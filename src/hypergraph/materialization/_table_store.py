@@ -54,8 +54,22 @@ class TableStore(ABC):
         conversion — the HyperTable layer does it once before calling here.
         """
 
-    def search(self, table_name: str, *, query: str, query_vector: list[float], **kwargs: Any) -> list[dict[str, Any]]:
-        """Search is optional because not every TableStore is a retrieval adapter."""
+    def search(
+        self,
+        table_name: str,
+        *,
+        query: str | None = None,
+        query_vector: list[float] | None = None,
+        vector_column: str | None = None,
+        where: RowPredicate | None = None,
+        limit: int | None = None,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        """Search is optional because not every TableStore is a retrieval adapter.
+
+        Implementations run a vector search on ``vector_column`` with ``where``
+        applied as a pre-filter, and include a ``_distance`` field per hit.
+        """
         raise NotImplementedError("This store does not support search")
 
     def save_manifest(self, table_name: str, manifest: dict[str, Any]) -> None:

@@ -6,7 +6,7 @@ import functools
 import hashlib
 import types
 import warnings
-from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Any, Union, get_args, get_origin
 
 import networkx as nx
 
@@ -77,6 +77,9 @@ def _format_type_hint(type_hint: Any) -> str:
     """Format a type annotation for human-readable summaries."""
     if type_hint is type(None):
         return "None"
+
+    if get_origin(type_hint) is Annotated:
+        return _format_type_hint(get_args(type_hint)[0])
 
     origin = get_origin(type_hint)
     if origin in (types.UnionType, Union):
@@ -156,7 +159,12 @@ class Graph:
                 edge. If omitted on a 2-tuple, values are auto-detected from
                 the intersection of source outputs and target inputs. Edges
                 with no matching values become ordering-only edges.
-                When ``edges`` is provided, auto-inference is disabled.
+                When ``edges`` is provided WITHOUT ``shared``, auto-inference
+                is disabled and the declared edges are the only data edges
+                (explicit mode). When ``shared`` is also provided, auto-inference
+                still runs for non-shared params and the declared edges are
+                added on top, typically as ordering-only edges (additive mode).
+                See :doc:`/05-how-to/declare-edges-explicitly`.
             entrypoint: Convenience shortcut for ``with_entrypoint(...)``.
                 Accepts a node name/object or a list/tuple of node names/objects
                 and applies the same validation and semantics as

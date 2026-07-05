@@ -162,10 +162,14 @@ def analyze_table(graph: Any, identity: str, components: dict[str, Any], map_ove
 
     derived_cols = [c for c in root_columns if c.role == "derived"]
     prov_cols = [_column(f"{PROVENANCE_PREFIX}{c.name}", role="internal") for c in derived_cols]
+    # One boundary provenance column per child spec: the recipe hash (+ item count)
+    # of the node producing the mapped items. The items list itself is never stored.
+    boundary_prov_cols = [_column(f"{PROVENANCE_PREFIX}{cs.map_input}", role="internal") for cs in child_specs if cs.map_input]
     final_columns = [
         *root_columns,
         _column("_row_fingerprint", role="internal"),
         *prov_cols,
+        *boundary_prov_cols,
         _column("_write_gen", role="internal", python_type=int),
         _column("_status", role="internal"),
         _column("_error", role="internal"),
@@ -195,6 +199,8 @@ def _analyze_map_over(map_node: Any, components: dict[str, Any]) -> TableSpec | 
             for out_name in n.data_outputs if hasattr(n, "data_outputs") else []:
                 _validate_column_name(out_name, "derived")
                 child_columns.append(_column(out_name, role="derived", produced_by=n, python_type=return_type(n)))
+        derived_child_cols = [c for c in child_columns if c.role == "derived"]
+        child_columns.extend(_column(f"{PROVENANCE_PREFIX}{c.name}", role="internal") for c in derived_child_cols)
 
     child_columns.extend(_internal_columns())
 

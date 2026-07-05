@@ -1081,3 +1081,64 @@ class TestGeneratorExecution:
         # At len=3, we stop adding (limit reached)
         # Final should stabilize at [0,1,2]
         assert len(result["items"]) <= 3
+
+
+class TestFunctionNodeBoundMethods:
+    """FunctionNode wrapping bound methods of configured instances."""
+
+    class Summarizer:
+        """Configurable component with a method used as a node."""
+
+        def __init__(self, model: str):
+            self.model = model
+
+        def summarize(self, text: str) -> str:
+            return f"{self.model}: {text}"
+
+    def test_bound_method_strips_self_and_runs(self):
+        """Bound-method node: self excluded from inputs, runs in a graph."""
+        from hypergraph import Graph
+        from hypergraph.runners.sync import SyncRunner
+
+        component = self.Summarizer(model="gpt-4")
+        fn = FunctionNode(component.summarize, name="summarize", output_name="summary")
+
+        assert fn.inputs == ("text",)
+        assert fn.outputs == ("summary",)
+
+        graph = Graph([fn])
+        result = SyncRunner().run(graph, {"text": "hello"})
+
+        assert result["summary"] == "gpt-4: hello"
+
+    def test_differently_configured_instances_different_hash(self):
+        """Two differently-configured instances → different definition_hash."""
+        a = FunctionNode(self.Summarizer(model="gpt-4").summarize, name="a", output_name="summary")
+        b = FunctionNode(self.Summarizer(model="haiku").summarize, name="b", output_name="summary")
+
+        assert a.definition_hash != b.definition_hash
+
+    def test_same_instance_stable_hash(self):
+        """Same instance, same method → stable definition_hash."""
+        component = self.Summarizer(model="gpt-4")
+
+        a = FunctionNode(component.summarize, name="a", output_name="summary")
+        b = FunctionNode(component.summarize, name="b", output_name="summary")
+
+        assert a.definition_hash == b.definition_hash
+
+    def test_rename_inputs_on_bound_method_node(self):
+        """rename_inputs works on a bound-method node."""
+        from hypergraph import Graph
+        from hypergraph.runners.sync import SyncRunner
+
+        component = self.Summarizer(model="gpt-4")
+        fn = FunctionNode(component.summarize, name="summarize", output_name="summary")
+        renamed = fn.rename_inputs({"text": "document"})
+
+        assert renamed.inputs == ("document",)
+
+        graph = Graph([renamed])
+        result = SyncRunner().run(graph, {"document": "report"})
+
+        assert result["summary"] == "gpt-4: report"
