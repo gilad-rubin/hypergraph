@@ -399,6 +399,33 @@ def test_field_consumer_nested_a_graph_deeper_is_still_map_fed(store):
     assert fanout.target_when_expanded == "input_text", "edge must re-route to the nested field pill, not the entrypoint"
 
 
+@node(output_name="embedding")
+def embed_chunk(chunk: str) -> list[float]:
+    """Inner node whose input is renamed FROM the item field ``text``."""
+    return [0.0]
+
+
+def test_renamed_inner_input_is_still_map_fed(store):
+    """A container that renames the item field to a different inner input is map-fed.
+
+    Regression for the rename gap: ``with_inputs(chunk="text")`` makes the inner
+    node consume ``chunk`` while the parent-facing container input (and pill)
+    stays ``text``. Matching against the container's OWN inputs (parent-facing),
+    not the renamed inner input, keeps ``text`` map-fed and routes the edge to
+    its pill.
+    """
+    from hypergraph.viz.renderer.ir_builder import build_graph_ir
+
+    child = Graph([embed_chunk], name="proc").as_node(name="items_node").with_inputs(chunk="text").map_over("items", identity="item_id")
+    table = HyperTable([produce_items, child], identity="doc_id", store=store)
+    ir = build_graph_ir(_combined_flat_graph(table))
+
+    (text_pill,) = [e for e in ir.external_inputs if e.synthetic_id == "input_text"]
+    assert text_pill.map_fed is True, "renamed inner input must still be map-fed on the parent-facing name"
+    (fanout,) = [e for e in ir.edges if e.source == "produce_items" and e.target == "items_node"]
+    assert fanout.target_when_expanded == "input_text"
+
+
 def test_unresolvable_schema_yields_no_fields_not_a_raise():
     """``_fanout_map_fields`` swallows a ``return_type`` failure (defensive).
 

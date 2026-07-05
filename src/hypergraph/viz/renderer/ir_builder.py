@@ -99,20 +99,23 @@ def _map_fed_fields(flat_graph: nx.DiGraph) -> dict[str, set[str]]:
 
     ``HyperTable.visualize`` stamps ``map_fields`` (the mapped item's schema
     field names) on each injected fan-out edge; the target is the mapped
-    container. Only fields an inner node actually consumes matter — a schema
-    field with no matching inner input (e.g. ``page_id``) is not a viz input,
-    so it is intersected out here.
+    container. Only fields the container actually consumes matter — a schema
+    field with no matching input (e.g. ``page_id``) is not a viz input, so it
+    is intersected out here.
+
+    Matching is against the mapped container's OWN input ports (parent-facing
+    names), not descendants' inner inputs. That is the name space the item
+    fields and the external-input pills share, so a container that renames an
+    inner input (``with_inputs(chunk="page_text")`` / ``rename_inputs``) still
+    matches on the parent-facing ``page_text`` rather than the renamed ``chunk``.
     """
     result: dict[str, set[str]] = {}
     for _src, tgt, attrs in flat_graph.edges(data=True):
         fields = attrs.get("map_fields")
         if not fields:
             continue
-        inner_inputs: set[str] = set()
-        for node_id, node_attrs in flat_graph.nodes(data=True):
-            if _is_descendant(node_id, tgt, flat_graph):
-                inner_inputs.update(node_attrs.get("inputs", ()))
-        matched = {f for f in fields if f in inner_inputs}
+        container_inputs = set(flat_graph.nodes.get(tgt, {}).get("inputs", ()))
+        matched = {f for f in fields if f in container_inputs}
         if matched:
             result.setdefault(tgt, set()).update(matched)
     return result

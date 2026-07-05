@@ -14,7 +14,8 @@
 
   // Pinned by Python via GraphIR.schema_version. Bump in lockstep with
   // ir_schema.py:CURRENT_SCHEMA_VERSION when the IR shape changes.
-  var SUPPORTED_SCHEMA_VERSION = '2';
+  // v3: tuple target_when_expanded (multi field-pill fan-out) + map_fed inputs.
+  var SUPPORTED_SCHEMA_VERSION = '3';
 
   function isSchemaSupported(ir) {
     if (!ir) return true;

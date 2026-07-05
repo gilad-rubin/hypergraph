@@ -109,7 +109,10 @@ class IRExternalInput:
 # Bump when the IR shape changes in a way old scene_builders can't read.
 # Both Python and JS scene_builders pin to this value; mismatches trigger
 # the static-fallback banner instead of a runtime exception.
-CURRENT_SCHEMA_VERSION = "2"
+# v3: ``IREdge.target_when_expanded`` may be a tuple (multi field-pill fan-out
+# re-route) and ``IRExternalInput`` gained ``map_fed`` — an old v2 scene builder
+# would mis-render both, so it must hit the mismatch banner instead.
+CURRENT_SCHEMA_VERSION = "3"
 
 
 class IRSchemaError(ValueError):
