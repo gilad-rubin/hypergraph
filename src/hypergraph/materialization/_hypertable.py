@@ -551,6 +551,7 @@ class HyperTable:
         if not include_children or not self._spec.children:
             return self._graph.visualize(**kwargs)
         from hypergraph.graph import Graph as _Graph
+        from hypergraph.viz.widget import render_flat_graph
 
         all_nodes = list(self._graph.nodes.values()) if isinstance(self._graph.nodes, dict) else []
         for map_node in getattr(self, "_map_over_nodes", []):
@@ -561,7 +562,48 @@ class HyperTable:
             binds = {k: v for k, v in self._components.items() if k in valid_inputs}
             if binds:
                 combined = combined.bind(**binds)
-        return combined.visualize(depth=1, **kwargs)
+
+        # The parent→mapped-child edge that auto-wiring can't infer: the mapped
+        # GraphNode consumes the parent's list column (map_input) through the
+        # derive lane, not through a name-matched input port, so no edge exists
+        # in the combined graph. Inject it as a viz-only fan-out edge here — the
+        # only place that holds both the producing node and the child spec.
+        extra_edges = self._fanout_viz_edges()
+
+        show_external_inputs = kwargs.pop("show_external_inputs", None)
+        show_inputs = kwargs.pop("show_inputs", None)
+        if show_external_inputs is not None:
+            if show_inputs is not None and show_inputs != show_external_inputs:
+                raise TypeError("Pass either show_inputs or show_external_inputs, not both.")
+            show_inputs = show_external_inputs
+        if show_inputs is None:
+            show_inputs = True
+        kwargs.setdefault("depth", 1)
+
+        flat_graph = combined.to_flat_graph(extra_edges=extra_edges)
+        return render_flat_graph(flat_graph, combined, show_inputs=show_inputs, **kwargs)
+
+    def _fanout_viz_edges(self) -> list[tuple[str, str, tuple[str, ...]]]:
+        """Viz-only ``(producer, mapped_node, (column,))`` edges for each child.
+
+        Pairs each child spec with the mapped GraphNode that maps its column and
+        the root node that produces that column, using hierarchical ids that
+        match ``to_flat_graph``. Empty when a producer or map node can't be
+        found, so viz degrades to the pre-fix disconnected view rather than
+        raising.
+        """
+        edges: list[tuple[str, str, tuple[str, ...]]] = []
+        map_nodes = getattr(self, "_map_over_nodes", [])
+        for child_spec in self._spec.children:
+            column = child_spec.map_input
+            if not column:
+                continue
+            producer = self._boundary_node(child_spec)
+            map_node = next((n for n in map_nodes if column in (getattr(n, "_map_over", None) or ())), None)
+            if producer is None or map_node is None:
+                continue
+            edges.append((producer.name, map_node.name, (column,)))
+        return edges
 
     def count(self, child_table: str | None = None) -> int:
         self._ensure_analyzed()

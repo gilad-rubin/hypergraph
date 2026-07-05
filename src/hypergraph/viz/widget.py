@@ -98,6 +98,41 @@ def visualize(
     elif show_inputs is None:
         show_inputs = True
 
+    flat_graph = graph.to_flat_graph()
+    return render_flat_graph(
+        flat_graph,
+        graph,
+        depth=depth,
+        theme=theme,
+        show_types=show_types,
+        separate_outputs=separate_outputs,
+        show_inputs=show_inputs,
+        show_bounded_inputs=show_bounded_inputs,
+        filepath=filepath,
+        _debug_overlays=_debug_overlays,
+    )
+
+
+def render_flat_graph(
+    flat_graph,
+    graph: Graph,
+    *,
+    depth: int = 0,
+    theme: str = "auto",
+    show_types: bool = True,
+    separate_outputs: bool = False,
+    show_inputs: bool = True,
+    show_bounded_inputs: bool = False,
+    filepath: str | None = None,
+    _debug_overlays: bool = False,
+) -> _VizCellOutput | None:
+    """Render a pre-built flat graph to the notebook widget / HTML file.
+
+    Split out of :func:`visualize` so callers that must augment the flat graph
+    before rendering (e.g. ``HyperTable.visualize`` injecting the parent→child
+    fan-out edge) reuse the exact same IR + HTML pipeline instead of
+    special-casing the renderer. ``graph`` is still needed for layout estimation.
+    """
     est_width, est_height = estimate_layout(
         graph,
         separate_outputs=separate_outputs,
@@ -109,7 +144,6 @@ def visualize(
     final_width = max(400, est_width)
     final_height = max(200, est_height)
 
-    flat_graph = graph.to_flat_graph()
     ir = build_graph_ir(flat_graph)
     initial_expansion = build_expansion_state(flat_graph, depth)
     graph_data = {
