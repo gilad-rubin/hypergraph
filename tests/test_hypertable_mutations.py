@@ -139,6 +139,22 @@ class TestUpdate:
         assert row["title"] == "New Title"
         assert row["clean_text"] == "hello"  # unchanged
 
+    def test_update_introducing_a_new_metadata_column_persists_it(self, store, embedder):
+        """A metadata-only update with a brand-new column evolves the schema.
+
+        The no-re-derive update path used to write straight to the store, which
+        silently drops keys the schema has never seen; a curated tag added after
+        insert would vanish. The update must evolve for the new column first.
+        """
+        from hypergraph.materialization import HyperTable
+
+        table = HyperTable([clean, count_words], identity="doc_id", store=store).with_runner(SyncRunner())
+        table.insert(doc_id="d1", text="hello")
+
+        table.update("d1", topic="presets")
+
+        assert table.get("d1")["topic"] == "presets"
+
     def test_update_cascades_to_children(self, store, embedder):
         """Updating a parent source re-derives children."""
         from hypergraph.materialization import HyperTable

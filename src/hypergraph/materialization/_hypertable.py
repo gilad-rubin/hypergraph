@@ -1488,6 +1488,10 @@ class HyperTable:
     def _row_with_changes(self, identity_value: str, changes: dict[str, Any], write_gen: int) -> dict[str, Any]:
         """Next generation of a row with metadata changes applied (no re-derivation)."""
         existing = self._store.read_one(self._spec.name, self._identity, identity_value)
+        # A metadata-only update may introduce a brand-new column (a curated key
+        # the schema has never seen); evolve for it first, or the write would
+        # silently drop the unknown key.
+        self._evolve_for_metadata({self._identity: identity_value, **changes})
         row = {k: _normalize_value(v) for k, v in existing.items()}
         row.update(changes)
         row["_write_gen"] = write_gen
