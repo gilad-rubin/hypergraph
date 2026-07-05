@@ -14,10 +14,11 @@ import subprocess
 from dataclasses import asdict
 from itertools import product
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import pytest
 
+from hypergraph import node as _node
 from hypergraph.viz.renderer.ir_builder import build_graph_ir
 from hypergraph.viz.scene_builder import build_initial_scene
 from tests.viz.conftest import (
@@ -67,6 +68,7 @@ def _semantic_node_data(data: dict) -> tuple:
             data.get("label"),
             data.get("typeHint"),
             data.get("isBound"),
+            data.get("mapFed"),
             data.get("ownerContainer"),
             data.get("deepestOwnerContainer"),
             tuple(sorted(data.get("actualTargets") or ())),
@@ -76,6 +78,7 @@ def _semantic_node_data(data: dict) -> tuple:
             tuple(data.get("params") or ()),
             tuple(data.get("paramTypes") or ()),
             data.get("isBound"),
+            data.get("mapFed"),
             data.get("ownerContainer"),
             data.get("deepestOwnerContainer"),
             tuple(sorted(data.get("actualTargets") or ())),
@@ -223,3 +226,81 @@ def test_python_js_scenes_match(fixture_name: str, separate_outputs: bool, show_
         assert py_edges == js_edges, (
             f"Edge-set drift for {ctx}\nOnly in Python: {sorted(py_edges - js_edges)}\nOnly in JS:     {sorted(js_edges - py_edges)}"
         )
+
+
+class _FanoutItem(TypedDict):
+    """Mapped item whose fields ``page_text``/``page_number`` name inner
+    inputs the fan-out edge re-routes to; ``item_id`` is the identity."""
+
+    item_id: str
+    page_text: str
+    page_number: int
+
+
+@_node(output_name="items")
+def _produce_fanout_items(source: str) -> list[_FanoutItem]:
+    return [_FanoutItem(item_id="i0", page_text=source, page_number=1)]
+
+
+@_node(output_name="embedding")
+def _embed_one_field(page_text: str) -> list[float]:
+    return [0.0]
+
+
+@_node(output_name="embedding")
+def _embed_two_fields(page_text: str, page_number: int) -> list[float]:
+    return [float(page_number)]
+
+
+_FANOUT_EMBED = {("page_text",): _embed_one_field, ("page_text", "page_number"): _embed_two_fields}
+
+
+def _fanout_ir(inner_inputs: tuple[str, ...]):
+    """Build the fan-out IR (with ``map_fields`` stamped) for a mapped child
+    whose inner graph consumes ``inner_inputs`` (item fields of a TypedDict).
+
+    Two inner inputs exercise the tuple ``target_when_expanded`` path (the
+    fan-out edge re-routes to multiple item-field pills); one exercises the
+    scalar path.
+    """
+    import tempfile
+
+    from hypergraph import Graph
+    from hypergraph.graph import Graph as _Graph
+    from hypergraph.materialization import HyperTable
+    from hypergraph.materialization._lancedb_store import LanceDBStore
+
+    store = LanceDBStore(tempfile.mkdtemp() + "/store")
+    child = Graph([_FANOUT_EMBED[inner_inputs]], name="proc").as_node(name="items_node").map_over("items", identity="item_id")
+    table = HyperTable([_produce_fanout_items, child], identity="doc_id", store=store)
+    table._ensure_analyzed()
+    nodes = list(table._graph.nodes.values())
+    nodes.extend(table._map_over_nodes)
+    combined = _Graph(nodes, name=table._spec.name)
+    extra = table._fanout_viz_edges()
+    flat = combined.to_flat_graph(extra_edges=extra)
+    for (src, tgt), fields in table._fanout_map_fields().items():
+        if flat.has_edge(src, tgt):
+            flat[src][tgt]["map_fields"] = list(fields)
+    return build_graph_ir(flat)
+
+
+@pytest.mark.parametrize("inner_inputs", [("page_text",), ("page_text", "page_number")])
+@pytest.mark.parametrize("show_inputs", [False, True])
+def test_python_js_fanout_scenes_match(inner_inputs: tuple[str, ...], show_inputs: bool) -> None:
+    """Python and JS scene builders agree on the map-fed fan-out re-routing.
+
+    Covers both the scalar and tuple ``target_when_expanded`` paths and the
+    ``mapFed`` INPUT flag across every expansion state.
+    """
+    ir = _fanout_ir(inner_inputs)
+    ir_dict: dict[str, Any] = asdict(ir)
+
+    for expansion_state in _all_expansion_states(ir_dict):
+        py_scene = build_initial_scene(ir, expansion_state=expansion_state, show_inputs=show_inputs)
+        js_scene = _node_scene(ir_dict, {"expansionState": expansion_state, "showInputs": show_inputs})
+        py_nodes, py_edges = _project(py_scene)
+        js_nodes, js_edges = _project(js_scene)
+        ctx = f"fanout inner={inner_inputs} state={expansion_state} inputs={show_inputs}"
+        assert py_nodes == js_nodes, f"Node drift for {ctx}\nPy-only: {sorted(py_nodes - js_nodes)}\nJS-only: {sorted(js_nodes - py_nodes)}"
+        assert py_edges == js_edges, f"Edge drift for {ctx}\nPy-only: {sorted(py_edges - js_edges)}\nJS-only: {sorted(js_edges - py_edges)}"

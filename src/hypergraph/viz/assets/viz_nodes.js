@@ -116,13 +116,26 @@
     // ── INPUT node ──
     if (nodeType === 'INPUT') {
       var tc = isLight ? 'text-slate-400' : 'text-slate-500';
+      // A map-fed input (an item field of a fan-out's mapped item, e.g.
+      // ``page_text`` off ``list[PageItem]``) is supplied by the parent's list
+      // column through the map — NOT a free-floating external input. Style it
+      // distinctly (amber accent, ⤨ marker) and give it a target handle so the
+      // re-routed fan-out edge attaches to it instead of looking like an
+      // external supplier.
+      var mapFed = !!data.mapFed;
+      var mapFedCls = mapFed
+        ? (isLight ? ' border-amber-300 text-amber-700 shadow-amber-100 hover:border-amber-400'
+                   : ' border-amber-500/60 text-amber-300 shadow-black/50 hover:border-amber-400')
+        : (isLight ? ' bg-white border-slate-200 text-slate-700 shadow-slate-200 hover:border-slate-300'
+                   : ' bg-slate-900 border-slate-700 text-slate-300 shadow-black/50 hover:border-slate-600');
       return html`
         <div className="w-full h-full relative" style=${wrapStyle}>
-          <div className=${'px-3 py-1.5 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg overflow-hidden' + (data.isBound ? ' border-dashed' : '') + (isLight ? ' bg-white border-slate-200 text-slate-700 shadow-slate-200 hover:border-slate-300' : ' bg-slate-900 border-slate-700 text-slate-300 shadow-black/50 hover:border-slate-600')}>
-            <span className=${'shrink-0 ' + (isLight ? 'text-slate-400' : 'text-slate-500')}><${Icons.Data} /></span>
+          <div className=${'px-3 py-1.5 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg overflow-hidden' + (data.isBound ? ' border-dashed' : '') + (mapFed && isLight ? ' bg-amber-50' : '') + (mapFed && !isLight ? ' bg-slate-900' : '') + mapFedCls}>
+            <span className=${'shrink-0 ' + (mapFed ? (isLight ? 'text-amber-500' : 'text-amber-400') : (isLight ? 'text-slate-400' : 'text-slate-500'))}>${mapFed ? '⤨' : html`<${Icons.Data} />`}</span>
             <span className="text-xs font-mono font-medium shrink-0">${data.label}</span>
             ${data.showTypes && data.typeHint ? html`<span className=${'text-xs font-mono truncate min-w-0 ' + tc} title=${data.typeHint}>: ${truncateTypeHint(data.typeHint)}</span>` : null}
           </div>
+          ${mapFed ? html`<${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${tgtStyle} />` : null}
           <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${srcStyle} />
         </div>`;
     }

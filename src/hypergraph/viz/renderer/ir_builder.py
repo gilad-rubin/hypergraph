@@ -8,6 +8,8 @@ all 2^N states ahead of time.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import networkx as nx
 
 from hypergraph.viz._common import (
@@ -39,6 +41,11 @@ def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
     nodes = [
         _build_ir_node(node_id, attrs, bound_params, flat_graph) for node_id, attrs in flat_graph.nodes(data=True) if node_id not in hidden_nodes
     ]
+    # ``container -> {item-field names}`` fed by a fan-out edge's mapped item.
+    # An inner input whose name is in this set is supplied by the parent's list
+    # column through the map, not by a genuine external supplier — the fan-out
+    # edge re-routes into its pill on expansion, and the pill is marked map-fed.
+    map_fed_fields = _map_fed_fields(flat_graph)
     exclusive_edges = compute_exclusive_data_edges(flat_graph)
     mutex_groups = _compute_mutex_groups(flat_graph)
     back_edges = _find_back_edges(flat_graph)
@@ -64,7 +71,14 @@ def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
     # Pre-compute the synthetic-id mapping so colliding leaf names
     # (e.g. ``A.x`` and ``B.x``) get unique ``input_<id>`` ids.
     id_for_param = disambiguate_external_input_ids([list(group["params"]) for group in groups])
-    external_inputs = [_build_input_group(group, flat_graph, id_for_param) for group in groups]
+    external_inputs = [_build_input_group(group, flat_graph, id_for_param, map_fed_fields) for group in groups]
+
+    # Re-route each identity-mode fan-out edge, when its mapped container is
+    # expanded, into the inner INPUT pill(s) fed by an item field — instead of
+    # the container entrypoint (#169). Done here (not in _build_ir_edge) because
+    # it needs the built ``external_inputs`` to resolve field -> pill id, which
+    # keeps the edge target guaranteed to be a real scene node.
+    edges = _reroute_fanout_edges_to_field_pills(edges, flat_graph, external_inputs)
 
     configured_entrypoints = tuple(flat_graph.graph.get("configured_entrypoints") or ())
     visibility = build_graph_output_visibility(flat_graph)
@@ -80,10 +94,70 @@ def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
     )
 
 
+def _map_fed_fields(flat_graph: nx.DiGraph) -> dict[str, set[str]]:
+    """``container_id -> {item-field names}`` from fan-out edges' ``map_fields``.
+
+    ``HyperTable.visualize`` stamps ``map_fields`` (the mapped item's schema
+    field names) on each injected fan-out edge; the target is the mapped
+    container. Only fields an inner node actually consumes matter — a schema
+    field with no matching inner input (e.g. ``page_id``) is not a viz input,
+    so it is intersected out here.
+    """
+    result: dict[str, set[str]] = {}
+    for _src, tgt, attrs in flat_graph.edges(data=True):
+        fields = attrs.get("map_fields")
+        if not fields:
+            continue
+        inner_inputs: set[str] = set()
+        for node_id, node_attrs in flat_graph.nodes(data=True):
+            if _is_descendant(node_id, tgt, flat_graph):
+                inner_inputs.update(node_attrs.get("inputs", ()))
+        matched = {f for f in fields if f in inner_inputs}
+        if matched:
+            result.setdefault(tgt, set()).update(matched)
+    return result
+
+
+def _reroute_fanout_edges_to_field_pills(
+    edges: list[IREdge],
+    flat_graph: nx.DiGraph,
+    external_inputs: list[IRExternalInput],
+) -> list[IREdge]:
+    """Point each map-fed fan-out edge at its item-field INPUT pill(s) on expand.
+
+    For a fan-out edge into a container whose ``map_fields`` name inner inputs,
+    the expanded target becomes the pill(s) for those fields (``input_page_text``)
+    rather than the entrypoint — so the visible flow is
+    ``segment_pages ──pages──▶ [page_text] ──▶ embed_page``. Falls back to the
+    entrypoint target already computed by ``_build_ir_edge`` when no field pill
+    exists (broadcast-only inner inputs, or a fieldless ``list[str]`` item).
+    """
+    # container_id -> {field leaf name -> pill synthetic id}, from the map-fed
+    # pills already built into external_inputs.
+    pill_by_field: dict[str, dict[str, str]] = {}
+    for ext in external_inputs:
+        if ext.map_fed and ext.deepest_owner is not None and len(ext.params) == 1:
+            leaf = external_input_display_name(ext.params[0])
+            pill_by_field.setdefault(ext.deepest_owner, {})[leaf] = ext.synthetic_id
+
+    rerouted: list[IREdge] = []
+    for edge in edges:
+        fields = flat_graph.edges[edge.source, edge.target].get("map_fields") if flat_graph.has_edge(edge.source, edge.target) else None
+        pills_for_container = pill_by_field.get(edge.target, {}) if fields else {}
+        pill_ids = tuple(pills_for_container[f] for f in fields if f in pills_for_container) if fields else ()
+        if pill_ids:
+            new_target = pill_ids[0] if len(pill_ids) == 1 else pill_ids
+            rerouted.append(replace(edge, target_when_expanded=new_target))
+        else:
+            rerouted.append(edge)
+    return rerouted
+
+
 def _build_input_group(
     group: dict,
     flat_graph: nx.DiGraph,
     id_for_param: dict[str, str] | None = None,
+    map_fed_fields: dict[str, set[str]] | None = None,
 ) -> IRExternalInput:
     """Convert a build_input_groups dict into an IRExternalInput.
 
@@ -122,6 +196,13 @@ def _build_input_group(
     # still use the short leaf segment when it is unambiguous.
     display_params = raw_params
     id_segments = tuple((id_for_param or {}).get(p, external_input_display_name(p)) for p in raw_params)
+    # Map-fed when this single-param input's leaf name is an item field of the
+    # fan-out edge into its owning container. Multi-param INPUT_GROUPs never
+    # arise for a single mapped item's fields, so only single-param inputs are
+    # considered (a group would need every member field-fed to qualify, which
+    # the fan-out never produces).
+    fed_for_owner = (map_fed_fields or {}).get(deepest_owner or "", set())
+    map_fed = len(raw_params) == 1 and external_input_display_name(raw_params[0]) in fed_for_owner
     return IRExternalInput(
         params=display_params,
         deepest_owner=deepest_owner,
@@ -129,6 +210,7 @@ def _build_input_group(
         type_hints=tuple(type_hints),
         is_bound=bool(group.get("is_bound", False)),
         id_segments=id_segments,
+        map_fed=map_fed,
     )
 
 

@@ -41,14 +41,23 @@ def store():
 
 
 def _combined_flat_graph(table: HyperTable):
-    """Rebuild exactly what ``visualize`` renders and return its flat graph."""
+    """Rebuild exactly what ``visualize`` renders and return its flat graph.
+
+    Mirrors ``HyperTable.visualize``: injects the fan-out edges AND stamps each
+    with its mapped item's ``map_fields`` so the IR can re-route the edge into
+    the item-field INPUT pill(s) on expansion.
+    """
     from hypergraph.graph import Graph as _Graph
 
     table._ensure_analyzed()
     nodes = list(table._graph.nodes.values())
     nodes.extend(table._map_over_nodes)
     combined = _Graph(nodes, name=table._spec.name)
-    return combined.to_flat_graph(extra_edges=table._fanout_viz_edges())
+    flat = combined.to_flat_graph(extra_edges=table._fanout_viz_edges())
+    for (src, tgt), fields in table._fanout_map_fields().items():
+        if flat.has_edge(src, tgt):
+            flat[src][tgt]["map_fields"] = list(fields)
+    return flat
 
 
 def test_fanout_edge_connects_producer_to_mapped_node(store):
@@ -257,9 +266,10 @@ def test_fanout_edge_ir_reroutes_into_expanded_container(store):
     The mapped container starts EXPANDED at the default depth, and the JS scene
     builder ranks only visible nodes — an edge whose target is the (invisible,
     expanded) container crashes dagre with "Cannot set properties of undefined
-    (setting 'rank')". The consumer-by-name search can never resolve an
-    identity-mode fan-out edge (the value names a parent column no inner node
-    consumes), so it must fall back to the container's entrypoint.
+    (setting 'rank')". Option A: the mapped item ``Item`` has a ``text`` field
+    that the inner ``clean`` node consumes, so the fan-out edge re-routes to the
+    ``text`` INPUT pill — the visible unpack
+    ``produce_items ──items──▶ [text] ──▶ clean``.
     """
     from hypergraph.viz.renderer.ir_builder import build_graph_ir
 
@@ -272,6 +282,95 @@ def test_fanout_edge_ir_reroutes_into_expanded_container(store):
     ir = build_graph_ir(_combined_flat_graph(table))
 
     (fanout,) = [e for e in ir.edges if e.source == "produce_items" and e.target == "items_node"]
-    assert fanout.target_when_expanded == "items_node/clean", (
-        f"fan-out edge must re-route to the container entrypoint when expanded; got {fanout.target_when_expanded!r}"
+    assert fanout.target_when_expanded == "input_text", (
+        f"fan-out edge must re-route to the item-field INPUT pill when expanded; got {fanout.target_when_expanded!r}"
     )
+    # The re-routed target is a real INPUT pill marked map-fed — not a plain
+    # external input and not the entrypoint.
+    (text_pill,) = [e for e in ir.external_inputs if e.synthetic_id == "input_text"]
+    assert text_pill.map_fed is True
+    assert text_pill.deepest_owner == "items_node"
+
+
+def test_map_fed_field_pill_is_not_a_plain_external_input(store):
+    """The item-field input renders as map-fed, and a genuine external input does not.
+
+    ``Item`` = {item_id, text}; ``clean`` consumes ``text`` (a field) while
+    ``produce_items`` consumes ``source`` (a real external supplier). Only
+    ``text`` is flagged map-fed.
+    """
+    from hypergraph.viz.renderer.ir_builder import build_graph_ir
+
+    table = HyperTable(
+        [produce_items, Graph([clean], name="proc").as_node(name="items_node").map_over("items", identity="item_id")],
+        identity="doc_id",
+        store=store,
+    )
+    ir = build_graph_ir(_combined_flat_graph(table))
+
+    by_id = {e.synthetic_id: e for e in ir.external_inputs}
+    assert by_id["input_text"].map_fed is True, "item-field input must be map-fed"
+    assert by_id["input_source"].map_fed is False, "genuine external input must be untouched"
+
+
+@node(output_name="clean_text")
+def broadcast_consumer(config: str) -> str:
+    """Inner node consuming a broadcast input whose name is NOT an item field."""
+    return config.strip()
+
+
+def test_broadcast_input_is_untouched_and_edge_falls_back(store):
+    """A broadcast (non-field) inner input keeps its plain rendering.
+
+    ``Item`` = {item_id, text}; the inner node consumes ``config``, which is not
+    an item field, so it is a broadcast input: NOT map-fed, and the fan-out edge
+    has no field pill to land on — it falls back to the container entrypoint
+    (#169 behavior).
+    """
+    from hypergraph.viz.renderer.ir_builder import build_graph_ir
+
+    table = HyperTable(
+        [produce_items, Graph([broadcast_consumer], name="proc").as_node(name="items_node").map_over("items", identity="item_id")],
+        identity="doc_id",
+        store=store,
+    )
+    ir = build_graph_ir(_combined_flat_graph(table))
+
+    (config_pill,) = [e for e in ir.external_inputs if e.synthetic_id == "input_config"]
+    assert config_pill.map_fed is False, "broadcast input must not be map-fed"
+    (fanout,) = [e for e in ir.edges if e.source == "produce_items" and e.target == "items_node"]
+    assert fanout.target_when_expanded == "items_node/broadcast_consumer", (
+        f"with no matching field pill the fan-out edge falls back to the entrypoint; got {fanout.target_when_expanded!r}"
+    )
+
+
+@node(output_name="plain_items")
+def produce_plain_items(source: str) -> list[str]:
+    """Producer whose item type is ``str`` — a fieldless mapped item."""
+    return [source]
+
+
+@node(output_name="clean_text")
+def clean_plain(plain_items: str) -> str:
+    return plain_items.strip()
+
+
+def test_fieldless_item_falls_back_to_entrypoint(store):
+    """No schema and a fieldless annotation (``list[str]``) => entrypoint fallback.
+
+    ``_map_config`` carries only ``identity`` (no ``schema``), and the producer
+    returns ``list[str]``, which has no fields — so nothing is map-fed and the
+    fan-out edge routes to the entrypoint exactly as in #169.
+    """
+    from hypergraph.viz.renderer.ir_builder import build_graph_ir
+
+    table = HyperTable(
+        [produce_plain_items, Graph([clean_plain], name="proc").as_node(name="items_node").map_over("plain_items", identity="item_id")],
+        identity="doc_id",
+        store=store,
+    )
+    ir = build_graph_ir(_combined_flat_graph(table))
+
+    assert not any(e.map_fed for e in ir.external_inputs), "a fieldless list[str] item feeds no field pills"
+    (fanout,) = [e for e in ir.edges if e.source == "produce_plain_items" and e.target == "items_node"]
+    assert fanout.target_when_expanded == "items_node/clean_plain"

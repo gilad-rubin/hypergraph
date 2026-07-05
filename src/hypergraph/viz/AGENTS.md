@@ -100,6 +100,12 @@ helper from ``tests/viz/conftest.py``. In the browser, App calls
 The IR carries all expansion-rewriting information eagerly:
 - ``IREdge.source_when_expanded`` / ``target_when_expanded`` re-route
   edges to the deepest internal producer/consumer when a container is expanded.
+  An identity-mode fan-out edge (``HyperTable.visualize``) re-routes instead to
+  the mapped item's field INPUT pill(s) — ``segment_pages ──pages──▶ [page_text]
+  ──▶ embed_page`` — so ``target_when_expanded`` may be a tuple of pill ids, and
+  each such pill is flagged ``IRExternalInput.map_fed`` (styled distinctly, not
+  as a free-floating external input). Falls back to the container entrypoint
+  when the mapped item has no matching field (e.g. ``list[str]``).
 - ``IREdge.is_back_edge`` marks DFS back-edges so feedback routing survives
   arbitrary expansion changes.
 - ``IRNode.outputs[i].internal_only`` flags outputs whose consumers all

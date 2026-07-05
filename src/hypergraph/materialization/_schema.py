@@ -78,6 +78,36 @@ def return_type(node: Any) -> Any:
     return typing.get_type_hints(func).get("return", str)
 
 
+def item_schema_fields(schema: Any) -> tuple[str, ...]:
+    """Field names of a mapped-item schema, or ``()`` when it has none.
+
+    Used by the fan-out viz to tell an inner input that is fed by an item
+    field (``page_text`` off a ``list[PageItem]``) apart from a genuine
+    external input. Accepts either the item type directly (``PageItem``) or
+    the producer's ``list[PageItem]`` annotation. Only mapping-like schemas
+    (TypedDicts, dataclasses, Pydantic models) expose fields; a ``list[str]``
+    item has none, so the caller falls back to the entrypoint.
+    """
+    if schema is None:
+        return ()
+    origin = typing.get_origin(schema)
+    if origin in (list, tuple):
+        args = typing.get_args(schema)
+        if not args:
+            return ()
+        schema = args[0]
+    # Pydantic models expose their fields under ``model_fields``; TypedDicts and
+    # dataclasses expose them via annotations (get_type_hints resolves both).
+    model_fields = getattr(schema, "model_fields", None)
+    if isinstance(model_fields, dict) and model_fields:
+        return tuple(model_fields.keys())
+    try:
+        hints = typing.get_type_hints(schema)
+    except Exception:
+        hints = getattr(schema, "__annotations__", {}) or {}
+    return tuple(hints.keys())
+
+
 def _input_types(graph: Any) -> dict[str, Any]:
     input_types: dict[str, Any] = {}
     nodes_dict = graph.nodes if isinstance(graph.nodes, dict) else {}

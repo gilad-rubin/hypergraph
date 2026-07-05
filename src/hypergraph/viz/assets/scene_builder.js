@@ -135,6 +135,7 @@
             params: params.slice(),
             paramTypes: typeHints.slice(),
             isBound: !!ext.is_bound,
+            mapFed: !!ext.map_fed,
             ownerContainer: ownerContainer,
             deepestOwnerContainer: ext.deepest_owner,
             actualTargets: (ext.consumers || []).slice(),
@@ -144,6 +145,7 @@
             label: params[0],
             typeHint: typeHints[0] || null,
             isBound: !!ext.is_bound,
+            mapFed: !!ext.map_fed,
             ownerContainer: ownerContainer,
             deepestOwnerContainer: ext.deepest_owner,
             actualTargets: (ext.consumers || []).slice(),
@@ -222,8 +224,15 @@
           ? irEdge.source_when_expanded.slice()
           : [irEdge.source_when_expanded];
       }
-      var tgt = irEdge.target;
-      if (expansionState[tgt] && irEdge.target_when_expanded) tgt = irEdge.target_when_expanded;
+      // A fan-out edge into an expanded container may re-route to several
+      // item-field INPUT pills, so target_when_expanded can be an array; emit
+      // one edge per target (mirrors the multi-source fan-out below).
+      var targets = [irEdge.target];
+      if (expansionState[irEdge.target] && irEdge.target_when_expanded) {
+        targets = Array.isArray(irEdge.target_when_expanded)
+          ? irEdge.target_when_expanded.slice()
+          : [irEdge.target_when_expanded];
+      }
 
       // A data edge can carry multiple value_names (one NetworkX edge per
       // (src,tgt) merges them). Merged-output mode should still render one
@@ -232,27 +241,30 @@
       var valueNames = irEdge.value_names || [];
       var valuesToEmit = (separateOutputs && irEdge.edge_type === 'data' && valueNames.length > 0) ? valueNames : [null];
 
-      for (var bs = 0; bs < baseSources.length; bs++) {
-        var baseSrc = baseSources[bs];
-        for (var v = 0; v < valuesToEmit.length; v++) {
-          var valueName = valuesToEmit[v];
-          var src = baseSrc;
-          if (separateOutputs && irEdge.edge_type === 'data' && valueName !== null) {
-            src = 'data_' + src + '_' + valueName;
+      for (var ti = 0; ti < targets.length; ti++) {
+        var tgt = targets[ti];
+        for (var bs = 0; bs < baseSources.length; bs++) {
+          var baseSrc = baseSources[bs];
+          for (var v = 0; v < valuesToEmit.length; v++) {
+            var valueName = valuesToEmit[v];
+            var src = baseSrc;
+            if (separateOutputs && irEdge.edge_type === 'data' && valueName !== null) {
+              src = 'data_' + src + '_' + valueName;
+            }
+            sceneEdges.push({
+              id: valueName === null ? src + '__' + tgt : src + '__' + tgt + '__' + valueName,
+              source: src,
+              target: tgt,
+              data: {
+                edgeType: irEdge.edge_type,
+                valueName: valueName,
+                label: (irEdge.label === undefined ? null : irEdge.label),
+                exclusive: !!irEdge.exclusive,
+                forceFeedback: !!irEdge.is_back_edge,
+              },
+              hidden: !visibleIds[src] || !visibleIds[tgt],
+            });
           }
-          sceneEdges.push({
-            id: valueName === null ? src + '__' + tgt : src + '__' + tgt + '__' + valueName,
-            source: src,
-            target: tgt,
-            data: {
-              edgeType: irEdge.edge_type,
-              valueName: valueName,
-              label: (irEdge.label === undefined ? null : irEdge.label),
-              exclusive: !!irEdge.exclusive,
-              forceFeedback: !!irEdge.is_back_edge,
-            },
-            hidden: !visibleIds[src] || !visibleIds[tgt],
-          });
         }
       }
     }

@@ -107,6 +107,7 @@ def build_initial_scene(
                         "params": list(ext.params),
                         "paramTypes": list(ext.type_hints),
                         "isBound": ext.is_bound,
+                        "mapFed": bool(ext.map_fed),
                         "ownerContainer": owner_container,
                         "deepestOwnerContainer": ext.deepest_owner,
                         "actualTargets": list(ext.consumers),
@@ -127,6 +128,7 @@ def build_initial_scene(
                         "label": ext.params[0],
                         "typeHint": ext.type_hints[0] if ext.type_hints else None,
                         "isBound": ext.is_bound,
+                        "mapFed": bool(ext.map_fed),
                         "ownerContainer": owner_container,
                         "deepestOwnerContainer": ext.deepest_owner,
                         "actualTargets": list(ext.consumers),
@@ -190,38 +192,43 @@ def build_initial_scene(
         if expansion_state.get(ir_edge.source) and ir_edge.source_when_expanded:
             expanded_sources = ir_edge.source_when_expanded
             base_sources = list(expanded_sources) if isinstance(expanded_sources, tuple) else [expanded_sources]
-        target = ir_edge.target
-        if expansion_state.get(target) and ir_edge.target_when_expanded:
-            target = ir_edge.target_when_expanded
+        # A fan-out edge into an expanded container may re-route to several item
+        # -field INPUT pills, so target_when_expanded can be a tuple; emit one
+        # edge per target (mirrors the multi-source fan-out below).
+        targets = [ir_edge.target]
+        if expansion_state.get(ir_edge.target) and ir_edge.target_when_expanded:
+            expanded_targets = ir_edge.target_when_expanded
+            targets = list(expanded_targets) if isinstance(expanded_targets, tuple) else [expanded_targets]
 
         # A data edge can carry multiple value_names (one NetworkX edge per
         # (src,tgt) merges them). Merged-output mode should still render one
         # visible edge per node pair; separate_outputs mode fans out through
         # one DATA node per value.
-        for base_source in base_sources:
-            if separate_outputs and ir_edge.edge_type == "data" and ir_edge.value_names:
-                edges_to_emit = [(value_name, base_source) for value_name in ir_edge.value_names]
-            else:
-                edges_to_emit = [(None, base_source)]
+        for target in targets:
+            for base_source in base_sources:
+                if separate_outputs and ir_edge.edge_type == "data" and ir_edge.value_names:
+                    edges_to_emit = [(value_name, base_source) for value_name in ir_edge.value_names]
+                else:
+                    edges_to_emit = [(None, base_source)]
 
-            for value_name, source in edges_to_emit:
-                if separate_outputs and ir_edge.edge_type == "data" and value_name is not None:
-                    source = f"data_{source}_{value_name}"
-                scene_edges.append(
-                    {
-                        "id": f"{source}__{target}" if value_name is None else f"{source}__{target}__{value_name}",
-                        "source": source,
-                        "target": target,
-                        "data": {
-                            "edgeType": ir_edge.edge_type,
-                            "valueName": value_name,
-                            "label": ir_edge.label,
-                            "exclusive": bool(ir_edge.exclusive),
-                            "forceFeedback": bool(ir_edge.is_back_edge),
-                        },
-                        "hidden": source not in visible_ids or target not in visible_ids,
-                    }
-                )
+                for value_name, source in edges_to_emit:
+                    if separate_outputs and ir_edge.edge_type == "data" and value_name is not None:
+                        source = f"data_{source}_{value_name}"
+                    scene_edges.append(
+                        {
+                            "id": f"{source}__{target}" if value_name is None else f"{source}__{target}__{value_name}",
+                            "source": source,
+                            "target": target,
+                            "data": {
+                                "edgeType": ir_edge.edge_type,
+                                "valueName": value_name,
+                                "label": ir_edge.label,
+                                "exclusive": bool(ir_edge.exclusive),
+                                "forceFeedback": bool(ir_edge.is_back_edge),
+                            },
+                            "hidden": source not in visible_ids or target not in visible_ids,
+                        }
+                    )
 
     if separate_outputs:
         # Add output edges from each producer to its DATA nodes. Mirrors
