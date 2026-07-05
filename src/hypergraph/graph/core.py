@@ -1663,7 +1663,17 @@ class Graph:
         self._flatten_edges(G)
         if extra_edges:
             for src_id, tgt_id, value_names in extra_edges:
-                if src_id in G.nodes and tgt_id in G.nodes and not G.has_edge(src_id, tgt_id):
+                if src_id not in G.nodes or tgt_id not in G.nodes:
+                    continue
+                if G.has_edge(src_id, tgt_id):
+                    # Merge into the existing edge (same convention as
+                    # _add_explicit_data_edges) instead of dropping the
+                    # fan-out label: the mapped node may already have a real
+                    # edge from this producer for another value.
+                    existing = G[src_id][tgt_id].get("value_names", [])
+                    G[src_id][tgt_id]["value_names"] = list(dict.fromkeys([*existing, *value_names]))
+                    G[src_id][tgt_id]["is_map"] = True
+                else:
                     G.add_edge(src_id, tgt_id, edge_type="data", value_names=list(value_names), is_map=True)
 
         # Build output_to_sources mapping (supports mutex outputs with multiple sources)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import math
+import warnings
 from typing import Any
 
 from hypergraph import Graph
@@ -570,11 +571,27 @@ class HyperTable:
         # only place that holds both the producing node and the child spec.
         extra_edges = self._fanout_viz_edges()
 
+        # `combined` is a throwaway Graph built fresh for this render (never
+        # cached, never the runtime graph), so mutating its nx_graph in place
+        # is safe. It must carry the same edges as the flat graph below:
+        # LayoutEstimator sizes off `combined.nx_graph`, not the flat graph, so
+        # without this the fan-out edge would render correctly but the iframe
+        # would still be sized as if the mapped node were a disconnected root
+        # (wrong width/height, e.g. clipped output).
+        for src_id, tgt_id, value_names in extra_edges:
+            if src_id in combined.nx_graph.nodes and tgt_id in combined.nx_graph.nodes and not combined.nx_graph.has_edge(src_id, tgt_id):
+                combined.nx_graph.add_edge(src_id, tgt_id, edge_type="data", value_names=list(value_names), is_map=True)
+
         show_external_inputs = kwargs.pop("show_external_inputs", None)
         show_inputs = kwargs.pop("show_inputs", None)
         if show_external_inputs is not None:
             if show_inputs is not None and show_inputs != show_external_inputs:
                 raise TypeError("Pass either show_inputs or show_external_inputs, not both.")
+            warnings.warn(
+                "show_external_inputs is deprecated; use show_inputs instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             show_inputs = show_external_inputs
         if show_inputs is None:
             show_inputs = True
@@ -591,16 +608,24 @@ class HyperTable:
         match ``to_flat_graph``. Empty when a producer or map node can't be
         found, so viz degrades to the pre-fix disconnected view rather than
         raising.
+
+        ``self._spec.children`` is built by ``analyze_table`` as
+        ``[_analyze_map_over(map_node, ...) for map_node in self._map_over_nodes]``
+        (one ``TableSpec`` per map node, same order, never filtered) — so the two
+        lists are always the same length and positionally aligned. Pairing by
+        position (rather than matching on ``column`` name) is required to keep
+        two children that map the *same* column name correctly attached to
+        their own map node instead of both resolving to whichever map node
+        happens to appear first.
         """
         edges: list[tuple[str, str, tuple[str, ...]]] = []
         map_nodes = getattr(self, "_map_over_nodes", [])
-        for child_spec in self._spec.children:
+        for child_spec, map_node in zip(self._spec.children, map_nodes, strict=True):
             column = child_spec.map_input
             if not column:
                 continue
             producer = self._boundary_node(child_spec)
-            map_node = next((n for n in map_nodes if column in (getattr(n, "_map_over", None) or ())), None)
-            if producer is None or map_node is None:
+            if producer is None:
                 continue
             edges.append((producer.name, map_node.name, (column,)))
         return edges
