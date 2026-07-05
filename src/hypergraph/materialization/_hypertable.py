@@ -529,6 +529,23 @@ class HyperTable:
 
     # --- Public API ---
 
+    @property
+    def table_name(self) -> str:
+        """The root table's physical name (e.g. for an index ``on=`` target)."""
+        self._ensure_analyzed()
+        return self._spec.name
+
+    @property
+    def child_table_names(self) -> tuple[str, ...]:
+        """The child (mapped) tables' physical names, in declaration order.
+
+        The public accessor for the name an application passes to
+        ``create_index(on=...)`` for a 1:many derivation step — so callers never
+        reach into ``_spec.children`` to find it.
+        """
+        self._ensure_analyzed()
+        return tuple(child.name for child in self._spec.children)
+
     def visualize(self, *, include_children: bool = True, **kwargs) -> Any:
         self._ensure_analyzed()
         if not include_children or not self._spec.children:
@@ -769,18 +786,33 @@ class HyperTable:
         del indexes[name]
         self._save_indexes(indexes)
 
-    def search(self, query_vector: list[float], *, index: str, limit: int = 10, include_status: bool = False) -> list[dict[str, Any]]:
-        """Vector search through a named index: public rows plus a ``_distance`` field."""
+    def search(
+        self,
+        query_vector: list[float],
+        *,
+        index: str,
+        limit: int = 10,
+        where: Any = None,
+        include_status: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Vector search through a named index: public rows plus a ``_distance`` field.
+
+        ``where`` is an optional query-time pre-filter (dict or predicate
+        tuples) that stacks on top of the index's own recorded ``rows`` slice:
+        both are applied, so a caller can narrow one search (e.g. by
+        ``station``) without minting a separate index.
+        """
         self._ensure_analyzed()
         indexes = self._load_indexes()
         if index not in indexes:
             raise KeyError(f"no index named {index!r}; known indexes: {sorted(indexes)}")
         index_spec = indexes[index]
+        combined_where = [*_where_predicate(index_spec.get("rows")), *_where_predicate(where)]
         hits = self._store.search(
             index_spec["on"],
             query_vector=list(query_vector),
             vector_column=index_spec["vector"],
-            where=_where_predicate(index_spec.get("rows")) or None,
+            where=combined_where or None,
             limit=limit,
         )
         results = []

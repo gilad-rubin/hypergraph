@@ -170,6 +170,40 @@ class TestChildTableIndex:
         assert hits[0]["page_text"] == "beta"
         assert hits[0]["_parent_id"] == "d1"
 
+    def test_child_table_names_is_the_public_index_on_target(self, tmp_path):
+        # The application names its 1:many index over child_table_names[0]
+        # instead of reaching into _spec.children.
+        store = LanceDBStore(str(tmp_path / "child_names_store"))
+        table = make_child_table(store)
+        table.insert([{"doc_id": "d1", "text": "alpha|beta"}])
+
+        (child_name,) = table.child_table_names
+        assert child_name == "page"
+        assert table.table_name == "doc"
+        table.create_index("pages_idx", on=child_name, vector="page_vector")
+        assert [s["name"] for s in table.list_indexes()] == ["pages_idx"]
+
+
+class TestSearchWhere:
+    def test_query_time_where_stacks_on_the_index(self, table):
+        # No baked rows filter on the index; a query-time where narrows this one
+        # search to active rows only, without minting a second index.
+        table.create_index("main", vector="vec")
+
+        # gamma (d3) is the true nearest but inactive; the query-time filter drops it.
+        hits = table.search([0.0, 0.1, 0.9], index="main", limit=1, where={"active": True})
+        assert hits[0]["doc_id"] == "d2"
+
+        # Same index, no where -> the inactive nearest is returned.
+        unfiltered = table.search([0.0, 0.1, 0.9], index="main", limit=1)
+        assert unfiltered[0]["doc_id"] == "d3"
+
+    def test_query_time_where_and_index_rows_both_apply(self, table):
+        # An index with a baked rows slice AND a query-time where AND both.
+        table.create_index("active_only", vector="vec", rows={"active": True})
+        hits = table.search([1.0, 0.0, 0.0], index="active_only", limit=5, where={"doc_id": "d2"})
+        assert [h["doc_id"] for h in hits] == ["d2"]
+
 
 class TestRecipeCurrency:
     def test_current_flips_after_rebinding_a_different_embedder(self, store, table):
