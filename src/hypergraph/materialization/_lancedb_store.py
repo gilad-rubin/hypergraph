@@ -51,18 +51,6 @@ def _sql_literal(val: Any) -> str:
     return str(val)
 
 
-def _is_table_absent(exc: Exception, table_name: str) -> bool:
-    """True when ``exc`` is LanceDB's "table not found" signal for ``table_name``.
-
-    LanceDB 0.33 raises a plain ``ValueError`` whose message reads
-    ``Table '<name>' was not found``. There is no dedicated exception class, so
-    we match the message narrowly — the table name plus "not found" — to avoid
-    treating an unrelated ValueError as an absent table.
-    """
-    message = str(exc).lower()
-    return "not found" in message and table_name.lower() in message
-
-
 def _build_lance_filter(where: RowPredicate) -> str:
     """Convert RowPredicate to a LanceDB SQL-like filter string."""
     op_map = {"eq": "=", "ne": "!=", "lt": "<", "lte": "<=", "gt": ">", "gte": ">="}
@@ -193,18 +181,17 @@ class LanceDBStore(TableStore):
             raise ValueError("LanceDBStore.search requires query_vector (text-only search is not supported in v1)")
         tbl = self._tables.get(table_name)
         if tbl is None:
-            try:
-                tbl = self._db.open_table(table_name)
-            except ValueError as exc:
-                # An absent table means "no rows have ever been written" — a
-                # documented empty result (mirrors max_write_gen's absent -> 0).
-                # LanceDB signals this with a ValueError whose message names the
-                # missing table. Any OTHER error (corruption, permissions, a
-                # different ValueError) is a real failure and must re-raise, not
-                # be swallowed into an empty result.
-                if _is_table_absent(exc, table_name):
-                    return []
-                raise
+            # A table LanceDB never created has no on-disk directory: that means
+            # "no rows have ever been written" — a documented empty result
+            # (mirrors max_write_gen's absent -> 0). But a table whose directory
+            # exists yet fails to open is corrupt / unreadable / permission-denied
+            # — a real failure that must surface, NOT be swallowed into []. The
+            # error message alone can't tell these apart (LanceDB raises the same
+            # "Table '<name>' was not found" ValueError for a corrupt table), so
+            # we key off the on-disk directory, which a corrupt table still has.
+            if not self._table_dir_exists(table_name):
+                return []
+            tbl = self._db.open_table(table_name)
             self._tables[table_name] = tbl
         q = tbl.search(list(query_vector), vector_column_name=vector_column)
         if where:
@@ -242,6 +229,15 @@ class LanceDBStore(TableStore):
 
     def _manifest_path(self, table_name: str) -> Path:
         return self._path / f"{table_name}__manifest.json"
+
+    def _table_dir_exists(self, table_name: str) -> bool:
+        """Whether LanceDB has ever created this table on disk.
+
+        LanceDB stores each table as a ``<name>.lance`` directory under the
+        connection path. Absent directory = never created (no rows ever
+        written); present directory that still fails to open = corrupt.
+        """
+        return (self._path / f"{table_name}.lance").exists()
 
     def _ensure_table(self, spec: TableSpec) -> None:
         try:

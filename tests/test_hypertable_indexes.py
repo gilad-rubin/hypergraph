@@ -181,39 +181,47 @@ class TestRecipeCurrency:
 
 
 class TestLanceDBStoreSearchAbsentVsError:
-    """LanceDBStore.search: absent table is an empty result; any other error re-raises.
+    """LanceDBStore.search: an absent table is an empty result; a corrupt or
+    unreadable one re-raises.
 
-    An absent table means "no rows have ever been written" — a documented empty
-    result. But the catch must NOT swallow corruption/permission errors into the
-    same ``[]``; those are real failures and must surface.
+    A table LanceDB never created (no on-disk ``<name>.lance`` directory) means
+    "no rows have ever been written" — a documented empty result. But a table
+    whose directory exists yet fails to open is corrupt / permission-denied — a
+    real failure that must surface, not be swallowed into ``[]``. The error
+    message can't tell them apart (LanceDB raises the same "was not found"
+    ValueError for a corrupt table), so the store keys off the directory.
     """
 
     def test_absent_table_returns_empty(self, tmp_path):
         store = LanceDBStore(str(tmp_path / "absent_store"))
-        # Never opened/written this table -> genuinely absent.
+        # Never created -> no <name>.lance directory -> genuinely absent.
         assert store.search("never_written", query_vector=[1.0, 0.0, 0.0]) == []
 
-    def test_non_absence_error_reraises(self, tmp_path, monkeypatch):
-        store = LanceDBStore(str(tmp_path / "err_store"))
+    def test_corrupt_table_reraises(self, tmp_path, monkeypatch):
+        """A table whose directory exists but won't open is corrupt -> re-raise."""
+        store = LanceDBStore(str(tmp_path / "corrupt_store"))
+        # Simulate the on-disk directory being present (table was created)...
+        (store._path / "some_table.lance").mkdir(parents=True)
 
-        class BoomDB:
-            def open_table(self, name):
-                raise RuntimeError("disk corruption / permission denied")
+        # ...but open_table fails as LanceDB does for a corrupt table: the same
+        # "was not found" ValueError it also raises for a truly absent table.
+        def boom(name):
+            raise ValueError(f"Table '{name}' was not found")
 
-        monkeypatch.setattr(store, "_db", BoomDB())
-        with pytest.raises(RuntimeError, match="corruption"):
+        monkeypatch.setattr(store._db, "open_table", boom)
+        with pytest.raises(ValueError, match="was not found"):
             store.search("some_table", query_vector=[1.0, 0.0, 0.0])
 
-    def test_unrelated_valueerror_reraises(self, tmp_path, monkeypatch):
-        """A ValueError that is NOT 'table not found' must not be swallowed."""
-        store = LanceDBStore(str(tmp_path / "verr_store"))
+    def test_permission_error_reraises(self, tmp_path, monkeypatch):
+        """A non-ValueError open failure (permissions, etc.) must re-raise too."""
+        store = LanceDBStore(str(tmp_path / "perm_store"))
+        (store._path / "some_table.lance").mkdir(parents=True)
 
-        class BadValueDB:
-            def open_table(self, name):
-                raise ValueError("invalid vector column dtype")
+        def boom(name):
+            raise RuntimeError("permission denied")
 
-        monkeypatch.setattr(store, "_db", BadValueDB())
-        with pytest.raises(ValueError, match="dtype"):
+        monkeypatch.setattr(store._db, "open_table", boom)
+        with pytest.raises(RuntimeError, match="permission denied"):
             store.search("some_table", query_vector=[1.0, 0.0, 0.0])
 
 
