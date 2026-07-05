@@ -31,6 +31,15 @@ class MyStore(TableStore):
 `search`, `save_manifest`, and `load_manifest` are optional (they default to
 "not supported" / no-op) — implement them only if your backend offers them.
 
+**Named indexes need both manifest hooks.** `save_manifest` / `load_manifest`
+persist a table's index specs. They stay optional for any store that never uses
+indexes, but a store that *is* asked to `create_index` without implementing them
+fails loud at use time — `HyperTable.create_index` checks the pair and raises
+`NotImplementedError` naming your store and `save_manifest`, rather than
+"succeeding" silently and then having `list_indexes()` return nothing. So
+implement **both** hooks (not just one) if you want named indexes; leave both as
+the base no-op if you don't.
+
 ## The invariants that aren't obvious
 
 Most of the interface is self-explanatory. These few are not, and a store that
