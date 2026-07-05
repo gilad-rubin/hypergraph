@@ -21,6 +21,7 @@ from hypergraph.materialization._schema import (
     analyze_table,
     input_names,
     is_internal_column,
+    item_schema_fields,
     node_func,
     python_type_to_arrow,
     return_type,
@@ -598,6 +599,17 @@ class HyperTable:
         kwargs.setdefault("depth", 1)
 
         flat_graph = combined.to_flat_graph(extra_edges=extra_edges)
+
+        # Tag each injected fan-out edge with the mapped item's schema fields.
+        # The ir_builder reads ``map_fields`` to re-route the edge into the
+        # matching inner INPUT pill(s) when the container is expanded, and to
+        # mark those pills as map-fed (see ir_builder._build_ir_edge). Kept off
+        # ``extra_edges`` so ``to_flat_graph`` stays a generic viz affordance.
+        map_fields = self._fanout_map_fields()
+        for (src_id, tgt_id), field_names in map_fields.items():
+            if flat_graph.has_edge(src_id, tgt_id):
+                flat_graph[src_id][tgt_id]["map_fields"] = list(field_names)
+
         return render_flat_graph(flat_graph, combined, show_inputs=show_inputs, **kwargs)
 
     def _fanout_viz_edges(self) -> list[tuple[str, str, tuple[str, ...]]]:
@@ -629,6 +641,43 @@ class HyperTable:
                 continue
             edges.append((producer.name, map_node.name, (column,)))
         return edges
+
+    def _fanout_map_fields(self) -> dict[tuple[str, str], tuple[str, ...]]:
+        """``(producer, mapped_node) -> item-schema field names`` for each child.
+
+        The viz uses these to re-route the fan-out edge, when the container is
+        expanded, into the inner INPUT pill(s) fed by an item field — so the
+        unpack ``segment_pages ──pages──▶ [page_text] ──▶ embed_page`` is
+        visible instead of the edge landing on ``embed_page`` beside a
+        free-floating ``page_text`` input pill.
+
+        Field discovery priority (matches the fingerprinting/schema lanes):
+        the map node's ``_map_config["schema"]`` if set, else the producing
+        node's return annotation (``list[PageItem]`` where ``PageItem`` is a
+        TypedDict). A schema with no fields (``list[str]``) yields ``()`` — the
+        ir_builder then falls back to the container entrypoint (#169 behavior).
+        """
+        fields: dict[tuple[str, str], tuple[str, ...]] = {}
+        map_nodes = getattr(self, "_map_over_nodes", [])
+        for child_spec, map_node in zip(self._spec.children, map_nodes, strict=True):
+            if not child_spec.map_input:
+                continue
+            producer = self._boundary_node(child_spec)
+            if producer is None:
+                continue
+            config = getattr(map_node, "_map_config", None) or {}
+            schema = config.get("schema")
+            if schema is None:
+                # ``return_type`` resolves the producer's annotation, which can
+                # raise on an unresolved forward reference. Viz must degrade to
+                # entrypoint routing on a valid table, never crash — so treat an
+                # unresolvable annotation as "no discoverable fields".
+                try:
+                    schema = return_type(producer)
+                except Exception:
+                    schema = None
+            fields[(producer.name, map_node.name)] = item_schema_fields(schema)
+        return fields
 
     def _read_projected(self, table_name: str, columns: list[str], where: Any = None) -> list[dict[str, Any]]:
         """Read only ``columns`` when the store can project; otherwise full rows.

@@ -33,8 +33,11 @@ class IREdge:
     # branches can expose the same container output from multiple internal
     # producers, so scene_builder rewrites to all of them when expanded.
     source_when_expanded: str | tuple[str, ...] | None = None
-    # Symmetric: deepest internal consumer when the target container is expanded.
-    target_when_expanded: str | None = None
+    # Symmetric: deepest internal consumer when the target container is
+    # expanded. Usually one node; an identity-mode fan-out edge whose mapped
+    # item has multiple item-field inputs re-routes to all matching INPUT pills,
+    # so this may be a tuple (mirrors ``source_when_expanded``).
+    target_when_expanded: str | tuple[str, ...] | None = None
     # Output-value names this edge carries (for separate_outputs mode, where
     # the data flow goes producer -> data_node -> consumer instead of
     # producer -> consumer directly).
@@ -71,6 +74,12 @@ class IRExternalInput:
     type_hints: tuple[str | None, ...] = ()  # one per param
     is_bound: bool = False
     id_segments: tuple[str, ...] = ()  # one per param; falls back to params if empty
+    # True when this input is a field of a mapped item (e.g. ``page_text`` off
+    # a ``list[PageItem]`` fan-out): the parent's list column supplies it via
+    # the map, so it is NOT a genuine external supplier. The fan-out edge
+    # re-routes into this pill when the container is expanded; frontends style
+    # it distinctly instead of as a free-floating external input.
+    map_fed: bool = False
 
     @property
     def name(self) -> str:
@@ -100,7 +109,10 @@ class IRExternalInput:
 # Bump when the IR shape changes in a way old scene_builders can't read.
 # Both Python and JS scene_builders pin to this value; mismatches trigger
 # the static-fallback banner instead of a runtime exception.
-CURRENT_SCHEMA_VERSION = "2"
+# v3: ``IREdge.target_when_expanded`` may be a tuple (multi field-pill fan-out
+# re-route) and ``IRExternalInput`` gained ``map_fed`` — an old v2 scene builder
+# would mis-render both, so it must hit the mismatch banner instead.
+CURRENT_SCHEMA_VERSION = "3"
 
 
 class IRSchemaError(ValueError):
