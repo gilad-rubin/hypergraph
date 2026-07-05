@@ -89,30 +89,65 @@ class LanceDBStore(TableStore):
             return 0
         return tbl.count_rows()
 
-    def read_rows(self, table_name: str, where: RowPredicate | None = None, *, limit: int | None = None) -> list[dict[str, Any]]:
+    def read_rows(
+        self, table_name: str, where: RowPredicate | None = None, *, limit: int | None = None, columns: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         tbl = self._tables.get(table_name)
         if tbl is None:
             return []
-        at = tbl.to_arrow()
+        at = self._read_arrow(tbl, columns, extra=self._predicate_columns(where))
         if where:
             at = _apply_arrow_predicate(at, where)
         if limit is not None:
             at = at.slice(0, limit)
+        if columns is not None:
+            at = at.select([c for c in columns if c in at.column_names])
         return _arrow_table_to_dicts(at)
 
-    def read_one(self, table_name: str, identity_column: str, identity_value: Any) -> dict[str, Any] | None:
+    def read_one(self, table_name: str, identity_column: str, identity_value: Any, *, columns: list[str] | None = None) -> dict[str, Any] | None:
         tbl = self._tables.get(table_name)
         if tbl is None:
             return None
-        at = tbl.to_arrow()
+        # Identity + _write_gen are always fetched: identity to match, _write_gen
+        # to pick the newest generation on crash-leftover duplicates. Both are
+        # dropped from the returned row if the caller did not ask for them.
+        at = self._read_arrow(tbl, columns, extra=[identity_column, "_write_gen"])
         at = _apply_arrow_predicate(at, [(identity_column, "eq", identity_value)])
         if len(at) == 0:
             return None
         if len(at) > 1:
             indices = pc.sort_indices(at, sort_keys=[("_write_gen", "descending")])
             at = at.take(indices)
-        rows = _arrow_table_to_dicts(at.slice(0, 1))
+        at = at.slice(0, 1)
+        if columns is not None:
+            at = at.select([c for c in columns if c in at.column_names])
+        rows = _arrow_table_to_dicts(at)
         return rows[0]
+
+    @staticmethod
+    def _predicate_columns(where: RowPredicate | None) -> list[str]:
+        """Columns a predicate reads — must survive the projection so the filter can run."""
+        return [col for col, _op, _val in where] if where else []
+
+    def _read_arrow(self, tbl: Any, columns: list[str] | None, *, extra: list[str]) -> pa.Table:
+        """Read an Arrow table, pushing a column projection into LanceDB when asked.
+
+        A projected read never materializes unrequested columns (the point:
+        keep ``large_binary`` blobs on disk for a metadata-only read). ``extra``
+        names columns the caller needs internally (predicate columns, identity,
+        ``_write_gen``) that must be present even if the caller did not list
+        them; they are trimmed from the returned rows afterward. An unknown
+        requested column fails loudly, naming the column and the real schema.
+        """
+        if columns is None:
+            return tbl.to_arrow()
+        available = {f.name for f in tbl.schema}
+        requested = list(dict.fromkeys([*columns, *extra]))
+        unknown = [c for c in requested if c not in available]
+        if unknown:
+            raise KeyError(f"read requested unknown column(s) {unknown} on table {tbl.name!r}; available columns: {sorted(available)}")
+        projected = [c for c in requested if c in available]
+        return tbl.to_lance().to_table(columns=projected)
 
     def write_rows(self, table_name: str, rows: list[dict[str, Any]]) -> None:
         if not rows:

@@ -25,12 +25,43 @@ class TableStore(ABC):
         """Return physical row count for a table."""
 
     @abstractmethod
-    def read_rows(self, table_name: str, where: RowPredicate | None = None, *, limit: int | None = None) -> list[dict[str, Any]]:
-        """Read rows, optionally filtered by a row predicate."""
+    def read_rows(
+        self,
+        table_name: str,
+        where: RowPredicate | None = None,
+        *,
+        limit: int | None = None,
+        columns: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read rows, optionally filtered by a row predicate.
+
+        ``columns`` projects the result to just those column names — a metadata
+        read never has to drag a ``large_binary`` blob column off disk. ``None``
+        (the default) returns every column, so existing callers are unaffected.
+
+        A subclass gets projection FOR FREE: it may fetch full rows and hand
+        them to ``TableStore._project_rows(rows, columns)``, which drops the
+        unwanted keys. A store that can push projection down to its backend
+        (e.g. LanceDB) overrides this for the real on-disk I/O saving. Either
+        way the observable contract is identical, and the conformance harness
+        checks it against both.
+        """
 
     @abstractmethod
-    def read_one(self, table_name: str, identity_column: str, identity_value: Any) -> dict[str, Any] | None:
-        """Read one row by identity, returning the newest generation when duplicated."""
+    def read_one(
+        self,
+        table_name: str,
+        identity_column: str,
+        identity_value: Any,
+        *,
+        columns: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Read one row by identity, returning the newest generation when duplicated.
+
+        ``columns`` projects the result exactly as in ``read_rows``. The identity
+        column is always retrievable regardless of the projection list (the
+        dedup-by-generation logic and the caller both rely on it).
+        """
 
     @abstractmethod
     def write_rows(self, table_name: str, rows: list[dict[str, Any]]) -> None:
@@ -95,6 +126,45 @@ class TableStore(ABC):
         support named indexes; the base no-ops do not count.
         """
         return type(self).save_manifest is not TableStore.save_manifest and type(self).load_manifest is not TableStore.load_manifest
+
+    def supports_column_projection(self) -> bool:
+        """Whether ``read_rows``/``read_one`` accept the ``columns=`` kwarg.
+
+        A store advertises support only when BOTH read methods carry a
+        ``columns`` parameter. This lets a caller (HyperTable's metadata-only
+        reads) push a projection down to conforming stores while staying
+        compatible with older external stores whose ``read_rows`` predates the
+        kwarg — they are simply never handed ``columns``. Checked by signature,
+        so a store implements projection just by accepting the parameter; no
+        registration step.
+        """
+        import inspect
+
+        for name in ("read_rows", "read_one"):
+            try:
+                params = inspect.signature(getattr(self, name)).parameters
+            except (TypeError, ValueError):
+                return False
+            if "columns" not in params:
+                return False
+        return True
+
+    @staticmethod
+    def _project_rows(rows: list[dict[str, Any]], columns: list[str] | None) -> list[dict[str, Any]]:
+        """Post-filter full rows to ``columns`` (the base-class projection default).
+
+        A store that cannot push projection into its backend fetches full rows
+        and calls this — the observable result matches a native projection. When
+        ``columns`` is ``None`` the rows pass through untouched. Keys requested
+        but absent from a row are silently omitted (mirrors a native projection
+        of a null-valued column), so callers must not treat a missing key as an
+        error here; the loud "unknown column" check belongs at the backend that
+        actually knows its schema.
+        """
+        if columns is None:
+            return rows
+        wanted = set(columns)
+        return [{k: v for k, v in row.items() if k in wanted} for row in rows]
 
 
 def validate_store(store: Any) -> TableStore:
