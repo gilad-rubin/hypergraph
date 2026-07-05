@@ -73,12 +73,28 @@ class TableStore(ABC):
         raise NotImplementedError("This store does not support search")
 
     def save_manifest(self, table_name: str, manifest: dict[str, Any]) -> None:
-        """Persist table metadata when the backend supports manifests."""
+        """Persist table metadata when the backend supports manifests.
+
+        Manifests are OPTIONAL: a store that never uses named indexes never
+        touches them and can leave this base no-op in place. The loud failure
+        for a store that *does* get asked to persist an index lives at the call
+        site (``HyperTable.create_index`` checks ``supports_manifests`` and
+        raises, naming the store and this method) so it fires exactly when the
+        capability is used — not silently at ``list_indexes``-returns-nothing.
+        """
         return None
 
     def load_manifest(self, table_name: str) -> dict[str, Any] | None:
         """Load table metadata when the backend supports manifests."""
         return None
+
+    def supports_manifests(self) -> bool:
+        """True when the store overrides the manifest hooks (index persistence).
+
+        A store must implement both ``save_manifest`` and ``load_manifest`` to
+        support named indexes; the base no-ops do not count.
+        """
+        return type(self).save_manifest is not TableStore.save_manifest and type(self).load_manifest is not TableStore.load_manifest
 
 
 def validate_store(store: Any) -> TableStore:

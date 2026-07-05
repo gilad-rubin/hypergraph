@@ -722,6 +722,12 @@ class HyperTable:
     ) -> dict[str, Any]:
         """Record a named query spec: which table, which vector column, which row slice."""
         self._ensure_analyzed()
+        if not self._store.supports_manifests():
+            raise NotImplementedError(
+                f"{type(self._store).__name__} does not implement save_manifest/load_manifest, "
+                "so it cannot persist named indexes. Implement both manifest hooks to support "
+                "create_index, or use a store that does (e.g. LanceDBStore)."
+            )
         spec = self._resolve_index_table(on)
         if vector is None:
             raise ValueError("create_index requires vector=<column>: v1 indexes are vector-search specs")

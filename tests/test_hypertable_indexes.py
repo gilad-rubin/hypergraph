@@ -12,7 +12,7 @@ from typing import TypedDict
 import pytest
 
 from hypergraph import Graph, node
-from hypergraph.materialization import HyperTable
+from hypergraph.materialization import HyperTable, TableStore
 from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.runners import SyncRunner
 
@@ -178,3 +178,111 @@ class TestRecipeCurrency:
 
         rebound = make_table(store, embedder=Embedder("embed-b"))
         assert rebound.list_indexes()[0]["current"] is False
+
+
+class TestLanceDBStoreSearchAbsentVsError:
+    """LanceDBStore.search: absent table is an empty result; any other error re-raises.
+
+    An absent table means "no rows have ever been written" — a documented empty
+    result. But the catch must NOT swallow corruption/permission errors into the
+    same ``[]``; those are real failures and must surface.
+    """
+
+    def test_absent_table_returns_empty(self, tmp_path):
+        store = LanceDBStore(str(tmp_path / "absent_store"))
+        # Never opened/written this table -> genuinely absent.
+        assert store.search("never_written", query_vector=[1.0, 0.0, 0.0]) == []
+
+    def test_non_absence_error_reraises(self, tmp_path, monkeypatch):
+        store = LanceDBStore(str(tmp_path / "err_store"))
+
+        class BoomDB:
+            def open_table(self, name):
+                raise RuntimeError("disk corruption / permission denied")
+
+        monkeypatch.setattr(store, "_db", BoomDB())
+        with pytest.raises(RuntimeError, match="corruption"):
+            store.search("some_table", query_vector=[1.0, 0.0, 0.0])
+
+    def test_unrelated_valueerror_reraises(self, tmp_path, monkeypatch):
+        """A ValueError that is NOT 'table not found' must not be swallowed."""
+        store = LanceDBStore(str(tmp_path / "verr_store"))
+
+        class BadValueDB:
+            def open_table(self, name):
+                raise ValueError("invalid vector column dtype")
+
+        monkeypatch.setattr(store, "_db", BadValueDB())
+        with pytest.raises(ValueError, match="dtype"):
+            store.search("some_table", query_vector=[1.0, 0.0, 0.0])
+
+
+class ManifestlessStore(TableStore):
+    """A store that supports rows but leaves the manifest hooks as base no-ops.
+
+    Legitimate for a backend that never uses indexes. But if such a store is
+    asked to ``create_index``, it must fail loud at use time instead of
+    silently "succeeding" and having ``list_indexes`` return nothing.
+    """
+
+    def __init__(self) -> None:
+        self._tables: dict[str, list[dict]] = {}
+
+    def open(self, spec, children):
+        result = {spec.name: [c.name for c in spec.columns]}
+        self._tables.setdefault(spec.name, [])
+        for child in children:
+            result[child.name] = [c.name for c in child.columns]
+            self._tables.setdefault(child.name, [])
+        return result
+
+    def count(self, table_name):
+        return len(self._tables.get(table_name, []))
+
+    def read_rows(self, table_name, where=None, *, limit=None):
+        rows = list(self._tables.get(table_name, []))
+        return rows[:limit] if limit is not None else rows
+
+    def read_one(self, table_name, identity_column, identity_value):
+        matches = [r for r in self._tables.get(table_name, []) if r.get(identity_column) == identity_value]
+        return max(matches, key=lambda r: r.get("_write_gen", 0)) if matches else None
+
+    def write_rows(self, table_name, rows):
+        self._tables.setdefault(table_name, []).extend(rows)
+
+    def delete_rows(self, table_name, where):
+        return 0
+
+    def max_write_gen(self, table_name):
+        rows = self._tables.get(table_name, [])
+        return max((r.get("_write_gen", 0) for r in rows), default=0)
+
+    def evolve_schema(self, table_name, new_columns):
+        return list(new_columns.keys())
+
+    # NOTE: save_manifest / load_manifest are intentionally NOT overridden.
+
+
+class TestManifestlessStoreFailsLoudOnCreateIndex:
+    def _table(self):
+        store = ManifestlessStore()
+        table = make_table(store)
+        table.insert(DOCS)
+        return store, table
+
+    def test_create_index_raises_naming_store_and_capability(self):
+        _store, table = self._table()
+
+        with pytest.raises(NotImplementedError, match="ManifestlessStore") as exc:
+            table.create_index("main", vector="vec")
+        assert "save_manifest" in str(exc.value)
+
+    def test_no_index_is_silently_recorded(self):
+        """The failure must fire before the index is half-written."""
+        store, table = self._table()
+
+        with pytest.raises(NotImplementedError):
+            table.create_index("main", vector="vec")
+        # A fresh instance over the same store sees no phantom index.
+        fresh = make_table(store)
+        assert fresh.list_indexes() == []
