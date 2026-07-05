@@ -1637,7 +1637,7 @@ class Graph:
             colors=colors,
         )
 
-    def to_flat_graph(self) -> nx.DiGraph:
+    def to_flat_graph(self, *, extra_edges: list[tuple[str, str, tuple[str, ...]]] | None = None) -> nx.DiGraph:
         """Create a flattened NetworkX graph with all nested nodes.
 
         Returns a new DiGraph where:
@@ -1648,11 +1648,33 @@ class Graph:
         - Graph attributes include `input_spec`, `output_to_sources`, and
           configured execution entrypoints (if any)
 
-        This is the canonical representation for visualization and analysis.
+        This is the canonical representation used by visualization and analysis
+        (``viz``, ``to_mermaid``, ``GraphDebugger``) — never by the runners. So
+        ``extra_edges`` is a viz-only affordance: it injects edges the auto-wiring
+        cannot infer because the value flows through a mechanism outside the graph
+        wiring. ``HyperTable.visualize`` uses it to draw the parent→mapped-child
+        fan-out edge, whose column is fed by the derive lane (via
+        ``child_spec.map_input``), not by a name-matched input port on the mapped
+        GraphNode. Each entry is ``(source_id, target_id, value_names)`` using the
+        same hierarchical ids and data-edge shape as real edges.
         """
         G = nx.DiGraph()
         self._flatten_nodes(G, list(self._nodes.values()), parent=None)
         self._flatten_edges(G)
+        if extra_edges:
+            for src_id, tgt_id, value_names in extra_edges:
+                if src_id not in G.nodes or tgt_id not in G.nodes:
+                    continue
+                if G.has_edge(src_id, tgt_id):
+                    # Merge into the existing edge (same convention as
+                    # _add_explicit_data_edges) instead of dropping the
+                    # fan-out label: the mapped node may already have a real
+                    # edge from this producer for another value.
+                    existing = G[src_id][tgt_id].get("value_names", [])
+                    G[src_id][tgt_id]["value_names"] = list(dict.fromkeys([*existing, *value_names]))
+                    G[src_id][tgt_id]["is_map"] = True
+                else:
+                    G.add_edge(src_id, tgt_id, edge_type="data", value_names=list(value_names), is_map=True)
 
         # Build output_to_sources mapping (supports mutex outputs with multiple sources)
         output_to_sources: dict[str, list[str]] = {}
