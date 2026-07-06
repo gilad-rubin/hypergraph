@@ -20,10 +20,15 @@ FINGERPRINT_COLUMNS = ("_row_fingerprint", "_write_gen")
 STATUS_COLUMNS = ("_status", "_error")
 PARENT_LINK_COLUMN = "_parent_id"
 PROVENANCE_PREFIX = "_provenance_"
+# The per-row RECIPE-ONLY stamp (node code + component configs + bound plain
+# values, NO input values) written at derive time. Additive: old stores gain
+# the column via idempotent schema evolution on first stamped write; rows
+# without it read as drifted-UNKNOWN, never as current (see RecipeDrift).
+RECIPE_COLUMN = "_recipe_fingerprint"
 
 # Names a user may not give an identity/source/derived column. A reserved name is
 # any framework-managed column plus the parent link.
-RESERVED_NAMES = frozenset({*FINGERPRINT_COLUMNS, *STATUS_COLUMNS, PARENT_LINK_COLUMN})
+RESERVED_NAMES = frozenset({*FINGERPRINT_COLUMNS, *STATUS_COLUMNS, PARENT_LINK_COLUMN, RECIPE_COLUMN})
 
 
 def is_reserved_name(name: str) -> bool:
@@ -32,7 +37,7 @@ def is_reserved_name(name: str) -> bool:
 
 def is_internal_column(name: str) -> bool:
     """Internal columns are stripped from public rows (status is handled separately)."""
-    return name in FINGERPRINT_COLUMNS or name in STATUS_COLUMNS or name.startswith(PROVENANCE_PREFIX)
+    return name in FINGERPRINT_COLUMNS or name in STATUS_COLUMNS or name == RECIPE_COLUMN or name.startswith(PROVENANCE_PREFIX)
 
 
 # --- Column / table specs ---
@@ -195,11 +200,15 @@ def analyze_table(graph: Any, identity: str, components: dict[str, Any], map_ove
     # One boundary provenance column per child spec: the recipe hash (+ item count)
     # of the node producing the mapped items. The items list itself is never stored.
     boundary_prov_cols = [_column(f"{PROVENANCE_PREFIX}{cs.map_input}", role="internal") for cs in child_specs if cs.map_input]
+    # The recipe stamp exists only where a recipe exists: a plain table (no
+    # derived columns, no children) never grows the column.
+    recipe_cols = [_column(RECIPE_COLUMN, role="internal")] if derived_cols or child_specs else []
     final_columns = [
         *root_columns,
         _column("_row_fingerprint", role="internal"),
         *prov_cols,
         *boundary_prov_cols,
+        *recipe_cols,
         _column("_write_gen", role="internal", python_type=int),
         _column("_status", role="internal"),
         _column("_error", role="internal"),
@@ -231,6 +240,9 @@ def _analyze_map_over(map_node: Any, components: dict[str, Any]) -> TableSpec | 
                 child_columns.append(_column(out_name, role="derived", produced_by=n, python_type=return_type(n)))
         derived_child_cols = [c for c in child_columns if c.role == "derived"]
         child_columns.extend(_column(f"{PROVENANCE_PREFIX}{c.name}", role="internal") for c in derived_child_cols)
+        # Child rows stamp their own child-graph recipe (scoped, like the
+        # child fingerprint), so the column exists exactly when a recipe does.
+        child_columns.append(_column(RECIPE_COLUMN, role="internal"))
 
     child_columns.extend(_internal_columns())
 

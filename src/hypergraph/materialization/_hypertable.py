@@ -15,6 +15,7 @@ from hypergraph.materialization._fingerprint import (
     compute_definition_hash,
     compute_recipe_fingerprint,
     compute_row_fingerprint,
+    compute_table_recipe_fingerprint,
 )
 from hypergraph.materialization._recipe_journal import (
     KIND_BOUND_VALUE,
@@ -23,6 +24,7 @@ from hypergraph.materialization._recipe_journal import (
     RecipeJournal,
 )
 from hypergraph.materialization._schema import (
+    RECIPE_COLUMN,
     STATUS_COLUMNS,
     TableSpec,
     analyze_table,
@@ -33,7 +35,7 @@ from hypergraph.materialization._schema import (
     python_type_to_arrow,
     return_type,
 )
-from hypergraph.materialization._types import ErrorRow, SyncResult, TableStatus
+from hypergraph.materialization._types import ErrorRow, RecipeDrift, SyncResult, TableStatus
 
 
 def _normalize_to_dict(item: Any) -> dict[str, Any]:
@@ -156,6 +158,9 @@ class HyperTable:
         self._analyzed = False
         self._column_graphs: dict[int, Any] = {}
         self._journal_obj: RecipeJournal | None = None
+        # Tables whose physical schema is known to hold the recipe-stamp column
+        # (memoized so the additive evolution runs at most once per table).
+        self._recipe_column_ready: set[str] = set()
 
     def bind(self, **components: Any) -> HyperTable:
         merged = {**self._components, **components}
@@ -261,6 +266,7 @@ class HyperTable:
 
         row["_row_fingerprint"] = self._compute_row_fingerprint(graph_inputs)
         row["_write_gen"] = write_gen
+        self._stamp_recipe(row, self._spec.name)
 
         if provenances is None:
             values = {**{k: v for k, v in item.items() if k != self._identity}, **outputs}
@@ -310,6 +316,9 @@ class HyperTable:
 
         row["_row_fingerprint"] = self._compute_row_fingerprint(graph_inputs)
         row["_write_gen"] = write_gen
+        # An error row stamps the recipe it was ATTEMPTED under, so a recipe
+        # change after a failure still reads as drift.
+        self._stamp_recipe(row, self._spec.name)
         row["_status"] = "error"
         row["_error"] = f"{type(error).__name__}: {error}"
 
@@ -414,6 +423,110 @@ class HyperTable:
         params = self._node_params(node)
         comp = {k: v for k, v in self._components.items() if k in params}
         return compute_recipe_fingerprint(node_func(node), _component_config_hashes(comp))
+
+    # --- Per-row recipe stamp (PRD 0027: drift = a stored-column comparison) ---
+
+    def _table_stamps_recipe(self) -> bool:
+        """Only deriving tables stamp: a plain table (no derived columns, no children) has no recipe."""
+        return bool(self._derived_columns() or self._spec.children)
+
+    def _current_recipe_fingerprint(self) -> str:
+        """The root table's recipe-only fingerprint under the CURRENT code + bindings."""
+        return compute_table_recipe_fingerprint(self._graph, self._components)
+
+    def _current_child_recipe_fingerprint(self, child_spec: TableSpec) -> str:
+        """A child table's recipe-only fingerprint, scoped to the child graph (mirrors the child row fingerprint)."""
+        child_graph = child_spec.child_graph
+        valid_inputs = set(child_graph.inputs.all) if child_graph is not None and hasattr(child_graph.inputs, "all") else set()
+        return compute_table_recipe_fingerprint(child_graph, self._components, valid_inputs)
+
+    def _ensure_recipe_column(self, table_name: str) -> None:
+        """Additively evolve the stamp column onto a pre-stamp physical table, once.
+
+        Write-lane only (called from the stamping helper, never from a read
+        path), so a pre-wave store that is only ever READ keeps its schema
+        byte-identical. Idempotent through evolve_schema; memoized so the
+        schema consultation happens at most once per table per instance.
+        """
+        if table_name in self._recipe_column_ready:
+            return
+        physical = self._store.column_names(table_name)
+        if physical and RECIPE_COLUMN not in physical:
+            self._store.evolve_schema(table_name, {RECIPE_COLUMN: python_type_to_arrow(str)})
+        self._recipe_column_ready.add(table_name)
+
+    def _stamp_recipe(self, row: dict[str, Any], table_name: str, *, child_spec: TableSpec | None = None) -> None:
+        """Stamp the recipe-only fingerprint onto a row being assembled for write."""
+        if not self._table_stamps_recipe():
+            return
+        if child_spec is not None:
+            if child_spec.child_graph is None:
+                return
+            fingerprint = self._current_child_recipe_fingerprint(child_spec)
+        else:
+            fingerprint = self._current_recipe_fingerprint()
+        self._ensure_recipe_column(table_name)
+        row[RECIPE_COLUMN] = fingerprint
+
+    def recipe_drift(self) -> RecipeDrift:
+        """Which stored rows were derived under something other than today's recipe.
+
+        A pure stored-column comparison: each row's ``_recipe_fingerprint``
+        stamp against the current recipe-only fingerprint (node code +
+        component configs + bound plain values — never input values). Reads
+        project ONLY identity/reserved columns, so content bytes never leave
+        the disk regardless of table size. Rows with no stamp (written before
+        stamping existed) count as UNKNOWN — honestly stale, never current.
+        """
+        self._ensure_analyzed()
+        root = self._table_recipe_drift(
+            self._spec.name,
+            self._identity,
+            self._current_recipe_fingerprint(),
+            child=False,
+        )
+        children = tuple(
+            self._table_recipe_drift(
+                child_spec.name,
+                child_spec.identity,
+                self._current_child_recipe_fingerprint(child_spec),
+                child=True,
+            )
+            for child_spec in self._spec.children
+        )
+        return RecipeDrift(
+            table=root.table,
+            total=root.total,
+            current=root.current,
+            drifted=root.drifted,
+            unknown=root.unknown,
+            children=children,
+        )
+
+    def _table_recipe_drift(self, table_name: str, identity: str, current_fingerprint: str, *, child: bool) -> RecipeDrift:
+        columns = [identity, "_write_gen"]
+        if child:
+            columns.append("_parent_id")
+        # A store that raises on unknown projected columns (LanceDB) reports
+        # its physical schema; only ask for the stamp when it exists there. A
+        # store that cannot introspect (``column_names() == []``) either
+        # returns full rows or silently omits missing projected keys — both
+        # read the stamp when present and as None when not.
+        physical = self._store.column_names(table_name)
+        if not physical or RECIPE_COLUMN in physical:
+            columns.append(RECIPE_COLUMN)
+        rows = self._read_projected(table_name, columns)
+        rows = _dedup_child_rows(rows, identity) if child else _dedup_rows(rows, identity)
+        current = drifted = unknown = 0
+        for row in rows:
+            stamp = row.get(RECIPE_COLUMN)
+            if not isinstance(stamp, str) or not stamp:
+                unknown += 1
+            elif stamp == current_fingerprint:
+                current += 1
+            else:
+                drifted += 1
+        return RecipeDrift(table=table_name, total=len(rows), current=current, drifted=drifted, unknown=unknown)
 
     # --- Recipe journal (hash -> readable recipe text) ---
 
@@ -1484,6 +1597,7 @@ class HyperTable:
             "_status": status,
             "_error": error,
         }
+        self._stamp_recipe(row, child_spec.name, child_spec=child_spec)
         for k, v in child_item.items():
             if k != child_spec.identity and k != "_parent_id":
                 row[k] = v
@@ -1977,6 +2091,9 @@ class HyperTable:
         new_row["_write_gen"] = write_gen
         if self._row_converged(new_row):
             new_row["_row_fingerprint"] = self._compute_row_fingerprint(self._source_inputs_from_row(new_row))
+            # Same convergence rule for the recipe stamp: a partially-current
+            # row keeps its OLD stamp so recipe_drift keeps reporting it.
+            self._stamp_recipe(new_row, self._spec.name)
 
         self._store.write_rows(self._spec.name, [new_row])
         self._store.delete_rows(

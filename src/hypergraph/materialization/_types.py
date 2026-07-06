@@ -27,6 +27,31 @@ class SyncResult:
 
 
 @dataclass(frozen=True)
+class RecipeDrift:
+    """Per-table recipe-drift report, returned by ``HyperTable.recipe_drift()``.
+
+    A row DRIFTED when its stored ``_recipe_fingerprint`` stamp differs from
+    the table's current recipe (node code + component configs + bound plain
+    values — input values never participate). A row is UNKNOWN when it carries
+    no stamp at all (written before stamping existed) — reported honestly as
+    needing a re-derive, never as current. Unlike ``status()``, computing this
+    reads only identity/reserved columns: content bytes never leave the disk.
+    """
+
+    table: str
+    total: int
+    current: int
+    drifted: int
+    unknown: int
+    children: tuple[RecipeDrift, ...] = ()
+
+    @property
+    def stale_total(self) -> int:
+        """Rows here and in child tables derived under something other than today's recipe."""
+        return self.drifted + self.unknown + sum(child.stale_total for child in self.children)
+
+
+@dataclass(frozen=True)
 class TableStatus:
     """Dry-run staleness report for one table, returned by status().
 

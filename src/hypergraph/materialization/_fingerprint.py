@@ -114,6 +114,21 @@ def compute_recipe_fingerprint(node_fn: Any, component_hashes: dict[str, str]) -
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def compute_table_recipe_fingerprint(graph: Any, components: dict[str, Any], valid_inputs: set[str] | None = None) -> str:
+    """Recipe-only identity for a whole table's derivation: NO input values.
+
+    The per-row stamp (``_recipe_fingerprint``) written at derive time: the
+    same payload composition as ``compute_row_fingerprint`` — node definition
+    hashes + component config / bound plain-value hashes — with the inputs
+    slot deliberately empty, so every row derived under one recipe carries
+    the SAME stamp and "does this row match today's recipe" is a stored-column
+    comparison. Root tables pass no ``valid_inputs`` (mirroring
+    ``compute_row_fingerprint``'s unscoped component set); child tables scope
+    to the child graph's inputs (mirroring ``compute_child_fingerprint``).
+    """
+    return _fingerprint({}, _node_definition_hashes(graph), _component_config_hashes(components, valid_inputs))
+
+
 def compute_column_provenance(node_fn: Any, inputs: dict[str, Any], component_hashes: dict[str, str]) -> str:
     """Per-column provenance: hash(producing node's code + its direct input values + consumed component configs).
 
