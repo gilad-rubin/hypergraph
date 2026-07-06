@@ -17,7 +17,17 @@ from typing import Any
 
 
 def compute_definition_hash(fn: Any) -> str:
-    """Hash the source code of a derive function (falls back to repr)."""
+    """Hash the definition of a derive node: function source, or a node's own hash.
+
+    A column producer may be a subgraph (a GraphNode — e.g. a validation cycle
+    wrapped as one node): it has no single source function, but its
+    ``definition_hash`` already covers the inner graph's node code plus the
+    boundary projection, so that is the code-sensitive basis here. Plain
+    functions hash their source (falls back to repr).
+    """
+    node_hash = getattr(fn, "definition_hash", None)
+    if isinstance(node_hash, str) and node_hash:
+        return node_hash
     try:
         source = inspect.getsource(fn)
     except (OSError, TypeError):
@@ -28,7 +38,16 @@ def compute_definition_hash(fn: Any) -> str:
 def _node_definition_hashes(graph: Any) -> list[str]:
     if graph is None:
         return []
-    return [compute_definition_hash(func) for n in graph.iter_nodes() if (func := getattr(n, "func", None)) is not None]
+    hashes: list[str] = []
+    for n in graph.iter_nodes():
+        func = getattr(n, "func", None)
+        if func is not None:
+            hashes.append(compute_definition_hash(func))
+        elif getattr(n, "definition_hash", None):
+            # A function-less producer (GraphNode) participates through its own
+            # code-sensitive hash, so an inner-node edit flips the table recipe.
+            hashes.append(compute_definition_hash(n))
+    return hashes
 
 
 def _plain_value_payload(value: Any) -> str | None:

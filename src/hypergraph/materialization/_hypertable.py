@@ -366,7 +366,20 @@ class HyperTable:
         return [c for c in spec.columns if c.role == "derived"]
 
     def _node_params(self, node: Any) -> Any:
-        return inspect.signature(node_func(node)).parameters
+        func = node_func(node)
+        if func is not None:
+            return inspect.signature(func).parameters
+        # A GraphNode column producer has no signature; synthesize equivalent
+        # parameters from its projected input ports (cycle-internal values are
+        # not projected, so they never look like required columns) so provenance
+        # and dependency ordering treat it like any other producer.
+        params: dict[str, inspect.Parameter] = {}
+        for name in getattr(node, "inputs", ()):
+            default = inspect.Parameter.empty
+            if hasattr(node, "has_default_for") and node.has_default_for(name):
+                default = node.get_default_for(name)
+            params[name] = inspect.Parameter(name, inspect.Parameter.KEYWORD_ONLY, default=default)
+        return params
 
     def _node_columns(self, node: Any, spec: TableSpec | None = None) -> list:
         return [c for c in self._derived_columns(spec) if c.produced_by is node]
@@ -416,13 +429,13 @@ class HyperTable:
                 inputs[name] = values[name]
             elif param.default is inspect.Parameter.empty:
                 return None
-        return compute_column_provenance(node_func(node), inputs, _component_config_hashes(comp))
+        return compute_column_provenance(node_func(node) or node, inputs, _component_config_hashes(comp))
 
     def _node_recipe(self, node: Any) -> str:
         """Recipe identity for a node: hash(node code + consumed component configs), no input values."""
         params = self._node_params(node)
         comp = {k: v for k, v in self._components.items() if k in params}
-        return compute_recipe_fingerprint(node_func(node), _component_config_hashes(comp))
+        return compute_recipe_fingerprint(node_func(node) or node, _component_config_hashes(comp))
 
     # --- Per-row recipe stamp (PRD 0027: drift = a stored-column comparison) ---
 
@@ -643,7 +656,8 @@ class HyperTable:
         """A cached single-node graph for column-scoped execution."""
         graph = self._column_graphs.get(id(node))
         if graph is None:
-            graph = Graph([node], name=f"{self._spec.name}__{node_func(node).__name__}")
+            column_label = getattr(node_func(node), "__name__", None) or getattr(node, "name", "column")
+            graph = Graph([node], name=f"{self._spec.name}__{column_label}")
             binds = {k: v for k, v in self._components.items() if k in set(graph.inputs.all)}
             if binds:
                 graph = graph.bind(**binds)
