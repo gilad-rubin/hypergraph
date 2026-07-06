@@ -271,7 +271,14 @@ class LanceDBStore(TableStore):
         return [f.name for f in tbl.schema]
 
     def evolve_schema(self, table_name: str, new_columns: dict[str, pa.DataType]) -> list[str]:
-        tbl = self._tables[table_name]
+        # Advance to the latest committed version first: another connection on the
+        # same folder may have added a column since this handle was opened. Reading
+        # the stale cached schema would keep that column in ``new_columns`` and the
+        # rewrite would build a duplicate field — the exact case the idempotence
+        # guarantee exists to prevent (mirrors ``column_names`` / the read path).
+        tbl = self._readable(table_name)
+        if tbl is None:
+            raise KeyError(f"table {table_name!r} is not open; call open() before evolve_schema()")
         # Idempotent: skip any column the physical schema already holds. HyperTable
         # can ask to add a column that exists (it re-infers the "new" set from an
         # emptied table); appending it would build a schema with a duplicate field
