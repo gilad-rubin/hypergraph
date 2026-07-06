@@ -100,12 +100,20 @@ class LanceDBStore(TableStore):
         so a commit made by ANOTHER connection on the same folder is invisible to
         this handle until it is advanced. Every read goes through here so a store's
         reads always reflect committed data — the KB gate flow relies on it (an
-        operator's KB handle must see a resolver handle's version bump). Returns
-        ``None`` for a table that was never opened (a documented empty result).
+        operator's KB handle must see a resolver handle's version bump).
+
+        A table this handle never opened may still exist on disk (a fresh handle
+        over an existing store). Mirroring ``search``: an absent on-disk directory
+        means "no rows have ever been written" — a documented empty ``None`` — while
+        a present directory is opened read-only here (opening an existing table
+        creates nothing); one that fails to open is corrupt and must surface.
         """
         tbl = self._tables.get(table_name)
         if tbl is None:
-            return None
+            if not self._table_dir_exists(table_name):
+                return None
+            tbl = self._db.open_table(table_name)
+            self._tables[table_name] = tbl
         tbl.checkout_latest()
         return tbl
 
