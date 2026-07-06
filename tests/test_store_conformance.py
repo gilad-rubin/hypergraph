@@ -112,6 +112,42 @@ def test_lancedb_store_conforms(tmp_path) -> None:
     check_store_conformance(LanceDBStore(str(tmp_path / "conformance_store")))
 
 
+def test_lancedb_store_construction_is_zero_io(tmp_path) -> None:
+    """Constructing the store must touch nothing on disk; connect happens on first use.
+
+    Config functions construct stores with ZERO I/O (a KB config is explored and
+    instantiated without side effects), so ``LanceDBStore(path)`` must only record
+    the path — ``lancedb.connect`` (which creates the directory eagerly) is
+    deferred to the first store-method use.
+    """
+    from hypergraph.materialization._schema import ColumnSpec, TableSpec
+
+    path = tmp_path / "lazy_store"
+    store = LanceDBStore(str(path))
+    assert not path.exists(), "constructing LanceDBStore must not create the store directory"
+
+    # Empty-store reads stay zero-I/O too (no table handle, documented empty results).
+    assert store.count("t") == 0
+    assert store.read_rows("t") == []
+    assert store.load_manifest("t") is None
+    assert not path.exists(), "empty-store reads must not create the store directory"
+
+    # The first real use (open) connects and the folder appears.
+    spec = TableSpec(
+        name="t",
+        identity="cid",
+        columns=[
+            ColumnSpec("cid", role="identity", arrow_type=pa.utf8()),
+            ColumnSpec("_write_gen", role="internal", arrow_type=pa.int64()),
+            ColumnSpec("_status", role="internal", arrow_type=pa.utf8()),
+            ColumnSpec("_row_fingerprint", role="internal", arrow_type=pa.utf8()),
+            ColumnSpec("_error", role="internal", arrow_type=pa.utf8()),
+        ],
+    )
+    store.open(spec, [])
+    assert path.exists(), "the first store-method use must connect and create the folder"
+
+
 def test_lancedb_reads_see_another_connection_write(tmp_path) -> None:
     """A read must reflect a commit made by a SEPARATE store on the same folder.
 

@@ -68,11 +68,21 @@ class LanceDBStore(TableStore):
     """LanceDB-backed TableStore implementation."""
 
     def __init__(self, path: str):
+        # Construction is zero-I/O: only the path is recorded. ``lancedb.connect``
+        # creates the directory eagerly, so it is deferred to the first
+        # store-method use — config functions construct stores without side
+        # effects, and empty-store reads (no cached table handle) never connect.
         self._path = Path(path)
-        self._db = lancedb.connect(path)
+        self._db_handle: Any | None = None
         self._tables: dict[str, Any] = {}
         self._schemas: dict[str, pa.Schema] = {}
         self._vector_dims: dict[str, dict[str, int]] = {}
+
+    @property
+    def _db(self) -> Any:
+        if self._db_handle is None:
+            self._db_handle = lancedb.connect(str(self._path))
+        return self._db_handle
 
     def open(self, spec: TableSpec, children: list[TableSpec]) -> dict[str, list[str]]:
         result: dict[str, list[str]] = {}

@@ -1,8 +1,11 @@
 """Content fingerprinting and provenance for HyperTable rows.
 
 A row's fingerprint is ``hash(source-input values + node definition hashes +
-component config hashes)``. When any of those change, the row re-derives on the
-next insert/sync; otherwise it is skipped.
+component config hashes + bound plain-value payloads)``. Bound non-component
+plain values (a scalar such as a segmentation mode) are recipe: they
+parameterize derivation exactly like a component config, so they participate
+in fingerprints and per-column provenance. When any of those change, the row
+re-derives on the next insert/sync; otherwise it is skipped.
 """
 
 from __future__ import annotations
@@ -28,6 +31,28 @@ def _node_definition_hashes(graph: Any) -> list[str]:
     return [compute_definition_hash(func) for n in graph.iter_nodes() if (func := getattr(n, "func", None)) is not None]
 
 
+def _plain_value_payload(value: Any) -> str | None:
+    """A stable hash payload for a bound plain-data value, or None when the value
+    is an object whose repr is not stable across processes (those are excluded,
+    exactly as a component without a config always was)."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return f"{type(value).__name__}:{value!r}"
+    if isinstance(value, (list, tuple)):
+        parts = [_plain_value_payload(item) for item in value]
+        if any(part is None for part in parts):
+            return None
+        return f"{type(value).__name__}:[{','.join(parts)}]"  # type: ignore[arg-type]
+    if isinstance(value, dict):
+        parts = []
+        for key in sorted(value, key=str):
+            part = _plain_value_payload(value[key])
+            if part is None:
+                return None
+            parts.append(f"{key!s}={part}")
+        return f"dict:{{{','.join(parts)}}}"
+    return None
+
+
 def _component_config_hashes(components: dict[str, Any], valid_inputs: set[str] | None = None) -> dict[str, str]:
     hashes: dict[str, str] = {}
     for name, comp in components.items():
@@ -36,6 +61,16 @@ def _component_config_hashes(components: dict[str, Any], valid_inputs: set[str] 
         config = getattr(comp, "__component_config__", None) or (comp._config() if hasattr(comp, "_config") else None)
         if config is not None:
             hashes[name] = str(config)
+            continue
+        # A bound non-component plain value (a scalar such as segment_semantics,
+        # or a plain list/dict of scalars) parameterizes derivation the same way
+        # a component config does — it is recipe by definition. Fold its value
+        # in so changing it stales exactly the columns whose nodes consume it.
+        # Objects without a config and without a stable value payload stay
+        # excluded, as before.
+        plain = _plain_value_payload(comp)
+        if plain is not None:
+            hashes[name] = plain
     return hashes
 
 

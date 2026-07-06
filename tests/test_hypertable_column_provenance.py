@@ -18,7 +18,7 @@ from hypergraph.runners import SyncRunner
 # Test nodes and components (with execution counters)
 # ---------------------------------------------------------------------------
 
-CALLS = {"clean": 0, "clean_same": 0, "clean_diff": 0, "embed": 0, "embed_v2": 0}
+CALLS = {"clean": 0, "clean_same": 0, "clean_diff": 0, "embed": 0, "embed_v2": 0, "shape": 0}
 
 
 class Embedder:
@@ -61,6 +61,12 @@ def embed_text(clean_text: str, embedder: Embedder) -> list[float]:
 def embed_text_v2(clean_text: str, embedder_v2: Embedder) -> list[float]:
     CALLS["embed_v2"] += 1
     return embedder_v2.embed(clean_text)
+
+
+@node(output_name="shaped_text")
+def shape_text(text: str, mode: str) -> str:
+    CALLS["shape"] += 1
+    return text.upper() if mode == "upper" else text.lower()
 
 
 @pytest.fixture(autouse=True)
@@ -139,6 +145,57 @@ class TestValueChaining:
         assert CALLS["embed"] == embed_before + 2, "changed upstream value must cascade"
         assert variant.get("d1")["clean_text"] == "chest pain!"
         assert variant.status().is_fresh
+
+
+# ---------------------------------------------------------------------------
+# Bound plain values are recipe
+# ---------------------------------------------------------------------------
+
+
+def make_bound_value_table(store, mode: str):
+    """A table binding a plain scalar (segment_semantics-style) beside a component."""
+    from hypergraph.materialization import HyperTable
+
+    return (
+        HyperTable([shape_text, clean, embed_text], identity="doc_id", store=store)
+        .bind(embedder=Embedder("embed-a"), mode=mode)
+        .with_runner(SyncRunner())
+    )
+
+
+class TestBoundValueChange:
+    """A bound non-component scalar parameterizes derivation, so it is recipe.
+
+    The fingerprint docstring promises hash(source values + node definitions +
+    component configs); a bound plain value that a node consumes must count as
+    recipe the same way a component config does — changing it stales exactly
+    the consuming column, and columns that do not consume it stay fresh.
+    """
+
+    def test_bound_value_change_stales_only_the_consuming_column(self, store):
+        make_bound_value_table(store, mode="lower").insert(DOCS)
+        assert (CALLS["shape"], CALLS["clean"], CALLS["embed"]) == (2, 2, 2)
+
+        rebound = make_bound_value_table(store, mode="upper")
+        report = rebound.status()
+        assert report.stale == 2, "a changed bound value must stale its consuming rows"
+        assert report.stale_columns == (("shaped_text", 2),)
+
+        rebound.sync(DOCS)
+        assert CALLS["shape"] == 4, "shape_text consumes the bound value; it must re-run"
+        assert CALLS["clean"] == 2, "clean() does not consume the bound value; it must not re-run"
+        assert CALLS["embed"] == 2, "embed's input value is unchanged; the cascade must stop"
+        assert rebound.get("d1")["shaped_text"] == "CHEST PAIN"
+        assert rebound.status().is_fresh
+
+    def test_unchanged_bound_value_keeps_rows_fresh(self, store):
+        make_bound_value_table(store, mode="lower").insert(DOCS)
+        calls_before = dict(CALLS)
+
+        same = make_bound_value_table(store, mode="lower")
+        assert same.status().is_fresh
+        same.sync(DOCS)
+        assert dict(CALLS) == calls_before, "an unchanged bound value must not re-derive anything"
 
 
 # ---------------------------------------------------------------------------
