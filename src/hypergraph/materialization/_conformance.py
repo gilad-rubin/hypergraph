@@ -186,6 +186,45 @@ def _check_evolve_schema(store: TableStore) -> None:
     assert got is not None and got.get("extra") == "hello", f"a row written after evolve_schema must round-trip the new column; got {got!r}"
 
 
+def _check_evolve_schema_is_idempotent(store: TableStore) -> None:
+    """Re-evolving a column the schema already holds is a no-op, never an error.
+
+    HyperTable can ask to add a metadata column that already exists — it re-infers
+    the "new" set from an emptied table and cannot always know the physical schema.
+    A store must skip the existing column rather than append a duplicate field
+    (which breaks the next write). Exercised on the emptied-table shape that first
+    surfaced the bug: add a column, delete every row, then re-evolve + re-insert.
+    """
+    store.open(_spec("c_evolve_idem"), [])
+    store.write_rows("c_evolve_idem", [_row("a", 1, 1)])
+    store.evolve_schema("c_evolve_idem", {"extra": pa.utf8()})
+    # Empty the table — the state in which HyperTable re-infers columns wrongly.
+    store.delete_rows("c_evolve_idem", [("cid", "eq", "a")])
+
+    cols = store.evolve_schema("c_evolve_idem", {"extra": pa.utf8()})
+    assert "extra" in cols, f"re-evolving an existing column must still report it in the column names; got {cols!r}"
+    # Duplicate field only surfaces on the next write; this must not raise.
+    store.write_rows("c_evolve_idem", [_row("b", 2, 1, extra="world")])
+    got = store.read_one("c_evolve_idem", "cid", "b")
+    assert got is not None and got.get("extra") == "world", f"after an idempotent re-evolve, a row must still round-trip the column; got {got!r}"
+
+
+def _check_column_names(store: TableStore) -> None:
+    """``column_names`` reports the physical schema, growing as it evolves.
+
+    The default is ``[]`` (a store that cannot introspect its schema), so this
+    only asserts the shape when a store returns anything: an opened table lists at
+    least its identity column, and an evolved column shows up afterwards.
+    """
+    store.open(_spec("c_cols"), [])
+    names = store.column_names("c_cols")
+    if not names:
+        return  # store opts out of schema introspection; evolve idempotence guards it
+    assert "cid" in names, f"column_names must include the identity column of an opened table; got {names!r}"
+    store.evolve_schema("c_cols", {"tag": pa.utf8()})
+    assert "tag" in store.column_names("c_cols"), "column_names must reflect a column added by evolve_schema"
+
+
 def _check_parent_child_filter(store: TableStore) -> None:
     store.open(_spec("c_parent"), [_spec("c_child", identity="kid", parent_link=True)])
     store.write_rows(
@@ -278,6 +317,8 @@ _CHECKS: list[Callable[[TableStore], None]] = [
     _check_string_quotes,
     _check_max_write_gen,
     _check_evolve_schema,
+    _check_evolve_schema_is_idempotent,
+    _check_column_names,
     _check_parent_child_filter,
     _check_binary_source_roundtrip,
     _check_binary_in_updates,

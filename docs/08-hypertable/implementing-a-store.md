@@ -28,8 +28,17 @@ class MyStore(TableStore):
     def evolve_schema(self, table_name, new_columns): ...  # new_columns: {name: pa.DataType}
 ```
 
-`search`, `save_manifest`, and `load_manifest` are optional (they default to
-"not supported" / no-op) — implement them only if your backend offers them.
+`search`, `save_manifest`, `load_manifest`, and `column_names` are optional (they
+default to "not supported" / no-op / `[]`) — implement them only if your backend
+offers them.
+
+**`column_names` lets HyperTable consult your schema.** It returns a table's
+physical column names (`[]` when the table doesn't exist yet). HyperTable's
+metadata evolution uses it to learn which columns already exist rather than
+inferring the set by sampling a row — a sample is empty exactly when a table has
+been emptied, which is when inference goes wrong. Override it if your store tracks
+a schema; leave the `[]` default if it doesn't, and `evolve_schema` idempotence
+(below) still protects you.
 
 **Named indexes need both manifest hooks.** `save_manifest` / `load_manifest`
 persist a table's index specs. They stay optional for any store that never uses
@@ -92,6 +101,15 @@ fields = [pa.field(name, arrow_type) for name, arrow_type in new_columns.items()
 self._schema[table_name] += list(new_columns.keys())
 ```
 
+**`evolve_schema` is idempotent.** Adding a column the schema already holds is a
+no-op for that column, never an error — skip it and return the current column
+names. HyperTable can ask to add an existing column: it re-infers the "new"
+metadata set from an emptied table (every row deleted) and doesn't always know
+the physical schema, so it may re-offer a column added earlier. An Arrow-native
+store that blindly appends builds a schema with a duplicate field and the backend
+rejects the next write; filter `new_columns` against your existing columns first.
+The conformance harness asserts this on the emptied-table shape.
+
 ## What is *not* your job
 
 The store is a dumb persistence layer. HyperTable owns everything semantic:
@@ -105,8 +123,8 @@ invariants above.
 `validate_store(store)` is a quick shape check (subclass + `open()`). For the real
 thing, run the **conformance harness** in your test suite — it drives a fresh store
 through the observable contract (newest-gen reads, every operator, delete counts,
-schema evolution, parent/child filtering) and fails with a precise message naming
-any invariant you missed:
+schema evolution and its idempotence, parent/child filtering) and fails with a
+precise message naming any invariant you missed:
 
 ```python
 from hypergraph.materialization import check_store_conformance

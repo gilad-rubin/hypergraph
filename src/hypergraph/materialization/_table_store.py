@@ -83,7 +83,28 @@ class TableStore(ABC):
         intermediate type system: stores map Arrow to their native format (or
         ignore types when schemaless). No store performs Python-to-Arrow
         conversion — the HyperTable layer does it once before calling here.
+
+        Evolving a column the physical schema ALREADY holds must be a no-op for
+        that column, not an error. HyperTable decides a metadata column is "new"
+        without always knowing the physical schema (e.g. it re-derives that set
+        from an empty table after every row is deleted), so it can ask to add a
+        column that already exists. A conforming store skips such columns and
+        returns the current column names; it never appends a duplicate field.
+        The conformance harness asserts this idempotence.
         """
+
+    def column_names(self, table_name: str) -> list[str]:
+        """The physical column names of a table, ``[]`` when it does not exist yet.
+
+        This is the schema-consultation seam: HyperTable's metadata evolution asks
+        the store what columns physically exist rather than inferring the set by
+        sampling a row — a sample is empty exactly when the table has been emptied,
+        which is when inference goes wrong. A store that cannot introspect its
+        schema may leave this default (``[]``); it is then protected by
+        ``evolve_schema`` idempotence instead. Stores that track a schema override
+        this to return it.
+        """
+        return []
 
     def search(
         self,

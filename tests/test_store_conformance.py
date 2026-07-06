@@ -96,8 +96,12 @@ class DictTableStore(TableStore):
         rows = self._tables.get(table_name, [])
         return max((r.get("_write_gen", 0) for r in rows), default=0)
 
+    def column_names(self, table_name: str) -> list[str]:
+        return list(self._schemas.get(table_name, []))
+
     def evolve_schema(self, table_name: str, new_columns: dict[str, pa.DataType]) -> list[str]:
         known = self._schemas.setdefault(table_name, [])
+        # Idempotent: only append columns the tracked schema does not already have.
         for name in new_columns:
             if name not in known:
                 known.append(name)
@@ -185,6 +189,54 @@ def test_lancedb_projection_unknown_column_fails_loudly(tmp_path) -> None:
         assert "nope" in str(exc), f"the error must name the unknown column; got {exc!r}"
     else:
         raise AssertionError("read_rows must fail loudly on an unknown projected column, not silently drop it")
+
+
+def test_lancedb_evolve_schema_idempotent_across_connections(tmp_path) -> None:
+    """Re-evolving a column another connection already added must be a no-op.
+
+    Two ``LanceDBStore`` handles over one folder model the KB gate flow. If one
+    connection evolves in a column and a second (whose cached handle predates that
+    commit) is asked to evolve the same column, reading its stale cached schema
+    would keep the column in ``new_columns`` and rebuild a schema with a duplicate
+    field — crashing the next write. ``evolve_schema`` must advance to the latest
+    committed version first, see the column, and treat the call as a no-op.
+    """
+    from hypergraph.materialization._schema import ColumnSpec, TableSpec
+
+    path = str(tmp_path / "evolve_cross_conn")
+    spec = TableSpec(
+        name="t",
+        identity="cid",
+        columns=[
+            ColumnSpec("cid", role="identity", arrow_type=pa.utf8()),
+            ColumnSpec("n", role="source", arrow_type=pa.int64()),
+            ColumnSpec("_write_gen", role="internal", arrow_type=pa.int64()),
+            ColumnSpec("_status", role="internal", arrow_type=pa.utf8()),
+            ColumnSpec("_row_fingerprint", role="internal", arrow_type=pa.utf8()),
+            ColumnSpec("_error", role="internal", arrow_type=pa.utf8()),
+        ],
+    )
+    base = {"_status": "complete", "_row_fingerprint": "fp", "_error": None}
+
+    writer = LanceDBStore(path)
+    writer.open(spec, [])
+    writer.write_rows("t", [{"cid": "a", "n": 1, "_write_gen": 1, **base}])
+
+    # A second handle opens BEFORE the column is added, pinning its cached schema.
+    other = LanceDBStore(path)
+    other.open(spec, [])
+
+    # The writer evolves in `tag` and commits it.
+    writer.evolve_schema("t", {"tag": pa.utf8()})
+    writer.write_rows("t", [{"cid": "a", "n": 1, "_write_gen": 2, "tag": "x", **base}])
+
+    # The stale handle re-evolves the same column: must be an idempotent no-op,
+    # then a subsequent write must not hit a duplicate field.
+    cols = other.evolve_schema("t", {"tag": pa.utf8()})
+    assert "tag" in cols, f"evolve_schema must report `tag` after advancing to the committed schema; got {cols!r}"
+    other.write_rows("t", [{"cid": "b", "n": 2, "_write_gen": 1, "tag": "y", **base}])
+    got = other.read_one("t", "cid", "b")
+    assert got is not None and got.get("tag") == "y", f"row must round-trip after a cross-connection idempotent evolve; got {got!r}"
 
 
 def test_minimal_store_conforms_via_base_projection() -> None:
