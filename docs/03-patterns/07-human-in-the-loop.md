@@ -1,5 +1,9 @@
 # Human-in-the-Loop
 
+{% hint style="warning" %}
+Interrupts require `AsyncRunner`. Running a graph that contains an `InterruptNode` on `SyncRunner` raises `IncompatibleRunnerError` — the sync runner does not support pausing.
+{% endhint %}
+
 Pause execution for human input. Resume when ready.
 
 - **`@interrupt`** - Decorator to create a pause point (like `@node` but pauses on `None`)
@@ -337,6 +341,67 @@ async def approval(draft: str) -> str:
     """Use an LLM to auto-review the draft."""
     return await call_llm(f"Review this draft: {draft}")
 ```
+
+## Preparing Data for the UI
+
+When an interrupt pauses, `PauseInfo.value` carries the interrupt node's first input. The key insight: **structure your graph so that input is the prepared UI data**. No special payload API needed — a prep node upstream computes everything the UI needs, and the interrupt receives it.
+
+```python
+from hypergraph import Graph, node, route, interrupt, AsyncRunner
+
+# Step 1: Compute everything the UI needs
+@node(output_name="comparison")
+def prepare_comparison(existing_doc, new_doc) -> dict:
+    return {
+        "similarity": compute_similarity(existing_doc, new_doc),
+        "existing": {"title": existing_doc.title, "pages": existing_doc.page_count},
+        "new": {"title": new_doc.title, "pages": new_doc.page_count},
+    }
+
+# Step 2: Route on the computed data (auto-resolve low-confidence cases)
+@route(targets=["review_duplicate", "process"])
+def duplicate_gate(comparison: dict) -> str:
+    return "review_duplicate" if comparison["similarity"] >= 0.3 else "process"
+
+# Step 3: Interrupt receives the prepared comparison
+# PauseInfo.value = comparison dict (similarity, titles, page counts)
+@interrupt(output_name="duplicate_decision")
+def review_duplicate(comparison: dict) -> str | None:
+    return None
+
+@node(output_name="result")
+def process(duplicate_decision: str) -> str:
+    return f"Processed with decision: {duplicate_decision}"
+
+graph = Graph([prepare_comparison, duplicate_gate, review_duplicate, process])
+runner = AsyncRunner()
+
+result = await runner.run(graph, {"existing_doc": doc_a, "new_doc": doc_b})
+assert result.paused
+# The UI gets everything it needs from PauseInfo:
+print(result.pause.value)  # {"similarity": 0.87, "existing": {...}, "new": {...}}
+print(result.pause.response_key)  # "duplicate_decision"
+```
+
+Key patterns:
+
+- **`PauseInfo.value` is always the first input** — structure your graph so that input is the prepared UI data
+- **Separation of concerns**: computation (`@node`), routing (`@route`), pause (`@interrupt`) — each is independently testable as a plain function
+- **Auto-resolve via route**: the `@route` node skips the interrupt entirely for clear-cut cases; only ambiguous ones reach the human
+
+### Validating the Response
+
+The interrupt node produces `duplicate_decision` as a raw string — the user can type anything. Validate downstream:
+
+```python
+@node(output_name="validated_decision")
+def validate_decision(duplicate_decision: str) -> str:
+    if duplicate_decision not in ("keep_both", "replace", "skip"):
+        raise ValueError(f"Invalid decision: {duplicate_decision}")
+    return duplicate_decision
+```
+
+This keeps the interrupt node clean (pause only, no logic) and makes validation testable without running the graph.
 
 ## Multiple Sequential Interrupts
 

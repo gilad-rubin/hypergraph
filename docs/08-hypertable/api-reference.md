@@ -10,7 +10,7 @@ A **HyperTable** turns a Hypergraph graph into an incremental, persisted table. 
 ```python
 from hypergraph import node, Graph
 from hypergraph.materialization import HyperTable
-from hypergraph.materialization.stores import LanceDBStore
+from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.runners import SyncRunner
 
 @node(output_name="clean_text")
@@ -43,7 +43,7 @@ Create a table backed by a graph pipeline and a persistent store.
 
 ```python
 from hypergraph.materialization import HyperTable
-from hypergraph.materialization.stores import LanceDBStore
+from hypergraph.materialization._lancedb_store import LanceDBStore
 
 table = HyperTable(
     [clean, count_words],
@@ -809,7 +809,7 @@ from typing import TypedDict
 
 from hypergraph import node, Graph
 from hypergraph.materialization import HyperTable
-from hypergraph.materialization.stores import LanceDBStore
+from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.runners import SyncRunner
 
 # --- Components ---
