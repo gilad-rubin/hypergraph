@@ -12,8 +12,15 @@ from hypergraph.materialization._fingerprint import (
     _component_config_hashes,
     compute_child_fingerprint,
     compute_column_provenance,
+    compute_definition_hash,
     compute_recipe_fingerprint,
     compute_row_fingerprint,
+)
+from hypergraph.materialization._recipe_journal import (
+    KIND_BOUND_VALUE,
+    KIND_COMPONENT_CONFIG,
+    KIND_NODE_SOURCE,
+    RecipeJournal,
 )
 from hypergraph.materialization._schema import (
     STATUS_COLUMNS,
@@ -135,6 +142,7 @@ class HyperTable:
         self._spec: TableSpec | None = None
         self._analyzed = False
         self._column_graphs: dict[int, Any] = {}
+        self._journal_obj: RecipeJournal | None = None
 
     def bind(self, **components: Any) -> HyperTable:
         merged = {**self._components, **components}
@@ -251,8 +259,21 @@ class HyperTable:
                     provenances[child_spec.map_input] = self._boundary_provenance_value(prov, outputs.get(child_spec.map_input))
         for name, prov in provenances.items():
             row[f"_provenance_{name}"] = prov
+            node = self._provenance_node(name)
+            if node is not None:
+                self._record_node_recipe(node)
 
         return row
+
+    def _provenance_node(self, name: str) -> Any:
+        """The node behind a root provenance column: a derived node, or a boundary node."""
+        for c in self._spec.columns:
+            if c.role == "derived" and c.name == name:
+                return c.produced_by
+        for child_spec in self._spec.children:
+            if child_spec.map_input == name:
+                return self._boundary_node(child_spec)
+        return None
 
     def _write_error_row(
         self,
@@ -378,6 +399,64 @@ class HyperTable:
         params = self._node_params(node)
         comp = {k: v for k, v in self._components.items() if k in params}
         return compute_recipe_fingerprint(node_func(node), _component_config_hashes(comp))
+
+    # --- Recipe journal (hash -> readable recipe text) ---
+
+    @property
+    def _journal(self) -> RecipeJournal:
+        if self._journal_obj is None:
+            self._journal_obj = RecipeJournal(self._store)
+        return self._journal_obj
+
+    def _record_node_recipe(self, node: Any) -> str:
+        """Journal a node's recipe text on first sight; return its definition hash.
+
+        Called only from the WRITE assembly (``_build_row`` / ``_child_row`` /
+        ``_persist_node_outputs``) — never from ``status()`` or any read path, so
+        the read-only guarantee holds. Journals the node source under its own
+        DEFINITION hash (stable across rows — value-chained provenance is NOT
+        journaled, which is why the journal stays tiny: one payload per recipe,
+        not one per row) plus every consumed component config / bound plain value
+        under its payload hash. The returned definition hash is the key
+        ``explain`` hands a reader to resolve the source.
+        """
+        func = node_func(node)
+        def_hash = compute_definition_hash(func)
+        self._journal.record(def_hash, KIND_NODE_SOURCE, self._node_source(func))
+        params = self._node_params(node)
+        for name, comp in self._components.items():
+            if name not in params:
+                continue
+            payload, kind = self._component_payload(comp)
+            if payload is not None:
+                self._journal.record(compute_definition_hash(payload), kind, payload)
+        return def_hash
+
+    @staticmethod
+    def _node_source(func: Any) -> str:
+        try:
+            return inspect.getsource(func)
+        except (OSError, TypeError):
+            return repr(func)
+
+    @staticmethod
+    def _component_payload(comp: Any) -> tuple[str | None, str]:
+        """The readable recipe text a component contributes, plus its journal kind.
+
+        A component config (``_config()``/``__component_config__``) journals its
+        repr; a bound plain value (scalar/list/dict) journals its stable payload.
+        Objects without either contribute nothing to the fingerprint, so they
+        journal nothing — mirrors ``_component_config_hashes`` exactly.
+        """
+        config = getattr(comp, "__component_config__", None) or (comp._config() if hasattr(comp, "_config") else None)
+        if config is not None:
+            return str(config), KIND_COMPONENT_CONFIG
+        from hypergraph.materialization._fingerprint import _plain_value_payload
+
+        plain = _plain_value_payload(comp)
+        if plain is not None:
+            return plain, KIND_BOUND_VALUE
+        return None, KIND_BOUND_VALUE
 
     def _column_graph(self, node: Any) -> Any:
         """A cached single-node graph for column-scoped execution."""
@@ -795,6 +874,53 @@ class HyperTable:
         if row is None:
             return None
         return _public_row(row, include_status=include_status)
+
+    def explain(self, identity_value: str) -> dict[str, dict[str, str | None]]:
+        """Resolve a row's per-column recipe to the readable source of THIS table's nodes.
+
+        For each derived column returns ``{"provenance": <node definition hash>,
+        "source": <node source verbatim>}``, pulled from the store's recipe
+        journal (commits or not). The ``provenance`` key is the node's DEFINITION
+        hash (stable across rows, the journal key), NOT the row's value-chained
+        ``_provenance_*`` stamp — the journal deliberately holds recipe meaning,
+        one payload per recipe, never one per row.
+
+        The source reported is that of the node objects bound to THIS table
+        instance — i.e. the recipe the row would derive under now. On a fresh or
+        just-synced row that IS the recipe the row was derived under. To resolve
+        an OLD stamp captured before a recipe change (the durable "what was it
+        derived under, no git" guarantee), keep the stamp and call
+        ``resolve_provenance`` — a direct journal lookup that never depends on the
+        current table's nodes. A column whose recipe was never journaled resolves
+        to ``source=None`` rather than raising, so explain over a
+        partially-journaled legacy row degrades instead of blowing up.
+        """
+        self._ensure_analyzed()
+        row = self._store.read_one(self._spec.name, self._identity, identity_value)
+        if row is None:
+            raise KeyError(identity_value)
+        explained: dict[str, dict[str, str | None]] = {}
+        for c in self._derived_columns():
+            if c.produced_by is None:
+                continue
+            def_hash = compute_definition_hash(node_func(c.produced_by))
+            explained[c.name] = {"provenance": def_hash, "source": self._journal.resolve(def_hash)}
+        return explained
+
+    def resolve_provenance(self, stamp: str) -> str | None:
+        """The recipe text a provenance/definition hash was journaled under, or None.
+
+        The public single-verb resolver behind ``explain``: hand it any stamp
+        (a column's ``_provenance_*`` value, a bare node definition hash, a
+        config/bound-value payload hash) and get the readable payload back.
+        """
+        self._ensure_analyzed()
+        return self._journal.resolve(stamp)
+
+    def journal_rows(self) -> list[dict[str, Any]]:
+        """Every journaled ``(hash, kind, payload, first_seen_at)`` row — the raw recipe journal."""
+        self._ensure_analyzed()
+        return self._journal.rows()
 
     def children(self, parent_id: str, *, include_status: bool = False) -> list[dict[str, Any]]:
         self._ensure_analyzed()
@@ -1350,6 +1476,10 @@ class HyperTable:
             row[k] = v
         for name, prov in (provenances or {}).items():
             row[f"_provenance_{name}"] = prov
+            for c in child_spec.columns:
+                if c.role == "derived" and c.name == name:
+                    self._record_node_recipe(c.produced_by)
+                    break
         return row
 
     def _child_provenances(self, child_spec: TableSpec, values: dict[str, Any]) -> dict[str, str]:
@@ -1828,6 +1958,7 @@ class HyperTable:
         prov = self._node_provenance(node, self._stored_values(new_row))
         for c in self._node_columns(node):
             new_row[f"_provenance_{c.name}"] = prov
+        self._record_node_recipe(node)
         new_row["_write_gen"] = write_gen
         if self._row_converged(new_row):
             new_row["_row_fingerprint"] = self._compute_row_fingerprint(self._source_inputs_from_row(new_row))
