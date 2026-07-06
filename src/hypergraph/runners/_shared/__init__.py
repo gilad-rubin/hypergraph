@@ -29,7 +29,6 @@ from hypergraph.runners._shared.types import (
 )
 from hypergraph.runners._shared.validation import (
     validate_inputs,
-    validate_map_compatible,
     validate_node_types,
     validate_runner_compatibility,
 )
@@ -57,7 +56,6 @@ __all__ = [
     # Validation
     "validate_inputs",
     "validate_runner_compatibility",
-    "validate_map_compatible",
     "validate_node_types",
     # Input normalization
     "merge_with_duplicate_check",

@@ -299,24 +299,6 @@ def validate_runner_compatibility(
             validate_runner_compatibility(node.graph, capabilities)
 
 
-def validate_map_compatible(graph: Graph) -> None:
-    """Validate that a graph can be used with map().
-
-    Checks that graphs with interrupts are not used with map().
-
-    Args:
-        graph: The graph to validate
-
-    Raises:
-        IncompatibleRunnerError: If graph contains InterruptNodes
-    """
-    if graph.has_interrupts:
-        raise IncompatibleRunnerError(
-            "Graph contains InterruptNode(s) which are incompatible with .map(). Use .run() for graphs with interrupts.",
-            capability="supports_interrupts",
-        )
-
-
 def _resolve_active_scope(
     graph: Graph,
     selected: tuple[str, ...] | None,

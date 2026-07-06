@@ -60,7 +60,6 @@ from hypergraph.runners._shared.validation import (
     resolve_runtime_selected,
     validate_delegated_runners,
     validate_item_inputs,
-    validate_map_compatible,
     validate_node_types,
     validate_runner_compatibility,
 )
@@ -623,7 +622,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         validate_runner_compatibility(graph, self.capabilities)
         validate_node_types(graph, self.supported_node_types)
         validate_delegated_runners(graph, self.capabilities)
-        validate_map_compatible(graph)
 
         map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
         input_variations = list(generate_map_inputs(normalized_values, map_over_list, map_mode, clone))
@@ -888,7 +886,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         validate_runner_compatibility(graph, self.capabilities)
         validate_node_types(graph, self.supported_node_types)
         validate_delegated_runners(graph, self.capabilities)
-        validate_map_compatible(graph)
 
         map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
 

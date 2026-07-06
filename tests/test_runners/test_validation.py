@@ -9,7 +9,6 @@ from hypergraph.runners import RunnerCapabilities
 from hypergraph.runners._shared.input_normalization import normalize_inputs
 from hypergraph.runners._shared.validation import (
     validate_inputs,
-    validate_map_compatible,
     validate_runner_compatibility,
 )
 
@@ -307,19 +306,15 @@ class TestValidateRunnerCompatibility:
         validate_runner_compatibility(graph, caps)
 
 
-class TestValidateMapCompatible:
-    """Tests for validate_map_compatible function."""
+class TestGraphNodeMapOverInterrupts:
+    """In-graph ``map_over`` still rejects interrupts at graph build.
 
-    def test_dag_graph_passes(self):
-        """DAG graphs are map-compatible."""
-        graph = Graph([double, add.rename_inputs(a="doubled")])
-        # Should not raise
-        validate_map_compatible(graph)
-
-    def test_cyclic_graph_passes(self):
-        """Cyclic graphs are currently map-compatible."""
-        graph = Graph([counter], entrypoint="counter")
-        validate_map_compatible(graph)
+    Runner-level ``.map()`` supports per-item pauses (the old
+    ``validate_map_compatible`` guard is gone — see
+    tests/test_map_interrupt_items.py); the GRAPH-level mapped-node fan-out is
+    a different mechanism with no per-item pause story, so its build-time
+    rejection stands.
+    """
 
     def test_graphnode_map_over_rejects_interrupts(self):
         @interrupt(output_name="decision")

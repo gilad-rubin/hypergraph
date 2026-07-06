@@ -315,8 +315,10 @@ class TestInterruptValidation:
         with pytest.raises(IncompatibleRunnerError, match="InterruptNode"):
             runner.run(graph, {"query": "hello"})
 
-    @pytest.mark.asyncio
-    async def test_async_map_rejects_interrupts(self):
+    def test_sync_map_rejects_interrupts(self):
+        # AsyncRunner.map() supports per-item pauses (tests/test_map_interrupt_items.py);
+        # SyncRunner cannot pause at all, so its map() must keep rejecting
+        # interrupt graphs via the capability check.
         @node(output_name="draft")
         def make_draft(query: str) -> str:
             return query
@@ -325,9 +327,9 @@ class TestInterruptValidation:
         def approval(draft: str) -> str: ...
 
         graph = Graph([make_draft, approval])
-        runner = AsyncRunner()
+        runner = SyncRunner()
         with pytest.raises(IncompatibleRunnerError, match="InterruptNode"):
-            await runner.map(graph, {"query": ["a", "b"]}, map_over="query")
+            runner.map(graph, {"query": ["a", "b"]}, map_over="query")
 
 
 # ── AsyncRunner pause/resume ──
