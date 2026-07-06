@@ -158,3 +158,79 @@ def test_child_rows_stamp_their_own_child_recipe(tmp_path):
     drift = v2.recipe_drift()
     assert drift.children[0].drifted == 2
     assert drift.stale_total >= 2
+
+
+def test_sync_stamps_unstamped_rows_it_proves_current_without_rederiving(tmp_path):
+    """A pre-stamp row whose fingerprint matches today's recipe gets STAMPED on
+    the next sync, not re-derived and not left unknown forever.
+
+    The row fingerprint embeds the whole recipe (inputs + node code + component
+    hashes), so a fingerprint-skip PROVES the row is current under today's
+    recipe — the recipe-only stamp can be written truthfully without running a
+    single node. Without this, a store written before stamping existed reads
+    "N rows derived under an older recipe" forever and Sync is a visible no-op.
+    """
+    calls: list[str] = []
+
+    @node(output_name="shout")
+    def shout(text: str, suffix: str) -> str:
+        calls.append(text)
+        return text + suffix
+
+    def build() -> HyperTable:
+        return HyperTable([shout], identity="doc_id", store=LanceDBStore(str(tmp_path))).bind(suffix="!").with_runner(SyncRunner())
+
+    table = build()
+    table.insert(doc_id="d1", text="hello")
+
+    # Simulate the pre-stamp store: physically NULL the stamp on the stored row.
+    store = LanceDBStore(str(tmp_path))
+    row = store.read_rows("doc")[0]
+    row[RECIPE_COLUMN] = None
+    row["_write_gen"] = int(row["_write_gen"]) + 1
+    store.write_rows("doc", [row])
+    store.delete_rows("doc", [("doc_id", "eq", "d1"), ("_write_gen", "lt", row["_write_gen"])])
+    assert build().recipe_drift().unknown == 1
+
+    calls.clear()
+    result = build().sync([{"doc_id": "d1", "text": "hello"}])
+    assert result.skipped == 1  # fingerprint-skip: nothing re-derived
+    assert calls == []  # the node never ran
+    drift = build().recipe_drift()
+    assert (drift.current, drift.unknown) == (1, 0)
+
+
+def test_sync_stamps_unstamped_child_rows_via_the_bump_path(tmp_path):
+    from hypergraph import Graph
+
+    @node(output_name="pages")
+    def split(text: str) -> list[dict]:
+        return [{"page_id": f"p{i}", "page_text": part} for i, part in enumerate(text.split(), start=1)]
+
+    @node(output_name="tagged")
+    def tag(page_text: str) -> str:
+        return f"t:{page_text}"
+
+    per_page = Graph([tag], name="per_page").as_node(name="pages").map_over("pages", identity="page_id")
+
+    def build() -> HyperTable:
+        return HyperTable([split, per_page], identity="doc_id", store=LanceDBStore(str(tmp_path))).with_runner(SyncRunner())
+
+    table = build()
+    table.insert(doc_id="d1", text="alpha beta")
+
+    # NULL the stamps on parent + children (the pre-stamp shape).
+    store = LanceDBStore(str(tmp_path))
+    for table_name in ("doc", "page"):
+        for row in store.read_rows(table_name):
+            row[RECIPE_COLUMN] = None
+            row["_write_gen"] = int(row["_write_gen"]) + 1
+            store.write_rows(table_name, [row])
+    for row in list(store.read_rows("doc")):
+        store.delete_rows("doc", [("doc_id", "eq", row["doc_id"]), ("_write_gen", "lt", row["_write_gen"])])
+    drift = build().recipe_drift()
+    assert drift.unknown == 1 and drift.children[0].unknown == 2
+
+    build().sync([{"doc_id": "d1", "text": "alpha beta"}])
+    drift = build().recipe_drift()
+    assert drift.stale_total == 0, f"sync must stamp what it proves current, got {drift}"

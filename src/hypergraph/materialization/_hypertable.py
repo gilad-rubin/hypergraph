@@ -468,6 +468,59 @@ class HyperTable:
         self._ensure_recipe_column(table_name)
         row[RECIPE_COLUMN] = fingerprint
 
+    def _row_missing_stamp(self, row: dict[str, Any]) -> bool:
+        stamp = row.get(RECIPE_COLUMN)
+        return self._table_stamps_recipe() and (not isinstance(stamp, str) or not stamp)
+
+    def _refresh_missing_stamps(self, existing: dict[str, Any]) -> None:
+        """Stamp a fingerprint-proven-current row (and its provable children) without deriving.
+
+        A pre-stamp row whose FULL fingerprint matches today's computation was
+        provably derived under today's recipe — the fingerprint embeds the
+        recipe (node code + component hashes) alongside the inputs — so the
+        recipe-only stamp can be written truthfully with zero node runs.
+        Without this repair, a store written before stamping existed reads
+        "N rows derived under an older recipe" forever and Sync is a visible
+        no-op. A child row whose own fingerprint does NOT match stays honestly
+        unstamped (unknown) — repair never invents currency.
+        """
+        identity_value = existing[self._identity]
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
+        new_row = {k: _normalize_value(v) for k, v in existing.items()}
+        self._stamp_recipe(new_row, self._spec.name)
+        new_row["_write_gen"] = write_gen
+        self._store.write_rows(self._spec.name, [new_row])
+        self._cleanup_old_parent_gens(identity_value, write_gen)
+        for child_spec in self._spec.children:
+            if child_spec.child_graph is None:
+                continue
+            child_gen = self._store.max_write_gen(child_spec.name) + 1
+            rows = _dedup_child_rows(
+                self._store.read_rows(child_spec.name, [("_parent_id", "eq", identity_value)]),
+                child_spec.identity,
+            )
+            for row in rows:
+                stamp = row.get(RECIPE_COLUMN)
+                if isinstance(stamp, str) and stamp:
+                    continue
+                proven = row.get("_row_fingerprint") == self._compute_child_fingerprint(
+                    self._child_source_inputs_from_row(row, child_spec), child_spec
+                )
+                if not proven:
+                    continue
+                new_child = {k: _normalize_value(v) for k, v in row.items()}
+                self._stamp_recipe(new_child, child_spec.name, child_spec=child_spec)
+                new_child["_write_gen"] = child_gen
+                self._store.write_rows(child_spec.name, [new_child])
+                self._store.delete_rows(
+                    child_spec.name,
+                    [
+                        (child_spec.identity, "eq", row[child_spec.identity]),
+                        ("_parent_id", "eq", identity_value),
+                        ("_write_gen", "lt", child_gen),
+                    ],
+                )
+
     def recipe_drift(self) -> RecipeDrift:
         """Which stored rows were derived under something other than today's recipe.
 
@@ -1385,7 +1438,9 @@ class HyperTable:
                 items = self._rebuild_child_items(child_spec, identity_value)
             self._insert_children_items(identity_value, items, child_spec, write_gen)
         prov_changed = any(existing.get(f"_provenance_{name}") != prov for name, prov in provenances.items())
-        if not parent_skipped or prov_changed:
+        # A pre-stamp parent row that reconciled clean is provably current:
+        # rewrite it so the recipe stamp lands (same rule as provenance repair).
+        if not parent_skipped or prov_changed or self._row_missing_stamp(existing):
             self._evolve_for_metadata(item)
             row = self._build_row(item, graph_inputs, outputs, write_gen, provenances=provenances)
             row["_status"] = "complete"
@@ -1413,7 +1468,9 @@ class HyperTable:
                 items = self._rebuild_child_items(child_spec, identity_value)
             await self._insert_children_items_async(identity_value, items, child_spec, write_gen)
         prov_changed = any(existing.get(f"_provenance_{name}") != prov for name, prov in provenances.items())
-        if not parent_skipped or prov_changed:
+        # A pre-stamp parent row that reconciled clean is provably current:
+        # rewrite it so the recipe stamp lands (same rule as provenance repair).
+        if not parent_skipped or prov_changed or self._row_missing_stamp(existing):
             self._evolve_for_metadata(item)
             row = self._build_row(item, graph_inputs, outputs, write_gen, provenances=provenances)
             row["_status"] = "complete"
@@ -1429,6 +1486,8 @@ class HyperTable:
         graph_inputs = self._extract_graph_inputs(item)
         existing, parent_skipped = self._plan_insert(item, graph_inputs)
         if parent_skipped and not self._spec.children:
+            if self._row_missing_stamp(existing):
+                self._refresh_missing_stamps(existing)
             return "skipped"
 
         if self._can_reconcile(existing):
@@ -1483,6 +1542,8 @@ class HyperTable:
         graph_inputs = self._extract_graph_inputs(item)
         existing, parent_skipped = self._plan_insert(item, graph_inputs)
         if parent_skipped and not self._spec.children:
+            if self._row_missing_stamp(existing):
+                self._refresh_missing_stamps(existing)
             return "skipped"
 
         if self._can_reconcile(existing):
@@ -1570,6 +1631,10 @@ class HyperTable:
             if status is None or status == "complete":
                 bumped = dict(existing_child)
                 bumped["_write_gen"] = write_gen
+                if self._row_missing_stamp(bumped):
+                    # The unchanged fingerprint proves this child current under
+                    # today's child recipe — stamp the rewrite (pre-stamp store).
+                    self._stamp_recipe(bumped, child_spec.name, child_spec=child_spec)
                 self._store.write_rows(child_spec.name, [bumped])
                 return None
         return child_identity, child_inputs, new_fingerprint, existing_child
@@ -2021,6 +2086,10 @@ class HyperTable:
                 else:
                     inserted += 1
             elif self._row_unchanged(item, existing):
+                if self._row_missing_stamp(existing):
+                    # A pre-stamp row the fingerprint match just proved current:
+                    # stamp it (and its provable children) — no derive.
+                    self._refresh_missing_stamps(existing)
                 skipped += 1
             else:
                 self.update(id_val, **{k: v for k, v in item.items() if k != self._identity})
@@ -2054,6 +2123,8 @@ class HyperTable:
                 else:
                     inserted += 1
             elif self._row_unchanged(item, existing):
+                if self._row_missing_stamp(existing):
+                    self._refresh_missing_stamps(existing)
                 skipped += 1
             else:
                 await self._update_async(id_val, **{k: v for k, v in item.items() if k != self._identity})
