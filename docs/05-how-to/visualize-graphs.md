@@ -125,3 +125,42 @@ When nested graphs are expanded, cross-boundary edges remap to the visible inter
 ## Works Offline
 
 All JavaScript dependencies (React, React Flow, Dagre layout) are bundled with hypergraph. No CDN calls, no internet required.
+
+## Mermaid Text Diagrams
+
+`graph.to_mermaid()` returns a `MermaidDiagram` — a text-based Mermaid flowchart instead of the interactive widget. Useful anywhere Markdown renders Mermaid (GitHub, GitBook) or in plain terminals with no notebook:
+
+```python
+diagram = graph.to_mermaid()   # accepts the same depth/show_types/separate_outputs as .visualize()
+diagram                        # renders inline in Jupyter/VS Code via a text/vnd.mermaid MIME type
+print(diagram)                 # raw Mermaid source, works anywhere
+diagram.source                 # the raw string directly
+```
+
+## Debugging Graph Structure
+
+`hypergraph.viz` also has non-interactive tools for spotting structural issues before you render anything — useful in scripts, tests, or headless environments.
+
+```python
+from hypergraph.viz import validate_graph, find_issues
+
+result = validate_graph(graph)
+if not result.valid:
+    print(result.errors)
+
+issues = find_issues(graph)
+# IssueReport(validation_errors=[], orphan_edges=[], disconnected_nodes=[],
+#             missing_parents=[], self_loops=[])
+```
+
+`VizDebugger` (also reachable as `graph.debug_viz()`) adds interactive tracing for a specific node or edge:
+
+```python
+debugger = graph.debug_viz()  # same as VizDebugger(graph)
+
+trace = debugger.trace_node("double")
+print(trace.status)          # "FOUND" or "NOT_FOUND"
+print(trace.outgoing_edges)  # [{'to': 'add_one', 'value': 'doubled', 'type': 'data'}]
+
+edge_trace = debugger.trace_edge("double", "add_one")
+```

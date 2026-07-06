@@ -7,7 +7,7 @@ Use `HyperTable` to persist graph outputs as table columns and only re-derive wh
 ```python
 from hypergraph import node, Graph
 from hypergraph.materialization import HyperTable
-from hypergraph.materialization.stores import LanceDBStore
+from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.runners import SyncRunner
 
 # 1. Write logic for ONE item
@@ -49,7 +49,7 @@ That same shape works for:
 ```python
 from hypergraph import node
 from hypergraph.materialization import HyperTable
-from hypergraph.materialization.stores import LanceDBStore
+from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.runners import SyncRunner
 
 @node(output_name="clean_text")
@@ -154,7 +154,7 @@ When each row contains a collection (a document has pages, a video has utterance
 from typing import TypedDict
 from hypergraph import Graph, node
 from hypergraph.materialization import HyperTable
-from hypergraph.materialization.stores import LanceDBStore
+from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.runners import SyncRunner
 
 # --- Parent graph nodes ---

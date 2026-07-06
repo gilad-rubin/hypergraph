@@ -25,7 +25,7 @@ def double(x: int) -> int:
 def triple(doubled: int) -> int:
     return doubled * 3
 
-graph = Graph([double, triple])
+graph = Graph([double, triple], name="graph")
 runner = SyncRunner()
 result = runner.run(graph, {"x": 5})
 
@@ -36,25 +36,28 @@ print(result.log)
 Output:
 
 ```
-RunLog: graph | 0.3ms | 2 nodes | 0 errors
+RunLog: graph | 4ms | 2 nodes | 0 errors
 
-  Step  Node    Duration  Status
-  ────  ──────  ────────  ─────────
-     0  double     0.1ms  completed
-     1  triple     0.1ms  completed
+  Step            Node              Duration          Status
+────────────────  ────────────────  ────────────────  ────────────────
+     0            double            3ms               completed
+     1            triple            0ms               completed
 ```
 
 ### Finding Slow Nodes
 
 ```python
+# result.log.steps is a tuple[NodeRecord, ...] in execution order
 # Sort by duration (slowest first)
-for record in result.log.slowest():
+for record in sorted(result.log.steps, key=lambda r: r.duration_ms, reverse=True):
     print(f"{record.node_name}: {record.duration_ms:.1f}ms")
 
 # Per-node aggregates (useful for map operations)
 for name, stats in result.log.node_stats.items():
     print(f"{name}: avg={stats.avg_ms:.1f}ms, count={stats.count}")
 ```
+
+`result.log.steps` yields `NodeRecord` — one per node execution, with `node_name`, `superstep`, `duration_ms`, `status`, `decision`, `error`. `result.log.node_stats` maps node name to `NodeStats` — aggregate `avg_ms`/`count` across all executions of that node in the run. `result.log.errors` is the subset of `.steps` where `status == "failed"`.
 
 ### Finding Errors
 
@@ -67,14 +70,14 @@ for record in result.log.errors:
 
 # Summary
 print(result.log.summary())
-# "2 nodes, 1 error, 0 cached | total: 42.5ms"
+# "2 nodes | 21ms | 0 errors | slowest: double (16ms)"
 ```
 
 ### Routing Decisions
 
 ```python
 # Which path did each gate take?
-for record in result.log.records:
+for record in result.log.steps:
     if record.decision:
         print(f"{record.node_name} → {record.decision}")
 ```
@@ -84,7 +87,8 @@ for record in result.log.records:
 ```python
 # Export for logging, dashboards, etc.
 log_dict = result.log.to_dict()
-# {"records": [...], "node_stats": {...}, "total_ms": 42.5, ...}
+# {"graph_name": "...", "run_id": "...", "total_duration_ms": 42.5,
+#  "steps": [...], "node_stats": {...}}
 ```
 
 ### RunLog with map()
@@ -106,6 +110,8 @@ if results.failed:
     for f in results.failures:
         print(f"Failed: {f.error}")
 ```
+
+`results.log` also returns a single batch-level `MapLog` (`graph_name`, `total_duration_ms`, `items` — a tuple of the per-item `RunLog`s, plus an aggregate `.errors`), for when you want one object instead of iterating `results` yourself.
 
 ### runner.map() vs map_over for debugging
 
@@ -708,7 +714,7 @@ hypergraph runs ls --db /path/to/runs.db
 | "I want to run a graph from the terminal" | CLI (`hypergraph run`) |
 | "I want to batch-run with different inputs" | CLI (`hypergraph map`) |
 | "What happened in the run I just finished?" | RunLog (`result.log`) |
-| "Which node was slowest?" | RunLog (`result.log.slowest()`) or CLI (`runs stats`) |
+| "Which node was slowest?" | RunLog (`sorted(result.log.steps, key=...)`) or CLI (`runs stats`) |
 | "What happened in yesterday's run?" | Checkpointer + CLI |
 | "What values were produced at step 3?" | CLI (`runs values --superstep 3`) |
 | "What failed runs exist?" | CLI (`runs ls --status failed`) |
