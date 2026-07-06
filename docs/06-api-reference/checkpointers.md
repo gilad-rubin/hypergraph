@@ -263,3 +263,18 @@ See [Human-in-the-Loop](../03-patterns/07-human-in-the-loop.md) for the interrup
 - [Human-in-the-Loop](../03-patterns/07-human-in-the-loop.md) — pause/resume mechanics, cyclic-graph entrypoints
 - [Runners](runners.md#run) — `workflow_id`, `fork_from`, `retry_from` parameter reference
 - [Batch Processing — Checkpointing with map()](../05-how-to/batch-processing.md#checkpointing-with-map) — parent/child batch runs
+
+## Cleanup
+
+A checkpointer owns a live database connection, and the runner does not manage its lifecycle. Call `await checkpointer.close()` when you are done — a process that skips this can hang on exit waiting for the open connection:
+
+{% code overflow="wrap" %}
+```python
+checkpointer = SqliteCheckpointer("./runs.db")
+try:
+    runner = AsyncRunner(checkpointer=checkpointer)
+    result = await runner.run(graph, {"x": 1}, workflow_id="run-1")
+finally:
+    await checkpointer.close()
+```
+{% endcode %}
