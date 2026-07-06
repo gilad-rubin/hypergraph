@@ -24,7 +24,7 @@ from typing import TypedDict
 
 from hypergraph import Graph, node
 from hypergraph.materialization import HyperTable
-from hypergraph.materialization.stores import LanceDBStore
+from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.runners import SyncRunner
 
 

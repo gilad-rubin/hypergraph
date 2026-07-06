@@ -347,6 +347,8 @@ Without `workflow_id`, `runner.map()` still works but results exist only in-proc
 
 ### Run Lineage: Resume vs Fork
 
+See [Checkpointers](../06-api-reference/checkpointers.md) for the `Checkpointer` ABC, `CheckpointPolicy`, and the `lineage()` view used to audit fork/retry trees. This section covers the `run()`-level resume/fork input rules.
+
 `run()` now uses strict, git-like lineage semantics when a checkpointer is configured:
 
 - Same `workflow_id` means "same lineage"

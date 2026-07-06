@@ -2,6 +2,10 @@
 
 Patterns for using OpenAI, Anthropic, and other LLM providers with hypergraph.
 
+{% hint style="info" %}
+This page is about calling LLM provider SDKs from inside `@node` functions — it has no relationship to the `hypergraph.integrations` package (currently just the Daft integration; see [Use Hypergraph with Daft](daft-workflows.md)). LLM clients are plain dependencies you `.bind()` to a graph like any other component, not a `hypergraph.integrations` entry.
+{% endhint %}
+
 ## Anthropic Claude
 
 ### Setup

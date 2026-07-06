@@ -30,7 +30,7 @@ table = HyperTable(
 
 table.insert(doc_id="d1", text="Hello World")
 print(table.get("d1"))
-# {'doc_id': 'd1', 'text': 'hello world', 'clean_text': 'hello world', 'word_count': 2}
+# {'doc_id': 'd1', 'text': 'Hello World', 'clean_text': 'hello world', 'word_count': 2}
 ```
 
 The graph's required inputs (`text`) become source columns. The node outputs (`clean_text`, `word_count`) become derived columns. The identity column (`doc_id`) is the primary key.
@@ -708,6 +708,46 @@ table.filter(where={"doc_id": "d1"})
 ```
 
 Supported operators: `"eq"`, `"ne"`, `"lt"`, `"lte"`, `"gt"`, `"gte"`, `"in"`.
+
+### Fingerprints and Provenance
+
+Every row carries a `_row_fingerprint` and one `_provenance_<column>` per derived column -- both SHA-256 hashes, and both hidden from read results unless you inspect the store directly. [What Triggers Re-Derivation](overview.md#what-triggers-re-derivation) covers the black-box behavior (what changes cause a re-derive); this section covers the three hashes underneath it.
+
+**Row fingerprint** -- `hash(source column values + node definition hashes + component config hashes)`. This is the fast-path check: on `insert()`/`update()`, the new fingerprint is compared to the stored one. A match skips the row entirely, with no per-column work.
+
+```python
+table.insert(doc_id="d1", text="Hello World")
+raw = table._store.read_rows("doc", None)  # inspecting the physical store directly
+print(raw[0]["_row_fingerprint"])
+# 'be70cedf32588ba9b1a095dfaa1aea738aea3f79f71001bd741e9e9911132645' (64 hex chars = SHA-256)
+```
+
+**Recipe fingerprint** -- `hash(node code + consumed component configs)`, used by named indexes (`create_index`/`list_indexes`) to detect when the recipe behind an indexed column has changed. Unlike the row fingerprint, it excludes input values entirely -- it names *how* a column is derived, not *what* it was derived from.
+
+**Per-column provenance** -- `hash(producing node's code + its direct input values + consumed component configs)`, stored as `_provenance_<column>` and computed once per node, after that node runs. Because a node's direct inputs are themselves stored columns, provenance comparison is value-based, which gives you a **cascade stop**: if an upstream column's value comes out the same after re-derivation, the provenance hash for anything reading that column doesn't change, and the cascade halts there.
+
+```python
+@node(output_name="clean_text")
+def clean(text: str) -> str:
+    return text.strip().lower()
+
+@node(output_name="word_count")
+def count_words(clean_text: str) -> int:
+    return len(clean_text.split())
+
+table = HyperTable([clean, count_words], identity="doc_id", store=store).with_runner(SyncRunner())
+table.insert(doc_id="d1", text="Hello World")
+
+# "Hello World" and "  Hello World  " both normalize to "hello world"
+table.update("d1", text="  Hello World  ")
+
+raw = table._store.read_rows("doc", None)[0]
+# _provenance_clean_text changed (its direct input, "text", changed)
+# _provenance_word_count did NOT change (its direct input, "clean_text", came out
+# the same value -- "hello world" both times -- so the cascade stops here)
+```
+
+`word_count` is not recomputed on this update, even though `text` changed upstream, because the value it actually depends on (`clean_text`) didn't change.
 
 ### Identity Column
 

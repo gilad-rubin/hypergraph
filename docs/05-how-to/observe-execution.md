@@ -102,6 +102,24 @@ graph outer
         └── node double
 ```
 
+To correlate your own logging with the current node span from inside a node body, call `current_node_span()`:
+
+```python
+from hypergraph import Graph, node, SyncRunner, current_node_span
+
+@node(output_name="result")
+def do_work(x: int) -> int:
+    ref = current_node_span()
+    # NodeSpanRef(run_id="...", span_id="...", node_name="do_work", graph_name=...)
+    my_logger.info("processing", extra={"span_id": ref.span_id if ref else None})
+    return x * 2
+
+runner = SyncRunner()
+runner.run(Graph([do_work]), {"x": 5})
+```
+
+`current_node_span()` returns `None` outside of node execution (for example, if called at module import time).
+
 Mapped work uses a parent `map` span plus child graph spans per item:
 
 ```text

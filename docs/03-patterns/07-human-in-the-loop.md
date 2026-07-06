@@ -91,6 +91,10 @@ When paused, the `RunResult` has:
 
 Combine `@interrupt` with agentic loops for a multi-turn conversation where the user provides input each turn.
 
+{% hint style="warning" %}
+Cyclic graphs (this one loops `should_continue` → `ask_user`) require an explicit `entrypoint=`. Hypergraph raises `GraphConfigError: Cyclic graphs require an explicit entrypoint` at construction if you omit it — there is no default starting node for a cycle.
+{% endhint %}
+
 ```python
 from hypergraph import Graph, node, route, END, AsyncRunner, interrupt
 
@@ -117,7 +121,17 @@ def should_continue(messages: list) -> str:
         return END
     return "ask_user"
 
-graph = Graph([ask_user, add_user_message, generate, accumulate, should_continue])
+graph = Graph(
+    [ask_user, add_user_message, generate, accumulate, should_continue],
+    edges=[
+        (ask_user, add_user_message),
+        (add_user_message, generate),
+        (generate, accumulate),
+        (accumulate, should_continue),
+    ],
+    shared=["messages"],
+    entrypoint=["ask_user", "add_user_message"],
+)
 
 # Pre-fill messages so the first step (ask_user) can run immediately
 chat = graph.bind(messages=[])
@@ -142,7 +156,32 @@ Key patterns:
 - **`.bind(messages=[])`** pre-fills the seed input so `.run({})` works with no values
 - **Interrupt as first step**: the graph pauses immediately, asking the user for input
 - **`emit="turn_done"` + `wait_for="turn_done"`**: ensures `should_continue` sees the fully updated messages
+- **Explicit `edges=[...]`**: `messages` has two producers (`add_user_message` and `accumulate`) feeding downstream nodes across the cycle, so auto-wiring can't pick one on its own — declare the edges directly
 - Each resume replays the graph, providing all previous responses
+
+### The Entrypoint Must Include the Interrupt
+
+`entrypoint=["ask_user", "add_user_message"]` lists **two** entrypoints, not one. This matters because of how a resumed cyclic run picks its starting node: on each call, the runner starts from whichever entrypoint's inputs are satisfied by the values you passed.
+
+If you only set `entrypoint="add_user_message"` (skipping `ask_user`), the first turn still "works" in the sense that it doesn't raise — but it silently never reaches the interrupt:
+
+```python
+# entrypoint="add_user_message" only (WRONG for a graph that should pause at ask_user)
+graph = Graph(
+    [ask_user, add_user_message, generate, accumulate, should_continue],
+    edges=[...],
+    shared=["messages"],
+    entrypoint="add_user_message",
+)
+chat = graph.bind(messages=[])
+
+result = await runner.run(chat, {"user_input": "hello"})
+# result.status == RunStatus.COMPLETED, result.paused == False
+# add_user_message ran; generate/accumulate/should_continue never ran;
+# ask_user never ran either. No error, no warning.
+```
+
+Because `add_user_message` was the only entrypoint and its required input (`user_input`) was already supplied, the run starts and finishes there — the rest of the cycle, including `ask_user`, is simply never scheduled. Nothing here is invalid input or a missing value, so there is no exception to catch. The fix is always the same: **every node the graph should be able to pause at must be listed in `entrypoint=`**, so a call with only the seed values (an empty `{}` or just `messages=[]`) can still reach it.
 
 ### Alternative: Explicit Edges
 

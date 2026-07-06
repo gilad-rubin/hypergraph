@@ -68,6 +68,8 @@ The row fingerprint is `hash(source values + node definition hashes + component 
 | Component config | Swap `Embedder("v1")` for `Embedder("v2")` | All rows re-derive on next insert/sync |
 | Nothing | Same source, same code, same components | Row skipped |
 
+The row fingerprint is a fast skip/re-derive check. Underneath it, each derived column also carries its own per-column provenance hash, which stops a re-derivation cascade as soon as an upstream value comes out unchanged — see [Fingerprints and Provenance](api-reference.md#fingerprints-and-provenance) for the three hashes and a live example.
+
 ## Child Tables
 
 When a single item expands into many sub-items (a document into pages, a video into utterances), use `map_over` to create a child table:
@@ -148,6 +150,7 @@ docs.insert(doc_id="d1", text="...")
 - **Runner** executes the graph (`SyncRunner` or `AsyncRunner`)
 - **Identity** is the stable key for each row — explicit, not convention-based
 - **Fingerprint** decides skip vs re-derive — automatic, no manual cache invalidation
+- **A named index (`create_index`) is a query spec, not a materialized table** — it records which table, which vector column, and which row slice to search; the store searches that column directly, so there is no separate index artifact to keep in sync
 
 ## Next Steps
 

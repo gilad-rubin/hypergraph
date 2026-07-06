@@ -1134,7 +1134,7 @@ Checkpoint lineage has two different input rules:
 - **Strict resume**: using an existing `workflow_id` resumes persisted state and rejects fresh runtime inputs, because new inputs would silently rewrite history. Interrupt response payloads are the exception; pass the paused response key/value to resolve the pending interrupt.
 - **Fork/retry**: `fork_from` and `retry_from` create a new lineage from a checkpoint, so runtime inputs may override restored values for the new run.
 
-See [Run Lineage](../05-how-to/batch-processing.md#run-lineage-resume-vs-fork).
+See [Run Lineage](../05-how-to/batch-processing.md#run-lineage-resume-vs-fork). For the `Checkpointer` ABC, `CheckpointPolicy`, backend comparison, and the no-checkpointer re-drive alternative, see [Checkpointers](checkpointers.md).
 
 ### Cyclic Graphs
 
