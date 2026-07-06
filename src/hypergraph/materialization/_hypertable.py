@@ -129,9 +129,22 @@ class HyperTable:
         _components: dict[str, Any] | None = None,
         _runner: Any | None = None,
         _graph: Graph | None = None,
+        _plain: bool = False,
     ):
         if on_error not in ("raise", "store"):
             raise ValueError(f"on_error must be 'raise' or 'store', got {on_error!r}")
+        if not nodes and not _plain:
+            # The degenerate no-derivation mode is promoted to its own class:
+            # a derivation substrate declaring "I don't derive" hides what the
+            # table is. Table wraps this machinery through the private _plain
+            # flag, so the on-disk shape stays byte-identical.
+            raise ValueError(
+                "HyperTable requires at least one derivation node — a table with "
+                "no nodes is not a derivation substrate. For a durable typed "
+                "table (identity + store + schema, zero derivation) use "
+                "hypergraph.materialization.Table instead."
+            )
+        self._plain = _plain
         self._nodes = nodes
         self._identity = identity
         self._store = store
@@ -153,6 +166,7 @@ class HyperTable:
             on_error=self._on_error,
             _components=merged,
             _runner=self._runner,
+            _plain=self._plain,
         )
 
     def with_runner(self, runner: Any) -> HyperTable:
@@ -163,6 +177,7 @@ class HyperTable:
             on_error=self._on_error,
             _components=self._components,
             _runner=runner,
+            _plain=self._plain,
         )
 
     def _ensure_analyzed(self):
