@@ -293,8 +293,17 @@ class HyperTable:
         store = self._store
         target = table_name or self._spec.name
         id_col = identity or self._identity
-        sample = store.read_rows(target, limit=1)
-        known_cols = set(sample[0].keys()) if sample else {c.name for c in self._spec.columns}
+        # Consult the physical schema, not a sampled row. Sampling returns nothing
+        # exactly when the table has been emptied (every row deleted), and the
+        # spec-only fallback omits metadata columns added earlier via update — so a
+        # re-inserted row would re-evolve a column the schema already holds. The
+        # store reports its real columns; only when it cannot introspect (default
+        # ``[]``) do we fall back to sampling, and evolve_schema idempotence guards
+        # that case.
+        known_cols = set(store.column_names(target))
+        if not known_cols:
+            sample = store.read_rows(target, limit=1)
+            known_cols = set(sample[0].keys()) if sample else {c.name for c in self._spec.columns}
         new_meta = {k: python_type_to_arrow(type(v) if v is not None else str) for k, v in item.items() if k not in known_cols and k != id_col}
         if new_meta:
             store.evolve_schema(target, new_meta)

@@ -217,6 +217,50 @@ class TestUpdate:
 
 
 # ---------------------------------------------------------------------------
+# Metadata evolution on an emptied table (archive -> restore regression)
+# ---------------------------------------------------------------------------
+
+
+class TestMetadataEvolveOnEmptyTable:
+    """A metadata column added earlier must not be re-evolved once the table empties.
+
+    ``_evolve_for_metadata`` decides which columns are "new" by sampling one
+    stored row. When the table is EMPTY (every row deleted — the archive step in
+    Superposition's KB), the sample is empty and it falls back to the spec-only
+    column set, which excludes any metadata column previously added via update.
+    Re-inserting a row carrying that column then re-evolves a column the physical
+    schema already holds, and LanceDB rejects the duplicate field.
+    """
+
+    def test_reinsert_metadata_column_after_emptying_table(self, store):
+        """Add a metadata column, delete every row, re-insert with it — must not crash."""
+        from hypergraph.materialization import HyperTable
+
+        def build_table():
+            return HyperTable([clean, count_words], identity="doc_id", store=store).with_runner(SyncRunner())
+
+        # 1. Insert a row and add a brand-new metadata column via update.
+        #    This evolves the physical schema to carry ``station``.
+        table = build_table()
+        table.insert(doc_id="d1", text="hello")
+        table.update("d1", station="north")
+        assert table.get("d1")["station"] == "north"
+
+        # 2. Empty the table (the archive step deletes the last corpus row).
+        table.delete("d1")
+        assert table.count() == 0
+
+        # 3. Re-insert a row that itself CARRIES ``station`` into the now-empty
+        #    table (the restore step). ``_evolve_for_metadata`` runs against zero
+        #    stored rows, falls back to spec-only columns, and re-adds ``station``
+        #    to a physical schema that already holds it → LanceDB duplicate-field
+        #    crash on the next write.
+        table = build_table()
+        table.insert(doc_id="d2", text="world", station="south")
+        assert table.get("d2")["station"] == "south"
+
+
+# ---------------------------------------------------------------------------
 # Delete
 # ---------------------------------------------------------------------------
 

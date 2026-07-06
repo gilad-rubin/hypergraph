@@ -262,8 +262,24 @@ class LanceDBStore(TableStore):
             return None
         return json.loads(path.read_text())
 
+    def column_names(self, table_name: str) -> list[str]:
+        # Advance to the latest committed version so a schema evolved by another
+        # connection on the same folder is visible (mirrors the read path).
+        tbl = self._readable(table_name)
+        if tbl is None:
+            return []
+        return [f.name for f in tbl.schema]
+
     def evolve_schema(self, table_name: str, new_columns: dict[str, pa.DataType]) -> list[str]:
         tbl = self._tables[table_name]
+        # Idempotent: skip any column the physical schema already holds. HyperTable
+        # can ask to add a column that exists (it re-infers the "new" set from an
+        # emptied table); appending it would build a schema with a duplicate field
+        # and LanceDB rejects that on the next write.
+        existing = {f.name for f in tbl.schema}
+        new_columns = {name: arrow_type for name, arrow_type in new_columns.items() if name not in existing}
+        if not new_columns:
+            return [f.name for f in tbl.schema]
         existing_data = tbl.to_arrow()
         new_fields = list(tbl.schema) + [pa.field(name, arrow_type) for name, arrow_type in new_columns.items()]
         new_schema = pa.schema(new_fields)

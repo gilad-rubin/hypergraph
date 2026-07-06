@@ -96,8 +96,12 @@ class DictTableStore(TableStore):
         rows = self._tables.get(table_name, [])
         return max((r.get("_write_gen", 0) for r in rows), default=0)
 
+    def column_names(self, table_name: str) -> list[str]:
+        return list(self._schemas.get(table_name, []))
+
     def evolve_schema(self, table_name: str, new_columns: dict[str, pa.DataType]) -> list[str]:
         known = self._schemas.setdefault(table_name, [])
+        # Idempotent: only append columns the tracked schema does not already have.
         for name in new_columns:
             if name not in known:
                 known.append(name)
