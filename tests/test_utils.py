@@ -165,6 +165,121 @@ class TestHashDefinition:
 
         assert hash_definition(ns1["f"]) != hash_definition(ns2["f"])
 
+    def test_dynamic_frozenset_default_is_stable_across_hash_seeds(self, tmp_path):
+        """Dynamic defaults must not inherit process-randomized repr ordering."""
+        script = tmp_path / "dynamic_default.py"
+        script.write_text(
+            textwrap.dedent(
+                """
+                from hypergraph._utils import hash_definition
+
+
+                namespace = {}
+                exec(
+                    "def dynamic(labels=frozenset({"
+                    "'triage', 'dosage', 'allergy', 'discharge'"
+                    "})): return labels",
+                    namespace,
+                )
+                print(hash_definition(namespace["dynamic"]))
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        hashes = []
+        for seed in ("1", "2"):
+            result = subprocess.run(
+                [sys.executable, str(script)],
+                check=True,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PYTHONHASHSEED": seed},
+            )
+            hashes.append(result.stdout.strip())
+
+        assert len(set(hashes)) == 1
+        assert len(hashes[0]) == 64
+
+    def test_dynamic_supported_default_leaf_changes_hash(self):
+        """A changed leaf in a supported default remains part of identity."""
+
+        def dynamic(default):
+            namespace = {"default": default}
+            exec("def generated(value=default): return value", namespace)  # noqa: S102
+            return namespace["generated"]
+
+        baseline = dynamic(frozenset({"triage", "dosage"}))
+        changed = dynamic(frozenset({"triage", "allergy"}))
+
+        assert hash_definition(baseline) != hash_definition(changed)
+
+    def test_dynamic_supported_closure_leaf_changes_hash(self):
+        """A changed leaf in a dynamic closure remains part of identity."""
+        namespace = {}
+        exec(  # noqa: S102
+            "def factory(state):\n    def generated():\n        return state\n    return generated",
+            namespace,
+        )
+
+        baseline = namespace["factory"](frozenset({"triage", "dosage"}))
+        changed = namespace["factory"](frozenset({"triage", "allergy"}))
+
+        assert hash_definition(baseline) != hash_definition(changed)
+
+    @pytest.mark.parametrize("location", ["default", "closure"])
+    def test_dynamic_opaque_state_refuses(self, location):
+        """Opaque dynamic state must not leak an address into identity."""
+        if location == "default":
+            namespace = {"opaque": object()}
+            exec("def generated(value=opaque): return value", namespace)  # noqa: S102
+            generated = namespace["generated"]
+        else:
+            namespace = {}
+            exec(  # noqa: S102
+                "def factory(state):\n    def generated():\n        return state\n    return generated",
+                namespace,
+            )
+            generated = namespace["factory"](object())
+
+        with pytest.raises(TypeError, match=r"object.*cache_key\(\)"):
+            hash_definition(generated)
+
+    def test_dynamic_cyclic_default_refuses(self):
+        """Cyclic defaults fail loudly instead of using recursive repr."""
+        cyclic = []
+        cyclic.append(cyclic)
+        namespace = {"cyclic": cyclic}
+        exec("def generated(value=cyclic): return value", namespace)  # noqa: S102
+
+        with pytest.raises(TypeError, match=r"cycle.*cache_key\(\)"):
+            hash_definition(namespace["generated"])
+
+    def test_nested_dynamic_code_body_changes_hash(self):
+        """Nested code constants retain their executable body."""
+
+        def outer(inner_result):
+            namespace = {}
+            exec(  # noqa: S102
+                f"def generated():\n    def nested():\n        return {inner_result}\n    return nested",
+                namespace,
+            )
+            return namespace["generated"]
+
+        assert hash_definition(outer(1)) != hash_definition(outer(2))
+
+    def test_dynamic_code_ignores_filename_and_first_line(self):
+        """Checkout path and first-line location are not identity facts."""
+        source = "def generated():\n    return 42"
+        first, second = {}, {}
+        exec(compile(source, "/checkout/one/component.py", "exec"), first)  # noqa: S102
+        exec(  # noqa: S102
+            compile("\n\n" + source, "/checkout/two/component.py", "exec"),
+            second,
+        )
+
+        assert hash_definition(first["generated"]) == hash_definition(second["generated"])
+
     # Note: Closure/global variable changes are not captured by hash_definition.
     # This is a known limitation shared by all DAG frameworks (see Hamilton docs).
     # The hash captures the function's *code*, not the values in its environment.
