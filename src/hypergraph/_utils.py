@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
+import math
 from collections.abc import Callable
+from dataclasses import fields, is_dataclass
 from datetime import datetime
+from enum import Enum
 from typing import Any
 
 
@@ -94,9 +98,10 @@ def hash_definition(func: Callable) -> str:
     (e.g. two ``Summarizer`` instances with different ``model`` attributes).
     The fingerprint prefers the instance's ``cache_key()`` method when one is
     defined (mirroring hypercache's convention), falling back to a
-    deterministic serialization of ``vars(instance)``. The fingerprint is
-    captured when the hash is computed — node construction — so mutating
-    instance state after construction is not tracked.
+    canonical, type-preserving serialization of ``vars(instance)``. Unsupported
+    opaque state and cycles fail with guidance to define ``cache_key()``. The
+    fingerprint is captured when the hash is computed — node construction — so
+    mutating instance state after construction is not tracked.
 
     Args:
         func: Function to hash
@@ -114,9 +119,9 @@ def hash_definition(func: Callable) -> str:
     # Bound methods: mix in instance state so differently-configured
     # instances of the same class do not share a hash (and a cache).
     instance = getattr(func, "__self__", None)
-    if instance is None or isinstance(instance, type):
-        # Plain function, or classmethod (class-level state is not
-        # deterministic across processes — keep code-only hashing).
+    if instance is None or isinstance(instance, type) or inspect.ismodule(instance):
+        # Plain function, builtin function, or classmethod (class/module-level
+        # state is not deterministic across processes — keep code-only hashing).
         return code_hash
 
     fingerprint = _instance_fingerprint(instance)
@@ -129,18 +134,141 @@ def _instance_fingerprint(instance: Any) -> str | None:
     """Deterministic fingerprint of a bound method's instance state.
 
     Prefers the instance's ``cache_key()`` method when defined. Falls back
-    to a sorted serialization of ``vars(instance)``. Returns None when no
-    state is accessible (e.g. ``__slots__`` without ``__dict__``).
+    to canonical typed JSON for ``vars(instance)``. Returns None when no state
+    is accessible (e.g. ``__slots__`` without ``__dict__``).
     """
     cache_key = getattr(instance, "cache_key", None)
     if callable(cache_key):
-        return repr(cache_key())
+        source = "cache_key"
+        state = cache_key()
+    else:
+        try:
+            state = vars(instance)
+        except TypeError:
+            return None
+        source = "vars"
 
+    payload = {
+        "kind": "bound-instance",
+        "source": source,
+        "type": _type_name(type(instance)),
+        "value": _canonicalize(state, active={id(instance)}),
+    }
+    return json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
+def _canonicalize(value: Any, *, active: set[int]) -> Any:
+    """Convert supported state to type-preserving canonical JSON values."""
+    value_type = type(value)
+    if value_type is type(None):
+        return {"type": "none"}
+    if value_type is bool:
+        return {"type": "bool", "value": value}
+    if value_type is int:
+        return {"type": "int", "value": value}
+    if value_type is float:
+        if not math.isfinite(value):
+            raise TypeError("Cannot deterministically fingerprint a non-finite float; define cache_key() returning supported deterministic state")
+        return {"type": "float", "value": value}
+    if value_type is str:
+        return {"type": "str", "value": value}
+    if value_type is bytes:
+        return {"type": "bytes", "value": value.hex()}
+
+    object_id = id(value)
+    if object_id in active:
+        raise TypeError(
+            f"Cannot deterministically fingerprint a cycle through "
+            f"{_type_name(value_type)}; define cache_key() returning acyclic "
+            "supported deterministic state"
+        )
+
+    active.add(object_id)
     try:
-        state = vars(instance)
-    except TypeError:
-        return None
-    return repr(tuple((key, repr(value)) for key, value in sorted(state.items())))
+        cache_key = getattr(value, "cache_key", None)
+        if callable(cache_key):
+            return {
+                "type": _type_name(value_type),
+                "via": "cache_key",
+                "value": _canonicalize(cache_key(), active=active),
+            }
+
+        if isinstance(value, Enum):
+            return {
+                "type": _type_name(value_type),
+                "via": "enum",
+                "name": value.name,
+                "value": _canonicalize(value.value, active=active),
+            }
+
+        if is_dataclass(value) and not isinstance(value, type):
+            return {
+                "type": _type_name(value_type),
+                "via": "dataclass",
+                "fields": [[field.name, _canonicalize(getattr(value, field.name), active=active)] for field in fields(value)],
+            }
+
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            return {
+                "type": _type_name(value_type),
+                "via": "model_dump",
+                "value": _canonicalize(model_dump(), active=active),
+            }
+
+        if value_type is dict:
+            entries = [
+                (
+                    _canonicalize(key, active=active),
+                    _canonicalize(item, active=active),
+                )
+                for key, item in value.items()
+            ]
+            entries.sort(key=lambda pair: _canonical_sort_key(pair[0]))
+            return {"type": "dict", "items": entries}
+
+        if value_type is list:
+            return {
+                "type": "list",
+                "items": [_canonicalize(item, active=active) for item in value],
+            }
+
+        if value_type is tuple:
+            return {
+                "type": "tuple",
+                "items": [_canonicalize(item, active=active) for item in value],
+            }
+
+        if value_type is set or value_type is frozenset:
+            items = [_canonicalize(item, active=active) for item in value]
+            items.sort(key=_canonical_sort_key)
+            return {"type": value_type.__name__, "items": items}
+    finally:
+        active.remove(object_id)
+
+    raise TypeError(f"Cannot deterministically fingerprint {_type_name(value_type)}; define cache_key() returning supported deterministic state")
+
+
+def _canonical_sort_key(value: Any) -> str:
+    """Return the canonical ordering key for one normalized JSON value."""
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
+def _type_name(value_type: type[Any]) -> str:
+    """Return a stable discriminator for a supported user-defined type."""
+    return f"{value_type.__module__}.{value_type.__qualname__}"
 
 
 def _hash_code(func: Callable) -> str:
