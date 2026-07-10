@@ -1,6 +1,6 @@
 # 0007 — Stable bound-method identity
 
-status: in-progress
+status: done
 
 ## Fixed acceptance contract
 
@@ -49,4 +49,3 @@ Out of scope:
 - no Superposition import, persistence, Git/version lookup, or Graph API change;
 - no change to runner/cache policy or the meaning of `Graph.code_hash`;
 - no permissive module/qualname-only or `default=str` fallback.
-
