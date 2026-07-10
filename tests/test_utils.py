@@ -1,5 +1,12 @@
 """Tests for hypergraph._utils."""
 
+import os
+import subprocess
+import sys
+import textwrap
+
+import pytest
+
 from hypergraph._utils import ensure_tuple, hash_definition
 
 
@@ -229,6 +236,147 @@ class TestHashDefinitionBoundMethods:
 
         assert hash_definition(a.run) == hash_definition(b.run)
         assert hash_definition(a.run) != hash_definition(c.run)
+
+    def test_frozen_frozenset_state_is_stable_across_hash_seeds(self, tmp_path):
+        """Typed state must not inherit process-randomized container repr order."""
+        script = tmp_path / "frozen_component.py"
+        script.write_text(
+            textwrap.dedent(
+                """
+                from dataclasses import dataclass
+
+                from hypergraph._utils import hash_definition
+
+
+                @dataclass(frozen=True)
+                class FrozenComponent:
+                    labels: frozenset[str]
+
+                    def run(self, value: int) -> int:
+                        return value
+
+
+                component = FrozenComponent(
+                    frozenset({"triage", "dosage", "allergy", "discharge"})
+                )
+                print(hash_definition(component.run))
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        hashes = []
+        for seed in ("1", "2"):
+            result = subprocess.run(
+                [sys.executable, str(script)],
+                check=True,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PYTHONHASHSEED": seed},
+            )
+            hashes.append(result.stdout.strip())
+
+        assert len(set(hashes)) == 1
+        assert len(hashes[0]) == 64
+
+    def test_frozen_dataclass_state_leaf_changes_hash(self):
+        """Canonicalization must retain every supported state leaf."""
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class Component:
+            labels: frozenset[str]
+
+            def run(self, value: int) -> int:
+                return value
+
+        baseline = Component(frozenset({"triage", "dosage"}))
+        changed = Component(frozenset({"triage", "allergy"}))
+
+        assert hash_definition(baseline.run) != hash_definition(changed.run)
+
+    def test_nested_mapping_order_does_not_change_hash(self):
+        """Mapping insertion order is not execution identity."""
+
+        class Component:
+            def __init__(self, settings: dict[str, int]):
+                self.settings = settings
+
+            def run(self, value: int) -> int:
+                return value
+
+        forward = Component({"alpha": 1, "beta": 2})
+        reversed_ = Component({"beta": 2, "alpha": 1})
+
+        assert hash_definition(forward.run) == hash_definition(reversed_.run)
+
+    def test_pydantic_like_model_dump_is_deterministic_state(self):
+        """A model_dump() contract is supported without consulting object repr."""
+
+        class Model:
+            def __init__(self, name: str):
+                self.name = name
+
+            def model_dump(self):
+                return {"name": self.name}
+
+            def __repr__(self):
+                return object.__repr__(self)
+
+        class Component:
+            def __init__(self, model: Model):
+                self.model = model
+
+            def run(self, value: int) -> int:
+                return value
+
+        a = Component(Model("clinical"))
+        b = Component(Model("clinical"))
+
+        assert hash_definition(a.run) == hash_definition(b.run)
+
+    def test_opaque_nested_state_refuses_with_cache_key_guidance(self):
+        """Opaque objects must not leak addresses into execution identity."""
+
+        class Component:
+            def __init__(self):
+                self.client = object()
+
+            def run(self, value: int) -> int:
+                return value
+
+        with pytest.raises(TypeError, match=r"object.*cache_key\(\)"):
+            hash_definition(Component().run)
+
+    def test_cyclic_nested_state_refuses(self):
+        """Cycles fail loudly instead of falling back to recursive repr."""
+
+        class Component:
+            def __init__(self):
+                self.steps = []
+                self.steps.append(self.steps)
+
+            def run(self, value: int) -> int:
+                return value
+
+        with pytest.raises(TypeError, match=r"cycle.*cache_key\(\)"):
+            hash_definition(Component().run)
+
+    def test_builtin_subclass_without_explicit_state_refuses(self):
+        """A builtin subclass cannot silently collapse into its base value."""
+
+        class Label(str):
+            pass
+
+        class Component:
+            def __init__(self):
+                self.label = Label("clinical")
+
+            def run(self, value: int) -> int:
+                return value
+
+        with pytest.raises(TypeError, match=r"Label.*cache_key\(\)"):
+            hash_definition(Component().run)
 
     def test_slots_instance_falls_back_to_code_hash(self):
         """Instances without __dict__ fall back to code-only hashing."""
