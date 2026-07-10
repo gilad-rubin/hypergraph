@@ -835,6 +835,15 @@ gn = inner.as_node()
 print(gn.definition_hash == inner.definition_hash)  # False
 ```
 
+#### `complete_on_stop: bool`
+
+The effective stop behavior configured by `Graph.as_node(complete_on_stop=...)`.
+
+```python
+finishing = inner.as_node(complete_on_stop=True)
+print(finishing.complete_on_stop)  # True
+```
+
 ### Type Annotation Forwarding
 
 GraphNode forwards type annotations from the inner graph for `strict_types` validation:
@@ -1071,6 +1080,35 @@ print(gn.map_config)  # None
 gn_mapped = gn.map_over("x", "y", mode="product")
 print(gn_mapped.map_config)  # (['x', 'y'], 'product', 'raise')
 ```
+
+### map_execution_config Property
+
+Use the immutable execution view when code needs every setting that changes
+mapped execution. It includes cloning and HyperTable child identity/schema in
+addition to the legacy `map_config` fields. List-shaped values are tuples so
+callers cannot mutate the node through the returned value.
+
+```python
+from hypergraph import GraphNodeMapExecutionConfig
+
+mapped = inner.as_node().map_over(
+    "items",
+    clone=True,
+    identity="item_id",
+    schema=Item,
+)
+
+assert mapped.map_execution_config == GraphNodeMapExecutionConfig(
+    params=("items",),
+    mode="zip",
+    error_handling="raise",
+    clone=True,
+    identity="item_id",
+    schema=Item,
+)
+```
+
+The property is `None` when `map_over(...)` has not been configured.
 
 ### Error: Missing Name
 
