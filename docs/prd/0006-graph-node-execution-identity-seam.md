@@ -1,6 +1,6 @@
 # 0006 — Public GraphNode execution identity seam
 
-status: in-progress
+status: done
 
 ## Fixed acceptance contract
 
@@ -58,4 +58,3 @@ Out of scope:
 - no change to runner behavior, graph construction, or the existing
   `definition_hash` contract;
 - no exposure of a general private-state dictionary.
-

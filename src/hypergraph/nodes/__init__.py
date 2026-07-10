@@ -4,7 +4,7 @@ from hypergraph.nodes._rename import RenameEntry, RenameError
 from hypergraph.nodes.base import _EMIT_SENTINEL, HyperNode
 from hypergraph.nodes.function import FunctionNode, node
 from hypergraph.nodes.gate import END, GateNode, IfElseNode, RouteNode, ifelse, route
-from hypergraph.nodes.graph_node import GraphNode
+from hypergraph.nodes.graph_node import GraphNode, GraphNodeMapExecutionConfig
 from hypergraph.nodes.interrupt import InterruptNode, interrupt
 
 __all__ = [
@@ -14,6 +14,7 @@ __all__ = [
     "RenameError",
     "FunctionNode",
     "GraphNode",
+    "GraphNodeMapExecutionConfig",
     "GateNode",
     "IfElseNode",
     "RouteNode",

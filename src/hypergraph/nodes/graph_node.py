@@ -3,6 +3,7 @@
 import functools
 import hashlib
 import keyword
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from hypergraph.nodes._rename import RenameError, build_reverse_rename_map, get_next_batch_id
@@ -14,6 +15,19 @@ _GN = TypeVar("_GN", bound="GraphNode")
 # Duplicated from runners._shared.types to avoid circular import
 # (graph_node -> runners -> graph -> nodes -> graph_node)
 ErrorHandling = Literal["raise", "continue"]
+
+
+@dataclass(frozen=True)
+class GraphNodeMapExecutionConfig:
+    """Immutable public view of a mapped GraphNode's execution settings."""
+
+    params: tuple[str, ...]
+    mode: Literal["zip", "product"]
+    error_handling: ErrorHandling
+    clone: bool | tuple[str, ...]
+    identity: str | None
+    schema: type | None
+
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
@@ -301,6 +315,28 @@ class GraphNode(HyperNode):
         if self._map_over:
             return (self._map_over, self._map_mode, self._error_handling)
         return None
+
+    @property
+    def map_execution_config(self) -> GraphNodeMapExecutionConfig | None:
+        """All effective settings for mapped execution, or None when unmapped."""
+        if not self._map_over:
+            return None
+
+        child_config = getattr(self, "_map_config", None) or {}
+        clone = tuple(self._clone) if isinstance(self._clone, list) else self._clone
+        return GraphNodeMapExecutionConfig(
+            params=tuple(self._map_over),
+            mode=self._map_mode,
+            error_handling=self._error_handling,
+            clone=clone,
+            identity=child_config.get("identity"),
+            schema=child_config.get("schema"),
+        )
+
+    @property
+    def complete_on_stop(self) -> bool:
+        """Whether nested execution completes remaining work after a stop."""
+        return self._complete_on_stop
 
     @functools.cached_property
     def output_annotation(self) -> dict[str, Any]:
