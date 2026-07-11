@@ -297,11 +297,18 @@ async def run_superstep_async(
         # runner's except PauseExecution handler to work
         if not isinstance(first_error, Exception):
             raise first_error
-        error = first_error if isinstance(first_error, ExecutionError) else ExecutionError(first_error, new_state)
-        error._attempted_node_names = tuple(node.name for node in ready_nodes)  # type: ignore[attr-defined]
-        error._node_errors = node_errors  # type: ignore[attr-defined]
-        if error is first_error:
-            raise error
+        attempted = tuple(node.name for node in ready_nodes)
+        if isinstance(first_error, ExecutionError):
+            # Re-attribute an inner ExecutionError to this superstep's batch.
+            first_error.attempted_node_names = attempted
+            first_error.node_errors = node_errors
+            raise first_error
+        error = ExecutionError(
+            first_error,
+            new_state,
+            attempted_node_names=attempted,
+            node_errors=node_errors,
+        )
         raise error from first_error
 
     return new_state

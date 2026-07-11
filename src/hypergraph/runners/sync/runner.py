@@ -254,9 +254,9 @@ class SyncRunner(SyncRunnerTemplate):
                     )
                 except ExecutionError as e:
                     superstep_error = e
-                    state = e.partial_state  # type: ignore[assignment]
-                    attempted_node_names = getattr(e, "_attempted_node_names", None)
-                    node_errors = getattr(e, "_node_errors", None)
+                    state = e.partial_state
+                    attempted_node_names = e.attempted_node_names
+                    node_errors = e.node_errors
                 except Exception as e:
                     superstep_error = ExecutionError(e, state)
                     attempted_node_names = ()
