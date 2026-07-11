@@ -1,5 +1,7 @@
 # Retry and Timeout
 
+> **Status: design intent** (written 2026-05). This spec describes the target design, not current behavior. The implemented API is documented under `docs/`.
+
 **Built-in resilience with full observability.**
 
 ---

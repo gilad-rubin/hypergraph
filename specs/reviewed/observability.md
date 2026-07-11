@@ -1,5 +1,7 @@
 # Observability
 
+> **Status: design intent** (written 2026-05). This spec describes the target design, not current behavior. The implemented API is documented under `docs/`.
+
 **Events are the primitive. Processors consume them.**
 
 hypergraph uses a unified event stream for all observability. The core execution engine emits events; pluggable processors handle logging, tracing, and integration with external tools.

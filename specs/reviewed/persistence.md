@@ -1,5 +1,7 @@
 # Persistence
 
+> **Status: design intent** (written 2026-05). This spec describes the target design, not current behavior. The implemented API is documented under `docs/`.
+
 **Save workflow progress, resume after interruptions, and build human-in-the-loop applications.**
 
 ---

@@ -1,5 +1,7 @@
 # Runners API Reference
 
+> **Status: design intent** (written 2026-05). This spec describes the target design, not current behavior. The implemented API is documented under `docs/`.
+
 Complete method signatures and type definitions for all runners.
 
 > **Looking for concepts and examples?** See [Runners](./runners.md) first.
