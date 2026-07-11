@@ -298,6 +298,100 @@ def test_daft_runner_map_dataframe_overlap_raises():
         DaftRunner().map_dataframe(graph, df, y=10)
 
 
+def test_daft_runner_map_dataframe_respects_graph_select():
+    """graph.select() must prune unselected output columns from map_dataframe (D15 / #143)."""
+    import daft
+
+    @node(output_name="final")
+    def add_one(doubled: int) -> int:
+        return doubled + 1
+
+    graph = Graph([double, add_one], name="df_select").select("final")
+    df = daft.from_pydict({"x": [1, 2]})
+
+    result_df = DaftRunner().map_dataframe(graph, df)
+
+    assert result_df.column_names == ["x", "final"]
+    assert result_df.collect().to_pydict()["final"] == [3, 5]
+
+
+def test_daft_runner_map_dataframe_select_matches_run_output_keys():
+    """Parity: run() values keys == map_dataframe output columns minus passthrough inputs."""
+    import daft
+
+    @node(output_name="final")
+    def add_one(doubled: int) -> int:
+        return doubled + 1
+
+    graph = Graph([double, add_one], name="df_select_parity").select("final")
+
+    run_keys = set(DaftRunner().run(graph, {"x": 2}).values)
+
+    df = daft.from_pydict({"x": [2]})
+    result_df = DaftRunner().map_dataframe(graph, df)
+    output_columns = set(result_df.column_names) - set(df.column_names)
+
+    assert output_columns == run_keys
+
+
+def test_daft_runner_map_dataframe_without_select_keeps_all_output_columns():
+    """No selection set -> every output column (including intermediates) is kept."""
+    import daft
+
+    @node(output_name="final")
+    def add_one(doubled: int) -> int:
+        return doubled + 1
+
+    graph = Graph([double, add_one], name="df_no_select")
+    df = daft.from_pydict({"x": [1]})
+
+    result_df = DaftRunner().map_dataframe(graph, df)
+
+    assert result_df.column_names == ["x", "doubled", "final"]
+
+
+def test_daft_runner_map_dataframe_select_composes_with_columns_filter():
+    """columns= governs input passthrough; select governs which output columns appear."""
+    import daft
+
+    @node(output_name="final")
+    def add_one(doubled: int) -> int:
+        return doubled + 1
+
+    graph = Graph([double, add_one], name="df_select_columns").select("final")
+    df = daft.from_pydict({"x": [1, 2], "extra": ["a", "b"]})
+
+    result_df = DaftRunner().map_dataframe(graph, df, columns=["x"])
+    collected = result_df.collect().to_pydict()
+
+    # All DataFrame columns pass through (columns= only picks graph inputs);
+    # select() prunes the output columns down to "final".
+    assert result_df.column_names == ["x", "extra", "final"]
+    assert collected["extra"] == ["a", "b"]
+    assert collected["final"] == [3, 5]
+
+
+def test_daft_runner_map_dataframe_select_prunes_renamed_multi_output_graphnode():
+    """select() keeps only the chosen parent-facing output of a multi-output GraphNode."""
+    import daft
+
+    @node(output_name=("lo", "hi"))
+    def bounds(x: int) -> tuple[int, int]:
+        return x - 1, x + 1
+
+    inner = Graph([bounds], name="inner_bounds_select")
+    outer = Graph(
+        [inner.as_node(name="nested_bounds").with_outputs(lo="public_lo", hi="public_hi")],
+        name="outer_bounds_select",
+    ).select("public_lo")
+    df = daft.from_pydict({"x": [5, 10]})
+
+    result_df = DaftRunner().map_dataframe(outer, df)
+
+    assert result_df.column_names == ["x", "public_lo"]
+    assert result_df.collect().to_pydict()["public_lo"] == [4, 9]
+
+
 def test_daft_runner_rejects_cycle_graph():
     """DaftRunner should reject graphs with cycles/gates."""
     from hypergraph import END, route
