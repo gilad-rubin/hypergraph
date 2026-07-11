@@ -18,7 +18,13 @@ from hypergraph.runners._shared.event_metadata import (
     RunContext,
     RunLineage,
 )
-from hypergraph.runners._shared.helpers import ExecutionFrontier, compute_execution_scope, graphnode_child_workflow_id, initialize_state
+from hypergraph.runners._shared.helpers import (
+    ExecutionFrontier,
+    compute_execution_scope,
+    graphnode_child_workflow_id,
+    initialize_state,
+    plan_interrupt_batch,
+)
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 from hypergraph.runners._shared.stop import StopSignal, get_stop_signal, reset_stop_signal, set_stop_signal
 from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
@@ -239,9 +245,9 @@ class AsyncRunner(AsyncRunnerTemplate):
                 if not ready_nodes:
                     continue
 
-                interrupts = [node for node in ready_nodes if node.is_interrupt]
-                if interrupts:
-                    ready_nodes = [interrupts[0]]
+                # Isolate interrupts BEFORE ready_node_names is captured below,
+                # so checkpoint metadata records exactly the executed batch.
+                ready_nodes = plan_interrupt_batch(ready_nodes)
 
                 if dispatcher.active:
                     from hypergraph.events.types import SuperstepStartEvent, _generate_span_id

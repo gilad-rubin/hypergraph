@@ -94,13 +94,9 @@ async def run_superstep_async(
     new_state = state.copy()
     active = dispatcher is not None and dispatcher.active
 
-    # Execute interrupt nodes alone (not concurrently with other nodes).
-    # PauseExecution extends BaseException, so if raised inside asyncio.gather
-    # it cancels all sibling tasks. By isolating interrupt nodes, other ready
-    # nodes are deferred to the next superstep where they'll still be ready.
-    interrupts = [n for n in ready_nodes if n.is_interrupt]
-    if interrupts:
-        ready_nodes = [interrupts[0]]
+    # Interrupt isolation happens in the runner (plan_interrupt_batch in
+    # _shared/helpers.py) BEFORE checkpoint metadata captures the batch —
+    # ready_nodes arrives here already planned.
 
     async def execute_one(
         node: HyperNode,
