@@ -706,7 +706,10 @@ class RunnerCapabilities:
         supports_cycles: Can execute graphs with cycles (default: True)
         supports_gates: Can execute graphs with gate nodes (default: True)
         supports_async_nodes: Can execute async nodes (default: False)
-        supports_streaming: Supports .iter() streaming (default: False)
+        supports_streaming: Streams results incrementally — per-item
+            yielding via map_iter() and StreamingChunkEvent emission from
+            ctx.stream() (default: False). SyncRunner and AsyncRunner set
+            this to True.
         supports_events: Supports event processors (default: True)
         supports_distributed: Can distribute across workers (default: False)
         returns_coroutine: run() returns a coroutine (default: False)

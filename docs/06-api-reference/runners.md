@@ -249,7 +249,7 @@ caps = runner.capabilities
 
 caps.supports_cycles       # True
 caps.supports_async_nodes  # False
-caps.supports_streaming    # False
+caps.supports_streaming    # True (map_iter + ctx.stream chunks)
 caps.returns_coroutine     # False
 caps.supports_interrupts   # False
 ```
@@ -800,7 +800,7 @@ caps = runner.capabilities
 
 caps.supports_cycles       # True
 caps.supports_async_nodes  # True
-caps.supports_streaming    # False (Phase 2)
+caps.supports_streaming    # True (map_iter + ctx.stream chunks)
 caps.returns_coroutine     # True
 caps.supports_interrupts   # True
 ```
