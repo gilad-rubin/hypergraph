@@ -158,7 +158,7 @@ async for index, result in runner.map_iter(
 ```
 
 - **Incremental** — each `(index, result)` pair is yielded as soon as that item finishes; `index` is the input item's position, so you can correlate results even when they arrive out of order.
-- **Bounded memory** — results stream through a bounded buffer instead of accumulating; a slow consumer pauses production (backpressure).
+- **Bounded memory** — nothing accumulates: the sync form pulls one input item at a time through a lazy generator; the async form buffers completed results in a bounded queue, so a slow consumer pauses production (backpressure).
 - **Concurrent (async)** — `AsyncRunner.map_iter()` runs items concurrently and yields in completion order; pass `max_concurrency=` to cap the parallelism. `SyncRunner.map_iter()` runs items one at a time and yields in input order.
 - **Error handling** — the default `error_handling="raise"` re-raises when a failed item is reached; `error_handling="continue"` yields the failed `RunResult` and keeps going.
 
