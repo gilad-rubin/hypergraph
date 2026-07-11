@@ -344,9 +344,14 @@ class GraphNode(HyperNode):
 
         Returns:
             dict mapping output names to their type annotations.
-            For each output, finds the node in the inner graph that produces it
-            and gets that node's type annotation for that specific output.
-            Returns empty dict entries for outputs without type annotations.
+            For each output, finds the inner node that produces it and gets
+            that node's type annotation for that specific output.
+            Returns None entries for outputs without type annotations.
+
+            When multiple inner nodes produce the same boundary output (mutex
+            branches), the annotation from the first *annotated* producer in
+            sorted inner-node-name order wins. This makes heterogeneous
+            boundary types deterministic instead of iteration-order dependent.
 
             When map_over is configured, output types are wrapped in list[T]
             since mapped execution produces lists of results.
@@ -362,26 +367,10 @@ class GraphNode(HyperNode):
             {'x': list[str]}
         """
         result: dict[str, Any] = {}
-
-        # Build mapping: output_name -> source_node
-        output_to_node: dict[str, HyperNode] = {}
-        for node in self._graph.iter_nodes():
-            for output in node.outputs:
-                output_to_node[output] = node
-
-        # For each output of this GraphNode, get type from source node
         for output_name in self.outputs:
-            local_output = self._local_output_for_address(output_name)
-            original_output = self.resolve_original_output_name(local_output)
-            source_node = output_to_node.get(original_output)
-            if source_node is None:
-                result[output_name] = self._wrap_type_for_map_over(None)
-                continue
-
-            # Use universal get_output_type method
-            output_type = source_node.get_output_type(original_output)
+            candidates = self._boundary_output_type_candidates(output_name)
+            output_type = next((annotation for _, annotation in candidates if annotation is not None), None)
             result[output_name] = self._wrap_type_for_map_over(output_type)
-
         return result
 
     def _wrap_type_for_map_over(self, inner_type: type | None) -> type | None:
@@ -414,22 +403,69 @@ class GraphNode(HyperNode):
     def get_input_type(self, param: str) -> type | None:
         """Get expected type for an input parameter from the inner graph.
 
-        Derives the type from whichever node in the inner graph declares
-        this parameter as an input.
+        Derives the type from the inner nodes that declare this parameter as
+        an input. When multiple inner consumers share the boundary name with
+        different annotations, the annotation from the first *annotated*
+        consumer in sorted inner-node-name order wins — deterministic
+        regardless of node insertion order. (Under ``strict_types=True`` the
+        parent graph rejects conflicting annotations at validation time.)
 
         Args:
             param: Input parameter name (may be a renamed external name)
 
         Returns:
-            The type annotation, or None if not annotated.
+            The type annotation, or None if no inner consumer is annotated.
         """
+        for _, annotation in self._boundary_input_type_candidates(param):
+            if annotation is not None:
+                return annotation
+        return None
+
+    def _boundary_input_type_candidates(self, param: str) -> list[tuple[str, Any]]:
+        """(inner node name, annotation) pairs for consumers of a boundary input.
+
+        Sorted by inner node name so boundary type selection is deterministic.
+        """
+        candidates: list[tuple[str, Any]] = []
         for local_param in self._local_inputs_for_address(param):
             original_param = self._resolve_original_input_name(local_param)
-            # Find which node in inner graph has this as an input
             for inner_node in self._graph.iter_nodes():
                 if original_param in inner_node.inputs:
-                    return inner_node.get_input_type(original_param)
-        return None
+                    candidates.append((inner_node.name, inner_node.get_input_type(original_param)))
+        candidates.sort(key=lambda pair: pair[0])
+        return candidates
+
+    def _boundary_output_type_candidates(self, output: str) -> list[tuple[str, Any]]:
+        """(inner node name, annotation) pairs for producers of a boundary output.
+
+        Sorted by inner node name so boundary type selection is deterministic.
+        """
+        local_output = self._local_output_for_address(output)
+        original_output = self.resolve_original_output_name(local_output)
+        candidates: list[tuple[str, Any]] = []
+        for inner_node in self._graph.iter_nodes():
+            if original_output in inner_node.outputs:
+                candidates.append((inner_node.name, inner_node.get_output_type(original_output)))
+        candidates.sort(key=lambda pair: pair[0])
+        return candidates
+
+    def boundary_input_type_conflicts(self, param: str) -> tuple[tuple[str, Any], ...]:
+        """Annotated inner consumers of a boundary input with conflicting types.
+
+        Returns () when zero or one distinct annotation exists. Otherwise
+        returns every annotated (inner node name, annotation) pair, so
+        strict-mode validation can name all sides of the conflict.
+        """
+        return _conflicting_candidates(self._boundary_input_type_candidates(param))
+
+    def boundary_output_type_conflicts(self, output: str) -> tuple[tuple[str, Any], ...]:
+        """Annotated inner producers of a boundary output with conflicting types.
+
+        Returns () when zero or one distinct annotation exists. Otherwise
+        returns every annotated (inner node name, annotation) pair, so
+        strict-mode validation can name all sides of the conflict.
+        """
+        return _conflicting_candidates(self._boundary_output_type_candidates(output))
 
     def _resolve_original_input_name(self, param: str) -> str:
         """Resolve a possibly-renamed input name back to the original.
@@ -1046,6 +1082,18 @@ class GraphNode(HyperNode):
                     leaf_outputs.append(mapped_output)
 
         return tuple(leaf_outputs)
+
+
+def _conflicting_candidates(candidates: list[tuple[str, Any]]) -> tuple[tuple[str, Any], ...]:
+    """Return annotated candidates when they disagree, else ()."""
+    annotated = [(name, annotation) for name, annotation in candidates if annotation is not None]
+    distinct: list[Any] = []
+    for _, annotation in annotated:
+        if not any(annotation == seen for seen in distinct):
+            distinct.append(annotation)
+    if len(distinct) <= 1:
+        return ()
+    return tuple(annotated)
 
 
 def _validate_clone(

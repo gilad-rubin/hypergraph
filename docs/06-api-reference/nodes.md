@@ -890,6 +890,31 @@ def consumer(value: int) -> int:
 outer = Graph([gn, consumer], strict_types=True)  # Works!
 ```
 
+#### Heterogeneous boundary types
+
+When multiple inner nodes share one boundary name with different annotations, the reported type is deterministic: the first *annotated* inner node in sorted inner-node-name order wins.
+
+```python
+@node(output_name="out1")
+def node_int(x: int) -> int: ...
+
+@node(output_name="out2")
+def node_str(x: str) -> str: ...
+
+gn = Graph([node_str, node_int], name="inner").as_node()
+print(gn.get_input_type("x"))  # <class 'int'> — 'node_int' sorts first
+```
+
+Under `strict_types=True`, a wired boundary port with conflicting inner annotations is rejected at construction time instead, naming both inner nodes and both types:
+
+```text
+GraphConfigError: Conflicting type annotations for input 'x' on GraphNode 'inner' in strict_types mode
+  -> inner node 'node_int' declares: <class 'int'>
+  -> inner node 'node_str' declares: <class 'str'>
+```
+
+The permissive default (`strict_types=False`) is unchanged.
+
 ### Nested Composition Example
 
 ```python

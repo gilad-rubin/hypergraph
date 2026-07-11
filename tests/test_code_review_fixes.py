@@ -252,17 +252,18 @@ class TestValueComparisonSafety:
         assert v1 == v2  # Version should not change for same object
 
 
-class TestGraphNodeInputTypeConsistency:
-    """Edge 1: GraphNode input type returns arbitrary match.
+class TestGraphNodeBoundaryTypeDeterminism:
+    """Edge 1 (#118): heterogeneous boundary types are deterministic, not iteration-order roulette.
 
-    If multiple inner nodes share an input with different types,
-    get_input_type returns first found (dict ordering dependent).
+    When multiple inner nodes share one parent-facing boundary name with
+    different annotations, the reported type comes from the first annotated
+    inner node in sorted inner-node-name order. Under strict_types=True the
+    conflict is rejected at validation time instead.
     """
 
-    def test_input_type_consistency_warning(self):
-        """Graph should warn/error if shared inputs have inconsistent types."""
+    def test_input_type_deterministic_sorted_node_order(self):
+        """get_input_type picks the alphabetically-first annotated inner consumer."""
 
-        # This tests the design choice: we should validate at graph construction
         @node(output_name="out1")
         def node_int(x: int) -> int:
             return x
@@ -271,16 +272,121 @@ class TestGraphNodeInputTypeConsistency:
         def node_str(x: str) -> str:
             return x
 
-        # Both consume 'x' but with different types
-        # This should either raise or warn during validation
-        # For now, test the current behavior
-        inner = Graph([node_int, node_str], name="inner")
+        # Insertion order reversed vs sorted order: node_str first.
+        inner = Graph([node_str, node_int], name="inner")
         gn = inner.as_node()
 
-        # get_input_type should return a consistent result
-        # (currently returns first match - test documents behavior)
-        t = gn.get_input_type("x")
-        assert t in (int, str)  # Documents current behavior
+        # 'node_int' < 'node_str' in sorted order -> int wins, regardless of insertion order.
+        assert gn.get_input_type("x") is int
+        assert Graph([node_int, node_str], name="inner").as_node().get_input_type("x") is int
+
+    def test_input_type_skips_unannotated_consumers(self):
+        """An unannotated consumer earlier in sort order does not hide a real annotation."""
+
+        @node(output_name="out1")
+        def a_unannotated(x) -> int:
+            return x
+
+        @node(output_name="out2")
+        def b_typed(x: str) -> str:
+            return x
+
+        gn = Graph([a_unannotated, b_typed], name="inner").as_node()
+        assert gn.get_input_type("x") is str
+
+    def test_output_type_deterministic_sorted_node_order(self):
+        """get_output_type picks the alphabetically-first annotated inner producer."""
+
+        @route(targets=["as_int", "as_str"])
+        def pick(x: int) -> str:
+            return "as_int" if x > 0 else "as_str"
+
+        @node(output_name="result")
+        def as_int(x: int) -> int:
+            return x
+
+        @node(output_name="result")
+        def as_str(x: int) -> str:
+            return str(x)
+
+        # Under the old last-write-wins behavior, as_str (inserted last) won.
+        # Sorted inner-node-name order must win regardless of insertion order.
+        inner = Graph([pick, as_int, as_str], name="inner")
+        gn = inner.as_node()
+        assert gn.get_output_type("result") is int
+        flipped = Graph([pick, as_str, as_int], name="inner")
+        assert flipped.as_node().get_output_type("result") is int
+
+    def test_permissive_default_builds_fine(self):
+        """Without strict_types, conflicting boundary annotations stay permissive."""
+
+        @node(output_name="out1")
+        def node_int(x: int) -> int:
+            return x
+
+        @node(output_name="out2")
+        def node_str(x: str) -> str:
+            return x
+
+        @node(output_name="x")
+        def produce_x() -> int:
+            return 1
+
+        inner = Graph([node_str, node_int], name="inner")
+        outer = Graph([produce_x, inner.as_node()])  # no strict_types
+        assert "produce_x" in outer.nodes
+
+    def test_strict_mode_rejects_conflicting_input_annotations(self):
+        """strict_types=True raises with both node names and both types."""
+        from hypergraph import GraphConfigError
+
+        @node(output_name="out1")
+        def node_int(x: int) -> int:
+            return x
+
+        @node(output_name="out2")
+        def node_str(x: str) -> str:
+            return x
+
+        @node(output_name="x")
+        def produce_x() -> int:
+            return 1
+
+        inner = Graph([node_str, node_int], name="inner")
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([produce_x, inner.as_node()], strict_types=True)
+        message = str(exc_info.value)
+        assert "node_int" in message
+        assert "node_str" in message
+        assert "int" in message
+        assert "str" in message
+
+    def test_strict_mode_rejects_conflicting_output_annotations(self):
+        """Mutex producers with different annotations for one exposed output are rejected."""
+        from hypergraph import GraphConfigError
+
+        @route(targets=["as_int", "as_str"])
+        def pick(x: int) -> str:
+            return "as_int" if x > 0 else "as_str"
+
+        @node(output_name="result")
+        def as_int(x: int) -> int:
+            return x
+
+        @node(output_name="result")
+        def as_str(x: int) -> str:
+            return str(x)
+
+        @node(output_name="final")
+        def consume(result: int) -> int:
+            return result
+
+        inner = Graph([pick, as_str, as_int], name="inner")
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([inner.as_node(), consume], strict_types=True)
+        message = str(exc_info.value)
+        assert "as_int" in message
+        assert "as_str" in message
 
 
 class TestSelectParameterValidation:
