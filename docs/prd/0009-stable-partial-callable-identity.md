@@ -1,6 +1,6 @@
 # 0009 — Stable partial-callable identity
 
-status: in-progress
+status: done
 
 ## Fixed acceptance contract
 
