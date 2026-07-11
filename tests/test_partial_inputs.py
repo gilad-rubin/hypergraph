@@ -185,6 +185,60 @@ class TestEntrypointNarrowsActiveSet:
 # === Entrypoint + select composition ===
 
 
+@node(output_name="mid_val")
+def chain_upstream(x):
+    return x
+
+
+@node(output_name="out_val")
+def chain_downstream(mid_val):
+    return mid_val
+
+
+class TestUnreachableSelectRejected:
+    """entrypoint+select combos that cannot produce the selection fail at build time (#119)."""
+
+    def test_select_after_entrypoint_raises(self):
+        """Selecting an output whose producer is upstream of the entrypoint raises."""
+        graph = Graph([chain_upstream, chain_downstream])
+        with pytest.raises(GraphConfigError, match="mid_val"):
+            graph.with_entrypoint("chain_downstream").select("mid_val")
+
+    def test_entrypoint_after_select_raises(self):
+        """Order-independent: .select(...).with_entrypoint(...) raises too."""
+        graph = Graph([chain_upstream, chain_downstream])
+        with pytest.raises(GraphConfigError, match="mid_val"):
+            graph.select("mid_val").with_entrypoint("chain_downstream")
+
+    def test_partially_unreachable_selection_raises(self):
+        """A mix of reachable and unreachable selected outputs still raises."""
+        graph = Graph([chain_upstream, chain_downstream])
+        with pytest.raises(GraphConfigError, match="mid_val"):
+            graph.with_entrypoint("chain_downstream").select("out_val", "mid_val")
+
+    def test_error_lists_producible_outputs_and_fix(self):
+        """House message style: what / valid options / how to fix."""
+        graph = Graph([chain_upstream, chain_downstream])
+        with pytest.raises(GraphConfigError) as exc_info:
+            graph.with_entrypoint("chain_downstream").select("mid_val")
+        message = str(exc_info.value)
+        assert "chain_downstream" in message  # entrypoint context
+        assert "out_val" in message  # what IS producible
+        assert "How to fix" in message
+
+    def test_reachable_selection_still_allowed(self):
+        """Selecting an output the entrypoint can reach stays valid."""
+        graph = Graph([chain_upstream, chain_downstream])
+        g2 = graph.with_entrypoint("chain_downstream").select("out_val")
+        assert g2.selected == ("out_val",)
+
+    def test_constructor_entrypoint_then_select_raises(self):
+        """Graph(entrypoint=...) followed by select() validates the combination."""
+        graph = Graph([chain_upstream, chain_downstream], entrypoint="chain_downstream")
+        with pytest.raises(GraphConfigError, match="mid_val"):
+            graph.select("mid_val")
+
+
 class TestEntrypointAndSelectCompose:
     """Both with_entrypoint and select narrow together."""
 

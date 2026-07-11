@@ -499,6 +499,7 @@ Runtime `select=` overrides are not supported. Use `graph.select(...)` to config
 
 **Raises:**
 - `ValueError` - If any name is not in `graph.outputs`
+- `GraphConfigError` - If entrypoints are configured and every producer of a selected output is upstream of them (the output could never be produced)
 
 #### Nested graph behavior
 
@@ -558,6 +559,7 @@ print(g2.inputs.required)  # ('embedding', 'query') - embedding is now a user in
 **Raises:**
 - `GraphConfigError` - If any name is not a node in the graph
 - `GraphConfigError` - If any name is a gate node (gates control routing, they cannot be entry points)
+- `GraphConfigError` - If a previously selected output becomes unreachable from the configured entry points
 
 #### Chainable
 
@@ -593,6 +595,13 @@ configured = (
 )
 print(configured.inputs.required)  # ('embedding', 'query')
 print(configured.inputs.optional)  # ('top_k',)
+```
+
+The combination must be able to produce the selection. If every producer of a selected output is upstream of the configured entrypoints, the graph raises `GraphConfigError` at configuration time (in whichever call completes the combination — the order of `select()` and `with_entrypoint()` does not matter):
+
+```python
+g.with_entrypoint("retrieve").select("embedding")
+# GraphConfigError: Selected output(s) 'embedding' cannot be produced from entrypoint(s) 'retrieve'.
 ```
 
 #### Active-set enforcement

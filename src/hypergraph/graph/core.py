@@ -1043,6 +1043,8 @@ class Graph:
 
         Raises:
             ValueError: If any name is not a graph output.
+            GraphConfigError: If entrypoints are configured and a selected
+                output's producer is not reachable from them.
 
         Example:
             >>> graph = Graph([embed, retrieve, generate]).select("answer")
@@ -1061,7 +1063,43 @@ class Graph:
 
         new_graph = self._shallow_copy()
         new_graph._selected = names
+        new_graph._validate_selection_reachable()
         return new_graph
+
+    def _validate_selection_reachable(self) -> None:
+        """Reject entrypoint+select combinations that cannot produce the selection.
+
+        Only meaningful when BOTH dimensions are configured: entrypoints narrow
+        the active scope to forward-reachable nodes, and a selected output whose
+        producers all fall outside that scope could never be produced. Uses the
+        canonical active-scope computation (never a second reachability walk).
+        """
+        if self._selected is None or self._entrypoints is None:
+            return
+
+        active_nodes, _ = _compute_active_scope(
+            self._nodes,
+            self._nx_graph,
+            entrypoints=self._entrypoints,
+            selected=None,
+        )
+        producible = {output for node in active_nodes.values() for output in node.outputs}
+        unreachable = [name for name in self._selected if name not in producible]
+        if not unreachable:
+            return
+
+        unreachable_str = ", ".join(f"'{name}'" for name in unreachable)
+        entrypoints_str = ", ".join(f"'{name}'" for name in self._entrypoints)
+        raise GraphConfigError(
+            f"Selected output(s) {unreachable_str} cannot be produced from entrypoint(s) {entrypoints_str}.\n\n"
+            f"  -> Every producer of {unreachable_str} is upstream of the configured entrypoints,\n"
+            f"     so it would never execute.\n"
+            f"  -> Outputs producible from these entrypoints: {sorted(producible)}\n\n"
+            f"How to fix:\n"
+            f"  - Select one of the producible outputs, OR\n"
+            f"  - Move the entrypoint upstream so the producer is included, OR\n"
+            f"  - Drop the entrypoint/select that excludes the producer."
+        )
 
     def add_nodes(self, *nodes: HyperNode) -> Graph:
         """Add nodes to graph. Returns new Graph (immutable).
@@ -1129,7 +1167,9 @@ class Graph:
             New Graph with entry points configured.
 
         Raises:
-            GraphConfigError: If node doesn't exist or is a gate.
+            GraphConfigError: If node doesn't exist or is a gate, or if a
+                previously selected output becomes unreachable from the
+                configured entrypoints.
 
         Example:
             >>> # Skip upstream, provide intermediate values directly
@@ -1146,6 +1186,7 @@ class Graph:
         new_graph = self._shallow_copy()
         existing = self._entrypoints or ()
         new_graph._entrypoints = tuple(dict.fromkeys(existing + normalized_names))
+        new_graph._validate_selection_reachable()
         return new_graph
 
     @property
