@@ -199,7 +199,7 @@ Generates a scrollable gallery of all notebook visualizations with DialKit contr
 - `src/hypergraph/viz/scene_builder.py` — Python scene builder (test oracle + initial-render path)
 - `src/hypergraph/viz/assets/scene_builder.js` — JS twin
 - `src/hypergraph/viz/renderer/__init__.py` — `render_graph()` thin wrapper (IR + initial scene)
-- `src/hypergraph/viz/renderer/nodes.py` + `edges.py` + `scope.py` — legacy helpers retained for `mermaid.py`
+- `src/hypergraph/viz/renderer/nodes.py` + `scope.py` — shared helpers used by `mermaid.py` and `ir_builder.py`
 - `src/hypergraph/viz/assets/viz.js` — single-file JS app (layout, rendering, controls)
 - `src/hypergraph/viz/html/generator.py` — HTML assembly with embedded assets
 - `src/hypergraph/viz/html/estimator.py` — iframe dimension estimation
