@@ -23,14 +23,14 @@ scene client-side without a kernel round-trip.
 4. `renderer/__init__.py:render_graph` is now a thin wrapper that ships
    the IR + initial scene to `html/generator.py`.
 
-**JavaScript pipeline** (`assets/viz.js` + `assets/scene_builder.js`)
+**JavaScript pipeline** (split `assets/*.js` modules — see "JS Asset Modules")
 1. `scene_builder.js:buildInitialScene` mirrors the Python twin — same IR,
    same expansion state, semantically equivalent output.
-2. Section 7 (App in `viz.js`) calls `buildInitialScene` on every
+2. The App (`viz.js`) calls `buildInitialScene` on every
    expansion / separateOutputs / showInputs change.
-3. `layoutGraph()` runs dagre for node positioning + native edge routing.
-4. `performCompoundLayout()` handles expanded containers with a compound dagre pass.
-5. `CustomEdge` renders B-spline curves through dagre-provided points via `curveBasis()`.
+3. `layoutGraph()` (`viz_layout.js`) runs dagre for node positioning + native edge routing.
+4. `performCompoundLayout()` (`viz_layout.js`) handles expanded containers with a compound dagre pass.
+5. `CustomEdge` (`viz_edges.js`) renders B-spline curves through dagre-provided points via `curveBasis()`.
 
 **Mermaid**: `mermaid.py` still consumes `renderer/nodes.py` +
 `renderer/scope.py` helpers rather than the compact IR path. Keep Mermaid and
@@ -60,16 +60,28 @@ pipelines differ.
 - Mermaid id sanitization should normalize before reserved-word lookup, and
   tests should cover mixed-case reserved words when the reserved set changes.
 
-## Viz.js Architecture
+## JS Asset Modules
 
-`assets/viz.js` is organized in 7 sections:
-1. **Constants + Helpers** — layout constants, node-type offsets
-2. **Theme** — host theme detection, light/dark switching
-3. **Layout** — `layoutGraph()`, `performCompoundLayout()`, feedback edge routing
-4. **Edge Component** — `curveBasis()`, `CustomEdge`, label placement
-5. **Node Components** — `CustomNode` for all node types
-6. **Controls** — zoom/fit/toggle buttons, `DevLayoutControls` (DialKit)
-7. **App + Init** — state management, `useLayout` hook, rendering
+The former single-file `viz.js` is split into no-build modules loaded by
+side-effect in the order defined by `FIRST_PARTY_ASSET_NAMES`
+(`assets/__init__.py`). Each attaches its API to a `window` global
+(`HypergraphDerivation`, `HypergraphSceneBuilder`, `HypergraphViz*`):
+
+1. `derivation.js` — pure graph-walk primitives over GraphIR + expansion
+   state (visibility, expansion-aware routing, container entrypoints); no
+   React Flow, layout, or styling knowledge
+2. `scene_builder.js` — JS twin of `scene_builder.py`; consumes `derivation.js`
+3. `viz_runtime.js` — shared constants + helpers: `NODE_TYPE_OFFSETS`,
+   `NODE_TYPE_TOP_INSETS`, `EDGE_ENDPOINT_PADDING`, node-type resolution,
+   theme detection
+4. `viz_layout.js` — `layoutGraph()`, `performCompoundLayout()`, feedback
+   edge routing, the `useLayout` hook
+5. `viz_edges.js` — `curveBasis()`, `CustomEdge`, label placement
+6. `viz_nodes.js` — `CustomNode` components for all node types
+7. `viz_controls.js` — zoom/fit/toggle buttons, `DevLayoutControls` (DialKit)
+8. `viz_debug.js` — `installDebugApi()` → `window.__hypergraphVizDebug`
+9. `viz.js` — App bootstrap: state management, scene refresh, theme wiring,
+   `hypergraph-set-options` message listener
 
 ## Edge Routing
 
@@ -146,7 +158,7 @@ External inputs are grouped by **consumer set** and **bound status**:
 
 ## Node-Type Offsets and Visible Bounds
 
-Offsets defined in viz.js Section 1:
+Offsets defined in `assets/viz_runtime.js`:
 - `NODE_TYPE_OFFSETS` — bottom gap (shadow/padding) per node type
 - `NODE_TYPE_TOP_INSETS` — top gap per node type
 
@@ -158,7 +170,7 @@ Dev-only controls visible when `window.__hypergraph_debug_viz = true`:
 - Slider: "Endpoint padding" (0–0.45 as a fraction of node width; overrides `EDGE_ENDPOINT_PADDING` default of 0.25)
 - Slider: "Vertical gap" (dagre rank separation)
 
-Gallery page (`scripts/render_notebook_viz.py`) has a DialKit bar that broadcasts settings to all iframes via `postMessage`. Viz.js listens for `{ type: 'hypergraph-set-options', options: {...} }` messages.
+Gallery page (`scripts/render_notebook_viz.py`) has a DialKit bar that broadcasts settings to all iframes via `postMessage`. The App (`viz.js`) listens for `{ type: 'hypergraph-set-options', options: {...} }` messages.
 
 ## Gallery Script (render_notebook_viz.py)
 
@@ -180,15 +192,16 @@ Generates a scrollable gallery of all notebook visualizations with DialKit contr
 | Edge points to container when expanded | `target_when_expanded` not populated in IR | `renderer/ir_builder.py` |
 | Dagre "setting 'rank'" crash, blank canvas | edge incident to an *expanded* container (dagre compound parent) — usually a renamed boundary param (`map_over`/`rename_inputs`/`rename_outputs`) not translated via the GRAPH node's `input_name_map`/`output_name_map` | `renderer/ir_builder.py` + `renderer/scope.py:get_deepest_consumers` |
 | Input appears outside expanded container | `ownerContainer` not derived from `deepest_owner` | `scene_builder.py` (Python + JS) |
-| Edge starts/ends with visible gap | wrong node-type offset | viz.js Section 1 |
-| Incoming edges overlap unexpectedly | dagre route or endpoint padding needs inspection | `assets/viz.js` |
-| Branch labels at wrong position | `outgoingMidpointDistance` heuristic | viz.js Section 4 |
-| Python and JS scene differ | scene_builder.py / scene_builder.js out of sync | tests/viz/test_scene_builder.py + Stage 3 parity |
+| Edge starts/ends with visible gap | wrong node-type offset | `assets/viz_runtime.js` (`NODE_TYPE_OFFSETS`) |
+| Incoming edges overlap unexpectedly | dagre route or endpoint padding needs inspection | `assets/viz_layout.js` |
+| Python and JS scene differ | scene_builder.py / scene_builder.js out of sync | tests/viz/test_scene_builder.py + tests/viz/test_parity.py |
 
 ## Test Coverage Pointers
 
+- `tests/viz/test_scene_builder.py` — Python scene builder against the IR oracle
+- `tests/viz/test_derivation_js.py` — drives `node` to run `derivation.js` directly
+- `tests/viz/test_viz_modules_js.py` — module smoke tests for the split assets
 - `tests/viz/test_scope_aware_visibility.py`
-- `tests/viz/test_edges_by_state_contract.py`
 - `tests/viz/test_edge_connections.py`
 - `tests/viz/test_visual_layout_issues.py`
 
@@ -200,7 +213,7 @@ Generates a scrollable gallery of all notebook visualizations with DialKit contr
 - `src/hypergraph/viz/assets/scene_builder.js` — JS twin
 - `src/hypergraph/viz/renderer/__init__.py` — `render_graph()` thin wrapper (IR + initial scene)
 - `src/hypergraph/viz/renderer/nodes.py` + `scope.py` — shared helpers used by `mermaid.py` and `ir_builder.py`
-- `src/hypergraph/viz/assets/viz.js` — single-file JS app (layout, rendering, controls)
+- `src/hypergraph/viz/assets/*.js` — split JS app modules (see "JS Asset Modules"); load order in `assets/__init__.py:FIRST_PARTY_ASSET_NAMES`
 - `src/hypergraph/viz/html/generator.py` — HTML assembly with embedded assets
 - `src/hypergraph/viz/html/estimator.py` — iframe dimension estimation
 - `scripts/render_notebook_viz.py` — gallery generator with DialKit controls
