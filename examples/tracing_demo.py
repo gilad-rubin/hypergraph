@@ -3,7 +3,7 @@
 Exercises every layer from the v5 plan:
   1. RunLog (always-on, in-memory trace)
   2. Checkpointer (durable persistence to SQLite)
-  3. CLI (post-hoc inspection)
+  3. Post-hoc inspection (checkpointer sync reads)
   4. Error tracing (failed nodes, partial failures)
   5. Cyclic workflows (re-execution tracking)
   6. Gate routing decisions
@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -62,17 +61,6 @@ def section(title: str) -> None:
     print(f"\n{'=' * 60}")
     print(f"  {title}")
     print(f"{'=' * 60}\n")
-
-
-def run_cli(args: list[str]) -> str:
-    """Run hypergraph CLI and return output."""
-    result = subprocess.run(
-        ["uv", "run", "hypergraph", *args],
-        capture_output=True,
-        text=True,
-        cwd=Path(__file__).parent.parent,
-    )
-    return result.stdout + result.stderr
 
 
 # ─── Demo scenarios ──────────────────────────────────────────────────
@@ -131,6 +119,8 @@ async def demo_2_checkpointer(db_path: str) -> None:
     print(f"  values: {checkpoint.values}")
     print(f"  steps: {len(checkpoint.steps)}")
 
+    await cp.close()
+
 
 async def demo_3_error_tracing(db_path: str) -> None:
     """Use case 3: Error tracing — failed nodes get tracked."""
@@ -165,6 +155,8 @@ async def demo_3_error_tracing(db_path: str) -> None:
             status_line += f" → {s.values}"
         print(status_line)
 
+    await cp.close()
+
 
 async def demo_4_cyclic_workflow(db_path: str) -> None:
     """Use case 4: Cyclic workflow — re-executions tracked per superstep."""
@@ -173,7 +165,7 @@ async def demo_4_cyclic_workflow(db_path: str) -> None:
     cp = SqliteCheckpointer(db_path, durability="sync")
 
     runner = AsyncRunner(checkpointer=cp)
-    graph = Graph([increment, check_done])
+    graph = Graph([increment, check_done], entrypoint="increment")
     result = await runner.run(graph, {"count": 0}, workflow_id="demo-cycle")
 
     print(f">>> result['count'] = {result['count']}")
@@ -193,31 +185,41 @@ async def demo_4_cyclic_workflow(db_path: str) -> None:
         decision = f", decision={s.decision}" if s.decision else ""
         print(f"  [superstep {s.superstep}] {s.node_name}: {s.values}{decision}")
 
+    await cp.close()
 
-async def demo_5_cli(db_path: str) -> None:
-    """Use case 5: CLI inspection — post-hoc debugging."""
-    section("5. CLI — Post-Hoc Workflow Inspection")
 
-    print(">>> hypergraph runs ls --db <db>")
-    print(run_cli(["runs", "ls", "--db", db_path]))
+async def demo_5_posthoc_inspection(db_path: str) -> None:
+    """Use case 5: post-hoc inspection — checkpointer sync reads from a fresh handle."""
+    section("5. Post-Hoc Workflow Inspection (checkpointer sync reads)")
 
-    print(">>> hypergraph runs show demo-pipeline --db <db>")
-    print(run_cli(["runs", "show", "demo-pipeline", "--db", db_path]))
+    # A fresh checkpointer handle — as if inspecting from a new process
+    cp = SqliteCheckpointer(db_path)
 
-    print(">>> hypergraph runs values demo-pipeline --db <db>")
-    print(run_cli(["runs", "values", "demo-pipeline", "--db", db_path]))
+    print(">>> cp.runs()")
+    for run in cp.runs():
+        print(f"  {run.id}: {run.status.value}")
 
-    print(">>> hypergraph runs values demo-pipeline --full --db <db>")
-    print(run_cli(["runs", "values", "demo-pipeline", "--full", "--db", db_path]))
+    print("\n>>> cp.get_run('demo-pipeline')")
+    print(f"  {cp.get_run('demo-pipeline')!r}")
 
-    print(">>> hypergraph runs show demo-partial-failure --db <db>")
-    print(run_cli(["runs", "show", "demo-partial-failure", "--db", db_path]))
+    print("\n>>> cp.values('demo-pipeline')")
+    print(f"  {cp.values('demo-pipeline')}")
 
-    print(">>> hypergraph runs show demo-cycle --db <db>")
-    print(run_cli(["runs", "show", "demo-cycle", "--db", db_path]))
+    print("\n>>> cp.steps('demo-partial-failure')")
+    for s in cp.steps("demo-partial-failure"):
+        error = f" — {s.error}" if s.error else ""
+        print(f"  [{s.index}] {s.node_name}: {s.status.value}{error}")
 
-    print(">>> hypergraph runs steps demo-cycle --values --db <db>")
-    print(run_cli(["runs", "steps", "demo-cycle", "--values", "--db", db_path]))
+    print("\n>>> cp.steps('demo-cycle')")
+    for s in cp.steps("demo-cycle"):
+        decision = f", decision={s.decision}" if s.decision else ""
+        print(f"  [superstep {s.superstep}] {s.node_name}: {s.values}{decision}")
+
+    print("\n>>> cp.stats('demo-cycle')")
+    for name, node_stats in cp.stats("demo-cycle").items():
+        print(f"  {name}: steps={node_stats['steps']}, total={node_stats['total_ms']:.1f}ms, errors={node_stats['errors']}")
+
+    await cp.close()
 
 
 async def demo_6_json_export(db_path: str) -> None:
@@ -231,15 +233,6 @@ async def demo_6_json_export(db_path: str) -> None:
     print(">>> json.dumps(result.log.to_dict(), indent=2)")
     print(json.dumps(result.log.to_dict(), indent=2))
 
-    print("\n>>> hypergraph runs show demo-pipeline --json --db <db>")
-    output = run_cli(["runs", "show", "demo-pipeline", "--json", "--db", db_path])
-    # Pretty-print the JSON
-    try:
-        parsed = json.loads(output)
-        print(json.dumps(parsed, indent=2))
-    except json.JSONDecodeError:
-        print(output)
-
 
 # ─── Main ────────────────────────────────────────────────────────────
 
@@ -252,7 +245,7 @@ async def main() -> None:
         await demo_2_checkpointer(db_path)
         await demo_3_error_tracing(db_path)
         await demo_4_cyclic_workflow(db_path)
-        await demo_5_cli(db_path)
+        await demo_5_posthoc_inspection(db_path)
         await demo_6_json_export(db_path)
 
         section("Done!")
