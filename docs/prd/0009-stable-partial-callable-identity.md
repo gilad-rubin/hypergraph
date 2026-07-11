@@ -4,10 +4,9 @@ status: in-progress
 
 ## Fixed acceptance contract
 
-`hash_definition()` falls back to `repr()` for `functools.partial`. When the
-wrapped callable is a Python function, that representation embeds its memory
-address, so identical `FunctionNode` and `Graph` definitions change across fresh
-processes.
+`hash_definition()` falls back to `repr()` for `functools.partial` and callable
+instances. Those representations can embed memory addresses, so identical
+`FunctionNode` and `Graph` definitions change across fresh processes.
 
 Before:
 
@@ -36,9 +35,14 @@ Acceptance criteria:
   deterministic; opaque values and cycles refuse loudly.
 - Partial subclasses refuse unless their additional typed behavior is modeled;
   this wave may choose exact-type refusal.
+- A source-defined callable instance is identified from the executable
+  `type(instance).__call__` definition plus deterministic instance state through
+  the existing bound-instance fingerprint seam. Opaque callable instances refuse;
+  no address-bearing fallback remains.
 - Two subprocesses produce the same `FunctionNode.definition_hash` and
   `Graph.code_hash` for one file-defined function wrapped in the same partial.
-  Changing an argument or keyword changes both hashes.
+  The same is true for one source-defined callable instance. Changing a partial
+  argument/keyword or callable-instance state changes both hashes.
 - Existing plain functions, bound methods, dynamic functions, and Graph APIs retain
   their behavior. Hypergraph's warning-as-error suite and pre-commit checks pass.
 
