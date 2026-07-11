@@ -402,11 +402,11 @@ result = await runner.run(graph, {{"x": 5}}, workflow_id="uc4-single")
   values: {cp.checkpoint("uc4-single").values}
   steps: {len(cp.checkpoint("uc4-single").steps)}"""
 
-    # Mapped — runner.map() is ephemeral (no checkpoints)
+    # Mapped — ephemeral here because no checkpointer/workflow_id is passed
     runner_sync = SyncRunner()
     results_map = runner_sync.map(graph, {"x": [5, 10, 15]}, map_over="x")
     mapped = f"""\
-# runner.map() is ephemeral — per-item RunLogs but no persistence
+# This runner has no checkpointer, so the mapped run is ephemeral
 runner_sync = SyncRunner()
 results = runner_sync.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
 
@@ -416,8 +416,8 @@ results = runner_sync.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
 >>> results["tripled"]
 {results_map["tripled"]}
 
-# Not checkpointed — cp.runs() won't show these runs
-# Use map_over with a checkpointer for persistence"""
+# Not checkpointed here — cp.runs() won't show these runs
+# SyncRunner(checkpointer=cp) + workflow_id= persists a parent run + per-item child runs"""
 
     # Nested — map_over in a checkpointed run
     inner = Graph([double, triple], name="pipeline")
@@ -478,23 +478,23 @@ cp = SqliteCheckpointer("./runs.db")
 >>> cp.steps("uc4-single")
 {fmt_step_records(steps)}"""
 
-    # Mapped — runner.map() results aren't persisted
+    # Mapped — ephemeral here because no checkpointer/workflow_id is passed
     runner_sync = SyncRunner()
     graph = Graph([double, triple])
     results_map = runner_sync.map(graph, {"x": [5, 10, 15]}, map_over="x")
     mapped = f"""\
-# runner.map() is ephemeral — results exist only in the current process
+# Without a checkpointer, mapped results exist only in the current process
 results = runner_sync.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
 
 >>> results.summary()
 '{results_map.summary()}'
 
 # After the process exits, these results are gone
-# cp.runs() won't show runner.map() runs
+# cp.runs() won't show this run — it was never checkpointed
 >>> cp.runs()
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in wfs)}
 
-# Use map_over with a checkpointer for cross-process persistence"""
+# SyncRunner(checkpointer=cp) + workflow_id= persists mapped runs across processes"""
 
     # Nested — query the mapped run
     state_m = cp.values("uc4-multi")
@@ -562,7 +562,7 @@ async def run_uc6(db_path: str) -> UseCase:
     )
     failure_errors = [f.error for f in results_map.failures]
     mapped = f"""\
-# runner.map() — in-process filtering via MapResult (ephemeral)
+# In-process filtering via MapResult — ephemeral here (no checkpointer passed)
 results = runner_sync.map(
     flaky_graph, {{"x": [1, 2, 3, 4, 5, 6]}},
     map_over="x", error_handling="continue",
@@ -577,8 +577,8 @@ results = runner_sync.map(
 >>> [f.error for f in results.failures]
 {failure_errors}
 
-# In-process only — not persisted to checkpointer
-# For persistent failure tracking, use map_over with a checkpointer"""
+# Not persisted here — this runner has no checkpointer
+# Pass a checkpointer + workflow_id= to also track failures across processes"""
 
     # Nested — dashboard shows both single and mapped runs
     nested = f"""\
@@ -701,11 +701,11 @@ cp2 = SqliteCheckpointer("./runs.db")
 #   "sync"   — block until written (crash-safe)
 #   "exit"   — only at run completion (fastest)"""
 
-    # Mapped — runner.map() is ephemeral (no live query)
+    # Mapped — no live query here because no checkpointer is attached
     runner_sync = SyncRunner()
     results_map = runner_sync.map(graph, {"x": [5, 10]}, map_over="x")
     mapped = f"""\
-# runner.map() is ephemeral — no live query from another process
+# Without a checkpointer, a mapped run can't be queried live from another process
 results = runner_sync.map(graph, {{"x": [5, 10]}}, map_over="x")
 
 >>> results.summary()
@@ -714,7 +714,7 @@ results = runner_sync.map(graph, {{"x": [5, 10]}}, map_over="x")
 >>> results["tripled"]
 {results_map["tripled"]}
 
-# Not checkpointed — can't query from another process
+# Not checkpointed here — SyncRunner(checkpointer=cp) + workflow_id= enables live queries
 # Durability modes only apply to checkpointer-backed runs"""
 
     # Nested — map_over with durability="sync"
@@ -776,18 +776,19 @@ result = await runner.run(
 # NOT YET: history= parameter for true fork-and-retry
 # result = await runner.run(graph, values=..., history=checkpoint.steps)"""
 
-    # Mapped — runner.map() is ephemeral (can't fork/retry)
+    # Mapped — nothing to fork from here because no checkpointer is attached
     runner_sync = SyncRunner()
     results_map = runner_sync.map(graph, {"x": [5, 10]}, map_over="x")
     mapped = f"""\
-# runner.map() is ephemeral — can't fork or retry from a checkpoint
+# This run has no checkpointer, so there is no checkpoint to fork or retry from
 results = runner_sync.map(graph, {{"x": [5, 10]}}, map_over="x")
 
 >>> results.summary()
 '{results_map.summary()}'
 
-# No checkpoint data — results exist only in-process
-# For fork-and-retry, use map_over with a checkpointer"""
+# No checkpoint data for this run — it was never persisted
+# Persist with a checkpointer + workflow_id=; re-running map() with the same
+# workflow_id then retries only failed items"""
 
     # Nested — map_over with checkpoint
     cp2 = SqliteCheckpointer(db_path, durability="sync")
