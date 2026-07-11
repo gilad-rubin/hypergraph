@@ -44,11 +44,13 @@ def test_scene_materializes_input_node_for_external_param():
     assert "input_x" in input_ids
 
 
-def test_simple_graph_scene_node_signatures_match_legacy():
-    """Comprehensive parity: scene_builder output for make_simple_graph
-    has the same set of (id, nodeType) signatures as the legacy
-    render_graph. This is the contract that lets us swap the legacy
-    path for the IR + scene_builder path without visual regressions."""
+def test_simple_graph_scene_node_signatures_match_render_graph_wrapper():
+    """Wrapper consistency for make_simple_graph: building the scene
+    directly (build_graph_ir + build_initial_scene) yields the same set
+    of visible (id, nodeType) signatures as going through the
+    render_graph() convenience wrapper, which forwards to the same IR
+    pipeline but computes its own default expansion state and flag
+    plumbing. Not an independent oracle."""
     flat_graph = make_simple_graph().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
@@ -58,8 +60,8 @@ def test_simple_graph_scene_node_signatures_match_legacy():
     assert _visible_node_sigs(scene["nodes"]) == _visible_node_sigs(oracle["nodes"])
 
 
-def test_workflow_scene_node_signatures_match_legacy():
-    """Parity for a 1-level nested graph (preprocess[clean, normalize] -> analyze)."""
+def test_workflow_scene_node_signatures_match_render_graph_wrapper():
+    """Wrapper consistency for a 1-level nested graph (preprocess[clean, normalize] -> analyze)."""
     flat_graph = make_workflow().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
@@ -69,8 +71,8 @@ def test_workflow_scene_node_signatures_match_legacy():
     assert _visible_node_sigs(scene["nodes"]) == _visible_node_sigs(oracle["nodes"])
 
 
-def test_outer_scene_node_signatures_match_legacy():
-    """Parity for a 2-level nested graph."""
+def test_outer_scene_node_signatures_match_render_graph_wrapper():
+    """Wrapper consistency for a 2-level nested graph."""
     flat_graph = make_outer().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
@@ -80,10 +82,10 @@ def test_outer_scene_node_signatures_match_legacy():
     assert _visible_node_sigs(scene["nodes"]) == _visible_node_sigs(oracle["nodes"])
 
 
-def test_simple_graph_scene_edges_match_legacy():
-    """Edge parity for the simple 2-node graph: scene has the same set
-    of (source, target, edgeType) as the legacy renderer for visible
-    edges."""
+def test_simple_graph_scene_edges_match_render_graph_wrapper():
+    """Edge wrapper consistency for the simple 2-node graph: the directly
+    built scene has the same set of visible (source, target, edgeType)
+    signatures as the render_graph() wrapper output."""
     flat_graph = make_simple_graph().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
@@ -93,7 +95,7 @@ def test_simple_graph_scene_edges_match_legacy():
     assert _visible_edge_sigs(scene) == _visible_edge_sigs(oracle)
 
 
-def test_workflow_scene_edges_match_legacy():
+def test_workflow_scene_edges_match_render_graph_wrapper():
     flat_graph = make_workflow().to_flat_graph()
     ir = build_graph_ir(flat_graph)
     scene = build_initial_scene(ir)
@@ -101,7 +103,7 @@ def test_workflow_scene_edges_match_legacy():
     assert _visible_edge_sigs(scene) == _visible_edge_sigs(oracle)
 
 
-def test_outer_scene_edges_match_legacy():
+def test_outer_scene_edges_match_render_graph_wrapper():
     flat_graph = make_outer().to_flat_graph()
     ir = build_graph_ir(flat_graph)
     scene = build_initial_scene(ir)
@@ -111,8 +113,7 @@ def test_outer_scene_edges_match_legacy():
 
 def test_show_inputs_false_hides_all_input_nodes():
     """When the user toggles 'show inputs' off, every INPUT/INPUT_GROUP
-    scene node should be hidden — matching the legacy renderer's
-    behavior when show_inputs=False."""
+    scene node should be hidden."""
     flat_graph = make_simple_graph().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
@@ -124,8 +125,8 @@ def test_show_inputs_false_hides_all_input_nodes():
 
 def test_separate_outputs_true_materializes_data_nodes():
     """separate_outputs=True should make every function output a visible
-    DATA scene node — the legacy contract for the 'separate outputs'
-    visualization mode."""
+    DATA scene node, and the directly built scene must agree with the
+    render_graph() wrapper output."""
     flat_graph = make_simple_graph().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
@@ -139,9 +140,9 @@ def test_separate_outputs_true_materializes_data_nodes():
 
 
 def test_multi_param_consumer_yields_single_input_group():
-    """When a single consumer takes multiple external params, the legacy
-    renderer groups them into one INPUT_GROUP scene node — the IR path
-    must do the same so labels/handles line up."""
+    """When a single consumer takes multiple external params, they group
+    into one INPUT_GROUP scene node so labels/handles line up — and the
+    directly built scene must agree with the render_graph() wrapper."""
     from hypergraph import Graph, node
 
     @node(output_name="out")
@@ -164,9 +165,10 @@ def test_multi_param_consumer_yields_single_input_group():
     assert scene_inputs == oracle_inputs
 
 
-def test_separate_outputs_true_edges_match_legacy():
+def test_separate_outputs_true_edges_match_render_graph_wrapper():
     """In separate_outputs mode, data flows producer -> DATA -> consumer.
-    Edge signatures should match the legacy renderer's."""
+    Edge signatures from the directly built scene should match the
+    render_graph() wrapper output."""
     flat_graph = make_simple_graph().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 

@@ -92,11 +92,11 @@ def test_data_edge_records_edge_type():
     assert edge.edge_type == "data"
 
 
-def test_function_node_signatures_match_legacy_renderer():
-    """First parity slice: for the simple 2-node graph, the IR's
-    function-node signatures (id, node_type, parent) match the legacy
-    renderer's. This is the contract that lets a frontend built on the
-    IR produce the same scene as today."""
+def test_function_node_signatures_match_render_graph_wrapper():
+    """For the simple 2-node graph, the IR's function-node signatures
+    (id, node_type, parent) match the scene emitted by the render_graph()
+    wrapper — a wrapper-consistency check (render_graph forwards to the
+    same IR pipeline), not comparison against an independent oracle."""
     flat_graph = make_simple_graph().to_flat_graph()
 
     ir = build_graph_ir(flat_graph)
