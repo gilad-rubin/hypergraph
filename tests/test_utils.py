@@ -1,5 +1,6 @@
 """Tests for hypergraph._utils."""
 
+import json
 import os
 import subprocess
 import sys
@@ -299,6 +300,181 @@ class TestHashDefinition:
         result = hash_definition(fn)
         assert len(result) == 64
         assert all(c in "0123456789abcdef" for c in result)
+
+
+class TestHashDefinitionCallableObjects:
+    """Structural identity for partials and callable instances."""
+
+    def test_partial_and_callable_object_graph_hashes_are_stable_across_processes(self, tmp_path):
+        """Fresh processes must agree on both node and graph identity."""
+        script = tmp_path / "callable_hashes.py"
+        script.write_text(
+            textwrap.dedent(
+                """
+                import json
+                from functools import partial
+
+                from hypergraph import FunctionNode, Graph
+
+
+                def score(prefix, text, *, mode):
+                    return f"{prefix}:{mode}:{text}"
+
+
+                class Scorer:
+                    def __init__(self, mode):
+                        self.mode = mode
+
+                    def __call__(self, text):
+                        return f"{self.mode}:{text}"
+
+
+                def hashes(callable_, name):
+                    node = FunctionNode(
+                        callable_, name=name, output_name="result"
+                    )
+                    graph = Graph([node], name=f"{name}-graph")
+                    return {
+                        "node": node.definition_hash,
+                        "graph": graph.code_hash,
+                    }
+
+
+                print(
+                    json.dumps(
+                        {
+                            "partial": hashes(
+                                partial(score, "dose", mode="clinical"),
+                                "partial_score",
+                            ),
+                            "callable": hashes(Scorer("clinical"), "scorer"),
+                        },
+                        sort_keys=True,
+                    )
+                )
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        outputs = []
+        for _ in range(2):
+            result = subprocess.run(
+                [sys.executable, str(script)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            outputs.append(result.stdout.strip())
+
+        assert outputs[0] == outputs[1]
+        parsed = json.loads(outputs[0])
+        assert all(len(digest) == 64 for identity in parsed.values() for digest in identity.values())
+
+    def test_partial_callable_argument_and_keyword_change_node_and_graph_hashes(self):
+        """Every structural degree of freedom remains part of identity."""
+        from functools import partial
+
+        from hypergraph import FunctionNode, Graph
+
+        def score(prefix, text, *, mode):
+            return f"{prefix}:{mode}:{text}"
+
+        def alternate(prefix, text, *, mode):
+            return f"alternate:{prefix}:{mode}:{text}"
+
+        def hashes(callable_):
+            node = FunctionNode(callable_, name="score", output_name="result")
+            return node.definition_hash, Graph([node], name="score-graph").code_hash
+
+        baseline = hashes(partial(score, "dose", mode="clinical"))
+        variants = [
+            hashes(partial(alternate, "dose", mode="clinical")),
+            hashes(partial(score, "allergy", mode="clinical")),
+            hashes(partial(score, "dose", mode="research")),
+        ]
+
+        for changed in variants:
+            assert changed[0] != baseline[0]
+            assert changed[1] != baseline[1]
+
+    def test_partial_keyword_order_does_not_change_hash(self):
+        """Keyword insertion order is not partial execution identity."""
+        from functools import partial
+
+        def score(text, *, mode, strict):
+            return f"{mode}:{strict}:{text}"
+
+        first = partial(score, mode="clinical", strict=True)
+        second = partial(score, strict=True, mode="clinical")
+
+        assert hash_definition(first) == hash_definition(second)
+
+    def test_callable_object_state_changes_node_and_graph_hashes(self):
+        """Callable-instance state participates in both public hashes."""
+        from hypergraph import FunctionNode, Graph
+
+        class Scorer:
+            def __init__(self, mode):
+                self.mode = mode
+
+            def __call__(self, text):
+                return f"{self.mode}:{text}"
+
+        def hashes(callable_):
+            node = FunctionNode(callable_, name="score", output_name="result")
+            return node.definition_hash, Graph([node], name="score-graph").code_hash
+
+        baseline = hashes(Scorer("clinical"))
+        changed = hashes(Scorer("research"))
+
+        assert changed[0] != baseline[0]
+        assert changed[1] != baseline[1]
+
+    def test_partial_opaque_and_cyclic_arguments_refuse(self):
+        """Partial arguments reuse canonical refusal rather than repr."""
+        from functools import partial
+
+        from hypergraph import FunctionNode
+
+        def score(prefix, text):
+            return f"{prefix}:{text}"
+
+        with pytest.raises(TypeError, match=r"object.*cache_key\(\)"):
+            FunctionNode(partial(score, object()), name="opaque")
+
+        cyclic = []
+        bound = partial(score, cyclic)
+        cyclic.append(bound)
+        with pytest.raises(TypeError, match=r"cycle.*cache_key\(\)"):
+            FunctionNode(bound, name="cyclic")
+
+    def test_partial_subclass_refuses(self):
+        """Unmodeled partial-subclass behavior cannot collapse to its base."""
+        from functools import partial
+
+        class CustomPartial(partial):
+            pass
+
+        def score(prefix, text):
+            return f"{prefix}:{text}"
+
+        with pytest.raises(TypeError, match=r"partial subclass.*exact functools.partial"):
+            hash_definition(CustomPartial(score, "dose"))
+
+    def test_callable_object_with_opaque_state_refuses(self):
+        """Unsupported callable-instance state fails before node construction."""
+        from hypergraph import FunctionNode
+
+        class Scorer:
+            def __init__(self):
+                self.client = object()
+
+            def __call__(self, text):
+                return text
+
+        with pytest.raises(TypeError, match=r"object.*cache_key\(\)"):
+            FunctionNode(Scorer(), name="opaque-scorer")
 
 
 class _Summarizer:
