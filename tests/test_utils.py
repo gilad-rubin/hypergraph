@@ -268,6 +268,14 @@ class TestHashDefinition:
 
         assert hash_definition(outer(1)) != hash_definition(outer(2))
 
+    def test_dynamic_top_level_name_table_changes_hash(self):
+        """Different referenced globals cannot collapse to one code identity."""
+        first, second = {}, {}
+        exec("def generated(x): return foo(x)", first)  # noqa: S102
+        exec("def generated(x): return bar(x)", second)  # noqa: S102
+
+        assert hash_definition(first["generated"]) != hash_definition(second["generated"])
+
     def test_dynamic_code_ignores_filename_and_first_line(self):
         """Checkout path and first-line location are not identity facts."""
         source = "def generated():\n    return 42"
