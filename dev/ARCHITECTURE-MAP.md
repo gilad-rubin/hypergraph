@@ -611,7 +611,7 @@ Use these terms when discussing changes:
 - **scheduler**: readiness, staleness, activation, SCC progression
 - **hierarchy bridge**: `GraphNode` and nested execution behavior
 - **durability layer**: checkpointers, snapshots, lineage, persistence semantics
-- **inspection surface**: notebook querying of persisted runs
+- **inspection surface**: notebook and script querying of persisted runs
 - **observability layer**: events and run logs
 - **viz projection**: flat graph + render pipeline + HTML/widget output
 - **integration runner**: alternate runtime like Daft that projects the core model elsewhere

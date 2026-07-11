@@ -1,7 +1,7 @@
 """Inspection adapters for querying persisted runs.
 
 The core ``Checkpointer`` contract is intentionally small and runner-focused.
-Inspection surfaces such as the CLI should depend on a dedicated adapter
+Inspection surfaces such as notebooks and scripts should depend on a dedicated adapter
 instead of reaching into a concrete backend's convenience API directly.
 """
 

@@ -202,7 +202,7 @@ cp.state("my-run-1", superstep=1)     # {"doubled": 10}
 cp.lineage("my-run-1")
 ```
 
-The sync read methods (`runs()`, `run()`, `values()`, `steps()`, `search()`, `stats()`, `checkpoint()`) work without async/await, making them ideal for debugging scripts and notebooks. No `initialize()` call needed.
+The sync read methods (`runs()`, `get_run()`, `values()`, `steps()`, `search()`, `stats()`, `checkpoint()`) work without async/await, making them ideal for debugging scripts and notebooks. No `initialize()` call needed.
 
 #### Interrupt Steps
 
