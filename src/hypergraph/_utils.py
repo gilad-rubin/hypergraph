@@ -311,8 +311,7 @@ def _hash_code(func: Callable) -> str:
                     closure_state.append(("empty",))
 
         payload = {
-            "bytecode": code.co_code,
-            "constants": code.co_consts,
+            "code": code,
             "defaults": getattr(func, "__defaults__", None),
             "keyword_defaults": getattr(func, "__kwdefaults__", None),
             "closure": tuple(closure_state),
