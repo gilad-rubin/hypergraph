@@ -40,6 +40,15 @@ if TYPE_CHECKING:
     from hypergraph.graph.core import Graph
 
 
+def _joined_value_names(edge_data: dict[str, Any]) -> str:
+    """Join a flat-graph edge's ``value_names`` (plural) into a display string.
+
+    Flat-graph edges carry ``value_names``; a singular ``value_name`` key never
+    exists on them (regression: reading it made every edge report no values).
+    """
+    return ", ".join(edge_data.get("value_names") or [])
+
+
 @dataclass
 class ValidationResult:
     """Result of graph validation."""
@@ -273,11 +282,11 @@ class VizDebugger:
         analysis: dict[str, Any] = {}
 
         if source in G.nodes:
-            from_source = [{"to": tgt, "value": G.edges[source, tgt].get("value_name")} for _, tgt in G.out_edges(source)]
+            from_source = [{"to": tgt, "value": _joined_value_names(G.edges[source, tgt])} for _, tgt in G.out_edges(source)]
             analysis["edges_from_source"] = from_source
 
         if target in G.nodes:
-            to_target = [{"from": src, "value": G.edges[src, target].get("value_name")} for src, _ in G.in_edges(target)]
+            to_target = [{"from": src, "value": _joined_value_names(G.edges[src, target])} for src, _ in G.in_edges(target)]
             analysis["edges_to_target"] = to_target
 
         if source in G.nodes and target in G.nodes:
@@ -366,7 +375,7 @@ class VizDebugger:
                     "source": src,
                     "target": tgt,
                     "edge_type": data.get("edge_type", "data"),
-                    "value_name": data.get("value_name", ""),
+                    "value_name": _joined_value_names(data),
                 }
             )
 
