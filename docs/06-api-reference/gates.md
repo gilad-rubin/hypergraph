@@ -111,7 +111,10 @@ Input parameter names from function signature.
 
 #### `outputs: tuple[str, ...]`
 
-Always empty tuple. Gates produce no data outputs.
+Derived from the current name: `("_<name>", *emit)`. The leading entry is an
+internal routing value (not user-facing data — gates produce no data outputs);
+`emit` names follow if declared. Renaming the node with `with_name()` renames
+the internal entry automatically.
 
 #### `targets: list[str]`
 
@@ -336,10 +339,13 @@ print(decide.inputs)  # ("x", "threshold")
 
 #### `outputs: tuple[str, ...]`
 
-Always empty tuple. Gates produce no data outputs.
+Derived from the current name: `("_<name>", *emit)`. The leading entry is an
+internal routing value (not user-facing data — gates produce no data outputs);
+`emit` names follow if declared. Renaming the node with `with_name()` renames
+the internal entry automatically.
 
 ```python
-print(decide.outputs)  # ()
+print(decide.outputs)  # ('_decide',)
 ```
 
 #### `targets: list[str]`
