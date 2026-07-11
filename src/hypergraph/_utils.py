@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import inspect
 import json
@@ -115,6 +116,16 @@ def hash_definition(func: Callable) -> str:
         >>> len(hash_definition(foo))
         64
     """
+    if isinstance(func, functools.partial):
+        if type(func) is not functools.partial:
+            raise TypeError(
+                f"Cannot deterministically fingerprint functools.partial subclass {_type_name(type(func))}; use an exact functools.partial"
+            )
+        return _hash_partial(func)
+
+    if callable(func) and not inspect.isroutine(func) and not isinstance(func, type):
+        return _hash_callable_object(func)
+
     code_hash = _hash_code(func)
 
     # Bound methods: mix in instance state so differently-configured
@@ -129,6 +140,33 @@ def hash_definition(func: Callable) -> str:
     if fingerprint is None:
         return code_hash
     return hashlib.sha256(f"{code_hash}:{fingerprint}".encode()).hexdigest()
+
+
+def _hash_partial(func: functools.partial) -> str:
+    """Hash an exact partial from its callable and bound arguments."""
+    payload = {
+        "kind": "partial",
+        "callable": hash_definition(func.func),
+        "args": func.args,
+        "keywords": func.keywords or {},
+    }
+    canonical = _canonical_json(_canonicalize(payload, active={id(func)}))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _hash_callable_object(func: Callable) -> str:
+    """Hash a callable instance from its call definition and typed state."""
+    call_definition = type(func).__call__
+
+    fingerprint = _instance_fingerprint(func)
+    if fingerprint is None:
+        raise TypeError(
+            f"Cannot deterministically fingerprint callable object "
+            f"{_type_name(type(func))}: instance state is inaccessible; "
+            "define cache_key() returning supported deterministic state"
+        )
+    call_hash = hash_definition(call_definition)
+    return hashlib.sha256(f"{call_hash}:{fingerprint}".encode()).hexdigest()
 
 
 def _instance_fingerprint(instance: Any) -> str | None:
@@ -319,7 +357,7 @@ def _hash_code(func: Callable) -> str:
         canonical = _canonical_json(_canonicalize(payload, active=set()))
         return hashlib.sha256(canonical.encode()).hexdigest()
 
-    # Name-based fallback — for builtins/C extensions/functools.partial
+    # Name-based fallback — for builtins/C extensions
     module = getattr(func, "__module__", "") or ""
     qualname = getattr(func, "__qualname__", None) or getattr(func, "__name__", repr(func))
     identity = f"{module}:{qualname}"
