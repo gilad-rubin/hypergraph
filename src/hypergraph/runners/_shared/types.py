@@ -181,6 +181,11 @@ class RunResult:
         error: Exception if status is FAILED, else None
         pause: PauseInfo if status is PAUSED, else None
         log: RunLog with execution trace (timing, status, routing), or None
+        checkpoint_ok: False when background checkpoint step-saves failed
+            under ``durability="async"`` (best-effort persistence). The run
+            itself still completes; check this flag to detect gaps in the
+            persisted history.
+        checkpoint_errors: String reprs of failed background step-saves.
     """
 
     values: dict[str, Any]
@@ -190,6 +195,8 @@ class RunResult:
     error: BaseException | None = None
     pause: PauseInfo | None = None
     log: RunLog | None = None
+    checkpoint_ok: bool = True
+    checkpoint_errors: tuple[str, ...] = ()
 
     @property
     def stopped(self) -> bool:

@@ -86,6 +86,16 @@ CheckpointPolicy()
 | `window` | `int \| None` | Required when `retention="windowed"`. |
 | `ttl` | `timedelta \| None` | Auto-expire completed runs after this duration. |
 
+**Async durability is best-effort.** With `durability="async"` (the default), step writes happen in background tasks: a failed write does not fail the run — the run still returns `COMPLETED`, and the failure is reported on the result instead. Check `result.checkpoint_ok` (and `result.checkpoint_errors`, a tuple of error strings) to detect gaps in the persisted history:
+
+```python
+result = await runner.run(graph, {"x": 5}, workflow_id="wf-1")
+if not result.checkpoint_ok:
+    log.warning("run completed but steps were not persisted: %s", result.checkpoint_errors)
+```
+
+With `durability="sync"`, the same write failure propagates and fails the run. `SyncRunner` always writes steps synchronously (there is no event loop to defer to), so a write failure fails the run regardless of the configured durability.
+
 Invalid combinations raise at construction, not at run time:
 
 ```python

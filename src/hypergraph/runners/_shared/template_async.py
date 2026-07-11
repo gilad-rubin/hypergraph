@@ -117,10 +117,16 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         workflow_id: str | None = None,
         checkpoint: Any | None = None,
         step_buffer: list[Any] | None = None,
+        checkpoint_save_errors: list[str] | None = None,
         _complete_on_stop: bool = False,
         item_index: int | None = None,
     ) -> GraphState:
-        """Execute graph and return final state."""
+        """Execute graph and return final state.
+
+        ``checkpoint_save_errors`` is a caller-owned sink: implementations
+        append string reprs of background step-save failures (durability
+        "async") so the template can surface them on the RunResult.
+        """
         ...
 
     @abstractmethod
@@ -383,6 +389,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         # Step buffer for "exit" durability — records are flushed after run completes
         step_buffer: list[Any] = []
+        # Sink for background step-save failures ("async" durability) —
+        # surfaced as result.checkpoint_ok / result.checkpoint_errors.
+        checkpoint_save_errors: list[str] = []
 
         try:
             state = await self._execute_graph_impl_async(
@@ -397,6 +406,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 workflow_id=workflow_id,
                 checkpoint=resume_checkpoint,
                 step_buffer=step_buffer,
+                checkpoint_save_errors=checkpoint_save_errors,
                 _complete_on_stop=_complete_on_stop,
                 item_index=_item_index,
             )
@@ -428,6 +438,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 run_id=run_id,
                 workflow_id=workflow_id,
                 log=collector.build(graph.name, run_id, total_duration_ms),
+                checkpoint_ok=not checkpoint_save_errors,
+                checkpoint_errors=tuple(checkpoint_save_errors),
             )
             await self._emit_run_end_async(
                 dispatcher,
@@ -511,6 +523,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 workflow_id=workflow_id,
                 pause=pause.pause_info,
                 log=collector.build(graph.name, run_id, total_duration_ms),
+                checkpoint_ok=not checkpoint_save_errors,
+                checkpoint_errors=tuple(checkpoint_save_errors),
             )
         except Exception as e:
             error = e
@@ -567,6 +581,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 workflow_id=workflow_id,
                 error=error,
                 log=collector.build(graph.name, run_id, total_duration_ms),
+                checkpoint_ok=not checkpoint_save_errors,
+                checkpoint_errors=tuple(checkpoint_save_errors),
             )
         finally:
             if _parent_span_id is None and dispatcher.active:

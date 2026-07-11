@@ -171,12 +171,15 @@ class AsyncRunner(AsyncRunnerTemplate):
         workflow_id: str | None = None,
         checkpoint: Any | None = None,
         step_buffer: list[Any] | None = None,
+        checkpoint_save_errors: list[str] | None = None,
         _complete_on_stop: bool = False,
         item_index: int | None = None,
     ) -> GraphState:
         """Execute graph until no more ready nodes or max_iterations reached.
 
         On failure, raises ExecutionError wrapping the cause and partial state.
+        Background step-save failures (durability "async") are appended to
+        ``checkpoint_save_errors`` as string reprs for the template to surface.
         """
         state = initialize_state(graph, values, checkpoint=checkpoint)
         scope = compute_execution_scope(graph)
@@ -368,6 +371,8 @@ class AsyncRunner(AsyncRunnerTemplate):
                 results = await asyncio.gather(*save_tasks, return_exceptions=True)
                 failures = [r for r in results if isinstance(r, BaseException)]
                 if failures:
+                    if checkpoint_save_errors is not None:
+                        checkpoint_save_errors.extend(repr(f) for f in failures)
                     import logging
 
                     logger = logging.getLogger("hypergraph.checkpointers")
