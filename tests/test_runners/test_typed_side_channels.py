@@ -20,6 +20,8 @@ from hypergraph.runners._shared.helpers import get_ready_nodes, initialize_state
 from hypergraph.runners._shared.types import (
     ExecutionContext,
     GraphState,
+    PauseExecution,
+    PauseInfo,
 )
 from hypergraph.runners.async_.executors import AsyncFunctionNodeExecutor
 from hypergraph.runners.async_.superstep import run_superstep_async
@@ -144,3 +146,22 @@ class TestGraphStateStopFields:
         copied = GraphState().copy()
         assert copied.stopped is False
         assert copied.stop_info is None
+
+
+# === PauseExecution constructor params (B1.1c) ===
+
+
+class TestPauseExecutionTypedFields:
+    def _pause_info(self) -> PauseInfo:
+        return PauseInfo(node_name="approval", output_param="decision", value="draft")
+
+    def test_defaults(self):
+        pause = PauseExecution(self._pause_info())
+        assert pause.partial_state is None
+        assert pause.stopped is False
+
+    def test_constructor_params_are_stored(self):
+        state = GraphState(values={"a": 1})
+        pause = PauseExecution(self._pause_info(), partial_state=state, stopped=True)
+        assert pause.partial_state is state
+        assert pause.stopped is True

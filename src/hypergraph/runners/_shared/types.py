@@ -666,10 +666,25 @@ class PauseExecution(BaseException):
     catches it and re-raises with a prefixed node_name (e.g.
     ``"outer/inner/interrupt_node"``), propagating the pause up
     through arbitrarily deep nesting.
+
+    Attributes:
+        pause_info: Details about the interrupt that paused the run.
+        partial_state: GraphState accumulated before the pause. Attached by
+            the runner as the pause propagates; None until then.
+        stopped: Whether a cooperative stop was also requested when the
+            pause propagated.
+        span_id: Span of the interrupt node, set by the superstep.
     """
 
-    def __init__(self, pause_info: PauseInfo):
+    def __init__(
+        self,
+        pause_info: PauseInfo,
+        partial_state: GraphState | None = None,
+        stopped: bool = False,
+    ):
         self.pause_info = pause_info
+        self.partial_state = partial_state
+        self.stopped = stopped
         self.span_id: str | None = None
         super().__init__(f"Paused at {pause_info.node_name}")
 

@@ -443,7 +443,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 )
             return result
         except PauseExecution as pause:
-            partial_state = getattr(pause, "_partial_state", None)
+            partial_state = pause.partial_state
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             total_duration_ms = (time.time() - start_time) * 1000
             if dispatcher.active:
@@ -498,7 +498,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             )
         except Exception as e:
             error = e
-            partial_state = getattr(e, "_partial_state", None)
+            partial_state = None
             if isinstance(e, ExecutionError):
                 error = e.__cause__ or e
                 partial_state = e.partial_state

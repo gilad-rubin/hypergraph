@@ -349,8 +349,8 @@ class AsyncRunner(AsyncRunnerTemplate):
                 superstep_idx += 1
 
         except PauseExecution as pause:
-            pause._partial_state = state  # type: ignore[attr-defined]
-            pause._stopped = signal.is_set  # type: ignore[attr-defined]
+            pause.partial_state = state
+            pause.stopped = signal.is_set
             raise
         finally:
             # Clean up signal registry
