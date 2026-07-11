@@ -70,9 +70,12 @@ class StepRecord:
             parts.append(f"error: {self.error[:60]}")
         return " | ".join(parts)
 
-    def _repr_html_(self) -> str:
+    def _repr_html_(self) -> str | None:
+        from hypergraph._repr import plain_reprs
         from hypergraph.checkpointers.presenters import render_step_record_html
 
+        if plain_reprs():
+            return None
         return render_step_record_html(self)
 
     def to_dict(self) -> dict[str, Any]:
@@ -138,9 +141,12 @@ class Run:
             parts.append(", ".join(items))
         return " | ".join(parts)
 
-    def _repr_html_(self) -> str:
+    def _repr_html_(self) -> str | None:
+        from hypergraph._repr import plain_reprs
         from hypergraph.checkpointers.presenters import render_run_html
 
+        if plain_reprs():
+            return None
         return render_run_html(self)
 
     def to_dict(self) -> dict[str, Any]:
@@ -184,9 +190,12 @@ class Checkpoint:
             origin = f" from {self.source_run_id}{at}"
         return f"Checkpoint{origin}: {plural(len(self.values), 'value')}, {plural(len(self.steps), 'step')}"
 
-    def _repr_html_(self) -> str:
+    def _repr_html_(self) -> str | None:
+        from hypergraph._repr import plain_reprs
         from hypergraph.checkpointers.presenters import render_checkpoint_html
 
+        if plain_reprs():
+            return None
         return render_checkpoint_html(self)
 
 
@@ -214,9 +223,12 @@ class RunTable(list):
             lines.append(f"  {run!r}")
         return "\n".join(lines)
 
-    def _repr_html_(self) -> str:
+    def _repr_html_(self) -> str | None:
+        from hypergraph._repr import plain_reprs
         from hypergraph.checkpointers.presenters import render_run_table_html
 
+        if plain_reprs():
+            return None
         return render_run_table_html(self)
 
 
@@ -234,9 +246,12 @@ class StepTable(list):
             lines.append(f"  {step!r}")
         return "\n".join(lines)
 
-    def _repr_html_(self) -> str:
+    def _repr_html_(self) -> str | None:
+        from hypergraph._repr import plain_reprs
         from hypergraph.checkpointers.presenters import render_step_table_html
 
+        if plain_reprs():
+            return None
         return render_step_table_html(self)
 
 
@@ -293,7 +308,10 @@ class LineageView(list):
             lines.append(summary + marker)
         return "\n".join(lines)
 
-    def _repr_html_(self) -> str:
+    def _repr_html_(self) -> str | None:
+        from hypergraph._repr import plain_reprs
         from hypergraph.checkpointers.presenters import render_lineage_view_html
 
+        if plain_reprs():
+            return None
         return render_lineage_view_html(self)

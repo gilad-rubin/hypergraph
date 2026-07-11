@@ -1,5 +1,6 @@
 """Hypergraph - A hierarchical and modular graph workflow framework."""
 
+from hypergraph._repr import get_display_mode, set_display_mode
 from hypergraph.cache import CacheBackend, DiskCache, InMemoryCache
 from hypergraph.checkpointers import (
     Checkpointer,
@@ -149,4 +150,7 @@ __all__ = [
     "Checkpointer",
     "CheckpointPolicy",
     "SqliteCheckpointer",
+    # Display
+    "set_display_mode",
+    "get_display_mode",
 ]
