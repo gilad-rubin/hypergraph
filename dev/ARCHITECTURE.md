@@ -113,13 +113,13 @@ Durability, lineage, and inspection for persisted runs.
 | `sqlite.py` | Durable SQLite-backed checkpointer |
 | `memory.py` | In-memory checkpointer for tests and lightweight experiments |
 | `types.py` | `Run`, `StepRecord`, `Checkpoint`, lineage and table display types |
-| `inspection.py` | Sync inspection adapters used by CLI and notebooks |
+| `inspection.py` | Sync inspection adapters used by notebooks and scripts |
 | `presenters.py` | HTML renderers for explorer/table-style checkpoint widgets |
 | `protocols.py` | Sync write protocol for `SyncRunner` |
 | `serializers.py` | Payload serializers |
 | `_migrate.py` | SQLite schema migrations |
 
-**Rule**: Checkpointing is not just persistence. It participates in resume, fork, retry, lineage, CLI inspection, and notebook UX.
+**Rule**: Checkpointing is not just persistence. It participates in resume, fork, retry, lineage, and notebook UX.
 
 ### events/
 

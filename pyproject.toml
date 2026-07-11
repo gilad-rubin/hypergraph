@@ -55,12 +55,6 @@ checkpoint = [
     "aiosqlite>=0.20.0",
 ]
 
-cli = [
-    "typer>=0.9.0",
-    "aiosqlite>=0.20.0",
-    "tomli>=2.0; python_version < '3.11'",
-]
-
 otel = [
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
@@ -113,9 +107,6 @@ materialization = [
     "pyarrow>=22.0.0",
 ]
 
-[project.scripts]
-hypergraph = "hypergraph.cli:main"
-
 [project.urls]
 Homepage = "https://github.com/gilad-rubin/hypergraph"
 Repository = "https://github.com/gilad-rubin/hypergraph"
@@ -145,8 +136,6 @@ dev = [
     "python-dotenv>=1.2.1",
     "rich>=13.0.0",
     "ruff>=0.8.0",
-    "tomli>=2.0; python_version < '3.11'",
-    "typer>=0.9.0",
 ]
 
 [build-system]
