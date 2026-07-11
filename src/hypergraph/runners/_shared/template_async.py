@@ -17,6 +17,7 @@ from hypergraph.exceptions import (
     InputOverrideRequiresForkError,
     MissingInputError,
     WorkflowAlreadyCompletedError,
+    WorkflowAlreadyRunningError,
     WorkflowForkError,
 )
 from hypergraph.runners._shared.event_metadata import (
@@ -530,7 +531,12 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 error=error,
             )
 
-            if has_checkpointer:
+            # A bare WorkflowAlreadyRunningError is a pre-flight rejection of a
+            # DUPLICATE start: this call never owned the run row, and the
+            # original run is still executing — never touch its persisted
+            # status. (Wrapped in ExecutionError it came from a node, so the
+            # run genuinely failed and the write below is correct.)
+            if has_checkpointer and not isinstance(e, WorkflowAlreadyRunningError):
                 from hypergraph.checkpointers.types import WorkflowStatus as _WS
 
                 # Flush buffered steps so partial execution is preserved on failure

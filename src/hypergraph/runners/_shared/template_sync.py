@@ -16,6 +16,7 @@ from hypergraph.exceptions import (
     InputOverrideRequiresForkError,
     MissingInputError,
     WorkflowAlreadyCompletedError,
+    WorkflowAlreadyRunningError,
     WorkflowForkError,
 )
 from hypergraph.runners._shared.event_metadata import (
@@ -513,8 +514,13 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 error=error,
             )
 
-            # Flush buffered steps and mark run failed
-            if sync_cp is not None:
+            # Flush buffered steps and mark run failed.
+            # A bare WorkflowAlreadyRunningError is a pre-flight rejection of a
+            # DUPLICATE start: this call never owned the run row, and the
+            # original run is still executing — never touch its persisted
+            # status. (Wrapped in ExecutionError it came from a node, so the
+            # run genuinely failed and the write below is correct.)
+            if sync_cp is not None and not isinstance(e, WorkflowAlreadyRunningError):
                 from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets as _cp_offsets
 
                 _, _step_off = _cp_offsets(resume_checkpoint)
