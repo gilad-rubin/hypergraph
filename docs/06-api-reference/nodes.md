@@ -182,7 +182,30 @@ def __init__(
 
 **Raises:**
 - `ValueError` - If function source cannot be retrieved (for definition_hash)
+- `TypeError` - If the signature contains a positional-only, `*args`, or `**kwargs` parameter (see [Supported Parameter Kinds](#supported-parameter-kinds))
 - `UserWarning` - If function has return annotation but no output_name provided
+
+### Supported Parameter Kinds
+
+Hypergraph invokes node functions with keyword arguments, so every parameter must be addressable by keyword. This applies to all function-backed node types: `@node`, `@route`, `@ifelse`, and `@interrupt`.
+
+| Parameter kind | Example | Supported |
+|----------------|---------|-----------|
+| Regular | `def f(a)` | Yes |
+| Keyword-only | `def f(*, kw)` | Yes |
+| Positional-only | `def f(a, /)` | No — rejected at construction |
+| Variadic positional | `def f(*args)` | No — rejected at construction |
+| Variadic keyword | `def f(**kwargs)` | No — rejected at construction |
+
+Unsupported kinds raise `TypeError` at construction time, naming the offending parameter:
+
+```python
+@node(output_name="result")
+def bad(*args):
+    ...
+# TypeError: Function 'bad' has parameter(s) that cannot be called by keyword:
+#   -> parameter 'args' is variadic positional (*args)
+```
 
 ### Creating from a function
 
