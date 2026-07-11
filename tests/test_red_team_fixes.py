@@ -324,7 +324,6 @@ class TestControlOnlyCycles:
 
         # "data" feeds process but is NOT part of any data cycle
         assert "data" in graph.inputs.required, f"'data' should be required, got: {graph.inputs.required}"
-        assert graph.inputs.entrypoints == {}
 
 
 # === Fix #11: Output rename propagation in GraphNode ===

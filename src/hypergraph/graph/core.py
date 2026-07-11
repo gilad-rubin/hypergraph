@@ -1425,9 +1425,6 @@ class Graph:
             lines.append(f"    optional: {formatted}")
         if bound_in_scope:
             lines.append(f"    bound: {', '.join(bound_in_scope)}")
-        for node_name, params in self.inputs.entrypoints.items():
-            formatted = ", ".join(self._describe_input(param, active_nodes, show_types=show_types) for param in params)
-            lines.append(f"    entrypoint[{node_name}]: {formatted}")
         if len(lines) == 2:
             lines.append("    none")
 
@@ -1739,7 +1736,6 @@ class Graph:
             "required": input_spec.required,
             "optional": input_spec.optional,
             "bound": dict(input_spec.bound),
-            "entrypoints": {k: list(v) for k, v in input_spec.entrypoints.items()},
         }
         G.graph["output_to_sources"] = output_to_sources
         G.graph["configured_entrypoints"] = list(self._entrypoints or ())

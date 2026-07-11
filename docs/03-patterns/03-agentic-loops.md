@@ -281,14 +281,14 @@ result = runner.run(graph, {
 })
 ```
 
-You can check what entrypoints a graph has via `graph.inputs.entrypoints`. This returns a dict mapping node names to the cycle parameters they need:
+Cycle bootstrap parameters appear directly in `graph.inputs.required` (or `optional` when bound or defaulted), alongside the graph's other inputs:
 
 ```python
-print(graph.inputs.entrypoints)
-# {'accumulate_history': ('history',), 'increment': ('iteration',)}
+print(graph.inputs.required)
+# ('prompt', 'history', 'iteration')
 ```
 
-Pick ONE entrypoint per cycle and provide its parameters. For full details, see [InputSpec](../06-api-reference/inputspec.md).
+Provide each cycle's bootstrap parameters in the `values` dict. For full details, see [InputSpec](../06-api-reference/inputspec.md).
 
 ## Tracking State Across Iterations
 
