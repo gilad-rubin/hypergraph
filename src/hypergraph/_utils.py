@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import fields, is_dataclass
 from datetime import datetime
 from enum import Enum
+from types import CodeType
 from typing import Any
 
 
@@ -191,6 +192,23 @@ def _canonicalize(value: Any, *, active: set[int]) -> Any:
 
     active.add(object_id)
     try:
+        if value_type is CodeType:
+            return {
+                "type": "code",
+                "name": value.co_name,
+                "bytecode": value.co_code.hex(),
+                "constants": _canonicalize(value.co_consts, active=active),
+                "names": _canonicalize(value.co_names, active=active),
+                "varnames": _canonicalize(value.co_varnames, active=active),
+                "freevars": _canonicalize(value.co_freevars, active=active),
+                "cellvars": _canonicalize(value.co_cellvars, active=active),
+                "argcount": value.co_argcount,
+                "posonlyargcount": value.co_posonlyargcount,
+                "kwonlyargcount": value.co_kwonlyargcount,
+                "flags": value.co_flags,
+                "exceptiontable": getattr(value, "co_exceptiontable", b"").hex(),
+            }
+
         cache_key = getattr(value, "cache_key", None)
         if callable(cache_key):
             return {
@@ -230,7 +248,7 @@ def _canonicalize(value: Any, *, active: set[int]) -> Any:
                 )
                 for key, item in value.items()
             ]
-            entries.sort(key=lambda pair: _canonical_sort_key(pair[0]))
+            entries.sort(key=lambda pair: _canonical_json(pair[0]))
             return {"type": "dict", "items": entries}
 
         if value_type is list:
@@ -247,7 +265,7 @@ def _canonicalize(value: Any, *, active: set[int]) -> Any:
 
         if value_type is set or value_type is frozenset:
             items = [_canonicalize(item, active=active) for item in value]
-            items.sort(key=_canonical_sort_key)
+            items.sort(key=_canonical_json)
             return {"type": value_type.__name__, "items": items}
     finally:
         active.remove(object_id)
@@ -255,8 +273,8 @@ def _canonicalize(value: Any, *, active: set[int]) -> Any:
     raise TypeError(f"Cannot deterministically fingerprint {_type_name(value_type)}; define cache_key() returning supported deterministic state")
 
 
-def _canonical_sort_key(value: Any) -> str:
-    """Return the canonical ordering key for one normalized JSON value."""
+def _canonical_json(value: Any) -> str:
+    """Serialize one normalized value as canonical JSON."""
     return json.dumps(
         value,
         sort_keys=True,
@@ -283,27 +301,24 @@ def _hash_code(func: Callable) -> str:
     # Bytecode fallback — for exec/eval/Jupyter-defined functions
     code = getattr(func, "__code__", None)
     if code is not None:
-        h = hashlib.sha256()
-        h.update(code.co_code)
-
-        # Serialize co_consts deterministically (replace nested code objects with names)
-        consts_serialized = tuple(c if not hasattr(c, "co_name") else c.co_name for c in code.co_consts)
-        h.update(repr(consts_serialized).encode())
-
-        # Include function defaults to distinguish f(x=1) from f(x=2)
-        h.update(repr(getattr(func, "__defaults__", None)).encode())
-        h.update(repr(getattr(func, "__kwdefaults__", None)).encode())
-
-        # Include closure values to distinguish functions with different captured variables
+        closure_state = []
         closure = getattr(func, "__closure__", None)
         if closure:
             for cell in closure:
                 try:
-                    h.update(repr(cell.cell_contents).encode())
+                    closure_state.append(("value", cell.cell_contents))
                 except ValueError:
-                    h.update(b"<empty_cell>")
+                    closure_state.append(("empty",))
 
-        return h.hexdigest()
+        payload = {
+            "bytecode": code.co_code,
+            "constants": code.co_consts,
+            "defaults": getattr(func, "__defaults__", None),
+            "keyword_defaults": getattr(func, "__kwdefaults__", None),
+            "closure": tuple(closure_state),
+        }
+        canonical = _canonical_json(_canonicalize(payload, active=set()))
+        return hashlib.sha256(canonical.encode()).hexdigest()
 
     # Name-based fallback — for builtins/C extensions/functools.partial
     module = getattr(func, "__module__", "") or ""

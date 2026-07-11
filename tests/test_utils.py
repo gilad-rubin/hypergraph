@@ -280,9 +280,8 @@ class TestHashDefinition:
 
         assert hash_definition(first["generated"]) == hash_definition(second["generated"])
 
-    # Note: Closure/global variable changes are not captured by hash_definition.
-    # This is a known limitation shared by all DAG frameworks (see Hamilton docs).
-    # The hash captures the function's *code*, not the values in its environment.
+    # Source-defined closure/global values are not captured because source is the
+    # identity. The dynamic bytecode fallback above additionally captures closures.
 
     def test_functools_partial_returns_hash(self):
         """functools.partial objects should produce a stable hash."""
