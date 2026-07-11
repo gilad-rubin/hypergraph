@@ -293,8 +293,8 @@ class SyncRunner(SyncRunnerTemplate):
                 self._active_signals.pop(workflow_id, None)
 
         # Propagate stopped flag to the template layer
-        state._stopped = signal.is_set  # type: ignore[attr-defined]
-        state._stop_info = signal.info  # type: ignore[attr-defined]
+        state.stopped = signal.is_set
+        state.stop_info = signal.info
         return state
 
     # Template hook implementations

@@ -121,3 +121,26 @@ class TestSuperstepErrorMetadataAsync:
         assert "bad exploded" in str(err.node_errors["bad_node"])
         assert not hasattr(err, "_attempted_node_names")
         assert not hasattr(err, "_node_errors")
+
+
+# === GraphState stop fields (B1.1b) ===
+
+
+class TestGraphStateStopFields:
+    def test_defaults(self):
+        state = GraphState()
+        assert state.stopped is False
+        assert state.stop_info is None
+
+    def test_copy_carries_stop_fields(self):
+        state = GraphState()
+        state.stopped = True
+        state.stop_info = {"reason": "user pressed stop"}
+        copied = state.copy()
+        assert copied.stopped is True
+        assert copied.stop_info == {"reason": "user pressed stop"}
+
+    def test_copy_default_stop_fields(self):
+        copied = GraphState().copy()
+        assert copied.stopped is False
+        assert copied.stop_info is None

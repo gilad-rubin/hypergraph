@@ -389,14 +389,14 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             )
             output_values = filter_outputs(state, graph, select, on_missing)
             total_duration_ms = (time.time() - start_time) * 1000
-            was_stopped = getattr(state, "_stopped", False)
+            was_stopped = state.stopped
             status = RunStatus.STOPPED if was_stopped else RunStatus.COMPLETED
 
             # Emit StopRequestedEvent if stopped
             if was_stopped and dispatcher.active:
                 from hypergraph.events.types import StopRequestedEvent
 
-                stop_info = getattr(state, "_stop_info", None)
+                stop_info = state.stop_info
                 dispatcher.emit(
                     StopRequestedEvent(
                         run_id=run_id,

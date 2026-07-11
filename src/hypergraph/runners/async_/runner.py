@@ -380,8 +380,8 @@ class AsyncRunner(AsyncRunnerTemplate):
                 reset_concurrency_limiter(token)
 
         # Propagate stopped flag to the template layer
-        state._stopped = signal.is_set  # type: ignore[attr-defined]
-        state._stop_info = signal.info  # type: ignore[attr-defined]
+        state.stopped = signal.is_set
+        state.stop_info = signal.info
         return state
 
     async def _save_superstep_records(
