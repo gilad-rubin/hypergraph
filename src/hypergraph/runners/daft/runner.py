@@ -291,7 +291,16 @@ class DaftRunner(BaseRunner):
 
         Returns:
             Daft DataFrame with original input columns plus output columns
-            from graph execution.
+            from graph execution. If the graph has an output selection set
+            via ``graph.select(...)``, only the selected outputs are added —
+            unselected (intermediate) output columns are projected away,
+            matching ``run()`` and ``map()``.
+
+        Note:
+            ``columns=`` and ``graph.select(...)`` compose independently:
+            ``columns=`` governs which DataFrame columns feed graph inputs
+            (every DataFrame column passes through to the result either way),
+            while ``select`` governs which OUTPUT columns appear.
         """
         from hypergraph.runners.daft.engine import build_execution_plan, execute_plan
 
@@ -335,7 +344,8 @@ class DaftRunner(BaseRunner):
 
         plan = build_execution_plan(graph, all_bound, self._cache, clone)
         _check_output_column_collision(list(dataframe.column_names), plan)
-        return execute_plan(dataframe, plan)
+        result_df = execute_plan(dataframe, plan)
+        return _project_selected_outputs(result_df, list(dataframe.column_names), graph)
 
     # ------------------------------------------------------------------
     # Internal: columnar execution
@@ -499,6 +509,22 @@ def _resolve_columns(
                 f"to specify which columns to map."
             )
     return column_names
+
+
+def _project_selected_outputs(
+    result_df: DataFrame,
+    input_column_names: list[str],
+    graph: Graph,
+) -> DataFrame:
+    """Project output columns down to ``graph.select(...)`` (D15 / #143).
+
+    Input DataFrame columns always pass through untouched; selection only
+    governs which graph output columns appear, mirroring how ``run()`` and
+    ``map()`` trim their values. No selection set → DataFrame unchanged.
+    """
+    if graph.selected is None:
+        return result_df
+    return result_df.select(*input_column_names, *graph.selected)
 
 
 def _check_column_overlap(
