@@ -1105,9 +1105,13 @@ class Graph:
         """Add nodes to graph. Returns new Graph (immutable).
 
         Equivalent to rebuilding the graph with the combined node list,
-        then replaying bind/select.
+        then replaying entrypoints/bind/select. Configured entrypoints are
+        preserved, so the execution scope stays narrowed after adding nodes.
 
-        Raises GraphConfigError if graph was constructed with explicit edges.
+        Raises GraphConfigError if graph was constructed with explicit edges,
+        or if the rebuilt graph is structurally invalid (e.g., conflicting
+        producers, or a replayed selection that the preserved entrypoints
+        cannot produce).
         Raises ValueError if existing bindings become invalid after
         adding nodes (e.g., a bound key becomes emit-only).
         Fix: call unbind() before add_nodes().
@@ -1124,6 +1128,7 @@ class Graph:
         new_graph = Graph(
             all_nodes,
             name=self.name,
+            entrypoint=list(self._entrypoints) if self._entrypoints else None,
             strict_types=self._strict_types,
             shared=sorted(self._shared) if self._shared else None,
         )

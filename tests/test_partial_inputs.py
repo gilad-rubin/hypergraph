@@ -454,18 +454,52 @@ class TestImmutability:
         g2 = graph.with_entrypoint("process_node")
         assert g2.entrypoints_config == ("process_node",)
 
-    def test_add_nodes_resets_entrypoints(self):
-        """add_nodes creates fresh graph without entrypoints."""
+    def test_add_nodes_preserves_entrypoints(self):
+        """add_nodes keeps configured entrypoints instead of silently dropping them (#115)."""
         graph = Graph([root1, process_node])
         g2 = graph.with_entrypoint("process_node")
-        assert g2.entrypoints_config is not None
+        assert g2.entrypoints_config == ("process_node",)
 
         @node(output_name="extra")
         def extra_node(a):
             return a
 
         g3 = g2.add_nodes(extra_node)
-        assert g3.entrypoints_config is None
+        assert g3.entrypoints_config == ("process_node",)
+        # Scope stays narrowed: root1 is still excluded, 'a' remains a user input.
+        assert "a" in g3.inputs.required
+
+    def test_add_nodes_cycle_with_preserved_entrypoint_builds(self):
+        """Preserved entrypoint satisfies the cyclic-graph requirement after add_nodes."""
+
+        @node(output_name="draft")
+        def write(topic, feedback="none"):
+            return f"{topic}:{feedback}"
+
+        @node(output_name="feedback")
+        def review(draft):
+            return f"review of {draft}"
+
+        graph = Graph([write]).with_entrypoint("write")
+        # Adding review forms the cycle write -> review -> write. With the old
+        # reset behavior this raised "Cyclic graphs require an explicit
+        # entrypoint"; the preserved entrypoint now satisfies that check.
+        g2 = graph.add_nodes(review)
+        assert g2.has_cycles
+        assert g2.entrypoints_config == ("write",)
+
+    def test_add_nodes_invalid_combination_fails_loud(self):
+        """Rebuild validation still fires with preserved entrypoints (loud failure)."""
+        graph = Graph([root1, process_node]).with_entrypoint("process_node")
+
+        @node(output_name="r1")
+        def rival_producer(q):
+            return q
+
+        # Two unordered producers of 'r1' (root1 + rival_producer) is a
+        # rebuild-time conflict. Entrypoint preservation must not mask it.
+        with pytest.raises(GraphConfigError):
+            graph.add_nodes(rival_producer)
 
 
 # === Runtime select rejected ===

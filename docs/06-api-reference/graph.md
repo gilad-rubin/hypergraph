@@ -451,6 +451,27 @@ print(partial.inputs.bound)  # {'y': 10}
 
 **Returns:** New Graph with specified bindings removed
 
+### `add_nodes(*nodes) -> Graph`
+
+Add nodes to the graph. Returns a new Graph (immutable pattern).
+
+Equivalent to rebuilding the graph with the combined node list, then replaying the existing configuration: entrypoints, bindings, and selection are all preserved.
+
+```python
+g = Graph([upstream, downstream]).with_entrypoint("downstream")
+g2 = g.add_nodes(extra)
+print(g2.entrypoints_config)  # ('downstream',) — entrypoints preserved
+```
+
+**Args:**
+- `*nodes`: Nodes to add.
+
+**Returns:** New Graph containing the combined nodes with entrypoints, bindings, and selection replayed
+
+**Raises:**
+- `GraphConfigError` - If the graph was constructed with explicit edges, or if the rebuilt graph is structurally invalid (e.g., the added nodes create conflicting producers)
+- `ValueError` - If an existing binding is no longer a valid graph input after adding nodes (call `unbind()` first)
+
 ### `select(*names) -> Graph`
 
 Set a default output selection. Returns a new Graph (immutable pattern).
