@@ -19,7 +19,7 @@ from typing import Any, TypeVar
 from hypergraph._utils import ensure_tuple, hash_definition
 from hypergraph.nodes._callable import CallableMixin
 from hypergraph.nodes._input_extraction import extract_inputs
-from hypergraph.nodes._rename import _apply_renames
+from hypergraph.nodes._rename import RenameError, _apply_renames
 from hypergraph.nodes.base import HyperNode, _validate_emit_wait_for
 
 # =============================================================================
@@ -94,7 +94,6 @@ class GateNode(CallableMixin, HyperNode):
     Subclasses must set these attributes in __init__:
     - name: str
     - inputs: tuple[str, ...]
-    - outputs: tuple[str, ...] (empty or emit-only for gates)
     - targets: list[str]
     - descriptions: dict[...key..., str] (key type varies by subclass)
     - func: Callable (the routing function)
@@ -131,6 +130,33 @@ class GateNode(CallableMixin, HyperNode):
     def data_outputs(self) -> tuple[str, ...]:
         """Internal routing value output used for checkpoint/resume reconstruction."""
         return (f"_{self.name}",)
+
+    @property
+    def outputs(self) -> tuple[str, ...]:
+        """Internal routing output plus emit-only outputs.
+
+        Derived from the CURRENT name and emit tuple (single source of truth),
+        so rename operations like ``with_name()`` can never leave a stale
+        stored copy behind (a stale ``_<old_name>`` broke graph construction).
+        """
+        return (f"_{self.name}", *self._emit)
+
+    @outputs.setter
+    def outputs(self, value: tuple[str, ...]) -> None:
+        """Accept output renames from ``rename_outputs()``.
+
+        The first entry is the internal routing output ``_<name>``; it is
+        derived from the gate name and must not change here. The remaining
+        entries are the emit outputs, which may be renamed freely.
+        """
+        routing_output = f"_{self.name}"
+        if not value or value[0] != routing_output:
+            raise RenameError(
+                f"Gate '{self.name}': the internal routing output '{routing_output}' is "
+                f"derived from the gate name and cannot be renamed or removed. "
+                f"Use with_name() to rename the gate instead."
+            )
+        self._emit = tuple(value[1:])
 
     @property
     def is_gate(self) -> bool:
@@ -182,7 +208,7 @@ class RouteNode(GateNode):
     Attributes:
         name: Node name (default: func.__name__)
         inputs: Input parameter names from function signature
-        outputs: Always empty tuple (gates produce no data)
+        outputs: Derived ``("_<name>", *emit)`` — internal routing output plus emit
         targets: List of valid target names (or END)
         descriptions: Optional descriptions for visualization
         fallback: Default target if function returns None
@@ -289,9 +315,7 @@ class RouteNode(GateNode):
         self.default_open = default_open
         self._definition_hash = hash_definition(func)
 
-        # Core HyperNode attributes
-        self.outputs = (f"_{self.name}", *self._emit)
-
+        # `outputs` is a derived property on GateNode — no stored copy here.
         inputs, self._context_param = extract_inputs(func)
         self.inputs, self._rename_history = _apply_renames(inputs, rename_inputs, "inputs")
 
@@ -422,7 +446,7 @@ class IfElseNode(GateNode):
     Attributes:
         name: Node name (default: func.__name__)
         inputs: Input parameter names from function signature
-        outputs: Always empty tuple (gates produce no data)
+        outputs: Derived ``("_<name>", *emit)`` — internal routing output plus emit
         targets: [when_true, when_false] targets
         descriptions: Fixed {True: "True", False: "False"}
         when_true: Target when function returns True
@@ -502,9 +526,7 @@ class IfElseNode(GateNode):
         self.default_open = default_open
         self._definition_hash = hash_definition(func)
 
-        # Core HyperNode attributes
-        self.outputs = (f"_{self.name}", *self._emit)
-
+        # `outputs` is a derived property on GateNode — no stored copy here.
         inputs, self._context_param = extract_inputs(func)
         self.inputs, self._rename_history = _apply_renames(inputs, rename_inputs, "inputs")
 

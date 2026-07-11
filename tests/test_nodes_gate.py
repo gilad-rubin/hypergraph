@@ -603,3 +603,129 @@ class TestGateNodeTypeAnnotations:
         # This should NOT raise GraphConfigError
         graph = Graph([make_decision, gate, done], strict_types=True)
         assert graph.strict_types is True
+
+
+# =============================================================================
+# Gate Rename Consistency Tests (regression: with_name corrupted outputs)
+# =============================================================================
+
+
+class TestGateRenameOutputConsistency:
+    """A gate's outputs must always derive from its CURRENT name and emit.
+
+    Regression: RouteNode/IfElseNode stored `outputs` at construction time
+    while `data_outputs` re-derived from the current name. `.with_name()`
+    left the stored tuple stale, so graphs rejected the renamed gate with
+    "Invalid output name '_<old_name>'".
+    """
+
+    def test_route_with_name_updates_outputs(self):
+        """B1.1: renaming a RouteNode keeps outputs in sync with the name."""
+
+        @route(targets=["a"])
+        def decide(x):
+            return "a"
+
+        renamed = decide.with_name("chooser")
+        assert renamed.outputs == ("_chooser",)
+        assert renamed.data_outputs == ("_chooser",)
+        # Original unchanged
+        assert decide.outputs == ("_decide",)
+
+    def test_route_with_name_graph_builds_and_routes(self):
+        """B1.1: a renamed @route gate builds into a Graph and routes at runtime."""
+        from hypergraph import Graph, RunStatus, SyncRunner, node
+
+        @node(output_name="a")
+        def start(x):
+            return x
+
+        @node(output_name="result")
+        def positive_path(a):
+            return a * 2
+
+        @node(output_name="result")
+        def negative_path(a):
+            return a * -1
+
+        @route(targets=["positive_path", "negative_path"])
+        def decide(a):
+            return "positive_path" if a > 0 else "negative_path"
+
+        renamed = decide.with_name("chooser")
+        graph = Graph([start, renamed, positive_path, negative_path])
+
+        result = SyncRunner().run(graph, {"x": 5})
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == 10
+
+        result = SyncRunner().run(graph, {"x": -5})
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == 5
+
+    def test_ifelse_with_name_updates_outputs_and_routes(self):
+        """B1.2: IfElseNode shares the fix — renamed gate builds and routes."""
+        from hypergraph import Graph, RunStatus, SyncRunner, node
+        from hypergraph.nodes.gate import ifelse
+
+        @node(output_name="a")
+        def start(x):
+            return x
+
+        @node(output_name="result")
+        def process(a):
+            return a * 2
+
+        @node(output_name="result")
+        def skip(a):
+            return a
+
+        @ifelse(when_true="process", when_false="skip")
+        def is_positive(a):
+            return a > 0
+
+        renamed = is_positive.with_name("checker")
+        assert renamed.outputs == ("_checker",)
+        assert renamed.data_outputs == ("_checker",)
+
+        graph = Graph([start, renamed, process, skip])
+        result = SyncRunner().run(graph, {"x": 3})
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == 6
+
+    def test_route_with_name_preserves_emit(self):
+        """B1.4: rename keeps emit outputs; outputs stays a tuple[str, ...]."""
+
+        @route(targets=["a"], emit="sig")
+        def decide(x):
+            return "a"
+
+        renamed = decide.with_name("chooser")
+        assert renamed.outputs == ("_chooser", "sig")
+        assert isinstance(renamed.outputs, tuple)
+        assert all(isinstance(o, str) for o in renamed.outputs)
+
+    def test_route_rename_emit_output_still_works(self):
+        """B1.3: renaming an emit output on a gate keeps working."""
+
+        @route(targets=["a"], emit="sig")
+        def decide(x):
+            return "a"
+
+        renamed = decide.rename_outputs(sig="signal")
+        assert renamed.outputs == ("_decide", "signal")
+        assert renamed.data_outputs == ("_decide",)
+        # Original unchanged
+        assert decide.outputs == ("_decide", "sig")
+
+    def test_route_rename_internal_output_fails_loudly(self):
+        """B1.3: the internal routing output derives from the gate name and
+        cannot be renamed independently — fail loudly, never diverge silently."""
+        from hypergraph.nodes._rename import RenameError
+
+        @route(targets=["a"])
+        def decide(x):
+            return "a"
+
+        with pytest.raises(RenameError, match="derived from the gate name"):
+            decide.rename_outputs({"_decide": "decision"})
