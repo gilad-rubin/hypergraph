@@ -660,22 +660,28 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     )
                     continue
 
-                result = self.run(
-                    graph,
-                    variation_inputs,
-                    select=select,
-                    on_missing=on_missing,
-                    entrypoint=entrypoint,
-                    error_handling="continue",
-                    event_processors=event_processors,
-                    show_progress=False,
-                    workflow_id=child_workflow_id,
-                    _parent_span_id=map_span_id,
-                    _parent_run_id=workflow_id,
-                    _validation_ctx=ctx,
-                    _run_config={_MAP_SIGNATURE_CONFIG_KEY: item_signature},
-                    _item_index=idx,
-                )
+                try:
+                    result = self.run(
+                        graph,
+                        variation_inputs,
+                        select=select,
+                        on_missing=on_missing,
+                        entrypoint=entrypoint,
+                        error_handling="continue",
+                        event_processors=event_processors,
+                        show_progress=False,
+                        workflow_id=child_workflow_id,
+                        _parent_span_id=map_span_id,
+                        _parent_run_id=workflow_id,
+                        _validation_ctx=ctx,
+                        _run_config={_MAP_SIGNATURE_CONFIG_KEY: item_signature},
+                        _item_index=idx,
+                    )
+                except Exception as e:
+                    # Catch validation errors (e.g., MissingInputError) that raise
+                    # before run()'s execution try block — parity with async map
+                    # and both map_iter variants.
+                    result = RunResult(values={}, status=RunStatus.FAILED, run_id=_generate_run_id(), error=e)
                 results.append(result)
                 if error_handling == "raise" and result.status == RunStatus.FAILED:
                     raise result.error  # type: ignore[misc]
