@@ -2,27 +2,19 @@
 
 from __future__ import annotations
 
-import inspect
-import math
-import warnings
 from typing import Any
 
 from hypergraph import Graph
-from hypergraph.materialization._fingerprint import (
-    _component_config_hashes,
-    compute_child_fingerprint,
-    compute_column_provenance,
-    compute_definition_hash,
-    compute_recipe_fingerprint,
-    compute_row_fingerprint,
-    compute_table_recipe_fingerprint,
+from hypergraph.materialization._fingerprint import compute_definition_hash
+from hypergraph.materialization._hypertable_viz import render_hypertable
+from hypergraph.materialization._provenance import (
+    Provenance,
+    RebuildChildren,
+    ReconcileComplete,
+    ReconcileResult,
+    ReconcileUnavailable,
 )
-from hypergraph.materialization._recipe_journal import (
-    KIND_BOUND_VALUE,
-    KIND_COMPONENT_CONFIG,
-    KIND_NODE_SOURCE,
-    RecipeJournal,
-)
+from hypergraph.materialization._recipe_journal import RecipeJournal
 from hypergraph.materialization._schema import (
     RECIPE_COLUMN,
     STATUS_COLUMNS,
@@ -30,7 +22,6 @@ from hypergraph.materialization._schema import (
     analyze_table,
     input_names,
     is_internal_column,
-    item_schema_fields,
     node_func,
     python_type_to_arrow,
     return_type,
@@ -107,17 +98,6 @@ def _where_predicate(where: Any) -> list[tuple[str, str, Any]]:
     return list(where)
 
 
-def _split_boundary_provenance(value: Any) -> tuple[str | None, int | None]:
-    """Parse a stored boundary provenance ("<hash>#<item count>") into its parts."""
-    if not isinstance(value, str) or "#" not in value:
-        return None, None
-    prov, _, count = value.rpartition("#")
-    try:
-        return prov, int(count)
-    except ValueError:
-        return None, None
-
-
 class HyperTable:
     """A Hypergraph graph where each node output is a stored column."""
 
@@ -158,6 +138,7 @@ class HyperTable:
         self._spec: TableSpec | None = None
         self._analyzed = False
         self._column_graphs: dict[int, Any] = {}
+        self._provenance_obj: Provenance | None = None
         self._journal_obj: RecipeJournal | None = None
         # Tables whose physical schema is known to hold the recipe-stamp column
         # (memoized so the additive evolution runs at most once per table).
@@ -214,6 +195,19 @@ class HyperTable:
 
     def _analyze_graph(self):
         self._spec = analyze_table(self._graph, self._identity, self._components, self._map_over_nodes)
+        self._provenance_obj = Provenance(
+            self._graph,
+            self._spec,
+            self._components,
+            tuple(self._nodes),
+            self._column_graphs,
+        )
+
+    @property
+    def _provenance_policy(self) -> Provenance:
+        if self._provenance_obj is None:
+            raise RuntimeError("HyperTable provenance requested before graph analysis")
+        return self._provenance_obj
 
     def _resolve_store(self):
         from hypergraph.materialization._table_store import TableStore
@@ -265,20 +259,20 @@ class HyperTable:
             if col.name in outputs:
                 row[col.name] = outputs[col.name]
 
-        row["_row_fingerprint"] = self._compute_row_fingerprint(graph_inputs)
+        row["_row_fingerprint"] = self._provenance_policy.root_fingerprint(graph_inputs)
         row["_write_gen"] = write_gen
         self._stamp_recipe(row, self._spec.name)
 
         if provenances is None:
             values = {**{k: v for k, v in item.items() if k != self._identity}, **outputs}
-            provenances = {c.name: self._node_provenance(c.produced_by, values) for c in derived_cols}
+            provenances = {c.name: self._provenance_policy.node_provenance(c.produced_by, values) for c in derived_cols}
             for child_spec in self._spec.children:
-                bnode = self._boundary_node(child_spec)
+                bnode = self._provenance_policy.boundary_node(child_spec)
                 if bnode is None:
                     continue
-                prov = self._node_provenance(bnode, values)
+                prov = self._provenance_policy.node_provenance(bnode, values)
                 if prov is not None:
-                    provenances[child_spec.map_input] = self._boundary_provenance_value(prov, outputs.get(child_spec.map_input))
+                    provenances[child_spec.map_input] = self._provenance_policy.boundary_provenance_value(prov, outputs.get(child_spec.map_input))
         for name, prov in provenances.items():
             row[f"_provenance_{name}"] = prov
             node = self._provenance_node(name)
@@ -294,7 +288,7 @@ class HyperTable:
                 return c.produced_by
         for child_spec in self._spec.children:
             if child_spec.map_input == name:
-                return self._boundary_node(child_spec)
+                return self._provenance_policy.boundary_node(child_spec)
         return None
 
     def _write_error_row(
@@ -315,7 +309,7 @@ class HyperTable:
         for col in derived_cols:
             row[col.name] = None
 
-        row["_row_fingerprint"] = self._compute_row_fingerprint(graph_inputs)
+        row["_row_fingerprint"] = self._provenance_policy.root_fingerprint(graph_inputs)
         row["_write_gen"] = write_gen
         # An error row stamps the recipe it was ATTEMPTED under, so a recipe
         # change after a failure still reads as drift.
@@ -360,99 +354,7 @@ class HyperTable:
                 return return_type(c.produced_by)
         return str
 
-    # --- Per-column provenance (config-aware, value-chained) ---
-
-    def _derived_columns(self, spec: TableSpec | None = None) -> list:
-        spec = spec or self._spec
-        return [c for c in spec.columns if c.role == "derived"]
-
-    def _node_params(self, node: Any) -> Any:
-        func = node_func(node)
-        if func is not None:
-            return inspect.signature(func).parameters
-        # A GraphNode column producer has no signature; synthesize equivalent
-        # parameters from its projected input ports (cycle-internal values are
-        # not projected, so they never look like required columns) so provenance
-        # and dependency ordering treat it like any other producer.
-        params: dict[str, inspect.Parameter] = {}
-        for name in getattr(node, "inputs", ()):
-            default = inspect.Parameter.empty
-            if hasattr(node, "has_default_for") and node.has_default_for(name):
-                default = node.get_default_for(name)
-            params[name] = inspect.Parameter(name, inspect.Parameter.KEYWORD_ONLY, default=default)
-        return params
-
-    def _node_columns(self, node: Any, spec: TableSpec | None = None) -> list:
-        return [c for c in self._derived_columns(spec) if c.produced_by is node]
-
-    def _producing_node(self, column: str) -> Any:
-        for c in self._derived_columns():
-            if c.name == column:
-                return c.produced_by
-        raise KeyError(f"{column!r} is not a derived column")
-
-    def _nodes_in_dependency_order(self, spec: TableSpec | None = None) -> list:
-        """Producing nodes ordered so every node's column inputs are produced before it."""
-        derived = self._derived_columns(spec)
-        nodes: list = []
-        seen: set[int] = set()
-        for col in derived:
-            if id(col.produced_by) not in seen:
-                seen.add(id(col.produced_by))
-                nodes.append(col.produced_by)
-        derived_names = {c.name for c in derived}
-        placed: set[str] = set()
-        ordered: list = []
-        remaining = list(nodes)
-        while remaining:
-            progressed = False
-            for n in list(remaining):
-                deps = {p for p in self._node_params(n) if p in derived_names}
-                if deps <= placed:
-                    ordered.append(n)
-                    placed.update(c.name for c in self._node_columns(n, spec))
-                    remaining.remove(n)
-                    progressed = True
-            if not progressed:
-                ordered.extend(remaining)
-                break
-        return ordered
-
-    def _node_provenance(self, node: Any, values: dict[str, Any]) -> str | None:
-        """Provenance for a node's output columns; None if a required input is unavailable."""
-        params = self._node_params(node)
-        comp = {k: v for k, v in self._components.items() if k in params}
-        inputs: dict[str, Any] = {}
-        for name, param in params.items():
-            if name in comp:
-                continue
-            if name in values:
-                inputs[name] = values[name]
-            elif param.default is inspect.Parameter.empty:
-                return None
-        return compute_column_provenance(node_func(node) or node, inputs, _component_config_hashes(comp))
-
-    def _node_recipe(self, node: Any) -> str:
-        """Recipe identity for a node: hash(node code + consumed component configs), no input values."""
-        params = self._node_params(node)
-        comp = {k: v for k, v in self._components.items() if k in params}
-        return compute_recipe_fingerprint(node_func(node) or node, _component_config_hashes(comp))
-
     # --- Per-row recipe stamp (PRD 0027: drift = a stored-column comparison) ---
-
-    def _table_stamps_recipe(self) -> bool:
-        """Only deriving tables stamp: a plain table (no derived columns, no children) has no recipe."""
-        return bool(self._derived_columns() or self._spec.children)
-
-    def _current_recipe_fingerprint(self) -> str:
-        """The root table's recipe-only fingerprint under the CURRENT code + bindings."""
-        return compute_table_recipe_fingerprint(self._graph, self._components)
-
-    def _current_child_recipe_fingerprint(self, child_spec: TableSpec) -> str:
-        """A child table's recipe-only fingerprint, scoped to the child graph (mirrors the child row fingerprint)."""
-        child_graph = child_spec.child_graph
-        valid_inputs = set(child_graph.inputs.all) if child_graph is not None and hasattr(child_graph.inputs, "all") else set()
-        return compute_table_recipe_fingerprint(child_graph, self._components, valid_inputs)
 
     def _ensure_recipe_column(self, table_name: str) -> None:
         """Additively evolve the stamp column onto a pre-stamp physical table, once.
@@ -471,20 +373,16 @@ class HyperTable:
 
     def _stamp_recipe(self, row: dict[str, Any], table_name: str, *, child_spec: TableSpec | None = None) -> None:
         """Stamp the recipe-only fingerprint onto a row being assembled for write."""
-        if not self._table_stamps_recipe():
+        if not self._provenance_policy.table_stamps_recipe():
             return
         if child_spec is not None:
             if child_spec.child_graph is None:
                 return
-            fingerprint = self._current_child_recipe_fingerprint(child_spec)
+            fingerprint = self._provenance_policy.current_child_recipe_fingerprint(child_spec)
         else:
-            fingerprint = self._current_recipe_fingerprint()
+            fingerprint = self._provenance_policy.current_recipe_fingerprint()
         self._ensure_recipe_column(table_name)
         row[RECIPE_COLUMN] = fingerprint
-
-    def _row_missing_stamp(self, row: dict[str, Any]) -> bool:
-        stamp = row.get(RECIPE_COLUMN)
-        return self._table_stamps_recipe() and (not isinstance(stamp, str) or not stamp)
 
     def _refresh_missing_stamps(self, existing: dict[str, Any]) -> None:
         """Stamp a fingerprint-proven-current row (and its provable children) without deriving.
@@ -517,8 +415,8 @@ class HyperTable:
                 stamp = row.get(RECIPE_COLUMN)
                 if isinstance(stamp, str) and stamp:
                     continue
-                proven = row.get("_row_fingerprint") == self._compute_child_fingerprint(
-                    self._child_source_inputs_from_row(row, child_spec), child_spec
+                proven = row.get("_row_fingerprint") == self._provenance_policy.child_fingerprint(
+                    self._provenance_policy.child_source_inputs(row, child_spec), child_spec
                 )
                 if not proven:
                     continue
@@ -549,14 +447,14 @@ class HyperTable:
         root = self._table_recipe_drift(
             self._spec.name,
             self._identity,
-            self._current_recipe_fingerprint(),
+            self._provenance_policy.current_recipe_fingerprint(),
             child=False,
         )
         children = tuple(
             self._table_recipe_drift(
                 child_spec.name,
                 child_spec.identity,
-                self._current_child_recipe_fingerprint(child_spec),
+                self._provenance_policy.current_child_recipe_fingerprint(child_spec),
                 child=True,
             )
             for child_spec in self._spec.children
@@ -615,203 +513,54 @@ class HyperTable:
         under its payload hash. The returned definition hash is the key
         ``explain`` hands a reader to resolve the source.
         """
-        func = node_func(node)
-        def_hash = compute_definition_hash(func)
-        self._journal.record(def_hash, KIND_NODE_SOURCE, self._node_source(func))
-        params = self._node_params(node)
-        for name, comp in self._components.items():
-            if name not in params:
-                continue
-            payload, kind = self._component_payload(comp)
-            if payload is not None:
-                self._journal.record(compute_definition_hash(payload), kind, payload)
-        return def_hash
-
-    @staticmethod
-    def _node_source(func: Any) -> str:
-        try:
-            return inspect.getsource(func)
-        except (OSError, TypeError):
-            return repr(func)
-
-    @staticmethod
-    def _component_payload(comp: Any) -> tuple[str | None, str]:
-        """The readable recipe text a component contributes, plus its journal kind.
-
-        A component config (``_config()``/``__component_config__``) journals its
-        repr; a bound plain value (scalar/list/dict) journals its stable payload.
-        Objects without either contribute nothing to the fingerprint, so they
-        journal nothing — mirrors ``_component_config_hashes`` exactly.
-        """
-        config = getattr(comp, "__component_config__", None) or (comp._config() if hasattr(comp, "_config") else None)
-        if config is not None:
-            return str(config), KIND_COMPONENT_CONFIG
-        from hypergraph.materialization._fingerprint import _plain_value_payload
-
-        plain = _plain_value_payload(comp)
-        if plain is not None:
-            return plain, KIND_BOUND_VALUE
-        return None, KIND_BOUND_VALUE
-
-    def _column_graph(self, node: Any) -> Any:
-        """A cached single-node graph for column-scoped execution."""
-        graph = self._column_graphs.get(id(node))
-        if graph is None:
-            column_label = getattr(node_func(node), "__name__", None) or getattr(node, "name", "column")
-            graph = Graph([node], name=f"{self._spec.name}__{column_label}")
-            binds = {k: v for k, v in self._components.items() if k in set(graph.inputs.all)}
-            if binds:
-                graph = graph.bind(**binds)
-            self._column_graphs[id(node)] = graph
-        return graph
-
-    def _node_inputs(self, node: Any, values: dict[str, Any]) -> dict[str, Any]:
-        return {name: values[name] for name in self._node_params(node) if name not in self._components and name in values}
-
-    def _run_column_node(self, node: Any, values: dict[str, Any]) -> dict[str, Any]:
-        return self._extract_outputs(self._runner.run(self._column_graph(node), **self._node_inputs(node, values)))
-
-    async def _run_column_node_async(self, node: Any, values: dict[str, Any]) -> dict[str, Any]:
-        return self._extract_outputs(await self._runner.run(self._column_graph(node), **self._node_inputs(node, values)))
-
-    def _stored_values(self, row: dict[str, Any]) -> dict[str, Any]:
-        return {k: _normalize_value(v) for k, v in row.items() if not is_internal_column(k)}
-
-    def _node_is_fresh(self, node: Any, prov: str, existing: dict[str, Any], spec: TableSpec | None = None) -> bool:
-        return all(
-            existing.get(f"_provenance_{c.name}") == prov and not self._column_is_null(existing.get(c.name)) for c in self._node_columns(node, spec)
-        )
-
-    def _boundary_node(self, child_spec: TableSpec) -> Any:
-        """The root-graph node whose output is the child spec's mapped-items list."""
-        if not child_spec.map_input:
-            return None
-        nodes_dict = self._graph.nodes if isinstance(self._graph.nodes, dict) else {}
-        for n in nodes_dict.values():
-            if child_spec.map_input in (n.data_outputs if hasattr(n, "data_outputs") else ()):
-                return n
-        return None
+        entries = self._provenance_policy.recipe_entries(node)
+        for entry in entries:
+            self._journal.record(entry.hash, entry.kind, entry.payload)
+        return entries[0].hash
 
     def _stored_child_count(self, child_spec: TableSpec, parent_id: Any) -> int:
         rows = self._store.read_rows(child_spec.name, [("_parent_id", "eq", parent_id)])
         return len(_dedup_child_rows(rows, child_spec.identity))
 
-    def _boundary_provenance_value(self, prov: str, items: Any) -> str:
-        """Stored boundary provenance: recipe hash + how many items it produced.
+    def _start_reconcile(self, item: dict[str, Any], existing: dict[str, Any], spec: TableSpec | None = None):
+        target = spec or self._spec
+        boundary_counts = {child_spec.name: self._stored_child_count(child_spec, item[target.identity]) for child_spec in target.children}
+        incoming = {key: value for key, value in item.items() if key != target.identity}
+        return self._provenance_policy.start_reconcile(target, existing, incoming, boundary_counts)
 
-        The count is checked against the stored child rows on reconcile, so a
-        lost child row (crash leftover) forces the boundary node to re-run.
-        """
-        count = len(items) if isinstance(items, list) else 0
-        return f"{prov}#{count}"
-
-    def _boundary_freshness(
-        self, child_spec: TableSpec, item: dict[str, Any], existing: dict[str, Any], values: dict[str, Any]
-    ) -> tuple[Any, str, Any, bool] | None:
-        """Decide whether stored child rows can stand in for a boundary-node run.
-
-        Returns ``(boundary_node, provenance, stored_value, fresh)``, or None when
-        the boundary can't be reconciled column-scoped (full-run fallback).
-        """
-        bnode = self._boundary_node(child_spec)
-        if bnode is None or any(c.produced_by is bnode for c in self._derived_columns()):
-            return None
-        prov = self._node_provenance(bnode, values)
-        if prov is None:
-            return None
-        stored = existing.get(f"_provenance_{child_spec.map_input}")
-        stored_prov, stored_count = _split_boundary_provenance(stored)
-        fresh = stored_prov == prov and stored_count == self._stored_child_count(child_spec, item[self._identity])
-        return bnode, prov, stored, fresh
-
-    def _reconcile_columns(self, item: dict[str, Any], existing: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]] | None:
-        """Column-scoped upsert: reuse fresh columns, re-derive stale ones from stored upstream values.
-
-        Returns (outputs, provenances, child_plan), or None when a required input
-        is unavailable — the caller falls back to a full graph run. A child_plan
-        entry of None means: rebuild the mapped items from stored child rows
-        instead of re-running the boundary node.
-        """
-        values = self._stored_values(existing)
-        values.update({k: v for k, v in item.items() if k != self._identity})
-        outputs: dict[str, Any] = {}
-        provenances: dict[str, str] = {}
-        for node in self._nodes_in_dependency_order():
-            prov = self._node_provenance(node, values)
-            if prov is None:
+    def _reconcile_columns(self, item: dict[str, Any], existing: dict[str, Any], spec: TableSpec | None = None) -> ReconcileResult | None:
+        """Execute only runner calls requested by the shared pure reconcile plan."""
+        state = self._start_reconcile(item, existing, spec)
+        while True:
+            state, step = self._provenance_policy.next_reconcile_step(state)
+            if isinstance(step, ReconcileUnavailable):
                 return None
-            if self._node_is_fresh(node, prov, existing):
-                node_outputs = {c.name: _normalize_value(existing[c.name]) for c in self._node_columns(node)}
-            else:
-                node_outputs = self._run_column_node(node, values)
-            for c in self._node_columns(node):
-                if c.name in node_outputs:
-                    outputs[c.name] = node_outputs[c.name]
-                    values[c.name] = node_outputs[c.name]
-                provenances[c.name] = prov
-        child_plan: dict[str, Any] = {}
-        for child_spec in self._spec.children:
-            state = self._boundary_freshness(child_spec, item, existing, values)
-            if state is None:
-                return None
-            bnode, prov, stored, fresh = state
-            if fresh:
-                provenances[child_spec.map_input] = stored
-                child_plan[child_spec.name] = None
-            else:
-                items = self._run_column_node(bnode, values).get(child_spec.map_input)
-                items = items if isinstance(items, list) else []
-                provenances[child_spec.map_input] = self._boundary_provenance_value(prov, items)
-                child_plan[child_spec.name] = items
-        return outputs, provenances, child_plan
+            if isinstance(step, ReconcileComplete):
+                return step.result
+            node_outputs = self._extract_outputs(
+                self._runner.run(
+                    self._provenance_policy.column_graph(step.node),
+                    **step.input_values(),
+                )
+            )
+            state = self._provenance_policy.apply_reconcile_result(state, step, node_outputs)
 
-    async def _reconcile_columns_async(
-        self, item: dict[str, Any], existing: dict[str, Any]
-    ) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]] | None:
-        """Async twin of ``_reconcile_columns`` — identical except the awaited node runs."""
-        values = self._stored_values(existing)
-        values.update({k: v for k, v in item.items() if k != self._identity})
-        outputs: dict[str, Any] = {}
-        provenances: dict[str, str] = {}
-        for node in self._nodes_in_dependency_order():
-            prov = self._node_provenance(node, values)
-            if prov is None:
+    async def _reconcile_columns_async(self, item: dict[str, Any], existing: dict[str, Any], spec: TableSpec | None = None) -> ReconcileResult | None:
+        """Async color of the same plan; only the requested runner call is awaited."""
+        state = self._start_reconcile(item, existing, spec)
+        while True:
+            state, step = self._provenance_policy.next_reconcile_step(state)
+            if isinstance(step, ReconcileUnavailable):
                 return None
-            if self._node_is_fresh(node, prov, existing):
-                node_outputs = {c.name: _normalize_value(existing[c.name]) for c in self._node_columns(node)}
-            else:
-                node_outputs = await self._run_column_node_async(node, values)
-            for c in self._node_columns(node):
-                if c.name in node_outputs:
-                    outputs[c.name] = node_outputs[c.name]
-                    values[c.name] = node_outputs[c.name]
-                provenances[c.name] = prov
-        child_plan: dict[str, Any] = {}
-        for child_spec in self._spec.children:
-            state = self._boundary_freshness(child_spec, item, existing, values)
-            if state is None:
-                return None
-            bnode, prov, stored, fresh = state
-            if fresh:
-                provenances[child_spec.map_input] = stored
-                child_plan[child_spec.name] = None
-            else:
-                boundary_outputs = await self._run_column_node_async(bnode, values)
-                items = boundary_outputs.get(child_spec.map_input)
-                items = items if isinstance(items, list) else []
-                provenances[child_spec.map_input] = self._boundary_provenance_value(prov, items)
-                child_plan[child_spec.name] = items
-        return outputs, provenances, child_plan
-
-    def _row_converged(self, row: dict[str, Any]) -> bool:
-        """All derived columns present with provenance matching the current recipe."""
-        values = self._stored_values(row)
-        for node in self._nodes_in_dependency_order():
-            prov = self._node_provenance(node, values)
-            for c in self._node_columns(node):
-                if prov is None or self._column_is_null(row.get(c.name)) or row.get(f"_provenance_{c.name}") != prov:
-                    return False
-        return True
+            if isinstance(step, ReconcileComplete):
+                return step.result
+            node_outputs = self._extract_outputs(
+                await self._runner.run(
+                    self._provenance_policy.column_graph(step.node),
+                    **step.input_values(),
+                )
+            )
+            state = self._provenance_policy.apply_reconcile_result(state, step, node_outputs)
 
     # --- Public API ---
 
@@ -834,134 +583,14 @@ class HyperTable:
 
     def visualize(self, *, include_children: bool = True, **kwargs) -> Any:
         self._ensure_analyzed()
-        if not include_children or not self._spec.children:
-            return self._graph.visualize(**kwargs)
-        from hypergraph.graph import Graph as _Graph
-        from hypergraph.viz.widget import render_flat_graph
-
-        all_nodes = list(self._graph.nodes.values()) if isinstance(self._graph.nodes, dict) else []
-        for map_node in self._map_over_nodes:
-            all_nodes.append(map_node)
-        combined = _Graph(all_nodes, name=self._spec.name)
-        if self._components:
-            valid_inputs = set(combined.inputs.all)
-            binds = {k: v for k, v in self._components.items() if k in valid_inputs}
-            if binds:
-                combined = combined.bind(**binds)
-
-        # The parent→mapped-child edge that auto-wiring can't infer: the mapped
-        # GraphNode consumes the parent's list column (map_input) through the
-        # derive lane, not through a name-matched input port, so no edge exists
-        # in the combined graph. Inject it as a viz-only fan-out edge here — the
-        # only place that holds both the producing node and the child spec.
-        extra_edges = self._fanout_viz_edges()
-
-        # `combined` is a throwaway Graph built fresh for this render (never
-        # cached, never the runtime graph), so mutating its nx_graph in place
-        # is safe. It must carry the same edges as the flat graph below:
-        # LayoutEstimator sizes off `combined.nx_graph`, not the flat graph, so
-        # without this the fan-out edge would render correctly but the iframe
-        # would still be sized as if the mapped node were a disconnected root
-        # (wrong width/height, e.g. clipped output).
-        for src_id, tgt_id, value_names in extra_edges:
-            if src_id in combined.nx_graph.nodes and tgt_id in combined.nx_graph.nodes and not combined.nx_graph.has_edge(src_id, tgt_id):
-                combined.nx_graph.add_edge(src_id, tgt_id, edge_type="data", value_names=list(value_names), is_map=True)
-
-        show_external_inputs = kwargs.pop("show_external_inputs", None)
-        show_inputs = kwargs.pop("show_inputs", None)
-        if show_external_inputs is not None:
-            if show_inputs is not None and show_inputs != show_external_inputs:
-                raise TypeError("Pass either show_inputs or show_external_inputs, not both.")
-            warnings.warn(
-                "show_external_inputs is deprecated; use show_inputs instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            show_inputs = show_external_inputs
-        if show_inputs is None:
-            show_inputs = True
-        kwargs.setdefault("depth", 1)
-
-        flat_graph = combined.to_flat_graph(extra_edges=extra_edges)
-
-        # Tag each injected fan-out edge with the mapped item's schema fields.
-        # The ir_builder reads ``map_fields`` to re-route the edge into the
-        # matching inner INPUT pill(s) when the container is expanded, and to
-        # mark those pills as map-fed (see ir_builder._build_ir_edge). Kept off
-        # ``extra_edges`` so ``to_flat_graph`` stays a generic viz affordance.
-        map_fields = self._fanout_map_fields()
-        for (src_id, tgt_id), field_names in map_fields.items():
-            if flat_graph.has_edge(src_id, tgt_id):
-                flat_graph[src_id][tgt_id]["map_fields"] = list(field_names)
-
-        return render_flat_graph(flat_graph, combined, show_inputs=show_inputs, **kwargs)
-
-    def _fanout_viz_edges(self) -> list[tuple[str, str, tuple[str, ...]]]:
-        """Viz-only ``(producer, mapped_node, (column,))`` edges for each child.
-
-        Pairs each child spec with the mapped GraphNode that maps its column and
-        the root node that produces that column, using hierarchical ids that
-        match ``to_flat_graph``. Empty when a producer or map node can't be
-        found, so viz degrades to the pre-fix disconnected view rather than
-        raising.
-
-        ``self._spec.children`` is built by ``analyze_table`` as
-        ``[_analyze_map_over(map_node, ...) for map_node in self._map_over_nodes]``
-        (one ``TableSpec`` per map node, same order, never filtered) — so the two
-        lists are always the same length and positionally aligned. Pairing by
-        position (rather than matching on ``column`` name) is required to keep
-        two children that map the *same* column name correctly attached to
-        their own map node instead of both resolving to whichever map node
-        happens to appear first.
-        """
-        edges: list[tuple[str, str, tuple[str, ...]]] = []
-        map_nodes = self._map_over_nodes
-        for child_spec, map_node in zip(self._spec.children, map_nodes, strict=True):
-            column = child_spec.map_input
-            if not column:
-                continue
-            producer = self._boundary_node(child_spec)
-            if producer is None:
-                continue
-            edges.append((producer.name, map_node.name, (column,)))
-        return edges
-
-    def _fanout_map_fields(self) -> dict[tuple[str, str], tuple[str, ...]]:
-        """``(producer, mapped_node) -> item-schema field names`` for each child.
-
-        The viz uses these to re-route the fan-out edge, when the container is
-        expanded, into the inner INPUT pill(s) fed by an item field — so the
-        unpack ``segment_pages ──pages──▶ [page_text] ──▶ embed_page`` is
-        visible instead of the edge landing on ``embed_page`` beside a
-        free-floating ``page_text`` input pill.
-
-        Field discovery priority (matches the fingerprinting/schema lanes):
-        the map node's ``_map_config["schema"]`` if set, else the producing
-        node's return annotation (``list[PageItem]`` where ``PageItem`` is a
-        TypedDict). A schema with no fields (``list[str]``) yields ``()`` — the
-        ir_builder then falls back to the container entrypoint (#169 behavior).
-        """
-        fields: dict[tuple[str, str], tuple[str, ...]] = {}
-        map_nodes = self._map_over_nodes
-        for child_spec, map_node in zip(self._spec.children, map_nodes, strict=True):
-            if not child_spec.map_input:
-                continue
-            producer = self._boundary_node(child_spec)
-            if producer is None:
-                continue
-            config = getattr(map_node, "_map_config", None) or {}
-            schema = config.get("schema")
-            if schema is None:
-                # ``return_type`` resolves the producer's annotation, which can
-                # raise on an unresolved forward reference. Viz must degrade to
-                # entrypoint routing on a valid table, never crash — so treat an
-                # unresolvable annotation as "no discoverable fields".
-                try:
-                    schema = return_type(producer)
-                except Exception:
-                    schema = None
-            fields[(producer.name, map_node.name)] = item_schema_fields(schema)
-        return fields
+        return render_hypertable(
+            self._graph,
+            self._spec,
+            self._map_over_nodes,
+            self._components,
+            include_children=include_children,
+            options=kwargs,
+        )
 
     def _read_projected(self, table_name: str, columns: list[str], where: Any = None) -> list[dict[str, Any]]:
         """Read only ``columns`` when the store can project; otherwise full rows.
@@ -1003,7 +632,7 @@ class HyperTable:
         root = self._classify_rows(
             rows,
             identity=self._identity,
-            fingerprint_of=lambda row: self._compute_row_fingerprint(self._source_inputs_from_row(row)),
+            fingerprint_of=lambda row: self._provenance_policy.root_fingerprint(self._source_inputs_from_row(row)),
             on_stale=lambda row: self._count_stale_columns(row, stale_column_counts),
         )
         children = tuple(self._child_status(child_spec) for child_spec in self._spec.children)
@@ -1016,11 +645,11 @@ class HyperTable:
 
     def _count_stale_columns(self, row: dict[str, Any], counts: dict[str, int], spec: TableSpec | None = None) -> None:
         """Attribute a stale row to the specific columns whose provenance no longer matches."""
-        values = self._stored_values(row)
-        for node in self._nodes_in_dependency_order(spec):
-            prov = self._node_provenance(node, values)
-            for c in self._node_columns(node, spec):
-                if prov is None or self._column_is_null(row.get(c.name)) or row.get(f"_provenance_{c.name}") != prov:
+        values = self._provenance_policy.stored_values(row)
+        for node in self._provenance_policy.nodes_in_dependency_order(spec):
+            prov = self._provenance_policy.node_provenance(node, values)
+            for c in self._provenance_policy.node_columns(node, spec):
+                if prov is None or self._provenance_policy.column_is_null(row.get(c.name)) or row.get(f"_provenance_{c.name}") != prov:
                     counts[c.name] = counts.get(c.name, 0) + 1
 
     def _child_status(self, child_spec: TableSpec) -> TableStatus:
@@ -1029,7 +658,9 @@ class HyperTable:
         counts = self._classify_rows(
             rows,
             identity=child_spec.identity,
-            fingerprint_of=lambda row: self._compute_child_fingerprint(self._child_source_inputs_from_row(row, child_spec), child_spec),
+            fingerprint_of=lambda row: self._provenance_policy.child_fingerprint(
+                self._provenance_policy.child_source_inputs(row, child_spec), child_spec
+            ),
             on_stale=lambda row: self._count_stale_columns(row, stale_column_counts, spec=child_spec),
         )
         return TableStatus(table=child_spec.name, stale_columns=tuple(sorted(stale_column_counts.items())), **counts)
@@ -1096,7 +727,7 @@ class HyperTable:
         if row is None:
             raise KeyError(identity_value)
         explained: dict[str, dict[str, str | None]] = {}
-        for c in self._derived_columns():
+        for c in self._provenance_policy.derived_columns():
             if c.produced_by is None:
                 continue
             def_hash = compute_definition_hash(node_func(c.produced_by))
@@ -1171,9 +802,9 @@ class HyperTable:
 
     def _index_recipe_fingerprint(self, spec: TableSpec, vector: str) -> str | None:
         """The component-config + node-definition basis of the vector column's producing node."""
-        for c in self._derived_columns(spec):
+        for c in self._provenance_policy.derived_columns(spec):
             if c.name == vector and c.produced_by is not None:
-                return self._node_recipe(c.produced_by)
+                return self._provenance_policy.node_recipe(c.produced_by)
         return None
 
     def _index_queryable_columns(self, spec: TableSpec) -> set[str]:
@@ -1400,7 +1031,7 @@ class HyperTable:
         """
         existing = self._store.read_one(self._spec.name, self._identity, item[self._identity])
         parent_skipped = False
-        if existing is not None and existing.get("_row_fingerprint") == self._compute_row_fingerprint(graph_inputs):
+        if existing is not None and existing.get("_row_fingerprint") == self._provenance_policy.root_fingerprint(graph_inputs):
             status = existing.get("_status")
             parent_skipped = status is None or status == "complete"
         return existing, parent_skipped
@@ -1435,7 +1066,7 @@ class HyperTable:
         item: dict[str, Any],
         graph_inputs: dict[str, Any],
         existing: dict[str, Any],
-        reconciled: tuple[dict[str, Any], dict[str, str], dict[str, Any]],
+        reconciled: ReconcileResult,
         parent_skipped: bool,
         write_gen: int,
     ) -> str:
@@ -1445,17 +1076,19 @@ class HyperTable:
         column must be persisted for a pre-provenance row); a skipped parent's
         stored row is left untouched so its old generation is never cleaned away.
         """
-        outputs, provenances, child_plan = reconciled
+        outputs = reconciled.output_values()
+        provenances = reconciled.provenance_values()
         identity_value = item[self._identity]
-        for child_spec in self._spec.children:
-            items = child_plan.get(child_spec.name)
-            if items is None:
-                items = self._rebuild_child_items(child_spec, identity_value)
+        for child_selection in reconciled.children:
+            child_spec = child_selection.spec
+            items = (
+                self._rebuild_child_items(child_spec, identity_value) if isinstance(child_selection, RebuildChildren) else list(child_selection.items)
+            )
             self._insert_children_items(identity_value, items, child_spec, write_gen)
         prov_changed = any(existing.get(f"_provenance_{name}") != prov for name, prov in provenances.items())
         # A pre-stamp parent row that reconciled clean is provably current:
         # rewrite it so the recipe stamp lands (same rule as provenance repair).
-        if not parent_skipped or prov_changed or self._row_missing_stamp(existing):
+        if not parent_skipped or prov_changed or self._provenance_policy.row_missing_stamp(existing, RECIPE_COLUMN):
             self._evolve_for_metadata(item)
             row = self._build_row(item, graph_inputs, outputs, write_gen, provenances=provenances)
             row["_status"] = "complete"
@@ -1470,22 +1103,24 @@ class HyperTable:
         item: dict[str, Any],
         graph_inputs: dict[str, Any],
         existing: dict[str, Any],
-        reconciled: tuple[dict[str, Any], dict[str, str], dict[str, Any]],
+        reconciled: ReconcileResult,
         parent_skipped: bool,
         write_gen: int,
     ) -> str:
         """Async twin of ``_apply_reconciled`` — identical except the awaited child runs."""
-        outputs, provenances, child_plan = reconciled
+        outputs = reconciled.output_values()
+        provenances = reconciled.provenance_values()
         identity_value = item[self._identity]
-        for child_spec in self._spec.children:
-            items = child_plan.get(child_spec.name)
-            if items is None:
-                items = self._rebuild_child_items(child_spec, identity_value)
+        for child_selection in reconciled.children:
+            child_spec = child_selection.spec
+            items = (
+                self._rebuild_child_items(child_spec, identity_value) if isinstance(child_selection, RebuildChildren) else list(child_selection.items)
+            )
             await self._insert_children_items_async(identity_value, items, child_spec, write_gen)
         prov_changed = any(existing.get(f"_provenance_{name}") != prov for name, prov in provenances.items())
         # A pre-stamp parent row that reconciled clean is provably current:
         # rewrite it so the recipe stamp lands (same rule as provenance repair).
-        if not parent_skipped or prov_changed or self._row_missing_stamp(existing):
+        if not parent_skipped or prov_changed or self._provenance_policy.row_missing_stamp(existing, RECIPE_COLUMN):
             self._evolve_for_metadata(item)
             row = self._build_row(item, graph_inputs, outputs, write_gen, provenances=provenances)
             row["_status"] = "complete"
@@ -1501,7 +1136,7 @@ class HyperTable:
         graph_inputs = self._extract_graph_inputs(item)
         existing, parent_skipped = self._plan_insert(item, graph_inputs)
         if parent_skipped and not self._spec.children:
-            if self._row_missing_stamp(existing):
+            if self._provenance_policy.row_missing_stamp(existing, RECIPE_COLUMN):
                 self._refresh_missing_stamps(existing)
             return "skipped"
 
@@ -1557,7 +1192,7 @@ class HyperTable:
         graph_inputs = self._extract_graph_inputs(item)
         existing, parent_skipped = self._plan_insert(item, graph_inputs)
         if parent_skipped and not self._spec.children:
-            if self._row_missing_stamp(existing):
+            if self._provenance_policy.row_missing_stamp(existing, RECIPE_COLUMN):
                 self._refresh_missing_stamps(existing)
             return "skipped"
 
@@ -1634,7 +1269,7 @@ class HyperTable:
         child_inputs = {
             col.name: child_item[col.name] for col in child_spec.columns if col.role == "source" and col.content_key and col.name in child_item
         }
-        new_fingerprint = self._compute_child_fingerprint(child_inputs, child_spec)
+        new_fingerprint = self._provenance_policy.child_fingerprint(child_inputs, child_spec)
 
         existing_children = self._store.read_rows(
             child_spec.name,
@@ -1646,7 +1281,7 @@ class HyperTable:
             if status is None or status == "complete":
                 bumped = dict(existing_child)
                 bumped["_write_gen"] = write_gen
-                if self._row_missing_stamp(bumped):
+                if self._provenance_policy.row_missing_stamp(bumped, RECIPE_COLUMN):
                     # The unchanged fingerprint proves this child current under
                     # today's child recipe — stamp the rewrite (pre-stamp store).
                     self._stamp_recipe(bumped, child_spec.name, child_spec=child_spec)
@@ -1694,9 +1329,9 @@ class HyperTable:
     def _child_provenances(self, child_spec: TableSpec, values: dict[str, Any]) -> dict[str, str]:
         """Per-column provenance for a child row, from the inner graph's nodes."""
         provenances: dict[str, str] = {}
-        for node in self._nodes_in_dependency_order(child_spec):
-            prov = self._node_provenance(node, values)
-            for c in self._node_columns(node, child_spec):
+        for node in self._provenance_policy.nodes_in_dependency_order(child_spec):
+            prov = self._provenance_policy.node_provenance(node, values)
+            for c in self._provenance_policy.node_columns(node, child_spec):
                 provenances[c.name] = prov
         return provenances
 
@@ -1729,23 +1364,9 @@ class HyperTable:
         Returns the new child row, or None when a required input is unavailable —
         the caller falls back to a full child-graph run.
         """
-        values = self._stored_values(existing_child)
-        values.update(child_item)
-        outputs: dict[str, Any] = {}
-        provenances: dict[str, str] = {}
-        for node in self._nodes_in_dependency_order(child_spec):
-            prov = self._node_provenance(node, values)
-            if prov is None:
-                return None
-            if self._node_is_fresh(node, prov, existing_child, child_spec):
-                node_outputs = {c.name: _normalize_value(existing_child[c.name]) for c in self._node_columns(node, child_spec)}
-            else:
-                node_outputs = self._run_column_node(node, values)
-            for c in self._node_columns(node, child_spec):
-                if c.name in node_outputs:
-                    outputs[c.name] = node_outputs[c.name]
-                    values[c.name] = node_outputs[c.name]
-                provenances[c.name] = prov
+        reconciled = self._reconcile_columns(child_item, existing_child, child_spec)
+        if reconciled is None:
+            return None
         child_identity = child_item.get(child_spec.identity, "")
         return self._child_row(
             child_spec,
@@ -1756,8 +1377,8 @@ class HyperTable:
             write_gen,
             status="complete",
             error=None,
-            outputs=outputs,
-            provenances=provenances,
+            outputs=reconciled.output_values(),
+            provenances=reconciled.provenance_values(),
         )
 
     async def _reconcile_child_row_async(
@@ -1770,23 +1391,9 @@ class HyperTable:
         write_gen: int,
     ) -> dict[str, Any] | None:
         """Async twin of ``_reconcile_child_row`` — identical except the awaited node runs."""
-        values = self._stored_values(existing_child)
-        values.update(child_item)
-        outputs: dict[str, Any] = {}
-        provenances: dict[str, str] = {}
-        for node in self._nodes_in_dependency_order(child_spec):
-            prov = self._node_provenance(node, values)
-            if prov is None:
-                return None
-            if self._node_is_fresh(node, prov, existing_child, child_spec):
-                node_outputs = {c.name: _normalize_value(existing_child[c.name]) for c in self._node_columns(node, child_spec)}
-            else:
-                node_outputs = await self._run_column_node_async(node, values)
-            for c in self._node_columns(node, child_spec):
-                if c.name in node_outputs:
-                    outputs[c.name] = node_outputs[c.name]
-                    values[c.name] = node_outputs[c.name]
-                provenances[c.name] = prov
+        reconciled = await self._reconcile_columns_async(child_item, existing_child, child_spec)
+        if reconciled is None:
+            return None
         child_identity = child_item.get(child_spec.identity, "")
         return self._child_row(
             child_spec,
@@ -1797,8 +1404,8 @@ class HyperTable:
             write_gen,
             status="complete",
             error=None,
-            outputs=outputs,
-            provenances=provenances,
+            outputs=reconciled.output_values(),
+            provenances=reconciled.provenance_values(),
         )
 
     def _insert_children(self, parent_id: str, outputs: dict, child_spec: TableSpec, write_gen: int) -> None:
@@ -2067,7 +1674,7 @@ class HyperTable:
         return {str(row[self._identity]): row for row in rows if row.get(self._identity) is not None}
 
     def _row_unchanged(self, item: dict[str, Any], existing: dict[str, Any]) -> bool:
-        return existing.get("_row_fingerprint") == self._compute_row_fingerprint(self._extract_graph_inputs(item))
+        return existing.get("_row_fingerprint") == self._provenance_policy.root_fingerprint(self._extract_graph_inputs(item))
 
     def _error_row_for(self, id_val: str) -> ErrorRow | None:
         """Build an ErrorRow from the persisted error row for a failed identity."""
@@ -2101,7 +1708,7 @@ class HyperTable:
                 else:
                     inserted += 1
             elif self._row_unchanged(item, existing):
-                if self._row_missing_stamp(existing):
+                if self._provenance_policy.row_missing_stamp(existing, RECIPE_COLUMN):
                     # A pre-stamp row the fingerprint match just proved current:
                     # stamp it (and its provable children) — no derive.
                     self._refresh_missing_stamps(existing)
@@ -2138,7 +1745,7 @@ class HyperTable:
                 else:
                     inserted += 1
             elif self._row_unchanged(item, existing):
-                if self._row_missing_stamp(existing):
+                if self._provenance_policy.row_missing_stamp(existing, RECIPE_COLUMN):
                     self._refresh_missing_stamps(existing)
                 skipped += 1
             else:
@@ -2167,16 +1774,16 @@ class HyperTable:
         stale so the pending cascade stays visible.
         """
         new_row = {k: _normalize_value(v) for k, v in existing.items()}
-        for c in self._node_columns(node):
+        for c in self._provenance_policy.node_columns(node):
             if c.name in node_outputs:
                 new_row[c.name] = node_outputs[c.name]
-        prov = self._node_provenance(node, self._stored_values(new_row))
-        for c in self._node_columns(node):
+        prov = self._provenance_policy.node_provenance(node, self._provenance_policy.stored_values(new_row))
+        for c in self._provenance_policy.node_columns(node):
             new_row[f"_provenance_{c.name}"] = prov
         self._record_node_recipe(node)
         new_row["_write_gen"] = write_gen
-        if self._row_converged(new_row):
-            new_row["_row_fingerprint"] = self._compute_row_fingerprint(self._source_inputs_from_row(new_row))
+        if self._provenance_policy.row_converged(new_row):
+            new_row["_row_fingerprint"] = self._provenance_policy.root_fingerprint(self._source_inputs_from_row(new_row))
             # Same convergence rule for the recipe stamp: a partially-current
             # row keeps its OLD stamp so recipe_drift keeps reporting it.
             self._stamp_recipe(new_row, self._spec.name)
@@ -2200,10 +1807,6 @@ class HyperTable:
                 {column: python_type_to_arrow(col_type), f"_provenance_{column}": python_type_to_arrow(str)},
             )
 
-    @staticmethod
-    def _column_is_null(value: Any) -> bool:
-        return value is None or (isinstance(value, float) and math.isnan(value))
-
     def recompute(self, column: str) -> Any:
         """Re-derive one column for all rows using current bound components."""
         self._require_runner()
@@ -2213,17 +1816,29 @@ class HyperTable:
         return self._recompute_sync(column)
 
     def _recompute_sync(self, column: str) -> None:
-        node = self._producing_node(column)
+        node = self._provenance_policy.producing_node(column)
         write_gen = self._store.max_write_gen(self._spec.name) + 1
         for existing in _dedup_rows(self._store.read_rows(self._spec.name), self._identity):
-            node_outputs = self._run_column_node(node, self._stored_values(existing))
+            values = self._provenance_policy.stored_values(existing)
+            node_outputs = self._extract_outputs(
+                self._runner.run(
+                    self._provenance_policy.column_graph(node),
+                    **self._provenance_policy.node_inputs(node, values),
+                )
+            )
             self._persist_node_outputs(existing, node, node_outputs, write_gen)
 
     async def _recompute_async(self, column: str) -> None:
-        node = self._producing_node(column)
+        node = self._provenance_policy.producing_node(column)
         write_gen = self._store.max_write_gen(self._spec.name) + 1
         for existing in _dedup_rows(self._store.read_rows(self._spec.name), self._identity):
-            node_outputs = await self._run_column_node_async(node, self._stored_values(existing))
+            values = self._provenance_policy.stored_values(existing)
+            node_outputs = self._extract_outputs(
+                await self._runner.run(
+                    self._provenance_policy.column_graph(node),
+                    **self._provenance_policy.node_inputs(node, values),
+                )
+            )
             self._persist_node_outputs(existing, node, node_outputs, write_gen)
 
     def backfill(self, column: str) -> Any:
@@ -2236,28 +1851,32 @@ class HyperTable:
 
     def _backfill_sync(self, column: str) -> None:
         self._evolve_for_backfill_column(column)
-        node = self._producing_node(column)
+        node = self._provenance_policy.producing_node(column)
         write_gen = self._store.max_write_gen(self._spec.name) + 1
         for existing in _dedup_rows(self._store.read_rows(self._spec.name), self._identity):
-            if not self._column_is_null(existing.get(column)):
+            if not self._provenance_policy.column_is_null(existing.get(column)):
                 continue
-            node_outputs = self._run_column_node(node, self._stored_values(existing))
+            values = self._provenance_policy.stored_values(existing)
+            node_outputs = self._extract_outputs(
+                self._runner.run(
+                    self._provenance_policy.column_graph(node),
+                    **self._provenance_policy.node_inputs(node, values),
+                )
+            )
             self._persist_node_outputs(existing, node, node_outputs, write_gen)
 
     async def _backfill_async(self, column: str) -> None:
         self._evolve_for_backfill_column(column)
-        node = self._producing_node(column)
+        node = self._provenance_policy.producing_node(column)
         write_gen = self._store.max_write_gen(self._spec.name) + 1
         for existing in _dedup_rows(self._store.read_rows(self._spec.name), self._identity):
-            if not self._column_is_null(existing.get(column)):
+            if not self._provenance_policy.column_is_null(existing.get(column)):
                 continue
-            node_outputs = await self._run_column_node_async(node, self._stored_values(existing))
+            values = self._provenance_policy.stored_values(existing)
+            node_outputs = self._extract_outputs(
+                await self._runner.run(
+                    self._provenance_policy.column_graph(node),
+                    **self._provenance_policy.node_inputs(node, values),
+                )
+            )
             self._persist_node_outputs(existing, node, node_outputs, write_gen)
-
-    # --- Fingerprint and provenance ---
-
-    def _compute_row_fingerprint(self, graph_inputs: dict) -> str:
-        return compute_row_fingerprint(self._graph, self._components, graph_inputs)
-
-    def _compute_child_fingerprint(self, child_inputs: dict, child_spec: TableSpec) -> str:
-        return compute_child_fingerprint(child_spec.child_graph, self._components, child_inputs)
