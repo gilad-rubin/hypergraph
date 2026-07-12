@@ -94,13 +94,9 @@ async def run_superstep_async(
     new_state = state.copy()
     active = dispatcher is not None and dispatcher.active
 
-    # Execute interrupt nodes alone (not concurrently with other nodes).
-    # PauseExecution extends BaseException, so if raised inside asyncio.gather
-    # it cancels all sibling tasks. By isolating interrupt nodes, other ready
-    # nodes are deferred to the next superstep where they'll still be ready.
-    interrupts = [n for n in ready_nodes if n.is_interrupt]
-    if interrupts:
-        ready_nodes = [interrupts[0]]
+    # Interrupt isolation happens in the runner (plan_interrupt_batch in
+    # _shared/helpers.py) BEFORE checkpoint metadata captures the batch —
+    # ready_nodes arrives here already planned.
 
     async def execute_one(
         node: HyperNode,
@@ -273,11 +269,14 @@ async def run_superstep_async(
 
     # Separate successes from failures, applying successful outputs first
     first_error: BaseException | None = None
+    control_flow_error: BaseException | None = None
     node_errors: dict[str, BaseException] = {}
     for node, result in zip(ready_nodes, results, strict=True):
         if isinstance(result, BaseException):
             if first_error is None:
                 first_error = result
+            if control_flow_error is None and not isinstance(result, Exception):
+                control_flow_error = result
             node_errors[node.name] = result
             continue
         node, outputs, input_versions, wait_for_versions, duration_ms, cached = result
@@ -292,16 +291,21 @@ async def run_superstep_async(
             cached=cached,
         )
 
+    if control_flow_error is not None:
+        # Pause/cancellation/system-exit control flow must not be hidden by an
+        # ordinary Exception that happened to appear earlier in graph order.
+        if isinstance(control_flow_error, PauseExecution):
+            control_flow_error.partial_state = new_state
+        raise control_flow_error
+
     if first_error is not None:
-        # PauseExecution (BaseException) must propagate unwrapped for the
-        # runner's except PauseExecution handler to work
-        if not isinstance(first_error, Exception):
-            raise first_error
-        error = first_error if isinstance(first_error, ExecutionError) else ExecutionError(first_error, new_state)
-        error._attempted_node_names = tuple(node.name for node in ready_nodes)  # type: ignore[attr-defined]
-        error._node_errors = node_errors  # type: ignore[attr-defined]
-        if error is first_error:
-            raise error
+        attempted = tuple(node.name for node in ready_nodes)
+        error = ExecutionError(
+            first_error,
+            new_state,
+            attempted_node_names=attempted,
+            node_errors=node_errors,
+        )
         raise error from first_error
 
     return new_state

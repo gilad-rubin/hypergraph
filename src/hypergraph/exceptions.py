@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from hypergraph.runners._shared.types import GraphState
 
 
@@ -96,15 +98,27 @@ class IncompatibleRunnerError(Exception):
 class ExecutionError(Exception):
     """Wraps an exception that occurred during graph execution.
 
-    Carries the partial GraphState accumulated before the error,
-    replacing the monkey-patched ``_partial_state`` attribute pattern.
+    Carries the partial GraphState accumulated before the error, plus
+    per-superstep failure attribution as real constructor parameters.
 
     Attributes:
         partial_state: GraphState snapshot from before the failure
+        attempted_node_names: Names of nodes attempted in the failing
+            superstep. Empty when the failure cannot be attributed to
+            specific nodes (e.g. a scheduler-level error).
+        node_errors: Mapping of node name to the exception that node raised.
     """
 
-    def __init__(self, cause: BaseException, partial_state: GraphState) -> None:
+    def __init__(
+        self,
+        cause: BaseException,
+        partial_state: GraphState,
+        attempted_node_names: tuple[str, ...] = (),
+        node_errors: Mapping[str, BaseException] | None = None,
+    ) -> None:
         self.partial_state = partial_state
+        self.attempted_node_names = tuple(attempted_node_names)
+        self.node_errors: dict[str, BaseException] = dict(node_errors) if node_errors else {}
         super().__init__(str(cause))
         self.__cause__ = cause
 

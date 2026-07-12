@@ -647,73 +647,74 @@ class TestFunctionNodeOutputAnnotation:
 
 
 class TestFunctionSignatures:
-    """Tests for FunctionNode handling of all Python parameter types (FUNC-01 through FUNC-05).
+    """Construction-time contract for Python parameter kinds (FUNC-01 through FUNC-05, #116).
 
-    Python has 5 parameter kinds (from inspect.Parameter.kind):
-    - POSITIONAL_ONLY: def f(a, /)
-    - POSITIONAL_OR_KEYWORD: def f(a) (standard, already tested elsewhere)
-    - VAR_POSITIONAL: def f(*args)
-    - KEYWORD_ONLY: def f(*, kw)
-    - VAR_KEYWORD: def f(**kwargs)
+    Hypergraph invokes node functions with keyword arguments, so only
+    keyword-addressable parameters are supported:
+    - POSITIONAL_OR_KEYWORD: def f(a) — supported
+    - KEYWORD_ONLY: def f(*, kw) — supported
+    - POSITIONAL_ONLY: def f(a, /) — rejected at construction
+    - VAR_POSITIONAL: def f(*args) — rejected at construction
+    - VAR_KEYWORD: def f(**kwargs) — rejected at construction
     """
 
-    # FUNC-01: *args tests
+    # FUNC-01: *args is rejected at construction
 
-    def test_var_positional_in_inputs(self):
-        """*args parameter appears in inputs (FUNC-01)."""
-
-        def foo(*args):
-            pass
-
-        fn = FunctionNode(foo)
-        assert "args" in fn.inputs
-        assert fn.inputs == ("args",)
-
-    def test_var_positional_no_default(self):
-        """*args has no default (FUNC-01)."""
+    def test_var_positional_rejected(self):
+        """*args cannot be a node parameter (FUNC-01)."""
 
         def foo(*args):
             pass
 
-        fn = FunctionNode(foo)
-        assert fn.defaults == {}
-        assert not fn.has_default_for("args")
+        with pytest.raises(TypeError, match="args"):
+            FunctionNode(foo)
 
-    def test_var_positional_with_annotation(self):
-        """*args can have type annotation (FUNC-01)."""
+    def test_var_positional_error_names_param_and_kind(self):
+        """Rejection names the offending parameter and its kind (FUNC-01)."""
+
+        def foo(*args):
+            pass
+
+        with pytest.raises(TypeError) as exc_info:
+            FunctionNode(foo)
+        message = str(exc_info.value)
+        assert "'args'" in message
+        assert "variadic positional" in message
+        assert "How to fix" in message
+
+    def test_var_positional_with_annotation_rejected(self):
+        """Annotated *args is still rejected (FUNC-01)."""
 
         def foo(*args: int):
             pass
 
-        fn = FunctionNode(foo)
-        # The annotation for *args may or may not appear in parameter_annotations
-        # depending on how get_type_hints handles variadic parameters
-        # Just verify no exception is raised
-        assert "args" in fn.inputs
+        with pytest.raises(TypeError, match="args"):
+            FunctionNode(foo)
 
-    # FUNC-02: **kwargs tests
+    # FUNC-02: **kwargs is rejected at construction
 
-    def test_var_keyword_in_inputs(self):
-        """**kwargs parameter appears in inputs (FUNC-02)."""
+    def test_var_keyword_rejected(self):
+        """**kwargs cannot be a node parameter (FUNC-02)."""
 
         def foo(**kwargs):
             pass
 
-        fn = FunctionNode(foo)
-        assert "kwargs" in fn.inputs
-        assert fn.inputs == ("kwargs",)
+        with pytest.raises(TypeError, match="kwargs"):
+            FunctionNode(foo)
 
-    def test_var_keyword_no_default(self):
-        """**kwargs has no default (FUNC-02)."""
+    def test_var_keyword_error_names_param_and_kind(self):
+        """Rejection names the offending parameter and its kind (FUNC-02)."""
 
         def foo(**kwargs):
             pass
 
-        fn = FunctionNode(foo)
-        assert fn.defaults == {}
-        assert not fn.has_default_for("kwargs")
+        with pytest.raises(TypeError) as exc_info:
+            FunctionNode(foo)
+        message = str(exc_info.value)
+        assert "'kwargs'" in message
+        assert "variadic keyword" in message
 
-    # FUNC-03: keyword-only tests
+    # FUNC-03: keyword-only params remain fully supported
 
     def test_keyword_only_in_inputs(self):
         """Keyword-only params appear in inputs (FUNC-03)."""
@@ -754,101 +755,8 @@ class TestFunctionSignatures:
         fn = FunctionNode(foo)
         assert fn.parameter_annotations.get("kw") is str
 
-    # FUNC-04: positional-only tests
-
-    def test_positional_only_in_inputs(self):
-        """Positional-only params appear in inputs (FUNC-04)."""
-
-        def foo(a, /, b):
-            pass
-
-        fn = FunctionNode(foo)
-        assert fn.inputs == ("a", "b")
-
-    def test_positional_only_with_default(self):
-        """Positional-only can have defaults (FUNC-04)."""
-
-        def foo(a=5, /, b=10):
-            pass
-
-        fn = FunctionNode(foo)
-        assert fn.defaults == {"a": 5, "b": 10}
-
-    def test_positional_only_with_annotation(self):
-        """Positional-only with type annotation (FUNC-04)."""
-
-        def foo(a: int, /) -> str:
-            return ""
-
-        fn = FunctionNode(foo, output_name="result")
-        assert fn.parameter_annotations.get("a") is int
-
-    # FUNC-05: mixed argument types tests
-
-    def test_mixed_all_param_kinds(self):
-        """Function with all parameter kinds (FUNC-05)."""
-
-        def foo(pos_only, /, regular, *args, kw_only, **kwargs):
-            pass
-
-        fn = FunctionNode(foo)
-        assert fn.inputs == ("pos_only", "regular", "args", "kw_only", "kwargs")
-
-    def test_mixed_with_defaults(self):
-        """Mixed params with various defaults (FUNC-05)."""
-
-        def foo(pos=1, /, reg=2, *args, kw=3, **kwargs):
-            pass
-
-        fn = FunctionNode(foo)
-        assert fn.defaults == {"pos": 1, "reg": 2, "kw": 3}
-        # *args and **kwargs never have defaults
-        assert "args" not in fn.defaults
-        assert "kwargs" not in fn.defaults
-
-    def test_mixed_with_annotations(self):
-        """Mixed params with type annotations (FUNC-05)."""
-
-        def foo(pos: int, /, reg: str, *args: float, kw: bool, **kwargs: dict) -> list:
-            pass
-
-        fn = FunctionNode(foo, output_name="result")
-        # Verify standard params are annotated
-        assert fn.parameter_annotations.get("pos") is int
-        assert fn.parameter_annotations.get("reg") is str
-        assert fn.parameter_annotations.get("kw") is bool
-
-    def test_mixed_rename_works(self):
-        """rename_inputs works with mixed param kinds (FUNC-05)."""
-
-        def foo(a, /, b, *, c):
-            pass
-
-        fn = FunctionNode(foo, rename_inputs={"a": "x", "b": "y", "c": "z"})
-        assert fn.inputs == ("x", "y", "z")
-
-    def test_mixed_callable(self):
-        """Mixed-signature function is still callable (FUNC-05)."""
-
-        def foo(a, /, b, *args, c, **kwargs):
-            return (a, b, args, c, kwargs)
-
-        fn = FunctionNode(foo, output_name="result")
-        result = fn(1, 2, 3, 4, c=5, extra=6)
-        assert result == (1, 2, (3, 4), 5, {"extra": 6})
-
-    def test_only_var_args_and_kwargs(self):
-        """Function with just *args and **kwargs (FUNC-05)."""
-
-        def foo(*args, **kwargs):
-            pass
-
-        fn = FunctionNode(foo)
-        assert fn.inputs == ("args", "kwargs")
-        assert fn.defaults == {}
-
     def test_keyword_only_multiple(self):
-        """Multiple keyword-only params (FUNC-05)."""
+        """Multiple keyword-only params (FUNC-03)."""
 
         def foo(*, a, b=1, c):
             pass
@@ -857,14 +765,99 @@ class TestFunctionSignatures:
         assert fn.inputs == ("a", "b", "c")
         assert fn.defaults == {"b": 1}
 
-    def test_positional_only_multiple(self):
-        """Multiple positional-only params (FUNC-05)."""
+    # FUNC-04: positional-only params are rejected at construction
+
+    def test_positional_only_rejected(self):
+        """Positional-only params cannot be node parameters (FUNC-04)."""
+
+        def foo(a, /, b):
+            pass
+
+        with pytest.raises(TypeError, match="'a'"):
+            FunctionNode(foo)
+
+    def test_positional_only_error_names_param_and_kind(self):
+        """Rejection names the offending parameter and its kind (FUNC-04)."""
+
+        def foo(a: int, /) -> str:
+            return ""
+
+        with pytest.raises(TypeError) as exc_info:
+            FunctionNode(foo, output_name="result")
+        message = str(exc_info.value)
+        assert "'a'" in message
+        assert "positional-only" in message
+
+    def test_positional_only_with_default_rejected(self):
+        """Defaults do not make positional-only params callable by keyword (FUNC-04)."""
+
+        def foo(a=5, /, b=10):
+            pass
+
+        with pytest.raises(TypeError, match="'a'"):
+            FunctionNode(foo)
+
+    def test_positional_only_multiple_rejected(self):
+        """Multiple positional-only params are all reported (FUNC-04)."""
 
         def foo(a, b, c, /):
             pass
 
-        fn = FunctionNode(foo)
-        assert fn.inputs == ("a", "b", "c")
+        with pytest.raises(TypeError) as exc_info:
+            FunctionNode(foo)
+        message = str(exc_info.value)
+        assert "'a'" in message
+        assert "'b'" in message
+        assert "'c'" in message
+
+    # FUNC-05: mixed signatures are rejected when any unsupported kind is present
+
+    def test_mixed_all_param_kinds_rejected(self):
+        """Function mixing supported and unsupported kinds is rejected (FUNC-05)."""
+
+        def foo(pos_only, /, regular, *args, kw_only, **kwargs):
+            pass
+
+        with pytest.raises(TypeError) as exc_info:
+            FunctionNode(foo)
+        message = str(exc_info.value)
+        assert "'pos_only'" in message
+        assert "'args'" in message
+        assert "'kwargs'" in message
+        # Supported params are not blamed
+        assert "'regular'" not in message
+        assert "'kw_only'" not in message
+
+    def test_only_var_args_and_kwargs_rejected(self):
+        """Function with just *args and **kwargs is rejected (FUNC-05)."""
+
+        def foo(*args, **kwargs):
+            pass
+
+        with pytest.raises(TypeError):
+            FunctionNode(foo)
+
+    def test_rejection_applies_to_all_node_kinds(self):
+        """Gates and interrupts reject unsupported kinds too — one choke point (FUNC-05)."""
+        from hypergraph import END, ifelse, interrupt, route
+
+        with pytest.raises(TypeError, match="args"):
+
+            @route(targets=["a", END])
+            def gate(*args):
+                return END
+
+        with pytest.raises(TypeError, match="'flag'"):
+
+            @ifelse(when_true="a", when_false="b")
+            def branch(flag, /):
+                return bool(flag)
+
+        with pytest.raises(TypeError, match="kwargs"):
+
+            @interrupt(output_name="decision")
+            def approval(**kwargs):
+                return None
 
 
 class TestGeneratorEdgeCases:

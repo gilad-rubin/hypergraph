@@ -108,7 +108,7 @@ class VizDebugger:
 
     Example:
         >>> debugger = graph.debug_viz()
-        >>> debugger.visualize(depth=1)  # Shows viz with debug overlays
+        >>> debugger.visualize(depth=1)  # Records metadata-only diagnostics
     """
 
     def __init__(self, graph: Graph):
@@ -415,10 +415,11 @@ class VizDebugger:
         show_types: bool = True,
         filepath: str | None = None,
     ) -> Any:
-        """Visualize the graph with debug overlays enabled.
+        """Visualize the graph with diagnostic metadata enabled.
 
-        Prints issues and stats before rendering, then shows the visualization
-        with debug overlays (BOUNDS/WIDTHS/TEXTS tabs, edge debug points).
+        Prints issues and stats before rendering, then renders the graph while
+        recording the metadata-only ``_debug_overlays`` flag. The browser debug
+        API is exposed for every visualization, independently of that flag.
 
         Args:
             depth: How many levels of nested graphs to expand (default: 0)
@@ -457,7 +458,9 @@ class VizDebugger:
         else:
             print("No issues found.")
 
-        print("\nDebug overlays enabled. Use tabs: BOUNDS | WIDTHS | TEXTS")
+        print("\nRendered with the metadata-only _debug_overlays flag recorded.")
+        print("Browser debug API: window.__hypergraphVizDebug (always available after layout).")
+        print("Optional dev controls: set window.__hypergraph_debug_viz = true before rendering.")
         print("=" * 28)
 
         return viz_func(

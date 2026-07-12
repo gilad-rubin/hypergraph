@@ -324,7 +324,7 @@ class TestDebugVisualize:
     """Tests for VizDebugger.visualize() method."""
 
     def test_visualize_returns_widget(self, capsys):
-        """Test that visualize() returns a widget with debug overlays."""
+        """Test that visualize() returns a widget with diagnostic metadata."""
         graph = Graph(nodes=[double, add_one])
         debugger = VizDebugger(graph)
 
@@ -346,8 +346,8 @@ class TestDebugVisualize:
         captured = capsys.readouterr()
         assert "Disconnected nodes" in captured.out
 
-    def test_visualize_enables_debug_overlays(self):
-        """Test that visualize() enables debug overlays in the HTML."""
+    def test_visualize_records_debug_metadata(self):
+        """Test that visualize() records the metadata-only flag in HTML."""
         graph = Graph(nodes=[double])
         debugger = VizDebugger(graph)
 

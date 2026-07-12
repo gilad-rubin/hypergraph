@@ -237,7 +237,7 @@ class TestDimensionMismatch:
         2. viz.js:886 - srcBottomY calculation for cross-boundary edges
         3. viz.js:954 - newStartY calculation for re-routed edges
         4. viz.js:44-45 - nodeVisibleBottom() helper
-        5. viz.js:1091-1101 - Debug overlay visible height calculation
+        5. viz_debug.js - Browser debug API visible height calculation
 
         NO FIXES NEEDED: Shadow handling is correct and well-documented in CLAUDE.md
         """
@@ -367,8 +367,8 @@ Locations:
 4. /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/viz.js:44-45
    - nodeVisibleBottom() helper function
    - Used throughout edge routing logic
-5. /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/viz.js:1091-1101
-   - Debug overlay visible height calculation
+5. src/hypergraph/viz/assets/viz_debug.js
+   - Browser debug API visible height calculation
 
 Purpose: Visual alignment - edges connect to where the user SEES the node boundary,
 not the layout box (which extends beyond visible edge due to shadow blur)

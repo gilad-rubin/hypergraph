@@ -43,7 +43,16 @@ class NodeContext:
         result = llm(messages=["hi"], ctx=ctx)
     """
 
-    __slots__ = ("_stop_signal", "_emit_fn", "_node_name", "_run_id")
+    __slots__ = (
+        "_stop_signal",
+        "_emit_fn",
+        "_node_name",
+        "_run_id",
+        "_graph_name",
+        "_workflow_id",
+        "_item_index",
+        "_parent_span_id",
+    )
 
     def __init__(
         self,
@@ -51,11 +60,20 @@ class NodeContext:
         emit_fn: Callable[[Any], None],
         node_name: str,
         run_id: str = "",
+        *,
+        graph_name: str = "",
+        workflow_id: str | None = None,
+        item_index: int | None = None,
+        parent_span_id: str | None = None,
     ) -> None:
         self._stop_signal = stop_signal
         self._emit_fn = emit_fn
         self._node_name = node_name
         self._run_id = run_id
+        self._graph_name = graph_name
+        self._workflow_id = workflow_id
+        self._item_index = item_index
+        self._parent_span_id = parent_span_id
 
     @property
     def stop_requested(self) -> bool:
@@ -74,8 +92,12 @@ class NodeContext:
             self._emit_fn(
                 StreamingChunkEvent(
                     run_id=self._run_id,
+                    parent_span_id=self._parent_span_id,
+                    workflow_id=self._workflow_id,
+                    item_index=self._item_index,
                     chunk=chunk,
                     node_name=self._node_name,
+                    graph_name=self._graph_name,
                 )
             )
 
@@ -94,13 +116,29 @@ def build_node_context(
     node_name: str,
     emit_fn: Callable[[Any], None] | None,
     run_id: str = "",
+    *,
+    graph_name: str = "",
+    workflow_id: str | None = None,
+    item_index: int | None = None,
+    parent_span_id: str | None = None,
 ) -> NodeContext:
     """Build a NodeContext for executor injection.
 
     Reads the StopSignal from the contextvar (set by the runner).
-    Falls back to an unset signal if none is active.
+    Falls back to an unset signal if none is active. The correlation
+    fields (graph_name, workflow_id, item_index, parent_span_id) are
+    stamped onto every ``StreamingChunkEvent`` the node emits.
     """
     from hypergraph.runners._shared.stop import StopSignal, get_stop_signal
 
     signal = get_stop_signal() or StopSignal()
-    return NodeContext(signal, emit_fn or _noop_emit, node_name, run_id=run_id)
+    return NodeContext(
+        signal,
+        emit_fn or _noop_emit,
+        node_name,
+        run_id=run_id,
+        graph_name=graph_name,
+        workflow_id=workflow_id,
+        item_index=item_index,
+        parent_span_id=parent_span_id,
+    )

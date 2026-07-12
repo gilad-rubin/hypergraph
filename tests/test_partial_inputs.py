@@ -185,6 +185,60 @@ class TestEntrypointNarrowsActiveSet:
 # === Entrypoint + select composition ===
 
 
+@node(output_name="mid_val")
+def chain_upstream(x):
+    return x
+
+
+@node(output_name="out_val")
+def chain_downstream(mid_val):
+    return mid_val
+
+
+class TestUnreachableSelectRejected:
+    """entrypoint+select combos that cannot produce the selection fail at build time (#119)."""
+
+    def test_select_after_entrypoint_raises(self):
+        """Selecting an output whose producer is upstream of the entrypoint raises."""
+        graph = Graph([chain_upstream, chain_downstream])
+        with pytest.raises(GraphConfigError, match="mid_val"):
+            graph.with_entrypoint("chain_downstream").select("mid_val")
+
+    def test_entrypoint_after_select_raises(self):
+        """Order-independent: .select(...).with_entrypoint(...) raises too."""
+        graph = Graph([chain_upstream, chain_downstream])
+        with pytest.raises(GraphConfigError, match="mid_val"):
+            graph.select("mid_val").with_entrypoint("chain_downstream")
+
+    def test_partially_unreachable_selection_raises(self):
+        """A mix of reachable and unreachable selected outputs still raises."""
+        graph = Graph([chain_upstream, chain_downstream])
+        with pytest.raises(GraphConfigError, match="mid_val"):
+            graph.with_entrypoint("chain_downstream").select("out_val", "mid_val")
+
+    def test_error_lists_producible_outputs_and_fix(self):
+        """House message style: what / valid options / how to fix."""
+        graph = Graph([chain_upstream, chain_downstream])
+        with pytest.raises(GraphConfigError) as exc_info:
+            graph.with_entrypoint("chain_downstream").select("mid_val")
+        message = str(exc_info.value)
+        assert "chain_downstream" in message  # entrypoint context
+        assert "out_val" in message  # what IS producible
+        assert "How to fix" in message
+
+    def test_reachable_selection_still_allowed(self):
+        """Selecting an output the entrypoint can reach stays valid."""
+        graph = Graph([chain_upstream, chain_downstream])
+        g2 = graph.with_entrypoint("chain_downstream").select("out_val")
+        assert g2.selected == ("out_val",)
+
+    def test_constructor_entrypoint_then_select_raises(self):
+        """Graph(entrypoint=...) followed by select() validates the combination."""
+        graph = Graph([chain_upstream, chain_downstream], entrypoint="chain_downstream")
+        with pytest.raises(GraphConfigError, match="mid_val"):
+            graph.select("mid_val")
+
+
 class TestEntrypointAndSelectCompose:
     """Both with_entrypoint and select narrow together."""
 
@@ -400,18 +454,52 @@ class TestImmutability:
         g2 = graph.with_entrypoint("process_node")
         assert g2.entrypoints_config == ("process_node",)
 
-    def test_add_nodes_resets_entrypoints(self):
-        """add_nodes creates fresh graph without entrypoints."""
+    def test_add_nodes_preserves_entrypoints(self):
+        """add_nodes keeps configured entrypoints instead of silently dropping them (#115)."""
         graph = Graph([root1, process_node])
         g2 = graph.with_entrypoint("process_node")
-        assert g2.entrypoints_config is not None
+        assert g2.entrypoints_config == ("process_node",)
 
         @node(output_name="extra")
         def extra_node(a):
             return a
 
         g3 = g2.add_nodes(extra_node)
-        assert g3.entrypoints_config is None
+        assert g3.entrypoints_config == ("process_node",)
+        # Scope stays narrowed: root1 is still excluded, 'a' remains a user input.
+        assert "a" in g3.inputs.required
+
+    def test_add_nodes_cycle_with_preserved_entrypoint_builds(self):
+        """Preserved entrypoint satisfies the cyclic-graph requirement after add_nodes."""
+
+        @node(output_name="draft")
+        def write(topic, feedback="none"):
+            return f"{topic}:{feedback}"
+
+        @node(output_name="feedback")
+        def review(draft):
+            return f"review of {draft}"
+
+        graph = Graph([write]).with_entrypoint("write")
+        # Adding review forms the cycle write -> review -> write. With the old
+        # reset behavior this raised "Cyclic graphs require an explicit
+        # entrypoint"; the preserved entrypoint now satisfies that check.
+        g2 = graph.add_nodes(review)
+        assert g2.has_cycles
+        assert g2.entrypoints_config == ("write",)
+
+    def test_add_nodes_invalid_combination_fails_loud(self):
+        """Rebuild validation still fires with preserved entrypoints (loud failure)."""
+        graph = Graph([root1, process_node]).with_entrypoint("process_node")
+
+        @node(output_name="r1")
+        def rival_producer(q):
+            return q
+
+        # Two unordered producers of 'r1' (root1 + rival_producer) is a
+        # rebuild-time conflict. Entrypoint preservation must not mask it.
+        with pytest.raises(GraphConfigError):
+            graph.add_nodes(rival_producer)
 
 
 # === Runtime select rejected ===

@@ -1,5 +1,7 @@
 # Durability (Consolidated): Steps, Serialization, Artifacts, and GraphNode Boundaries
 
+> **Status: design intent** (written 2026-05). This spec describes the target design, not current behavior. The implemented API is documented under `docs/`.
+
 This document consolidates the reviewed durability specs into one coherent design:
 - `specs/deprecated/durability-boundaries.md`
 - `specs/deprecated/serialization-and-durability.md`

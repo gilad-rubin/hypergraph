@@ -249,7 +249,7 @@ caps = runner.capabilities
 
 caps.supports_cycles       # True
 caps.supports_async_nodes  # False
-caps.supports_streaming    # False
+caps.supports_streaming    # True (map_iter + ctx.stream chunks)
 caps.returns_coroutine     # False
 caps.supports_interrupts   # False
 ```
@@ -818,7 +818,7 @@ caps = runner.capabilities
 
 caps.supports_cycles       # True
 caps.supports_async_nodes  # True
-caps.supports_streaming    # False (Phase 2)
+caps.supports_streaming    # True (map_iter + ctx.stream chunks)
 caps.returns_coroutine     # True
 caps.supports_interrupts   # True
 ```
@@ -857,7 +857,14 @@ class RunResult:
     workflow_id: str | None     # Optional workflow tracking
     error: BaseException | None # Exception if FAILED
     pause: PauseInfo | None     # Pause info if PAUSED (InterruptNode)
+    log: RunLog | None          # Execution trace, if collected
+    checkpoint_ok: bool         # False when a best-effort async step save failed
+    checkpoint_errors: tuple[str, ...]  # String-only checkpoint save errors
 ```
+
+With async checkpoint durability, step saves are best-effort: a persistence gap
+does not change the execution status. Check `checkpoint_ok` and
+`checkpoint_errors` when durable history is required.
 
 ### Convenience Properties
 
@@ -904,7 +911,7 @@ This is useful for debugging — you can inspect which nodes completed successfu
 result.summary()   # "3 nodes | 12ms | 0 errors | slowest: generate (8ms)"
 
 # JSON-serializable metadata (no raw values or exception objects)
-result.to_dict()   # {"status": "completed", "run_id": "run-abc", "log": {...}}
+result.to_dict()   # {"status": "completed", "run_id": "run-abc", "checkpoint_ok": True, "checkpoint_errors": [], "log": {...}}
 ```
 
 ---
@@ -936,6 +943,10 @@ results.failed       # True if any failed
 results.partial      # True if some items completed and some failed
 results.stopped      # True if any item stopped and none failed/paused
 results.failures     # List of failed RunResult items
+
+# Derived durability aggregation (properties, not dataclass fields)
+results.checkpoint_ok      # True only when every item persisted successfully
+results.checkpoint_errors  # Tuple of save errors in stable item order
 
 # Progressive disclosure
 results.summary()    # "3 items | 3 completed | 12ms"
@@ -1058,6 +1069,22 @@ try:
 except InfiniteLoopError as e:
     print(e)
     # Graph execution exceeded 100 iterations
+```
+
+### ExecutionError
+
+Wraps an exception raised inside a node during graph execution and carries the partial `GraphState` accumulated before the failure (`partial_state` attribute).
+
+`runner.run()` with the default `error_handling="raise"` unwraps it and re-raises the original node exception, so application code normally catches the node's own exception type. `ExecutionError` is exported for advanced integrations (custom runners, executors, or superstep-level code) that need access to the partial state alongside the failure.
+
+```python
+from hypergraph import ExecutionError
+
+try:
+    advanced_execution_surface(...)
+except ExecutionError as e:
+    print(e.partial_state)   # state accumulated before the failure
+    print(e.__cause__)       # the original node exception
 ```
 
 ---

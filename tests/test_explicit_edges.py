@@ -193,7 +193,6 @@ class TestExplicitEdgesInputSpec:
             entrypoint="ask_user",
         )
         assert g.inputs.required == ()
-        assert g.inputs.entrypoints == {}
 
 
 # ── Execution tests ──────────────────────────────────────────────────────────

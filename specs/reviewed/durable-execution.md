@@ -1,5 +1,7 @@
 # Durable Execution
 
+> **Status: design intent** (written 2026-05). This spec describes the target design, not current behavior. The implemented API is documented under `docs/`.
+
 **From development save points to production-grade crash recovery.**
 
 > **Type Reference:** For all type definitions (`RunResult`, `RunStatus`, `PauseReason`, `Workflow`, `StepRecord`, etc.), see [Execution Types](execution-types.md). This document focuses on usage patterns.

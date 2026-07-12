@@ -94,7 +94,7 @@ dump = debugger.debug_dump()
 ```python
 # From the graph object directly
 debugger = graph.debug_viz()
-debugger.visualize(depth=1)  # Shows viz with debug overlays
+debugger.visualize(depth=1)  # Renders the viz (sets the metadata-only debug_overlays flag)
 ```
 
 ### Dataclasses
@@ -415,7 +415,7 @@ class TestEdgeRouting:
 
 ## 6. Browser Debug API
 
-When rendering with `_debug_overlays=True`, the browser exposes `window.__hypergraphVizDebug`:
+The rendered page always exposes `window.__hypergraphVizDebug` — `assets/viz_debug.js` installs it on every layout pass, no flag required:
 
 ```javascript
 window.__hypergraphVizDebug = {
@@ -444,23 +444,17 @@ window.__hypergraphVizDebug = {
 }
 ```
 
-### Enabling Debug Mode
+### The `_debug_overlays` flag
 
-```python
-# In Python
-visualize(graph, _debug_overlays=True)
+`visualize(graph, _debug_overlays=True)` is metadata-only today: it sets
+`graph_data["meta"]["debug_overlays"] = True` (`widget.py:render_flat_graph`),
+and no JavaScript asset reads that key. It renders no overlay UI, and it does
+not gate `window.__hypergraphVizDebug`, which is installed unconditionally.
+The flag may be removed in a future cleanup.
 
-# Or in browser console before rendering
-window.__hypergraph_debug_viz = true
-```
-
-### Debug Overlays
-
-When enabled, the visualization shows:
-- **BOUNDS tab**: Node boundary boxes
-- **WIDTHS tab**: Width measurements
-- **TEXTS tab**: Text element bounds
-- **Edge debug points**: Start/end markers on edges
+`window.__hypergraph_debug_viz = true` (browser console) is a separate switch:
+it shows the DialKit dev layout controls (see `AGENTS.md`, "Dev Controls"),
+not debug overlays.
 
 ---
 

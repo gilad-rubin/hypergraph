@@ -1,5 +1,7 @@
 # Checkpointer
 
+> **Status: design intent** (written 2026-05). This spec describes the target design, not current behavior. The implemented API is documented under `docs/`.
+
 **The interface for workflow persistence and state management.**
 
 Checkpointers store workflow state to enable resume, crash recovery, and multi-turn conversations. Unlike EventProcessor (which handles observability), Checkpointer is a bidirectional interface for reading and writing durable state.

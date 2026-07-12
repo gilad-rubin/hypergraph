@@ -15,6 +15,14 @@ from typing import get_type_hints
 # Currently only NodeContext; kept as a set for future extensibility.
 _INJECTABLE_TYPES: set[type] = set()
 
+# Node functions are invoked with keyword arguments (func(**inputs)), so
+# parameters that cannot be addressed by keyword can never receive a value.
+_UNSUPPORTED_PARAM_KINDS: dict[inspect._ParameterKind, str] = {
+    inspect.Parameter.POSITIONAL_ONLY: "positional-only",
+    inspect.Parameter.VAR_POSITIONAL: "variadic positional (*args)",
+    inspect.Parameter.VAR_KEYWORD: "variadic keyword (**kwargs)",
+}
+
 
 def register_injectable(cls: type) -> None:
     """Register a type as framework-injectable (excluded from node.inputs)."""
@@ -36,8 +44,12 @@ def extract_inputs(func: Callable) -> tuple[tuple[str, ...], str | None]:
 
     Raises:
         TypeError: If more than one injectable parameter is declared.
+        TypeError: If the signature contains a positional-only, ``*args``,
+            or ``**kwargs`` parameter. Nodes are invoked with keyword
+            arguments, so such parameters could never receive a value.
     """
     sig = inspect.signature(func)
+    _reject_non_keyword_callable_params(func, sig)
     hints = _safe_get_type_hints(func)
 
     inputs: list[str] = []
@@ -55,6 +67,24 @@ def extract_inputs(func: Callable) -> tuple[tuple[str, ...], str | None]:
             inputs.append(name)
 
     return tuple(inputs), context_param
+
+
+def _reject_non_keyword_callable_params(func: Callable, sig: inspect.Signature) -> None:
+    """Reject signatures the framework could never invoke with keyword args."""
+    offending = [(name, _UNSUPPORTED_PARAM_KINDS[param.kind]) for name, param in sig.parameters.items() if param.kind in _UNSUPPORTED_PARAM_KINDS]
+    if not offending:
+        return
+
+    offending_str = "\n".join(f"  -> parameter '{name}' is {kind}" for name, kind in offending)
+    raise TypeError(
+        f"Function '{func.__name__}' has parameter(s) that cannot be called by keyword:\n\n"
+        f"{offending_str}\n\n"
+        f"Hypergraph calls node functions with keyword arguments, so every parameter\n"
+        f"must be a regular or keyword-only parameter.\n\n"
+        f"How to fix:\n"
+        f"  Declare each input as a named parameter, e.g. def {func.__name__}(a, b) or\n"
+        f"  def {func.__name__}(a, *, b). Remove '/', '*args', and '**kwargs' from the signature."
+    )
 
 
 def _safe_get_type_hints(func: Callable) -> dict:
