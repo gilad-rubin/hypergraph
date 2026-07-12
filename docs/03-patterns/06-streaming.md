@@ -154,7 +154,7 @@ async for index, result in runner.map_iter(
     {"query": queries},
     map_over="query",
 ):
-    send_to_client(index, result["answer"])
+    send_to_client(index, result["response"])
 ```
 
 - **Incremental** — each `(index, result)` pair is yielded as soon as that item finishes; `index` is the input item's position, so you can correlate results even when they arrive out of order.
@@ -170,7 +170,7 @@ from hypergraph import SyncRunner
 runner = SyncRunner()
 
 for index, result in runner.map_iter(rag_pipeline, {"query": queries}, map_over="query"):
-    print(f"[{index}] {result['answer']}")
+    print(f"[{index}] {result['response']}")
 ```
 
 See [Batch Processing](../05-how-to/batch-processing.md) for the buffering counterpart, `runner.map()`.
