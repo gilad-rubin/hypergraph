@@ -165,6 +165,17 @@ g2 = g.with_entrypoint("downstream")
 print(g2.entrypoints_config)  # ('downstream',)
 ```
 
+### `default_event_processors: tuple[EventProcessor, ...]`
+
+Event processors carried by this graph, set via `with_processors()`. Runners
+merge them in front of any call-site processors on every run. Empty tuple by
+default.
+
+```python
+instrumented = g.with_processors(OpenTelemetryProcessor())
+print(instrumented.default_event_processors)  # (<OpenTelemetryProcessor ...>,)
+```
+
 ### `has_cycles: bool`
 
 True if the graph contains cycles.
@@ -455,7 +466,7 @@ print(partial.inputs.bound)  # {'y': 10}
 
 Add nodes to the graph. Returns a new Graph (immutable pattern).
 
-Equivalent to rebuilding the graph with the combined node list, then replaying the existing configuration: entrypoints, bindings, and selection are all preserved.
+Equivalent to rebuilding the graph with the combined node list, then replaying the existing configuration: entrypoints, bindings, selection, and carried event processors are all preserved.
 
 ```python
 g = Graph([upstream, downstream]).with_entrypoint("downstream")
@@ -636,6 +647,32 @@ g2 = g.with_entrypoint("retrieve")
 result = runner.run(g2, {"embedding": [0.1, 0.2], "query": "hello"})
 # Only retrieve and generate execute
 ```
+
+### `with_processors(*processors) -> Graph`
+
+Attach default event processors. Returns a new Graph (immutable pattern).
+
+Carried processors travel with the graph: every runner merges them in front
+of any call-site processors — `[*graph.default_event_processors,
+*event_processors]` — so carrying processors never replaces what a caller
+passes, and vice versa. Accumulative and chainable. See
+[Graph-Carried Processors](events.md#graph-carried-processors) for the full
+contract.
+
+```python
+from hypergraph.events.otel import OpenTelemetryProcessor
+
+instrumented = graph.with_processors(OpenTelemetryProcessor())
+SyncRunner().run(instrumented, {"x": 1})  # spans exported, no call-site wiring
+```
+
+**Args:**
+- `*processors`: `EventProcessor` instances to carry.
+
+**Returns:** New Graph carrying `(*existing, *processors)`
+
+**Raises:**
+- `TypeError` - If an argument is not an `EventProcessor`.
 
 ### `as_node(*, name=None, namespaced=False, runner=None, complete_on_stop=False) -> GraphNode`
 

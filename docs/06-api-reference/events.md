@@ -17,13 +17,26 @@ runner = SyncRunner()
 result = runner.run(graph, inputs, event_processors=[RichProgressProcessor()])
 ```
 
+Processors can also travel with the graph itself — see
+[Graph-Carried Processors](#graph-carried-processors).
+
 Events flow through this pipeline:
 
 ```text
 Runner emits event → EventDispatcher → each EventProcessor.on_event()
 ```
 
-All dispatch is best-effort: a failing processor never breaks execution.
+Two contracts hold everywhere processors appear:
+
+1. **Processors observe only, and are failure-isolated.** A processor never
+   changes execution, and dispatch is best-effort: if a processor raises, the
+   error is logged and the run continues (`EventDispatcher(strict=True)`
+   propagates instead, for tests that want loud failures).
+2. **Graph-carried processors merge with call-site processors — never
+   replace.** Runners dispatch to
+   `[*graph.default_event_processors, *event_processors]`: carrying processors
+   on a graph never silences what a caller passes, and passing processors at
+   the call site never silences what the graph carries.
 
 ---
 
@@ -313,6 +326,70 @@ class SlowNodeDetector(TypedEventProcessor):
 
 ---
 
+## Graph-Carried Processors
+
+A graph can carry default event processors so instrumentation survives being
+handed to any runner — no need to thread `event_processors=` through every
+call site.
+
+```python
+from hypergraph import Graph, SyncRunner
+
+instrumented = graph.with_processors(MyProcessor())   # new Graph (immutable)
+
+SyncRunner().run(instrumented, inputs)                # MyProcessor observes the run
+SyncRunner().map(instrumented, items, map_over="x")   # …and every map, on any runner
+```
+
+### Graph.with_processors
+
+```python
+def with_processors(self, *processors: EventProcessor) -> Graph: ...
+```
+
+Returns a **new** graph carrying `(*existing, *processors)` — accumulative and
+chainable, like `bind()` and `select()`. The original graph is unchanged.
+Raises `TypeError` if an argument is not an `EventProcessor`.
+
+### Graph.default_event_processors
+
+```python
+@property
+def default_event_processors(self) -> tuple[EventProcessor, ...]: ...
+```
+
+The carried processors as a tuple (default `()`).
+
+### Merge semantics
+
+Every runner merges carried processors in front of call-site ones:
+
+```python
+[*graph.default_event_processors, *event_processors]
+```
+
+- **Merge, never replace** — both sets observe the same run (see the
+  contracts in [Overview](#overview)). Nothing is deduplicated: carrying the
+  **same processor instance** at more than one level (call-site and carried,
+  or on both an outer graph and a graph nested inside it) delivers that
+  instance the same events more than once — carry stateful processors like
+  `OpenTelemetryProcessor` at exactly one level.
+- All entry points participate: `run()`, `map()` (including the top-level map
+  span), and `map_iter()` (which delegates through `run()` per item, so
+  carried processors observe each item; there is no top-level map span).
+- Nested `GraphNode` sub-runs forward carried processors exactly like
+  call-site processors, so a processor carried by the outer graph observes
+  inner-graph events too.
+- `DaftRunner` does not support events: it warns and ignores carried
+  processors, exactly as it already does for explicit `event_processors`.
+- `repr(graph)` appends `· N processors` when processors are carried:
+
+```text
+Graph: my_graph | 3 nodes | 2 edges | no cycles · 1 processor
+```
+
+---
+
 ## RichProgressProcessor
 
 Hierarchical Rich progress bars for graph execution. Requires the `rich` package.
@@ -408,7 +485,12 @@ Manages processor lifecycle and event delivery. You typically don't interact wit
 
 ```python
 class EventDispatcher:
-    def __init__(self, processors: list[EventProcessor] | None = None) -> None: ...
+    def __init__(
+        self,
+        processors: list[EventProcessor] | None = None,
+        *,
+        strict: bool = False,
+    ) -> None: ...
 
     @property
     def active(self) -> bool:
@@ -421,11 +503,15 @@ class EventDispatcher:
         """Send event to every processor, using async when available."""
 
     def shutdown(self) -> None:
-        """Shut down all processors. Best-effort."""
+        """Shut down all processors. Best-effort unless strict."""
 
     async def shutdown_async(self) -> None:
         """Shut down all processors, using async when available."""
 ```
+
+By default dispatch is best-effort — a raising processor is logged and
+skipped. With `strict=True` exceptions propagate immediately (useful in
+tests). Runners always construct non-strict dispatchers.
 
 ---
 

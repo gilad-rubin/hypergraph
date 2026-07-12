@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any
 from hypergraph.events.processor import TypedEventProcessor
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from hypergraph.events.types import (
         CacheHitEvent,
         InterruptEvent,
@@ -77,13 +79,38 @@ _MAX_LINEAGE_CONTEXTS = 256
 class OpenTelemetryProcessor(TypedEventProcessor):
     """Convert Hypergraph events into OTel spans and span events."""
 
-    def __init__(self, tracer_name: str = "hypergraph") -> None:
+    def __init__(
+        self,
+        tracer_name: str = "hypergraph",
+        *,
+        extra_attributes: Mapping[str, str | int | float | bool] | None = None,
+        tracer_provider: Any | None = None,
+    ) -> None:
+        """Create an OTel export processor.
+
+        Args:
+            tracer_name: Name passed to ``get_tracer`` on the resolved provider.
+            extra_attributes: Attributes merged onto **every** span this
+                processor creates — run root spans (``graph …``/``map …``) and
+                node spans alike. All spans rather than the root only: it is
+                cheap, and lets backends filter on any span. Hypergraph's own
+                span attributes win on key collisions.
+            tracer_provider: OTel ``TracerProvider`` to write spans to. When
+                ``None`` (default), the tracer is looked up on the global
+                provider exactly as before. When provided, spans go only to
+                this provider — the global tracer provider is neither
+                consulted nor modified.
+        """
         _require_opentelemetry()
         from opentelemetry import trace
         from opentelemetry.trace import Link, Status, StatusCode
 
         self._trace = trace
-        self._tracer = trace.get_tracer(tracer_name)
+        if tracer_provider is not None:
+            self._tracer = tracer_provider.get_tracer(tracer_name)
+        else:
+            self._tracer = trace.get_tracer(tracer_name)
+        self._extra_attributes: dict[str, Any] = dict(extra_attributes) if extra_attributes else {}
         self._Link = Link
         self._Status = Status
         self._StatusCode = StatusCode
@@ -130,6 +157,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
 
         name = f"{'map' if event.is_map else 'graph'} {event.graph_name}"
         attributes = {
+            **self._extra_attributes,
             **_base_attrs(event),
             "hypergraph.graph_name": event.graph_name,
             "hypergraph.is_map": event.is_map,
@@ -219,6 +247,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
             attributes={
                 k: v
                 for k, v in {
+                    **self._extra_attributes,
                     **_base_attrs(event),
                     "hypergraph.node_name": event.node_name,
                     "hypergraph.graph_name": event.graph_name,

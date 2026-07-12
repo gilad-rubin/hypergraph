@@ -346,6 +346,12 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             from hypergraph.runners._shared.scheduling import ensure_progress_processor
 
             event_processors = ensure_progress_processor(event_processors)
+        if graph.default_event_processors:
+            # Graph-carried processors merge in front of call-site ones — never
+            # replace, never dedup. Reassigning event_processors also forwards
+            # them into nested GraphNode sub-runs, exactly like call-site
+            # processors.
+            event_processors = [*graph.default_event_processors, *(event_processors or [])]
         collector = RunLogCollector()
         all_processors = [collector] + (event_processors or [])
         dispatcher = self._create_dispatcher(all_processors)
@@ -615,7 +621,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 graph_name=graph.name or "",
             )
 
-        dispatcher = self._create_dispatcher(event_processors)
+        # Graph-carried processors merge into the top-level map dispatcher only;
+        # the per-item self.run(...) calls below re-merge them per item, so
+        # forwarding the merged list would double-deliver every item event.
+        dispatcher = self._create_dispatcher([*graph.default_event_processors, *(event_processors or [])])
         map_run_id, map_span_id = self._emit_run_start_sync(
             dispatcher,
             graph,

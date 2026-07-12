@@ -19,6 +19,7 @@ from hypergraph.nodes.base import HyperNode
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from hypergraph.events.processor import EventProcessor
     from hypergraph.nodes.graph_node import GraphNode
     from hypergraph.viz.debug import VizDebugger
 
@@ -123,6 +124,9 @@ class Graph:
         has_async_nodes: True if any FunctionNode is async
         strict_types: If True, type validation between nodes is enabled
         definition_hash: Merkle-tree hash of graph structure (for caching)
+        default_event_processors: Event processors carried by this graph
+            (see with_processors); runners merge them in front of call-site
+            event_processors
 
     Example:
         >>> @node(output_name="doubled")
@@ -187,6 +191,7 @@ class Graph:
         self._shared = self._normalize_shared(shared)
         self._bound: dict[str, Any] = {}
         self._selected: tuple[str, ...] | None = None
+        self._default_event_processors: tuple[EventProcessor, ...] = ()
         self._nodes = self._build_nodes_dict(nodes)
         self._validate_shared_params()
         self._entrypoints = self._normalize_constructor_entrypoints(entrypoint)
@@ -1104,9 +1109,10 @@ class Graph:
     def add_nodes(self, *nodes: HyperNode) -> Graph:
         """Add nodes to graph. Returns new Graph (immutable).
 
-        Equivalent to rebuilding the graph with the combined node list,
-        then replaying entrypoints/bind/select. Configured entrypoints are
-        preserved, so the execution scope stays narrowed after adding nodes.
+        Equivalent to rebuilding the graph with the combined node list, then
+        replaying entrypoints/bind/select and carried event processors.
+        Configured entrypoints are preserved, so the execution scope stays
+        narrowed after adding nodes.
 
         Raises GraphConfigError if graph was constructed with explicit edges,
         or if the rebuilt graph is structurally invalid (e.g., conflicting
@@ -1132,6 +1138,7 @@ class Graph:
             strict_types=self._strict_types,
             shared=sorted(self._shared) if self._shared else None,
         )
+        new_graph._default_event_processors = self._default_event_processors
 
         if self._bound:
             valid_names = set(new_graph.inputs.all)
@@ -1198,6 +1205,51 @@ class Graph:
     def entrypoints_config(self) -> tuple[str, ...] | None:
         """Configured entry points, or None if all nodes are active."""
         return self._entrypoints
+
+    def with_processors(self, *processors: EventProcessor) -> Graph:
+        """Attach default event processors. Returns new Graph (immutable).
+
+        Carried processors travel with the graph: every runner merges them in
+        front of any call-site processors —
+        ``[*graph.default_event_processors, *event_processors]`` — so carrying
+        processors never replaces what a caller passes, and vice versa.
+        Accumulative and chainable: each call appends to the processors the
+        graph already carries.
+
+        Like call-site processors, carried processors observe only and are
+        failure-isolated: a raising processor is logged and never breaks the
+        run.
+
+        Args:
+            *processors: ``EventProcessor`` instances to carry.
+
+        Returns:
+            New Graph carrying ``(*existing, *processors)``.
+
+        Raises:
+            TypeError: If an argument is not an ``EventProcessor``.
+
+        Example:
+            >>> instrumented = graph.with_processors(OpenTelemetryProcessor())
+            >>> SyncRunner().run(instrumented, {"x": 1})  # spans exported
+        """
+        from hypergraph.events.processor import EventProcessor
+
+        for processor in processors:
+            if not isinstance(processor, EventProcessor):
+                raise TypeError(
+                    f"with_processors() expects EventProcessor instances, got {type(processor).__name__}. "
+                    "Subclass hypergraph.events.EventProcessor (or TypedEventProcessor)."
+                )
+
+        new_graph = self._shallow_copy()
+        new_graph._default_event_processors = (*self._default_event_processors, *processors)
+        return new_graph
+
+    @property
+    def default_event_processors(self) -> tuple[EventProcessor, ...]:
+        """Event processors carried by this graph, merged into every run."""
+        return self._default_event_processors
 
     @property
     def has_cycles(self) -> bool:
@@ -1350,7 +1402,9 @@ class Graph:
         new_graph._bound = dict(self._bound)
         # Clear cached_property values that depend on _bound / _selected / _entrypoints
         new_graph.__dict__.pop("inputs", None)
-        # _selected and _entrypoints are immutable tuples (or None), safe to share via copy.copy
+        # _selected, _entrypoints, and _default_event_processors are immutable
+        # tuples (or None), safe to share via copy.copy — mutators assign fresh
+        # tuples on the copy, never mutate in place.
         # All other attributes preserved: _strict_types, _nodes, _nx_graph, _cached_hash
         return new_graph
 
@@ -1522,7 +1576,8 @@ class Graph:
             props.append("interrupts")
         prop_str = f" | {', '.join(props)}" if props else " | no cycles"
         name = self.name or "unnamed"
-        return f"Graph: {name} | {plural(n_nodes, 'node')} | {plural(n_edges, 'edge')}{prop_str}"
+        processors_str = f" · {plural(len(self._default_event_processors), 'processor')}" if self._default_event_processors else ""
+        return f"Graph: {name} | {plural(n_nodes, 'node')} | {plural(n_edges, 'edge')}{prop_str}{processors_str}"
 
     def _repr_html_(self) -> str | None:
         from hypergraph._repr import _code, html_detail, html_panel, html_table, plain_reprs, status_badge, theme_wrap, widget_state_key

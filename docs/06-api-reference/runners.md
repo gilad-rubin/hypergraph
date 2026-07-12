@@ -91,7 +91,7 @@ Execute a graph once.
 - `error_handling` - How to handle node execution errors:
   - `"raise"` (default): Re-raise the original exception (e.g., `ValueError`). Clean traceback, no wrapper.
   - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
-- `event_processors` - Optional list of [event processors](events.md) to observe execution
+- `event_processors` - Optional list of [event processors](events.md) to observe execution, merged after any processors the graph carries (see [Graph-Carried Processors](events.md#graph-carried-processors))
 - `checkpoint` - Optional low-level checkpoint snapshot (`values + steps`) for explicit fork restores.
 - `workflow_id` - Optional workflow identifier for lineage tracking. With a checkpointer:
   - omitted on a fresh or retry run: a generic `run-...` ID is generated
@@ -198,7 +198,7 @@ Execute a graph multiple times with different inputs.
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
-- `event_processors` - Optional list of [event processors](events.md) to observe execution
+- `event_processors` - Optional list of [event processors](events.md) to observe execution, merged after any processors the graph carries (see [Graph-Carried Processors](events.md#graph-carried-processors))
 - `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. Creates a parent batch run with per-item child runs (`{workflow_id}/0`, `{workflow_id}/1`, ...). On re-run, completed items are skipped. See [Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
 - `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
 
@@ -686,7 +686,7 @@ Execute a graph asynchronously.
 - `error_handling` - How to handle node execution errors:
   - `"raise"` (default): Re-raise the original exception. Clean traceback, no wrapper.
   - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
-- `event_processors` - Optional list of [event processors](events.md) to observe execution (supports `AsyncEventProcessor`)
+- `event_processors` - Optional list of [event processors](events.md) to observe execution, merged after any processors the graph carries (see [Graph-Carried Processors](events.md#graph-carried-processors)) (supports `AsyncEventProcessor`)
 - `checkpoint` - Optional low-level checkpoint snapshot (`values + steps`) for explicit fork restores.
 - `workflow_id` - Optional workflow identifier for lineage tracking. With a checkpointer:
   - omitted on a fresh or retry run: a generic `run-...` ID is generated
@@ -776,7 +776,7 @@ Execute graph multiple times concurrently.
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
-- `event_processors` - Optional list of [event processors](events.md) to observe execution
+- `event_processors` - Optional list of [event processors](events.md) to observe execution, merged after any processors the graph carries (see [Graph-Carried Processors](events.md#graph-carried-processors))
 - `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. Creates per-item child runs that can be skipped on re-run. See [Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
 - `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
 

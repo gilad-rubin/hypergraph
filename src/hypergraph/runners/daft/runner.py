@@ -131,7 +131,7 @@ class DaftRunner(BaseRunner):
             graph=graph,
             validation_ctx=ctx,
         )
-        self._warn_ignored(event_processors=event_processors, show_progress=show_progress)
+        self._warn_ignored(graph=graph, event_processors=event_processors, show_progress=show_progress)
 
         validate_runner_compatibility(graph, self.capabilities)
         _validate_no_runner_overrides(graph)
@@ -200,7 +200,7 @@ class DaftRunner(BaseRunner):
             graph=graph,
             validation_ctx=ctx,
         )
-        self._warn_ignored(event_processors=event_processors, show_progress=show_progress)
+        self._warn_ignored(graph=graph, event_processors=event_processors, show_progress=show_progress)
 
         validate_runner_compatibility(graph, self.capabilities)
         _validate_no_runner_overrides(graph)
@@ -450,6 +450,7 @@ class DaftRunner(BaseRunner):
     @staticmethod
     def _warn_ignored(
         *,
+        graph: Graph,
         event_processors: list[EventProcessor] | None = None,
         show_progress: bool | None = None,
     ) -> None:
@@ -457,6 +458,12 @@ class DaftRunner(BaseRunner):
         if event_processors:
             warnings.warn(
                 "DaftRunner does not support event_processors. The provided processors will be ignored.",
+                UserWarning,
+                stacklevel=3,
+            )
+        if graph.default_event_processors:
+            warnings.warn(
+                "DaftRunner does not support event_processors. The graph's carried default_event_processors will be ignored.",
                 UserWarning,
                 stacklevel=3,
             )
