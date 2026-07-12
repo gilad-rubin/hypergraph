@@ -300,7 +300,9 @@ class AsyncRunner(AsyncRunnerTemplate):
                         run_span_id=run_span_id,
                         superstep_idx=superstep_idx,
                     )
-                except PauseExecution:
+                except PauseExecution as pause:
+                    if pause.partial_state is not None:
+                        state = pause.partial_state
                     # Save step records before propagating the pause.
                     # The interrupt node gets a "paused" status record.
                     if has_checkpointer:

@@ -5,8 +5,9 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING, Any
 
+from hypergraph.exceptions import IncompatibleRunnerError
 from hypergraph.runners._shared.helpers import collect_as_lists, graphnode_child_workflow_id, map_inputs_to_func_params
-from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
+from hypergraph.runners._shared.protocols import CheckpointErrorSinkRunner
 from hypergraph.runners._shared.types import PauseExecution, PauseInfo, RunResult, RunStatus
 
 if TYPE_CHECKING:
@@ -118,6 +119,23 @@ class AsyncGraphNodeExecutor:
 
         # Use delegated runner if configured, otherwise inherit parent
         runner = node.runner_override or self.runner
+        accepts_checkpoint_error_sink = isinstance(runner, CheckpointErrorSinkRunner) and runner._accepts_checkpoint_error_sink is True
+        if (
+            ctx.checkpoint_error_sink is not None
+            and runner.capabilities.returns_coroutine
+            and runner.capabilities.supports_checkpointing
+            and not accepts_checkpoint_error_sink
+        ):
+            raise IncompatibleRunnerError(
+                f"GraphNode {node.name!r} uses checkpoint-capable async runner "
+                f"{type(runner).__name__}, but that runner does not declare "
+                f"checkpoint error forwarding. Nested durability failures could be lost.\n\n"
+                f"How to fix: use AsyncRunner, or declare "
+                f"_accepts_checkpoint_error_sink = True and accept "
+                f"_checkpoint_error_sink in both run() and map().",
+                node_name=node.name,
+                capability="checkpoint_error_sink",
+            )
 
         if map_config:
             _, mode, error_handling = map_config
@@ -137,7 +155,7 @@ class AsyncGraphNodeExecutor:
             }
             if getattr(node, "_complete_on_stop", False):
                 map_kwargs["_complete_on_stop"] = True
-            if ctx.checkpoint_error_sink is not None and isinstance(runner, AsyncRunnerTemplate):
+            if ctx.checkpoint_error_sink is not None and accepts_checkpoint_error_sink:
                 map_kwargs["_checkpoint_error_sink"] = ctx.checkpoint_error_sink
             map_call = runner.map(node.graph, inner_inputs, **map_kwargs)
             # Delegated runner may be sync (e.g. DaftRunner) — await only if needed
@@ -162,7 +180,7 @@ class AsyncGraphNodeExecutor:
             run_kwargs["retry_from"] = child_retry_from
         if getattr(node, "_complete_on_stop", False):
             run_kwargs["_complete_on_stop"] = True
-        if ctx.checkpoint_error_sink is not None and isinstance(runner, AsyncRunnerTemplate):
+        if ctx.checkpoint_error_sink is not None and accepts_checkpoint_error_sink:
             run_kwargs["_checkpoint_error_sink"] = ctx.checkpoint_error_sink
 
         run_call = runner.run(node.graph, inner_inputs, **run_kwargs)

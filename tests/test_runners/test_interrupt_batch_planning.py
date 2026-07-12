@@ -66,3 +66,52 @@ class TestCheckpointBatchMatchesExecutedBatch:
         # must not be recorded as part of this superstep.
         assert [s.node_name for s in superstep0] == ["approval"]
         assert superstep0[0].status == StepStatus.PAUSED
+
+    async def test_nested_pause_preserves_completed_sibling_across_resume(self):
+        """A sibling completed beside a pausing GraphNode must not run twice."""
+
+        @node(output_name="side_out")
+        async def side_effect(x: int) -> int:
+            executions.append(x)
+            return x + 1
+
+        executions: list[int] = []
+        checkpointer = MemoryCheckpointer()
+        runner = AsyncRunner(checkpointer=checkpointer)
+        inner = Graph([_make_interrupt()], name="review")
+        graph = Graph([inner.as_node(name="review"), side_effect], name="outer")
+
+        paused = await runner.run(
+            graph,
+            {"draft": "please review", "x": 1},
+            workflow_id="wf-nested-pause-sibling",
+        )
+
+        assert paused.paused
+        assert paused["side_out"] == 2
+        assert executions == [1]
+        paused_steps = await checkpointer.get_steps("wf-nested-pause-sibling")
+        assert [(step.node_name, step.status) for step in paused_steps] == [
+            ("review", StepStatus.PAUSED),
+            ("side_effect", StepStatus.COMPLETED),
+        ]
+
+        assert paused.pause is not None
+        resumed = await runner.run(
+            graph,
+            {paused.pause.response_key: "approved"},
+            workflow_id="wf-nested-pause-sibling",
+        )
+
+        assert resumed.completed
+        assert resumed["decision"] == "approved"
+        assert resumed["side_out"] == 2
+        assert executions == [1]
+        all_steps = await checkpointer.get_steps("wf-nested-pause-sibling")
+        assert [step.status for step in all_steps if step.node_name == "review"] == [
+            StepStatus.PAUSED,
+            StepStatus.COMPLETED,
+        ]
+        assert [step.status for step in all_steps if step.node_name == "side_effect"] == [
+            StepStatus.COMPLETED,
+        ]

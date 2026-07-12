@@ -294,6 +294,8 @@ async def run_superstep_async(
     if control_flow_error is not None:
         # Pause/cancellation/system-exit control flow must not be hidden by an
         # ordinary Exception that happened to appear earlier in graph order.
+        if isinstance(control_flow_error, PauseExecution):
+            control_flow_error.partial_state = new_state
         raise control_flow_error
 
     if first_error is not None:

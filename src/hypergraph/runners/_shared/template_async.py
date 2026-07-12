@@ -9,7 +9,7 @@ import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from hypergraph.exceptions import (
     ExecutionError,
@@ -85,6 +85,8 @@ _MAP_SIGNATURE_CONFIG_KEY = "map_item_signature"
 
 class AsyncRunnerTemplate(BaseRunner, ABC):
     """Template implementation for async run/map lifecycle."""
+
+    _accepts_checkpoint_error_sink: ClassVar[Literal[True]] = True
 
     @property
     @abstractmethod
@@ -666,6 +668,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 f"Too many map tasks without a concurrency limit: {len(input_variations)}. "
                 f"Set max_concurrency or keep inputs at <= {MAX_UNBOUNDED_MAP_TASKS}."
             )
+        item_checkpoint_errors: list[list[str]] = [[] for _ in input_variations]
 
         dispatcher = self._create_dispatcher(event_processors)
         map_run_id, map_span_id = await self._emit_run_start_async(
@@ -740,7 +743,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     _validation_ctx=ctx,
                     _run_config={_MAP_SIGNATURE_CONFIG_KEY: item_signature},
                     _item_index=idx,
-                    _checkpoint_error_sink=_checkpoint_error_sink,
+                    _checkpoint_error_sink=(item_checkpoint_errors[idx].append if _checkpoint_error_sink is not None else None),
                 )
             except Exception as e:
                 # Catch validation errors (e.g., MissingInputError) that raise
@@ -862,6 +865,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 )
             raise
         finally:
+            if _checkpoint_error_sink is not None:
+                for checkpoint_errors in item_checkpoint_errors:
+                    for checkpoint_error in checkpoint_errors:
+                        _checkpoint_error_sink(checkpoint_error)
             if token is not None:
                 self._reset_concurrency_limiter(token)
             if _parent_span_id is None and dispatcher.active:

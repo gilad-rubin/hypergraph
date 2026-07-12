@@ -16,6 +16,7 @@ from hypergraph import AsyncRunner, Graph, RunStatus, SyncRunner, interrupt, nod
 from hypergraph.checkpointers import MemoryCheckpointer, SqliteCheckpointer
 from hypergraph.checkpointers.base import CheckpointPolicy
 from hypergraph.checkpointers.types import StepRecord
+from hypergraph.exceptions import IncompatibleRunnerError
 from hypergraph.runners._shared.node_context import NodeContext
 
 
@@ -43,6 +44,81 @@ class ChildOnlyFailingSaveCheckpointer(MemoryCheckpointer):
         if "/" in record.run_id:
             raise RuntimeError(f"disk full for {record.run_id}")
         await super().save_step(record)
+
+
+class CheckpointForwardingAsyncRunner:
+    """Non-template runner wrapper that explicitly accepts the private sink."""
+
+    _accepts_checkpoint_error_sink = True
+
+    def __init__(self, checkpointer: MemoryCheckpointer):
+        self._runner = AsyncRunner(checkpointer=checkpointer)
+
+    @property
+    def capabilities(self):
+        return self._runner.capabilities
+
+    @property
+    def supported_node_types(self):
+        return self._runner.supported_node_types
+
+    async def run(self, *args, _checkpoint_error_sink=None, **kwargs):
+        return await self._runner.run(
+            *args,
+            _checkpoint_error_sink=_checkpoint_error_sink,
+            **kwargs,
+        )
+
+    async def map(self, *args, _checkpoint_error_sink=None, **kwargs):
+        return await self._runner.map(
+            *args,
+            _checkpoint_error_sink=_checkpoint_error_sink,
+            **kwargs,
+        )
+
+
+class NonParticipatingCheckpointAsyncRunner:
+    """Checkpoint-capable async wrapper that does not accept sink forwarding."""
+
+    def __init__(self, checkpointer: MemoryCheckpointer):
+        self._runner = AsyncRunner(checkpointer=checkpointer)
+        self.run_calls = 0
+
+    @property
+    def capabilities(self):
+        return self._runner.capabilities
+
+    @property
+    def supported_node_types(self):
+        return self._runner.supported_node_types
+
+    async def run(self, *args, **kwargs):
+        self.run_calls += 1
+        return await self._runner.run(*args, **kwargs)
+
+    async def map(self, *args, **kwargs):
+        return await self._runner.map(*args, **kwargs)
+
+
+class NonCheckpointingAsyncRunner:
+    """Non-template async wrapper with no durability evidence to forward."""
+
+    def __init__(self):
+        self._runner = AsyncRunner()
+
+    @property
+    def capabilities(self):
+        return self._runner.capabilities
+
+    @property
+    def supported_node_types(self):
+        return self._runner.supported_node_types
+
+    async def run(self, *args, **kwargs):
+        return await self._runner.run(*args, **kwargs)
+
+    async def map(self, *args, **kwargs):
+        return await self._runner.map(*args, **kwargs)
 
 
 def _assert_nested_checkpoint_failures(result, *run_ids: str) -> None:
@@ -192,6 +268,94 @@ class TestNestedAsyncDurabilityBestEffort:
         assert result.completed
         assert result.checkpoint_ok is True
         assert result.checkpoint_errors == ()
+
+
+class TestDelegatedRunnerDurabilityForwarding:
+    async def test_noncheckpointing_async_wrapper_does_not_need_sink_capability(self):
+        inner = Graph([double], name="inner")
+        outer = Graph([inner.as_node(runner=NonCheckpointingAsyncRunner())])
+        parent = AsyncRunner(checkpointer=MemoryCheckpointer())
+
+        result = await parent.run(
+            outer,
+            {"x": 5},
+            workflow_id="wf-wrapper-no-checkpointer",
+        )
+
+        assert result.completed
+        assert result["doubled"] == 10
+        assert result.checkpoint_ok is True
+
+    async def test_non_template_wrapper_forwards_run_checkpoint_failure(self):
+        child_checkpointer = ChildOnlyFailingSaveCheckpointer()
+        child_runner = CheckpointForwardingAsyncRunner(child_checkpointer)
+        inner = Graph([double], name="inner")
+        outer = Graph([inner.as_node(runner=child_runner)], name="outer")
+        parent = AsyncRunner(checkpointer=MemoryCheckpointer())
+
+        result = await parent.run(outer, {"x": 5}, workflow_id="wf-wrapper-run")
+
+        assert result.completed
+        assert result["doubled"] == 10
+        assert result.checkpoint_errors == ("RuntimeError('disk full for wf-wrapper-run/inner')",)
+
+    async def test_non_template_wrapper_forwards_mapped_failures_in_item_order(self):
+        @node(output_name="doubled")
+        async def delayed_double(x: int) -> int:
+            await asyncio.sleep((4 - x) * 0.01)
+            return x * 2
+
+        child_checkpointer = ChildOnlyFailingSaveCheckpointer()
+        child_runner = CheckpointForwardingAsyncRunner(child_checkpointer)
+        inner = Graph([delayed_double], name="inner")
+        outer = Graph([inner.as_node(runner=child_runner).map_over("x")], name="outer")
+        parent = AsyncRunner(checkpointer=MemoryCheckpointer())
+
+        result = await parent.run(
+            outer,
+            {"x": [1, 2, 3]},
+            workflow_id="wf-wrapper-map",
+        )
+
+        assert result.completed
+        assert result["doubled"] == [2, 4, 6]
+        assert result.checkpoint_errors == tuple(f"RuntimeError('disk full for wf-wrapper-map/inner/{index}')" for index in range(3))
+
+    async def test_non_template_wrapper_forwards_checkpoint_failure_when_child_raises(self):
+        @node(output_name="never")
+        async def fail_child(x: int) -> int:
+            await asyncio.sleep(0)
+            raise ValueError(f"bad child input: {x}")
+
+        child_checkpointer = ChildOnlyFailingSaveCheckpointer()
+        child_runner = CheckpointForwardingAsyncRunner(child_checkpointer)
+        inner = Graph([fail_child], name="inner")
+        outer = Graph([inner.as_node(runner=child_runner)], name="outer")
+        parent = AsyncRunner(checkpointer=MemoryCheckpointer())
+
+        result = await parent.run(
+            outer,
+            {"x": 5},
+            workflow_id="wf-wrapper-raised",
+            error_handling="continue",
+        )
+
+        assert result.status == RunStatus.FAILED
+        assert isinstance(result.error, ValueError)
+        assert result.checkpoint_errors == ("RuntimeError('disk full for wf-wrapper-raised/inner')",)
+
+    async def test_nonparticipating_checkpoint_async_wrapper_is_rejected_before_run(self):
+        child_runner = NonParticipatingCheckpointAsyncRunner(ChildOnlyFailingSaveCheckpointer())
+        inner = Graph([double], name="inner")
+        outer = Graph([inner.as_node(runner=child_runner)], name="outer")
+        parent = AsyncRunner(checkpointer=MemoryCheckpointer())
+
+        with pytest.raises(IncompatibleRunnerError) as exc_info:
+            await parent.run(outer, {"x": 5}, workflow_id="wf-wrapper-rejected")
+
+        assert child_runner.run_calls == 0
+        assert "checkpoint error" in str(exc_info.value).lower()
+        assert "How to fix:" in str(exc_info.value)
 
 
 class TestSyncDurabilityFailsTheRun:
