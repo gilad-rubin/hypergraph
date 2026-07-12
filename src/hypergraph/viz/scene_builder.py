@@ -292,8 +292,7 @@ def _add_start_end_nodes_and_edges(
 ) -> None:
     """Synthesize the synthetic ``__start__`` / ``__end__`` boundary nodes
     and the edges connecting them to visible entrypoints / END-routed
-    gates. Mirrors the behavior of the legacy ``create_start_node`` /
-    ``create_end_node`` helpers."""
+    gates. Materializes the START/END endpoints for the visible scene."""
 
     # When an entrypoint is itself a GRAPH and currently expanded, the
     # START edge should attach to its real inner entrypoint(s) so it

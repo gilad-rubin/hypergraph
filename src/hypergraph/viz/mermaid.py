@@ -221,8 +221,8 @@ def _render_merged_edges(
 ) -> list[tuple[str, str]]:
     """Render edges in merged output mode (no DATA intermediaries).
 
-    Mirrors add_merged_output_edges() from renderer/edges.py. Returns a list
-    of ``(line, kind)`` tuples where kind ∈ {"data", "control", "ordering"}.
+    Mirrors the interactive renderer's merged-output edge derivation. Returns
+    a list of ``(line, kind)`` tuples where kind ∈ {"data", "control", "ordering"}.
     """
     out: list[tuple[str, str]] = []
     output_to_producer = build_output_to_producer_map(
@@ -310,8 +310,8 @@ def _render_separate_edges(
 ) -> list[tuple[str, str]]:
     """Render edges in separate output mode (with DATA intermediaries).
 
-    Mirrors add_separate_output_edges() from renderer/edges.py. Returns a list
-    of ``(line, kind)`` tuples where kind ∈ {"data", "control", "ordering"}.
+    Mirrors the interactive renderer's separate-output edge derivation. Returns
+    a list of ``(line, kind)`` tuples where kind ∈ {"data", "control", "ordering"}.
     """
     out: list[tuple[str, str]] = []
     output_to_producer = build_output_to_producer_map(

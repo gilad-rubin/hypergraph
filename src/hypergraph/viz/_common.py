@@ -1,14 +1,14 @@
 """Shared algorithms for the visualization system.
 
-These functions are used by both renderer/ (React Flow format) and
-instructions.py (explicit VizInstructions format). Keeping them in
-one place prevents the two code paths from diverging.
+These functions are used by both renderer/ (IR + scene pipeline) and
+mermaid.py. Keeping them in one place prevents the two code paths
+from diverging.
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from itertools import combinations, product
+from itertools import combinations
 from typing import TYPE_CHECKING
 
 import networkx as nx
@@ -134,56 +134,6 @@ def is_descendant_of(node_id: str, ancestor_id: str, flat_graph: nx.DiGraph) -> 
 def get_expandable_nodes(flat_graph: nx.DiGraph) -> list[str]:
     """Get list of node IDs that can be expanded/collapsed (GRAPH nodes)."""
     return sorted([node_id for node_id, attrs in flat_graph.nodes(data=True) if attrs.get("node_type") == "GRAPH"])
-
-
-def expansion_state_to_key(expansion_state: dict[str, bool]) -> str:
-    """Convert expansion state dict to a canonical string key.
-
-    Format: "node1:0,node2:1" (sorted alphabetically, 0=collapsed, 1=expanded)
-    """
-    sorted_items = sorted(expansion_state.items())
-    return ",".join(f"{node_id}:{int(expanded)}" for node_id, expanded in sorted_items)
-
-
-def enumerate_valid_expansion_states(
-    flat_graph: nx.DiGraph,
-    expandable_nodes: list[str],
-) -> list[dict[str, bool]]:
-    """Enumerate all valid expansion state combinations.
-
-    A state is valid if expanded children only appear when their parent is also expanded.
-    This prunes unreachable states (e.g., inner expanded when outer collapsed).
-    """
-    if not expandable_nodes:
-        return [{}]
-
-    node_to_parent: dict[str, str] = {}
-    for node_id in expandable_nodes:
-        parent_id = flat_graph.nodes[node_id].get("parent")
-        if parent_id in expandable_nodes:
-            node_to_parent[node_id] = parent_id
-
-    valid_states = []
-
-    for bits in product([False, True], repeat=len(expandable_nodes)):
-        state = dict(zip(expandable_nodes, bits, strict=True))
-
-        is_valid = True
-        for node_id, is_expanded in state.items():
-            if is_expanded:
-                parent = node_to_parent.get(node_id)
-                while parent is not None:
-                    if not state.get(parent, False):
-                        is_valid = False
-                        break
-                    parent = node_to_parent.get(parent)
-                if not is_valid:
-                    break
-
-        if is_valid:
-            valid_states.append(state)
-
-    return valid_states
 
 
 # =============================================================================
