@@ -3,23 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import time
 from abc import ABC, abstractmethod
-from collections import defaultdict
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from hypergraph.exceptions import (
     ExecutionError,
-    GraphChangedError,
-    InputOverrideRequiresForkError,
     MissingInputError,
-    WorkflowAlreadyCompletedError,
     WorkflowAlreadyRunningError,
-    WorkflowForkError,
-    WorkflowStoppedError,
 )
 from hypergraph.runners._shared.event_metadata import (
     DEFAULT_RUN_CONTEXT,
@@ -28,36 +20,48 @@ from hypergraph.runners._shared.event_metadata import (
     RunContext,
     RunLineage,
 )
-from hypergraph.runners._shared.helpers import (
-    _UNSET_SELECT,
-    _validate_error_handling,
-    _validate_on_missing,
-    _validate_workflow_id,
-    build_resume_validation_values,
-    compute_execution_scope,
-    filter_outputs,
-    find_missing_resume_seed_inputs,
-    generate_map_inputs,
-    generate_workflow_id,
-    initialize_state,
-    is_interrupt_resume_payload,
-    warn_on_bind_overrides,
-)
 from hypergraph.runners._shared.input_normalization import (
     normalize_inputs,
     runner_option_names,
 )
-from hypergraph.runners._shared.run_log import RunLogCollector
-from hypergraph.runners._shared.types import (
-    CheckpointErrorSink,
+from hypergraph.runners._shared.lineage import (
+    ResumeAction,
+    plan_lineage,
+    resolve_existing_run,
+    validate_lineage_request,
+)
+from hypergraph.runners._shared.map_inputs import generate_map_inputs
+from hypergraph.runners._shared.map_resume import (
+    MAP_SIGNATURE_CONFIG_KEY,
+    claim_completed_child_run_id,
+    compute_map_item_signature,
+    index_completed_child_runs,
+)
+from hypergraph.runners._shared.outputs import (
+    SELECT_UNSET,
+    filter_outputs,
+    validate_error_handling,
+    validate_on_missing,
+)
+from hypergraph.runners._shared.readiness import find_missing_resume_seed_inputs
+from hypergraph.runners._shared.results import (
     ErrorHandling,
-    GraphState,
     MapResult,
-    PauseExecution,
     RunResult,
     RunStatus,
-    _generate_run_id,
-    build_restored_run_log,
+    build_failed_run_result,
+    build_paused_run_result,
+    build_pre_run_failed_result,
+    build_restored_run_result,
+    build_terminal_run_result,
+)
+from hypergraph.runners._shared.run_log import RunLogCollector
+from hypergraph.runners._shared.scheduling import compute_execution_scope
+from hypergraph.runners._shared.state import CheckpointErrorSink, GraphState, PauseExecution
+from hypergraph.runners._shared.state_restore import (
+    generate_workflow_id,
+    initialize_state,
+    validate_workflow_id,
 )
 from hypergraph.runners._shared.validation import (
     precompute_input_validation,
@@ -67,9 +71,14 @@ from hypergraph.runners._shared.validation import (
     validate_node_types,
     validate_runner_compatibility,
 )
+from hypergraph.runners._shared.value_resolution import (
+    build_resume_validation_values,
+    warn_on_bind_overrides,
+)
 from hypergraph.runners.base import BaseRunner
 
 if TYPE_CHECKING:
+    from hypergraph.checkpointers.types import Checkpoint
     from hypergraph.events.dispatcher import EventDispatcher
     from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
@@ -82,7 +91,6 @@ MAX_UNBOUNDED_MAP_TASKS = 10_000
 # Unlike map(), map_iter is bounded by design, so an absent limit means a modest
 # bounded pool (tune via max_concurrency), never unbounded fan-out.
 _DEFAULT_STREAM_CONCURRENCY = 16
-_MAP_SIGNATURE_CONFIG_KEY = "map_item_signature"
 
 
 class AsyncRunnerTemplate(BaseRunner, ABC):
@@ -120,7 +128,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
         workflow_id: str | None = None,
-        checkpoint: Any | None = None,
+        checkpoint: Checkpoint | None = None,
         step_buffer: list[Any] | None = None,
         checkpoint_save_errors: list[str] | None = None,
         _complete_on_stop: bool = False,
@@ -203,7 +211,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         graph: Graph,
         values: dict[str, Any] | None = None,
         *,
-        select: str | list[str] = _UNSET_SELECT,
+        select: str | list[str] = SELECT_UNSET,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
@@ -211,7 +219,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
         show_progress: bool | None = None,
-        checkpoint: Any | None = None,
+        checkpoint: Checkpoint | None = None,
         workflow_id: str | None = None,
         override_workflow: bool = False,
         fork_from: str | None = None,
@@ -230,9 +238,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         map_option_names = runner_option_names(self.map)
         validation_ctx = _validation_ctx
         if validation_ctx is None:
-            _validate_on_missing(on_missing)
-            _validate_error_handling(error_handling)
-            _validate_workflow_id(workflow_id, _parent_run_id)
+            validate_on_missing(on_missing)
+            validate_error_handling(error_handling)
+            validate_workflow_id(workflow_id, _parent_run_id)
             effective_selected = resolve_runtime_selected(select, graph)
             validation_ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=effective_selected)
         normalized_values = normalize_inputs(
@@ -260,44 +268,41 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         if _validation_ctx is None and (fork_from is not None or retry_from is not None) and checkpointer is None:
             raise ValueError("fork_from/retry_from require a checkpointer and workflow persistence to be enabled.")
         resume_checkpoint = None
+        resume_action = ResumeAction.START_NEW
         skip_missing_input_validation = False
         if checkpointer is not None and _validation_ctx is None:
             if workflow_id is None and fork_from is None:
                 workflow_id = generate_workflow_id()
-            if fork_from is not None and retry_from is not None:
-                raise ValueError("Cannot pass both fork_from and retry_from. Choose one lineage source.")
-            if checkpoint is not None and (fork_from is not None or retry_from is not None):
-                raise ValueError("Cannot combine checkpoint with fork_from/retry_from. Use one forking mechanism.")
+            validate_lineage_request(
+                checkpoint=checkpoint,
+                fork_from=fork_from,
+                retry_from=retry_from,
+            )
+            candidate_checkpoint = checkpoint
             if fork_from is not None:
                 workflow_id, resume_checkpoint = await checkpointer.fork_workflow_async(fork_from, workflow_id=workflow_id)
-                checkpoint = resume_checkpoint
+                candidate_checkpoint = resume_checkpoint
             elif retry_from is not None:
                 workflow_id, resume_checkpoint = await checkpointer.retry_workflow_async(retry_from, workflow_id=workflow_id)
-                checkpoint = resume_checkpoint
+                candidate_checkpoint = resume_checkpoint
 
             existing_run = await checkpointer.get_run_async(workflow_id)
-            graph_hash = graph.structural_hash
-            if checkpoint is not None:
-                if existing_run is not None:
-                    raise WorkflowForkError(f"Cannot fork into existing workflow '{workflow_id}'. Use a new workflow_id.")
-                resume_checkpoint = checkpoint
-            elif existing_run is not None:
-                if override_workflow:
-                    # Ergonomic shortcut: same workflow_id + override => auto-fork.
-                    workflow_id, resume_checkpoint = await checkpointer.fork_workflow_async(workflow_id)
-                    checkpoint = resume_checkpoint
-                else:
-                    previous_hash = (existing_run.config or {}).get("graph_struct_hash")
-                    if previous_hash is not None and previous_hash != graph_hash:
-                        raise GraphChangedError(workflow_id)
-                    if existing_run.status.value == "stopped":
-                        if not normalized_values:
-                            raise WorkflowStoppedError(workflow_id)
-                    elif normalized_values and not is_interrupt_resume_payload(graph, normalized_values):
-                        raise InputOverrideRequiresForkError(workflow_id)
-                    if existing_run.status.value == "completed":
-                        raise WorkflowAlreadyCompletedError(workflow_id)
-                    resume_checkpoint = await checkpointer.get_checkpoint(workflow_id)
+            resume_action = resolve_existing_run(
+                existing_run=existing_run,
+                checkpoint=candidate_checkpoint,
+                override_workflow=override_workflow,
+                workflow_id=workflow_id,
+                graph_hash=graph.structural_hash,
+                graph=graph,
+                resume_values=normalized_values,
+            )
+            if resume_action is ResumeAction.USE_CHECKPOINT:
+                resume_checkpoint = candidate_checkpoint
+            elif resume_action is ResumeAction.FORK_EXISTING:
+                # Ergonomic shortcut: same workflow_id + override => auto-fork.
+                workflow_id, resume_checkpoint = await checkpointer.fork_workflow_async(workflow_id)
+            elif resume_action is ResumeAction.RESUME_EXISTING:
+                resume_checkpoint = await checkpointer.get_checkpoint(workflow_id)
             if resume_checkpoint is not None:
                 # Runs that start from checkpoint state (resume, fork, retry)
                 # should not re-require original graph inputs that were already
@@ -305,24 +310,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 skip_missing_input_validation = True
 
         has_checkpointer = checkpointer is not None and workflow_id is not None
-        forked_from: str | None = None
-        fork_superstep: int | None = None
-        retry_of: str | None = None
-        retry_index: int | None = None
-        if checkpoint is not None and resume_checkpoint is not None:
-            forked_from = getattr(resume_checkpoint, "source_run_id", None)
-            fork_superstep = getattr(resume_checkpoint, "source_superstep", None)
-            retry_of = getattr(resume_checkpoint, "retry_of", None)
-            retry_index = getattr(resume_checkpoint, "retry_index", None)
-        is_resume = resume_checkpoint is not None and forked_from is None and retry_of is None
         run_context = RunContext(workflow_id=workflow_id, item_index=_item_index)
-        run_lineage = RunLineage(
+        run_lineage = plan_lineage(
             parent_workflow_id=_parent_run_id,
-            forked_from=forked_from,
-            fork_superstep=fork_superstep,
-            retry_of=retry_of,
-            retry_index=retry_index,
-            is_resume=is_resume,
+            checkpoint=resume_checkpoint,
+            action=resume_action,
         )
 
         validation_values = build_resume_validation_values(graph, normalized_values, resume_checkpoint)
@@ -362,7 +354,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         max_iter = max_iterations or self.default_max_iterations
         effective_show_progress = show_progress if show_progress is not None else getattr(self, "_show_progress", False)
         if effective_show_progress:
-            from hypergraph.runners._shared.helpers import ensure_progress_processor
+            from hypergraph.runners._shared.scheduling import ensure_progress_processor
 
             event_processors = ensure_progress_processor(event_processors)
         collector = RunLogCollector()
@@ -389,10 +381,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 workflow_id,
                 graph_name=graph.name,
                 parent_run_id=_parent_run_id,
-                forked_from=forked_from,
-                fork_superstep=fork_superstep,
-                retry_of=retry_of,
-                retry_index=retry_index,
+                forked_from=run_lineage.forked_from,
+                fork_superstep=run_lineage.fork_superstep,
+                retry_of=run_lineage.retry_of,
+                retry_index=run_lineage.retry_index,
                 config=run_config,
             )
 
@@ -441,14 +433,13 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     )
                 )
 
-            result = RunResult(
+            result = build_terminal_run_result(
                 values=output_values,
                 status=status,
                 run_id=run_id,
                 workflow_id=workflow_id,
                 log=collector.build(graph.name, run_id, total_duration_ms),
-                checkpoint_ok=not checkpoint_save_errors,
-                checkpoint_errors=tuple(checkpoint_save_errors),
+                checkpoint_errors=checkpoint_save_errors,
             )
             await self._emit_run_end_async(
                 dispatcher,
@@ -469,8 +460,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
 
                 _, step_offset = checkpoint_offsets(resume_checkpoint)
-                step_count = step_offset + len(collector._records)
-                error_count = sum(1 for r in collector._records if r.status == "failed")
+                step_count = step_offset + collector.step_count
+                error_count = collector.failed_step_count
                 await checkpointer.update_run_status(
                     workflow_id,
                     WorkflowStatus.STOPPED if status == RunStatus.STOPPED else WorkflowStatus.COMPLETED,
@@ -516,8 +507,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
 
                 _, step_offset = checkpoint_offsets(resume_checkpoint)
-                step_count = step_offset + len(collector._records)
-                error_count = sum(1 for r in collector._records if r.status == "failed")
+                step_count = step_offset + collector.step_count
+                error_count = collector.failed_step_count
                 await checkpointer.update_run_status(
                     workflow_id,
                     WorkflowStatus.PAUSED,
@@ -525,15 +516,13 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     node_count=step_count,
                     error_count=error_count,
                 )
-            return RunResult(
+            return build_paused_run_result(
                 values=partial_values,
-                status=RunStatus.PAUSED,
                 run_id=run_id,
                 workflow_id=workflow_id,
                 pause=pause.pause_info,
                 log=collector.build(graph.name, run_id, total_duration_ms),
-                checkpoint_ok=not checkpoint_save_errors,
-                checkpoint_errors=tuple(checkpoint_save_errors),
+                checkpoint_errors=checkpoint_save_errors,
             )
         except Exception as e:
             error = e
@@ -568,8 +557,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets as _cp_offsets
 
                 _, _step_offset = _cp_offsets(resume_checkpoint)
-                fail_count = _step_offset + len(collector._records)
-                err_count = sum(1 for r in collector._records if r.status == "failed")
+                fail_count = _step_offset + collector.step_count
+                err_count = collector.failed_step_count
                 await checkpointer.update_run_status(
                     workflow_id,
                     _WS.FAILED,
@@ -583,15 +572,13 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
             total_duration_ms = (time.time() - start_time) * 1000
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
-            return RunResult(
+            return build_failed_run_result(
                 values=partial_values,
-                status=RunStatus.FAILED,
                 run_id=run_id,
                 workflow_id=workflow_id,
                 error=error,
                 log=collector.build(graph.name, run_id, total_duration_ms),
-                checkpoint_ok=not checkpoint_save_errors,
-                checkpoint_errors=tuple(checkpoint_save_errors),
+                checkpoint_errors=checkpoint_save_errors,
             )
         finally:
             if _checkpoint_error_sink is not None:
@@ -608,7 +595,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         map_over: str | list[str],
         map_mode: Literal["zip", "product"] = "zip",
         clone: bool | list[str] = False,
-        select: str | list[str] = _UNSET_SELECT,
+        select: str | list[str] = SELECT_UNSET,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_concurrency: int | None = None,
@@ -625,9 +612,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         """Execute a graph multiple times with different inputs."""
         run_option_names = runner_option_names(self.run)
         map_option_names = runner_option_names(self.map)
-        _validate_error_handling(error_handling)
-        _validate_workflow_id(workflow_id, _parent_run_id)
-        _validate_on_missing(on_missing)
+        validate_error_handling(error_handling)
+        validate_workflow_id(workflow_id, _parent_run_id)
+        validate_on_missing(on_missing)
         effective_selected = resolve_runtime_selected(select, graph)
         ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=effective_selected)
         normalized_values = normalize_inputs(
@@ -648,7 +635,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         # Resolve show_progress and merge processors
         effective_show_progress = show_progress if show_progress is not None else getattr(self, "_show_progress", False)
         if effective_show_progress:
-            from hypergraph.runners._shared.helpers import ensure_progress_processor
+            from hypergraph.runners._shared.scheduling import ensure_progress_processor
 
             event_processors = ensure_progress_processor(event_processors)
 
@@ -703,7 +690,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         # Resume: find completed child runs to skip by stable input signature.
         completed_runs = await _get_completed_child_runs(checkpointer, workflow_id)
-        completed_by_signature, completed_by_index = _index_completed_child_runs(completed_runs, workflow_id)
+        completed_by_signature, completed_by_index = index_completed_child_runs(completed_runs, workflow_id)
 
         existing_limiter = self._get_concurrency_limiter()
         token = self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
@@ -711,10 +698,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         async def _run_map_item(idx: int, variation_inputs: dict[str, Any]) -> RunResult:
             """Execute one map variation, or restore from checkpoint if completed."""
             child_workflow_id = f"{workflow_id}/{idx}" if workflow_id else None
-            item_signature = _compute_map_item_signature(variation_inputs, map_over_list, map_mode)
+            item_signature = compute_map_item_signature(variation_inputs, map_over_list, map_mode)
 
             # Skip completed items — restore result from checkpoint.
-            restore_run_id = _claim_completed_child_run_id(
+            restore_run_id = claim_completed_child_run_id(
                 idx=idx,
                 signature=item_signature,
                 by_signature=completed_by_signature,
@@ -724,13 +711,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 state = await checkpointer.get_state(restore_run_id)
                 restored_state = GraphState(values=dict(state))
                 restored_values = filter_outputs(restored_state, graph, select, on_missing)
-                return RunResult(
+                return build_restored_run_result(
                     values=restored_values,
-                    status=RunStatus.COMPLETED,
+                    graph_name=graph.name or "",
                     run_id=restore_run_id,
-                    workflow_id=restore_run_id,
-                    log=build_restored_run_log(graph.name or "", restore_run_id),
-                    restored=True,
                 )
 
             try:
@@ -748,19 +732,14 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     _parent_span_id=map_span_id,
                     _parent_run_id=workflow_id,
                     _validation_ctx=ctx,
-                    _run_config={_MAP_SIGNATURE_CONFIG_KEY: item_signature},
+                    _run_config={MAP_SIGNATURE_CONFIG_KEY: item_signature},
                     _item_index=idx,
                     _checkpoint_error_sink=(item_checkpoint_errors[idx].append if _checkpoint_error_sink is not None else None),
                 )
             except Exception as e:
                 # Catch validation errors (e.g., MissingInputError) that raise
                 # before run()'s execution try block
-                return RunResult(
-                    values={},
-                    status=RunStatus.FAILED,
-                    run_id=_generate_run_id(),
-                    error=e,
-                )
+                return build_pre_run_failed_result(e)
 
         try:
             if max_concurrency is None:
@@ -889,7 +868,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         map_over: str | list[str],
         map_mode: Literal["zip", "product"] = "zip",
         clone: bool | list[str] = False,
-        select: str | list[str] = _UNSET_SELECT,
+        select: str | list[str] = SELECT_UNSET,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_concurrency: int | None = None,
@@ -908,8 +887,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         """
         run_option_names = runner_option_names(self.run)
         map_option_names = runner_option_names(self.map)
-        _validate_error_handling(error_handling)
-        _validate_on_missing(on_missing)
+        validate_error_handling(error_handling)
+        validate_on_missing(on_missing)
         if max_concurrency is not None and max_concurrency < 1:
             raise ValueError(f"max_concurrency must be >= 1, got {max_concurrency}")
         effective_selected = resolve_runtime_selected(select, graph)
@@ -975,7 +954,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         _validation_ctx=ctx,
                     )
                 except Exception as e:  # node/validation error during a single run → failed row
-                    result = RunResult(values={}, status=RunStatus.FAILED, run_id=_generate_run_id(), error=e)
+                    result = build_pre_run_failed_result(e)
                 if error_handling == "raise" and result.status == RunStatus.FAILED:
                     stop_requested = True
                 await out_queue.put((i, result))
@@ -1010,38 +989,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 self._reset_concurrency_limiter(token)
 
 
-def _normalize_signature_value(value: Any) -> Any:
-    """Normalize map inputs into a JSON-stable structure for hashing."""
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    if isinstance(value, dict):
-        return {str(k): _normalize_signature_value(v) for k, v in sorted(value.items(), key=lambda item: str(item[0]))}
-    if isinstance(value, (list, tuple)):
-        return [_normalize_signature_value(v) for v in value]
-    if isinstance(value, (set, frozenset)):
-        normalized = [_normalize_signature_value(v) for v in value]
-        return sorted(
-            normalized,
-            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
-        )
-    return {"__type__": type(value).__name__, "__repr__": repr(value)}
-
-
-def _compute_map_item_signature(
-    variation_inputs: dict[str, Any],
-    map_over: list[str],
-    map_mode: str,
-) -> str:
-    """Compute a stable signature for one mapped item input payload."""
-    payload = {
-        "map_mode": map_mode,
-        "map_over": map_over,
-        "inputs": _normalize_signature_value(variation_inputs),
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
-
-
 async def _get_completed_child_runs(
     checkpointer: Any,
     workflow_id: str | None,
@@ -1054,49 +1001,3 @@ async def _get_completed_child_runs(
 
     child_runs = await checkpointer.list_runs(parent_run_id=workflow_id)
     return [run for run in child_runs if run.status == WorkflowStatus.COMPLETED]
-
-
-def _index_completed_child_runs(
-    child_runs: list[Any],
-    workflow_id: str | None,
-) -> tuple[dict[str, list[str]], dict[int, list[str]]]:
-    """Index completed child runs by signature and by legacy index suffix."""
-    by_signature: dict[str, list[str]] = defaultdict(list)
-    by_index: dict[int, list[str]] = defaultdict(list)
-
-    for run in child_runs:
-        if isinstance(run.config, dict):
-            signature = run.config.get(_MAP_SIGNATURE_CONFIG_KEY)
-            if isinstance(signature, str):
-                by_signature[signature].append(run.id)
-
-        if workflow_id is None:
-            continue
-        suffix = run.id.removeprefix(f"{workflow_id}/")
-        if suffix.isdigit():
-            by_index[int(suffix)].append(run.id)
-
-    for ids in by_signature.values():
-        ids.sort()
-    for ids in by_index.values():
-        ids.sort()
-    return by_signature, by_index
-
-
-def _claim_completed_child_run_id(
-    *,
-    idx: int,
-    signature: str,
-    by_signature: dict[str, list[str]],
-    by_index: dict[int, list[str]],
-) -> str | None:
-    """Claim a completed child run id for resume, preferring signature match."""
-    by_sig = by_signature.get(signature)
-    if by_sig:
-        return by_sig.pop(0)
-
-    by_idx = by_index.get(idx)
-    if by_idx:
-        return by_idx.pop(0)
-
-    return None

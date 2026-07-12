@@ -18,22 +18,21 @@ from hypergraph.runners._shared.event_metadata import (
     RunContext,
     RunLineage,
 )
-from hypergraph.runners._shared.helpers import (
+from hypergraph.runners._shared.protocols import AsyncNodeExecutor
+from hypergraph.runners._shared.scheduling import (
     ExecutionFrontier,
     compute_execution_scope,
-    graphnode_child_workflow_id,
-    initialize_state,
     plan_interrupt_batch,
 )
-from hypergraph.runners._shared.protocols import AsyncNodeExecutor
-from hypergraph.runners._shared.stop import StopSignal, get_stop_signal, reset_stop_signal, set_stop_signal
-from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
-from hypergraph.runners._shared.types import (
+from hypergraph.runners._shared.state import (
     ExecutionContext,
     GraphState,
     PauseExecution,
     RunnerCapabilities,
 )
+from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id, initialize_state
+from hypergraph.runners._shared.stop import StopSignal, get_stop_signal, reset_stop_signal, set_stop_signal
+from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
 from hypergraph.runners.async_.executors import (
     AsyncFunctionNodeExecutor,
     AsyncGraphNodeExecutor,
@@ -51,6 +50,7 @@ from hypergraph.runners.async_.superstep import (
 if TYPE_CHECKING:
     from hypergraph.cache import CacheBackend
     from hypergraph.checkpointers.base import Checkpointer
+    from hypergraph.checkpointers.types import Checkpoint
     from hypergraph.events.dispatcher import EventDispatcher
     from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
@@ -169,7 +169,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
         workflow_id: str | None = None,
-        checkpoint: Any | None = None,
+        checkpoint: Checkpoint | None = None,
         step_buffer: list[Any] | None = None,
         checkpoint_save_errors: list[str] | None = None,
         _complete_on_stop: bool = False,

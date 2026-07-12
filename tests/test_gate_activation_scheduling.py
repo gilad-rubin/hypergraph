@@ -8,11 +8,10 @@ Covers two key behaviors:
 import pytest
 
 from hypergraph import END, AsyncRunner, Graph, interrupt, node, route
-from hypergraph.runners._shared.helpers import (
-    compute_execution_scope,
-    get_ready_nodes,
-)
-from hypergraph.runners._shared.types import GraphState, NodeExecution
+from hypergraph.runners._shared import readiness as readiness_module
+from hypergraph.runners._shared.readiness import gate_permits_startup, get_ready_nodes
+from hypergraph.runners._shared.scheduling import compute_execution_scope
+from hypergraph.runners._shared.state import GraphState, NodeExecution
 
 # --- Fixtures ---
 
@@ -55,6 +54,149 @@ CHAT_GRAPH = Graph(
     shared=["messages"],
     entrypoint="add_user_message",
 )
+
+
+class TestGatePermitsStartupTable:
+    """The flat predicate is executable form of the shared gate table."""
+
+    @pytest.mark.parametrize(
+        (
+            "gate_executed",
+            "node_executed",
+            "default_open",
+            "entrypoints",
+            "decision",
+            "expected",
+        ),
+        [
+            pytest.param(False, False, True, None, None, True, id="never-never-default-open"),
+            pytest.param(False, False, True, ("target",), None, True, id="entrypoint-target-starts"),
+            pytest.param(False, False, True, ("other",), None, False, id="non-entrypoint-waits"),
+            pytest.param(False, False, False, None, None, False, id="default-closed-waits"),
+            pytest.param(True, False, False, ("other",), "target", True, id="decision-target-wins"),
+            pytest.param(True, True, True, None, "other", False, id="decision-other-blocks"),
+            pytest.param(True, False, True, None, None, False, id="stale-cleared-decision-blocks"),
+        ],
+    )
+    def test_canonical_decision_table(
+        self,
+        gate_executed,
+        node_executed,
+        default_open,
+        entrypoints,
+        decision,
+        expected,
+    ):
+        assert (
+            gate_permits_startup(
+                "target",
+                decision=decision,
+                gate_executed=gate_executed,
+                node_executed=node_executed,
+                default_open=default_open,
+                entrypoints=entrypoints,
+            )
+            is expected
+        )
+
+    @pytest.mark.parametrize(
+        ("decision", "expected"),
+        [
+            pytest.param("target", True, id="string-target"),
+            pytest.param("other", False, id="string-other"),
+            pytest.param(["other", "target"], True, id="list-includes-target"),
+            pytest.param(["other"], False, id="list-excludes-target"),
+            pytest.param(END, False, id="end-is-terminal"),
+        ],
+    )
+    def test_executed_decision_shapes(self, decision, expected):
+        assert (
+            gate_permits_startup(
+                "target",
+                decision=decision,
+                gate_executed=True,
+                node_executed=True,
+                default_open=False,
+                entrypoints=("other",),
+            )
+            is expected
+        )
+
+    def test_missing_controlling_gate_is_ignored(self):
+        @node(output_name="result")
+        def target() -> int:
+            return 1
+
+        graph = Graph([target])
+        graph.controlled_by[target.name] = ["missing_gate"]
+
+        assert target.name not in readiness_module._get_activated_nodes(graph, GraphState())
+
+    def test_multiple_controlling_gates_use_or_semantics(self):
+        @node(output_name="result")
+        def target() -> int:
+            return 1
+
+        @route(targets=["target"], default_open=False)
+        def first_gate(seed: int) -> str:
+            return "target"
+
+        @route(targets=["target"], default_open=False)
+        def second_gate(seed: int) -> str:
+            return "target"
+
+        graph = Graph([target, first_gate, second_gate])
+        state = GraphState(
+            values={"seed": 1},
+            versions={"seed": 1},
+            node_executions={
+                second_gate.name: NodeExecution(
+                    node_name=second_gate.name,
+                    input_versions={"seed": 1},
+                    outputs={},
+                )
+            },
+            routing_decisions={second_gate.name: target.name},
+        )
+
+        assert target.name in readiness_module._get_activated_nodes(graph, state)
+
+    @pytest.mark.parametrize(
+        ("decision", "expected_present", "expected_activated"),
+        [
+            pytest.param("target", False, False, id="stale-routing-decision-cleared-first"),
+            pytest.param(END, True, False, id="terminal-end-never-cleared"),
+        ],
+    )
+    def test_stale_clearing_precedes_activation_and_preserves_end(
+        self,
+        decision,
+        expected_present,
+        expected_activated,
+    ):
+        @node(output_name="result")
+        def target() -> int:
+            return 1
+
+        @route(targets=["target", END], default_open=False)
+        def gate(seed: int):
+            return decision
+
+        graph = Graph([target, gate])
+        state = GraphState()
+        state.update_value("seed", 1)
+        state.update_value("seed", 2)
+        state.node_executions[gate.name] = NodeExecution(
+            node_name=gate.name,
+            input_versions={"seed": 1},
+            outputs={},
+        )
+        state.routing_decisions[gate.name] = decision
+
+        activated = readiness_module._get_activated_nodes(graph, state)
+
+        assert (gate.name in state.routing_decisions) is expected_present
+        assert (target.name in activated) is expected_activated
 
 
 class TestPendingActivationRetrigger:

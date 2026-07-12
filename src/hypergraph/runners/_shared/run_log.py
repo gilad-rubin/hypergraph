@@ -19,7 +19,7 @@ from hypergraph.events.types import (
     RouteDecisionEvent,
     SuperstepStartEvent,
 )
-from hypergraph.runners._shared.types import NodeRecord, RunLog
+from hypergraph.runners._shared.results import NodeRecord, RunLog
 
 
 class RunLogCollector(TypedEventProcessor):
@@ -88,6 +88,16 @@ class RunLogCollector(TypedEventProcessor):
                 span_id=event.span_id,
             )
         )
+
+    @property
+    def step_count(self) -> int:
+        """Number of collected node records."""
+        return len(self._records)
+
+    @property
+    def failed_step_count(self) -> int:
+        """Number of collected failed node records."""
+        return sum(1 for record in self._records if record.status == "failed")
 
     def build(self, graph_name: str, run_id: str, total_duration_ms: float) -> RunLog:
         """Produce the frozen RunLog from collected records."""

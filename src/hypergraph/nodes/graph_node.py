@@ -12,7 +12,7 @@ from hypergraph.nodes.base import HyperNode, RenameEntry, _invalidate_cached_pro
 # TypeVar for self-referential return types (Python 3.10 compatible)
 _GN = TypeVar("_GN", bound="GraphNode")
 
-# Duplicated from runners._shared.types to avoid circular import
+# Duplicated from runners._shared.results to avoid circular import
 # (graph_node -> runners -> graph -> nodes -> graph_node)
 ErrorHandling = Literal["raise", "continue"]
 

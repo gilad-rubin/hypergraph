@@ -344,7 +344,7 @@ class TestInnerLogs:
         step = result.log.steps[0]
         assert step.node_name == "inner"
 
-        from hypergraph.runners._shared.types import RunLog
+        from hypergraph.runners._shared.results import RunLog
 
         assert isinstance(step.log, RunLog)
         assert step.log.graph_name == "inner"
@@ -360,7 +360,7 @@ class TestInnerLogs:
 
         step = result.log.steps[0]
 
-        from hypergraph.runners._shared.types import MapLog
+        from hypergraph.runners._shared.results import MapLog
 
         assert isinstance(step.log, MapLog)
         assert len(step.log) == 3
@@ -448,7 +448,7 @@ class TestInnerLogs:
         assert result["doubled"] == 10
         step = result.log.steps[0]
 
-        from hypergraph.runners._shared.types import RunLog
+        from hypergraph.runners._shared.results import RunLog
 
         assert isinstance(step.log, RunLog)
         assert step.log.graph_name == "inner"
@@ -463,7 +463,7 @@ class TestInnerLogs:
 
         step = result.log.steps[0]
 
-        from hypergraph.runners._shared.types import MapLog
+        from hypergraph.runners._shared.results import MapLog
 
         assert isinstance(step.log, MapLog)
         assert len(step.log) == 3

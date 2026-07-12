@@ -5,8 +5,11 @@ from __future__ import annotations
 import pytest
 
 from hypergraph import AsyncRunner, Graph, RunStatus, SyncRunner, ifelse, node
-from hypergraph.runners._shared.helpers import _has_input
-from hypergraph.runners._shared.types import GraphState, NodeExecution
+from hypergraph.checkpointers.types import Checkpoint, StepRecord, StepStatus
+from hypergraph.runners._shared.readiness import apply_node_result
+from hypergraph.runners._shared.state import GraphState, NodeExecution
+from hypergraph.runners._shared.state_restore import initialize_state
+from hypergraph.runners._shared.value_resolution import _unversioned_execution_can_own_value, has_input
 
 
 def same_graph() -> Graph:
@@ -167,7 +170,7 @@ def test_missing_output_versions_do_not_accept_later_undeclared_writer() -> None
         },
     )
 
-    assert not _has_input("o1", consumer, graph, state)
+    assert not has_input("o1", consumer, graph, state)
 
 
 def test_missing_output_versions_still_accept_current_declared_writer() -> None:
@@ -186,7 +189,138 @@ def test_missing_output_versions_still_accept_current_declared_writer() -> None:
         },
     )
 
-    assert _has_input("o1", consumer, graph, state)
+    assert has_input("o1", consumer, graph, state)
+
+
+def test_unversioned_owner_uses_explicit_execution_sequence() -> None:
+    state = GraphState(
+        node_executions={
+            # Deliberately opposite execution order: replacement/re-keying must
+            # not change which legacy unversioned writer owns ``shared``.
+            "newer": NodeExecution(
+                node_name="newer",
+                input_versions={},
+                outputs={"shared": "new"},
+                sequence=2,
+            ),
+            "older": NodeExecution(
+                node_name="older",
+                input_versions={},
+                outputs={"shared": "old"},
+                sequence=1,
+            ),
+        }
+    )
+
+    assert _unversioned_execution_can_own_value("shared", "newer", state)
+    assert not _unversioned_execution_can_own_value("shared", "older", state)
+
+
+def test_explicit_execution_sequence_outranks_legacy_sentinel() -> None:
+    state = GraphState(
+        node_executions={
+            "sequenced": NodeExecution(
+                node_name="sequenced",
+                input_versions={},
+                outputs={"shared": "new"},
+                sequence=4,
+            ),
+            "legacy": NodeExecution(
+                node_name="legacy",
+                input_versions={},
+                outputs={"shared": "unknown"},
+            ),
+        }
+    )
+
+    assert _unversioned_execution_can_own_value("shared", "sequenced", state)
+    assert not _unversioned_execution_can_own_value("shared", "legacy", state)
+
+
+def test_reexecuted_node_gets_sequence_after_existing_maximum() -> None:
+    @node(output_name="shared")
+    def writer(x: int) -> int:
+        return x
+
+    graph = Graph([writer])
+    state = GraphState(
+        node_executions={
+            "writer": NodeExecution(
+                node_name="writer",
+                input_versions={"x": 1},
+                outputs={"shared": 1},
+                sequence=1,
+            ),
+            "other": NodeExecution(
+                node_name="other",
+                input_versions={},
+                outputs={"other": 1},
+                sequence=5,
+            ),
+        }
+    )
+
+    apply_node_result(
+        graph,
+        state,
+        writer,
+        {"shared": 2},
+        {"x": 2},
+        {},
+        duration_ms=0.0,
+        cached=False,
+    )
+
+    assert list(state.node_executions) == ["writer", "other"]
+    assert state.node_executions["writer"].sequence == 6
+
+
+def test_checkpoint_replay_restores_durable_sequence_for_next_execution() -> None:
+    @node(output_name="shared")
+    def writer(x: int) -> int:
+        return x
+
+    graph = Graph([writer])
+    checkpoint = Checkpoint(
+        values={"x": 1, "shared": 2},
+        steps=[
+            StepRecord(
+                run_id="workflow",
+                superstep=1,
+                node_name="writer",
+                index=7,
+                status=StepStatus.COMPLETED,
+                input_versions={"x": 1},
+                values={"shared": 2},
+            ),
+            StepRecord(
+                run_id="workflow",
+                superstep=0,
+                node_name="writer",
+                index=2,
+                status=StepStatus.COMPLETED,
+                input_versions={"x": 1},
+                values={"shared": 1},
+            ),
+        ],
+    )
+
+    state = initialize_state(graph, {}, checkpoint=checkpoint)
+
+    assert state.node_executions["writer"].sequence == 7
+
+    apply_node_result(
+        graph,
+        state,
+        writer,
+        {"shared": 3},
+        {"x": 1},
+        {},
+        duration_ms=0.0,
+        cached=False,
+    )
+
+    assert state.node_executions["writer"].sequence == 8
 
 
 async def test_async_mutex_duplicate_outputs_feed_consumer_at_runtime() -> None:

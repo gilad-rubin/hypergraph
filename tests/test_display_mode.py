@@ -166,7 +166,7 @@ def _instance_factories() -> dict[str, object]:
         StepTable,
         WorkflowStatus,
     )
-    from hypergraph.runners._shared.types import MapLog, MapResult, NodeRecord, RunLog, RunResult, RunStatus
+    from hypergraph.runners._shared.results import MapLog, MapResult, NodeRecord, RunLog, RunResult, RunStatus
 
     step = StepRecord(run_id="r", superstep=0, node_name="a", index=0, status=StepStatus.COMPLETED, input_versions={})
     run = Run(id="r-1", status=WorkflowStatus.COMPLETED)
@@ -180,8 +180,8 @@ def _instance_factories() -> dict[str, object]:
 
     factories: dict[str, object] = {
         "hypergraph.graph.core.Graph": lambda: make_graph(),
-        "hypergraph.runners._shared.types.RunResult": lambda: run_result,
-        "hypergraph.runners._shared.types.MapResult": lambda: MapResult(
+        "hypergraph.runners._shared.results.RunResult": lambda: run_result,
+        "hypergraph.runners._shared.results.MapResult": lambda: MapResult(
             results=(run_result,),
             run_id="r-1",
             total_duration_ms=1.0,
@@ -189,8 +189,8 @@ def _instance_factories() -> dict[str, object]:
             map_mode="zip",
             graph_name="g",
         ),
-        "hypergraph.runners._shared.types.RunLog": lambda: run_log,
-        "hypergraph.runners._shared.types.MapLog": lambda: MapLog(graph_name="g", total_duration_ms=1.0, items=(run_log,)),
+        "hypergraph.runners._shared.results.RunLog": lambda: run_log,
+        "hypergraph.runners._shared.results.MapLog": lambda: MapLog(graph_name="g", total_duration_ms=1.0, items=(run_log,)),
         "hypergraph.checkpointers.types.StepRecord": lambda: step,
         "hypergraph.checkpointers.types.Run": lambda: run,
         "hypergraph.checkpointers.types.Checkpoint": lambda: Checkpoint(values={"x": 1}, steps=[step]),
@@ -219,7 +219,7 @@ class TestPlainModeSweep:
         classes = dict(_iter_repr_html_classes())
         # Sanity: the walk actually discovered the core surface.
         assert "hypergraph.graph.core.Graph" in classes
-        assert "hypergraph.runners._shared.types.RunResult" in classes
+        assert "hypergraph.runners._shared.results.RunResult" in classes
 
         factories = _instance_factories()
         set_display_mode("plain")

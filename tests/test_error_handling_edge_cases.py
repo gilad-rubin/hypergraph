@@ -4,7 +4,7 @@ import pytest
 
 from hypergraph import Graph, node
 from hypergraph.runners import AsyncRunner, SyncRunner
-from hypergraph.runners._shared.types import RunStatus
+from hypergraph.runners._shared.results import RunStatus
 
 
 class FailError(Exception):

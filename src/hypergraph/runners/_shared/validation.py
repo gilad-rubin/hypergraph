@@ -7,7 +7,7 @@ from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import IncompatibleRunnerError, MissingInputError
-from hypergraph.runners._shared.types import RunnerCapabilities
+from hypergraph.runners._shared.state import RunnerCapabilities
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
@@ -383,7 +383,7 @@ def _node_is_runnable_from_seed_values(node: HyperNode, provided: set[str]) -> b
     Resolves each input via the canonical parent-facing address so GraphNode
     inputs match sync/async runners' ``get_value_source`` behavior.
     """
-    from hypergraph.runners._shared.helpers import address_for_node_input
+    from hypergraph.runners._shared.value_resolution import address_for_node_input
 
     return all(address_for_node_input(node, param) in provided or node.has_default_for(param) for param in node.inputs)
 
@@ -527,9 +527,9 @@ def resolve_runtime_selected(
     graph: Graph,
 ) -> tuple[str, ...] | None:
     """Resolve effective select under canonical graph scope semantics."""
-    from hypergraph.runners._shared.helpers import _UNSET_SELECT
+    from hypergraph.runners._shared.outputs import SELECT_UNSET
 
-    if select is _UNSET_SELECT:
+    if select is SELECT_UNSET:
         return graph.selected
 
     raise ValueError("Runtime select overrides are no longer supported. Configure output scope on the graph via graph.select(...).")

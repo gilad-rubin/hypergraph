@@ -49,7 +49,7 @@ Scope:
 
 - Shared widget helpers: `src/hypergraph/_repr.py`
 - Run/step/checkpoint widgets: `src/hypergraph/checkpointers/types.py`
-- Map result/log widgets: `src/hypergraph/runners/_shared/types.py`
+- Runner result/log presentation: `src/hypergraph/_runner_repr.py`
 - Notebook progress widget: `src/hypergraph/events/rich_progress.py`
 
 ## Change Discipline

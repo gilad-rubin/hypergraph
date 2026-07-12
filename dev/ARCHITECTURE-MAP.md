@@ -154,8 +154,17 @@ Key files:
 - `src/hypergraph/runners/sync/superstep.py`
 - `src/hypergraph/runners/async_/runner.py`
 - `src/hypergraph/runners/async_/superstep.py`
-- `src/hypergraph/runners/_shared/helpers.py`
-- `src/hypergraph/runners/_shared/types.py`
+- `src/hypergraph/runners/_shared/scheduling.py`
+- `src/hypergraph/runners/_shared/readiness.py`
+- `src/hypergraph/runners/_shared/value_resolution.py`
+- `src/hypergraph/runners/_shared/state_restore.py`
+- `src/hypergraph/runners/_shared/lineage.py`
+- `src/hypergraph/runners/_shared/outputs.py`
+- `src/hypergraph/runners/_shared/map_inputs.py`
+- `src/hypergraph/runners/_shared/map_resume.py`
+- `src/hypergraph/runners/_shared/results.py`
+- `src/hypergraph/runners/_shared/state.py`
+- `src/hypergraph/runners/_shared/types.py` (compatibility re-exports)
 - `src/hypergraph/runners/_shared/protocols.py`
 - `src/hypergraph/runners/_shared/template_sync.py`
 - `src/hypergraph/runners/_shared/template_async.py`
@@ -192,7 +201,10 @@ Important types:
 
 ### The Scheduler
 
-The scheduler logic lives primarily in `runners/_shared/helpers.py`.
+Scheduler policy is split between `runners/_shared/scheduling.py` and
+`runners/_shared/readiness.py`; input provenance and availability live in
+`runners/_shared/value_resolution.py`, while checkpoint reconstruction lives
+in `runners/_shared/state_restore.py`.
 
 Core responsibilities:
 
@@ -472,6 +484,7 @@ That means "architecture-only" changes in these areas often leak into user expec
 src/hypergraph/
 ├── __init__.py                        public API surface
 ├── _repr.py                          notebook/HTML rendering primitives
+├── _runner_repr.py                   runner result/log presentation
 ├── _typing.py                        type-compatibility helpers
 ├── _utils.py                         formatting and utility helpers
 ├── cache.py                          cache backends and cache contract
@@ -496,8 +509,17 @@ src/hypergraph/
 ├── runners/                          execution kernel
 │   ├── base.py
 │   ├── _shared/
-│   │   ├── helpers.py
-│   │   ├── types.py
+│   │   ├── scheduling.py
+│   │   ├── readiness.py
+│   │   ├── value_resolution.py
+│   │   ├── state_restore.py
+│   │   ├── lineage.py
+│   │   ├── outputs.py
+│   │   ├── map_inputs.py
+│   │   ├── map_resume.py
+│   │   ├── results.py
+│   │   ├── state.py
+│   │   ├── types.py                  compatibility re-exports
 │   │   ├── protocols.py
 │   │   ├── template_sync.py
 │   │   ├── template_async.py
@@ -565,15 +587,16 @@ Touches:
 - runner input handling
 - docs and examples
 
-### 2. `runners/_shared/helpers.py`
+### 2. Runner scheduling and state-policy modules
 
 Touches:
 
-- readiness
-- staleness
-- SCC planning
-- checkpoint restore behavior
-- gate behavior
+- `scheduling.py`: active scope, SCC planning, and frontier progression
+- `readiness.py`: readiness, staleness, and gate activation
+- `value_resolution.py`: input provenance and availability
+- `state_restore.py`: checkpoint restore behavior
+- `outputs.py`: output shaping and selection
+- `map_inputs.py`: mapped input expansion
 
 ### 3. `nodes/graph_node.py` plus graph-node executors
 
@@ -625,10 +648,12 @@ If you need to rebuild context quickly, use this order:
 1. `dev/CORE-BELIEFS.md`
 2. `dev/ARCHITECTURE.md`
 3. `src/hypergraph/graph/core.py`
-4. `src/hypergraph/runners/_shared/helpers.py`
-5. `src/hypergraph/runners/_shared/template_sync.py`
-6. `src/hypergraph/runners/_shared/template_async.py`
-7. the specific surface you are touching:
+4. `src/hypergraph/runners/_shared/scheduling.py`
+5. `src/hypergraph/runners/_shared/readiness.py`
+6. the focused state/input owner (`state_restore.py` or `value_resolution.py`)
+7. `src/hypergraph/runners/_shared/template_sync.py`
+8. `src/hypergraph/runners/_shared/template_async.py`
+9. the specific surface you are touching:
    - checkpointers
    - viz
    - integrations

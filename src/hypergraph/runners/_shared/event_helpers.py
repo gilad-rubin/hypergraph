@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
     from hypergraph.nodes.base import HyperNode
-    from hypergraph.runners._shared.types import GraphState
+    from hypergraph.runners._shared.state import GraphState
 
 
 def create_dispatcher(
@@ -210,9 +210,9 @@ def build_run_start_event(
 ) -> tuple[str, str, Any]:
     """Build a RunStartEvent. Returns (run_id, span_id, event)."""
     from hypergraph.events.types import RunStartEvent, _generate_span_id
-    from hypergraph.runners._shared.types import _generate_run_id
+    from hypergraph.runners._shared.results import generate_run_id
 
-    run_id = _generate_run_id()
+    run_id = generate_run_id()
     span_id = _generate_span_id()
     event = RunStartEvent(
         run_id=run_id,

@@ -12,7 +12,7 @@ from hypergraph.nodes.gate import IfElseNode, RouteNode
 if TYPE_CHECKING:
     from hypergraph.cache import CacheBackend
     from hypergraph.nodes.base import HyperNode
-    from hypergraph.runners._shared.types import GraphState
+    from hypergraph.runners._shared.state import GraphState
 
 # Internal key used to store routing decisions alongside cached gate outputs.
 # Never exposed in RunResult.values.

@@ -10,7 +10,7 @@ from typing import get_args, get_type_hints
 from hypergraph import Graph, MapResult, RunResult, WorkflowStoppedError
 from hypergraph.checkpointers import Checkpointer, MemoryCheckpointer, SqliteCheckpointer, SqliteRunInspector
 from hypergraph.events import RunEndEvent
-from hypergraph.runners._shared.types import NodeRecord
+from hypergraph.runners._shared.results import NodeRecord
 
 ROOT = Path(__file__).resolve().parents[1]
 

@@ -6,15 +6,12 @@ import inspect
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.cache_observer import node_cache_observer
-from hypergraph.runners._shared.helpers import (
-    map_inputs_to_func_params,
-    wrap_outputs,
-)
+from hypergraph.runners._shared.outputs import wrap_outputs
 from hypergraph.runners.async_.superstep import get_concurrency_limiter
 
 if TYPE_CHECKING:
     from hypergraph.nodes.function import FunctionNode
-    from hypergraph.runners._shared.types import ExecutionContext, GraphState
+    from hypergraph.runners._shared.state import ExecutionContext, GraphState
 
 
 class AsyncFunctionNodeExecutor:
@@ -67,7 +64,7 @@ class AsyncFunctionNodeExecutor:
     ) -> dict[str, Any]:
         """Execute the function and handle result types."""
         # Map renamed inputs back to original function parameter names
-        func_inputs = map_inputs_to_func_params(node, inputs)
+        func_inputs = node.map_inputs_to_params(inputs)
 
         # Inject NodeContext if the node declares one
         if getattr(node, "_context_param", None) is not None:

@@ -6,11 +6,12 @@ from inspect import isawaitable
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.nodes.base import _EMIT_SENTINEL
-from hypergraph.runners._shared.types import PauseExecution, PauseInfo
+from hypergraph.runners._shared.results import PauseInfo
+from hypergraph.runners._shared.state import PauseExecution
 
 if TYPE_CHECKING:
     from hypergraph.nodes.interrupt import InterruptNode
-    from hypergraph.runners._shared.types import ExecutionContext, GraphState
+    from hypergraph.runners._shared.state import ExecutionContext, GraphState
 
 
 class AsyncInterruptNodeExecutor:

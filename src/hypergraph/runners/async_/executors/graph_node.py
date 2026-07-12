@@ -6,13 +6,15 @@ import inspect
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import IncompatibleRunnerError
-from hypergraph.runners._shared.helpers import collect_as_lists, graphnode_child_workflow_id, map_inputs_to_func_params
+from hypergraph.runners._shared.outputs import collect_as_lists
 from hypergraph.runners._shared.protocols import CheckpointErrorSinkRunner
-from hypergraph.runners._shared.types import PauseExecution, PauseInfo, RunResult, RunStatus
+from hypergraph.runners._shared.results import PauseInfo, RunResult, RunStatus
+from hypergraph.runners._shared.state import PauseExecution
+from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id
 
 if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
-    from hypergraph.runners._shared.types import ExecutionContext, GraphState
+    from hypergraph.runners._shared.state import ExecutionContext, GraphState
     from hypergraph.runners.async_.runner import AsyncRunner
 
 
@@ -53,7 +55,7 @@ class AsyncGraphNodeExecutor:
             Dict mapping output names to their values
         """
         # Translate renamed input keys back to original inner graph names
-        inner_inputs = map_inputs_to_func_params(node, inputs)
+        inner_inputs = node.map_inputs_to_params(inputs)
         child_workflow_id = graphnode_child_workflow_id(ctx.workflow_id, node.name, state)
         map_config = node.map_config
 

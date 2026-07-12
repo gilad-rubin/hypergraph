@@ -1,6 +1,9 @@
 # Runners Shared — Agent Guide
 
-The scheduling and state engine. Read this before modifying `helpers.py`, `types.py`, or `template_*.py`.
+The scheduling and state engine. Read this before modifying the focused
+`scheduling.py`, `readiness.py`, `value_resolution.py`, `state_restore.py`,
+`outputs.py`, `map_inputs.py`, `results.py`, `state.py`, or `template_*.py`
+modules. Treat `types.py` as a compatibility re-export surface only.
 
 ## Node Readiness (`get_ready_nodes`)
 
@@ -8,7 +11,7 @@ A node is ready when ALL of these pass (checked in order):
 
 1. **Gate activation** — `_get_activated_nodes`: node has no controlling gate, OR a gate has routed to it
 2. **Startup predecessors** — `_startup_predecessors_satisfied`: all DATA+ORDERING predecessors have executed (CONTROL edges excluded — gate activation is handled separately)
-3. **Inputs available** — `_has_all_inputs`: all input params exist in state, bound values, or defaults
+3. **Inputs available** — `has_all_inputs`: all input params exist in state, bound values, or defaults
 4. **Wait-for satisfied** — `_wait_for_satisfied`: ordering-only deps exist and are fresh
 5. **Needs execution** — `_needs_execution`: never executed, OR inputs changed (stale), OR a routing decision targets this node
 
@@ -80,7 +83,7 @@ code that looks up a node-input value should use that canonical address instead
 of guessing a bare or prefixed name:
 
 ```python
-from hypergraph.runners._shared.helpers import address_for_node_input
+from hypergraph.runners._shared.value_resolution import address_for_node_input
 
 addr = address_for_node_input(node, param)
 if addr in state.values:
@@ -92,9 +95,9 @@ already contains the resolved parent-facing address, so the helper currently
 returns `param`. It remains useful as a readable assertion at record/read sites.
 
 **Sites that already use it (canonical examples):**
-- `_has_input` (readiness check, helpers.py)
-- `get_value_source` (PROVIDED + BOUND + EDGE branches, helpers.py)
-- `_is_stale` (read side, helpers.py)
+- `has_input` (readiness check, `value_resolution.py`)
+- `get_value_source` (PROVIDED + BOUND + EDGE branches, `value_resolution.py`)
+- `_is_stale` (read side, `readiness.py`)
 - sync/async `superstep.py` (recording `input_versions` under the same key the
   staleness check reads — record-key MUST equal read-key)
 - `runners/daft/operations.py` (DataFrame column naming)
@@ -114,4 +117,4 @@ caller is probably carrying an old pre-projection assumption.
 - **Shared params + cycles**: a node that both consumes and produces `messages` triggers the Sole Producer Rule. Split into separate consume/produce nodes if the node is NOT gate-controlled.
 - **Inputless gate targets**: without `_has_pending_activation`, they never re-fire after first execution because `_is_stale` iterates over zero inputs.
 - **Control edges vs ordering edges**: control edges are excluded from `startup_predecessors`. If you need ordering, use `wait_for` or data edges. Gates handle control flow separately.
-- **Local-name input lookups**: see "GraphNode Boundary Addressing" above. If you're touching `helpers.py` / `superstep.py` / an executor and writing `state.values[param]` or `param in node_bound`, route through `address_for_node_input` instead.
+- **Local-name input lookups**: see "GraphNode Boundary Addressing" above. If you're touching `value_resolution.py` / `superstep.py` / an executor and writing `state.values[param]` or `param in node_bound`, route through `address_for_node_input` instead.
