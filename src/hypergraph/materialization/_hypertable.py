@@ -154,6 +154,7 @@ class HyperTable:
         self._components = _components or {}
         self._runner = _runner
         self._graph = _graph
+        self._map_over_nodes: list[Any] = []
         self._spec: TableSpec | None = None
         self._analyzed = False
         self._column_graphs: dict[int, Any] = {}
@@ -197,7 +198,7 @@ class HyperTable:
         if self._graph is not None:
             return
         plain_nodes = []
-        self._map_over_nodes = []
+        self._map_over_nodes.clear()
         for n in self._nodes:
             if hasattr(n, "_map_config") and n._map_config:
                 self._map_over_nodes.append(n)
@@ -212,7 +213,7 @@ class HyperTable:
                 self._graph = self._graph.bind(**root_binds)
 
     def _analyze_graph(self):
-        self._spec = analyze_table(self._graph, self._identity, self._components, getattr(self, "_map_over_nodes", []))
+        self._spec = analyze_table(self._graph, self._identity, self._components, self._map_over_nodes)
 
     def _resolve_store(self):
         from hypergraph.materialization._table_store import TableStore
@@ -839,7 +840,7 @@ class HyperTable:
         from hypergraph.viz.widget import render_flat_graph
 
         all_nodes = list(self._graph.nodes.values()) if isinstance(self._graph.nodes, dict) else []
-        for map_node in getattr(self, "_map_over_nodes", []):
+        for map_node in self._map_over_nodes:
             all_nodes.append(map_node)
         combined = _Graph(all_nodes, name=self._spec.name)
         if self._components:
@@ -914,7 +915,7 @@ class HyperTable:
         happens to appear first.
         """
         edges: list[tuple[str, str, tuple[str, ...]]] = []
-        map_nodes = getattr(self, "_map_over_nodes", [])
+        map_nodes = self._map_over_nodes
         for child_spec, map_node in zip(self._spec.children, map_nodes, strict=True):
             column = child_spec.map_input
             if not column:
@@ -941,7 +942,7 @@ class HyperTable:
         ir_builder then falls back to the container entrypoint (#169 behavior).
         """
         fields: dict[tuple[str, str], tuple[str, ...]] = {}
-        map_nodes = getattr(self, "_map_over_nodes", [])
+        map_nodes = self._map_over_nodes
         for child_spec, map_node in zip(self._spec.children, map_nodes, strict=True):
             if not child_spec.map_input:
                 continue
