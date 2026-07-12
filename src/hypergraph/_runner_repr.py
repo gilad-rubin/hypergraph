@@ -223,11 +223,13 @@ def render_run_result_html(result: RunResult) -> str:
 
 def render_map_result_repr(result: MapResult) -> str:
     """Render a concise MapResult representation."""
+    from hypergraph.runners._shared.results import RunStatus
+
     n = len(result.results)
-    n_completed = sum(1 for item in result.results if item.status.value == "completed")
-    n_failed = sum(1 for item in result.results if item.status.value == "failed")
-    n_paused = sum(1 for item in result.results if item.status.value == "paused")
-    n_stopped = sum(1 for item in result.results if item.status.value == "stopped")
+    n_completed = sum(1 for item in result.results if item.status == RunStatus.COMPLETED)
+    n_failed = sum(1 for item in result.results if item.status == RunStatus.FAILED)
+    n_paused = sum(1 for item in result.results if item.status == RunStatus.PAUSED)
+    n_stopped = sum(1 for item in result.results if item.status == RunStatus.STOPPED)
     n_restored = result.restored_count
     parts = []
     if n_completed:
@@ -262,9 +264,11 @@ def render_map_result_pretty(result: MapResult, pretty_printer: Any, cycle: bool
 
 def render_map_result_html(result: MapResult) -> str:
     """Render a MapResult as rich notebook HTML."""
+    from hypergraph.runners._shared.results import RunStatus
+
     n = len(result.results)
-    n_completed = sum(1 for item in result.results if item.status.value == "completed")
-    n_failed = sum(1 for item in result.results if item.status.value == "failed")
+    n_completed = sum(1 for item in result.results if item.status == RunStatus.COMPLETED)
+    n_failed = sum(1 for item in result.results if item.status == RunStatus.FAILED)
     n_restored = result.restored_count
     kvs = [
         html_kv("Items", str(n)),

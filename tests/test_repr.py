@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import Enum
 
 import pytest
 
@@ -627,6 +628,28 @@ class TestRunResultProgressiveDisclosure:
 class TestMapResultProgressiveDisclosure:
     def _make_result(self, status=RunStatus.COMPLETED, error=None):
         return RunResult(values={}, status=status, error=error)
+
+    def test_foreign_status_value_is_not_counted_as_canonical(self):
+        class ForeignStatus(Enum):
+            COMPLETED = "completed"
+
+        foreign_result = RunResult(
+            values={},
+            status=ForeignStatus.COMPLETED,  # type: ignore[arg-type]
+        )
+        mapped = MapResult(
+            results=(foreign_result,),
+            run_id="r",
+            total_duration_ms=0.0,
+            map_over=("x",),
+            map_mode="zip",
+            graph_name="test",
+        )
+
+        assert repr(mapped) == "MapResult(1 item: empty, map_over=('x',))"
+        html = mapped._repr_html_()
+        assert html is not None
+        assert "Completed:" not in html
 
     def test_per_item_breakdown_collapsible(self):
         mr = MapResult(

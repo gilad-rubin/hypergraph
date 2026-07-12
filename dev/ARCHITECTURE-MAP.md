@@ -482,6 +482,7 @@ That means "architecture-only" changes in these areas often leak into user expec
 src/hypergraph/
 ├── __init__.py                        public API surface
 ├── _repr.py                          notebook/HTML rendering primitives
+├── _runner_repr.py                   runner result/log presentation
 ├── _typing.py                        type-compatibility helpers
 ├── _utils.py                         formatting and utility helpers
 ├── cache.py                          cache backends and cache contract
@@ -512,7 +513,9 @@ src/hypergraph/
 │   │   ├── state_restore.py
 │   │   ├── outputs.py
 │   │   ├── map_inputs.py
-│   │   ├── types.py
+│   │   ├── results.py
+│   │   ├── state.py
+│   │   ├── types.py                  compatibility re-exports
 │   │   ├── protocols.py
 │   │   ├── template_sync.py
 │   │   ├── template_async.py
