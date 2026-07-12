@@ -33,6 +33,7 @@ from hypergraph import (
     StreamingChunkEvent,
     SyncRunner,
     WorkflowAlreadyRunningError,
+    WorkflowStoppedError,
     node,
     route,
 )
@@ -55,6 +56,19 @@ class ChunkCollector:
             self.chunks.append(event.chunk)
         elif isinstance(event, StopRequestedEvent):
             self.stop_events.append(event)
+
+    def shutdown(self):
+        pass
+
+
+class EventCollector:
+    """Collect every dispatched event for lifecycle rejection assertions."""
+
+    def __init__(self):
+        self.events: list[Any] = []
+
+    def on_event(self, event):
+        self.events.append(event)
 
     def shutdown(self):
         pass
@@ -444,6 +458,193 @@ class TestStoppedStatus:
 
 
 class TestResumeAfterStop:
+    @pytest.mark.asyncio
+    async def test_async_bare_stopped_rerun_requires_explicit_signal(self, tmp_path):
+        from hypergraph.checkpointers import SqliteCheckpointer, WorkflowStatus
+
+        node_started = asyncio.Event()
+        release_node = asyncio.Event()
+        call_count = 0
+
+        @node(output_name="doubled")
+        async def double_after_release(x: int, ctx: NodeContext) -> int:
+            nonlocal call_count
+            call_count += 1
+            node_started.set()
+            await release_node.wait()
+            return x * 2
+
+        workflow_id = "stopped-explicit-signal"
+        graph = Graph([double_after_release])
+        checkpointer = SqliteCheckpointer(str(tmp_path / "stopped-explicit-signal.db"))
+        try:
+            runner = AsyncRunner(checkpointer=checkpointer)
+
+            async def stop_after_start():
+                await node_started.wait()
+                runner.stop(workflow_id)
+                release_node.set()
+
+            stop_task = asyncio.create_task(stop_after_start())
+            stopped = await runner.run(graph, {"x": 1}, workflow_id=workflow_id)
+            await stop_task
+
+            assert stopped.status == RunStatus.STOPPED
+            assert call_count == 1
+            stored_before = await checkpointer.get_run_async(workflow_id)
+            assert stored_before is not None
+            assert stored_before.status == WorkflowStatus.STOPPED
+            stored_snapshot = stored_before.to_dict()
+
+            collector = EventCollector()
+            with pytest.raises(WorkflowStoppedError) as exc_info:
+                await runner.run(graph, workflow_id=workflow_id, event_processors=[collector])
+
+            message = str(exc_info.value)
+            assert workflow_id in message
+            assert "How to fix:" in message
+            assert "non-empty" in message
+            assert "override_workflow=True" in message
+            assert collector.events == []
+            assert call_count == 1
+            stored_after_rejection = await checkpointer.get_run_async(workflow_id)
+            assert stored_after_rejection is not None
+            assert stored_after_rejection.to_dict() == stored_snapshot
+
+            with pytest.raises(WorkflowStoppedError):
+                await runner.run(graph, {}, workflow_id=workflow_id)
+
+            resumed = await runner.run(graph, {"x": 2}, workflow_id=workflow_id)
+
+            assert resumed.workflow_id == workflow_id
+            assert resumed["doubled"] == 4
+            assert call_count == 2
+
+            await checkpointer.update_run_status(workflow_id, WorkflowStatus.STOPPED)
+            same_value_signal = await runner.run(graph, {"x": 2}, workflow_id=workflow_id)
+            assert same_value_signal.workflow_id == workflow_id
+            assert same_value_signal["doubled"] == 4
+        finally:
+            await checkpointer.close()
+
+    def test_sync_bare_stopped_rerun_requires_explicit_signal(self, tmp_path):
+        from hypergraph.checkpointers import SqliteCheckpointer, WorkflowStatus
+
+        node_started = threading.Event()
+        release_node = threading.Event()
+        call_count = 0
+
+        @node(output_name="doubled")
+        def double_after_release(x: int, ctx: NodeContext) -> int:
+            nonlocal call_count
+            call_count += 1
+            node_started.set()
+            assert release_node.wait(timeout=2.0)
+            return x * 2
+
+        workflow_id = "sync-stopped-explicit-signal"
+        graph = Graph([double_after_release])
+        checkpointer = SqliteCheckpointer(str(tmp_path / "sync-stopped-explicit-signal.db"))
+        try:
+            runner = SyncRunner(checkpointer=checkpointer)
+
+            def stop_after_start():
+                assert node_started.wait(timeout=2.0)
+                runner.stop(workflow_id)
+                release_node.set()
+
+            stop_thread = threading.Thread(target=stop_after_start)
+            stop_thread.start()
+            stopped = runner.run(graph, {"x": 1}, workflow_id=workflow_id)
+            stop_thread.join(timeout=2.0)
+            assert not stop_thread.is_alive()
+
+            assert stopped.status == RunStatus.STOPPED
+            assert call_count == 1
+            stored_before = checkpointer.get_run(workflow_id)
+            assert stored_before is not None
+            assert stored_before.status == WorkflowStatus.STOPPED
+            stored_snapshot = stored_before.to_dict()
+
+            collector = EventCollector()
+            with pytest.raises(WorkflowStoppedError):
+                runner.run(graph, workflow_id=workflow_id, event_processors=[collector])
+
+            assert collector.events == []
+            assert call_count == 1
+            stored_after_rejection = checkpointer.get_run(workflow_id)
+            assert stored_after_rejection is not None
+            assert stored_after_rejection.to_dict() == stored_snapshot
+
+            resumed = runner.run(graph, {"x": 2}, workflow_id=workflow_id)
+            assert resumed.workflow_id == workflow_id
+            assert resumed["doubled"] == 4
+            assert call_count == 2
+        finally:
+            if checkpointer._sync_conn is not None:
+                checkpointer._sync_conn.close()
+
+    @pytest.mark.asyncio
+    async def test_stopped_parent_with_completed_graphnode_resumes_coherently(self, tmp_path):
+        from hypergraph.checkpointers import SqliteCheckpointer, WorkflowStatus
+
+        outer_node_started = asyncio.Event()
+        release_outer_node = asyncio.Event()
+        finish_calls = 0
+
+        @node(output_name="doubled")
+        def child_double(x: int) -> int:
+            return x * 2
+
+        @node(output_name="final")
+        async def finish(doubled: int, resume_token: int, ctx: NodeContext) -> int:
+            nonlocal finish_calls
+            finish_calls += 1
+            outer_node_started.set()
+            await release_outer_node.wait()
+            return doubled + resume_token
+
+        child = Graph([child_double], name="child-graph").as_node(name="child")
+        graph = Graph([child, finish], name="outer-graph")
+        workflow_id = "stopped-nested"
+        checkpointer = SqliteCheckpointer(str(tmp_path / "stopped-nested.db"))
+        try:
+            runner = AsyncRunner(checkpointer=checkpointer)
+
+            async def stop_after_outer_node_starts():
+                await outer_node_started.wait()
+                runner.stop(workflow_id)
+                release_outer_node.set()
+
+            stop_task = asyncio.create_task(stop_after_outer_node_starts())
+            stopped = await runner.run(
+                graph,
+                {"x": 1, "resume_token": 0},
+                workflow_id=workflow_id,
+            )
+            await stop_task
+
+            assert stopped.status == RunStatus.STOPPED
+            child_before = await checkpointer.get_run_async(f"{workflow_id}/child")
+            assert child_before is not None
+            assert child_before.status == WorkflowStatus.COMPLETED
+            assert child_before.parent_run_id == workflow_id
+
+            with pytest.raises(WorkflowStoppedError):
+                await runner.run(graph, workflow_id=workflow_id)
+
+            resumed = await runner.run(graph, {"resume_token": 1}, workflow_id=workflow_id)
+            assert resumed.workflow_id == workflow_id
+            assert resumed["final"] == 3
+            assert finish_calls == 2
+
+            child_after = await checkpointer.get_run_async(f"{workflow_id}/child")
+            assert child_after is not None
+            assert child_after.to_dict() == child_before.to_dict()
+            assert child_after.parent_run_id == workflow_id
+        finally:
+            await checkpointer.close()
+
     @pytest.mark.asyncio
     async def test_resume_after_stop_with_checkpointer(self, tmp_path):
         """Stop mid-generation, then re-run fresh to verify clean restart."""

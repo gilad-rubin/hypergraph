@@ -69,6 +69,12 @@ class TestRunResult:
         )
         assert result.workflow_id == "workflow-123"
 
+    def test_fresh_result_is_not_restored(self):
+        result = RunResult(values={}, status=RunStatus.COMPLETED)
+
+        assert result.restored is False
+        assert result.to_dict()["restored"] is False
+
     def test_dict_like_access(self):
         result = RunResult(
             values={"x": 42, "y": "hello"},
@@ -311,6 +317,18 @@ class TestGraphState:
 
 
 class TestMapResult:
+    def test_batch_restored_count_is_completed_subset(self):
+        results = (
+            RunResult(values={}, status=RunStatus.COMPLETED, restored=True),
+            RunResult(values={}, status=RunStatus.COMPLETED),
+        )
+
+        summary = BatchSummary.from_results(results)
+
+        assert summary.completed_items == 2
+        assert summary.restored_items == 1
+        assert summary.outcome == "completed"
+
     def test_batch_summary_uses_map_result_status_precedence(self):
         cases = [
             ((), RunStatus.COMPLETED),

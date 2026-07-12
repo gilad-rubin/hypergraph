@@ -187,6 +187,9 @@ class RunResult:
             itself still completes; check this flag to detect gaps in the
             persisted history.
         checkpoint_errors: String reprs of failed background step-saves.
+        restored: Whether this completed map child was skipped because its
+            checkpoint was restored. Other resume/cache/missing-log paths are
+            always False.
     """
 
     values: dict[str, Any]
@@ -198,6 +201,7 @@ class RunResult:
     log: RunLog | None = None
     checkpoint_ok: bool = True
     checkpoint_errors: tuple[str, ...] = ()
+    restored: bool = False
 
     @property
     def stopped(self) -> bool:
@@ -221,7 +225,9 @@ class RunResult:
 
     def summary(self) -> str:
         """One-line overview: 'completed | 3 nodes | 12ms' or 'failed: ValueError'."""
-        if self.log:
+        if self.restored:
+            summary = "restored from checkpoint"
+        elif self.log:
             summary = self.log.summary()
         elif self.error:
             summary = f"{self.status.value}: {type(self.error).__name__}: {self.error}"
@@ -245,6 +251,7 @@ class RunResult:
             "workflow_id": self.workflow_id,
             "checkpoint_ok": self.checkpoint_ok,
             "checkpoint_errors": list(self.checkpoint_errors),
+            "restored": self.restored,
         }
         if self.log:
             d["log"] = self.log.to_dict()
@@ -275,6 +282,7 @@ class RunResult:
             f"values={_compact_value(self.values)}, "
             f"run_id={self.run_id!r}, "
             f"workflow_id={self.workflow_id!r}, "
+            f"restored={self.restored}, "
             f"error={_compact_value(self.error)}, "
             f"pause={_compact_value(self.pause)}"
             f"{checkpoint}"
@@ -308,7 +316,9 @@ class RunResult:
             return None
 
         kvs = [html_kv("Status", status_badge(self.status.value))]
-        if self.log:
+        if self.restored:
+            kvs.append(html_kv("Restored", status_badge("restored")))
+        if self.log and not self.restored:
             kvs.append(html_kv("Duration", duration_html(self.log.total_duration_ms)))
             kvs.append(html_kv("Nodes", str(len({s.node_name for s in self.log.steps}))))
             n_errors = len(self.log.errors)
@@ -436,6 +446,18 @@ class MapResult:
         return [r for r in self.results if r.status == RunStatus.FAILED]
 
     @property
+    def restored_count(self) -> int:
+        """Number of completed items restored without child execution."""
+        return sum(1 for result in self.results if result.restored)
+
+    @property
+    def _timed_completed_items(self) -> tuple[RunResult, ...]:
+        """Fresh completed items whose real execution logs can be averaged."""
+        return tuple(
+            result for result in self.results if result.status == RunStatus.COMPLETED and not result.restored and _has_timed_work(result.log)
+        )
+
+    @property
     def checkpoint_ok(self) -> bool:
         """Whether every item persisted all best-effort async checkpoints."""
         return all(result.checkpoint_ok for result in self.results)
@@ -457,6 +479,10 @@ class MapResult:
             graph_name=self.graph_name,
             total_duration_ms=self.total_duration_ms,
             items=tuple(r.log if r.log is not None else _build_map_item_placeholder_log(r, self.graph_name) for r in self.results),
+            _item_restored=tuple(result.restored for result in self.results),
+            _item_timed=tuple(
+                result.status == RunStatus.COMPLETED and not result.restored and _has_timed_work(result.log) for result in self.results
+            ),
         )
 
     def get(self, key: str, default: Any = None) -> list[Any]:
@@ -473,6 +499,7 @@ class MapResult:
         n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
         n_paused = sum(1 for r in self.results if r.status == RunStatus.PAUSED)
         n_stopped = sum(1 for r in self.results if r.status == RunStatus.STOPPED)
+        n_restored = self.restored_count
         parts = [plural(n, "item")]
         status_parts = []
         if n_completed:
@@ -483,15 +510,17 @@ class MapResult:
             status_parts.append(f"{n_paused} paused")
         if n_stopped:
             status_parts.append(f"{n_stopped} stopped")
+        if n_restored:
+            status_parts.append(f"{n_restored} restored")
         if status_parts:
             parts.append(", ".join(status_parts))
         checkpoint_gap_count = self._checkpoint_gap_count
         if checkpoint_gap_count:
             parts.append(f"{plural(checkpoint_gap_count, 'item')} with checkpoint gaps")
-        if n_completed > 0:
-            completed_items = [r for r in self.results if r.status == RunStatus.COMPLETED]
-            completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
-            avg = completed_ms / n_completed
+        timed_completed_items = self._timed_completed_items
+        if timed_completed_items:
+            completed_ms = sum(result.log.total_duration_ms for result in timed_completed_items if result.log is not None)
+            avg = completed_ms / len(timed_completed_items)
             parts.append(f"avg {_format_duration(avg)}/item")
         return " | ".join(parts)
 
@@ -509,6 +538,7 @@ class MapResult:
             "checkpoint_errors": list(self.checkpoint_errors),
             "item_count": len(self.results),
             "completed_count": n_completed,
+            "restored_count": self.restored_count,
             "failed_count": n_failed,
             "items": [item.to_dict() for item in self.results],
         }
@@ -519,6 +549,7 @@ class MapResult:
         n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
         n_paused = sum(1 for r in self.results if r.status == RunStatus.PAUSED)
         n_stopped = sum(1 for r in self.results if r.status == RunStatus.STOPPED)
+        n_restored = self.restored_count
         parts = []
         if n_completed:
             parts.append(f"{n_completed} completed")
@@ -528,14 +559,16 @@ class MapResult:
             parts.append(f"{n_paused} paused")
         if n_stopped:
             parts.append(f"{n_stopped} stopped")
+        if n_restored:
+            parts.append(f"{n_restored} restored")
         status = ", ".join(parts) if parts else "empty"
         checkpoint_gap_count = self._checkpoint_gap_count
         checkpoint_part = f", {plural(checkpoint_gap_count, 'item')} with checkpoint gaps" if checkpoint_gap_count else ""
         avg_part = ""
-        if n_completed > 0:
-            completed_items = [r for r in self.results if r.status == RunStatus.COMPLETED]
-            completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
-            avg = completed_ms / n_completed
+        timed_completed_items = self._timed_completed_items
+        if timed_completed_items:
+            completed_ms = sum(result.log.total_duration_ms for result in timed_completed_items if result.log is not None)
+            avg = completed_ms / len(timed_completed_items)
             avg_part = f", avg {_format_duration(avg)}/item"
         return f"MapResult({plural(n, 'item')}: {status}{checkpoint_part}{avg_part}, map_over={self.map_over!r})"
 
@@ -564,6 +597,7 @@ class MapResult:
         n = len(self.results)
         n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
         n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
+        n_restored = self.restored_count
         kvs = [
             html_kv("Items", str(n)),
             html_kv("Status", status_badge(self.status.value)),
@@ -572,6 +606,8 @@ class MapResult:
             kvs.append(html_kv("Completed", str(n_completed)))
         if n_failed:
             kvs.append(html_kv("Failed", f'<span style="color:{ERROR_COLOR}">{n_failed}</span>'))
+        if n_restored:
+            kvs.append(html_kv("Restored", str(n_restored)))
         checkpoint_gap_count = self._checkpoint_gap_count
         if checkpoint_gap_count:
             kvs.append(
@@ -580,10 +616,10 @@ class MapResult:
                     f'<span style="color:{ERROR_COLOR}">{plural(checkpoint_gap_count, "item")}</span>',
                 )
             )
-        if n_completed > 0:
-            completed_items = [r for r in self.results if r.status == RunStatus.COMPLETED]
-            completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
-            avg = completed_ms / n_completed
+        timed_completed_items = self._timed_completed_items
+        if timed_completed_items:
+            completed_ms = sum(result.log.total_duration_ms for result in timed_completed_items if result.log is not None)
+            avg = completed_ms / len(timed_completed_items)
             kvs.append(html_kv("Avg/item", duration_html(avg)))
         body = " &nbsp;|&nbsp; ".join(kvs)
 
@@ -623,10 +659,11 @@ def _map_items_drilldown(
 
     total = len(results)
     status_counts: dict[str, int] = {"all": total}
-    for status in RunStatus:
-        count = sum(1 for r in results if r.status == status)
-        if count:
-            status_counts[status.value] = count
+    for result in results:
+        status = result.status.value
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if result.restored:
+            status_counts["restored"] = status_counts.get("restored", 0) + 1
 
     # Intelligent default: moderate batches open at 50, larger ones at 100 to
     # reduce unnecessary paging while keeping the view readable.
@@ -641,12 +678,14 @@ def _map_items_drilldown(
 
     parts: list[str] = []
     for i, r in enumerate(results):
-        dur = duration_html(r.log.total_duration_ms) if r.log else "—"
+        display_status = "restored" if r.restored else r.status.value
+        filter_status = f"{r.status.value} restored" if r.restored else r.status.value
+        dur = duration_html(r.log.total_duration_ms) if r.log and not r.restored else "—"
         err_label = f' — <span style="color:{ERROR_COLOR}">{type(r.error).__name__}</span>' if r.error else ""
-        summary = f"Item {i}: {status_badge(r.status.value)} {dur}{err_label}"
+        summary = f"Item {i}: {status_badge(display_status)} {dur}{err_label}"
         # Render the full RunResult HTML inside each item's expandable section.
         item_html = html_detail(summary, r._repr_html_(), state_key=f"item-{i}")
-        parts.append(f'<div data-hg-map-item="1" data-status="{r.status.value}" style="display:block">{item_html}</div>')
+        parts.append(f'<div data-hg-map-item="1" data-status="{filter_status}" style="display:block">{item_html}</div>')
 
     controls = html_filter_paginate_controls(
         filter_id=filter_id,
@@ -934,7 +973,7 @@ class NodeRecord:
         node_name: Name of the executed node.
         superstep: Parallel execution round (0-indexed).
         duration_ms: Wall-clock execution time in milliseconds.
-        status: "completed", "failed", or "paused".
+        status: "completed", "failed", "paused", or "restored".
         span_id: Correlates with OTel traces.
         error: Error message if status is "failed".
         cached: Whether this was a cache hit.
@@ -944,7 +983,7 @@ class NodeRecord:
     node_name: str
     superstep: int
     duration_ms: float
-    status: Literal["completed", "failed", "paused"]
+    status: Literal["completed", "failed", "paused", "restored"]
     span_id: str
     error: str | None = None
     cached: bool = False
@@ -956,7 +995,8 @@ class NodeRecord:
 
     def __repr__(self) -> str:
         status = "cached" if self.cached else self.status
-        parts = [f"NodeRecord: {self.node_name}", status, _format_duration(self.duration_ms), f"superstep {self.superstep}"]
+        duration = "—" if self.status == "restored" else _format_duration(self.duration_ms)
+        parts = [f"NodeRecord: {self.node_name}", status, duration, f"superstep {self.superstep}"]
         if self.error:
             parts.append(f"error: {self.error[:60]}")
         if self.decision is not None:
@@ -1027,6 +1067,8 @@ def _compute_node_stats(steps: tuple[NodeRecord, ...]) -> dict[str, NodeStats]:
     """Aggregate per-node stats from step records."""
     accumulators: dict[str, dict[str, Any]] = {}
     for step in steps:
+        if step.status == "restored":
+            continue
         acc = accumulators.setdefault(step.node_name, {"count": 0, "total_ms": 0.0, "errors": 0, "cached": 0})
         acc["count"] += 1
         acc["total_ms"] += step.duration_ms
@@ -1076,10 +1118,11 @@ class RunLog:
         """One-line overview string."""
         n_errors = len(self.errors)
         n_nodes = len({s.node_name for s in self.steps})
+        n_restored = sum(1 for step in self.steps if step.status == "restored")
         slowest = max(self.timing.items(), key=lambda x: x[1]) if self.timing else ("", 0)
         parts = [
             plural(n_nodes, "node"),
-            _format_duration(self.total_duration_ms),
+            f"{n_restored} restored" if n_restored else _format_duration(self.total_duration_ms),
             plural(n_errors, "error"),
         ]
         if slowest[1] > 0:
@@ -1125,12 +1168,9 @@ class RunLog:
     def __str__(self) -> str:
         """Formatted table output for terminal / print()."""
         n_errors = len(self.errors)
-        header = (
-            f"RunLog: {self.graph_name} | "
-            f"{_format_duration(self.total_duration_ms)} | "
-            f"{plural(len({s.node_name for s in self.steps}), 'node')} | "
-            f"{plural(n_errors, 'error')}"
-        )
+        n_restored = sum(1 for step in self.steps if step.status == "restored")
+        duration = f"{n_restored} restored" if n_restored else _format_duration(self.total_duration_ms)
+        header = f"RunLog: {self.graph_name} | {duration} | {plural(len({s.node_name for s in self.steps}), 'node')} | {plural(n_errors, 'error')}"
 
         has_decisions = any(s.decision is not None for s in self.steps)
         lines = [header, ""]
@@ -1143,11 +1183,13 @@ class RunLog:
         lines.append("  ".join("─" * 16 for _ in cols))
 
         for i, step in enumerate(self.steps):
-            dur = _format_duration(step.duration_ms) if step.status != "failed" or step.duration_ms > 0 else "—"
+            dur = "—" if step.status == "restored" or (step.status == "failed" and step.duration_ms == 0) else _format_duration(step.duration_ms)
             if step.status == "completed":
                 status = "completed"
             elif step.status == "paused":
                 status = "paused"
+            elif step.status == "restored":
+                status = "restored"
             else:
                 status = f"FAILED: {step.error or 'unknown'}"
             if step.cached:
@@ -1174,6 +1216,9 @@ class RunLog:
 
     def __repr__(self) -> str:
         """Concise repr for REPL/debugger."""
+        n_restored = sum(1 for step in self.steps if step.status == "restored")
+        if n_restored:
+            return f"RunLog(graph={self.graph_name!r}, steps={len(self.steps)}, restored={n_restored})"
         return f"RunLog(graph={self.graph_name!r}, steps={len(self.steps)}, duration={_format_duration(self.total_duration_ms)})"
 
     def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
@@ -1205,7 +1250,7 @@ class RunLog:
         rows = []
         for i, step in enumerate(self.steps):
             status = "cached" if step.cached else step.status
-            dur = duration_html(step.duration_ms)
+            dur = duration_html(None if step.status == "restored" else step.duration_ms)
             row = [str(i), _code(step.node_name), status_badge(status), dur]
             if has_decisions:
                 if step.decision is not None:
@@ -1215,9 +1260,11 @@ class RunLog:
                     row.append("")
             rows.append(row)
         n_errors = len(self.errors)
+        n_restored = sum(1 for step in self.steps if step.status == "restored")
+        duration = f"{n_restored} restored" if n_restored else duration_html(self.total_duration_ms)
         title = (
             f"RunLog: {self.graph_name} &nbsp; "
-            f"{duration_html(self.total_duration_ms)} &nbsp; "
+            f"{duration} &nbsp; "
             f"{plural(len({s.node_name for s in self.steps}), 'node')} &nbsp; "
             f"{plural(n_errors, 'error')}"
         )
@@ -1228,8 +1275,28 @@ class RunLog:
         )
 
 
+def build_restored_run_log(graph_name: str, run_id: str) -> RunLog:
+    """Build visible, non-error evidence for a checkpoint-restored map child."""
+    return RunLog(
+        graph_name=graph_name,
+        run_id=run_id,
+        total_duration_ms=0.0,
+        steps=(
+            NodeRecord(
+                node_name="map_item",
+                superstep=0,
+                duration_ms=0.0,
+                status="restored",
+                span_id="restored-checkpoint",
+            ),
+        ),
+    )
+
+
 def _build_map_item_placeholder_log(result: RunResult, graph_name: str) -> RunLog:
     """Create a synthetic per-item log when map item trace is unavailable."""
+    if result.restored:
+        return build_restored_run_log(graph_name, result.run_id)
     if result.status == RunStatus.FAILED:
         error_text = None
         if result.error is not None:
@@ -1254,6 +1321,11 @@ def _build_map_item_placeholder_log(result: RunResult, graph_name: str) -> RunLo
     )
 
 
+def _has_timed_work(log: RunLog | None) -> bool:
+    """Whether a real, non-error run log contains work that was not cached."""
+    return log is not None and not log.errors and any(not step.cached for step in log.steps)
+
+
 # ---------------------------------------------------------------------------
 # MapLog — batch-level execution trace
 # ---------------------------------------------------------------------------
@@ -1271,6 +1343,29 @@ class MapLog:
     graph_name: str
     total_duration_ms: float
     items: tuple[RunLog, ...]
+    _item_restored: tuple[bool, ...] = field(default=(), repr=False, compare=False)
+    _item_timed: tuple[bool, ...] = field(default=(), repr=False, compare=False)
+
+    @property
+    def _restored_flags(self) -> tuple[bool, ...]:
+        if len(self._item_restored) == len(self.items):
+            return self._item_restored
+        return tuple(any(step.status == "restored" for step in log.steps) for log in self.items)
+
+    @property
+    def _timed_flags(self) -> tuple[bool, ...]:
+        if len(self._item_timed) == len(self.items):
+            return self._item_timed
+        return tuple(not restored and _has_timed_work(log) for log, restored in zip(self.items, self._restored_flags, strict=False))
+
+    @property
+    def restored_count(self) -> int:
+        """Number of item logs representing checkpoint restoration."""
+        return sum(self._restored_flags)
+
+    @property
+    def _timed_success_items(self) -> tuple[RunLog, ...]:
+        return tuple(log for log, timed in zip(self.items, self._timed_flags, strict=False) if timed)
 
     @property
     def errors(self) -> tuple[NodeRecord, ...]:
@@ -1288,17 +1383,20 @@ class MapLog:
         n = len(self.items)
         n_succeeded = sum(1 for log in self.items if not log.errors)
         n_errors = len(self.errors)
+        n_restored = self.restored_count
         parts = [plural(n, "item")]
         status_parts = []
         if n_succeeded:
             status_parts.append(f"{n_succeeded} completed")
         if n_errors:
             status_parts.append(plural(n_errors, "error"))
+        if n_restored:
+            status_parts.append(f"{n_restored} restored")
         if status_parts:
             parts.append(", ".join(status_parts))
-        if n_succeeded > 0:
-            succeeded_items = [log for log in self.items if not log.errors]
-            avg = sum(log.total_duration_ms for log in succeeded_items) / n_succeeded
+        timed_success_items = self._timed_success_items
+        if timed_success_items:
+            avg = sum(log.total_duration_ms for log in timed_success_items) / len(timed_success_items)
             parts.append(f"avg {_format_duration(avg)}/item")
         return " | ".join(parts)
 
@@ -1307,6 +1405,7 @@ class MapLog:
         return {
             "graph_name": self.graph_name,
             "total_duration_ms": self.total_duration_ms,
+            "restored_count": self.restored_count,
             "items": [log.to_dict() for log in self.items],
         }
 
@@ -1323,12 +1422,17 @@ class MapLog:
         """Per-item table with footer."""
         n_errors = len(self.errors)
         n_succeeded = sum(1 for log in self.items if not log.errors)
+        n_restored = self.restored_count
         avg_part = ""
-        if n_succeeded > 0:
-            succeeded_items = [log for log in self.items if not log.errors]
-            avg = sum(log.total_duration_ms for log in succeeded_items) / n_succeeded
+        timed_success_items = self._timed_success_items
+        if timed_success_items:
+            avg = sum(log.total_duration_ms for log in timed_success_items) / len(timed_success_items)
             avg_part = f" | avg {_format_duration(avg)}/item"
-        header = f"MapLog: {self.graph_name} | {plural(len(self.items), 'item')} ({n_succeeded} succeeded) | {plural(n_errors, 'error')}{avg_part}"
+        restored_part = f", {n_restored} restored" if n_restored else ""
+        header = (
+            f"MapLog: {self.graph_name} | {plural(len(self.items), 'item')} "
+            f"({n_succeeded} succeeded{restored_part}) | {plural(n_errors, 'error')}{avg_part}"
+        )
         lines = [header, ""]
 
         cols = ["  Item", "Duration", "Status", "Nodes"]
@@ -1337,8 +1441,9 @@ class MapLog:
 
         display_items = self.items[:_MAX_MAP_LOG_ROWS]
         for i, log in enumerate(display_items):
-            dur = _format_duration(log.total_duration_ms)
-            status = "FAILED" if log.errors else "completed"
+            restored = self._restored_flags[i]
+            dur = "—" if restored else _format_duration(log.total_duration_ms)
+            status = "restored" if restored else ("FAILED" if log.errors else "completed")
             n_nodes = len({s.node_name for s in log.steps})
             row = [f"  {i:>4}", f"{dur:<16}", f"{status:<16}", str(n_nodes)]
             lines.append("  ".join(f"{c:<16}" for c in row).rstrip())
@@ -1353,7 +1458,10 @@ class MapLog:
         return "\n".join(lines)
 
     def __repr__(self) -> str:
-        return f"MapLog(graph={self.graph_name!r}, items={len(self.items)}, duration={_format_duration(self.total_duration_ms)})"
+        return (
+            f"MapLog(graph={self.graph_name!r}, items={len(self.items)}, restored={self.restored_count}, "
+            f"duration={_format_duration(self.total_duration_ms)})"
+        )
 
     def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
         """Show table in IPython/Jupyter notebooks."""
@@ -1389,25 +1497,26 @@ class MapLog:
         trace_items = []
         n_items = len(self.items)
         status_counts: dict[str, int] = {"all": n_items}
-        n_completed = 0
         for i, log in enumerate(self.items):
-            status = "failed" if log.errors else "completed"
-            if status == "completed":
-                n_completed += 1
-            status_counts[status] = status_counts.get(status, 0) + 1
+            restored = self._restored_flags[i]
+            status = "restored" if restored else ("failed" if log.errors else "completed")
+            filter_status = "completed restored" if restored else status
+            if not log.errors:
+                status_counts["completed"] = status_counts.get("completed", 0) + 1
+            else:
+                status_counts["failed"] = status_counts.get("failed", 0) + 1
+            if restored:
+                status_counts["restored"] = status_counts.get("restored", 0) + 1
             n_nodes = len({s.node_name for s in log.steps})
-            rows.append([str(i), duration_html(log.total_duration_ms), status_badge(status), str(n_nodes)])
-            row_attrs.append({"data-hg-map-log-item": "1", "data-status": status})
+            duration = duration_html(None if restored else log.total_duration_ms)
+            rows.append([str(i), duration, status_badge(status), str(n_nodes)])
+            row_attrs.append({"data-hg-map-log-item": "1", "data-status": filter_status})
 
-            summary = (
-                f"Item {i}: {status_badge(status)} "
-                f"{duration_html(log.total_duration_ms)} "
-                f'<span style="color:{MUTED_COLOR}">({plural(n_nodes, "node")})</span>'
-            )
+            summary = f'Item {i}: {status_badge(status)} {duration} <span style="color:{MUTED_COLOR}">({plural(n_nodes, "node")})</span>'
             trace_detail = html_detail(summary, log._repr_html_(), state_key=f"map-log-item-{i}")
             trace_items.append(
                 '<div data-hg-map-log-item="1" '
-                f'data-status="{status}" '
+                f'data-status="{filter_status}" '
                 'style="display:block; margin:0 0 8px 0; padding:6px 8px; '
                 f"border:1px solid {BORDER_COLOR}; border-radius:10px; "
                 f'background:{SURFACE_COLOR}">'
@@ -1415,10 +1524,9 @@ class MapLog:
             )
 
         avg_part = ""
-        n_succeeded = n_completed
-        if n_succeeded > 0:
-            succeeded_items = [log for log in self.items if not log.errors]
-            avg = sum(log.total_duration_ms for log in succeeded_items) / n_succeeded
+        timed_success_items = self._timed_success_items
+        if timed_success_items:
+            avg = sum(log.total_duration_ms for log in timed_success_items) / len(timed_success_items)
             avg_part = f" &nbsp; avg {duration_html(avg)}/item"
 
         title = f"MapLog: {self.graph_name} ({plural(n_items, 'item')}){avg_part}"

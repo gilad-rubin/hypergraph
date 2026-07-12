@@ -150,11 +150,36 @@ class TestOTelProcessor:
         assert attrs["hypergraph.batch.total_items"] == 3
         assert attrs["hypergraph.batch.completed_items"] == 2
         assert attrs["hypergraph.batch.failed_items"] == 1
+        assert attrs["hypergraph.batch.restored_items"] == 0
         assert attrs["hypergraph.batch.outcome"] == "partial"
         assert map_span.status.status_code == StatusCode.UNSET
 
         child_item_spans = [span for span in spans if span.name.startswith("graph ") and span.attributes.get("hypergraph.item_index") is not None]
         assert sorted(span.attributes["hypergraph.item_index"] for span in child_item_spans) == [0, 1, 2]
+
+    def test_restored_batch_subset_is_exported(self, sqlite_checkpointer):
+        """A fully restored map keeps completed inclusive and exports its subset."""
+        from hypergraph.events.otel import OpenTelemetryProcessor
+
+        runner = SyncRunner(checkpointer=sqlite_checkpointer)
+        graph = Graph([double])
+        runner.map(graph, {"x": [1, 2]}, map_over="x", workflow_id="otel-restored")
+
+        processor = OpenTelemetryProcessor()
+        resumed = runner.map(
+            graph,
+            {"x": [1, 2]},
+            map_over="x",
+            workflow_id="otel-restored",
+            event_processors=[processor],
+        )
+
+        assert resumed.restored_count == 2
+        spans = self.exporter.get_finished_spans()
+        map_span = next(span for span in spans if span.attributes.get("hypergraph.is_map") is True)
+        attrs = dict(map_span.attributes)
+        assert attrs["hypergraph.batch.completed_items"] == 2
+        assert attrs["hypergraph.batch.restored_items"] == 2
 
     def test_forked_run_adds_lineage_link_when_source_span_is_known(self, sqlite_checkpointer):
         """Forked runs link back to the source run span when both are in-process."""

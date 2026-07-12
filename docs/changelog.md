@@ -4,6 +4,12 @@
 
 ### Added
 
+- **Truthful restored-map provenance** — checkpoint-skipped map children now return `RunResult(restored=True)` with a visible non-error `NodeRecord(status="restored")`. `MapResult.restored_count`, `MapLog.restored_count`, `RunEndEvent.batch_restored_items`, and `hypergraph.batch.restored_items` expose the restored subset while completed counts stay inclusive. Duration averages include only fresh completed items with real logs.
+
+- **Internal-step inspection escape hatch** — `get_steps(..., show_internal=True)`, SQLite `steps(...)`, and `RunInspector.steps(...)` can expose retention carrier rows for debugging; public views hide them by default while state reconstruction still folds them.
+
+- **`WorkflowStoppedError`** — a bare rerun of a persisted stopped workflow now fails before events or persistence writes. Pass a non-empty runtime mapping to resume the same lineage, or `override_workflow=True` to fork.
+
 - **HyperTable child fingerprints** — child rows now have real fingerprints computed from the child's source inputs, child graph node hashes, and component config hashes (scoped to the child graph, not the parent). Re-inserting a parent skips children whose inputs and graph definition haven't changed. Makes insert naturally resumable after crashes.
 
 - **HyperTable `on_error` policy** — `HyperTable(..., on_error="store")` writes error rows instead of raising on derivation failure. Error rows preserve source columns and identity with `_status="error"` and `_error="{ExceptionType}: {message}"`. Successful siblings are unaffected. Error rows are retried (not skipped) on the next insert/sync. Default `on_error="raise"` preserves backward compatibility. Works for both parent and child rows, and with both `SyncRunner` and `AsyncRunner`.
@@ -15,6 +21,10 @@
 - **Reserved column name validation** — identity and source columns named `_status`, `_error`, `_row_fingerprint`, `_write_gen`, `_parent_id`, or `_provenance_*` are rejected at graph analysis time with a clear error message.
 
 ### Fixed
+
+- **Checkpointer run-filter parity** — async Memory/SQLite and SQLite sync reads now compose `graph_name`, inclusive UTC-normalized `since`, status, and parent filters before limit. Omitting `parent_run_id` returns all runs; explicit `None` returns top-level runs only. `count_runs()` uses the same three-state parent contract.
+
+- **Source-derived fork IDs** — before, `runner.run(..., fork_from="job-1")` generated an unrelated `run-...` ID; now it yields `job-1-fork-<hex>`. Explicit targets remain exact, retries keep generic runner IDs, and missing/nested implicit sources fail without creating a run.
 
 - **`set_children` parent scoping** — the cleanup predicate in `set_children` now includes `_parent_id`, preventing accidental deletion of another parent's children when child identity values overlap.
 

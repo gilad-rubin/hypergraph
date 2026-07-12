@@ -5,10 +5,33 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from hypergraph.checkpointers.types import Checkpoint, Run, StepRecord, WorkflowStatus
+from hypergraph.exceptions import WorkflowForkError
+
+_UNSET = object()
+
+
+def _normalize_since(value: datetime) -> datetime:
+    """Return an aware UTC boundary for run-list filtering."""
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _resolve_fork_workflow_id(source_run_id: str, workflow_id: str | None) -> str:
+    """Keep an explicit target or derive one for a top-level source."""
+    if workflow_id is not None:
+        return workflow_id
+    if "/" in source_run_id:
+        raise WorkflowForkError(
+            f"Cannot auto-derive a top-level workflow_id from nested source {source_run_id!r}.\n\n"
+            "How to fix:\n"
+            "  Top-level callers should pass an explicit slash-free workflow_id for the new fork."
+        )
+    return f"{source_run_id}-fork-{uuid.uuid4().hex[:6]}"
 
 
 @dataclass
@@ -116,8 +139,14 @@ class Checkpointer(ABC):
         ...
 
     @abstractmethod
-    async def get_steps(self, run_id: str, *, superstep: int | None = None) -> list[StepRecord]:
-        """Get step records through a superstep (None = all)."""
+    async def get_steps(
+        self,
+        run_id: str,
+        *,
+        superstep: int | None = None,
+        show_internal: bool = False,
+    ) -> list[StepRecord]:
+        """Get step records through a superstep, hiding internal carriers by default."""
         ...
 
     async def get_checkpoint(self, run_id: str, *, superstep: int | None = None) -> Checkpoint:
@@ -142,8 +171,11 @@ class Checkpointer(ABC):
         superstep: int | None = None,
     ) -> tuple[str, Checkpoint]:
         """Prepare a fork by materializing a checkpoint and suggested workflow_id."""
+        source = await self.get_run_async(source_run_id)
+        if source is None:
+            raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
+        new_workflow_id = _resolve_fork_workflow_id(source_run_id, workflow_id)
         checkpoint = await self.get_checkpoint(source_run_id, superstep=superstep)
-        new_workflow_id = workflow_id or f"{source_run_id}-fork-{uuid.uuid4().hex[:6]}"
         return new_workflow_id, checkpoint
 
     async def retry_workflow_async(
@@ -175,14 +207,19 @@ class Checkpointer(ABC):
         self,
         *,
         status: WorkflowStatus | None = None,
-        parent_run_id: str | None = None,
+        graph_name: str | None = None,
+        since: datetime | None = None,
+        parent_run_id: str | None | object = _UNSET,
         limit: int | None = 100,
     ) -> list[Run]:
         """List runs, optionally filtered by status and/or parent.
 
         Args:
             status: Filter to runs with this status (None = all).
-            parent_run_id: Filter to children of this run (None = no filter).
+            graph_name: Filter to runs for this graph.
+            since: Inclusive creation-time boundary. Naive values mean UTC.
+            parent_run_id: Filter by parent relationship. Omitted means all,
+                None means top-level, and a run id means direct children.
             limit: Max results to return. ``None`` returns all matches.
         """
         ...
@@ -191,7 +228,7 @@ class Checkpointer(ABC):
         self,
         *,
         status: WorkflowStatus | None = None,
-        parent_run_id: str | None = None,
+        parent_run_id: str | None | object = _UNSET,
         retry_of: str | None = None,
     ) -> int:
         """Count runs matching a small set of backend-neutral filters.
@@ -199,7 +236,10 @@ class Checkpointer(ABC):
         Backends with efficient query support should override this to avoid
         materializing full run objects for simple counting operations.
         """
-        runs = await self.list_runs(status=status, parent_run_id=parent_run_id, limit=None)
+        if parent_run_id is _UNSET:
+            runs = await self.list_runs(status=status, limit=None)
+        else:
+            runs = await self.list_runs(status=status, parent_run_id=parent_run_id, limit=None)
         if retry_of is not None:
             runs = [run for run in runs if run.retry_of == retry_of]
         return len(runs)

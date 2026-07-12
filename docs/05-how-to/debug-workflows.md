@@ -98,7 +98,7 @@ log_dict = result.log.to_dict()
 results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x")
 
 # Batch-level overview
-print(results.summary())  # "3 items | 3 completed | 12ms"
+print(results.summary())  # "3 items | 3 completed | avg 4ms/item"
 
 # Per-item RunLogs
 for i, r in enumerate(results):
@@ -110,7 +110,7 @@ if results.failed:
         print(f"Failed: {f.error}")
 ```
 
-`results.log` also returns a single batch-level `MapLog` (`graph_name`, `total_duration_ms`, `items` — a tuple of the per-item `RunLog`s, plus an aggregate `.errors`), for when you want one object instead of iterating `results` yourself.
+`results.log` also returns a single batch-level `MapLog` (`graph_name`, `total_duration_ms`, `items` — a tuple of the per-item `RunLog`s, plus aggregate `.errors` and `restored_count`), for when you want one object instead of iterating `results` yourself. A checkpoint-skipped item has `RunResult.restored=True` and a visible synthetic `NodeRecord(status="restored")`; terminal and HTML views show it as restored, never as failed or as fake `0ms` work.
 
 ### runner.map() vs map_over for debugging
 
@@ -185,6 +185,7 @@ cp.runs()                             # List all runs
 cp.get_run("my-run-1")                # Run metadata (status, duration, counts)
 cp.values("my-run-1")                 # {"doubled": 10, "tripled": 30}
 cp.steps("my-run-1")                  # Step records with timing
+cp.steps("my-run-1", show_internal=True)  # Include retention carriers
 cp.stats("my-run-1")                  # Per-node duration/frequency breakdown
 cp.checkpoint("my-run-1")             # Full snapshot (values + steps)
 
@@ -202,7 +203,7 @@ cp.state("my-run-1", superstep=1)     # {"doubled": 10}
 cp.lineage("my-run-1")
 ```
 
-The sync read methods (`runs()`, `get_run()`, `values()`, `steps()`, `search()`, `stats()`, `checkpoint()`) work without async/await, making them ideal for debugging scripts and notebooks. No `initialize()` call needed.
+The sync read methods (`runs()`, `get_run()`, `values()`, `steps()`, `search()`, `stats()`, `checkpoint()`) work without async/await, making them ideal for debugging scripts and notebooks. No `initialize()` call needed. Public step/checkpoint/search/statistics views hide `__retained_state__` / `RetentionBaseline` compaction carriers by default; state reconstruction still folds those internal rows. Use `show_internal=True` only to inspect retention internals.
 
 #### Interrupt Steps
 
@@ -258,7 +259,7 @@ cp = SqliteCheckpointer(
 
 ### Without workflow_id
 
-For `runner.run()`, if a checkpointer is configured and you omit `workflow_id`, hypergraph auto-generates one and persists the run. This reduces boilerplate while keeping runs addressable.
+For a fresh `runner.run()` (or `retry_from=`), if a checkpointer is configured and you omit `workflow_id`, hypergraph generates a generic `run-...` ID and persists the run. `fork_from=` instead derives `{source}-fork-{hex}`; an explicit target remains exact.
 
 ```python
 # Auto-generated workflow_id (when checkpointer exists)

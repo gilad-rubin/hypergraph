@@ -18,6 +18,7 @@ from hypergraph.exceptions import (
     WorkflowAlreadyCompletedError,
     WorkflowAlreadyRunningError,
     WorkflowForkError,
+    WorkflowStoppedError,
 )
 from hypergraph.runners._shared.event_metadata import (
     DEFAULT_RUN_CONTEXT,
@@ -46,7 +47,16 @@ from hypergraph.runners._shared.input_normalization import (
     runner_option_names,
 )
 from hypergraph.runners._shared.run_log import RunLogCollector
-from hypergraph.runners._shared.types import ErrorHandling, GraphState, MapResult, PauseExecution, RunResult, RunStatus, _generate_run_id
+from hypergraph.runners._shared.types import (
+    ErrorHandling,
+    GraphState,
+    MapResult,
+    PauseExecution,
+    RunResult,
+    RunStatus,
+    _generate_run_id,
+    build_restored_run_log,
+)
 from hypergraph.runners._shared.validation import (
     precompute_input_validation,
     resolve_runtime_selected,
@@ -234,9 +244,12 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             validate_node_types(graph, self.supported_node_types)
             validate_delegated_runners(graph, self.capabilities)
 
-        if self._checkpointer is not None and _validation_ctx is None and workflow_id is None:
+        if self._checkpointer is not None and _validation_ctx is None and workflow_id is None and fork_from is None:
             workflow_id = generate_workflow_id()
-        sync_cp = self._get_sync_checkpointer(workflow_id)
+        sync_checkpointer_key = workflow_id
+        if sync_checkpointer_key is None:
+            sync_checkpointer_key = fork_from if fork_from is not None else retry_from
+        sync_cp = self._get_sync_checkpointer(sync_checkpointer_key)
         if _validation_ctx is None and (fork_from is not None or retry_from is not None) and sync_cp is None:
             raise ValueError("fork_from/retry_from require a checkpointer and workflow persistence to be enabled.")
         resume_checkpoint = None
@@ -268,7 +281,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     previous_hash = (existing_run.config or {}).get("graph_struct_hash")
                     if previous_hash is not None and previous_hash != graph_hash:
                         raise GraphChangedError(workflow_id)
-                    if normalized_values and not is_interrupt_resume_payload(graph, normalized_values):
+                    if existing_run.status.value == "stopped":
+                        if not normalized_values:
+                            raise WorkflowStoppedError(workflow_id)
+                    elif normalized_values and not is_interrupt_resume_payload(graph, normalized_values):
                         raise InputOverrideRequiresForkError(workflow_id)
                     if existing_run.status.value == "completed":
                         raise WorkflowAlreadyCompletedError(workflow_id)
@@ -662,6 +678,8 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                             status=RunStatus.COMPLETED,
                             run_id=restore_run_id,
                             workflow_id=restore_run_id,
+                            log=build_restored_run_log(graph.name or "", restore_run_id),
+                            restored=True,
                         )
                     )
                     continue

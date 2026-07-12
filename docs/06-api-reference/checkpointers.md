@@ -60,13 +60,15 @@ Every checkpointer implements the same contract, so runners don't need to know w
 | `create_run(run_id, ...)` | Create or reset a run record at run start. |
 | `update_run_status(run_id, status, ...)` | Update lifecycle status with duration/counts. |
 | `get_state(run_id, superstep=None)` | Fold step values into accumulated state. `None` means latest. |
-| `get_steps(run_id, superstep=None)` | Raw step records through a superstep. |
+| `get_steps(run_id, superstep=None, show_internal=False)` | Public step records through a superstep. Set `show_internal=True` to include retention carriers. |
 | `get_checkpoint(run_id, superstep=None)` | `Checkpoint` (values + steps) for forking — has a default implementation built from `get_state`/`get_steps`. |
-| `list_runs(status=None, parent_run_id=None, limit=100)` | List runs, optionally filtered. |
-| `count_runs(status=None, parent_run_id=None, retry_of=None)` | Count without materializing full run objects. |
+| `list_runs(status=None, graph_name=None, since=None, parent_run_id=<omitted>, limit=100)` | List runs with composable filters. Omit `parent_run_id` for all runs; pass `None` for top-level runs only. |
+| `count_runs(status=None, parent_run_id=<omitted>, retry_of=None)` | Count with the same omitted/all versus explicit-`None`/top-level parent filter. |
 | `search_async(query, field=None, limit=20)` | FTS search over step values. Returns `[]` if unsupported. |
 
-Steps are the source of truth — state is always computed by folding steps, never stored as a separate mutable blob. This is what makes time-travel (`get_state(run_id, superstep=3)`) and forking from an arbitrary point possible.
+`graph_name`, `since`, `status`, and `parent_run_id` compose with AND before `limit` is applied. `since` is inclusive; naive datetimes mean UTC and aware datetimes are normalized to UTC. The same rules apply to SQLite's sync `runs()` adapter.
+
+Steps are the source of truth — state is always computed by folding steps, never stored as a separate mutable blob. Public step views hide internal `__retained_state__` / `RetentionBaseline` carrier rows by default, while state reconstruction folds the raw internal stream. This keeps `latest` and `windowed` retention reconstructible without showing phantom nodes in checkpoints, search, statistics, or lineage views. Use `show_internal=True` only when debugging the retention mechanism itself.
 
 ## CheckpointPolicy
 
@@ -137,10 +139,10 @@ checkpointer.get_run(retried.workflow_id).retry_of  # "job-1"
 ```
 
 {% hint style="warning" %}
-`fork_workflow_async`/`retry_workflow_async` (called internally by `run(fork_from=...)`) fall back to a `{source}-fork-{hex}` / `{source}-retry-{n}` name **only when `workflow_id` is `None`**. In practice, `run()` always auto-generates a `workflow_id` (`run-YYYYMMDD-hex`) before the fork/retry branch runs, so calling `runner.run(graph, fork_from="job-1")` without an explicit `workflow_id=` produces an auto-generated id, not a `job-1-fork-...` name. Pass `workflow_id=` explicitly if you want a specific, readable name for the new run.
+`runner.run(graph, fork_from="job-1")` derives a source-readable target such as `job-1-fork-a1b2c3`. An explicit `workflow_id=` remains exact. A nested source such as `job-1/0` cannot be implicitly promoted to a top-level fork; top-level callers must provide an explicit slash-free target. `retry_from=` deliberately keeps the generic `run-YYYYMMDD-hex` runner naming behavior.
 {% endhint %}
 
-Call the checkpointer's own `fork_workflow`/`retry_workflow` (sync) or `fork_workflow_async`/`retry_workflow_async` directly to get the `{source}-fork-{hex}` naming convention:
+The checkpointer's own `fork_workflow`/`retry_workflow` (sync) and `fork_workflow_async`/`retry_workflow_async` use source-derived names when their target is omitted:
 
 ```python
 fork_id, fork_checkpoint = checkpointer.fork_workflow("job-1")
@@ -171,7 +173,8 @@ Use this to audit which forks/retries came from which source run, and their stat
 | Error | Raised when |
 |---|---|
 | `WorkflowAlreadyRunningError` | A second `run()` starts for a `workflow_id` that already has an active run. At most one active `run()` per `workflow_id` — use different `workflow_id`s for concurrent runs. |
-| `WorkflowForkError` | An explicit `checkpoint=` is passed to fork into a `workflow_id` that already exists. Use a new `workflow_id` for the fork. |
+| `WorkflowForkError` | A fork targets an existing workflow, or a nested source is used without an explicit top-level target. |
+| `WorkflowStoppedError` | A stopped workflow is rerun without either a non-empty runtime value mapping or `override_workflow=True`. The rejection happens before new run events or persistence writes. |
 
 ```python
 from hypergraph.exceptions import WorkflowForkError

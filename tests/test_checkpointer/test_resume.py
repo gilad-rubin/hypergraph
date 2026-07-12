@@ -5,6 +5,8 @@ import pytest_asyncio
 
 from hypergraph import AsyncRunner, Graph, SyncRunner, node
 from hypergraph.checkpointers import SqliteCheckpointer, WorkflowStatus
+from hypergraph.events import EventProcessor
+from hypergraph.events.types import NodeStartEvent, RunEndEvent, RunStartEvent
 from hypergraph.exceptions import (
     GraphChangedError,
     InputOverrideRequiresForkError,
@@ -14,6 +16,19 @@ from hypergraph.exceptions import (
 from hypergraph.runners._shared.types import RunStatus
 
 aiosqlite = pytest.importorskip("aiosqlite")
+
+
+class EventCollector(EventProcessor):
+    """Collect execution events without adding behavior to the runner."""
+
+    def __init__(self):
+        self.events: list[object] = []
+
+    def on_event(self, event):
+        self.events.append(event)
+
+    def of_type(self, event_type):
+        return [event for event in self.events if isinstance(event, event_type)]
 
 
 # --- Shared nodes ---
@@ -306,23 +321,49 @@ class TestAsyncMapResume:
         call_count = 0
 
         # Resume: all 3 completed, should skip all
+        collector = EventCollector()
         result = await runner.map(
             graph,
             {"x": [10, 20, 30]},
             map_over="x",
             workflow_id="batch-1",
+            event_processors=[collector],
         )
         assert call_count == 0
         assert len(result.results) == 3
         # Restored results should have correct values
         assert all(r["doubled"] is not None for r in result.results)
+        assert result.restored_count == 3
+        assert all(r.restored for r in result.results)
+        assert all(r.log is not None for r in result.results)
+        assert all(r.log.steps[0].status == "restored" for r in result.results if r.log is not None)
+        assert "3 restored" in result.summary()
+        assert "avg" not in result.summary()
+        assert result.to_dict()["restored_count"] == 3
+        assert result.log.restored_count == 3
+        assert "avg" not in result.log.summary()
+
+        starts = collector.of_type(RunStartEvent)
+        ends = collector.of_type(RunEndEvent)
+        assert len(starts) == 1
+        assert starts[0].is_map
+        assert collector.of_type(NodeStartEvent) == []
+        assert len(ends) == 1
+        assert ends[0].batch_completed_items == 3
+        assert ends[0].batch_restored_items == 3
+
+        parent = checkpointer.get_run("batch-1")
+        assert parent is not None
+        assert parent.status == WorkflowStatus.COMPLETED
 
     async def test_map_reruns_failed_items(self, checkpointer):
         """Failed items are re-executed on resume (only COMPLETED are skipped)."""
         should_fail = True
+        calls: list[int] = []
 
         @node(output_name="result")
         def flaky(x: int) -> int:
+            calls.append(x)
             if x == 20 and should_fail:
                 raise ValueError("transient failure")
             return x * 2
@@ -333,27 +374,50 @@ class TestAsyncMapResume:
         # First run: item 1 (x=20) fails
         result1 = await runner.map(
             graph,
-            {"x": [10, 20, 30]},
+            {"x": [10, 20]},
             map_over="x",
             workflow_id="batch-retry",
             error_handling="continue",
         )
         statuses = [r.status for r in result1.results]
         assert statuses[1] == RunStatus.FAILED  # x=20 failed
+        assert all(not result.restored for result in result1.results)
 
         # Now make it succeed
         should_fail = False
+        calls.clear()
+        collector = EventCollector()
 
-        # Resume: x=10 and x=30 skip (completed), x=20 re-runs (was failed)
+        # Resume: x=10 skips (completed), x=20 re-runs (was failed)
         result2 = await runner.map(
             graph,
-            {"x": [10, 20, 30]},
+            {"x": [10, 20]},
             map_over="x",
             workflow_id="batch-retry",
             error_handling="continue",
+            event_processors=[collector],
         )
         statuses2 = [r.status for r in result2.results]
         assert all(s == RunStatus.COMPLETED for s in statuses2)
+        assert calls == [20]
+        assert [result.restored for result in result2.results] == [True, False]
+        assert result2.results[0].log is not None
+        assert result2.results[0].log.steps[0].status == "restored"
+        assert result2.results[1].log is not None
+        assert all(step.status != "restored" for step in result2.results[1].log.steps)
+        assert result2.restored_count == 1
+        assert "1 restored" in result2.summary()
+
+        starts = collector.of_type(RunStartEvent)
+        assert len([event for event in starts if event.is_map]) == 1
+        assert len([event for event in starts if not event.is_map]) == 1
+        parent_end = next(event for event in collector.of_type(RunEndEvent) if event.batch_total_items is not None)
+        assert parent_end.batch_completed_items == 2
+        assert parent_end.batch_restored_items == 1
+
+        parent = checkpointer.get_run("batch-retry")
+        assert parent is not None
+        assert parent.status == WorkflowStatus.COMPLETED
 
     async def test_map_no_checkpointer_no_skip(self):
         """Without checkpointer, map always runs all items."""
@@ -568,16 +632,47 @@ class TestSyncMapResume:
         assert call_count == 3
 
         call_count = 0
-        result = runner.map(graph, {"x": [10, 20, 30]}, map_over="x", workflow_id="sync-batch")
+        collector = EventCollector()
+        result = runner.map(
+            graph,
+            {"x": [10, 20, 30]},
+            map_over="x",
+            workflow_id="sync-batch",
+            event_processors=[collector],
+        )
         assert call_count == 0
         assert len(result.results) == 3
+        assert result.restored_count == 3
+        assert all(r.restored for r in result.results)
+        assert all(r.log is not None for r in result.results)
+        assert all(r.log.steps[0].status == "restored" for r in result.results if r.log is not None)
+        assert "3 restored" in result.summary()
+        assert "avg" not in result.summary()
+        assert result.to_dict()["restored_count"] == 3
+        assert result.log.restored_count == 3
+        assert "avg" not in result.log.summary()
+
+        starts = collector.of_type(RunStartEvent)
+        ends = collector.of_type(RunEndEvent)
+        assert len(starts) == 1
+        assert starts[0].is_map
+        assert collector.of_type(NodeStartEvent) == []
+        assert len(ends) == 1
+        assert ends[0].batch_completed_items == 3
+        assert ends[0].batch_restored_items == 3
+
+        parent = sync_checkpointer.get_run("sync-batch")
+        assert parent is not None
+        assert parent.status == WorkflowStatus.COMPLETED
 
     def test_map_reruns_failed_items(self, sync_checkpointer):
         """Sync mirror: failed items are re-executed on resume."""
         should_fail = True
+        calls: list[int] = []
 
         @node(output_name="result")
         def flaky(x: int) -> int:
+            calls.append(x)
             if x == 20 and should_fail:
                 raise ValueError("transient failure")
             return x * 2
@@ -587,22 +682,45 @@ class TestSyncMapResume:
 
         result1 = runner.map(
             graph,
-            {"x": [10, 20, 30]},
+            {"x": [10, 20]},
             map_over="x",
             workflow_id="sync-retry",
             error_handling="continue",
         )
         assert result1.results[1].status == RunStatus.FAILED
+        assert all(not result.restored for result in result1.results)
 
         should_fail = False
+        calls.clear()
+        collector = EventCollector()
         result2 = runner.map(
             graph,
-            {"x": [10, 20, 30]},
+            {"x": [10, 20]},
             map_over="x",
             workflow_id="sync-retry",
             error_handling="continue",
+            event_processors=[collector],
         )
         assert all(r.status == RunStatus.COMPLETED for r in result2.results)
+        assert calls == [20]
+        assert [result.restored for result in result2.results] == [True, False]
+        assert result2.results[0].log is not None
+        assert result2.results[0].log.steps[0].status == "restored"
+        assert result2.results[1].log is not None
+        assert all(step.status != "restored" for step in result2.results[1].log.steps)
+        assert result2.restored_count == 1
+        assert "1 restored" in result2.summary()
+
+        starts = collector.of_type(RunStartEvent)
+        assert len([event for event in starts if event.is_map]) == 1
+        assert len([event for event in starts if not event.is_map]) == 1
+        parent_end = next(event for event in collector.of_type(RunEndEvent) if event.batch_total_items is not None)
+        assert parent_end.batch_completed_items == 2
+        assert parent_end.batch_restored_items == 1
+
+        parent = sync_checkpointer.get_run("sync-retry")
+        assert parent is not None
+        assert parent.status == WorkflowStatus.COMPLETED
 
     def test_map_resume_matches_completed_items_by_input_identity(self, sync_checkpointer):
         """Sync mirror: reordered inputs should restore by input identity."""

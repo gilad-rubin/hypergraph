@@ -43,6 +43,7 @@ class BatchSummary:
     failed_items: int
     paused_items: int
     stopped_items: int
+    restored_items: int
     outcome: str
 
     @classmethod
@@ -55,12 +56,14 @@ class BatchSummary:
         failed_items = sum(1 for result in results if result.status == RunStatus.FAILED)
         paused_items = sum(1 for result in results if result.status == RunStatus.PAUSED)
         stopped_items = sum(1 for result in results if result.status == RunStatus.STOPPED)
+        restored_items = sum(1 for result in results if result.restored)
         return cls(
             total_items=total_items,
             completed_items=completed_items,
             failed_items=failed_items,
             paused_items=paused_items,
             stopped_items=stopped_items,
+            restored_items=restored_items,
             outcome=aggregate_run_status(results).value,
         )
 

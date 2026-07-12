@@ -6,10 +6,11 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
-from hypergraph.checkpointers.base import Checkpointer
+from hypergraph.checkpointers.base import _UNSET, Checkpointer, _normalize_since
 from hypergraph.checkpointers.types import Run, StepRecord, StepStatus, WorkflowStatus
 
 _BASELINE_NODE_NAME = "__retained_state__"
+_BASELINE_NODE_TYPE = "RetentionBaseline"
 
 
 def _step_sort_key(record: StepRecord) -> tuple[datetime, datetime, int, str]:
@@ -91,16 +92,27 @@ class MemoryCheckpointer(Checkpointer):
 
     async def get_state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:
         state: dict[str, Any] = {}
-        for step in await self.get_steps(run_id, superstep=superstep):
+        records = list(self._steps.get(run_id, {}).values())
+        if superstep is not None:
+            records = [record for record in records if record.superstep <= superstep]
+        for step in sorted(records, key=_step_sort_key):
             if step.values:
                 state.update(step.values)
         return state
 
-    async def get_steps(self, run_id: str, *, superstep: int | None = None) -> list[StepRecord]:
+    async def get_steps(
+        self,
+        run_id: str,
+        *,
+        superstep: int | None = None,
+        show_internal: bool = False,
+    ) -> list[StepRecord]:
         run_steps = self._steps.get(run_id, {})
         records = list(run_steps.values())
         if superstep is not None:
             records = [record for record in records if record.superstep <= superstep]
+        if not show_internal:
+            records = [record for record in records if record.node_name != _BASELINE_NODE_NAME and record.node_type != _BASELINE_NODE_TYPE]
         return sorted(records, key=_step_sort_key)
 
     async def get_run_async(self, run_id: str) -> Run | None:
@@ -110,13 +122,20 @@ class MemoryCheckpointer(Checkpointer):
         self,
         *,
         status: WorkflowStatus | None = None,
-        parent_run_id: str | None = None,
+        graph_name: str | None = None,
+        since: datetime | None = None,
+        parent_run_id: str | None | object = _UNSET,
         limit: int | None = 100,
     ) -> list[Run]:
         runs = list(self._runs.values())
         if status is not None:
             runs = [run for run in runs if run.status == status]
-        if parent_run_id is not None:
+        if graph_name is not None:
+            runs = [run for run in runs if (run.graph_name or "") == graph_name]
+        if since is not None:
+            boundary = _normalize_since(since)
+            runs = [run for run in runs if run.created_at >= boundary]
+        if parent_run_id is not _UNSET:
             runs = [run for run in runs if run.parent_run_id == parent_run_id]
 
         runs.sort(key=lambda run: run.created_at, reverse=True)
@@ -128,7 +147,7 @@ class MemoryCheckpointer(Checkpointer):
         self,
         *,
         status: WorkflowStatus | None = None,
-        parent_run_id: str | None = None,
+        parent_run_id: str | None | object = _UNSET,
         retry_of: str | None = None,
     ) -> int:
         runs = self._runs.values()
@@ -136,7 +155,7 @@ class MemoryCheckpointer(Checkpointer):
             1
             for run in runs
             if (status is None or run.status == status)
-            and (parent_run_id is None or run.parent_run_id == parent_run_id)
+            and (parent_run_id is _UNSET or run.parent_run_id == parent_run_id)
             and (retry_of is None or run.retry_of == retry_of)
         )
 

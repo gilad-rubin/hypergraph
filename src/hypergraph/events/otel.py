@@ -193,6 +193,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
                 "hypergraph.batch.failed_items": event.batch_failed_items,
                 "hypergraph.batch.paused_items": event.batch_paused_items,
                 "hypergraph.batch.stopped_items": event.batch_stopped_items,
+                "hypergraph.batch.restored_items": event.batch_restored_items,
                 "hypergraph.batch.outcome": event.batch_outcome,
             },
         )

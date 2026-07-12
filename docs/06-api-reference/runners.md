@@ -52,7 +52,7 @@ class SyncRunner:
 
 **Args:**
 - `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`. Supports `InMemoryCache`, `DiskCache`, or any `CacheBackend` implementation.
-- `checkpointer` — Optional [checkpointer](../05-how-to/batch-processing.md#checkpointing-with-map) for persistent run history. For `run()`, enables strict lineage semantics (resume/fork) and auto-generates `workflow_id` when omitted. For `map()`, persistence is enabled when `workflow_id` is provided. Requires `SqliteCheckpointer` or any `SyncCheckpointerProtocol` implementation.
+- `checkpointer` — Optional [checkpointer](../05-how-to/batch-processing.md#checkpointing-with-map) for persistent run history. For `run()`, enables strict lineage semantics, generic IDs for fresh/retry runs, and source-derived IDs for `fork_from`. For `map()`, persistence is enabled when `workflow_id` is provided. Requires `SqliteCheckpointer` or any `SyncCheckpointerProtocol` implementation.
 - `show_progress` — If `True`, automatically attaches a Rich progress processor to `run()` and `map()` calls. Per-call `show_progress` overrides this default.
 
 ### run()
@@ -94,12 +94,13 @@ Execute a graph once.
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
 - `checkpoint` - Optional low-level checkpoint snapshot (`values + steps`) for explicit fork restores.
 - `workflow_id` - Optional workflow identifier for lineage tracking. With a checkpointer:
-  - omitted: auto-generated for `run()`
-  - existing: strict resume only (no runtime values; same graph structure). Existing persisted workflows may be `active`, `paused`, or `failed`; completed workflows are terminal.
+  - omitted on a fresh or retry run: a generic `run-...` ID is generated
+  - omitted with `fork_from`: a `{source}-fork-{hex}` ID is derived
+  - existing: strict resume only (same graph structure). Active/failed runs reject fresh values, paused runs accept interrupt responses, and stopped runs require a non-empty runtime mapping; completed workflows are terminal.
   - new + `checkpoint`: explicit fork
-- `override_workflow` - Convenience shortcut for existing `workflow_id`s. When `True` and the `workflow_id` already exists, `run()` auto-forks from that workflow (generates a new workflow ID and uses its checkpoint) instead of raising strict resume errors.
-- `fork_from` - Workflow ID to fork from directly (no manual checkpoint plumbing). Requires a checkpointer.
-- `retry_from` - Workflow ID to retry from directly (records retry lineage metadata). Requires a checkpointer.
+- `override_workflow` - Convenience shortcut for existing `workflow_id`s. When `True`, `run()` creates a source-derived fork and leaves the source row unchanged.
+- `fork_from` - Workflow ID to fork from directly (no manual checkpoint plumbing). Without `workflow_id=`, the target is `{source}-fork-{hex}`. Requires a checkpointer.
+- `retry_from` - Workflow ID to retry from directly (records retry lineage metadata). Without `workflow_id=`, runner naming remains generic `run-...`. Requires a checkpointer.
 - Lineage hashing: checkpoint compatibility uses a structural hash; a separate code hash is recorded for observability/caching workflows.
 - `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
 
@@ -109,6 +110,7 @@ Execute a graph once.
 - `MissingInputError` - Required input not provided
 - `IncompatibleRunnerError` - Graph contains async nodes
 - `GraphConfigError` - If graph is cyclic and has no configured entrypoint
+- `WorkflowStoppedError` - A stopped persisted workflow is rerun without a non-empty runtime mapping or `override_workflow=True`
 - `ValueError` - If runtime `select` or `entrypoint` overrides are passed
 - Node execution errors (e.g., `ValueError`, `TypeError`) when `error_handling="raise"` (the default)
 
@@ -644,7 +646,7 @@ class AsyncRunner:
 
 **Args:**
 - `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`.
-- `checkpointer` — Optional checkpointer for persistent run history. For `run()`, enables strict lineage semantics (resume/fork) and auto-generates `workflow_id` when omitted. For `map()`, persistence is enabled when `workflow_id` is provided. Requires `SqliteCheckpointer` or any `Checkpointer` implementation.
+- `checkpointer` — Optional checkpointer for persistent run history. For `run()`, enables strict lineage semantics, generic IDs for fresh/retry runs, and source-derived IDs for `fork_from`. For `map()`, persistence is enabled when `workflow_id` is provided. Requires `SqliteCheckpointer` or any `Checkpointer` implementation.
 - `show_progress` — If `True`, automatically attaches a Rich progress processor to `run()` and `map()` calls. Per-call `show_progress` overrides this default.
 
 ### run()
@@ -687,12 +689,13 @@ Execute a graph asynchronously.
 - `event_processors` - Optional list of [event processors](events.md) to observe execution (supports `AsyncEventProcessor`)
 - `checkpoint` - Optional low-level checkpoint snapshot (`values + steps`) for explicit fork restores.
 - `workflow_id` - Optional workflow identifier for lineage tracking. With a checkpointer:
-  - omitted: auto-generated for `run()`
-  - existing: strict resume only (no runtime values; same graph structure). Existing persisted workflows may be `active`, `paused`, or `failed`; completed workflows are terminal.
+  - omitted on a fresh or retry run: a generic `run-...` ID is generated
+  - omitted with `fork_from`: a `{source}-fork-{hex}` ID is derived
+  - existing: strict resume only (same graph structure). Active/failed runs reject fresh values, paused runs accept interrupt responses, and stopped runs require a non-empty runtime mapping; completed workflows are terminal.
   - new + `checkpoint`: explicit fork
-- `override_workflow` - Convenience shortcut for existing `workflow_id`s. When `True` and the `workflow_id` already exists, `run()` auto-forks from that workflow (generates a new workflow ID and uses its checkpoint) instead of raising strict resume errors.
-- `fork_from` - Workflow ID to fork from directly (no manual checkpoint plumbing). Requires a checkpointer.
-- `retry_from` - Workflow ID to retry from directly (records retry lineage metadata). Requires a checkpointer.
+- `override_workflow` - Convenience shortcut for existing `workflow_id`s. When `True`, `run()` creates a source-derived fork and leaves the source row unchanged.
+- `fork_from` - Workflow ID to fork from directly (no manual checkpoint plumbing). Without `workflow_id=`, the target is `{source}-fork-{hex}`. Requires a checkpointer.
+- `retry_from` - Workflow ID to retry from directly (records retry lineage metadata). Without `workflow_id=`, runner naming remains generic `run-...`. Requires a checkpointer.
 - Lineage hashing: checkpoint compatibility uses a structural hash; a separate code hash is recorded for observability/caching workflows.
 - `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
 
@@ -860,6 +863,7 @@ class RunResult:
     log: RunLog | None          # Execution trace, if collected
     checkpoint_ok: bool         # False when a best-effort async step save failed
     checkpoint_errors: tuple[str, ...]  # String-only checkpoint save errors
+    restored: bool              # True only for a checkpoint-skipped map child
 ```
 
 With async checkpoint durability, step saves are best-effort: a persistence gap
@@ -911,8 +915,10 @@ This is useful for debugging — you can inspect which nodes completed successfu
 result.summary()   # "3 nodes | 12ms | 0 errors | slowest: generate (8ms)"
 
 # JSON-serializable metadata (no raw values or exception objects)
-result.to_dict()   # {"status": "completed", "run_id": "run-abc", "checkpoint_ok": True, "checkpoint_errors": [], "log": {...}}
+result.to_dict()   # {"status": "completed", "run_id": "run-abc", "checkpoint_ok": True, "checkpoint_errors": [], "restored": False, "log": {...}}
 ```
+
+A checkpoint-skipped map child remains `status=COMPLETED` for compatibility but has `restored=True`. Its summary, repr, HTML, serialized metadata, and synthetic `RunLog` all disclose restoration rather than reporting a fake execution duration.
 
 ---
 
@@ -943,15 +949,18 @@ results.failed       # True if any failed
 results.partial      # True if some items completed and some failed
 results.stopped      # True if any item stopped and none failed/paused
 results.failures     # List of failed RunResult items
+results.restored_count  # Restored successes (a subset of completed items)
 
 # Derived durability aggregation (properties, not dataclass fields)
 results.checkpoint_ok      # True only when every item persisted successfully
 results.checkpoint_errors  # Tuple of save errors in stable item order
 
 # Progressive disclosure
-results.summary()    # "3 items | 3 completed | 12ms"
+results.summary()    # "3 items | 3 completed | avg 12ms/item"
 results.to_dict()    # JSON-serializable batch metadata + per-item results
 ```
+
+Completed counts stay inclusive of restored successes. Duration averages use only freshly executed completed items with real logs; a fully restored map omits the average. `results.log` exposes the same `restored_count` and per-item provenance through `MapLog`.
 
 ### Attributes
 
@@ -1176,7 +1185,7 @@ graph = Graph([process]).bind(x=5)  # bound=5
 
 Checkpoint lineage has two different input rules:
 
-- **Strict resume**: using an existing `workflow_id` resumes persisted state and rejects fresh runtime inputs, because new inputs would silently rewrite history. Interrupt response payloads are the exception; pass the paused response key/value to resolve the pending interrupt.
+- **Strict resume**: using an existing `workflow_id` resumes persisted state and ordinarily rejects fresh runtime inputs, because new inputs would silently rewrite history. Interrupt response payloads resolve paused runs. A stopped run instead requires an explicit signal: pass any non-empty valid runtime mapping to resume the same lineage, or pass `override_workflow=True` to create a source-derived fork. `None` and `{}` raise `WorkflowStoppedError` before execution events or persistence writes.
 - **Fork/retry**: `fork_from` and `retry_from` create a new lineage from a checkpoint, so runtime inputs may override restored values for the new run.
 
 See [Run Lineage](../05-how-to/batch-processing.md#run-lineage-resume-vs-fork). For the `Checkpointer` ABC, `CheckpointPolicy`, backend comparison, and the no-checkpointer re-drive alternative, see [Checkpointers](checkpointers.md).

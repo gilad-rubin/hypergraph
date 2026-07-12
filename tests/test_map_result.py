@@ -447,6 +447,113 @@ class TestMapResultCheckpointEvidence:
 
 
 class TestMapResultProgressiveDisclosure:
+    def test_fully_cached_items_do_not_report_an_average(self):
+        cached_log = RunLog(
+            graph_name="test",
+            run_id="cached",
+            total_duration_ms=0.0,
+            steps=(
+                NodeRecord(
+                    node_name="work",
+                    superstep=0,
+                    duration_ms=0.0,
+                    status="completed",
+                    span_id="cached-span",
+                    cached=True,
+                ),
+            ),
+        )
+        mapped = _make_map_result([_make_result(log=cached_log), _make_result(log=cached_log)])
+
+        assert "avg" not in mapped.summary()
+        assert "avg" not in mapped.log.summary()
+        assert "avg" not in MapLog(graph_name="test", total_duration_ms=0.0, items=(cached_log, cached_log)).summary()
+
+    def test_empty_item_logs_do_not_report_an_average(self):
+        empty_log = RunLog(
+            graph_name="test",
+            run_id="empty",
+            total_duration_ms=0.0,
+            steps=(),
+        )
+        mapped = _make_map_result([_make_result(log=empty_log)])
+
+        assert "avg" not in mapped.summary()
+        assert "avg" not in mapped.log.summary()
+        assert "avg" not in MapLog(graph_name="test", total_duration_ms=0.0, items=(empty_log,)).summary()
+
+    def test_restored_items_are_counted_without_diluting_fresh_duration(self):
+        fresh_log = RunLog(
+            graph_name="test",
+            run_id="fresh",
+            total_duration_ms=100.0,
+            steps=(
+                NodeRecord(
+                    node_name="work",
+                    superstep=0,
+                    duration_ms=100.0,
+                    status="completed",
+                    span_id="fresh-span",
+                ),
+            ),
+        )
+        restored_log = RunLog(
+            graph_name="test",
+            run_id="restored",
+            total_duration_ms=0.0,
+            steps=(
+                NodeRecord(
+                    node_name="map_item",
+                    superstep=0,
+                    duration_ms=0.0,
+                    status="restored",
+                    span_id="restored-checkpoint",
+                ),
+            ),
+        )
+        fresh = RunResult(values={"x": 1}, status=RunStatus.COMPLETED, log=fresh_log)
+        restored = RunResult(
+            values={"x": 2},
+            status=RunStatus.COMPLETED,
+            log=restored_log,
+            restored=True,
+        )
+        mapped = _make_map_result([fresh, restored], total_duration_ms=125.0)
+
+        assert "2 completed" in mapped.summary()
+        assert "1 restored" in mapped.summary()
+        assert "avg 100ms/item" in mapped.summary()
+        assert mapped.restored_count == 1
+        assert mapped.to_dict()["restored_count"] == 1
+        assert mapped.to_dict()["items"][1]["restored"] is True
+        assert "restored" in restored.summary().lower()
+        assert "restored=true" in repr(restored).lower()
+        assert "restored=1" in repr(restored_log).lower()
+        assert "duration=0ms" not in repr(restored_log).lower()
+        assert "restored" in str(restored_log).lower()
+        assert "failed" not in str(restored_log).lower()
+        assert "1 restored" in mapped.log.summary()
+        assert "avg 100ms/item" in mapped.log.summary()
+        assert "restored" in str(mapped.log).lower()
+        mapped_html = mapped._repr_html_() or ""
+        map_log_html = mapped.log._repr_html_() or ""
+        assert "restored" in mapped_html.lower()
+        assert "Completed (2)" in mapped_html
+        assert "Restored (1)" in mapped_html
+        assert "Completed (2)" in map_log_html
+        assert "Restored (1)" in map_log_html
+        assert "restored" in (restored._repr_html_() or "").lower()
+
+        same_log_but_not_restored = RunResult(
+            values={"x": 2},
+            status=RunStatus.COMPLETED,
+            log=restored_log,
+        )
+        without_explicit_flag = _make_map_result([fresh, same_log_but_not_restored])
+        assert "restored" not in without_explicit_flag.summary().lower()
+        assert "avg 50ms/item" in without_explicit_flag.summary()
+        assert "avg 50ms/item" in without_explicit_flag.log.summary()
+
     def test_summary(self):
         items = [
             _make_result(),
@@ -458,8 +565,7 @@ class TestMapResultProgressiveDisclosure:
         assert "3 items" in s
         assert "2 completed" in s
         assert "1 failed" in s
-        assert "avg" in s
-        assert "/item" in s
+        assert "avg" not in s
 
     def test_to_dict_envelope(self):
         items = [_make_result()]

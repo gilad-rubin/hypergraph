@@ -252,6 +252,7 @@ STATUS_COLORS: dict[str, str] = {
     "failed": ALIGNUI_WIDGET_THEME["error_text"],
     "partial": ALIGNUI_WIDGET_THEME["warning_text"],
     "cached": ALIGNUI_WIDGET_THEME["info_text"],
+    "restored": ALIGNUI_WIDGET_THEME["info_text"],
     "active": ALIGNUI_WIDGET_THEME["warning_text"],
     "paused": ALIGNUI_WIDGET_THEME["feature_text"],
 }
@@ -261,6 +262,7 @@ _BADGE_BG: dict[str, str] = {
     "failed": ALIGNUI_WIDGET_THEME["error_bg"],
     "partial": ALIGNUI_WIDGET_THEME["warning_bg"],
     "cached": ALIGNUI_WIDGET_THEME["info_bg"],
+    "restored": ALIGNUI_WIDGET_THEME["info_bg"],
     "active": ALIGNUI_WIDGET_THEME["warning_bg"],
     "paused": ALIGNUI_WIDGET_THEME["feature_bg"],
 }
@@ -510,7 +512,7 @@ def html_filter_paginate_controls(
     default_page_size: int,
 ) -> str:
     """Render reusable filter + pagination controls for list-like widgets."""
-    status_order = ["completed", "failed", "active", "paused", "partial", "cached"]
+    status_order = ["completed", "restored", "failed", "active", "paused", "partial", "cached"]
     status_options = []
     for status in status_order:
         n = counts.get(status, 0)
@@ -574,7 +576,7 @@ def html_filter_paginate_script(
         "for(var i=0;i<all.length;i++){"
         "var it=all[i];"
         f"var st=(it.getAttribute('{_html.escape(status_attr, quote=True)}')||'');"
-        "if(want==='all'||st===want)filtered.push(it);"
+        "if(want==='all'||st.split(/\\s+/).indexOf(want)>=0)filtered.push(it);"
         "}"
         "var total=filtered.length;"
         "var pages=(size<0)?1:Math.max(1,Math.ceil(total/size));"

@@ -107,6 +107,7 @@ class RunEndEvent(BaseEvent):
     batch_paused_items: int | None = None
     batch_stopped_items: int | None = None
     batch_outcome: str | None = None
+    batch_restored_items: int | None = None
 
     def __post_init__(self) -> None:
         # Coerce string status values to RunStatus enum

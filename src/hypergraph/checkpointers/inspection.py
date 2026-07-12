@@ -36,7 +36,13 @@ class RunInspector(Protocol):
         limit: int | None = 100,
     ) -> list[Run]: ...
 
-    def steps(self, run_id: str, *, superstep: int | None = None) -> list[StepRecord]: ...
+    def steps(
+        self,
+        run_id: str,
+        *,
+        superstep: int | None = None,
+        show_internal: bool = False,
+    ) -> list[StepRecord]: ...
 
     def state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]: ...
 
@@ -81,8 +87,14 @@ class SqliteRunInspector:
             kwargs["parent_run_id"] = parent_run_id
         return self.checkpointer.runs(**kwargs)
 
-    def steps(self, run_id: str, *, superstep: int | None = None) -> list[StepRecord]:
-        return self.checkpointer.steps(run_id, superstep=superstep)
+    def steps(
+        self,
+        run_id: str,
+        *,
+        superstep: int | None = None,
+        show_internal: bool = False,
+    ) -> list[StepRecord]:
+        return self.checkpointer.steps(run_id, superstep=superstep, show_internal=show_internal)
 
     def state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:
         return self.checkpointer.state(run_id, superstep=superstep)

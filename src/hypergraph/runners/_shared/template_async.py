@@ -19,6 +19,7 @@ from hypergraph.exceptions import (
     WorkflowAlreadyCompletedError,
     WorkflowAlreadyRunningError,
     WorkflowForkError,
+    WorkflowStoppedError,
 )
 from hypergraph.runners._shared.event_metadata import (
     DEFAULT_RUN_CONTEXT,
@@ -56,6 +57,7 @@ from hypergraph.runners._shared.types import (
     RunResult,
     RunStatus,
     _generate_run_id,
+    build_restored_run_log,
 )
 from hypergraph.runners._shared.validation import (
     precompute_input_validation,
@@ -260,7 +262,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         resume_checkpoint = None
         skip_missing_input_validation = False
         if checkpointer is not None and _validation_ctx is None:
-            if workflow_id is None:
+            if workflow_id is None and fork_from is None:
                 workflow_id = generate_workflow_id()
             if fork_from is not None and retry_from is not None:
                 raise ValueError("Cannot pass both fork_from and retry_from. Choose one lineage source.")
@@ -288,7 +290,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     previous_hash = (existing_run.config or {}).get("graph_struct_hash")
                     if previous_hash is not None and previous_hash != graph_hash:
                         raise GraphChangedError(workflow_id)
-                    if normalized_values and not is_interrupt_resume_payload(graph, normalized_values):
+                    if existing_run.status.value == "stopped":
+                        if not normalized_values:
+                            raise WorkflowStoppedError(workflow_id)
+                    elif normalized_values and not is_interrupt_resume_payload(graph, normalized_values):
                         raise InputOverrideRequiresForkError(workflow_id)
                     if existing_run.status.value == "completed":
                         raise WorkflowAlreadyCompletedError(workflow_id)
@@ -724,6 +729,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     status=RunStatus.COMPLETED,
                     run_id=restore_run_id,
                     workflow_id=restore_run_id,
+                    log=build_restored_run_log(graph.name or "", restore_run_id),
+                    restored=True,
                 )
 
             try:
