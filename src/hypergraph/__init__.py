@@ -39,6 +39,7 @@ from hypergraph.exceptions import (
     WorkflowAlreadyRunningError,
     WorkflowForkError,
     WorkflowStoppedError,
+    get_failure_evidence,
 )
 from hypergraph.graph import Graph, GraphConfigError, InputSpec
 from hypergraph.nodes import (
@@ -62,6 +63,7 @@ from hypergraph.runners import (
     BaseRunner,
     DaftRunner,
     ErrorHandling,
+    FailureEvidence,
     MapLog,
     MapResult,
     NodeRecord,
@@ -99,6 +101,7 @@ __all__ = [
     "DaftRunner",
     "BaseRunner",
     "ErrorHandling",
+    "FailureEvidence",
     "PauseInfo",
     "RunResult",
     "MapResult",
@@ -110,6 +113,7 @@ __all__ = [
     "InfiniteLoopError",
     "IncompatibleRunnerError",
     "ExecutionError",
+    "get_failure_evidence",
     "WorkflowAlreadyCompletedError",
     "GraphChangedError",
     "WorkflowForkError",

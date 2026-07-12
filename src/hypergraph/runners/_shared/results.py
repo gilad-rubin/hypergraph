@@ -15,6 +15,36 @@ ErrorHandling = Literal["raise", "continue"]
 DURATION_PRECISION = 3  # decimal places for duration_ms (microsecond precision)
 
 
+@dataclass(frozen=True)
+class FailureEvidence:
+    """Ephemeral evidence for an exception raised by a node executor.
+
+    ``inputs`` is a shallow snapshot of the resolved graph inputs. Contained
+    values retain identity and stay referenced until this evidence is
+    collected. Raw inputs are intentionally available only through explicit
+    attribute access; implicit representations and serialization omit them.
+    """
+
+    node_name: str
+    error: BaseException = field(repr=False)
+    inputs: dict[str, Any] = field(repr=False)
+    superstep: int
+    duration_ms: float
+    graph_name: str
+    workflow_id: str | None
+    item_index: int | None
+
+    def __post_init__(self) -> None:
+        """Own the input mapping without copying any contained value."""
+        object.__setattr__(self, "inputs", dict(self.inputs))
+
+    def __repr__(self) -> str:
+        """Return a safe summary that never renders raw inputs or the error."""
+        return (
+            f"FailureEvidence({self.node_name!r} | {type(self.error).__name__} | superstep {self.superstep} | {_format_duration(self.duration_ms)})"
+        )
+
+
 class RunStatus(Enum):
     """Status of a graph execution run.
 
@@ -76,6 +106,7 @@ class RunResult:
         restored: Whether this completed map child was skipped because its
             checkpoint was restored. Other resume/cache/missing-log paths are
             always False.
+        node_failures: Attributable leaf-node failures in deterministic order
     """
 
     values: dict[str, Any]
@@ -88,6 +119,7 @@ class RunResult:
     checkpoint_ok: bool = True
     checkpoint_errors: tuple[str, ...] = ()
     restored: bool = False
+    node_failures: tuple[FailureEvidence, ...] = ()
 
     @property
     def stopped(self) -> bool:
@@ -108,6 +140,11 @@ class RunResult:
     def failed(self) -> bool:
         """Whether execution failed."""
         return self.status == RunStatus.FAILED
+
+    @property
+    def failure(self) -> FailureEvidence | None:
+        """First attributable node failure, if one exists."""
+        return self.node_failures[0] if self.node_failures else None
 
     def summary(self) -> str:
         """One-line overview: 'completed | 3 nodes | 12ms' or 'failed: ValueError'."""
@@ -143,6 +180,19 @@ class RunResult:
             d["log"] = self.log.to_dict()
         if self.error:
             d["error"] = f"{type(self.error).__name__}: {self.error}"
+        if self.status == RunStatus.FAILED:
+            d["node_failures"] = [
+                {
+                    "node_name": failure.node_name,
+                    "error": f"{type(failure.error).__name__}: {failure.error}",
+                    "superstep": failure.superstep,
+                    "duration_ms": failure.duration_ms,
+                    "graph_name": failure.graph_name,
+                    "workflow_id": failure.workflow_id,
+                    "item_index": failure.item_index,
+                }
+                for failure in self.node_failures
+            ]
         return d
 
     def __getitem__(self, key: str) -> Any:
@@ -229,6 +279,7 @@ def build_failed_run_result(
     workflow_id: str | None,
     error: BaseException,
     log: RunLog,
+    node_failures: Sequence[FailureEvidence] = (),
     checkpoint_errors: Sequence[str] = (),
 ) -> RunResult:
     """Build a failed result with durability evidence."""
@@ -239,6 +290,7 @@ def build_failed_run_result(
         run_id=run_id,
         workflow_id=workflow_id,
         error=error,
+        node_failures=tuple(node_failures),
         log=log,
         checkpoint_ok=not errors,
         checkpoint_errors=errors,

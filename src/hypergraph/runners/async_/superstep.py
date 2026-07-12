@@ -8,8 +8,15 @@ from contextvars import ContextVar
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.exceptions import ExecutionError
+from hypergraph.exceptions import (
+    ExecutionError,
+    _bind_failure_evidence_invocation,
+    _get_failure_evidence_from_context,
+    _get_failure_evidence_invocation,
+    _NodeExecutionError,
+)
 from hypergraph.nodes.base import HyperNode
+from hypergraph.nodes.graph_node import GraphNode
 from hypergraph.runners._shared.caching import (
     check_cache,
     restore_routing_decision,
@@ -28,6 +35,7 @@ from hypergraph.runners._shared.observability import (
     set_current_node_span,
 )
 from hypergraph.runners._shared.readiness import apply_node_result
+from hypergraph.runners._shared.results import FailureEvidence
 from hypergraph.runners._shared.state import ExecutionContext, GraphState, PauseExecution
 from hypergraph.runners._shared.value_resolution import address_for_node_input, collect_inputs_for_node
 
@@ -185,6 +193,7 @@ async def run_superstep_async(
             await dispatcher.emit_async(start_evt)
 
         node_start = time.time()
+        node_error_event_attempted = False
         try:
             executor = executors.get(type(node))
             if executor is None:
@@ -202,9 +211,68 @@ async def run_superstep_async(
             # Publish the node span so in-node telemetry (LLM clients, stores)
             # can attribute itself to this exact span even under concurrency.
             span_token = set_current_node_span(NodeSpanRef(run_id=run_id, span_id=node_span_id, node_name=node.name, graph_name=graph.name))
+            evidence_inputs = dict(inputs)
+            parent_invocation_token = _get_failure_evidence_invocation()
+            invocation_token = object() if isinstance(node, GraphNode) else None
             try:
-                # Pass new_state so routing decisions are stored in the updated state
-                outputs = await executor(node, new_state, inputs, ctx)
+                try:
+                    # Pass new_state so routing decisions are stored in the
+                    # updated state. This exact executor boundary is the only
+                    # place that creates FailureEvidence.
+                    with _bind_failure_evidence_invocation(invocation_token):
+                        outputs = await executor(node, new_state, inputs, ctx)
+                except BaseException as executor_error:
+                    if isinstance(executor_error, PauseExecution):
+                        raise
+                    if isinstance(executor_error, Exception):
+                        duration_ms = (time.time() - node_start) * 1000
+                        if active:
+                            node_error_event_attempted = True
+                            await dispatcher.emit_async(
+                                build_node_error_event(
+                                    run_id,
+                                    node_span_id,
+                                    run_span_id,
+                                    node,
+                                    graph,
+                                    workflow_id=ctx_base.workflow_id,
+                                    item_index=ctx_base.item_index,
+                                    superstep=superstep_idx,
+                                )
+                            )
+                        if isinstance(node, GraphNode):
+                            assert invocation_token is not None
+                            inner_failures = (
+                                _get_failure_evidence_from_context(
+                                    executor_error,
+                                    invocation_token=invocation_token,
+                                )
+                                or ()
+                            )
+                            node_failures = tuple(replace(failure, node_name=f"{node.name}/{failure.node_name}") for failure in inner_failures)
+                        else:
+                            node_failures = (
+                                FailureEvidence(
+                                    node_name=node.name,
+                                    error=executor_error,
+                                    inputs=evidence_inputs,
+                                    superstep=superstep_idx if superstep_idx is not None else 0,
+                                    duration_ms=duration_ms,
+                                    graph_name=graph.name or "",
+                                    workflow_id=ctx_base.workflow_id,
+                                    item_index=ctx_base.item_index,
+                                ),
+                            )
+                        executor_failure = _NodeExecutionError(
+                            executor_error,
+                            new_state,
+                            attempted_node_names=(node.name,),
+                            node_errors={node.name: executor_error},
+                            node_failures=node_failures,
+                            invocation_token=parent_invocation_token,
+                        )
+                        raise executor_failure from executor_error
+                    raise
             finally:
                 reset_current_node_span(span_token)
 
@@ -247,8 +315,8 @@ async def run_superstep_async(
         except PauseExecution as exc:
             exc.span_id = node_span_id
             raise
-        except Exception:
-            if active:
+        except Exception as exc:
+            if active and not node_error_event_attempted and not isinstance(exc, _NodeExecutionError):
                 await dispatcher.emit_async(
                     build_node_error_event(
                         run_id,
@@ -272,13 +340,18 @@ async def run_superstep_async(
     first_error: BaseException | None = None
     control_flow_error: BaseException | None = None
     node_errors: dict[str, BaseException] = {}
+    node_failures: list[FailureEvidence] = []
     for node, result in zip(ready_nodes, results, strict=True):
         if isinstance(result, BaseException):
             if first_error is None:
-                first_error = result
+                first_error = (result.__cause__ or result) if isinstance(result, _NodeExecutionError) else result
             if control_flow_error is None and not isinstance(result, Exception):
                 control_flow_error = result
-            node_errors[node.name] = result
+            if isinstance(result, _NodeExecutionError):
+                node_errors[node.name] = result.__cause__ or result
+                node_failures.extend(result.node_failures)
+            else:
+                node_errors[node.name] = result
             continue
         node, outputs, input_versions, wait_for_versions, duration_ms, cached = result
         apply_node_result(
@@ -301,12 +374,22 @@ async def run_superstep_async(
 
     if first_error is not None:
         attempted = tuple(node.name for node in ready_nodes)
-        error = ExecutionError(
-            first_error,
-            new_state,
-            attempted_node_names=attempted,
-            node_errors=node_errors,
-        )
+        if node_failures:
+            error = _NodeExecutionError(
+                first_error,
+                new_state,
+                attempted_node_names=attempted,
+                node_errors=node_errors,
+                node_failures=tuple(node_failures),
+                invocation_token=_get_failure_evidence_invocation(),
+            )
+        else:
+            error = ExecutionError(
+                first_error,
+                new_state,
+                attempted_node_names=attempted,
+                node_errors=node_errors,
+            )
         raise error from first_error
 
     return new_state

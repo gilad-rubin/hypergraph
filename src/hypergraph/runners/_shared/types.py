@@ -9,6 +9,9 @@ from hypergraph.runners._shared.results import (
     ErrorHandling as ErrorHandling,
 )
 from hypergraph.runners._shared.results import (
+    FailureEvidence as FailureEvidence,
+)
+from hypergraph.runners._shared.results import (
     MapLog as MapLog,
 )
 from hypergraph.runners._shared.results import (

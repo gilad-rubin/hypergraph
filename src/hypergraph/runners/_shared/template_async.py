@@ -12,6 +12,8 @@ from hypergraph.exceptions import (
     ExecutionError,
     MissingInputError,
     WorkflowAlreadyRunningError,
+    _failure_evidence_context,
+    _NodeExecutionError,
 )
 from hypergraph.runners._shared.event_metadata import (
     DEFAULT_RUN_CONTEXT,
@@ -533,9 +535,12 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         except Exception as e:
             error = e
             partial_state = None
+            node_failures = ()
             if isinstance(e, ExecutionError):
                 error = e.__cause__ or e
                 partial_state = e.partial_state
+                if isinstance(e, _NodeExecutionError):
+                    node_failures = e.node_failures
 
             await self._emit_run_end_async(
                 dispatcher,
@@ -583,6 +588,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 run_id=run_id,
                 workflow_id=workflow_id,
                 error=error,
+                node_failures=node_failures,
                 log=collector.build(graph.name, run_id, total_duration_ms),
                 checkpoint_errors=checkpoint_save_errors,
             )
@@ -762,7 +768,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 if error_handling == "raise":
                     for result in results:
                         if result.status == RunStatus.FAILED:
-                            raise result.error  # type: ignore[misc]
+                            error = result.error
+                            assert error is not None, "FAILED status requires an error"
+                            with _failure_evidence_context(error, result.node_failures):
+                                raise error from None
             else:
                 results_list: list[RunResult] = []
                 queue: asyncio.Queue[tuple[int, dict[str, Any]]] = asyncio.Queue()
@@ -796,7 +805,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 if error_handling == "raise":
                     for result in results:
                         if result.status == RunStatus.FAILED:
-                            raise result.error  # type: ignore[misc]
+                            error = result.error
+                            assert error is not None, "FAILED status requires an error"
+                            with _failure_evidence_context(error, result.node_failures):
+                                raise error from None
 
             batch_summary = BatchSummary.from_results(results)
 
@@ -961,6 +973,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         error_handling="continue",
                         show_progress=False,
                         _validation_ctx=ctx,
+                        _item_index=i,
                     )
                 except Exception as e:  # node/validation error during a single run → failed row
                     result = build_pre_run_failed_result(e)
@@ -987,7 +1000,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     break
                 i, result = item
                 if error_handling == "raise" and result.status == RunStatus.FAILED:
-                    raise result.error  # type: ignore[misc]
+                    error = result.error
+                    assert error is not None, "FAILED status requires an error"
+                    with _failure_evidence_context(error, result.node_failures):
+                        raise error from None
                 yield i, result
         finally:
             for w in workers:

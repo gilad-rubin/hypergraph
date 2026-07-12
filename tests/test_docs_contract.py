@@ -7,7 +7,7 @@ import inspect
 from pathlib import Path
 from typing import get_args, get_type_hints
 
-from hypergraph import Graph, MapResult, RunResult, WorkflowStoppedError
+from hypergraph import FailureEvidence, Graph, MapResult, RunResult, WorkflowStoppedError
 from hypergraph.checkpointers import Checkpointer, MemoryCheckpointer, SqliteCheckpointer, SqliteRunInspector
 from hypergraph.events import RunEndEvent
 from hypergraph.runners._shared.results import NodeRecord
@@ -138,7 +138,24 @@ def test_result_docs_mirror_checkpoint_evidence() -> None:
     assert "log: RunLog | None" in run_attributes
     assert "checkpoint_ok: bool" in run_attributes
     assert "checkpoint_errors: tuple[str, ...]" in run_attributes
+    assert "node_failures: tuple[FailureEvidence, ...]" in run_attributes
     assert "best-effort" in run_result
+    assert "get_failure_evidence" in run_result
+    assert "worker/parser/parse_order" in run_result
+    assert "large values or secrets" in run_result
+    assert "until the `RunResult` or raised exception" in run_result
+    assert tuple(FailureEvidence.__dataclass_fields__) == (
+        "node_name",
+        "error",
+        "inputs",
+        "superstep",
+        "duration_ms",
+        "graph_name",
+        "workflow_id",
+        "item_index",
+    )
+    assert "node_failures" in RunResult.__dataclass_fields__
+    assert isinstance(inspect.getattr_static(RunResult, "failure"), property)
     run_progressive_disclosure = _scoped_section(run_result, "### Progressive Disclosure")
     assert '"checkpoint_ok": True' in run_progressive_disclosure
     assert '"checkpoint_errors": []' in run_progressive_disclosure

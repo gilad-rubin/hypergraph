@@ -16,10 +16,12 @@ import asyncio
 
 import pytest
 
-from hypergraph import Graph, node
-from hypergraph.exceptions import ExecutionError
+from hypergraph import AsyncRunner, Graph, SyncRunner, node
+from hypergraph.events import EventDispatcher, EventProcessor
+from hypergraph.events.types import Event, NodeErrorEvent
+from hypergraph.exceptions import ExecutionError, get_failure_evidence
 from hypergraph.runners._shared.readiness import get_ready_nodes
-from hypergraph.runners._shared.results import PauseInfo
+from hypergraph.runners._shared.results import FailureEvidence, PauseInfo
 from hypergraph.runners._shared.state import (
     ExecutionContext,
     GraphState,
@@ -51,8 +53,11 @@ class TestExecutionErrorConstructor:
     def test_defaults_are_empty_and_fresh(self):
         cause = ValueError("boom")
         err = ExecutionError(cause, GraphState())
+        assert get_failure_evidence(None) == ()
         assert err.attempted_node_names == ()
         assert err.node_errors == {}
+        assert err.node_failures == ()
+        assert err.failure is None
         assert err.__cause__ is cause
 
     def test_constructor_params_are_stored(self):
@@ -63,10 +68,25 @@ class TestExecutionErrorConstructor:
             state,
             attempted_node_names=("a", "b"),
             node_errors={"b": cause},
+            node_failures=(
+                FailureEvidence(
+                    node_name="b",
+                    error=cause,
+                    inputs={"x": 1},
+                    superstep=2,
+                    duration_ms=3.0,
+                    graph_name="graph",
+                    workflow_id="workflow",
+                    item_index=None,
+                ),
+            ),
         )
         assert err.partial_state is state
         assert err.attempted_node_names == ("a", "b")
         assert err.node_errors == {"b": cause}
+        assert err.failure is err.node_failures[0]
+        assert err.failure.inputs == {"x": 1}
+        assert get_failure_evidence(err) == err.node_failures
 
     def test_node_errors_default_is_not_shared(self):
         first = ExecutionError(ValueError("x"), GraphState())
@@ -235,6 +255,422 @@ class TestAsyncSuperstepNestedExecutionError:
         assert inner_error.attempted_node_names == original_attempted
         assert inner_error.node_errors == original_node_errors
         assert inner_error.__cause__ is cause
+        assert outer_error.failure is not None
+        assert outer_error.failure.node_name == "nested_failure"
+        assert outer_error.failure.error is inner_error
+        assert outer_error.failure.inputs == {"x": 5}
+
+
+class TestFailureEvidenceAttributionBoundaries:
+    def test_sync_node_error_processor_failure_is_attempted_once(self):
+        class RaisingProcessor(EventProcessor):
+            def __init__(self) -> None:
+                self.attempts = 0
+
+            def on_event(self, event: Event) -> None:
+                if isinstance(event, NodeErrorEvent):
+                    self.attempts += 1
+                    raise RuntimeError("processor failed")
+
+        graph = Graph([bad_node])
+        state = initialize_state(graph, {"x": 5})
+        processor = RaisingProcessor()
+
+        with pytest.raises(ExecutionError) as exc_info:
+            run_superstep_sync(
+                graph,
+                state,
+                get_ready_nodes(graph, state),
+                {"x": 5},
+                {type(bad_node): SyncFunctionNodeExecutor()},
+                ExecutionContext(),
+                dispatcher=EventDispatcher([processor], strict=True),
+                run_id="run",
+                run_span_id="span",
+            )
+
+        assert processor.attempts == 1
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+        assert str(exc_info.value.__cause__) == "processor failed"
+        assert exc_info.value.node_failures == ()
+
+    async def test_async_node_error_processor_failure_is_attempted_once(self):
+        class RaisingProcessor(EventProcessor):
+            def __init__(self) -> None:
+                self.attempts = 0
+
+            def on_event(self, event: Event) -> None:
+                if isinstance(event, NodeErrorEvent):
+                    self.attempts += 1
+                    raise RuntimeError("processor failed")
+
+        graph = Graph([bad_node])
+        state = initialize_state(graph, {"x": 5})
+        processor = RaisingProcessor()
+
+        with pytest.raises(ExecutionError) as exc_info:
+            await run_superstep_async(
+                graph,
+                state,
+                get_ready_nodes(graph, state),
+                {"x": 5},
+                {type(bad_node): AsyncFunctionNodeExecutor()},
+                ExecutionContext(),
+                dispatcher=EventDispatcher([processor], strict=True),
+                run_id="run",
+                run_span_id="span",
+            )
+
+        assert processor.attempts == 1
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+        assert str(exc_info.value.__cause__) == "processor failed"
+        assert exc_info.value.node_failures == ()
+
+    def test_non_graph_node_ignores_stale_failure_context(self):
+        stale_cause = ValueError("stale")
+        stale_evidence = FailureEvidence(
+            node_name="stale_node",
+            error=stale_cause,
+            inputs={"x": -1},
+            superstep=9,
+            duration_ms=1.0,
+            graph_name="stale_graph",
+            workflow_id=None,
+            item_index=None,
+        )
+        stale_error = ExecutionError(
+            stale_cause,
+            GraphState(),
+            node_failures=(stale_evidence,),
+        )
+        current_error = ValueError("current")
+        current_error.__context__ = stale_error
+
+        @node(output_name="bad_out")
+        def current_failure(x: int) -> int:
+            raise current_error
+
+        result = SyncRunner().run(
+            Graph([current_failure], name="current_graph"),
+            {"x": 5},
+            error_handling="continue",
+        )
+
+        assert result.failure is not None
+        assert result.failure.node_name == "current_failure"
+        assert result.failure.error is current_error
+        assert result.failure.inputs == {"x": 5}
+
+    def test_graph_node_qualifies_child_that_raises_execution_error(self):
+        stale_cause = ValueError("stale")
+        user_error = ExecutionError(
+            stale_cause,
+            GraphState(),
+            node_failures=(
+                FailureEvidence(
+                    node_name="stale_node",
+                    error=stale_cause,
+                    inputs={"x": -1},
+                    superstep=9,
+                    duration_ms=1.0,
+                    graph_name="stale_graph",
+                    workflow_id=None,
+                    item_index=None,
+                ),
+            ),
+        )
+
+        @node(output_name="bad_out")
+        def current_failure(x: int) -> int:
+            raise user_error
+
+        child = Graph([current_failure], name="child")
+        outer = Graph([child.as_node(name="child_node")], name="outer")
+
+        result = SyncRunner().run(
+            outer,
+            {"x": 5},
+            error_handling="continue",
+        )
+
+        assert result.error is user_error
+        assert result.failure is not None
+        assert result.failure.node_name == "child_node/current_failure"
+        assert result.failure.error is user_error
+        assert result.failure.inputs == {"x": 5}
+        assert result.failure.graph_name == "child"
+
+    def test_sync_graph_node_does_not_copy_raw_execution_error_evidence(self):
+        cause = RuntimeError("custom graph executor failed")
+        raw_error = ExecutionError(
+            cause,
+            GraphState(),
+            node_failures=(
+                FailureEvidence(
+                    node_name="stale_node",
+                    error=cause,
+                    inputs={"secret": "TOP-SECRET"},
+                    superstep=9,
+                    duration_ms=1.0,
+                    graph_name="stale_graph",
+                    workflow_id=None,
+                    item_index=None,
+                ),
+            ),
+        )
+
+        @node(output_name="child_out")
+        def child_node(x: int) -> int:
+            return x
+
+        child = Graph([child_node], name="child")
+        graph_node = child.as_node(name="custom_graph_node")
+        runner = SyncRunner()
+
+        def raise_raw_error(node, state, inputs, ctx):
+            raise raw_error
+
+        runner._executors[type(graph_node)] = raise_raw_error
+        result = runner.run(
+            Graph([graph_node], name="outer"),
+            {"x": 5},
+            error_handling="continue",
+        )
+
+        assert result.error is raw_error
+        assert result.node_failures == ()
+        assert result.failure is None
+        assert "TOP-SECRET" not in repr(result)
+        assert "TOP-SECRET" not in repr(result.to_dict())
+
+    def test_sync_graph_node_does_not_replay_evidence_from_previous_run(self):
+        reused_error = RuntimeError("reused across runs")
+
+        @node(output_name="first_out")
+        def first_failure(secret: str) -> str:
+            raise reused_error
+
+        with pytest.raises(RuntimeError) as exc_info:
+            SyncRunner().run(Graph([first_failure], name="first"), {"secret": "TOP-SECRET"})
+
+        assert exc_info.value is reused_error
+        assert get_failure_evidence(reused_error)[0].inputs == {"secret": "TOP-SECRET"}
+
+        @node(output_name="child_out")
+        def child_node(x: int) -> int:
+            return x
+
+        graph_node = Graph([child_node], name="child").as_node(name="custom_graph_node")
+        runner = SyncRunner()
+
+        def raise_reused_error(node, state, inputs, ctx):
+            raise reused_error
+
+        runner._executors[type(graph_node)] = raise_reused_error
+        result = runner.run(Graph([graph_node], name="second"), {"x": 5}, error_handling="continue")
+
+        assert result.error is reused_error
+        assert result.node_failures == ()
+        assert result.failure is None
+        assert "TOP-SECRET" not in repr(result)
+        assert "TOP-SECRET" not in repr(result.to_dict())
+
+    async def test_async_graph_node_does_not_copy_raw_execution_error_evidence(self):
+        cause = RuntimeError("custom async graph executor failed")
+        raw_error = ExecutionError(
+            cause,
+            GraphState(),
+            node_failures=(
+                FailureEvidence(
+                    node_name="stale_node",
+                    error=cause,
+                    inputs={"secret": "TOP-SECRET"},
+                    superstep=9,
+                    duration_ms=1.0,
+                    graph_name="stale_graph",
+                    workflow_id=None,
+                    item_index=None,
+                ),
+            ),
+        )
+
+        @node(output_name="child_out")
+        def child_node(x: int) -> int:
+            return x
+
+        child = Graph([child_node], name="child")
+        graph_node = child.as_node(name="custom_graph_node")
+        runner = AsyncRunner()
+
+        async def raise_raw_error(node, state, inputs, ctx):
+            raise raw_error
+
+        runner._executors[type(graph_node)] = raise_raw_error
+        result = await runner.run(
+            Graph([graph_node], name="outer"),
+            {"x": 5},
+            error_handling="continue",
+        )
+
+        assert result.error is raw_error
+        assert result.node_failures == ()
+        assert result.failure is None
+        assert "TOP-SECRET" not in repr(result)
+        assert "TOP-SECRET" not in repr(result.to_dict())
+
+    async def test_async_graph_node_does_not_replay_evidence_from_previous_run(self):
+        reused_error = RuntimeError("reused across async runs")
+
+        @node(output_name="first_out")
+        async def first_failure(secret: str) -> str:
+            raise reused_error
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await AsyncRunner().run(Graph([first_failure], name="first"), {"secret": "TOP-SECRET"})
+
+        assert exc_info.value is reused_error
+        assert get_failure_evidence(reused_error)[0].inputs == {"secret": "TOP-SECRET"}
+
+        @node(output_name="child_out")
+        def child_node(x: int) -> int:
+            return x
+
+        graph_node = Graph([child_node], name="child").as_node(name="custom_graph_node")
+        runner = AsyncRunner()
+
+        async def raise_reused_error(node, state, inputs, ctx):
+            raise reused_error
+
+        runner._executors[type(graph_node)] = raise_reused_error
+        result = await runner.run(Graph([graph_node], name="second"), {"x": 5}, error_handling="continue")
+
+        assert result.error is reused_error
+        assert result.node_failures == ()
+        assert result.failure is None
+        assert "TOP-SECRET" not in repr(result)
+        assert "TOP-SECRET" not in repr(result.to_dict())
+
+    def test_graph_node_does_not_attribute_child_infrastructure_failure(self):
+        class CacheFailure(RuntimeError):
+            pass
+
+        class ExplodingCache:
+            def get(self, key: str) -> tuple[bool, object]:
+                raise CacheFailure(key)
+
+            def set(self, key: str, value: object) -> None:
+                raise AssertionError("cache set must not run")
+
+        @node(output_name="cached_out", cache=True)
+        def cached_child(x: int) -> int:
+            raise AssertionError("executor must not run")
+
+        child = Graph([cached_child], name="child")
+        outer = Graph([child.as_node(name="child_node")], name="outer")
+
+        result = SyncRunner(cache=ExplodingCache()).run(
+            outer,
+            {"x": 5},
+            error_handling="continue",
+        )
+
+        assert isinstance(result.error, CacheFailure)
+        assert result.node_failures == ()
+        assert result.failure is None
+
+    def test_cache_execution_error_cannot_smuggle_stale_evidence(self):
+        cache_cause = RuntimeError("cache unavailable")
+        stale_evidence = FailureEvidence(
+            node_name="stale_node",
+            error=cache_cause,
+            inputs={"secret": object()},
+            superstep=9,
+            duration_ms=1.0,
+            graph_name="stale_graph",
+            workflow_id=None,
+            item_index=None,
+        )
+        cache_error = ExecutionError(
+            cache_cause,
+            GraphState(),
+            node_failures=(stale_evidence,),
+        )
+
+        class ExplodingCache:
+            def get(self, key: str) -> tuple[bool, object]:
+                raise cache_error
+
+            def set(self, key: str, value: object) -> None:
+                raise AssertionError("cache set must not run")
+
+        @node(output_name="cached_out", cache=True)
+        def cached_node(x: int) -> int:
+            raise AssertionError("executor must not run")
+
+        result = SyncRunner(cache=ExplodingCache()).run(
+            Graph([cached_node], name="cache_graph"),
+            {"x": 5},
+            error_handling="continue",
+        )
+
+        assert result.error is cache_cause
+        assert result.node_failures == ()
+        assert result.failure is None
+
+        with pytest.raises(RuntimeError) as exc_info:
+            SyncRunner(cache=ExplodingCache()).run(
+                Graph([cached_node], name="cache_graph"),
+                {"x": 5},
+            )
+
+        assert exc_info.value is cache_cause
+        assert get_failure_evidence(exc_info.value) == ()
+
+    async def test_async_cache_execution_error_retains_identity_without_evidence(self):
+        cache_cause = RuntimeError("async cache unavailable")
+        stale_evidence = FailureEvidence(
+            node_name="stale_node",
+            error=cache_cause,
+            inputs={"secret": object()},
+            superstep=9,
+            duration_ms=1.0,
+            graph_name="stale_graph",
+            workflow_id=None,
+            item_index=None,
+        )
+        cache_error = ExecutionError(
+            cache_cause,
+            GraphState(),
+            node_failures=(stale_evidence,),
+        )
+
+        class ExplodingCache:
+            def get(self, key: str) -> tuple[bool, object]:
+                raise cache_error
+
+            def set(self, key: str, value: object) -> None:
+                raise AssertionError("cache set must not run")
+
+        @node(output_name="cached_out", cache=True)
+        async def cached_node(x: int) -> int:
+            raise AssertionError("executor must not run")
+
+        graph = Graph([cached_node], name="async_cache_graph")
+        result = await AsyncRunner(cache=ExplodingCache()).run(
+            graph,
+            {"x": 5},
+            error_handling="continue",
+        )
+
+        assert result.error is cache_error
+        assert result.node_failures == ()
+        assert result.failure is None
+
+        with pytest.raises(ExecutionError) as exc_info:
+            await AsyncRunner(cache=ExplodingCache()).run(graph, {"x": 5})
+
+        assert exc_info.value is cache_error
+        assert get_failure_evidence(exc_info.value) == ()
 
 
 # === GraphState stop fields (B1.1b) ===

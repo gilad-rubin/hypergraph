@@ -864,6 +864,7 @@ class RunResult:
     checkpoint_ok: bool         # False when a best-effort async step save failed
     checkpoint_errors: tuple[str, ...]  # String-only checkpoint save errors
     restored: bool              # True only for a checkpoint-skipped map child
+    node_failures: tuple[FailureEvidence, ...]  # Attributable leaf failures
 ```
 
 With async checkpoint durability, step saves are best-effort: a persistence gap
@@ -876,6 +877,7 @@ does not change the execution status. Check `checkpoint_ok` and
 result.completed  # True if status == COMPLETED
 result.paused     # True if status == PAUSED
 result.failed     # True if status == FAILED
+result.failure    # First FailureEvidence, or None
 ```
 
 ### Dict-like Access
@@ -907,6 +909,90 @@ if result.status == RunStatus.FAILED:
 ```
 
 This is useful for debugging — you can inspect which nodes completed successfully.
+
+### Structured Failure Evidence
+
+Use `result.failure` when you need to reproduce the exact leaf-node call that
+failed, rather than only reading its exception:
+
+```python
+@node(output_name="order")
+def parse_order(raw_order: str) -> dict:
+    raise ValueError(f"invalid order: {raw_order}")
+
+graph = Graph([parse_order], name="orders")
+result = SyncRunner().run(
+    graph,
+    {"raw_order": "missing-price"},
+    error_handling="continue",
+)
+
+failure = result.failure
+assert failure is not None
+failure.node_name       # "parse_order"
+failure.inputs          # {"raw_order": "missing-price"}
+failure.error is result.error  # True: the original exception object
+result.node_failures    # Deterministic tuple of every attributable failure
+```
+
+Default raise mode still raises the original exception type and object. Use
+`get_failure_evidence()` when you catch it:
+
+```python
+from hypergraph import get_failure_evidence
+
+try:
+    SyncRunner().run(graph, {"raw_order": "missing-price"})
+except ValueError as error:
+    failure = get_failure_evidence(error)[0]
+    assert failure.inputs == {"raw_order": "missing-price"}
+```
+
+Mapped failures retain their source item index. `MapResult.failures` remains a
+list of failed `RunResult` children:
+
+```python
+results = SyncRunner().map(
+    graph,
+    {"raw_order": ["missing-price", "missing-sku"]},
+    map_over="raw_order",
+    error_handling="continue",
+)
+
+[(item.failure.item_index, item.failure.inputs) for item in results.failures]
+# [(0, {"raw_order": "missing-price"}), (1, {"raw_order": "missing-sku"})]
+```
+
+Nested GraphNodes report the leaf once and prefix its path at each boundary:
+
+```python
+inner = Graph([parse_order], name="order-parser")
+middle = Graph([inner.as_node(name="parser")], name="order-worker")
+outer = Graph([middle.as_node(name="worker")], name="batch")
+
+result = SyncRunner().run(
+    outer,
+    {"raw_order": "missing-price"},
+    error_handling="continue",
+)
+result.failure.node_name   # "worker/parser/parse_order"
+result.failure.graph_name  # "order-parser" (the leaf graph)
+```
+
+`FailureEvidence.inputs` is deliberately ephemeral debugging state. It is a
+shallow copy of the resolved graph-input mapping; contained values retain their
+identity, and framework-injected `NodeContext` is excluded. Explicitly reading
+`.inputs` returns the raw objects, which may include large values or secrets.
+Those objects remain referenced until the `RunResult` or raised exception and
+its suppressed evidence context are collected.
+
+Raw inputs never appear in repr/HTML, `to_dict()`, run logs, events, checkpoints,
+or OpenTelemetry. Failed `RunResult.to_dict()` output includes safe
+`node_failures` metadata—node path, error text/type, timing, graph/workflow, and
+item index—but no `inputs` or exception objects. Infrastructure failures that
+cannot be attributed to a node executor use `node_failures == ()` and
+`failure is None`. Daft integrations may likewise return no evidence until
+they execute through the core node seam.
 
 ### Progressive Disclosure
 
@@ -1082,7 +1168,7 @@ except InfiniteLoopError as e:
 
 ### ExecutionError
 
-Wraps an exception raised inside a node during graph execution and carries the partial `GraphState` accumulated before the failure (`partial_state` attribute).
+Wraps an exception raised inside a node during graph execution and carries the partial `GraphState` accumulated before the failure (`partial_state` attribute). While this internal wrapper is in hand, `node_failures` exposes the same deterministic tuple as `RunResult`, and `failure` returns its first item or `None`.
 
 `runner.run()` with the default `error_handling="raise"` unwraps it and re-raises the original node exception, so application code normally catches the node's own exception type. `ExecutionError` is exported for advanced integrations (custom runners, executors, or superstep-level code) that need access to the partial state alongside the failure.
 
@@ -1094,6 +1180,7 @@ try:
 except ExecutionError as e:
     print(e.partial_state)   # state accumulated before the failure
     print(e.__cause__)       # the original node exception
+    print(e.node_failures)   # attributable leaf failures, if any
 ```
 
 ---

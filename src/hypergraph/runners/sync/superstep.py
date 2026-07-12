@@ -6,8 +6,15 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.exceptions import ExecutionError
+from hypergraph.exceptions import (
+    ExecutionError,
+    _bind_failure_evidence_invocation,
+    _get_failure_evidence_from_context,
+    _get_failure_evidence_invocation,
+    _NodeExecutionError,
+)
 from hypergraph.nodes.base import HyperNode
+from hypergraph.nodes.graph_node import GraphNode
 from hypergraph.runners._shared.caching import (
     check_cache,
     restore_routing_decision,
@@ -26,6 +33,7 @@ from hypergraph.runners._shared.observability import (
     set_current_node_span,
 )
 from hypergraph.runners._shared.readiness import apply_node_result
+from hypergraph.runners._shared.results import FailureEvidence
 from hypergraph.runners._shared.state import ExecutionContext, GraphState, PauseExecution
 from hypergraph.runners._shared.value_resolution import address_for_node_input, collect_inputs_for_node
 
@@ -166,6 +174,7 @@ def run_superstep_sync(
                 dispatcher.emit(start_evt)
 
             node_start = time.time()
+            node_error_event_attempted = False
             try:
                 executor = executors.get(type(node))
                 if executor is None:
@@ -183,9 +192,67 @@ def run_superstep_sync(
                 # Publish the node span so in-node telemetry (LLM clients, stores)
                 # can attribute itself to this exact span.
                 span_token = set_current_node_span(NodeSpanRef(run_id=run_id, span_id=node_span_id, node_name=node.name, graph_name=graph.name))
+                evidence_inputs = dict(inputs)
+                parent_invocation_token = _get_failure_evidence_invocation()
+                invocation_token = object() if isinstance(node, GraphNode) else None
                 try:
-                    # Execute node
-                    outputs = executor(node, new_state, inputs, ctx)
+                    try:
+                        # Execute node. This is the only boundary that creates
+                        # FailureEvidence; surrounding work is infrastructure.
+                        with _bind_failure_evidence_invocation(invocation_token):
+                            outputs = executor(node, new_state, inputs, ctx)
+                    except BaseException as executor_error:
+                        if isinstance(executor_error, PauseExecution):
+                            raise
+                        if isinstance(executor_error, Exception):
+                            duration_ms = (time.time() - node_start) * 1000
+                            if active:
+                                node_error_event_attempted = True
+                                dispatcher.emit(
+                                    build_node_error_event(
+                                        run_id,
+                                        node_span_id,
+                                        run_span_id,
+                                        node,
+                                        graph,
+                                        workflow_id=ctx_base.workflow_id,
+                                        item_index=ctx_base.item_index,
+                                        superstep=superstep_idx,
+                                    )
+                                )
+                            if isinstance(node, GraphNode):
+                                assert invocation_token is not None
+                                inner_failures = (
+                                    _get_failure_evidence_from_context(
+                                        executor_error,
+                                        invocation_token=invocation_token,
+                                    )
+                                    or ()
+                                )
+                                node_failures = tuple(replace(failure, node_name=f"{node.name}/{failure.node_name}") for failure in inner_failures)
+                            else:
+                                node_failures = (
+                                    FailureEvidence(
+                                        node_name=node.name,
+                                        error=executor_error,
+                                        inputs=evidence_inputs,
+                                        superstep=superstep_idx if superstep_idx is not None else 0,
+                                        duration_ms=duration_ms,
+                                        graph_name=graph.name or "",
+                                        workflow_id=ctx_base.workflow_id,
+                                        item_index=ctx_base.item_index,
+                                    ),
+                                )
+                            executor_failure = _NodeExecutionError(
+                                executor_error,
+                                new_state,
+                                attempted_node_names=tuple(attempted_node_names),
+                                node_errors={node.name: executor_error},
+                                node_failures=node_failures,
+                                invocation_token=parent_invocation_token,
+                            )
+                            raise executor_failure from executor_error
+                        raise
                 finally:
                     reset_current_node_span(span_token)
 
@@ -226,7 +293,7 @@ def run_superstep_sync(
 
             except BaseException as e:
                 duration_ms = (time.time() - node_start) * 1000
-                if active:
+                if active and not node_error_event_attempted and not isinstance(e, _NodeExecutionError):
                     dispatcher.emit(
                         build_node_error_event(
                             run_id,
@@ -243,8 +310,18 @@ def run_superstep_sync(
                 if isinstance(e, PauseExecution):
                     e.span_id = node_span_id
                     raise
+                if isinstance(e, _NodeExecutionError):
+                    raise
                 # Wrap only Exception subclasses
                 if isinstance(e, Exception):
+                    if isinstance(e, ExecutionError):
+                        error = ExecutionError(
+                            e,
+                            e.partial_state,
+                            attempted_node_names=e.attempted_node_names,
+                            node_errors=e.node_errors,
+                        )
+                        raise error from e
                     error = ExecutionError(
                         e,
                         new_state,
