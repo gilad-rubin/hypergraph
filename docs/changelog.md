@@ -142,7 +142,7 @@
 
 ### Changed
 
-- **InputSpec is now scope-aware** — `graph.inputs` considers both `with_entrypoint()` (forward-reachable) and `select()` (backward-reachable) when determining required, optional, and entrypoint parameters. Parameters from excluded nodes no longer appear in InputSpec.
+- **InputSpec is now scope-aware** — `graph.inputs` considers both `with_entrypoint()` (forward-reachable) and `select()` (backward-reachable) when determining required or optional parameters, including cycle bootstrap inputs. Parameters from excluded nodes no longer appear in InputSpec; there is no separate `entrypoints` field.
 
 ## January 2026
 

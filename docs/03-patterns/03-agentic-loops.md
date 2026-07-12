@@ -269,15 +269,15 @@ def should_continue(messages: list) -> str:
 
 **Validation**: emit names must not overlap with `output_name`, and wait_for names must not overlap with function parameters. Referencing a nonexistent emit/output address in `wait_for` raises `GraphConfigError` at build time.
 
-## Entry Points
+## Cycle Bootstrap Inputs
 
-When a parameter is both an input and output of a cycle (like `history` or `iteration`), it becomes an **entrypoint parameter** — an initial value needed to start the first iteration. Provide these in the `values` dict when calling `runner.run()`:
+When a parameter is both an input and output of a cycle (like `history` or `iteration`), it is a **cycle bootstrap parameter** — an initial value needed to start the first iteration. Provide these in the `values` dict when calling `runner.run()`:
 
 ```python
 result = runner.run(graph, {
     "prompt": "...",
-    "history": [],       # Entry point: initial value before first iteration
-    "iteration": 0,      # Entry point: starting counter
+    "history": [],       # Bootstrap value before the first iteration
+    "iteration": 0,      # Bootstrap value for the starting counter
 })
 ```
 

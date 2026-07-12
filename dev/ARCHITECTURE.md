@@ -37,7 +37,7 @@ Graph construction and build-time validation.
 | File | Purpose |
 |------|---------|
 | `core.py` | `Graph` class — the build pipeline, `bind`/`select`/`unbind`/`with_entrypoint` |
-| `input_spec.py` | `InputSpec` — classifies inputs as required/optional/entrypoint. Also computes active subgraph scope from entrypoints and selection. |
+| `input_spec.py` | `InputSpec` — classifies active inputs as required or optional and records bound values. Entrypoints and selection narrow the active subgraph; cycle bootstrap parameters remain required or optional inputs. |
 | `validation.py` | All build-time checks (names, edges, gates, types, conflicts) |
 | `_conflict.py` | Name conflict detection and resolution |
 | `_helpers.py` | Graph construction helpers |

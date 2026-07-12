@@ -111,3 +111,31 @@ def test_cyclic_docs_examples_configure_entrypoints() -> None:
     assert 'entrypoint="generate_prompt_variants"' in hierarchical
     assert "optimization_loop = Graph(" in hierarchical
     assert 'entrypoint="variant_tester"' in hierarchical
+
+
+def test_inputspec_mirrors_distinguish_scope_from_input_categories() -> None:
+    current_surfaces = (
+        "src/hypergraph/graph/core.py",
+        "dev/ARCHITECTURE.md",
+        "docs/03-patterns/03-agentic-loops.md",
+        "docs/07-design/guiding-principles.md",
+        "docs/changelog.md",
+    )
+    stale_category_claims = (
+        "required/optional/entrypoint",
+        "required, optional, and entrypoint parameters",
+        "InputSpec docs define `entrypoints`",
+        "classified as entrypoint parameters",
+        "**entrypoint parameter**",
+    )
+
+    for path in current_surfaces:
+        text = _read(path)
+        for stale_claim in stale_category_claims:
+            assert stale_claim not in text, f"{path} still contains {stale_claim!r}"
+
+    inputspec = _read("docs/06-api-reference/inputspec.md")
+    assert "there is no separate entrypoints category on InputSpec" in inputspec
+    scope_narrowing = _section(inputspec, "### Scope Narrowing (Entrypoint and Select)")
+    assert "`with_entrypoint()` and `select()` narrow" in scope_narrowing
+    assert "`required` or `optional`" in scope_narrowing
