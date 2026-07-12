@@ -403,11 +403,12 @@ class GraphNode(HyperNode):
     def get_input_type(self, param: str) -> type | None:
         """Get expected type for an input parameter from the inner graph.
 
-        Derives the type from the inner nodes that declare this parameter as
-        an input. When multiple inner consumers share the boundary name with
-        different annotations, the annotation from the first *annotated*
-        consumer in sorted inner-node-name order wins — deterministic
-        regardless of node insertion order. (Under ``strict_types=True`` the
+        Derives the type from the active inner nodes that declare this
+        parameter as an input. When multiple active inner consumers share the
+        boundary name with different annotations, the annotation from the
+        first *annotated* consumer in sorted inner-node-name order wins —
+        deterministic regardless of node insertion order. (Under
+        ``strict_types=True`` the
         parent graph rejects conflicting annotations at validation time.)
 
         Args:
@@ -422,28 +423,28 @@ class GraphNode(HyperNode):
         return None
 
     def _boundary_input_type_candidates(self, param: str) -> list[tuple[str, Any]]:
-        """(inner node name, annotation) pairs for consumers of a boundary input.
+        """(inner node name, annotation) pairs for active boundary-input consumers.
 
         Sorted by inner node name so boundary type selection is deterministic.
         """
         candidates: list[tuple[str, Any]] = []
         for local_param in self._local_inputs_for_address(param):
             original_param = self._resolve_original_input_name(local_param)
-            for inner_node in self._graph.iter_nodes():
+            for inner_node in self.iter_active_inner_nodes():
                 if original_param in inner_node.inputs:
                     candidates.append((inner_node.name, inner_node.get_input_type(original_param)))
         candidates.sort(key=lambda pair: pair[0])
         return candidates
 
     def _boundary_output_type_candidates(self, output: str) -> list[tuple[str, Any]]:
-        """(inner node name, annotation) pairs for producers of a boundary output.
+        """(inner node name, annotation) pairs for active boundary-output producers.
 
         Sorted by inner node name so boundary type selection is deterministic.
         """
         local_output = self._local_output_for_address(output)
         original_output = self.resolve_original_output_name(local_output)
         candidates: list[tuple[str, Any]] = []
-        for inner_node in self._graph.iter_nodes():
+        for inner_node in self.iter_active_inner_nodes():
             if original_output in inner_node.outputs:
                 candidates.append((inner_node.name, inner_node.get_output_type(original_output)))
         candidates.sort(key=lambda pair: pair[0])

@@ -261,6 +261,82 @@ class TestGraphNodeBoundaryTypeDeterminism:
     conflict is rejected at validation time instead.
     """
 
+    @staticmethod
+    def _scoped_input_graph(scope: str) -> Graph:
+        @node(output_name="excluded_result")
+        def a_excluded(x: str) -> str:
+            return x
+
+        @node(output_name="active_result")
+        def z_active(x: int) -> int:
+            return x
+
+        graph = Graph([a_excluded, z_active], name=f"{scope}_input")
+        if scope == "select":
+            return graph.select("active_result")
+        return graph.with_entrypoint("z_active")
+
+    @staticmethod
+    def _scoped_output_graph(scope: str) -> Graph:
+        @route(targets=["a_excluded", "z_active"])
+        def choose(seed: int) -> str:
+            return "z_active" if seed > 0 else "a_excluded"
+
+        @node(output_name="result")
+        def a_excluded(seed: int) -> str:
+            return str(seed)
+
+        @node(output_name="result")
+        def z_active(seed: int) -> int:
+            return seed
+
+        graph = Graph([choose, a_excluded, z_active], name=f"{scope}_output")
+        if scope == "select_and_entrypoint":
+            # select() exposes every producer of its output, so excluding one
+            # duplicate producer requires intersecting it with entrypoint scope.
+            return graph.select("result").with_entrypoint("z_active")
+        return graph.with_entrypoint("z_active")
+
+    @pytest.mark.parametrize("scope", ["select", "entrypoint"])
+    def test_scoped_out_input_consumer_cannot_affect_boundary_type(self, scope):
+        """Select and entrypoint scope ignore excluded input annotations."""
+        from hypergraph import GraphConfigError
+
+        graph_node = self._scoped_input_graph(scope).as_node()
+
+        @node(output_name="x")
+        def produce_x() -> int:
+            return 1
+
+        try:
+            Graph([produce_x, graph_node], strict_types=True)
+        except GraphConfigError as error:
+            strict_error = str(error)
+        else:
+            strict_error = None
+
+        assert (graph_node.get_input_type("x"), strict_error) == (int, None)
+
+    @pytest.mark.parametrize("scope", ["entrypoint", "select_and_entrypoint"])
+    def test_scoped_out_output_producer_cannot_affect_boundary_type(self, scope):
+        """Entrypoint scope ignores excluded output annotations, including under select."""
+        from hypergraph import GraphConfigError
+
+        graph_node = self._scoped_output_graph(scope).as_node()
+
+        @node(output_name="final")
+        def consume(result: int) -> int:
+            return result
+
+        try:
+            Graph([graph_node, consume], strict_types=True)
+        except GraphConfigError as error:
+            strict_error = str(error)
+        else:
+            strict_error = None
+
+        assert (graph_node.get_output_type("result"), strict_error) == (int, None)
+
     def test_input_type_deterministic_sorted_node_order(self):
         """get_input_type picks the alphabetically-first annotated inner consumer."""
 
