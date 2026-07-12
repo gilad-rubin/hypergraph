@@ -28,49 +28,45 @@ def _make_sync_func(name: str, input_name: str, output_name: str) -> FunctionNod
     """Create a sync function node."""
 
     @node(output_name=output_name)
-    def sync_node(**kwargs: Any) -> int:
-        val = kwargs.get(input_name, 0)
-        return val * 2 if isinstance(val, int) else 0
+    def sync_node(value: Any) -> int:
+        return value * 2 if isinstance(value, int) else 0
 
     # Rename to match expected interface
-    return sync_node.with_name(name).rename_inputs(**{list(sync_node.inputs)[0]: input_name})
+    return sync_node.with_name(name).rename_inputs(value=input_name)
 
 
 def _make_async_func(name: str, input_name: str, output_name: str) -> FunctionNode:
     """Create an async function node."""
 
     @node(output_name=output_name)
-    async def async_node(**kwargs: Any) -> int:
-        val = kwargs.get(input_name, 0)
-        return val * 2 if isinstance(val, int) else 0
+    async def async_node(value: Any) -> int:
+        return value * 2 if isinstance(value, int) else 0
 
-    return async_node.with_name(name).rename_inputs(**{list(async_node.inputs)[0]: input_name})
+    return async_node.with_name(name).rename_inputs(value=input_name)
 
 
 def _make_sync_generator(name: str, input_name: str, output_name: str) -> FunctionNode:
     """Create a sync generator node."""
 
     @node(output_name=output_name)
-    def sync_gen(**kwargs: Any):
-        val = kwargs.get(input_name, 0)
-        if isinstance(val, int):
-            yield val
-            yield val * 2
+    def sync_gen(value: Any):
+        if isinstance(value, int):
+            yield value
+            yield value * 2
 
-    return sync_gen.with_name(name).rename_inputs(**{list(sync_gen.inputs)[0]: input_name})
+    return sync_gen.with_name(name).rename_inputs(value=input_name)
 
 
 def _make_async_generator(name: str, input_name: str, output_name: str) -> FunctionNode:
     """Create an async generator node."""
 
     @node(output_name=output_name)
-    async def async_gen(**kwargs: Any):
-        val = kwargs.get(input_name, 0)
-        if isinstance(val, int):
-            yield val
-            yield val * 2
+    async def async_gen(value: Any):
+        if isinstance(value, int):
+            yield value
+            yield value * 2
 
-    return async_gen.with_name(name).rename_inputs(**{list(async_gen.inputs)[0]: input_name})
+    return async_gen.with_name(name).rename_inputs(value=input_name)
 
 
 def _make_node(node_type: NodeType, name: str, input_name: str, output_name: str) -> FunctionNode:

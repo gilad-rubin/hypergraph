@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from hypergraph.events.processor import EventProcessor
 
 ErrorHandling = Literal["raise", "continue"]
+CheckpointErrorSink = Callable[[str], None]
 
 _MAX_STRING_PREVIEW = 120
 _MAX_SEQUENCE_PREVIEW = 6
@@ -181,6 +182,11 @@ class RunResult:
         error: Exception if status is FAILED, else None
         pause: PauseInfo if status is PAUSED, else None
         log: RunLog with execution trace (timing, status, routing), or None
+        checkpoint_ok: False when background checkpoint step-saves failed
+            under ``durability="async"`` (best-effort persistence). The run
+            itself still completes; check this flag to detect gaps in the
+            persisted history.
+        checkpoint_errors: String reprs of failed background step-saves.
     """
 
     values: dict[str, Any]
@@ -190,6 +196,8 @@ class RunResult:
     error: BaseException | None = None
     pause: PauseInfo | None = None
     log: RunLog | None = None
+    checkpoint_ok: bool = True
+    checkpoint_errors: tuple[str, ...] = ()
 
     @property
     def stopped(self) -> bool:
@@ -214,10 +222,16 @@ class RunResult:
     def summary(self) -> str:
         """One-line overview: 'completed | 3 nodes | 12ms' or 'failed: ValueError'."""
         if self.log:
-            return self.log.summary()
-        if self.error:
-            return f"{self.status.value}: {type(self.error).__name__}: {self.error}"
-        return self.status.value
+            summary = self.log.summary()
+        elif self.error:
+            summary = f"{self.status.value}: {type(self.error).__name__}: {self.error}"
+        else:
+            summary = self.status.value
+        if not self.checkpoint_ok:
+            error_count = len(self.checkpoint_errors)
+            detail = f" ({plural(error_count, 'save error')})" if error_count else ""
+            summary += f" | checkpoint gap{detail}"
+        return summary
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-serializable dict with status, run_id, and log.
@@ -229,6 +243,8 @@ class RunResult:
             "status": self.status.value,
             "run_id": self.run_id,
             "workflow_id": self.workflow_id,
+            "checkpoint_ok": self.checkpoint_ok,
+            "checkpoint_errors": list(self.checkpoint_errors),
         }
         if self.log:
             d["log"] = self.log.to_dict()
@@ -250,6 +266,9 @@ class RunResult:
 
     def __repr__(self) -> str:
         """Compact repr to avoid extremely large notebook output."""
+        checkpoint = ""
+        if not self.checkpoint_ok:
+            checkpoint = f", checkpoint_ok=False, checkpoint_errors={_compact_value(self.checkpoint_errors)}"
         text = (
             "RunResult("
             f"status={self.status.value}, "
@@ -258,6 +277,7 @@ class RunResult:
             f"workflow_id={self.workflow_id!r}, "
             f"error={_compact_value(self.error)}, "
             f"pause={_compact_value(self.pause)}"
+            f"{checkpoint}"
             ")"
         )
         return _truncate_text(text, _MAX_RUN_RESULT_REPR)
@@ -294,6 +314,10 @@ class RunResult:
             n_errors = len(self.log.errors)
             if n_errors:
                 kvs.append(html_kv("Errors", f'<span style="color:{ERROR_COLOR}">{n_errors}</span>'))
+        if not self.checkpoint_ok:
+            error_count = len(self.checkpoint_errors)
+            detail = f" ({plural(error_count, 'save error')})" if error_count else ""
+            kvs.append(html_kv("Checkpoint", f'<span style="color:{ERROR_COLOR}">gap{detail}</span>'))
         kvs.append(html_kv("Values", plural(len(self.values), "key")))
         body = " &nbsp;|&nbsp; ".join(kvs)
         if self.error:
@@ -303,6 +327,12 @@ class RunResult:
                 f"Values ({plural(len(self.values), 'key')})",
                 values_html(self.values),
                 state_key="values",
+            )
+        if self.checkpoint_errors:
+            body += html_detail(
+                f"Checkpoint errors ({plural(len(self.checkpoint_errors), 'save error')})",
+                values_html({str(index): error for index, error in enumerate(self.checkpoint_errors)}),
+                state_key="checkpoint-errors",
             )
         if self.log:
             body += html_detail("Run Log", self.log._repr_html_(), state_key="run-log")
@@ -406,6 +436,21 @@ class MapResult:
         return [r for r in self.results if r.status == RunStatus.FAILED]
 
     @property
+    def checkpoint_ok(self) -> bool:
+        """Whether every item persisted all best-effort async checkpoints."""
+        return all(result.checkpoint_ok for result in self.results)
+
+    @property
+    def checkpoint_errors(self) -> tuple[str, ...]:
+        """Checkpoint-save errors flattened in stable item order."""
+        return tuple(error for result in self.results for error in result.checkpoint_errors)
+
+    @property
+    def _checkpoint_gap_count(self) -> int:
+        """Number of items with incomplete best-effort checkpoint persistence."""
+        return sum(1 for result in self.results if not result.checkpoint_ok)
+
+    @property
     def log(self) -> MapLog:
         """Batch-level execution trace."""
         return MapLog(
@@ -440,6 +485,9 @@ class MapResult:
             status_parts.append(f"{n_stopped} stopped")
         if status_parts:
             parts.append(", ".join(status_parts))
+        checkpoint_gap_count = self._checkpoint_gap_count
+        if checkpoint_gap_count:
+            parts.append(f"{plural(checkpoint_gap_count, 'item')} with checkpoint gaps")
         if n_completed > 0:
             completed_items = [r for r in self.results if r.status == RunStatus.COMPLETED]
             completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
@@ -457,6 +505,8 @@ class MapResult:
             "map_over": list(self.map_over),
             "map_mode": self.map_mode,
             "graph_name": self.graph_name,
+            "checkpoint_ok": self.checkpoint_ok,
+            "checkpoint_errors": list(self.checkpoint_errors),
             "item_count": len(self.results),
             "completed_count": n_completed,
             "failed_count": n_failed,
@@ -479,13 +529,15 @@ class MapResult:
         if n_stopped:
             parts.append(f"{n_stopped} stopped")
         status = ", ".join(parts) if parts else "empty"
+        checkpoint_gap_count = self._checkpoint_gap_count
+        checkpoint_part = f", {plural(checkpoint_gap_count, 'item')} with checkpoint gaps" if checkpoint_gap_count else ""
         avg_part = ""
         if n_completed > 0:
             completed_items = [r for r in self.results if r.status == RunStatus.COMPLETED]
             completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
             avg = completed_ms / n_completed
             avg_part = f", avg {_format_duration(avg)}/item"
-        return f"MapResult({plural(n, 'item')}: {status}{avg_part}, map_over={self.map_over!r})"
+        return f"MapResult({plural(n, 'item')}: {status}{checkpoint_part}{avg_part}, map_over={self.map_over!r})"
 
     def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
         if cycle:
@@ -520,6 +572,14 @@ class MapResult:
             kvs.append(html_kv("Completed", str(n_completed)))
         if n_failed:
             kvs.append(html_kv("Failed", f'<span style="color:{ERROR_COLOR}">{n_failed}</span>'))
+        checkpoint_gap_count = self._checkpoint_gap_count
+        if checkpoint_gap_count:
+            kvs.append(
+                html_kv(
+                    "Checkpoint gaps",
+                    f'<span style="color:{ERROR_COLOR}">{plural(checkpoint_gap_count, "item")}</span>',
+                )
+            )
         if n_completed > 0:
             completed_items = [r for r in self.results if r.status == RunStatus.COMPLETED]
             completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
@@ -666,10 +726,25 @@ class PauseExecution(BaseException):
     catches it and re-raises with a prefixed node_name (e.g.
     ``"outer/inner/interrupt_node"``), propagating the pause up
     through arbitrarily deep nesting.
+
+    Attributes:
+        pause_info: Details about the interrupt that paused the run.
+        partial_state: GraphState accumulated before the pause. Attached by
+            the runner as the pause propagates; None until then.
+        stopped: Whether a cooperative stop was also requested when the
+            pause propagated.
+        span_id: Span of the interrupt node, set by the superstep.
     """
 
-    def __init__(self, pause_info: PauseInfo):
+    def __init__(
+        self,
+        pause_info: PauseInfo,
+        partial_state: GraphState | None = None,
+        stopped: bool = False,
+    ):
         self.pause_info = pause_info
+        self.partial_state = partial_state
+        self.stopped = stopped
         self.span_id: str | None = None
         super().__init__(f"Paused at {pause_info.node_name}")
 
@@ -684,7 +759,10 @@ class RunnerCapabilities:
         supports_cycles: Can execute graphs with cycles (default: True)
         supports_gates: Can execute graphs with gate nodes (default: True)
         supports_async_nodes: Can execute async nodes (default: False)
-        supports_streaming: Supports .iter() streaming (default: False)
+        supports_streaming: Streams results incrementally — per-item
+            yielding via map_iter() and StreamingChunkEvent emission from
+            ctx.stream() (default: False). SyncRunner and AsyncRunner set
+            this to True.
         supports_events: Supports event processors (default: True)
         supports_distributed: Can distribute across workers (default: False)
         returns_coroutine: run() returns a coroutine (default: False)
@@ -723,6 +801,7 @@ class ExecutionContext:
     provided_values: dict[str, Any] = field(default_factory=dict)
     is_resuming: bool = False
     on_inner_log: Callable[[RunLog], None] | None = None
+    checkpoint_error_sink: CheckpointErrorSink | None = None
     emit_fn: Callable[[Any], None] | None = None
 
 
@@ -762,6 +841,10 @@ class GraphState:
         versions: Version number for each value (incremented on update)
         node_executions: History of node executions (for staleness detection)
         routing_decisions: Routing decisions made by gate nodes
+        stopped: Whether a cooperative stop was requested during this run.
+            Runtime-only: checkpoint restores start fresh (False).
+        stop_info: Optional metadata passed to ``runner.stop(info=...)``.
+            Runtime-only: checkpoint restores start fresh (None).
     """
 
     values: dict[str, Any] = field(default_factory=dict)
@@ -769,6 +852,8 @@ class GraphState:
     node_executions: dict[str, NodeExecution] = field(default_factory=dict)
     routing_decisions: dict[str, Any] = field(default_factory=dict)
     resume_values: frozenset[str] = frozenset()
+    stopped: bool = False
+    stop_info: Any = None
 
     def update_value(self, name: str, value: Any) -> None:
         """Update a value and increment its version if value changed.
@@ -831,6 +916,8 @@ class GraphState:
             },
             routing_decisions=dict(self.routing_decisions),
             resume_values=frozenset(self.resume_values),
+            stopped=self.stopped,
+            stop_info=self.stop_info,
         )
 
 

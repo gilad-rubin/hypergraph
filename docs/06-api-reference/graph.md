@@ -451,6 +451,27 @@ print(partial.inputs.bound)  # {'y': 10}
 
 **Returns:** New Graph with specified bindings removed
 
+### `add_nodes(*nodes) -> Graph`
+
+Add nodes to the graph. Returns a new Graph (immutable pattern).
+
+Equivalent to rebuilding the graph with the combined node list, then replaying the existing configuration: entrypoints, bindings, and selection are all preserved.
+
+```python
+g = Graph([upstream, downstream]).with_entrypoint("downstream")
+g2 = g.add_nodes(extra)
+print(g2.entrypoints_config)  # ('downstream',) — entrypoints preserved
+```
+
+**Args:**
+- `*nodes`: Nodes to add.
+
+**Returns:** New Graph containing the combined nodes with entrypoints, bindings, and selection replayed
+
+**Raises:**
+- `GraphConfigError` - If the graph was constructed with explicit edges, or if the rebuilt graph is structurally invalid (e.g., the added nodes create conflicting producers)
+- `ValueError` - If an existing binding is no longer a valid graph input after adding nodes (call `unbind()` first)
+
 ### `select(*names) -> Graph`
 
 Set a default output selection. Returns a new Graph (immutable pattern).
@@ -499,6 +520,7 @@ Runtime `select=` overrides are not supported. Use `graph.select(...)` to config
 
 **Raises:**
 - `ValueError` - If any name is not in `graph.outputs`
+- `GraphConfigError` - If entrypoints are configured and every producer of a selected output is upstream of them (the output could never be produced)
 
 #### Nested graph behavior
 
@@ -558,6 +580,7 @@ print(g2.inputs.required)  # ('embedding', 'query') - embedding is now a user in
 **Raises:**
 - `GraphConfigError` - If any name is not a node in the graph
 - `GraphConfigError` - If any name is a gate node (gates control routing, they cannot be entry points)
+- `GraphConfigError` - If a previously selected output becomes unreachable from the configured entry points
 
 #### Chainable
 
@@ -593,6 +616,13 @@ configured = (
 )
 print(configured.inputs.required)  # ('embedding', 'query')
 print(configured.inputs.optional)  # ('top_k',)
+```
+
+The combination must be able to produce the selection. If every producer of a selected output is upstream of the configured entrypoints, the graph raises `GraphConfigError` at configuration time (in whichever call completes the combination — the order of `select()` and `with_entrypoint()` does not matter):
+
+```python
+g.with_entrypoint("retrieve").select("embedding")
+# GraphConfigError: Selected output(s) 'embedding' cannot be produced from entrypoint(s) 'retrieve'.
 ```
 
 #### Active-set enforcement

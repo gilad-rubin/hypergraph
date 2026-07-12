@@ -190,17 +190,18 @@ def should_continue(score: float) -> str:
 
 ## 7. Cycles Require Entry Points
 
-When a value participates in a cycle, the first iteration needs an initial value. Entry points group these by the node where execution starts.
+When a value participates in a cycle, the first iteration needs an initial value. The graph-level entrypoint identifies where execution starts and narrows the active subgraph.
 
 ### Explicit signals
 
-- InputSpec docs define `entrypoints` for cyclic inputs, grouped by node name.
+- `Graph(..., entrypoint=...)` configures where a cyclic graph starts.
+- `InputSpec` exposes cycle bootstrap inputs through `required` or `optional`; it has no separate `entrypoints` field.
 
 ### Implicit invariants
 
-- Cycle parameters are classified as entrypoint parameters.
-- Missing entrypoint values fail input validation.
-- Entry point values can be bound with `bind()` or provided at `runner.run()` time.
+- Cycle bootstrap parameters are required unless a binding or default makes them optional.
+- Missing required cycle bootstrap values fail input validation.
+- Cycle bootstrap values can be bound with `bind()` or provided at `runner.run()` time.
 
 ### Good example
 

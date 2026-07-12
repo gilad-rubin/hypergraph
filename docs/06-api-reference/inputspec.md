@@ -52,14 +52,13 @@ print(configured.inputs.optional)  # ('top_k',)
 
 ## The InputSpec Dataclass
 
-InputSpec is a frozen dataclass with four fields:
+InputSpec is a frozen dataclass with three fields:
 
 ```python
 @dataclass(frozen=True)
 class InputSpec:
     required: tuple[str, ...]
     optional: tuple[str, ...]
-    entrypoints: dict[str, tuple[str, ...]]
     bound: dict[str, Any]
 ```
 
@@ -89,12 +88,6 @@ g = Graph([process])
 print(g.inputs.required)  # ('x',)
 print(g.inputs.optional)  # ('scale',)
 ```
-
-### `entrypoints: dict[str, tuple[str, ...]]`
-
-Reserved for compatibility. For configured graphs, this field is `{}`.
-
-Cyclic graphs must be constructed with graph-level `entrypoint` configuration (`Graph(..., entrypoint=...)`). Cycle bootstrap parameters are represented directly in canonical `required`/`optional`.
 
 ### `bound: dict[str, Any]`
 
@@ -155,8 +148,9 @@ def update(state: dict, input: int) -> dict:
 
 g = Graph([update], entrypoint="update")
 print(g.inputs.required)    # ('state', 'input')
-print(g.inputs.entrypoints) # {}
 ```
+
+Cycle bootstrap parameters are represented directly in `required`/`optional` — there is no separate entrypoints category on InputSpec.
 
 ### GraphNode Boundary Inputs
 
@@ -240,7 +234,7 @@ For namespaced GraphNodes, `.expose("x")` replaces `inner.x` with the flat paren
 
 ### Scope Narrowing (Entrypoint and Select)
 
-`with_entrypoint()` and `select()` narrow which nodes are considered when computing InputSpec. Parameters from excluded nodes do not appear in `required`, `optional`, or `entrypoints`.
+`with_entrypoint()` and `select()` narrow which nodes are considered when computing InputSpec. Parameters from excluded nodes do not appear in `required` or `optional`.
 
 ```python
 from hypergraph import node, Graph
@@ -283,7 +277,6 @@ spec = g.inputs  # Returns InputSpec
 
 print(spec.required)      # tuple of required param names
 print(spec.optional)      # tuple of optional param names
-print(spec.entrypoints)  # {} (reserved for compatibility)
 print(spec.bound)         # dict of bound values
 ```
 
@@ -349,7 +342,6 @@ g = Graph([embed, retrieve])
 
 print(g.inputs.required)      # ('text',)
 print(g.inputs.optional)      # ('top_k',)
-print(g.inputs.entrypoints)  # {}
 print(g.inputs.bound)         # {}
 ```
 
@@ -382,7 +374,6 @@ def chat(messages: list[str], user_input: str) -> list[str]:
 
 g = Graph([chat], entrypoint="chat")
 print(g.inputs.required)      # ('messages', 'user_input')
-print(g.inputs.entrypoints)   # {}
 ```
 
 ### Multiple Nodes Sharing a Parameter
@@ -461,7 +452,6 @@ g = Graph([embed, search, update_history], entrypoint="update_history")
 # Inspect InputSpec
 print("Required:", g.inputs.required)        # ('text', 'history')
 print("Optional:", g.inputs.optional)        # ('top_k', 'threshold')
-print("Entry points:", g.inputs.entrypoints)  # {}
 print("Bound:", g.inputs.bound)              # {}
 print("All:", g.inputs.all)                  # ('text', 'history', 'top_k', 'threshold')
 
@@ -470,6 +460,5 @@ configured = g.bind(top_k=10, threshold=0.9)
 print("\nAfter bind:")
 print("Required:", configured.inputs.required)        # ('text', 'history')
 print("Optional:", configured.inputs.optional)        # ('top_k', 'threshold') - still have fallback
-print("Entry points:", configured.inputs.entrypoints)  # {}
 print("Bound:", configured.inputs.bound)              # {'top_k': 10, 'threshold': 0.9}
 ```

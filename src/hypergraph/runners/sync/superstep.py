@@ -78,9 +78,12 @@ def run_superstep_sync(
         try:
             inputs = collect_inputs_for_node(node, graph, state, provided_values)
         except Exception as e:
-            error = ExecutionError(e, new_state)
-            error._attempted_node_names = tuple(attempted_node_names)  # type: ignore[attr-defined]
-            error._node_errors = {node.name: e}  # type: ignore[attr-defined]
+            error = ExecutionError(
+                e,
+                new_state,
+                attempted_node_names=tuple(attempted_node_names),
+                node_errors={node.name: e},
+            )
             raise error from e
 
         # Record input versions under the same parent-facing key the staleness
@@ -241,9 +244,12 @@ def run_superstep_sync(
                     raise
                 # Wrap only Exception subclasses
                 if isinstance(e, Exception):
-                    error = ExecutionError(e, new_state)
-                    error._attempted_node_names = tuple(attempted_node_names)  # type: ignore[attr-defined]
-                    error._node_errors = {node.name: e}  # type: ignore[attr-defined]
+                    error = ExecutionError(
+                        e,
+                        new_state,
+                        attempted_node_names=tuple(attempted_node_names),
+                        node_errors={node.name: e},
+                    )
                     raise error from e
                 # Re-raise other BaseExceptions (KeyboardInterrupt, SystemExit, etc.)
                 raise

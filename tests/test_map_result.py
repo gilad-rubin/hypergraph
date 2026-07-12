@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 
 import pytest
@@ -30,12 +31,16 @@ def _make_result(
     values: dict | None = None,
     error: Exception | None = None,
     log: RunLog | None = None,
+    checkpoint_ok: bool = True,
+    checkpoint_errors: tuple[str, ...] = (),
 ) -> RunResult:
     return RunResult(
         values=values or {},
         status=status,
         error=error,
         log=log,
+        checkpoint_ok=checkpoint_ok,
+        checkpoint_errors=checkpoint_errors,
     )
 
 
@@ -136,6 +141,64 @@ class TestRunResultToDict:
         r = _make_result()
         d = r.to_dict()
         assert "error" not in d
+
+    def test_healthy_checkpoint_evidence_is_always_serialized(self):
+        d = _make_result().to_dict()
+
+        assert d["checkpoint_ok"] is True
+        assert d["checkpoint_errors"] == []
+        json.dumps(d)
+
+    def test_failed_checkpoint_evidence_is_serialized_as_strings(self):
+        d = _make_result(
+            checkpoint_ok=False,
+            checkpoint_errors=("RuntimeError: disk full",),
+        ).to_dict()
+
+        assert d["checkpoint_ok"] is False
+        assert d["checkpoint_errors"] == ["RuntimeError: disk full"]
+        assert all(isinstance(error, str) for error in d["checkpoint_errors"])
+        json.dumps(d)
+
+
+class TestRunResultCheckpointProgressiveDisclosure:
+    def test_checkpoint_gap_is_visible_without_changing_execution_status(self):
+        log = RunLog(
+            graph_name="test",
+            run_id="run-123",
+            total_duration_ms=10.0,
+            steps=(),
+        )
+        result = _make_result(
+            log=log,
+            checkpoint_ok=False,
+            checkpoint_errors=("RuntimeError: disk full",),
+        )
+
+        assert result.status == RunStatus.COMPLETED
+        assert "checkpoint gap" in result.summary().lower()
+        assert "checkpoint_ok=False" in repr(result)
+        assert "RuntimeError: disk full" in repr(result)
+        html = result._repr_html_()
+        assert html is not None
+        assert "Checkpoint" in html
+        assert "gap" in html.lower()
+
+    def test_plain_repr_mode_keeps_checkpoint_gap_visible(self, monkeypatch):
+        monkeypatch.setenv("HYPERGRAPH_DISPLAY", "plain")
+        result = _make_result(
+            checkpoint_ok=False,
+            checkpoint_errors=("RuntimeError: disk full",),
+        )
+
+        assert result._repr_html_() is None
+        assert "checkpoint_ok=False" in repr(result)
+
+    def test_healthy_result_does_not_report_a_checkpoint_gap(self):
+        result = _make_result()
+
+        assert "checkpoint gap" not in result.summary().lower()
+        assert "checkpoint_ok=False" not in repr(result)
 
 
 # === MapResult Unit Tests ===
@@ -307,6 +370,82 @@ class TestMapResultAggregateStatus:
         assert mr.failures == []
 
 
+class TestMapResultCheckpointEvidence:
+    def test_empty_and_healthy_maps_have_clean_checkpoint_evidence(self):
+        empty = _make_map_result([])
+        healthy = _make_map_result([_make_result(), _make_result()])
+
+        assert empty.checkpoint_ok is True
+        assert empty.checkpoint_errors == ()
+        assert healthy.checkpoint_ok is True
+        assert healthy.checkpoint_errors == ()
+        assert "checkpoint gap" not in healthy.summary().lower()
+        assert "checkpoint gap" not in repr(healthy).lower()
+
+        healthy_dict = healthy.to_dict()
+        assert healthy_dict["checkpoint_ok"] is True
+        assert healthy_dict["checkpoint_errors"] == []
+        json.dumps(healthy_dict)
+
+    def test_aggregate_errors_follow_stable_item_order(self):
+        results = [
+            _make_result(
+                checkpoint_ok=False,
+                checkpoint_errors=("item 0 first", "item 0 second"),
+            ),
+            _make_result(),
+            _make_result(
+                checkpoint_ok=False,
+                checkpoint_errors=("item 2",),
+            ),
+        ]
+        mapped = _make_map_result(results)
+
+        assert mapped.status == RunStatus.COMPLETED
+        assert mapped.checkpoint_ok is False
+        assert mapped.checkpoint_errors == (
+            "item 0 first",
+            "item 0 second",
+            "item 2",
+        )
+
+    def test_checkpoint_gap_is_visible_in_summary_text_and_html(self):
+        mapped = _make_map_result(
+            [
+                _make_result(
+                    checkpoint_ok=False,
+                    checkpoint_errors=("item 0",),
+                ),
+                _make_result(),
+                _make_result(
+                    checkpoint_ok=False,
+                    checkpoint_errors=("item 2",),
+                ),
+            ]
+        )
+
+        assert "2 items with checkpoint gaps" in mapped.summary().lower()
+        assert "2 items with checkpoint gaps" in repr(mapped).lower()
+        html = mapped._repr_html_()
+        assert html is not None
+        assert "Checkpoint gaps" in html
+        assert "2 items" in html
+
+    def test_plain_repr_mode_keeps_map_checkpoint_gap_visible(self, monkeypatch):
+        monkeypatch.setenv("HYPERGRAPH_DISPLAY", "plain")
+        mapped = _make_map_result(
+            [
+                _make_result(
+                    checkpoint_ok=False,
+                    checkpoint_errors=("item 0",),
+                )
+            ]
+        )
+
+        assert mapped._repr_html_() is None
+        assert "1 item with checkpoint gaps" in repr(mapped).lower()
+
+
 class TestMapResultProgressiveDisclosure:
     def test_summary(self):
         items = [
@@ -337,6 +476,23 @@ class TestMapResultProgressiveDisclosure:
         assert len(d["items"]) == 1
         # Items delegate to RunResult.to_dict()
         assert d["items"][0]["status"] == "completed"
+
+    def test_to_dict_preserves_item_checkpoint_evidence(self):
+        healthy = _make_result()
+        unhealthy = _make_result(
+            checkpoint_ok=False,
+            checkpoint_errors=("RuntimeError: disk full",),
+        )
+
+        d = _make_map_result([healthy, unhealthy]).to_dict()
+
+        assert d["items"][0]["checkpoint_ok"] is True
+        assert d["items"][0]["checkpoint_errors"] == []
+        assert d["items"][1]["checkpoint_ok"] is False
+        assert d["items"][1]["checkpoint_errors"] == ["RuntimeError: disk full"]
+        assert d["checkpoint_ok"] is False
+        assert d["checkpoint_errors"] == ["RuntimeError: disk full"]
+        json.dumps(d)
 
     def test_repr(self):
         items = [_make_result(), _make_result()]
@@ -671,8 +827,6 @@ class TestMapLog:
 
     def test_map_log_to_dict(self):
         """to_dict() is JSON serializable."""
-        import json
-
         log = _make_run_log()
         r = _make_result(log=log)
         mr = _make_map_result([r])

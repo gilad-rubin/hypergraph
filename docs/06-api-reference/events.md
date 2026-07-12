@@ -174,6 +174,24 @@ class StopRequestedEvent(BaseEvent):
     info: object                 # Optional stop metadata
 ```
 
+### StreamingChunkEvent
+
+Emitted when a node calls `ctx.stream(chunk)` to publish a live-preview chunk
+without changing the node's return value.
+
+```python
+@dataclass(frozen=True)
+class StreamingChunkEvent(BaseEvent):
+    chunk: object                # Streamed token, fragment, or payload
+    node_name: str               # Node that emitted the chunk
+    graph_name: str              # Graph containing the node
+```
+
+Inherited `run_id`, `workflow_id`, and `item_index` fields correlate the chunk
+with its run, persisted workflow, and mapped item. Inherited `parent_span_id`
+is the span of the emitting node, so consumers can attach chunks to the exact
+node execution even when siblings run concurrently.
+
 ### CacheHitEvent
 
 Emitted when a node result is served from cache instead of being executed.

@@ -15,38 +15,38 @@ class TestInputSpec:
         spec = InputSpec(
             required=("param1", "param2"),
             optional=("param3",),
-            entrypoints={"node_a": ("param4",)},
             bound={"param5": 42},
         )
 
         assert spec.required == ("param1", "param2")
         assert spec.optional == ("param3",)
-        assert spec.entrypoints == {"node_a": ("param4",)}
         assert spec.bound == {"param5": 42}
+
+    def test_input_spec_has_no_entrypoints_field(self):
+        """The always-empty entrypoints field was removed (D11a)."""
+        spec = InputSpec(required=(), optional=(), bound={})
+        assert not hasattr(spec, "entrypoints")
 
     def test_input_spec_all_property(self):
         """Test .all property returns combined tuple of all inputs."""
         spec = InputSpec(
             required=("a", "b"),
             optional=("c",),
-            entrypoints={"node_a": ("d",)},
             bound={},
         )
 
-        assert spec.all == ("a", "b", "c", "d")
+        assert spec.all == ("a", "b", "c")
 
     def test_input_spec_empty_fields(self):
         """Test InputSpec works with empty tuples/dicts."""
         spec = InputSpec(
             required=(),
             optional=(),
-            entrypoints={},
             bound={},
         )
 
         assert spec.required == ()
         assert spec.optional == ()
-        assert spec.entrypoints == {}
         assert spec.bound == {}
         assert spec.all == ()
 
@@ -55,7 +55,6 @@ class TestInputSpec:
         spec = InputSpec(
             required=("param1",),
             optional=(),
-            entrypoints={},
             bound={},
         )
 
@@ -63,15 +62,14 @@ class TestInputSpec:
             spec.required = ("param2",)
 
     def test_input_spec_all_preserves_order(self):
-        """Test .all property preserves order: required + optional + entrypoint params."""
+        """Test .all property preserves order: required + optional."""
         spec = InputSpec(
             required=("r1", "r2"),
             optional=("o1", "o2"),
-            entrypoints={"node_a": ("s1",), "node_b": ("s2",)},
             bound={},
         )
 
-        assert spec.all == ("r1", "r2", "o1", "o2", "s1", "s2")
+        assert spec.all == ("r1", "r2", "o1", "o2")
 
 
 class TestGraphDescribe:
@@ -477,7 +475,6 @@ class TestGraphInputs:
 
         assert g.inputs.required == ("a", "b", "c")
         assert g.inputs.optional == ()
-        assert g.inputs.entrypoints == {}
         assert g.inputs.bound == {}
 
     def test_with_defaults_become_optional(self):
@@ -491,7 +488,6 @@ class TestGraphInputs:
 
         assert g.inputs.required == ("a",)
         assert g.inputs.optional == ("b", "c")
-        assert g.inputs.entrypoints == {}
         assert g.inputs.bound == {}
 
     def test_edge_connected_not_in_inputs(self):
@@ -523,7 +519,6 @@ class TestGraphInputs:
             Graph([counter])
 
         g = Graph([counter], entrypoint="counter")
-        assert g.inputs.entrypoints == {}
         assert g.inputs.required == ("count",)
         assert g.inputs.optional == ()
 

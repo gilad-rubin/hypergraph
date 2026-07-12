@@ -260,10 +260,15 @@ class StreamingChunkEvent(BaseEvent):
     Attributes:
         chunk: The streamed payload (token, JSON fragment, etc.).
         node_name: Name of the node that emitted the chunk.
+        graph_name: Name of the graph containing the node.
+        parent_span_id: Inherited from BaseEvent — span of the emitting node.
+        workflow_id: Inherited from BaseEvent — workflow identifier, if any.
+        item_index: Inherited from BaseEvent — mapped item index, if any.
     """
 
     chunk: object = None
     node_name: str = ""
+    graph_name: str = ""
 
 
 @dataclass(frozen=True)
