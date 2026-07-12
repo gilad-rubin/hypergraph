@@ -352,6 +352,101 @@ class RunResult:
         )
 
 
+def build_terminal_run_result(
+    *,
+    values: dict[str, Any],
+    status: RunStatus,
+    run_id: str,
+    workflow_id: str | None,
+    log: RunLog,
+    checkpoint_errors: Sequence[str] = (),
+) -> RunResult:
+    """Build a completed or stopped result with durability evidence."""
+    errors = tuple(checkpoint_errors)
+    return RunResult(
+        values=values,
+        status=status,
+        run_id=run_id,
+        workflow_id=workflow_id,
+        log=log,
+        checkpoint_ok=not errors,
+        checkpoint_errors=errors,
+    )
+
+
+def build_paused_run_result(
+    *,
+    values: dict[str, Any],
+    run_id: str,
+    workflow_id: str | None,
+    pause: PauseInfo,
+    log: RunLog,
+    checkpoint_errors: Sequence[str] = (),
+) -> RunResult:
+    """Build a paused result with durability evidence."""
+    errors = tuple(checkpoint_errors)
+    return RunResult(
+        values=values,
+        status=RunStatus.PAUSED,
+        run_id=run_id,
+        workflow_id=workflow_id,
+        pause=pause,
+        log=log,
+        checkpoint_ok=not errors,
+        checkpoint_errors=errors,
+    )
+
+
+def build_failed_run_result(
+    *,
+    values: dict[str, Any],
+    run_id: str,
+    workflow_id: str | None,
+    error: BaseException,
+    log: RunLog,
+    checkpoint_errors: Sequence[str] = (),
+) -> RunResult:
+    """Build a failed result with durability evidence."""
+    errors = tuple(checkpoint_errors)
+    return RunResult(
+        values=values,
+        status=RunStatus.FAILED,
+        run_id=run_id,
+        workflow_id=workflow_id,
+        error=error,
+        log=log,
+        checkpoint_ok=not errors,
+        checkpoint_errors=errors,
+    )
+
+
+def build_restored_run_result(
+    *,
+    values: dict[str, Any],
+    graph_name: str,
+    run_id: str,
+) -> RunResult:
+    """Build a completed map child restored from persisted state."""
+    return RunResult(
+        values=values,
+        status=RunStatus.COMPLETED,
+        run_id=run_id,
+        workflow_id=run_id,
+        log=build_restored_run_log(graph_name, run_id),
+        restored=True,
+    )
+
+
+def build_pre_run_failed_result(error: BaseException) -> RunResult:
+    """Build a failed map item for an error raised before execution starts."""
+    return RunResult(
+        values={},
+        status=RunStatus.FAILED,
+        run_id=_generate_run_id(),
+        error=error,
+    )
+
+
 @dataclass(frozen=True)
 class MapResult:
     """Result of a batch map() execution.
