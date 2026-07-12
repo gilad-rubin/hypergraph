@@ -7,6 +7,7 @@ from typing import Any
 from hypergraph import Graph
 from hypergraph.materialization._fingerprint import compute_definition_hash
 from hypergraph.materialization._hypertable_viz import render_hypertable
+from hypergraph.materialization._indexes import IndexPolicy
 from hypergraph.materialization._provenance import (
     Provenance,
     RebuildChildren,
@@ -139,6 +140,7 @@ class HyperTable:
         self._analyzed = False
         self._column_graphs: dict[int, Any] = {}
         self._provenance_obj: Provenance | None = None
+        self._indexes_obj: IndexPolicy | None = None
         self._journal_obj: RecipeJournal | None = None
         # Tables whose physical schema is known to hold the recipe-stamp column
         # (memoized so the additive evolution runs at most once per table).
@@ -202,12 +204,19 @@ class HyperTable:
             tuple(self._nodes),
             self._column_graphs,
         )
+        self._indexes_obj = IndexPolicy(self._store, self._spec, self._provenance_obj)
 
     @property
     def _provenance_policy(self) -> Provenance:
         if self._provenance_obj is None:
             raise RuntimeError("HyperTable provenance requested before graph analysis")
         return self._provenance_obj
+
+    @property
+    def _indexes(self) -> IndexPolicy:
+        if self._indexes_obj is None:
+            raise RuntimeError("HyperTable indexes requested before graph analysis")
+        return self._indexes_obj
 
     def _resolve_store(self):
         from hypergraph.materialization._table_store import TableStore
@@ -791,38 +800,6 @@ class HyperTable:
     # Materializing into external backends (Chroma, Azure Search) is an
     # application-layer concern, out of scope here.
 
-    def _resolve_index_table(self, on: str | None) -> TableSpec:
-        if on is None or on == self._spec.name:
-            return self._spec
-        for cs in self._spec.children:
-            if cs.name == on:
-                return cs
-        known = [self._spec.name, *(cs.name for cs in self._spec.children)]
-        raise ValueError(f"unknown table {on!r} for index; expected one of {known}")
-
-    def _index_recipe_fingerprint(self, spec: TableSpec, vector: str) -> str | None:
-        """The component-config + node-definition basis of the vector column's producing node."""
-        for c in self._provenance_policy.derived_columns(spec):
-            if c.name == vector and c.produced_by is not None:
-                return self._provenance_policy.node_recipe(c.produced_by)
-        return None
-
-    def _index_queryable_columns(self, spec: TableSpec) -> set[str]:
-        """Columns an index may reference: spec columns plus physical (metadata-evolved) ones."""
-        columns = {c.name for c in spec.columns if c.role != "internal"}
-        physical = self._store.open(self._spec, self._spec.children).get(spec.name, [])
-        columns.update(name for name in physical if not is_internal_column(name))
-        return columns
-
-    def _load_indexes(self) -> dict[str, dict[str, Any]]:
-        manifest = self._store.load_manifest(self._spec.name) or {}
-        return dict(manifest.get("indexes", {}))
-
-    def _save_indexes(self, indexes: dict[str, dict[str, Any]]) -> None:
-        manifest = self._store.load_manifest(self._spec.name) or {}
-        manifest["indexes"] = indexes
-        self._store.save_manifest(self._spec.name, manifest)
-
     def create_index(
         self,
         name: str,
@@ -834,52 +811,16 @@ class HyperTable:
     ) -> dict[str, Any]:
         """Record a named query spec: which table, which vector column, which row slice."""
         self._ensure_analyzed()
-        if not self._store.supports_manifests():
-            raise NotImplementedError(
-                f"{type(self._store).__name__} does not implement save_manifest/load_manifest, "
-                "so it cannot persist named indexes. Implement both manifest hooks to support "
-                "create_index, or use a store that does (e.g. LanceDBStore)."
-            )
-        spec = self._resolve_index_table(on)
-        if vector is None:
-            raise ValueError("create_index requires vector=<column>: v1 indexes are vector-search specs")
-        columns = self._index_queryable_columns(spec)
-        for label, col in (("vector", vector), ("text", text)):
-            if col is not None and col not in columns:
-                raise ValueError(f"{label} column {col!r} does not exist on table {spec.name!r}; known columns: {sorted(columns)}")
-        for col, _op, _val in _where_predicate(rows):
-            if col not in columns:
-                raise ValueError(f"rows filter column {col!r} does not exist on table {spec.name!r}; known columns: {sorted(columns)}")
-        index_spec = {
-            "name": name,
-            "on": spec.name,
-            "rows": rows,
-            "text": text,
-            "vector": vector,
-            "recipe_fingerprint": self._index_recipe_fingerprint(spec, vector),
-        }
-        indexes = self._load_indexes()
-        indexes[name] = index_spec
-        self._save_indexes(indexes)
-        return dict(index_spec)
+        return self._indexes.create(name, on=on, rows=rows, text=text, vector=vector)
 
     def list_indexes(self) -> list[dict[str, Any]]:
         """The persisted index specs, each with ``current``: does its recorded recipe match the recipe now?"""
         self._ensure_analyzed()
-        specs = []
-        for index_spec in self._load_indexes().values():
-            spec = self._resolve_index_table(index_spec.get("on"))
-            now = self._index_recipe_fingerprint(spec, index_spec["vector"])
-            specs.append({**index_spec, "current": now == index_spec.get("recipe_fingerprint")})
-        return specs
+        return self._indexes.list()
 
     def drop_index(self, name: str) -> None:
         self._ensure_analyzed()
-        indexes = self._load_indexes()
-        if name not in indexes:
-            raise KeyError(f"no index named {name!r}")
-        del indexes[name]
-        self._save_indexes(indexes)
+        self._indexes.drop(name)
 
     def search(
         self,
@@ -898,18 +839,7 @@ class HyperTable:
         ``station``) without minting a separate index.
         """
         self._ensure_analyzed()
-        indexes = self._load_indexes()
-        if index not in indexes:
-            raise KeyError(f"no index named {index!r}; known indexes: {sorted(indexes)}")
-        index_spec = indexes[index]
-        combined_where = [*_where_predicate(index_spec.get("rows")), *_where_predicate(where)]
-        hits = self._store.search(
-            index_spec["on"],
-            query_vector=list(query_vector),
-            vector_column=index_spec["vector"],
-            where=combined_where or None,
-            limit=limit,
-        )
+        hits = self._indexes.search(query_vector, index=index, limit=limit, where=where)
         results = []
         for row in hits:
             distance = row.pop("_distance", None)
