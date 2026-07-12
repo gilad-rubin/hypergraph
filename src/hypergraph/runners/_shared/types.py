@@ -453,7 +453,11 @@ class MapResult:
     @property
     def _timed_completed_items(self) -> tuple[RunResult, ...]:
         """Fresh completed items whose real execution logs can be averaged."""
-        return tuple(result for result in self.results if result.status == RunStatus.COMPLETED and not result.restored and result.log is not None)
+        return tuple(
+            result
+            for result in self.results
+            if result.status == RunStatus.COMPLETED and not result.restored and _has_fresh_completed_work(result.log)
+        )
 
     @property
     def checkpoint_ok(self) -> bool:
@@ -478,7 +482,9 @@ class MapResult:
             total_duration_ms=self.total_duration_ms,
             items=tuple(r.log if r.log is not None else _build_map_item_placeholder_log(r, self.graph_name) for r in self.results),
             _item_restored=tuple(result.restored for result in self.results),
-            _item_timed=tuple(result.status == RunStatus.COMPLETED and not result.restored and result.log is not None for result in self.results),
+            _item_timed=tuple(
+                result.status == RunStatus.COMPLETED and not result.restored and _has_fresh_completed_work(result.log) for result in self.results
+            ),
         )
 
     def get(self, key: str, default: Any = None) -> list[Any]:
@@ -1316,6 +1322,11 @@ def _build_map_item_placeholder_log(result: RunResult, graph_name: str) -> RunLo
     )
 
 
+def _has_fresh_completed_work(log: RunLog | None) -> bool:
+    """Whether a run log contains completed work that was not a cache hit."""
+    return log is not None and any(step.status == "completed" and not step.cached for step in log.steps)
+
+
 # ---------------------------------------------------------------------------
 # MapLog — batch-level execution trace
 # ---------------------------------------------------------------------------
@@ -1346,7 +1357,10 @@ class MapLog:
     def _timed_flags(self) -> tuple[bool, ...]:
         if len(self._item_timed) == len(self.items):
             return self._item_timed
-        return tuple(bool(log.steps) and not restored and not log.errors for log, restored in zip(self.items, self._restored_flags, strict=False))
+        return tuple(
+            not restored and not log.errors and _has_fresh_completed_work(log)
+            for log, restored in zip(self.items, self._restored_flags, strict=False)
+        )
 
     @property
     def restored_count(self) -> int:

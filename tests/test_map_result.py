@@ -447,6 +447,41 @@ class TestMapResultCheckpointEvidence:
 
 
 class TestMapResultProgressiveDisclosure:
+    def test_fully_cached_items_do_not_report_an_average(self):
+        cached_log = RunLog(
+            graph_name="test",
+            run_id="cached",
+            total_duration_ms=0.0,
+            steps=(
+                NodeRecord(
+                    node_name="work",
+                    superstep=0,
+                    duration_ms=0.0,
+                    status="completed",
+                    span_id="cached-span",
+                    cached=True,
+                ),
+            ),
+        )
+        mapped = _make_map_result([_make_result(log=cached_log), _make_result(log=cached_log)])
+
+        assert "avg" not in mapped.summary()
+        assert "avg" not in mapped.log.summary()
+        assert "avg" not in MapLog(graph_name="test", total_duration_ms=0.0, items=(cached_log, cached_log)).summary()
+
+    def test_empty_item_logs_do_not_report_an_average(self):
+        empty_log = RunLog(
+            graph_name="test",
+            run_id="empty",
+            total_duration_ms=0.0,
+            steps=(),
+        )
+        mapped = _make_map_result([_make_result(log=empty_log)])
+
+        assert "avg" not in mapped.summary()
+        assert "avg" not in mapped.log.summary()
+        assert "avg" not in MapLog(graph_name="test", total_duration_ms=0.0, items=(empty_log,)).summary()
+
     def test_restored_items_are_counted_without_diluting_fresh_duration(self):
         fresh_log = RunLog(
             graph_name="test",
@@ -514,7 +549,7 @@ class TestMapResultProgressiveDisclosure:
         )
         without_explicit_flag = _make_map_result([fresh, same_log_but_not_restored])
         assert "restored" not in without_explicit_flag.summary().lower()
-        assert "avg 50ms/item" in without_explicit_flag.summary()
+        assert "avg 100ms/item" in without_explicit_flag.summary()
 
     def test_summary(self):
         items = [

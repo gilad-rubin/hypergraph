@@ -236,7 +236,10 @@ class Checkpointer(ABC):
         Backends with efficient query support should override this to avoid
         materializing full run objects for simple counting operations.
         """
-        runs = await self.list_runs(status=status, parent_run_id=parent_run_id, limit=None)
+        if parent_run_id is _UNSET:
+            runs = await self.list_runs(status=status, limit=None)
+        else:
+            runs = await self.list_runs(status=status, parent_run_id=parent_run_id, limit=None)
         if retry_of is not None:
             runs = [run for run in runs if run.retry_of == retry_of]
         return len(runs)

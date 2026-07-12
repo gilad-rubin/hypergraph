@@ -69,6 +69,29 @@ class TestEventImmutability:
         assert event.batch_completed_items == 3
         assert event.batch_restored_items == 2
 
+    def test_run_end_preserves_existing_positional_batch_outcome(self):
+        event = RunEndEvent(
+            "run-1",
+            "span-1",
+            None,
+            None,
+            None,
+            0.0,
+            "graph",
+            "completed",
+            None,
+            1.0,
+            2,
+            2,
+            0,
+            0,
+            0,
+            "completed",
+        )
+
+        assert event.batch_outcome == "completed"
+        assert event.batch_restored_items is None
+
 
 # ---------------------------------------------------------------------------
 # TypedEventProcessor dispatch

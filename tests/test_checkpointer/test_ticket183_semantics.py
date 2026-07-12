@@ -9,6 +9,7 @@ import pytest
 
 from hypergraph import AsyncRunner, Graph, SyncRunner, node
 from hypergraph.checkpointers import (
+    Checkpointer,
     CheckpointPolicy,
     MemoryCheckpointer,
     SqliteCheckpointer,
@@ -95,6 +96,44 @@ async def test_async_run_filters_distinguish_omitted_parent_from_none(async_chec
     if isinstance(async_checkpointer, SqliteCheckpointer):
         for since in (boundary, equivalent_offset, naive_utc):
             assert {run.id for run in async_checkpointer.runs(since=since, limit=None)} == expected_since
+
+
+async def test_default_count_runs_omits_parent_filter_for_third_party_backends():
+    backend_unset = object()
+
+    class ThirdPartyCheckpointer(MemoryCheckpointer):
+        count_runs = Checkpointer.count_runs
+
+        def __init__(self):
+            super().__init__()
+            self.seen_parent_run_id: object | str | None = None
+
+        async def list_runs(
+            self,
+            *,
+            status=None,
+            graph_name=None,
+            since=None,
+            parent_run_id=backend_unset,
+            limit=100,
+        ):
+            self.seen_parent_run_id = parent_run_id
+            if parent_run_id is not backend_unset:
+                return []
+            return await super().list_runs(
+                status=status,
+                graph_name=graph_name,
+                since=since,
+                limit=limit,
+            )
+
+    checkpointer = ThirdPartyCheckpointer()
+    await checkpointer.create_run("run-1")
+
+    assert await checkpointer.count_runs() == 1
+    assert checkpointer.seen_parent_run_id is backend_unset
+    assert await checkpointer.count_runs(parent_run_id=None) == 0
+    assert checkpointer.seen_parent_run_id is None
 
 
 async def test_retention_carriers_are_hidden_but_state_remains_folded(async_checkpointer):
