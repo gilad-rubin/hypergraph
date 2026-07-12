@@ -400,6 +400,92 @@ class TestFailureEvidenceAttributionBoundaries:
         assert result.failure.inputs == {"x": 5}
         assert result.failure.graph_name == "child"
 
+    def test_sync_graph_node_does_not_copy_raw_execution_error_evidence(self):
+        cause = RuntimeError("custom graph executor failed")
+        raw_error = ExecutionError(
+            cause,
+            GraphState(),
+            node_failures=(
+                FailureEvidence(
+                    node_name="stale_node",
+                    error=cause,
+                    inputs={"secret": "TOP-SECRET"},
+                    superstep=9,
+                    duration_ms=1.0,
+                    graph_name="stale_graph",
+                    workflow_id=None,
+                    item_index=None,
+                ),
+            ),
+        )
+
+        @node(output_name="child_out")
+        def child_node(x: int) -> int:
+            return x
+
+        child = Graph([child_node], name="child")
+        graph_node = child.as_node(name="custom_graph_node")
+        runner = SyncRunner()
+
+        def raise_raw_error(node, state, inputs, ctx):
+            raise raw_error
+
+        runner._executors[type(graph_node)] = raise_raw_error
+        result = runner.run(
+            Graph([graph_node], name="outer"),
+            {"x": 5},
+            error_handling="continue",
+        )
+
+        assert result.error is raw_error
+        assert result.node_failures == ()
+        assert result.failure is None
+        assert "TOP-SECRET" not in repr(result)
+        assert "TOP-SECRET" not in repr(result.to_dict())
+
+    async def test_async_graph_node_does_not_copy_raw_execution_error_evidence(self):
+        cause = RuntimeError("custom async graph executor failed")
+        raw_error = ExecutionError(
+            cause,
+            GraphState(),
+            node_failures=(
+                FailureEvidence(
+                    node_name="stale_node",
+                    error=cause,
+                    inputs={"secret": "TOP-SECRET"},
+                    superstep=9,
+                    duration_ms=1.0,
+                    graph_name="stale_graph",
+                    workflow_id=None,
+                    item_index=None,
+                ),
+            ),
+        )
+
+        @node(output_name="child_out")
+        def child_node(x: int) -> int:
+            return x
+
+        child = Graph([child_node], name="child")
+        graph_node = child.as_node(name="custom_graph_node")
+        runner = AsyncRunner()
+
+        async def raise_raw_error(node, state, inputs, ctx):
+            raise raw_error
+
+        runner._executors[type(graph_node)] = raise_raw_error
+        result = await runner.run(
+            Graph([graph_node], name="outer"),
+            {"x": 5},
+            error_handling="continue",
+        )
+
+        assert result.error is raw_error
+        assert result.node_failures == ()
+        assert result.failure is None
+        assert "TOP-SECRET" not in repr(result)
+        assert "TOP-SECRET" not in repr(result.to_dict())
+
     def test_graph_node_does_not_attribute_child_infrastructure_failure(self):
         class CacheFailure(RuntimeError):
             pass

@@ -159,10 +159,12 @@ def _failure_evidence_context(
         yield
 
 
-def get_failure_evidence(error: BaseException | None) -> tuple[FailureEvidence, ...]:
-    """Return node-failure evidence carried by a runner exception chain."""
+def _get_failure_evidence_from_context(
+    error: BaseException | None,
+) -> tuple[FailureEvidence, ...] | None:
+    """Return evidence from trusted context, or None when none is present."""
     if error is None:
-        return ()
+        return None
 
     seen = {id(error)}
     current = BaseException.__getattribute__(error, "__context__")
@@ -175,6 +177,16 @@ def get_failure_evidence(error: BaseException | None) -> tuple[FailureEvidence, 
         if isinstance(current, _FailureEvidenceCarrier):
             return current.node_failures if current.error is error else ()
         current = BaseException.__getattribute__(current, "__context__")
+    return None
+
+
+def get_failure_evidence(error: BaseException | None) -> tuple[FailureEvidence, ...]:
+    """Return node-failure evidence carried by a runner exception chain."""
+    contextual = _get_failure_evidence_from_context(error)
+    if contextual is not None:
+        return contextual
+    if error is None:
+        return ()
     return error.node_failures if isinstance(error, ExecutionError) else ()
 
 

@@ -8,7 +8,7 @@ from contextvars import ContextVar
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.exceptions import ExecutionError, _NodeExecutionError, get_failure_evidence
+from hypergraph.exceptions import ExecutionError, _get_failure_evidence_from_context, _NodeExecutionError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.graph_node import GraphNode
 from hypergraph.runners._shared.caching import (
@@ -232,7 +232,7 @@ async def run_superstep_async(
                                 )
                             )
                         if isinstance(node, GraphNode):
-                            inner_failures = get_failure_evidence(executor_error)
+                            inner_failures = _get_failure_evidence_from_context(executor_error) or ()
                             node_failures = tuple(replace(failure, node_name=f"{node.name}/{failure.node_name}") for failure in inner_failures)
                         else:
                             node_failures = (
