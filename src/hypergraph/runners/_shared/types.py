@@ -454,9 +454,7 @@ class MapResult:
     def _timed_completed_items(self) -> tuple[RunResult, ...]:
         """Fresh completed items whose real execution logs can be averaged."""
         return tuple(
-            result
-            for result in self.results
-            if result.status == RunStatus.COMPLETED and not result.restored and _has_fresh_completed_work(result.log)
+            result for result in self.results if result.status == RunStatus.COMPLETED and not result.restored and _has_timed_work(result.log)
         )
 
     @property
@@ -483,7 +481,7 @@ class MapResult:
             items=tuple(r.log if r.log is not None else _build_map_item_placeholder_log(r, self.graph_name) for r in self.results),
             _item_restored=tuple(result.restored for result in self.results),
             _item_timed=tuple(
-                result.status == RunStatus.COMPLETED and not result.restored and _has_fresh_completed_work(result.log) for result in self.results
+                result.status == RunStatus.COMPLETED and not result.restored and _has_timed_work(result.log) for result in self.results
             ),
         )
 
@@ -1219,8 +1217,9 @@ class RunLog:
     def __repr__(self) -> str:
         """Concise repr for REPL/debugger."""
         n_restored = sum(1 for step in self.steps if step.status == "restored")
-        restored = f", restored={n_restored}" if n_restored else ""
-        return f"RunLog(graph={self.graph_name!r}, steps={len(self.steps)}, duration={_format_duration(self.total_duration_ms)}{restored})"
+        if n_restored:
+            return f"RunLog(graph={self.graph_name!r}, steps={len(self.steps)}, restored={n_restored})"
+        return f"RunLog(graph={self.graph_name!r}, steps={len(self.steps)}, duration={_format_duration(self.total_duration_ms)})"
 
     def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
         """Show full table in IPython/Jupyter notebooks."""
@@ -1322,9 +1321,9 @@ def _build_map_item_placeholder_log(result: RunResult, graph_name: str) -> RunLo
     )
 
 
-def _has_fresh_completed_work(log: RunLog | None) -> bool:
-    """Whether a run log contains completed work that was not a cache hit."""
-    return log is not None and any(step.status == "completed" and not step.cached for step in log.steps)
+def _has_timed_work(log: RunLog | None) -> bool:
+    """Whether a real, non-error run log contains work that was not cached."""
+    return log is not None and not log.errors and any(not step.cached for step in log.steps)
 
 
 # ---------------------------------------------------------------------------
@@ -1357,10 +1356,7 @@ class MapLog:
     def _timed_flags(self) -> tuple[bool, ...]:
         if len(self._item_timed) == len(self.items):
             return self._item_timed
-        return tuple(
-            not restored and not log.errors and _has_fresh_completed_work(log)
-            for log, restored in zip(self.items, self._restored_flags, strict=False)
-        )
+        return tuple(not restored and _has_timed_work(log) for log, restored in zip(self.items, self._restored_flags, strict=False))
 
     @property
     def restored_count(self) -> int:

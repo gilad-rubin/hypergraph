@@ -528,6 +528,8 @@ class TestMapResultProgressiveDisclosure:
         assert mapped.to_dict()["items"][1]["restored"] is True
         assert "restored" in restored.summary().lower()
         assert "restored=true" in repr(restored).lower()
+        assert "restored=1" in repr(restored_log).lower()
+        assert "duration=0ms" not in repr(restored_log).lower()
         assert "restored" in str(restored_log).lower()
         assert "failed" not in str(restored_log).lower()
         assert "1 restored" in mapped.log.summary()
@@ -549,7 +551,8 @@ class TestMapResultProgressiveDisclosure:
         )
         without_explicit_flag = _make_map_result([fresh, same_log_but_not_restored])
         assert "restored" not in without_explicit_flag.summary().lower()
-        assert "avg 100ms/item" in without_explicit_flag.summary()
+        assert "avg 50ms/item" in without_explicit_flag.summary()
+        assert "avg 50ms/item" in without_explicit_flag.log.summary()
 
     def test_summary(self):
         items = [
