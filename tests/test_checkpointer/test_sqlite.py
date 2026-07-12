@@ -629,8 +629,8 @@ class TestRetentionPolicyBehavior:
         await checkpointer.save_step(_make_step(run_id="wf-latest", superstep=1, node_name="a", index=2, values={"x": 3}))
 
         steps = checkpointer.steps("wf-latest")
-        live_steps = [s for s in steps if s.node_type != "RetentionBaseline"]
-        assert {(s.node_name, s.superstep) for s in live_steps} == {("a", 1), ("b", 0)}
+        assert {(s.node_name, s.superstep) for s in steps} == {("a", 1), ("b", 0)}
+        assert any(s.node_type == "RetentionBaseline" for s in checkpointer.steps("wf-latest", show_internal=True))
         assert checkpointer.state("wf-latest") == {"x": 3, "y": 2}
 
     @pytest.mark.parametrize("latest_status", [StepStatus.FAILED, StepStatus.PAUSED])
@@ -662,9 +662,9 @@ class TestRetentionPolicyBehavior:
         await checkpointer.save_step(_make_step(run_id="wf-windowed", superstep=2, node_name="c", index=2, values={"z": 3}))
 
         steps = checkpointer.steps("wf-windowed")
-        live_steps = [s for s in steps if s.node_type != "RetentionBaseline"]
-        assert {s.superstep for s in live_steps} == {1, 2}
-        assert {s.node_name for s in live_steps} == {"b", "c"}
+        assert {s.superstep for s in steps} == {1, 2}
+        assert {s.node_name for s in steps} == {"b", "c"}
+        assert any(s.node_type == "RetentionBaseline" for s in checkpointer.steps("wf-windowed", show_internal=True))
         assert checkpointer.state("wf-windowed") == {"x": 1, "y": 2, "z": 3}
 
     async def test_windowed_retention_preserves_folded_state_across_pruned_supersteps(self, checkpointer):
@@ -688,9 +688,9 @@ class TestRetentionPolicyBehavior:
         cp.save_step_sync(_make_step(run_id="wf-sync", superstep=1, node_name="b", index=1, values={"y": 2}))
 
         steps = cp.steps("wf-sync")
-        live_steps = [s for s in steps if s.node_type != "RetentionBaseline"]
-        assert len(live_steps) == 1
-        assert live_steps[0].superstep == 1
+        assert len(steps) == 1
+        assert steps[0].superstep == 1
+        assert any(s.node_type == "RetentionBaseline" for s in cp.steps("wf-sync", show_internal=True))
         assert cp.state("wf-sync") == {"x": 1, "y": 2}
         if cp._sync_conn:
             cp._sync_conn.close()

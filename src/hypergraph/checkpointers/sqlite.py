@@ -38,6 +38,10 @@ _STEP_TIME_ORDER_DESC = "COALESCE(completed_at, created_at) DESC, created_at DES
 _STEP_TIME_ORDER_DESC_WITH_ALIAS = "COALESCE(s.completed_at, s.created_at) DESC, s.created_at DESC, s.id DESC"
 _RETENTION_BASELINE_NODE_NAME = "__retained_state__"
 _RETENTION_BASELINE_NODE_TYPE = "RetentionBaseline"
+_PUBLIC_STEP_FILTER = f"node_name != '{_RETENTION_BASELINE_NODE_NAME}' AND (node_type IS NULL OR node_type != '{_RETENTION_BASELINE_NODE_TYPE}')"
+_PUBLIC_STEP_FILTER_WITH_ALIAS = (
+    f"s.node_name != '{_RETENTION_BASELINE_NODE_NAME}' AND (s.node_type IS NULL OR s.node_type != '{_RETENTION_BASELINE_NODE_TYPE}')"
+)
 _RETENTION_ROW_COLS = "id, step_index, superstep, node_name, values_data, created_at, completed_at"
 _DELETE_BATCH_SIZE = 500
 
@@ -163,7 +167,7 @@ class SqliteCheckpointer(Checkpointer):
         try:
             db = self._sync_db()
             (stats["run_count"],) = db.execute("SELECT COUNT(*) FROM runs").fetchone()
-            (stats["step_count"],) = db.execute("SELECT COUNT(*) FROM steps").fetchone()
+            (stats["step_count"],) = db.execute(f"SELECT COUNT(*) FROM steps WHERE {_PUBLIC_STEP_FILTER}").fetchone()
         except Exception:
             stats["run_count"] = None
             stats["step_count"] = None
@@ -438,21 +442,28 @@ class SqliteCheckpointer(Checkpointer):
                     state.update(values)
         return state
 
-    async def get_steps(self, run_id: str, *, superstep: int | None = None) -> list[StepRecord]:
+    async def get_steps(
+        self,
+        run_id: str,
+        *,
+        superstep: int | None = None,
+        show_internal: bool = False,
+    ) -> list[StepRecord]:
         """Get step records in execution order."""
         await self._ensure_db()
 
+        conditions = ["run_id = ?"]
+        params: list[Any] = [run_id]
         if superstep is not None:
-            cursor = await self._db.execute(
-                f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY {_STEP_TIME_ORDER}",
-                (run_id, superstep),
-            )
-        else:
-            cursor = await self._db.execute(
-                f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
-                (run_id,),
-            )
+            conditions.append("superstep <= ?")
+            params.append(superstep)
+        if not show_internal:
+            conditions.append(_PUBLIC_STEP_FILTER)
 
+        cursor = await self._db.execute(
+            f"SELECT {_STEPS_COLS} FROM steps WHERE {' AND '.join(conditions)} ORDER BY {_STEP_TIME_ORDER}",
+            params,
+        )
         rows = await cursor.fetchall()
         return StepTable(self._row_to_step(row) for row in rows)
 
@@ -591,7 +602,7 @@ class SqliteCheckpointer(Checkpointer):
             f"""
             SELECT {cols} FROM steps s
             JOIN steps_fts fts ON s.id = fts.rowid
-            WHERE steps_fts MATCH ?
+            WHERE steps_fts MATCH ? AND {_PUBLIC_STEP_FILTER_WITH_ALIAS}
             ORDER BY {_STEP_TIME_ORDER_DESC_WITH_ALIAS}
             LIMIT ?
             """,
@@ -700,19 +711,26 @@ class SqliteCheckpointer(Checkpointer):
                     state.update(values)
         return state
 
-    def steps(self, run_id: str, *, superstep: int | None = None) -> list[StepRecord]:
+    def steps(
+        self,
+        run_id: str,
+        *,
+        superstep: int | None = None,
+        show_internal: bool = False,
+    ) -> list[StepRecord]:
         """Get step records synchronously."""
         db = self._sync_db()
+        conditions = ["run_id = ?"]
+        params: list[Any] = [run_id]
         if superstep is not None:
-            cursor = db.execute(
-                f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY {_STEP_TIME_ORDER}",
-                (run_id, superstep),
-            )
-        else:
-            cursor = db.execute(
-                f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
-                (run_id,),
-            )
+            conditions.append("superstep <= ?")
+            params.append(superstep)
+        if not show_internal:
+            conditions.append(_PUBLIC_STEP_FILTER)
+        cursor = db.execute(
+            f"SELECT {_STEPS_COLS} FROM steps WHERE {' AND '.join(conditions)} ORDER BY {_STEP_TIME_ORDER}",
+            params,
+        )
         return StepTable(self._row_to_step(row) for row in cursor.fetchall())
 
     def get_run(self, run_id: str) -> Run | None:
@@ -864,7 +882,7 @@ class SqliteCheckpointer(Checkpointer):
             f"""
             SELECT {cols} FROM steps s
             JOIN steps_fts fts ON s.id = fts.rowid
-            WHERE steps_fts MATCH ?
+            WHERE steps_fts MATCH ? AND {_PUBLIC_STEP_FILTER_WITH_ALIAS}
             ORDER BY {_STEP_TIME_ORDER_DESC_WITH_ALIAS}
             LIMIT ?
             """,
@@ -883,7 +901,7 @@ class SqliteCheckpointer(Checkpointer):
         """Get per-node duration/frequency stats for a run."""
         db = self._sync_db()
         cursor = db.execute(
-            """
+            f"""
             SELECT node_name, node_type,
                    COUNT(*) as step_runs,
                    SUM(duration_ms) as total_ms,
@@ -891,7 +909,7 @@ class SqliteCheckpointer(Checkpointer):
                    MAX(duration_ms) as max_ms,
                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as errors,
                    SUM(cached) as cache_hits
-            FROM steps WHERE run_id = ?
+            FROM steps WHERE run_id = ? AND {_PUBLIC_STEP_FILTER}
             GROUP BY node_name
             ORDER BY total_ms DESC
             """,

@@ -125,8 +125,14 @@ class Checkpointer(ABC):
         ...
 
     @abstractmethod
-    async def get_steps(self, run_id: str, *, superstep: int | None = None) -> list[StepRecord]:
-        """Get step records through a superstep (None = all)."""
+    async def get_steps(
+        self,
+        run_id: str,
+        *,
+        superstep: int | None = None,
+        show_internal: bool = False,
+    ) -> list[StepRecord]:
+        """Get step records through a superstep, hiding internal carriers by default."""
         ...
 
     async def get_checkpoint(self, run_id: str, *, superstep: int | None = None) -> Checkpoint:

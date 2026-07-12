@@ -10,6 +10,7 @@ from hypergraph.checkpointers.base import _UNSET, Checkpointer, _normalize_since
 from hypergraph.checkpointers.types import Run, StepRecord, StepStatus, WorkflowStatus
 
 _BASELINE_NODE_NAME = "__retained_state__"
+_BASELINE_NODE_TYPE = "RetentionBaseline"
 
 
 def _step_sort_key(record: StepRecord) -> tuple[datetime, datetime, int, str]:
@@ -91,16 +92,27 @@ class MemoryCheckpointer(Checkpointer):
 
     async def get_state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:
         state: dict[str, Any] = {}
-        for step in await self.get_steps(run_id, superstep=superstep):
+        records = list(self._steps.get(run_id, {}).values())
+        if superstep is not None:
+            records = [record for record in records if record.superstep <= superstep]
+        for step in sorted(records, key=_step_sort_key):
             if step.values:
                 state.update(step.values)
         return state
 
-    async def get_steps(self, run_id: str, *, superstep: int | None = None) -> list[StepRecord]:
+    async def get_steps(
+        self,
+        run_id: str,
+        *,
+        superstep: int | None = None,
+        show_internal: bool = False,
+    ) -> list[StepRecord]:
         run_steps = self._steps.get(run_id, {})
         records = list(run_steps.values())
         if superstep is not None:
             records = [record for record in records if record.superstep <= superstep]
+        if not show_internal:
+            records = [record for record in records if record.node_name != _BASELINE_NODE_NAME and record.node_type != _BASELINE_NODE_TYPE]
         return sorted(records, key=_step_sort_key)
 
     async def get_run_async(self, run_id: str) -> Run | None:
