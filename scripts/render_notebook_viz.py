@@ -85,7 +85,7 @@ class VizCapture:
         # Notebooks sometimes call visualize(width=..., height=...) which is not supported.
         kwargs.pop("width", None)
         kwargs.pop("height", None)
-        # Always disable debug overlays for gallery output.
+        # Keep the metadata-only _debug_overlays flag false in gallery payloads.
         kwargs["_debug_overlays"] = False
 
         # Capture to gallery output dir, but also honor caller's filepath

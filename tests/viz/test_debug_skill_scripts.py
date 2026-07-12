@@ -22,6 +22,9 @@ SCENE_INSPECTOR = ROOT / ".claude/skills/debug-viz/scripts/inspect_scene.py"
 DEBUG_SOURCE = ROOT / "src/hypergraph/viz/debug.py"
 WIDGET_SOURCE = ROOT / "src/hypergraph/viz/widget.py"
 SCENE_BUILDER_SOURCE = ROOT / "src/hypergraph/viz/scene_builder.py"
+ARCHITECTURE_MAP = ROOT / "dev/ARCHITECTURE-MAP.md"
+VIZ_LAYOUT_NOTEBOOK = ROOT / "notebooks/test_viz_layout.ipynb"
+GALLERY_SCRIPT = ROOT / "scripts/render_notebook_viz.py"
 
 
 def _markdown_section(text: str, heading: str) -> str:
@@ -36,6 +39,11 @@ def _load_script(path: Path, name: str) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _notebook_source(path: Path) -> str:
+    notebook = json.loads(path.read_text())
+    return "\n".join("".join(cell.get("source", [])) for cell in notebook["cells"])
 
 
 def _make_nested_graph() -> Graph:
@@ -228,6 +236,89 @@ def test_debug_guidance_calls_overlay_flag_metadata_only() -> None:
     assert "metadata-only" in source_text["VizDebugger class example"]
     assert "metadata-only" in source_text["visualize parameter"]
     assert "metadata-only" in source_text["scene-builder bounded-input comment"]
+
+
+def test_architecture_map_describes_compact_browser_viz_pipeline() -> None:
+    text = ARCHITECTURE_MAP.read_text()
+    _, viz_section = text.split("### Visualization", maxsplit=1)
+    viz_section = viz_section.split("\n## Zone 5", maxsplit=1)[0]
+
+    stale_pipeline = "renderer/ (nodes, edges, precompute, scope, instructions)"
+    required = (
+        "ir_builder",
+        "GraphIR",
+        "initial expansion",
+        "empty top-level",
+        "browser",
+        "window.__hypergraphVizDebug",
+    )
+    assert stale_pipeline not in viz_section, f"architecture map still documents the removed viz pipeline: {stale_pipeline}"
+    missing = [term for term in required if term not in viz_section]
+    assert not missing, f"architecture map is missing compact browser-pipeline facts: {missing}"
+
+
+def test_architecture_map_lists_real_debug_surfaces() -> None:
+    text = ARCHITECTURE_MAP.read_text()
+    _, viz_section = text.split("### Visualization", maxsplit=1)
+    viz_section = viz_section.split("\n## Zone 5", maxsplit=1)[0]
+
+    assert "debug overlays" not in viz_section.lower(), "architecture map still promises visible debug overlays"
+    required = (
+        "VizDebugger",
+        "validate_graph",
+        "find_issues",
+        "window.__hypergraphVizDebug",
+        "metadata-only `_debug_overlays`",
+    )
+    missing = [surface for surface in required if surface not in viz_section]
+    assert not missing, f"architecture map is missing current diagnostic surfaces: {missing}"
+
+
+def test_viz_layout_notebook_teaches_metadata_and_browser_debug_api() -> None:
+    source = _notebook_source(VIZ_LAYOUT_NOTEBOOK)
+
+    assert "shows with debug overlay tabs" not in source.lower(), "viz layout notebook still promises removed overlay tabs"
+    required = (
+        "metadata-only",
+        "window.__hypergraphVizReady",
+        "window.__hypergraphVizDebug",
+    )
+    missing = [term for term in required if term not in source]
+    assert not missing, f"viz layout notebook is missing current debug guidance: {missing}"
+
+
+def test_gallery_script_calls_overlay_flag_metadata_only() -> None:
+    source = GALLERY_SCRIPT.read_text()
+
+    assert "disable debug overlays" not in source.lower(), "gallery script still claims the metadata flag controls visible overlays"
+    assert "metadata-only" in source
+
+
+def test_active_debug_guidance_has_no_positive_overlay_claims() -> None:
+    current_guidance = (
+        DEBUG_SKILL,
+        DEBUG_SOURCE,
+        WIDGET_SOURCE,
+        SCENE_BUILDER_SOURCE,
+        ARCHITECTURE_MAP,
+        VIZ_LAYOUT_NOTEBOOK,
+        GALLERY_SCRIPT,
+    )
+    positive_claims: dict[str, list[str]] = {}
+    for path in current_guidance:
+        text = _notebook_source(path) if path.suffix == ".ipynb" else path.read_text()
+        matches = []
+        for line in text.splitlines():
+            lowered = line.lower()
+            if "debug overlay" not in lowered:
+                continue
+            if any(negative in lowered for negative in ("does not", "not ", "no ", "metadata-only", "removed")):
+                continue
+            matches.append(line.strip())
+        if matches:
+            positive_claims[str(path.relative_to(ROOT))] = matches
+
+    assert not positive_claims, f"active current-behavior guidance promises visible overlays: {positive_claims}"
 
 
 def test_debug_script_has_no_removed_state_table_machinery() -> None:

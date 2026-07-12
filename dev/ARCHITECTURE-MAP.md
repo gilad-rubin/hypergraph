@@ -400,9 +400,10 @@ Current mental model:
 ```text
 Graph
   -> to_flat_graph()
-  -> renderer/ (nodes, edges, precompute, scope, instructions)
-  -> html/generator.py
-  -> notebook iframe widget or saved HTML file
+  -> renderer/ir_builder.py -> GraphIR
+  -> widget.py (GraphIR + initial expansion/options; empty top-level nodes/edges)
+  -> html/generator.py -> notebook iframe widget or saved HTML file
+  -> on browser load: scene_builder.js -> viz_layout.js -> window.__hypergraphVizDebug
 ```
 
 The viz subsystem also has its own debugging surface:
@@ -410,7 +411,8 @@ The viz subsystem also has its own debugging surface:
 - `VizDebugger`
 - `validate_graph`
 - `find_issues`
-- debug overlays
+- always-available `window.__hypergraphVizDebug` after browser readiness
+- metadata-only `_debug_overlays` flag
 
 This is not just "draw the graph". It is a projection pipeline plus diagnostics.
 
