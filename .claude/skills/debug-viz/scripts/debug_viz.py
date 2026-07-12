@@ -10,6 +10,7 @@ import keyword
 import subprocess
 import sys
 import tempfile
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -50,14 +51,60 @@ def _unwrap_graph(graph_obj: Any) -> Any:
     return wrapped_graph if hasattr(wrapped_graph, "to_flat_graph") else graph_obj
 
 
+class _GraphDataParser(HTMLParser):
+    """Extract the JSON text from the widget's ``graph-data`` script."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._capturing = False
+        self._chunks: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "script" and attributes.get("id") == "graph-data" and attributes.get("type") == "application/json":
+            self._capturing = True
+
+    def handle_data(self, data: str) -> None:
+        if self._capturing:
+            self._chunks.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script" and self._capturing:
+            self._capturing = False
+
+    @property
+    def graph_data_json(self) -> str:
+        """Return the captured JSON text."""
+        return "".join(self._chunks)
+
+
+def _read_embedded_payload(html_path: str) -> dict[str, Any]:
+    """Read the exact ``graph-data`` payload embedded in generated HTML."""
+    parser = _GraphDataParser()
+    parser.feed(Path(html_path).read_text())
+    parser.close()
+    if not parser.graph_data_json:
+        raise RuntimeError(
+            "Generated visualization HTML has no graph-data JSON payload.\n\n"
+            f"Path: {html_path}\n\n"
+            "How to fix: Generate the file through hypergraph.viz.widget.visualize()."
+        )
+    return json.loads(parser.graph_data_json)
+
+
 def build_debug_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    """Build a compact, JSON-serializable summary of a renderer payload."""
+    """Build a compact summary of the widget payload embedded in HTML."""
     meta = payload.get("meta") or {}
     ir = meta.get("ir") or {}
     nodes = payload.get("nodes") or []
     edges = payload.get("edges") or []
 
     return {
+        "embedded_payload": {
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+            "contains_prebuilt_scene": bool(nodes or edges),
+        },
         "ir": {
             "schema_version": ir.get("schema_version"),
             "node_count": len(ir.get("nodes") or []),
@@ -66,36 +113,14 @@ def build_debug_summary(payload: dict[str, Any]) -> dict[str, Any]:
             "external_input_count": len(ir.get("external_inputs") or []),
         },
         "initial_expansion": meta.get("initial_expansion") or {},
-        "initial_scene": {
-            "node_ids": [node.get("id") for node in nodes],
-            "nodes": [
-                {
-                    "id": node.get("id"),
-                    "node_type": (node.get("data") or {}).get("nodeType"),
-                    "parent": node.get("parentNode"),
-                    "hidden": bool(node.get("hidden")),
-                    "owner_container": (node.get("data") or {}).get("ownerContainer"),
-                    "deepest_owner_container": (node.get("data") or {}).get("deepestOwnerContainer"),
-                }
-                for node in nodes
-            ],
-            "edges": [
-                {
-                    "id": edge.get("id"),
-                    "source": edge.get("source"),
-                    "target": edge.get("target"),
-                    "value_name": (edge.get("data") or {}).get("valueName"),
-                    "edge_type": (edge.get("data") or {}).get("edgeType"),
-                }
-                for edge in edges
-            ],
-        },
-        "routing_maps": {
-            "output_to_producer": meta.get("output_to_producer") or {},
-            "param_to_consumer": meta.get("param_to_consumer") or {},
-            "node_to_parent": meta.get("node_to_parent") or {},
+        "scene_derivation": {
+            "visible_scene": "browser-derived from embedded GraphIR and initial expansion",
+            "browser_debug_state": "browser-derived after scene layout; routing maps are not embedded",
+            "python_oracle": ".claude/skills/debug-viz/scripts/inspect_scene.py",
         },
         "render_options": {
+            "theme_preference": meta.get("theme_preference", "auto"),
+            "show_types": bool(meta.get("show_types", True)),
             "separate_outputs": bool(meta.get("separate_outputs")),
             "show_inputs": bool(meta.get("show_inputs", True)),
             "show_bounded_inputs": bool(meta.get("show_bounded_inputs")),
@@ -114,30 +139,21 @@ def generate_debug_html(
     depth: int = 1,
     separate_outputs: bool = False,
 ) -> tuple[str, dict[str, Any]]:
-    """Generate debug HTML and return its current IR/scene summary.
+    """Generate debug HTML and summarize its exact embedded widget payload.
 
     Args:
         graph_module: Module path, for example ``mypackage.graphs``.
         graph_var: Variable name of the graph config.
-        depth: Expansion depth for the initial scene.
+        depth: Initial browser expansion depth.
         separate_outputs: Whether to render outputs as separate DATA nodes.
 
     Returns:
         A tuple containing the temporary HTML path and debug summary.
     """
-    from hypergraph.viz.renderer import render_graph
     from hypergraph.viz.widget import visualize
 
     graph = _unwrap_graph(_load_graph_object(graph_module, graph_var))
     bound = graph.bind() if hasattr(graph, "bind") else graph
-    flat_graph = bound.to_flat_graph()
-
-    payload = render_graph(
-        flat_graph,
-        depth=depth,
-        separate_outputs=separate_outputs,
-        debug_overlays=True,
-    )
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
         html_path = tmp.name
@@ -150,7 +166,8 @@ def generate_debug_html(
         _debug_overlays=True,
     )
 
-    return html_path, build_debug_summary(payload)
+    embedded_payload = _read_embedded_payload(html_path)
+    return html_path, build_debug_summary(embedded_payload)
 
 
 def main() -> None:
@@ -175,7 +192,7 @@ def main() -> None:
     if args.open:
         subprocess.run(["open", html_path], check=False)
 
-    print("\n=== Debug Info ===")
+    print("\n=== Embedded Payload Summary ===")
     print(json.dumps(debug_info, indent=2))
     print("\nThe browser debug API is available at window.__hypergraphVizDebug after layout.")
 

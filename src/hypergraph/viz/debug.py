@@ -108,7 +108,7 @@ class VizDebugger:
 
     Example:
         >>> debugger = graph.debug_viz()
-        >>> debugger.visualize(depth=1)  # Shows viz with debug overlays
+        >>> debugger.visualize(depth=1)  # Records metadata-only diagnostics
     """
 
     def __init__(self, graph: Graph):

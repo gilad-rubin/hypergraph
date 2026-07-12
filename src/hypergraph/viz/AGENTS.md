@@ -17,11 +17,11 @@ scene client-side without a kernel round-trip.
 2. `renderer/ir_builder.py:build_graph_ir(flat_graph)` → `GraphIR`
    (pure facts: nodes, edges, expandable_nodes, external_inputs,
    configured_entrypoints, graph_output_visibility)
-3. `scene_builder.py:build_initial_scene(ir, expansion_state, ...)` → React
-   Flow `{nodes, edges}` for the initial render. Same function powers
-   the test oracle.
-4. `renderer/__init__.py:render_graph` is now a thin wrapper that ships
-   the IR + initial scene to `html/generator.py`.
+3. `widget.py:render_flat_graph` embeds the IR + initial expansion/options in
+   HTML with empty top-level `nodes`/`edges`; the browser derives the scene.
+4. `scene_builder.py:build_initial_scene(ir, expansion_state, ...)` is the
+   Python test oracle and powers `renderer/__init__.py:render_graph`; that
+   compatibility helper is not the widget payload path.
 
 **JavaScript pipeline** (split `assets/*.js` modules — see "JS Asset Modules")
 1. `scene_builder.js:buildInitialScene` mirrors the Python twin — same IR,
@@ -209,9 +209,10 @@ Generates a scrollable gallery of all notebook visualizations with DialKit contr
 
 - `src/hypergraph/viz/ir_schema.py` — `GraphIR` / `IRNode` / `IREdge` / `IRExternalInput` dataclasses
 - `src/hypergraph/viz/renderer/ir_builder.py` — `build_graph_ir(flat_graph)`
-- `src/hypergraph/viz/scene_builder.py` — Python scene builder (test oracle + initial-render path)
+- `src/hypergraph/viz/scene_builder.py` — Python scene builder and test oracle
 - `src/hypergraph/viz/assets/scene_builder.js` — JS twin
-- `src/hypergraph/viz/renderer/__init__.py` — `render_graph()` thin wrapper (IR + initial scene)
+- `src/hypergraph/viz/renderer/__init__.py` — explicit Python scene + metadata compatibility helper
+- `src/hypergraph/viz/widget.py` — compact IR payload used by the HTML widget path
 - `src/hypergraph/viz/renderer/nodes.py` + `scope.py` — shared helpers used by `mermaid.py` and `ir_builder.py`
 - `src/hypergraph/viz/assets/*.js` — split JS app modules (see "JS Asset Modules"); load order in `assets/__init__.py:FIRST_PARTY_ASSET_NAMES`
 - `src/hypergraph/viz/html/generator.py` — HTML assembly with embedded assets
