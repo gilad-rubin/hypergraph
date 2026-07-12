@@ -336,13 +336,6 @@ cp.runs(parent_run_id="batch-001")  # list child runs
 cp.values("batch-001/1")            # values for item 1
 ```
 
-From the CLI:
-
-```bash
-hypergraph runs ls --parent batch-001
-hypergraph runs show batch-001/1
-```
-
 Without `workflow_id`, `runner.map()` still works but results exist only in-process.
 
 ### Run Lineage: Resume vs Fork
@@ -445,20 +438,6 @@ results = await runner.map(
 ```
 
 This makes it safe to retry large batches — you only pay for the items that actually need re-processing.
-
-### CLI batch execution
-
-You can also run batch operations directly from the terminal:
-
-```bash
-# Map over a parameter
-hypergraph map my_module:graph --map-over x --values '{"x": [1, 2, 3]}'
-
-# With checkpointing (requires --workflow-id to activate persistence)
-hypergraph map my_module:graph --map-over x --values '{"x": [1, 2, 3]}' --workflow-id batch-001 --db ./runs.db
-```
-
-See [Debug Workflows — CLI](debug-workflows.md#run--execute-a-graph) for full CLI reference.
 
 ## When to Use Map vs Loop
 

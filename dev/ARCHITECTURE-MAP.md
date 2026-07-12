@@ -25,7 +25,6 @@ The internal system is broader because Hypergraph treats nested graphs as first-
 - execution
 - checkpointing
 - lineage
-- CLI inspection
 - observability
 - visualization
 - notebook/HTML presentation
@@ -42,10 +41,10 @@ execution kernel
   runners + scheduling + supersteps + staleness + gate activation
 
 durability and inspection
-  checkpointers + lineage + snapshots + CLI/query adapters + HTML presenters
+  checkpointers + lineage + snapshots + query adapters + HTML presenters
 
 observability and UX surfaces
-  events + run logs + widgets + viz + CLI output
+  events + run logs + widgets + viz
 
 optional integrations
   runner implementations that project the core model into another runtime
@@ -58,7 +57,6 @@ nodes -> graph -> runners -> events
                     |
                     +-> checkpointers
                     +-> viz
-                    +-> cli
                     +-> integrations
 ```
 
@@ -324,7 +322,7 @@ Architecturally, the important point is:
 1. **runtime durability**
    - runners call checkpointer methods during execution
 2. **inspection**
-   - CLI and notebooks query persisted runs without participating in execution
+   - notebooks and scripts query persisted runs without participating in execution
 
 That split is why `inspection.py` exists. It keeps inspection consumers from reaching directly into backend-specific helper methods.
 
@@ -415,28 +413,6 @@ The viz subsystem also has its own debugging surface:
 - debug overlays
 
 This is not just "draw the graph". It is a projection pipeline plus diagnostics.
-
-### CLI
-
-Key files:
-
-- `src/hypergraph/cli/run_cmd.py`
-- `src/hypergraph/cli/graph_cmd.py`
-- `src/hypergraph/cli/runs.py`
-- `src/hypergraph/cli/_config.py`
-- `src/hypergraph/cli/_db.py`
-- `src/hypergraph/cli/_format.py`
-
-Current CLI responsibilities:
-
-- execute graphs from the terminal
-- discover configured graphs
-- inspect topology
-- inspect persisted runs
-- inspect checkpoints
-- query lineage and search surfaces indirectly through the run inspector
-
-`cli/runs.py` is now a serious inspection surface, not a thin debug helper.
 
 ## Zone 5: Optional Integrations
 
@@ -568,14 +544,6 @@ src/hypergraph/
 │   ├── styles/
 │   └── assets/
 │
-├── cli/                              terminal surface
-│   ├── run_cmd.py
-│   ├── graph_cmd.py
-│   ├── runs.py
-│   ├── _config.py
-│   ├── _db.py
-│   └── _format.py
-│
 └── integrations/                     optional runtimes
     ├── __init__.py
     └── daft/
@@ -629,7 +597,6 @@ Touches:
 
 Touches:
 
-- CLI output expectations
 - notebook rendering
 - human inspection workflows
 - serialized display assumptions in docs/tests
@@ -644,7 +611,7 @@ Use these terms when discussing changes:
 - **scheduler**: readiness, staleness, activation, SCC progression
 - **hierarchy bridge**: `GraphNode` and nested execution behavior
 - **durability layer**: checkpointers, snapshots, lineage, persistence semantics
-- **inspection surface**: CLI and notebook querying of persisted runs
+- **inspection surface**: notebook and script querying of persisted runs
 - **observability layer**: events and run logs
 - **viz projection**: flat graph + render pipeline + HTML/widget output
 - **integration runner**: alternate runtime like Daft that projects the core model elsewhere
@@ -661,7 +628,6 @@ If you need to rebuild context quickly, use this order:
 6. `src/hypergraph/runners/_shared/template_async.py`
 7. the specific surface you are touching:
    - checkpointers
-   - CLI
    - viz
    - integrations
 

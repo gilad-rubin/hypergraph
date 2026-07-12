@@ -5,7 +5,6 @@ Purpose: a single source of truth for notebook/HTML widget UX decisions.
 Scope:
 - `_repr_html_` widgets (`RunTable`, `MapResult`, `MapLog`, etc.)
 - notebook progress UI
-- related CLI parity for inspection/discovery workflows
 
 ## Core UX Defaults
 
@@ -43,11 +42,7 @@ Scope:
 - One step smaller over oversized defaults (font and bar dimensions).
 - Avoid full-width bars unless explicitly requested.
 
-9. CLI parity should exist for key inspection interactions.
-- Expose compact equivalents for hierarchy view, filtering, sorting, limiting, and traces.
-- Keep options minimal; avoid combinatorial flag explosion.
-
-10. Any new reusable interaction must be generalized.
+9. Any new reusable interaction must be generalized.
 - If we add filter/sort/drilldown behavior in one widget, promote it to common/shared code when practical.
 
 ## Implementation Anchors
@@ -56,10 +51,8 @@ Scope:
 - Run/step/checkpoint widgets: `src/hypergraph/checkpointers/types.py`
 - Map result/log widgets: `src/hypergraph/runners/_shared/types.py`
 - Notebook progress widget: `src/hypergraph/events/rich_progress.py`
-- CLI inspection parity: `src/hypergraph/cli/runs.py`
 
 ## Change Discipline
 
 - Add focused regression tests for each UX rule that changes behavior.
-- Prefer additive, backward-compatible CLI changes.
 - Preserve existing user flows unless they violate these preferences.

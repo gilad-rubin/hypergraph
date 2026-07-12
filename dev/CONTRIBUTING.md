@@ -27,7 +27,7 @@ uv run nbdime config-git --enable
 uv run playwright install chromium
 ```
 
-`uv sync --group dev` is the default local setup for contributors. It includes the optional tooling used by this repo's broader test surface, including CLI, SQLite checkpointing, notebook kernels, Rich progress, and OTel processors.
+`uv sync --group dev` is the default local setup for contributors. It includes the optional tooling used by this repo's broader test surface, including SQLite checkpointing, notebook kernels, Rich progress, and OTel processors.
 
 ## Worktrees
 

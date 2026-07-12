@@ -204,7 +204,7 @@ run.status == WorkflowStatus.COMPLETED  # True
 | Durability | On disk (or shared `:memory:`) | In-process only, lost on exit |
 | Works with | `AsyncRunner` and `SyncRunner` | `AsyncRunner` only |
 | Sync convenience methods (`get_run`, `steps`, `lineage`, ...) | Yes | No — async only |
-| Best for | Production durability, multi-process resume, CLI inspection | Unit tests, short-lived scripts |
+| Best for | Production durability, multi-process resume, cross-process inspection | Unit tests, short-lived scripts |
 
 ## Checkpointing vs the No-Checkpointer Re-Drive Pattern
 

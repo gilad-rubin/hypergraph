@@ -20,7 +20,7 @@ rg -F -- '<old_value>' docs/ README.md examples/ notebooks/ src/hypergraph/
 ```
 
 **Scope:** docstrings, doc pages, README, examples, notebooks, `__init__.py` exports,
-viz/CLI output strings, error messages.
+viz output strings, error messages.
 
 **Note:** files under `examples/` are exercised by `tests/test_examples_*.py` via
 `runpy` — they're tests, not just docs. A behavior migration that updates tests
@@ -57,7 +57,7 @@ ls src/hypergraph/runners/async_/executors/
 
 **When:** You added or modified a shared contract: enum variant, Literal member,
 dataclass field on a public type, event name, config key, `__all__` export,
-CLI subcommand, or viz state key.
+or viz state key.
 
 **What:** Find all sites that consume existing values, then verify the new value
 is handled at each site.

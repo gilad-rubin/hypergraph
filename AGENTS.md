@@ -8,7 +8,7 @@ Hypergraph is a Python workflow orchestration framework (alpha, solo dev) with o
 
 Core intent:
 - Keep user API small and clear; absorb complexity internally.
-- Treat nested graphs as first-class everywhere (execution, checkpointing, debugging, CLI, observability).
+- Treat nested graphs as first-class everywhere (execution, checkpointing, debugging, observability).
 - Catch structural errors at graph build time when possible, not late at runtime.
 
 ## Project What
@@ -19,7 +19,6 @@ Primary code areas (coarse map only):
 - `src/hypergraph/runners/`: sync/async execution engines and shared run-state utilities.
 - `src/hypergraph/events/`: event types/processors, progress, and OTel integration.
 - `src/hypergraph/checkpointers/`: persistent run history and SQLite implementation.
-- `src/hypergraph/cli/`: run/inspect graphs from terminal.
 - `src/hypergraph/viz/`: renderer + HTML/Mermaid visualization pipeline.
 
 ## Project How

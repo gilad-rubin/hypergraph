@@ -12,8 +12,6 @@ from __future__ import annotations
 import asyncio
 import html
 import json
-import re
-import subprocess
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -21,7 +19,6 @@ from pathlib import Path
 from hypergraph import END, AsyncRunner, Graph, SyncRunner, ifelse, node
 from hypergraph.checkpointers import SqliteCheckpointer, WorkflowStatus
 
-PROJECT_ROOT = Path(__file__).parent.parent
 OUTPUT_PATH = Path(__file__).parent / "tracing-playground.html"
 
 
@@ -77,33 +74,11 @@ class UseCase:
     impl_note: str
 
     single_python: str  # Python code + output for single-item run
-    single_cli: str  # CLI output for single-item (empty string if N/A)
     mapped_python: str  # runner.map() variation
-    mapped_cli: str
     nested_python: str  # map_over variation
-    nested_cli: str
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────
-
-
-def run_cli(args: list[str]) -> str:
-    """Run hypergraph CLI and return output."""
-    result = subprocess.run(
-        ["uv", "run", "hypergraph", *args],
-        capture_output=True,
-        text=True,
-        cwd=PROJECT_ROOT,
-        timeout=30,
-    )
-    output = strip_ansi((result.stdout or "") + (result.stderr or "")).rstrip()
-    if result.returncode != 0:
-        raise RuntimeError(f"CLI command failed ({result.returncode}): {' '.join(args)}\n{output}")
-    return output
-
-
-def strip_ansi(text: str) -> str:
-    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def fmt_node_stats(stats: dict) -> str:
@@ -206,11 +181,8 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
         status="ok",
         impl_note="Fully implemented. RunLog is always-on, zero config.",
         single_python=single,
-        single_cli="",
         mapped_python=mapped,
-        mapped_cli="",
         nested_python=nested,
-        nested_cli="",
     )
 
 
@@ -310,24 +282,21 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}}, error_handling="continue")
         status="ok",
         impl_note="Fully implemented. error_handling='continue' works in both run() and map().",
         single_python=single,
-        single_cli="",
         mapped_python=mapped,
-        mapped_cli="",
         nested_python=nested,
-        nested_cli="",
     )
 
 
 def run_uc3() -> UseCase:
     """UC3: What path did execution take? — Routing and cycles."""
     runner = SyncRunner()
-    graph = Graph([increment, check_done])
+    graph = Graph([increment, check_done], entrypoint="increment")
 
     # Single
     result = runner.run(graph, {"count": 0})
     single = f"""\
 # Cyclic graph: increment → check_done → (loop or END)
-graph = Graph([increment, check_done])
+graph = Graph([increment, check_done], entrypoint="increment")
 result = runner.run(graph, {{"count": 0}})
 
 >>> result["count"]
@@ -364,15 +333,15 @@ results = runner.map(graph, {{"count": [0, 1, 2]}}, map_over="count")
 {fmt_node_stats(r0_m.log.node_stats)}"""
 
     # Nested — map_over with .log revealing per-item routing
-    inner = Graph([increment, check_done], name="counter")
-    outer = Graph([inner.as_node().map_over("count")])
+    inner = Graph([increment, check_done], name="counter", entrypoint="increment")
+    outer = Graph([inner.as_node().map_over("count")], entrypoint="counter")
     result_n = runner.run(outer, {"count": [0, 1, 2]})
     step_n = result_n.log.steps[0]
     log0_n = step_n.log[0]
     nested = f"""\
 # map_over — drill into per-item routing via .log
-inner = Graph([increment, check_done], name="counter")
-outer = Graph([inner.as_node().map_over("count")])
+inner = Graph([increment, check_done], name="counter", entrypoint="increment")
+outer = Graph([inner.as_node().map_over("count")], entrypoint="counter")
 result = runner.run(outer, {{"count": [0, 1, 2]}})
 
 >>> result["count"]
@@ -402,11 +371,8 @@ result = runner.run(outer, {{"count": [0, 1, 2]}})
         status="ok",
         impl_note="Fully implemented. RunLog tracks routing decisions and re-executions.",
         single_python=single,
-        single_cli="",
         mapped_python=mapped,
-        mapped_cli="",
         nested_python=nested,
-        nested_cli="",
     )
 
 
@@ -436,13 +402,11 @@ result = await runner.run(graph, {{"x": 5}}, workflow_id="uc4-single")
   values: {cp.checkpoint("uc4-single").values}
   steps: {len(cp.checkpoint("uc4-single").steps)}"""
 
-    single_cli = run_cli(["runs", "values", "uc4-single", "--values", "--db", db_path])
-
-    # Mapped — runner.map() is ephemeral (no checkpoints)
+    # Mapped — ephemeral here because no checkpointer/workflow_id is passed
     runner_sync = SyncRunner()
     results_map = runner_sync.map(graph, {"x": [5, 10, 15]}, map_over="x")
     mapped = f"""\
-# runner.map() is ephemeral — per-item RunLogs but no persistence
+# This runner has no checkpointer, so the mapped run is ephemeral
 runner_sync = SyncRunner()
 results = runner_sync.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
 
@@ -452,8 +416,8 @@ results = runner_sync.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
 >>> results["tripled"]
 {results_map["tripled"]}
 
-# Not checkpointed — cp.runs() won't show these runs
-# Use map_over with a checkpointer for persistence"""
+# Not checkpointed here — cp.runs() won't show these runs
+# SyncRunner(checkpointer=cp) + workflow_id= persists a parent run + per-item child runs"""
 
     # Nested — map_over in a checkpointed run
     inner = Graph([double, triple], name="pipeline")
@@ -477,7 +441,7 @@ result = await runner.run(outer, {{"x": [5, 10, 15]}}, workflow_id="uc4-multi")
 >>> cp.steps("uc4-multi")
 {fmt_step_records(steps_m)}"""
 
-    nested_cli = run_cli(["runs", "values", "uc4-multi", "--values", "--db", db_path])
+    await cp.close()
 
     return UseCase(
         id="uc4",
@@ -488,11 +452,8 @@ result = await runner.run(outer, {{"x": [5, 10, 15]}}, workflow_id="uc4-multi")
         status="ok",
         impl_note="Fully implemented. Sync reads: cp.values(), cp.steps(), cp.checkpoint().",
         single_python=single,
-        single_cli=f"$ hypergraph runs values uc4-single --values --db <db>\n\n{single_cli}",
         mapped_python=mapped,
-        mapped_cli="# runner.map() runs are ephemeral — no CLI queries available",
         nested_python=nested,
-        nested_cli=f"$ hypergraph runs values uc4-multi --values --db <db>\n\n{nested_cli}",
     )
 
 
@@ -517,25 +478,23 @@ cp = SqliteCheckpointer("./runs.db")
 >>> cp.steps("uc4-single")
 {fmt_step_records(steps)}"""
 
-    single_cli = run_cli(["runs", "ls", "--db", db_path])
-
-    # Mapped — runner.map() results aren't persisted
+    # Mapped — ephemeral here because no checkpointer/workflow_id is passed
     runner_sync = SyncRunner()
     graph = Graph([double, triple])
     results_map = runner_sync.map(graph, {"x": [5, 10, 15]}, map_over="x")
     mapped = f"""\
-# runner.map() is ephemeral — results exist only in the current process
+# Without a checkpointer, mapped results exist only in the current process
 results = runner_sync.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
 
 >>> results.summary()
 '{results_map.summary()}'
 
 # After the process exits, these results are gone
-# cp.runs() won't show runner.map() runs
+# cp.runs() won't show this run — it was never checkpointed
 >>> cp.runs()
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in wfs)}
 
-# Use map_over with a checkpointer for cross-process persistence"""
+# SyncRunner(checkpointer=cp) + workflow_id= persists mapped runs across processes"""
 
     # Nested — query the mapped run
     state_m = cp.values("uc4-multi")
@@ -547,7 +506,7 @@ results = runner_sync.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
 >>> cp.runs()
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in wfs)}"""
 
-    nested_cli = run_cli(["runs", "show", "uc4-multi", "--db", db_path])
+    await cp.close()
 
     return UseCase(
         id="uc5",
@@ -558,11 +517,8 @@ results = runner_sync.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
         status="ok",
         impl_note="Fully implemented. Sync reads work from any process without async.",
         single_python=single,
-        single_cli=f"$ hypergraph runs ls --db <db>\n\n{single_cli}",
         mapped_python=mapped,
-        mapped_cli="# runner.map() runs are ephemeral — nothing to query from CLI",
         nested_python=nested,
-        nested_cli=f"$ hypergraph runs show uc4-multi --db <db>\n\n{nested_cli}",
     )
 
 
@@ -589,8 +545,6 @@ async def run_uc6(db_path: str) -> UseCase:
 >>> cp.steps("{failed[0].id}" if failed else "???")
 {fmt_step_records(cp2.steps(failed[0].id)) if failed else "  (no failed runs)"}"""
 
-    single_cli = run_cli(["runs", "--db", db_path])
-
     # Mapped — runner.map() with MapResult.failures (in-process filtering)
     @node(output_name="checked")
     def flaky(x: int) -> int:
@@ -608,7 +562,7 @@ async def run_uc6(db_path: str) -> UseCase:
     )
     failure_errors = [f.error for f in results_map.failures]
     mapped = f"""\
-# runner.map() — in-process filtering via MapResult (ephemeral)
+# In-process filtering via MapResult — ephemeral here (no checkpointer passed)
 results = runner_sync.map(
     flaky_graph, {{"x": [1, 2, 3, 4, 5, 6]}},
     map_over="x", error_handling="continue",
@@ -623,8 +577,8 @@ results = runner_sync.map(
 >>> [f.error for f in results.failures]
 {failure_errors}
 
-# In-process only — not persisted to checkpointer
-# For persistent failure tracking, use map_over with a checkpointer"""
+# Not persisted here — this runner has no checkpointer
+# Pass a checkpointer + workflow_id= to also track failures across processes"""
 
     # Nested — dashboard shows both single and mapped runs
     nested = f"""\
@@ -635,7 +589,8 @@ results = runner_sync.map(
 >>> cp.runs(status=WorkflowStatus.COMPLETED)
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in cp2.runs(status=WorkflowStatus.COMPLETED))}"""
 
-    nested_cli = run_cli(["runs", "ls", "--status", "completed", "--db", db_path])
+    await cp.close()
+    await cp2.close()
 
     return UseCase(
         id="uc6",
@@ -644,13 +599,10 @@ results = runner_sync.map(
         note="Dashboard, status filtering",
         category="persistence",
         status="ok",
-        impl_note="Fully implemented. Filter by status via Python API or CLI.",
+        impl_note="Fully implemented. Filter by status via the Python API.",
         single_python=single,
-        single_cli=f"$ hypergraph runs --db <db>\n\n{single_cli}",
         mapped_python=mapped,
-        mapped_cli="# runner.map() failures are ephemeral — use MapResult.failures in-process",
         nested_python=nested,
-        nested_cli=f"$ hypergraph runs ls --status completed --db <db>\n\n{nested_cli}",
     )
 
 
@@ -672,8 +624,6 @@ result = runner.run(graph, {{"x": 5}})
 # Machine-readable trace for agents
 >>> json.dumps(result.log.to_dict(), indent=2)
 {json_pretty}"""
-
-    single_cli = run_cli(["runs", "--help"])
 
     # Mapped — runner.map() JSON export
     results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x")
@@ -719,13 +669,10 @@ result = runner.run(outer, {{"x": [1, 2, 3]}})
         note="Structured JSON for agents",
         category="tracing",
         status="ok",
-        impl_note="Fully implemented. .to_dict() for Python, --json for CLI.",
+        impl_note="Fully implemented. Use .to_dict() for machine-readable traces.",
         single_python=single,
-        single_cli=f"$ hypergraph runs --help\n\n{single_cli}",
         mapped_python=mapped,
-        mapped_cli="# runner.map() results are ephemeral — use .to_dict() per item\n# For persistent JSON, use map_over with a checkpointer + CLI --json",
         nested_python=nested,
-        nested_cli="",
     )
 
 
@@ -754,13 +701,11 @@ cp2 = SqliteCheckpointer("./runs.db")
 #   "sync"   — block until written (crash-safe)
 #   "exit"   — only at run completion (fastest)"""
 
-    single_cli = run_cli(["runs", "show", "uc8-live", "--db", db_path])
-
-    # Mapped — runner.map() is ephemeral (no live query)
+    # Mapped — no live query here because no checkpointer is attached
     runner_sync = SyncRunner()
     results_map = runner_sync.map(graph, {"x": [5, 10]}, map_over="x")
     mapped = f"""\
-# runner.map() is ephemeral — no live query from another process
+# Without a checkpointer, a mapped run can't be queried live from another process
 results = runner_sync.map(graph, {{"x": [5, 10]}}, map_over="x")
 
 >>> results.summary()
@@ -769,7 +714,7 @@ results = runner_sync.map(graph, {{"x": [5, 10]}}, map_over="x")
 >>> results["tripled"]
 {results_map["tripled"]}
 
-# Not checkpointed — can't query from CLI or another process
+# Not checkpointed here — SyncRunner(checkpointer=cp) + workflow_id= enables live queries
 # Durability modes only apply to checkpointer-backed runs"""
 
     # Nested — map_over with durability="sync"
@@ -789,7 +734,8 @@ await runner.run(outer, {{"x": [5, 10]}}, workflow_id="uc8-multi")
 >>> cp.values("uc8-multi")
 {state_m}"""
 
-    nested_cli = run_cli(["runs", "show", "uc8-multi", "--db", db_path])
+    await cp.close()
+    await cp3.close()
 
     return UseCase(
         id="uc8",
@@ -800,11 +746,8 @@ await runner.run(outer, {{"x": [5, 10]}}, workflow_id="uc8-multi")
         status="ok",
         impl_note="Fully implemented. Durability controls when data is queryable.",
         single_python=single,
-        single_cli=f"$ hypergraph runs show uc8-live --db <db>\n\n{single_cli}",
         mapped_python=mapped,
-        mapped_cli="# runner.map() is ephemeral — no CLI queries for live monitoring",
         nested_python=nested,
-        nested_cli=f"$ hypergraph runs show uc8-multi --db <db>\n\n{nested_cli}",
     )
 
 
@@ -833,20 +776,19 @@ result = await runner.run(
 # NOT YET: history= parameter for true fork-and-retry
 # result = await runner.run(graph, values=..., history=checkpoint.steps)"""
 
-    single_cli = run_cli(["runs", "values", "uc9-fork", "--values", "--db", db_path])
-
-    # Mapped — runner.map() is ephemeral (can't fork/retry)
+    # Mapped — nothing to fork from here because no checkpointer is attached
     runner_sync = SyncRunner()
     results_map = runner_sync.map(graph, {"x": [5, 10]}, map_over="x")
     mapped = f"""\
-# runner.map() is ephemeral — can't fork or retry from a checkpoint
+# This run has no checkpointer, so there is no checkpoint to fork or retry from
 results = runner_sync.map(graph, {{"x": [5, 10]}}, map_over="x")
 
 >>> results.summary()
 '{results_map.summary()}'
 
-# No checkpoint data — results exist only in-process
-# For fork-and-retry, use map_over with a checkpointer"""
+# No checkpoint data for this run — it was never persisted
+# Persist with a checkpointer + workflow_id=; re-running map() with the same
+# workflow_id then retries only failed items"""
 
     # Nested — map_over with checkpoint
     cp2 = SqliteCheckpointer(db_path, durability="sync")
@@ -866,7 +808,8 @@ await runner.run(outer, {{"x": [5, 10]}}, workflow_id="uc9-multi")
   values: {checkpoint_m.values}
   steps: {len(checkpoint_m.steps)}"""
 
-    nested_cli = run_cli(["runs", "values", "uc9-multi", "--values", "--db", db_path])
+    await cp.close()
+    await cp2.close()
 
     return UseCase(
         id="uc9",
@@ -877,11 +820,8 @@ await runner.run(outer, {{"x": [5, 10]}}, workflow_id="uc9-multi")
         status="defer",
         impl_note="Partially implemented. checkpoint() works; history= param deferred to v2.",
         single_python=single,
-        single_cli=f"$ hypergraph runs values uc9-fork --values --db <db>\n\n{single_cli}",
         mapped_python=mapped,
-        mapped_cli="# runner.map() runs are ephemeral — no checkpoints to fork from",
         nested_python=nested,
-        nested_cli=f"$ hypergraph runs values uc9-multi --values --db <db>\n\n{nested_cli}",
     )
 
 
@@ -969,11 +909,8 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
         status="ok",
         impl_note="Fully implemented. MapResult wraps per-item RunResults with batch metadata.",
         single_python=single,
-        single_cli="",
         mapped_python=mapped,
-        mapped_cli="# runner.map() runs are ephemeral (not checkpointed)\n# Each result has .log for per-item tracing",
         nested_python=nested,
-        nested_cli="",
     )
 
 
@@ -1069,11 +1006,8 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
         status="ok",
         impl_note="Fully implemented. map_over wraps outputs in list[T] automatically.",
         single_python=single,
-        single_cli="",
         mapped_python=mapped,
-        mapped_cli="",
         nested_python=nested,
-        nested_cli="",
     )
 
 
@@ -1152,11 +1086,8 @@ result_zip = runner.run(outer_zip, {{"a": [1, 2], "b": [10, 20]}})
         status="ok",
         impl_note="Fully implemented. zip (default) for parallel, product for cartesian.",
         single_python=single,
-        single_cli="",
         mapped_python=mapped,
-        mapped_cli="",
         nested_python=nested,
-        nested_cli="",
     )
 
 
@@ -1294,9 +1225,6 @@ function render() {
   const pyCode = v === 'single' ? uc.single_python
                : v === 'mapped' ? uc.mapped_python
                : uc.nested_python;
-  const cliCode = v === 'single' ? uc.single_cli
-                : v === 'mapped' ? uc.mapped_cli
-                : uc.nested_cli;
 
   // Python section
   if (pyCode) {
@@ -1312,18 +1240,6 @@ function render() {
         ${badge}
       </div>
       <pre class="code"><code class="language-python">${pyCode}</code></pre>
-    </div>`;
-  }
-
-  // CLI section
-  if (cliCode) {
-    html += `<div class="section">
-      <div class="sec-hdr">
-        <div class="dot" style="background:var(--cyan)"></div>
-        <h3>CLI</h3>
-        <span class="badge" style="background:#0a1a2e;color:var(--cyan)">post-hoc</span>
-      </div>
-      <pre class="code"><code class="language-bash">${cliCode}</code></pre>
     </div>`;
   }
 
@@ -1347,7 +1263,7 @@ def generate_html(use_cases: list[UseCase]) -> str:
     for uc in use_cases:
         d = asdict(uc)
         # HTML-escape all code strings
-        for key in ("single_python", "single_cli", "mapped_python", "mapped_cli", "nested_python", "nested_cli"):
+        for key in ("single_python", "mapped_python", "nested_python"):
             d[key] = html.escape(d[key])
         ucs_data.append(d)
 
@@ -1376,7 +1292,6 @@ def generate_html(use_cases: list[UseCase]) -> str:
 </div>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1/prism.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-python.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>
 <script>
 const UCS = {ucs_json};
 {RENDER_JS}</script>
