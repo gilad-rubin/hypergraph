@@ -482,3 +482,44 @@ def test_daft_runner_rejects_cycle_graph():
 
     with pytest.raises(IncompatibleRunnerError):
         DaftRunner().run(graph, {"x": 0})
+
+
+def test_daft_runner_warns_and_ignores_carried_processors_on_run():
+    """Carried processors are warned-and-ignored exactly like explicit ones."""
+    from hypergraph.events import EventProcessor
+
+    class Recorder(EventProcessor):
+        def __init__(self):
+            self.events = []
+
+        def on_event(self, event):
+            self.events.append(event)
+
+    recorder = Recorder()
+    graph = Graph([double], name="carried_daft_run").with_processors(recorder)
+
+    with pytest.warns(UserWarning, match="carried default_event_processors will be ignored"):
+        result = DaftRunner().run(graph, {"x": 2})
+
+    assert result["doubled"] == 4
+    assert recorder.events == []
+
+
+def test_daft_runner_warns_and_ignores_carried_processors_on_map():
+    from hypergraph.events import EventProcessor
+
+    class Recorder(EventProcessor):
+        def __init__(self):
+            self.events = []
+
+        def on_event(self, event):
+            self.events.append(event)
+
+    recorder = Recorder()
+    graph = Graph([double], name="carried_daft_map").with_processors(recorder)
+
+    with pytest.warns(UserWarning, match="carried default_event_processors will be ignored"):
+        results = DaftRunner().map(graph, {"x": [1, 2]}, map_over="x")
+
+    assert results["doubled"] == [2, 4]
+    assert recorder.events == []
