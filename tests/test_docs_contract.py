@@ -5,8 +5,12 @@ from __future__ import annotations
 import ast
 import inspect
 from pathlib import Path
+from typing import get_args, get_type_hints
 
-from hypergraph import Graph, MapResult, RunResult
+from hypergraph import Graph, MapResult, RunResult, WorkflowStoppedError
+from hypergraph.checkpointers import Checkpointer, MemoryCheckpointer, SqliteCheckpointer, SqliteRunInspector
+from hypergraph.events import RunEndEvent
+from hypergraph.runners._shared.types import NodeRecord
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -164,3 +168,51 @@ def test_streaming_chunk_event_docs_mirror_correlation_fields() -> None:
     assert "`item_index`" in streaming
     assert "`parent_span_id`" in streaming
     assert "span of the emitting node" in streaming
+
+
+def test_checkpointer_semantics_docs_mirror_high_drift_surfaces() -> None:
+    checkpointers = _read("docs/06-api-reference/checkpointers.md")
+    runners = _read("docs/06-api-reference/runners.md")
+    events = _read("docs/06-api-reference/events.md")
+    batch = _read("docs/05-how-to/batch-processing.md")
+
+    for get_steps in (
+        Checkpointer.get_steps,
+        MemoryCheckpointer.get_steps,
+        SqliteCheckpointer.get_steps,
+        SqliteCheckpointer.steps,
+        SqliteRunInspector.steps,
+    ):
+        assert inspect.signature(get_steps).parameters["show_internal"].default is False
+    assert "show_internal=True" in checkpointers
+    assert "retention carriers" in checkpointers
+
+    list_runs = inspect.signature(Checkpointer.list_runs).parameters
+    count_runs = inspect.signature(Checkpointer.count_runs).parameters
+    assert {"graph_name", "since", "parent_run_id"} <= set(list_runs)
+    assert list_runs["parent_run_id"].default is not None
+    assert count_runs["parent_run_id"].default is not None
+    assert "Omit `parent_run_id` for all runs" in checkpointers
+    assert "explicit-`None`/top-level" in checkpointers
+
+    assert RunResult.__dataclass_fields__["restored"].default is False
+    assert isinstance(inspect.getattr_static(MapResult, "restored_count"), property)
+    assert "restored" in get_args(get_type_hints(NodeRecord)["status"])
+    assert "restored: bool" in _scoped_section(runners, "## RunResult")
+    assert "restored_count" in _scoped_section(runners, "## MapResult")
+    assert "fully restored map omits the average" in runners
+
+    assert "batch_restored_items" in RunEndEvent.__dataclass_fields__
+    assert "batch_restored_items: int | None" in events
+    assert "hypergraph.batch.restored_items" in events
+    assert "Restored children" in events
+
+    assert issubclass(WorkflowStoppedError, Exception)
+    assert "WorkflowStoppedError" in runners
+    assert "non-empty runtime mapping" in batch
+    assert "before a new run event or persistence write" in batch
+
+    assert "{source}-fork-{hex}" in runners
+    assert "generic `run-...`" in runners
+    assert "job-1-fork-a1b2c3" in checkpointers
+    assert "nested source" in checkpointers

@@ -182,7 +182,7 @@ This keeps the core logic small and reusable instead of mixing per-item logic wi
 results = runner.map(graph, {"text": texts}, map_over="text")
 
 # Quick overview
-print(results.summary())    # "5 items | 5 completed | 42ms"
+print(results.summary())    # "5 items | 5 completed | avg 42ms/item"
 
 # Collect values across all items by key
 word_counts = results["word_count"]  # [2, 2, 2]
@@ -194,6 +194,7 @@ word_counts = results.get("word_count", 0)  # [2, 2, 0, 2, ...]
 results.run_id              # Unique batch ID
 results.total_duration_ms   # Wall-clock time for the entire batch
 results.map_over            # ("text",)
+results.restored_count      # Checkpoint-skipped successes (subset of completed)
 
 # JSON-serializable export (for logging, dashboards, agents)
 results.to_dict()           # Full batch metadata + per-item results
@@ -345,11 +346,12 @@ See [Checkpointers](../06-api-reference/checkpointers.md) for the `Checkpointer`
 `run()` now uses strict, git-like lineage semantics when a checkpointer is configured:
 
 - Same `workflow_id` means "same lineage"
-- Resume is strict: no new runtime values
+- Resume is strict: active/failed runs reject new runtime values; paused runs accept interrupt responses
+- A stopped run requires a non-empty runtime mapping to resume, or `override_workflow=True` to fork
 - Structural graph changes require fork
 - Completed workflows are terminal (fork to branch)
 
-When `workflow_id` is omitted and a checkpointer exists, `run()` auto-generates one and returns it in `result.workflow_id`.
+When `workflow_id` is omitted on a fresh or retry run and a checkpointer exists, `run()` generates a generic ID and returns it in `result.workflow_id`. A `fork_from=` call instead derives `{source}-fork-{hex}`.
 
 ```python
 result = await runner.run(graph, {"x": 5})  # auto-id when checkpointer is set
@@ -380,7 +382,23 @@ await runner.run(Graph([double, triple]), {"x": 5}, workflow_id="job-1")
 # await runner.run(Graph([double, triple]), workflow_id="job-1")
 ```
 
-Resume is intended for ACTIVE/PAUSED/FAILED workflows (for example: still-running work, interrupt-paused workflows, or retry after failure), not for appending new work to completed lineages.
+Ordinary resume covers ACTIVE/PAUSED/FAILED workflows (for example: still-running work, interrupt-paused workflows, or retry after failure). STOPPED workflows use the explicit-signal rule below. Completed lineages remain terminal.
+
+A persisted `STOPPED` workflow needs an explicit signal. `None` and `{}` raise `WorkflowStoppedError` before a new run event or persistence write. Pass any non-empty, otherwise-valid runtime mapping to resume the same ID, or use `override_workflow=True` to leave the source untouched and create a fork:
+
+```python
+# Same lineage
+resumed = await runner.run(graph, {"x": 2}, workflow_id="stopped-job")
+
+# New source-derived lineage
+forked = await runner.run(
+    graph,
+    {"x": 2},
+    workflow_id="stopped-job",
+    override_workflow=True,
+)
+assert forked.workflow_id.startswith("stopped-job-fork-")
+```
 
 #### Fork (new workflow_id, optional overrides)
 
@@ -393,6 +411,7 @@ forked = await runner.run(
     fork_from="job-1",
 )
 assert forked["tripled"] == 600
+assert forked.workflow_id.startswith("job-1-fork-")
 ```
 
 Retry is symmetrical:
@@ -435,9 +454,13 @@ results = await runner.map(
 # batch-retry/0 → skipped (already COMPLETED)
 # batch-retry/1 → re-executed (was FAILED)
 # batch-retry/2 → skipped (already COMPLETED)
+
+assert [item.restored for item in results] == [True, False, True]
+assert results.restored_count == 2
+assert results[0].log.steps[0].status == "restored"
 ```
 
-This makes it safe to retry large batches — you only pay for the items that actually need re-processing.
+Restored items remain included in completed counts, but are also reported as a separate subset in `MapResult`, `MapLog`, parent events, and telemetry. Average item duration uses only freshly executed completed items with real logs, so a fully restored batch omits the average instead of displaying fake `0ms` work. This makes it safe to retry large batches — you only pay for the items that actually need re-processing, and the result shows which items were skipped.
 
 ## When to Use Map vs Loop
 
