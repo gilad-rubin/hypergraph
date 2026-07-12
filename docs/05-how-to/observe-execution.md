@@ -128,6 +128,53 @@ graph outer
         └── node double
 ```
 
+### Ambient Context: Third-Party Telemetry Nests Under Node Spans
+
+While a run executes, `OpenTelemetryProcessor` makes its spans the **ambient
+OTel context** for the code they cover — the run root around the run, each
+node span around that node's body. Any OTel-instrumented library called
+inside a node (an openinference-instrumented OpenAI client, an agent SDK, a
+database driver) parents its spans under the node span automatically, with
+zero coupling on either side:
+
+```python
+from opentelemetry import trace
+from hypergraph import Graph, SyncRunner, node
+from hypergraph.events.otel import OpenTelemetryProcessor
+
+tracer = trace.get_tracer("my.instrumentation")
+
+@node(output_name="answer")
+def call_llm(prompt: str) -> str:
+    # Any instrumented call here — this explicit span stands in for one —
+    # picks up the node span as its parent from the ambient context.
+    with tracer.start_as_current_span("ChatCompletion"):
+        return llm.complete(prompt)
+
+SyncRunner().run(Graph([call_llm], name="rag"), {"prompt": "hi"},
+                 event_processors=[OpenTelemetryProcessor()])
+```
+
+```text
+graph rag
+└── node call_llm
+    └── ChatCompletion        ← nested under the node, same trace
+```
+
+Without ambient activation the `ChatCompletion` span would attach to
+whatever context was current before `.run()` — a sibling of the node at
+best, a separate trace when no outer span existed. Activation holds for
+`SyncRunner`, `AsyncRunner` (concurrent nodes each get their own context —
+no cross-node or cross-map-item leakage), and per-item map runs. The
+previous ambient context is restored when the run ends, including on
+failure. Runs without an `OpenTelemetryProcessor` never touch OTel context
+(nothing is imported or attached).
+
+Span *parentage* is unchanged by activation — hypergraph still parents its
+own run and node spans explicitly, so exported span structure is identical
+to before; activation only changes what
+`opentelemetry.context.get_current()` returns inside the bracketed code.
+
 To correlate your own logging with the current node span from inside a node body, call `current_node_span()`:
 
 ```python

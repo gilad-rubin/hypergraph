@@ -31,7 +31,12 @@ Two contracts hold everywhere processors appear:
 1. **Processors observe only, and are failure-isolated.** A processor never
    changes execution, and dispatch is best-effort: if a processor raises, the
    error is logged and the run continues (`EventDispatcher(strict=True)`
-   propagates instead, for tests that want loud failures).
+   propagates instead, for tests that want loud failures). One deliberate
+   observability-plane effect exists: `OpenTelemetryProcessor` makes its run
+   and node spans the ambient OTel context around the code they cover, so
+   third-party instrumentation inside node bodies nests under the node span
+   (see [Observe Execution](../05-how-to/observe-execution.md#ambient-context-third-party-telemetry-nests-under-node-spans)).
+   Workflow behavior — routing, values, results — is never affected.
 2. **Graph-carried processors merge with call-site processors — never
    replace.** Runners dispatch to
    `[*graph.default_event_processors, *event_processors]`: carrying processors
