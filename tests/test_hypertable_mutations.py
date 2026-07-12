@@ -644,7 +644,6 @@ class TestFingerprintCorrectness:
     def test_fingerprint_detects_component_config_change(self, store):
         """Changing a component's config produces a different fingerprint."""
         from hypergraph.materialization import HyperTable
-        from hypergraph.materialization._fingerprint import compute_row_fingerprint
 
         emb_a = Embedder(model_name="model-a", dim=3)
         table_a = (
@@ -659,7 +658,7 @@ class TestFingerprintCorrectness:
 
         table_a._ensure_analyzed()
         graph_inputs = {"text": "hello"}
-        fp_a = compute_row_fingerprint(table_a._graph, table_a._components, graph_inputs)
+        fp_a = table_a._provenance_policy.root_fingerprint(graph_inputs)
 
         emb_b = Embedder(model_name="model-b", dim=3)
         table_b = (
@@ -673,7 +672,7 @@ class TestFingerprintCorrectness:
         )
 
         table_b._ensure_analyzed()
-        fp_b = compute_row_fingerprint(table_b._graph, table_b._components, graph_inputs)
+        fp_b = table_b._provenance_policy.root_fingerprint(graph_inputs)
         assert fp_a != fp_b
 
 

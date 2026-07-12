@@ -8,9 +8,8 @@ from hypergraph import Graph
 from hypergraph.materialization._fingerprint import compute_definition_hash
 from hypergraph.materialization._hypertable_viz import render_hypertable
 from hypergraph.materialization._indexes import IndexPolicy
-from hypergraph.materialization._provenance import (
-    Provenance,
-)
+from hypergraph.materialization._provenance import Provenance
+from hypergraph.materialization._provenance import normalize_value as _normalize_value
 from hypergraph.materialization._schema import (
     RECIPE_COLUMN,
     STATUS_COLUMNS,
@@ -30,9 +29,6 @@ from hypergraph.materialization._writes import (
 )
 from hypergraph.materialization._writes import (
     dedup_rows as _dedup_rows,
-)
-from hypergraph.materialization._writes import (
-    normalize_value as _normalize_value,
 )
 
 
@@ -618,7 +614,7 @@ class HyperTable:
             return [kwargs]
         raise ValueError("insert() requires kwargs or a list of dicts")
 
-    def insert(self, *args: Any, **kwargs: Any) -> Any:
+    def insert(self, *args, **kwargs) -> Any:
         self._require_runner()
         self._ensure_analyzed()
         operation = self._writes.plans.insert(self._insert_items(*args, **kwargs))

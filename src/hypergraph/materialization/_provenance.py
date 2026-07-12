@@ -42,7 +42,7 @@ def _thaw(values: _Items) -> dict[str, Any]:
     return dict(values)
 
 
-def _normalize_value(value: Any) -> Any:
+def normalize_value(value: Any) -> Any:
     """Convert numpy/arrow scalars into the public Python representation."""
     import numpy as np
 
@@ -315,7 +315,7 @@ class Provenance:
 
     @staticmethod
     def stored_values(row: Mapping[str, Any]) -> dict[str, Any]:
-        return {name: _normalize_value(value) for name, value in row.items() if not is_internal_column(name)}
+        return {name: normalize_value(value) for name, value in row.items() if not is_internal_column(name)}
 
     def node_is_fresh(self, node: Any, provenance: str, existing: Mapping[str, Any], spec: TableSpec | None = None) -> bool:
         return all(
@@ -332,14 +332,14 @@ class Provenance:
 
     def child_source_inputs(self, row: Mapping[str, Any], child_spec: TableSpec) -> dict[str, Any]:
         return {
-            column.name: _normalize_value(row[column.name])
+            column.name: normalize_value(row[column.name])
             for column in child_spec.columns
             if column.role == "source" and column.content_key and column.name in row
         }
 
     def source_inputs(self, row: Mapping[str, Any]) -> dict[str, Any]:
         """Reconstruct root graph inputs from stored source columns."""
-        return {column.name: _normalize_value(row[column.name]) for column in self.spec.columns if column.role == "source" and column.name in row}
+        return {column.name: normalize_value(row[column.name]) for column in self.spec.columns if column.role == "source" and column.name in row}
 
     @staticmethod
     def column_is_null(value: Any) -> bool:
@@ -394,7 +394,7 @@ class Provenance:
                     provenance=provenance,
                     kind="column",
                 )
-            node_outputs = {column.name: _normalize_value(existing[column.name]) for column in self.node_columns(node, current.spec)}
+            node_outputs = {column.name: normalize_value(existing[column.name]) for column in self.node_columns(node, current.spec)}
             current = self._advance_column(current, node, provenance, node_outputs)
 
         while current.boundary_index < len(current.spec.children):

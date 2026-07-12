@@ -13,6 +13,7 @@ from hypergraph.materialization._provenance import (
     ReconcileComplete,
     ReconcileResult,
     ReconcileUnavailable,
+    normalize_value,
 )
 from hypergraph.materialization._recipe_journal import RecipeJournal
 from hypergraph.materialization._schema import (
@@ -57,17 +58,6 @@ def normalize_to_dict(item: Any) -> dict[str, Any]:
 
         return asdict(item)
     return dict(item)
-
-
-def normalize_value(value: Any) -> Any:
-    """Convert numpy/Arrow scalar values back to native Python values."""
-    import numpy as np
-
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, (np.floating, np.integer)):
-        return value.item()
-    return value
 
 
 def dedup_rows(rows: list[dict[str, Any]], identity: str) -> list[dict[str, Any]]:
@@ -401,9 +391,6 @@ class WriteExecutor:
         row["_write_gen"] = action.write_gen
         return row
 
-    def _source_inputs(self, row: dict[str, Any]) -> dict[str, Any]:
-        return {column.name: normalize_value(row[column.name]) for column in self._spec.columns if column.role == "source" and column.name in row}
-
     def _build_node_row(self, action: BuildNodeRow) -> dict[str, Any]:
         existing = _thaw(action.existing)
         outputs = _thaw(action.outputs)
@@ -417,7 +404,7 @@ class WriteExecutor:
         self._record_node_recipe(action.node)
         new_row["_write_gen"] = action.write_gen
         if self._provenance.row_converged(new_row):
-            new_row["_row_fingerprint"] = self._provenance.root_fingerprint(self._source_inputs(new_row))
+            new_row["_row_fingerprint"] = self._provenance.root_fingerprint(self._provenance.source_inputs(new_row))
             self._stamp_recipe(new_row, self._spec.name)
         return new_row
 
@@ -1043,9 +1030,6 @@ class WritePlanner:
                 ),
             )
         return len(updated)
-
-    def _source_inputs(self, row: dict[str, Any]) -> dict[str, Any]:
-        return {column.name: normalize_value(row[column.name]) for column in self._spec.columns if column.role == "source" and column.name in row}
 
     def derive_column(self, column: str, *, backfill: bool) -> WriteOperation:
         if backfill:
