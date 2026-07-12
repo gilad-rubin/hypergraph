@@ -770,10 +770,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         if result.status == RunStatus.FAILED:
                             error = result.error
                             assert error is not None, "FAILED status requires an error"
-                            if result.node_failures:
-                                with _failure_evidence_context(error, result.node_failures):
-                                    raise error from None
-                            raise error
+                            with _failure_evidence_context(error, result.node_failures):
+                                raise error from None
             else:
                 results_list: list[RunResult] = []
                 queue: asyncio.Queue[tuple[int, dict[str, Any]]] = asyncio.Queue()
@@ -809,10 +807,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         if result.status == RunStatus.FAILED:
                             error = result.error
                             assert error is not None, "FAILED status requires an error"
-                            if result.node_failures:
-                                with _failure_evidence_context(error, result.node_failures):
-                                    raise error from None
-                            raise error
+                            with _failure_evidence_context(error, result.node_failures):
+                                raise error from None
 
             batch_summary = BatchSummary.from_results(results)
 
@@ -1006,10 +1002,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 if error_handling == "raise" and result.status == RunStatus.FAILED:
                     error = result.error
                     assert error is not None, "FAILED status requires an error"
-                    if result.node_failures:
-                        with _failure_evidence_context(error, result.node_failures):
-                            raise error from None
-                    raise error
+                    with _failure_evidence_context(error, result.node_failures):
+                        raise error from None
                 yield i, result
         finally:
             for w in workers:

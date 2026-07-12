@@ -859,12 +859,12 @@ class RunResult:
     run_id: str                 # Unique identifier (auto-generated)
     workflow_id: str | None     # Optional workflow tracking
     error: BaseException | None # Exception if FAILED
-    node_failures: tuple[FailureEvidence, ...]  # Attributable leaf failures
     pause: PauseInfo | None     # Pause info if PAUSED (InterruptNode)
     log: RunLog | None          # Execution trace, if collected
     checkpoint_ok: bool         # False when a best-effort async step save failed
     checkpoint_errors: tuple[str, ...]  # String-only checkpoint save errors
     restored: bool              # True only for a checkpoint-skipped map child
+    node_failures: tuple[FailureEvidence, ...]  # Attributable leaf failures
 ```
 
 With async checkpoint durability, step saves are best-effort: a persistence gap

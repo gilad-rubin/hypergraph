@@ -96,7 +96,6 @@ class RunResult:
         run_id: Unique identifier for this run
         workflow_id: Optional workflow identifier for tracking related runs
         error: Exception if status is FAILED, else None
-        node_failures: Attributable leaf-node failures in deterministic order
         pause: PauseInfo if status is PAUSED, else None
         log: RunLog with execution trace (timing, status, routing), or None
         checkpoint_ok: False when background checkpoint step-saves failed
@@ -107,6 +106,7 @@ class RunResult:
         restored: Whether this completed map child was skipped because its
             checkpoint was restored. Other resume/cache/missing-log paths are
             always False.
+        node_failures: Attributable leaf-node failures in deterministic order
     """
 
     values: dict[str, Any]
@@ -114,12 +114,12 @@ class RunResult:
     run_id: str = field(default_factory=generate_run_id)
     workflow_id: str | None = None
     error: BaseException | None = None
-    node_failures: tuple[FailureEvidence, ...] = ()
     pause: PauseInfo | None = None
     log: RunLog | None = None
     checkpoint_ok: bool = True
     checkpoint_errors: tuple[str, ...] = ()
     restored: bool = False
+    node_failures: tuple[FailureEvidence, ...] = ()
 
     @property
     def stopped(self) -> bool:

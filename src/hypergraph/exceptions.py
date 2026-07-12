@@ -165,7 +165,7 @@ def get_failure_evidence(error: BaseException | None) -> tuple[FailureEvidence, 
         return ()
 
     seen = {id(error)}
-    current = error.__context__
+    current = BaseException.__getattribute__(error, "__context__")
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         if isinstance(current, _NodeExecutionError):
@@ -174,7 +174,7 @@ def get_failure_evidence(error: BaseException | None) -> tuple[FailureEvidence, 
             return ()
         if isinstance(current, _FailureEvidenceCarrier):
             return current.node_failures if current.error is error else ()
-        current = current.__context__
+        current = BaseException.__getattribute__(current, "__context__")
     return error.node_failures if isinstance(error, ExecutionError) else ()
 
 

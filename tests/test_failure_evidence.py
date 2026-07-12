@@ -10,9 +10,11 @@ import pytest
 
 from hypergraph import (
     AsyncRunner,
+    ExecutionError,
     FailureEvidence,
     Graph,
     NodeContext,
+    PauseInfo,
     RunResult,
     RunStatus,
     SyncRunner,
@@ -196,6 +198,28 @@ def test_sync_raise_preserves_the_exact_original_exception_object() -> None:
     assert get_failure_evidence(exc_info.value)[0].error is original
 
 
+def test_accessor_bypasses_custom_context_hiding() -> None:
+    class HidingContextError(Exception):
+        def __getattribute__(self, name: str) -> Any:
+            if name == "__context__":
+                return None
+            return super().__getattribute__(name)
+
+    original = HidingContextError("hidden-context")
+
+    @node(output_name="never")
+    def raise_hiding_error(x: int) -> int:
+        raise original
+
+    with pytest.raises(HidingContextError) as exc_info:
+        SyncRunner().run(Graph([raise_hiding_error]), {"x": 3})
+
+    failures = get_failure_evidence(exc_info.value)
+    assert len(failures) == 1
+    assert failures[0].error is original
+    assert failures[0].inputs == {"x": 3}
+
+
 @pytest.mark.asyncio
 async def test_async_raise_preserves_original_type_and_all_parallel_evidence() -> None:
     graph = Graph([fail_left, fail_right], name="raise-parallel")
@@ -271,6 +295,41 @@ def test_sync_map_raise_accessor_retains_failing_item_index() -> None:
     formatted = "".join(traceback.format_exception(exc_info.value))
     assert "FailureEvidenceCarrier" not in formatted
     assert "FailureEvidenceContext" not in formatted
+
+
+def test_sync_map_raise_masks_stale_infrastructure_execution_error() -> None:
+    from hypergraph.runners import GraphState
+
+    cause = RuntimeError("cache unavailable")
+    stale = FailureEvidence(
+        node_name="stale",
+        error=cause,
+        inputs={"secret": "old"},
+        superstep=9,
+        duration_ms=1.0,
+        graph_name="old",
+        workflow_id=None,
+        item_index=None,
+    )
+    cache_error = ExecutionError(cause, GraphState(), node_failures=(stale,))
+
+    class StaleEvidenceCache:
+        def get(self, key: str) -> tuple[bool, Any]:
+            raise cache_error
+
+        def set(self, key: str, value: Any) -> None:
+            raise AssertionError("cache set must not run")
+
+    with pytest.raises(ExecutionError) as exc_info:
+        SyncRunner(cache=StaleEvidenceCache()).map(
+            Graph([cached_node_that_must_not_run], name="stale-cache-map"),
+            {"x": [5]},
+            map_over="x",
+            error_handling="raise",
+        )
+
+    assert exc_info.value is cache_error
+    assert get_failure_evidence(exc_info.value) == ()
 
 
 @pytest.mark.asyncio
@@ -436,6 +495,15 @@ def test_failed_result_without_node_attribution_has_empty_evidence() -> None:
     assert result.node_failures == ()
     assert result.failure is None
     assert get_failure_evidence(result.error) == ()
+
+
+def test_run_result_keeps_preexisting_positional_field_order() -> None:
+    pause = PauseInfo(node_name="approval", output_param="answer", value="draft")
+
+    result = RunResult({}, RunStatus.PAUSED, "run-positional", None, None, pause)
+
+    assert result.pause is pause
+    assert result.node_failures == ()
 
 
 def test_public_accessor_terminates_on_an_unrelated_context_cycle() -> None:
