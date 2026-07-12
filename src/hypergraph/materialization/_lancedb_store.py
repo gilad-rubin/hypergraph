@@ -194,13 +194,26 @@ class LanceDBStore(TableStore):
             tbl = self._tables[table_name]
             schema = tbl.schema
 
+        record_batches: list[pa.RecordBatch] = []
         for row in rows:
             for field_obj in schema:
                 if field_obj.name not in row:
                     row[field_obj.name] = None
 
-        batch = pa.Table.from_pylist(rows, schema=schema)
-        tbl.add(batch)
+            arrays = []
+            for field_obj in schema:
+                val = row.get(field_obj.name)
+                if val is None:
+                    arrays.append(pa.array([None], type=field_obj.type))
+                elif pa.types.is_list(field_obj.type) and isinstance(val, list):
+                    inner_type = field_obj.type.value_type
+                    inner_arr = pa.array(val, type=inner_type)
+                    arrays.append(pa.array([inner_arr], type=field_obj.type))
+                else:
+                    arrays.append(pa.array([val], type=field_obj.type))
+            record_batches.append(pa.record_batch(arrays, schema=schema))
+
+        tbl.add(pa.Table.from_batches(record_batches, schema=schema))
 
     def delete_rows(self, table_name: str, where: RowPredicate) -> int:
         tbl = self._readable(table_name)
