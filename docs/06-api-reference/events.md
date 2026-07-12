@@ -369,7 +369,11 @@ Every runner merges carried processors in front of call-site ones:
 ```
 
 - **Merge, never replace** — both sets observe the same run (see the
-  contracts in [Overview](#overview)). Nothing is deduplicated.
+  contracts in [Overview](#overview)). Nothing is deduplicated: carrying the
+  **same processor instance** at more than one level (call-site and carried,
+  or on both an outer graph and a graph nested inside it) delivers that
+  instance the same events more than once — carry stateful processors like
+  `OpenTelemetryProcessor` at exactly one level.
 - All entry points participate: `run()`, `map()` (including the top-level map
   span), and `map_iter()` (which delegates through `run()` per item, so
   carried processors observe each item; there is no top-level map span).
