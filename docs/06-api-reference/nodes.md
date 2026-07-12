@@ -182,7 +182,30 @@ def __init__(
 
 **Raises:**
 - `ValueError` - If function source cannot be retrieved (for definition_hash)
+- `TypeError` - If the signature contains a positional-only, `*args`, or `**kwargs` parameter (see [Supported Parameter Kinds](#supported-parameter-kinds))
 - `UserWarning` - If function has return annotation but no output_name provided
+
+### Supported Parameter Kinds
+
+Hypergraph invokes node functions with keyword arguments, so every parameter must be addressable by keyword. This applies to all function-backed node types: `@node`, `@route`, `@ifelse`, and `@interrupt`.
+
+| Parameter kind | Example | Supported |
+|----------------|---------|-----------|
+| Regular | `def f(a)` | Yes |
+| Keyword-only | `def f(*, kw)` | Yes |
+| Positional-only | `def f(a, /)` | No — rejected at construction |
+| Variadic positional | `def f(*args)` | No — rejected at construction |
+| Variadic keyword | `def f(**kwargs)` | No — rejected at construction |
+
+Unsupported kinds raise `TypeError` at construction time, naming the offending parameter:
+
+```python
+@node(output_name="result")
+def bad(*args):
+    ...
+# TypeError: Function 'bad' has parameter(s) that cannot be called by keyword:
+#   -> parameter 'args' is variadic positional (*args)
+```
 
 ### Creating from a function
 
@@ -867,6 +890,31 @@ def consumer(value: int) -> int:
 outer = Graph([gn, consumer], strict_types=True)  # Works!
 ```
 
+#### Heterogeneous boundary types
+
+When multiple inner nodes share one boundary name with different annotations, the reported type is deterministic: the first *annotated* inner node in sorted inner-node-name order wins.
+
+```python
+@node(output_name="out1")
+def node_int(x: int) -> int: ...
+
+@node(output_name="out2")
+def node_str(x: str) -> str: ...
+
+gn = Graph([node_str, node_int], name="inner").as_node()
+print(gn.get_input_type("x"))  # <class 'int'> — 'node_int' sorts first
+```
+
+Under `strict_types=True`, a wired boundary port with conflicting inner annotations is rejected at construction time instead, naming both inner nodes and both types:
+
+```text
+GraphConfigError: Conflicting type annotations for input 'x' on GraphNode 'inner' in strict_types mode
+  -> inner node 'node_int' declares: <class 'int'>
+  -> inner node 'node_str' declares: <class 'str'>
+```
+
+The permissive default (`strict_types=False`) is unchanged.
+
 ### Nested Composition Example
 
 ```python
@@ -945,6 +993,9 @@ def map_over(
     *params: str,
     mode: Literal["zip", "product"] = "zip",
     error_handling: Literal["raise", "continue"] = "raise",
+    clone: bool | list[str] = False,
+    identity: str | None = None,
+    schema: type | None = None,
 ) -> GraphNode: ...
 ```
 

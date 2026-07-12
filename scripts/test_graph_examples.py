@@ -32,7 +32,7 @@ print(f"g.has_async_nodes = {g.has_async_nodes}")  # False
 print("\n=== Binding Values ===")
 bound = g.bind(a=10)
 print(f"bound.inputs.required = {bound.inputs.required}")  # ('b',)
-print(f"bound.inputs.bound = {bound.inputs.bound}")  # ('a',)
+print(f"bound.inputs.bound = {bound.inputs.bound}")  # {'a': 10}
 
 print("\n=== strict_types Compatible ===")
 

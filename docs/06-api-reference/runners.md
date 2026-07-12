@@ -1053,6 +1053,22 @@ except InfiniteLoopError as e:
     # Graph execution exceeded 100 iterations
 ```
 
+### ExecutionError
+
+Wraps an exception raised inside a node during graph execution and carries the partial `GraphState` accumulated before the failure (`partial_state` attribute).
+
+`runner.run()` with the default `error_handling="raise"` unwraps it and re-raises the original node exception, so application code normally catches the node's own exception type. `ExecutionError` is exported for advanced integrations (custom runners, executors, or superstep-level code) that need access to the partial state alongside the failure.
+
+```python
+from hypergraph import ExecutionError
+
+try:
+    advanced_execution_surface(...)
+except ExecutionError as e:
+    print(e.partial_state)   # state accumulated before the failure
+    print(e.__cause__)       # the original node exception
+```
+
 ---
 
 ## Execution Model

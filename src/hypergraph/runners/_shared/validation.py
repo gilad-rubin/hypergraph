@@ -30,7 +30,6 @@ class _InputValidationContext:
     input_spec: InputSpec
     edge_produced: set[str]
     interrupt_outputs: set[str]
-    cycle_ep_params: set[str]
 
 
 def precompute_input_validation(
@@ -53,7 +52,6 @@ def precompute_input_validation(
         raise ValueError("Runtime select overrides are no longer supported. Configure output scope on the graph via graph.select(...).")
     active_nodes, active_subgraph = _resolve_active_scope(graph, graph.selected)
     input_spec = graph.inputs
-    cycle_ep_params = {p for params in input_spec.entrypoints.values() for p in params}
     edge_produced = get_edge_produced_values(active_subgraph)
     interrupt_outputs = _get_interrupt_outputs(active_nodes)
 
@@ -64,7 +62,6 @@ def precompute_input_validation(
         input_spec=input_spec,
         edge_produced=edge_produced,
         interrupt_outputs=interrupt_outputs,
-        cycle_ep_params=cycle_ep_params,
     )
 
 
@@ -100,7 +97,6 @@ def validate_item_inputs(
             active_nodes=ctx.active_nodes,
             provided=provided,
             internal_edge=internal_edge,
-            cycle_ep_params=ctx.cycle_ep_params,
         )
         if conflict_errors:
             raise ValueError("Cannot determine whether to run or skip node(s):\n" + "\n".join(conflict_errors))
@@ -139,7 +135,6 @@ def validate_item_inputs(
         missing=sorted(missing_required),
         provided=list(provided),
         suggestions=suggestions,
-        entrypoints=inputs_spec.entrypoints,
     )
 
     raise MissingInputError(
@@ -198,7 +193,6 @@ def _build_missing_input_message(
     missing: list[str],
     provided: list[str],
     suggestions: dict[str, list[str]],
-    entrypoints: dict[str, tuple[str, ...]] | None = None,
 ) -> str:
     """Build a helpful error message for missing inputs."""
     from hypergraph.graph._helpers import describe_addressed_input
@@ -216,12 +210,6 @@ def _build_missing_input_message(
 
     if provided:
         msg += f"\n\nProvided: {', '.join(f'{p!r}' for p in sorted(provided))}"
-
-    if entrypoints:
-        msg += "\n\nCycle entry points:"
-        for name, params in sorted(entrypoints.items()):
-            params_str = ", ".join(params) if params else "(no params needed)"
-            msg += f"\n  {name} → {params_str}"
 
     if suggestions:
         msg += "\n\nDid you mean:"
@@ -338,7 +326,6 @@ def _find_internal_override_conflicts(
     active_nodes: dict[str, HyperNode],
     provided: set[str],
     internal_edge: set[str],
-    cycle_ep_params: set[str],
 ) -> list[str]:
     """Find hard conflicts where compute and inject modes are mixed."""
     if not internal_edge:
@@ -348,7 +335,7 @@ def _find_internal_override_conflicts(
     conflicts: list[str] = []
 
     for node in active_nodes.values():
-        node_outputs = set(node.outputs) - cycle_ep_params
+        node_outputs = set(node.outputs)
         injected_outputs = sorted(node_outputs & internal_edge)
         if not injected_outputs:
             continue
@@ -365,7 +352,7 @@ def _find_internal_override_conflicts(
                 )
             else:
                 defaults = sorted([p for p in node.inputs if node.has_default_for(p)])
-                consumed_for_node = (node_outputs & downstream_consumed) - cycle_ep_params
+                consumed_for_node = node_outputs & downstream_consumed
                 all_needed = sorted(consumed_for_node)
                 conflicts.append(
                     f"- '{node.name}' conflict — you provided its outputs "
@@ -376,7 +363,7 @@ def _find_internal_override_conflicts(
             continue
 
         # Partial inject: some outputs provided but downstream needs others
-        consumed_for_node = (node_outputs & downstream_consumed) - cycle_ep_params
+        consumed_for_node = node_outputs & downstream_consumed
         missing_consumed = sorted(consumed_for_node - provided)
         if missing_consumed:
             all_needed = sorted(consumed_for_node)
@@ -499,15 +486,11 @@ def _find_bypassed_inputs(graph: Graph, provided: set[str], inputs_spec: InputSp
     for node in graph._nodes.values():
         consumed_outputs.update(node.inputs)
 
-    # Cycle entry point params bootstrap a cycle and do not imply that an
-    # active producer has been replaced.
-    cycle_ep_params = {p for params in inputs_spec.entrypoints.values() for p in params}
-
-    # A node is considered fully replaced only if ALL its non-cycle consumed
+    # A node is considered fully replaced only if ALL its consumed
     # outputs are provided by the user.
     bypassed_nodes: set[str] = set()
     for node in graph._nodes.values():
-        node_consumed_outputs = (set(node.outputs) & consumed_outputs) - cycle_ep_params
+        node_consumed_outputs = set(node.outputs) & consumed_outputs
         if node_consumed_outputs and node_consumed_outputs <= provided:
             # All consumed outputs are provided — treat the node as replaced for
             # conflict analysis.
@@ -516,13 +499,13 @@ def _find_bypassed_inputs(graph: Graph, provided: set[str], inputs_spec: InputSp
     if not bypassed_nodes:
         return set()
 
-    # Also mark nodes as replaced if ALL their non-cycle outputs are provided.
+    # Also mark nodes as replaced if ALL their outputs are provided.
     # Unlike the first pass (consumed only), this catches nodes whose outputs
     # are not consumed downstream but are still being fully supplied by the
     # user in a contradictory request.
     for node in graph._nodes.values():
-        non_cycle_outputs = set(node.outputs) - cycle_ep_params
-        if non_cycle_outputs and non_cycle_outputs <= provided:
+        node_outputs = set(node.outputs)
+        if node_outputs and node_outputs <= provided:
             bypassed_nodes.add(node.name)
 
     # Collect inputs exclusively needed by bypassed nodes

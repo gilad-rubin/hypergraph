@@ -25,25 +25,16 @@ class InputSpec:
     Categories follow the "edge cancels default" rule:
     - required: No edge, no default, not bound -> must always provide
     - optional: No edge, has default OR bound -> can omit (fallback exists)
-    - entrypoints: Reserved for compatibility; empty for configured graphs.
     """
 
     required: tuple[str, ...]
     optional: tuple[str, ...]
-    entrypoints: dict[str, tuple[str, ...]]
     bound: dict[str, Any]
 
     @property
     def all(self) -> tuple[str, ...]:
         """All input names (required + optional)."""
-        seen = set(self.required + self.optional)
-        entry_params: list[str] = []
-        for params in self.entrypoints.values():
-            for p in params:
-                if p not in seen:
-                    seen.add(p)
-                    entry_params.append(p)
-        return self.required + self.optional + tuple(entry_params)
+        return self.required + self.optional
 
 
 def compute_input_spec(
@@ -113,7 +104,6 @@ def compute_input_spec(
     return InputSpec(
         required=tuple(required),
         optional=tuple(optional),
-        entrypoints={},
         bound=all_bound,
     )
 

@@ -214,8 +214,9 @@ def _validate_types(nodes: dict[str, HyperNode], nx_graph: nx.DiGraph) -> None:
     """Validate type compatibility between connected nodes.
 
     Checks each edge (source_node -> target_node) for:
-    1. Missing type annotations (raises error if either side is missing)
-    2. Type mismatches (raises error if types are incompatible)
+    1. Conflicting annotations behind a GraphNode boundary port
+    2. Missing type annotations (raises error if either side is missing)
+    3. Type mismatches (raises error if types are incompatible)
 
     Only called when strict_types=True.
     """
@@ -228,6 +229,8 @@ def _validate_types(nodes: dict[str, HyperNode], nx_graph: nx.DiGraph) -> None:
         target_node = nodes[target_name]
 
         for value_name in value_names:
+            _validate_no_boundary_type_conflict(source_node, target_node, value_name)
+
             # Get types using universal capability methods
             output_type = source_node.get_output_type(value_name)
             input_type = target_node.get_input_type(value_name)
@@ -259,6 +262,47 @@ def _validate_types(nodes: dict[str, HyperNode], nx_graph: nx.DiGraph) -> None:
                     f"  Either change the type annotation on one of the nodes, or add a\n"
                     f"  conversion node between them."
                 )
+
+
+def _validate_no_boundary_type_conflict(
+    source_node: HyperNode,
+    target_node: HyperNode,
+    value_name: str,
+) -> None:
+    """Reject GraphNode boundary ports whose inner annotations disagree.
+
+    Without strict mode, a heterogeneous boundary port deterministically
+    reports the first annotated inner node in sorted inner-node-name order.
+    In strict mode that ambiguity is an error: name both inner nodes and
+    both types so the user can align them.
+    """
+    from hypergraph.nodes.graph_node import GraphNode
+
+    if isinstance(source_node, GraphNode):
+        conflicts = source_node.boundary_output_type_conflicts(value_name)
+        if conflicts:
+            _raise_boundary_type_conflict(source_node.name, "output", value_name, conflicts)
+
+    if isinstance(target_node, GraphNode):
+        conflicts = target_node.boundary_input_type_conflicts(value_name)
+        if conflicts:
+            _raise_boundary_type_conflict(target_node.name, "input", value_name, conflicts)
+
+
+def _raise_boundary_type_conflict(
+    graph_node_name: str,
+    port_role: str,
+    value_name: str,
+    conflicts: tuple[tuple[str, Any], ...],
+) -> None:
+    lines = "\n".join(f"  -> inner node '{inner_name}' declares: {annotation}" for inner_name, annotation in conflicts)
+    raise GraphConfigError(
+        f"Conflicting type annotations for {port_role} '{value_name}' on GraphNode '{graph_node_name}' in strict_types mode\n\n"
+        f"{lines}\n\n"
+        f"How to fix:\n"
+        f"  Align the annotations on the inner nodes, or rename the ports so\n"
+        f"  each {port_role} has a single type."
+    )
 
 
 # =============================================================================
