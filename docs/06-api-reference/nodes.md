@@ -993,6 +993,9 @@ def map_over(
     *params: str,
     mode: Literal["zip", "product"] = "zip",
     error_handling: Literal["raise", "continue"] = "raise",
+    clone: bool | list[str] = False,
+    identity: str | None = None,
+    schema: type | None = None,
 ) -> GraphNode: ...
 ```
 
