@@ -6,7 +6,7 @@ import ast
 import inspect
 from pathlib import Path
 
-from hypergraph import Graph, RunResult
+from hypergraph import Graph, MapResult, RunResult
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -18,6 +18,16 @@ def _read(path: str) -> str:
 def _section(text: str, heading: str) -> str:
     start = text.index(heading)
     next_heading = text.find("\n##", start + len(heading))
+    if next_heading == -1:
+        return text[start:]
+    return text[start:next_heading]
+
+
+def _scoped_section(text: str, heading: str) -> str:
+    """Return one Markdown heading through the next heading at the same level."""
+    start = text.index(heading)
+    level = heading.split(maxsplit=1)[0]
+    next_heading = text.find(f"\n{level} ", start + len(heading))
     if next_heading == -1:
         return text[start:]
     return text[start:next_heading]
@@ -111,3 +121,43 @@ def test_cyclic_docs_examples_configure_entrypoints() -> None:
     assert 'entrypoint="generate_prompt_variants"' in hierarchical
     assert "optimization_loop = Graph(" in hierarchical
     assert 'entrypoint="variant_tester"' in hierarchical
+
+
+def test_result_docs_mirror_checkpoint_evidence() -> None:
+    runners = _read("docs/06-api-reference/runners.md")
+
+    run_result = _scoped_section(runners, "## RunResult")
+    run_attributes = _scoped_section(run_result, "### Attributes")
+    assert "log: RunLog | None" in run_attributes
+    assert "checkpoint_ok: bool" in run_attributes
+    assert "checkpoint_errors: tuple[str, ...]" in run_attributes
+    assert "best-effort" in run_result
+    run_progressive_disclosure = _scoped_section(run_result, "### Progressive Disclosure")
+    assert '"checkpoint_ok": True' in run_progressive_disclosure
+    assert '"checkpoint_errors": []' in run_progressive_disclosure
+
+    map_result = _scoped_section(runners, "## MapResult")
+    assert "results.checkpoint_ok" in map_result
+    assert "results.checkpoint_errors" in map_result
+    assert "derived" in map_result.lower()
+    map_attributes = _scoped_section(map_result, "### Attributes")
+    assert "checkpoint_ok" not in map_attributes
+    assert "checkpoint_errors" not in map_attributes
+    assert "checkpoint_ok" not in MapResult.__dataclass_fields__
+    assert "checkpoint_errors" not in MapResult.__dataclass_fields__
+    assert isinstance(inspect.getattr_static(MapResult, "checkpoint_ok"), property)
+    assert isinstance(inspect.getattr_static(MapResult, "checkpoint_errors"), property)
+
+
+def test_streaming_chunk_event_docs_mirror_correlation_fields() -> None:
+    events = _read("docs/06-api-reference/events.md")
+
+    streaming = _scoped_section(events, "### StreamingChunkEvent")
+    assert "chunk: object" in streaming
+    assert "node_name: str" in streaming
+    assert "graph_name: str" in streaming
+    assert "`run_id`" in streaming
+    assert "`workflow_id`" in streaming
+    assert "`item_index`" in streaming
+    assert "`parent_span_id`" in streaming
+    assert "span of the emitting node" in streaming

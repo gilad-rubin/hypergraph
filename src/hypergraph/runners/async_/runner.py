@@ -226,6 +226,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                 item_index=item_index,
                 provided_values=values,
                 is_resuming=(checkpoint is not None if self._checkpointer_instance is not None else True),
+                checkpoint_error_sink=checkpoint_save_errors.append if checkpoint_save_errors is not None else None,
                 emit_fn=dispatcher.emit if dispatcher.active else None,
             )
 

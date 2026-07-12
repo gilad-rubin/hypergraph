@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from hypergraph.events.processor import EventProcessor
 
 ErrorHandling = Literal["raise", "continue"]
+CheckpointErrorSink = Callable[[str], None]
 
 _MAX_STRING_PREVIEW = 120
 _MAX_SEQUENCE_PREVIEW = 6
@@ -221,10 +222,16 @@ class RunResult:
     def summary(self) -> str:
         """One-line overview: 'completed | 3 nodes | 12ms' or 'failed: ValueError'."""
         if self.log:
-            return self.log.summary()
-        if self.error:
-            return f"{self.status.value}: {type(self.error).__name__}: {self.error}"
-        return self.status.value
+            summary = self.log.summary()
+        elif self.error:
+            summary = f"{self.status.value}: {type(self.error).__name__}: {self.error}"
+        else:
+            summary = self.status.value
+        if not self.checkpoint_ok:
+            error_count = len(self.checkpoint_errors)
+            detail = f" ({plural(error_count, 'save error')})" if error_count else ""
+            summary += f" | checkpoint gap{detail}"
+        return summary
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-serializable dict with status, run_id, and log.
@@ -236,6 +243,8 @@ class RunResult:
             "status": self.status.value,
             "run_id": self.run_id,
             "workflow_id": self.workflow_id,
+            "checkpoint_ok": self.checkpoint_ok,
+            "checkpoint_errors": list(self.checkpoint_errors),
         }
         if self.log:
             d["log"] = self.log.to_dict()
@@ -257,6 +266,9 @@ class RunResult:
 
     def __repr__(self) -> str:
         """Compact repr to avoid extremely large notebook output."""
+        checkpoint = ""
+        if not self.checkpoint_ok:
+            checkpoint = f", checkpoint_ok=False, checkpoint_errors={_compact_value(self.checkpoint_errors)}"
         text = (
             "RunResult("
             f"status={self.status.value}, "
@@ -265,6 +277,7 @@ class RunResult:
             f"workflow_id={self.workflow_id!r}, "
             f"error={_compact_value(self.error)}, "
             f"pause={_compact_value(self.pause)}"
+            f"{checkpoint}"
             ")"
         )
         return _truncate_text(text, _MAX_RUN_RESULT_REPR)
@@ -301,6 +314,10 @@ class RunResult:
             n_errors = len(self.log.errors)
             if n_errors:
                 kvs.append(html_kv("Errors", f'<span style="color:{ERROR_COLOR}">{n_errors}</span>'))
+        if not self.checkpoint_ok:
+            error_count = len(self.checkpoint_errors)
+            detail = f" ({plural(error_count, 'save error')})" if error_count else ""
+            kvs.append(html_kv("Checkpoint", f'<span style="color:{ERROR_COLOR}">gap{detail}</span>'))
         kvs.append(html_kv("Values", plural(len(self.values), "key")))
         body = " &nbsp;|&nbsp; ".join(kvs)
         if self.error:
@@ -310,6 +327,12 @@ class RunResult:
                 f"Values ({plural(len(self.values), 'key')})",
                 values_html(self.values),
                 state_key="values",
+            )
+        if self.checkpoint_errors:
+            body += html_detail(
+                f"Checkpoint errors ({plural(len(self.checkpoint_errors), 'save error')})",
+                values_html({str(index): error for index, error in enumerate(self.checkpoint_errors)}),
+                state_key="checkpoint-errors",
             )
         if self.log:
             body += html_detail("Run Log", self.log._repr_html_(), state_key="run-log")
@@ -413,6 +436,21 @@ class MapResult:
         return [r for r in self.results if r.status == RunStatus.FAILED]
 
     @property
+    def checkpoint_ok(self) -> bool:
+        """Whether every item persisted all best-effort async checkpoints."""
+        return all(result.checkpoint_ok for result in self.results)
+
+    @property
+    def checkpoint_errors(self) -> tuple[str, ...]:
+        """Checkpoint-save errors flattened in stable item order."""
+        return tuple(error for result in self.results for error in result.checkpoint_errors)
+
+    @property
+    def _checkpoint_gap_count(self) -> int:
+        """Number of items with incomplete best-effort checkpoint persistence."""
+        return sum(1 for result in self.results if not result.checkpoint_ok)
+
+    @property
     def log(self) -> MapLog:
         """Batch-level execution trace."""
         return MapLog(
@@ -447,6 +485,9 @@ class MapResult:
             status_parts.append(f"{n_stopped} stopped")
         if status_parts:
             parts.append(", ".join(status_parts))
+        checkpoint_gap_count = self._checkpoint_gap_count
+        if checkpoint_gap_count:
+            parts.append(f"{plural(checkpoint_gap_count, 'item')} with checkpoint gaps")
         if n_completed > 0:
             completed_items = [r for r in self.results if r.status == RunStatus.COMPLETED]
             completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
@@ -464,6 +505,8 @@ class MapResult:
             "map_over": list(self.map_over),
             "map_mode": self.map_mode,
             "graph_name": self.graph_name,
+            "checkpoint_ok": self.checkpoint_ok,
+            "checkpoint_errors": list(self.checkpoint_errors),
             "item_count": len(self.results),
             "completed_count": n_completed,
             "failed_count": n_failed,
@@ -486,13 +529,15 @@ class MapResult:
         if n_stopped:
             parts.append(f"{n_stopped} stopped")
         status = ", ".join(parts) if parts else "empty"
+        checkpoint_gap_count = self._checkpoint_gap_count
+        checkpoint_part = f", {plural(checkpoint_gap_count, 'item')} with checkpoint gaps" if checkpoint_gap_count else ""
         avg_part = ""
         if n_completed > 0:
             completed_items = [r for r in self.results if r.status == RunStatus.COMPLETED]
             completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
             avg = completed_ms / n_completed
             avg_part = f", avg {_format_duration(avg)}/item"
-        return f"MapResult({plural(n, 'item')}: {status}{avg_part}, map_over={self.map_over!r})"
+        return f"MapResult({plural(n, 'item')}: {status}{checkpoint_part}{avg_part}, map_over={self.map_over!r})"
 
     def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
         if cycle:
@@ -527,6 +572,14 @@ class MapResult:
             kvs.append(html_kv("Completed", str(n_completed)))
         if n_failed:
             kvs.append(html_kv("Failed", f'<span style="color:{ERROR_COLOR}">{n_failed}</span>'))
+        checkpoint_gap_count = self._checkpoint_gap_count
+        if checkpoint_gap_count:
+            kvs.append(
+                html_kv(
+                    "Checkpoint gaps",
+                    f'<span style="color:{ERROR_COLOR}">{plural(checkpoint_gap_count, "item")}</span>',
+                )
+            )
         if n_completed > 0:
             completed_items = [r for r in self.results if r.status == RunStatus.COMPLETED]
             completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
@@ -748,6 +801,7 @@ class ExecutionContext:
     provided_values: dict[str, Any] = field(default_factory=dict)
     is_resuming: bool = False
     on_inner_log: Callable[[RunLog], None] | None = None
+    checkpoint_error_sink: CheckpointErrorSink | None = None
     emit_fn: Callable[[Any], None] | None = None
 
 

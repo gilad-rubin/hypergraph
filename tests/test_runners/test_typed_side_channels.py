@@ -12,6 +12,8 @@ Pins the typed replacements for the old dynamically-attached attributes:
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from hypergraph import Graph, node
@@ -123,6 +125,115 @@ class TestSuperstepErrorMetadataAsync:
         assert "bad exploded" in str(err.node_errors["bad_node"])
         assert not hasattr(err, "_attempted_node_names")
         assert not hasattr(err, "_node_errors")
+
+
+class TestAsyncSuperstepControlFlowPriority:
+    async def test_cancelled_error_dominates_earlier_ordinary_exception(self):
+        @node(output_name="ordinary_out")
+        async def ordinary_failure(x: int) -> int:
+            await asyncio.sleep(0)
+            raise ValueError(f"ordinary failure: {x}")
+
+        @node(output_name="cancelled_out")
+        async def cancelled_failure(x: int) -> int:
+            await asyncio.sleep(0)
+            raise asyncio.CancelledError(f"cancelled: {x}")
+
+        graph = Graph([ordinary_failure, cancelled_failure])
+        state = initialize_state(graph, {"x": 5})
+        ready = get_ready_nodes(graph, state)
+        assert [node.name for node in ready] == ["ordinary_failure", "cancelled_failure"]
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_superstep_async(
+                graph,
+                state,
+                ready,
+                {"x": 5},
+                {type(ordinary_failure): AsyncFunctionNodeExecutor()},
+                ExecutionContext(),
+            )
+
+    async def test_pause_dominates_earlier_ordinary_exception(self):
+        pause = PauseExecution(PauseInfo(node_name="approval", output_param="decision", value="draft"))
+
+        @node(output_name="ordinary_out")
+        async def ordinary_failure(x: int) -> int:
+            await asyncio.sleep(0)
+            raise ValueError(f"ordinary failure: {x}")
+
+        @node(output_name="decision")
+        async def pause_execution(x: int) -> str:
+            await asyncio.sleep(0)
+            raise pause
+
+        graph = Graph([ordinary_failure, pause_execution])
+        state = initialize_state(graph, {"x": 5})
+        ready = get_ready_nodes(graph, state)
+        assert [node.name for node in ready] == ["ordinary_failure", "pause_execution"]
+
+        with pytest.raises(PauseExecution) as exc_info:
+            await run_superstep_async(
+                graph,
+                state,
+                ready,
+                {"x": 5},
+                {type(ordinary_failure): AsyncFunctionNodeExecutor()},
+                ExecutionContext(),
+            )
+
+        assert exc_info.value is pause
+
+
+class TestAsyncSuperstepNestedExecutionError:
+    async def test_existing_execution_error_is_wrapped_without_mutation(self):
+        cause = ValueError("inner exploded")
+        inner_state = GraphState(values={"inner_partial": 1})
+        inner_error = ExecutionError(
+            cause,
+            inner_state,
+            attempted_node_names=("inner_node",),
+            node_errors={"inner_node": cause},
+        )
+        original_attempted = inner_error.attempted_node_names
+        original_node_errors = dict(inner_error.node_errors)
+
+        @node(output_name="bad_out")
+        async def nested_failure(x: int) -> int:
+            await asyncio.sleep(0)
+            raise inner_error
+
+        @node(output_name="good_out")
+        async def successful_sibling(x: int) -> int:
+            await asyncio.sleep(0)
+            return x + 1
+
+        graph = Graph([nested_failure, successful_sibling])
+        state = initialize_state(graph, {"x": 5})
+        ready = get_ready_nodes(graph, state)
+        assert [node.name for node in ready] == ["nested_failure", "successful_sibling"]
+
+        with pytest.raises(ExecutionError) as exc_info:
+            await run_superstep_async(
+                graph,
+                state,
+                ready,
+                {"x": 5},
+                {type(nested_failure): AsyncFunctionNodeExecutor()},
+                ExecutionContext(),
+            )
+
+        outer_error = exc_info.value
+        assert outer_error is not inner_error
+        assert outer_error.__cause__ is inner_error
+        assert outer_error.partial_state.values["good_out"] == 6
+        assert outer_error.attempted_node_names == ("nested_failure", "successful_sibling")
+        assert outer_error.node_errors == {"nested_failure": inner_error}
+        assert outer_error not in outer_error.node_errors.values()
+        assert inner_error.partial_state is inner_state
+        assert inner_error.attempted_node_names == original_attempted
+        assert inner_error.node_errors == original_node_errors
+        assert inner_error.__cause__ is cause
 
 
 # === GraphState stop fields (B1.1b) ===

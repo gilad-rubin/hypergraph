@@ -269,11 +269,14 @@ async def run_superstep_async(
 
     # Separate successes from failures, applying successful outputs first
     first_error: BaseException | None = None
+    control_flow_error: BaseException | None = None
     node_errors: dict[str, BaseException] = {}
     for node, result in zip(ready_nodes, results, strict=True):
         if isinstance(result, BaseException):
             if first_error is None:
                 first_error = result
+            if control_flow_error is None and not isinstance(result, Exception):
+                control_flow_error = result
             node_errors[node.name] = result
             continue
         node, outputs, input_versions, wait_for_versions, duration_ms, cached = result
@@ -288,17 +291,13 @@ async def run_superstep_async(
             cached=cached,
         )
 
+    if control_flow_error is not None:
+        # Pause/cancellation/system-exit control flow must not be hidden by an
+        # ordinary Exception that happened to appear earlier in graph order.
+        raise control_flow_error
+
     if first_error is not None:
-        # PauseExecution (BaseException) must propagate unwrapped for the
-        # runner's except PauseExecution handler to work
-        if not isinstance(first_error, Exception):
-            raise first_error
         attempted = tuple(node.name for node in ready_nodes)
-        if isinstance(first_error, ExecutionError):
-            # Re-attribute an inner ExecutionError to this superstep's batch.
-            first_error.attempted_node_names = attempted
-            first_error.node_errors = node_errors
-            raise first_error
         error = ExecutionError(
             first_error,
             new_state,

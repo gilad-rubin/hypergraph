@@ -6,6 +6,7 @@ import inspect
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.helpers import collect_as_lists, graphnode_child_workflow_id, map_inputs_to_func_params
+from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
 from hypergraph.runners._shared.types import PauseExecution, PauseInfo, RunResult, RunStatus
 
 if TYPE_CHECKING:
@@ -136,6 +137,8 @@ class AsyncGraphNodeExecutor:
             }
             if getattr(node, "_complete_on_stop", False):
                 map_kwargs["_complete_on_stop"] = True
+            if ctx.checkpoint_error_sink is not None and isinstance(runner, AsyncRunnerTemplate):
+                map_kwargs["_checkpoint_error_sink"] = ctx.checkpoint_error_sink
             map_call = runner.map(node.graph, inner_inputs, **map_kwargs)
             # Delegated runner may be sync (e.g. DaftRunner) — await only if needed
             results = await map_call if inspect.isawaitable(map_call) else map_call
@@ -159,6 +162,8 @@ class AsyncGraphNodeExecutor:
             run_kwargs["retry_from"] = child_retry_from
         if getattr(node, "_complete_on_stop", False):
             run_kwargs["_complete_on_stop"] = True
+        if ctx.checkpoint_error_sink is not None and isinstance(runner, AsyncRunnerTemplate):
+            run_kwargs["_checkpoint_error_sink"] = ctx.checkpoint_error_sink
 
         run_call = runner.run(node.graph, inner_inputs, **run_kwargs)
         # Delegated runner may be sync (e.g. DaftRunner) — await only if needed

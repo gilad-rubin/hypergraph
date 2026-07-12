@@ -48,6 +48,7 @@ from hypergraph.runners._shared.input_normalization import (
 )
 from hypergraph.runners._shared.run_log import RunLogCollector
 from hypergraph.runners._shared.types import (
+    CheckpointErrorSink,
     ErrorHandling,
     GraphState,
     MapResult,
@@ -217,6 +218,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         _run_config: dict[str, Any] | None = None,
         _complete_on_stop: bool = False,
         _item_index: int | None = None,
+        _checkpoint_error_sink: CheckpointErrorSink | None = None,
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
@@ -585,6 +587,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 checkpoint_errors=tuple(checkpoint_save_errors),
             )
         finally:
+            if _checkpoint_error_sink is not None:
+                for checkpoint_error in checkpoint_save_errors:
+                    _checkpoint_error_sink(checkpoint_error)
             if _parent_span_id is None and dispatcher.active:
                 await self._shutdown_dispatcher_async(dispatcher)
 
@@ -607,6 +612,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         _parent_span_id: str | None = None,
         _parent_run_id: str | None = None,
         _item_index: int | None = None,
+        _checkpoint_error_sink: CheckpointErrorSink | None = None,
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
@@ -734,6 +740,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     _validation_ctx=ctx,
                     _run_config={_MAP_SIGNATURE_CONFIG_KEY: item_signature},
                     _item_index=idx,
+                    _checkpoint_error_sink=_checkpoint_error_sink,
                 )
             except Exception as e:
                 # Catch validation errors (e.g., MissingInputError) that raise
