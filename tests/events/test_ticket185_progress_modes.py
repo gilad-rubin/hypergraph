@@ -234,3 +234,49 @@ def test_notebook_stopped_completion_keeps_paused_foreground() -> None:
     completion_html = display.call_args.args[0].data
     assert f"color:{STATUS_COLORS['paused']}" in completion_html
     assert "◼ pipeline stopped" in completion_html
+
+
+def test_unknown_size_map_never_materializes_a_late_progress_task() -> None:
+    tty = RichProgressProcessor(force_mode="tty")
+    tty_renderer = tty._renderer
+    assert isinstance(tty_renderer, _RichTTYRenderer)
+    tty_progress = _mock_rich_progress()
+    tty_renderer._progress = tty_progress
+
+    with patch("IPython.display.display", return_value=MagicMock()):
+        notebook = RichProgressProcessor(force_mode="notebook")
+        notebook_renderer = notebook._renderer
+        assert isinstance(notebook_renderer, _NotebookRenderer)
+
+        for processor in (tty, notebook):
+            processor.on_run_start(RunStartEvent(run_id="root", span_id="root", graph_name="pipeline"))
+            processor.on_run_start(
+                RunStartEvent(
+                    run_id="map",
+                    span_id="map",
+                    parent_span_id="root",
+                    graph_name="inner",
+                    is_map=True,
+                    map_size=None,
+                )
+            )
+            processor.on_run_start(
+                RunStartEvent(
+                    run_id="child",
+                    span_id="child",
+                    parent_span_id="map",
+                    graph_name="inner",
+                )
+            )
+            processor.on_run_end(
+                RunEndEvent(
+                    run_id="child",
+                    span_id="child",
+                    parent_span_id="map",
+                    graph_name="inner",
+                    status=RunStatus.COMPLETED,
+                )
+            )
+
+    assert tty_progress.add_task.call_args_list == []
+    assert notebook_renderer._progress._tasks == {}

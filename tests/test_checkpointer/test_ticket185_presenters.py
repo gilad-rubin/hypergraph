@@ -92,6 +92,14 @@ def test_missing_and_corrupt_explorer_assets_fail_loudly(monkeypatch) -> None:
     with pytest.raises(RuntimeError, match="corrupt"):
         presenters._read_explorer_asset()
 
+    class _TruncatedResource(_MissingResource):
+        def read_text(self, *, encoding: str) -> str:
+            return "/* hypergraph-checkpointer-explorer */"
+
+    monkeypatch.setattr(presenters, "files", lambda _package: _TruncatedResource())
+    with pytest.raises(RuntimeError, match="corrupt"):
+        presenters._read_explorer_asset()
+
 
 def _explorer_html(path: str, dangerous: str) -> str:
     created = datetime(2026, 7, 12, tzinfo=timezone.utc)
@@ -134,6 +142,39 @@ def _explorer_html(path: str, dangerous: str) -> str:
         state_key=f"state-{path}",
         runs=[root, child],
         steps_by_run={root.id: steps, child.id: []},
+    )
+
+
+def _reserved_id_explorer_html() -> str:
+    created = datetime(2026, 7, 12, tzinfo=timezone.utc)
+    root = Run(
+        id="constructor",
+        status=WorkflowStatus.COMPLETED,
+        graph_name="pipeline",
+        created_at=created,
+    )
+    children = [
+        Run(
+            id="__proto__",
+            status=WorkflowStatus.COMPLETED,
+            graph_name="pipeline",
+            parent_run_id=root.id,
+            created_at=created,
+        ),
+        Run(
+            id="toString",
+            status=WorkflowStatus.STOPPED,
+            graph_name="pipeline",
+            parent_run_id=root.id,
+            created_at=created,
+        ),
+    ]
+    return render_checkpointer_explorer_html(
+        title="Reserved IDs",
+        path="reserved-ids",
+        state_key="state-reserved-ids",
+        runs=[root, *children],
+        steps_by_run={},
     )
 
 
@@ -191,6 +232,27 @@ def test_real_dom_proves_navigation_safety_bind_once_and_isolation() -> None:
         )
         assert rebound == 0
         assert first.evaluate("root => root.__hgExplorerBound") is True
+        browser.close()
+
+
+def test_real_dom_accepts_workflow_ids_that_are_object_prototype_names() -> None:
+    playwright = pytest.importorskip("playwright.sync_api")
+    page_errors: list[Exception] = []
+
+    with playwright.sync_playwright() as runtime:
+        browser = runtime.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.on("pageerror", lambda error: page_errors.append(error))
+        page.set_content(f"<!doctype html><html><body>{_reserved_id_explorer_html()}</body></html>")
+        root = page.locator('[data-hg-explorer="checkpointer"]')
+
+        assert page_errors == []
+        assert root.locator("[data-run-target]").count() >= 3
+        assert "constructor" in root.locator("[data-hg-explorer-header]").inner_text()
+        for run_id in ("__proto__", "toString"):
+            root.get_by_role("button", name=run_id, exact=True).first.click()
+            assert run_id in root.locator("[data-hg-explorer-header]").inner_text()
+        assert root.evaluate("node => node.__hgExplorerBound") is True
         browser.close()
 
 
