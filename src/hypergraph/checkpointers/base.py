@@ -5,10 +5,19 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from hypergraph.checkpointers.types import Checkpoint, Run, StepRecord, WorkflowStatus
+
+_UNSET = object()
+
+
+def _normalize_since(value: datetime) -> datetime:
+    """Return an aware UTC boundary for run-list filtering."""
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 @dataclass
@@ -175,14 +184,19 @@ class Checkpointer(ABC):
         self,
         *,
         status: WorkflowStatus | None = None,
-        parent_run_id: str | None = None,
+        graph_name: str | None = None,
+        since: datetime | None = None,
+        parent_run_id: str | None | object = _UNSET,
         limit: int | None = 100,
     ) -> list[Run]:
         """List runs, optionally filtered by status and/or parent.
 
         Args:
             status: Filter to runs with this status (None = all).
-            parent_run_id: Filter to children of this run (None = no filter).
+            graph_name: Filter to runs for this graph.
+            since: Inclusive creation-time boundary. Naive values mean UTC.
+            parent_run_id: Filter by parent relationship. Omitted means all,
+                None means top-level, and a run id means direct children.
             limit: Max results to return. ``None`` returns all matches.
         """
         ...
@@ -191,7 +205,7 @@ class Checkpointer(ABC):
         self,
         *,
         status: WorkflowStatus | None = None,
-        parent_run_id: str | None = None,
+        parent_run_id: str | None | object = _UNSET,
         retry_of: str | None = None,
     ) -> int:
         """Count runs matching a small set of backend-neutral filters.

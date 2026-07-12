@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
-from hypergraph.checkpointers.base import Checkpointer
+from hypergraph.checkpointers.base import _UNSET, Checkpointer, _normalize_since
 from hypergraph.checkpointers.types import Run, StepRecord, StepStatus, WorkflowStatus
 
 _BASELINE_NODE_NAME = "__retained_state__"
@@ -110,13 +110,20 @@ class MemoryCheckpointer(Checkpointer):
         self,
         *,
         status: WorkflowStatus | None = None,
-        parent_run_id: str | None = None,
+        graph_name: str | None = None,
+        since: datetime | None = None,
+        parent_run_id: str | None | object = _UNSET,
         limit: int | None = 100,
     ) -> list[Run]:
         runs = list(self._runs.values())
         if status is not None:
             runs = [run for run in runs if run.status == status]
-        if parent_run_id is not None:
+        if graph_name is not None:
+            runs = [run for run in runs if run.graph_name == graph_name]
+        if since is not None:
+            boundary = _normalize_since(since)
+            runs = [run for run in runs if run.created_at >= boundary]
+        if parent_run_id is not _UNSET:
             runs = [run for run in runs if run.parent_run_id == parent_run_id]
 
         runs.sort(key=lambda run: run.created_at, reverse=True)
@@ -128,7 +135,7 @@ class MemoryCheckpointer(Checkpointer):
         self,
         *,
         status: WorkflowStatus | None = None,
-        parent_run_id: str | None = None,
+        parent_run_id: str | None | object = _UNSET,
         retry_of: str | None = None,
     ) -> int:
         runs = self._runs.values()
@@ -136,7 +143,7 @@ class MemoryCheckpointer(Checkpointer):
             1
             for run in runs
             if (status is None or run.status == status)
-            and (parent_run_id is None or run.parent_run_id == parent_run_id)
+            and (parent_run_id is _UNSET or run.parent_run_id == parent_run_id)
             and (retry_of is None or run.retry_of == retry_of)
         )
 

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from hypergraph.checkpointers._migrate import ensure_schema
-from hypergraph.checkpointers.base import Checkpointer, CheckpointPolicy
+from hypergraph.checkpointers.base import _UNSET, Checkpointer, CheckpointPolicy, _normalize_since
 from hypergraph.checkpointers.presenters import render_checkpointer_explorer_html
 from hypergraph.checkpointers.serializers import JsonSerializer, Serializer
 from hypergraph.checkpointers.types import (
@@ -40,9 +40,6 @@ _RETENTION_BASELINE_NODE_NAME = "__retained_state__"
 _RETENTION_BASELINE_NODE_TYPE = "RetentionBaseline"
 _RETENTION_ROW_COLS = "id, step_index, superstep, node_name, values_data, created_at, completed_at"
 _DELETE_BATCH_SIZE = 500
-
-# Sentinel for "parameter not provided" — distinct from None (which means "top-level only")
-_UNSET = object()
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -512,7 +509,9 @@ class SqliteCheckpointer(Checkpointer):
         self,
         *,
         status: WorkflowStatus | None = None,
-        parent_run_id: str | None = None,
+        graph_name: str | None = None,
+        since: datetime | None = None,
+        parent_run_id: str | None | object = _UNSET,
         limit: int | None = 100,
     ) -> list[Run]:
         """List runs, optionally filtered by status and/or parent."""
@@ -524,9 +523,18 @@ class SqliteCheckpointer(Checkpointer):
         if status is not None:
             conditions.append("status = ?")
             params.append(status.value)
-        if parent_run_id is not None:
-            conditions.append("parent_run_id = ?")
-            params.append(parent_run_id)
+        if graph_name is not None:
+            conditions.append("graph_name = ?")
+            params.append(graph_name)
+        if since is not None:
+            conditions.append("created_at >= ?")
+            params.append(_normalize_since(since).isoformat())
+        if parent_run_id is not _UNSET:
+            if parent_run_id is None:
+                conditions.append("parent_run_id IS NULL")
+            else:
+                conditions.append("parent_run_id = ?")
+                params.append(parent_run_id)
 
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         query = f"SELECT {_RUNS_COLS} FROM runs{where} ORDER BY created_at DESC"
@@ -542,7 +550,7 @@ class SqliteCheckpointer(Checkpointer):
         self,
         *,
         status: WorkflowStatus | None = None,
-        parent_run_id: str | None = None,
+        parent_run_id: str | None | object = _UNSET,
         retry_of: str | None = None,
     ) -> int:
         """Count runs without materializing full run records."""
@@ -553,9 +561,12 @@ class SqliteCheckpointer(Checkpointer):
         if status is not None:
             conditions.append("status = ?")
             params.append(status.value)
-        if parent_run_id is not None:
-            conditions.append("parent_run_id = ?")
-            params.append(parent_run_id)
+        if parent_run_id is not _UNSET:
+            if parent_run_id is None:
+                conditions.append("parent_run_id IS NULL")
+            else:
+                conditions.append("parent_run_id = ?")
+                params.append(parent_run_id)
         if retry_of is not None:
             conditions.append("retry_of = ?")
             params.append(retry_of)
@@ -742,7 +753,7 @@ class SqliteCheckpointer(Checkpointer):
             params.append(graph_name)
         if since is not None:
             conditions.append("created_at >= ?")
-            params.append(since.isoformat())
+            params.append(_normalize_since(since).isoformat())
         if parent_run_id is not _UNSET:
             if parent_run_id is None:
                 conditions.append("parent_run_id IS NULL")
