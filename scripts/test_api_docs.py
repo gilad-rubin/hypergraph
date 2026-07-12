@@ -93,7 +93,6 @@ def retrieve(embedding: list[float], top_k: int = 5) -> list[str]:
 g4 = Graph([embed, retrieve])
 print(f"required: {g4.inputs.required}")
 print(f"optional: {g4.inputs.optional}")
-print(f"entry_points: {g4.inputs.entry_points}")
 print(f"bound: {g4.inputs.bound}")
 print(f"all: {g4.inputs.all}")
 

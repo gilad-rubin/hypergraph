@@ -173,7 +173,6 @@ class TestMultiNodeCycle:
             return b - 1
 
         g = Graph([node_a, node_b, node_c], entrypoint="node_a")
-        assert g.inputs.entrypoints == {}
         assert g.inputs.required == ("c",)
 
     def test_three_node_cycle_no_required_inputs(self):
@@ -211,7 +210,6 @@ class TestMultiNodeCycle:
 
         g = Graph([node_a, node_b, node_c], entrypoint="node_a")
         assert set(g.inputs.required) == {"c", "x"}
-        assert g.inputs.entrypoints == {}
 
 
 class TestMultipleCycles:
@@ -275,7 +273,6 @@ class TestMultipleCycles:
             return q - 5
 
         g = Graph([x_node, y_node, p_node, q_node, r_node], entrypoint=["x_node", "p_node"])
-        assert g.inputs.entrypoints == {}
         assert set(g.inputs.required) == {"y", "r"}
 
     def test_cycles_with_shared_external_input(self):
@@ -305,7 +302,6 @@ class TestMultipleCycles:
         assert "config" in g.inputs.required
         assert "y" in g.inputs.required
         assert "r" in g.inputs.required
-        assert g.inputs.entrypoints == {}
 
 
 class TestIsolatedSubgraphs:
