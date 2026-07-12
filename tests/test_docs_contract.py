@@ -80,7 +80,10 @@ def test_public_docs_track_current_api_contracts() -> None:
         "error_handling",
     }
     assert ") -> DataFrame" in map_dataframe
-    assert "select" not in map_dataframe
+    # No runtime select parameter — output scope comes from graph.select(...),
+    # which map_dataframe honors by projecting output columns (D15 / #143).
+    assert "select=" not in map_dataframe
+    assert "graph.select" in map_dataframe
     assert "on_missing" not in map_dataframe
     assert "error_handling" not in map_dataframe
     assert "MapResult" not in map_dataframe

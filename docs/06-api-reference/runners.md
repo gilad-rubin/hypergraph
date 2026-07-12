@@ -470,6 +470,24 @@ result_df = runner.map_dataframe(graph, frame)
 result_df.show()
 ```
 
+If the graph has an output selection set via `graph.select(...)`, it prunes
+both the computation (only nodes needed for the selected outputs run) and the
+returned columns (only the selected outputs are added), matching `run()` and
+`map()`. `columns=` and `graph.select(...)` compose independently: `columns=`
+governs which DataFrame columns feed graph inputs (every DataFrame column
+passes through either way), while `graph.select(...)` governs which output
+columns appear.
+
+Selected emit-only ordering signals never become DataFrame columns, matching
+`run()`.
+
+```python
+graph = Graph([clean, count], name="text_pipeline").select("word_count")
+
+result_df = runner.map_dataframe(graph, frame)
+# Columns: text, word_count — the intermediate cleaned_text is not added
+```
+
 Broadcast values (shared across all rows) are passed as keyword arguments
 and captured in UDF closures:
 
