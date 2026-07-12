@@ -264,5 +264,6 @@ def build_run_end_event(
         batch_failed_items=batch_summary.failed_items if batch_summary is not None else None,
         batch_paused_items=batch_summary.paused_items if batch_summary is not None else None,
         batch_stopped_items=batch_summary.stopped_items if batch_summary is not None else None,
+        batch_restored_items=batch_summary.restored_items if batch_summary is not None else None,
         batch_outcome=batch_summary.outcome if batch_summary is not None else None,
     )

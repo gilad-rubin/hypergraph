@@ -58,6 +58,17 @@ class TestEventImmutability:
             e = cls(run_id="r1")
             assert e.run_id == "r1"
 
+    def test_run_end_discloses_restored_batch_subset(self):
+        event = RunEndEvent(
+            run_id="map-1",
+            batch_total_items=3,
+            batch_completed_items=3,
+            batch_restored_items=2,
+        )
+
+        assert event.batch_completed_items == 3
+        assert event.batch_restored_items == 2
+
 
 # ---------------------------------------------------------------------------
 # TypedEventProcessor dispatch

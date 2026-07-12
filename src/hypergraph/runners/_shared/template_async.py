@@ -57,6 +57,7 @@ from hypergraph.runners._shared.types import (
     RunResult,
     RunStatus,
     _generate_run_id,
+    build_restored_run_log,
 )
 from hypergraph.runners._shared.validation import (
     precompute_input_validation,
@@ -728,6 +729,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     status=RunStatus.COMPLETED,
                     run_id=restore_run_id,
                     workflow_id=restore_run_id,
+                    log=build_restored_run_log(graph.name or "", restore_run_id),
+                    restored=True,
                 )
 
             try:

@@ -106,6 +106,7 @@ class RunEndEvent(BaseEvent):
     batch_failed_items: int | None = None
     batch_paused_items: int | None = None
     batch_stopped_items: int | None = None
+    batch_restored_items: int | None = None
     batch_outcome: str | None = None
 
     def __post_init__(self) -> None:

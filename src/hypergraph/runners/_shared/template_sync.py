@@ -47,7 +47,16 @@ from hypergraph.runners._shared.input_normalization import (
     runner_option_names,
 )
 from hypergraph.runners._shared.run_log import RunLogCollector
-from hypergraph.runners._shared.types import ErrorHandling, GraphState, MapResult, PauseExecution, RunResult, RunStatus, _generate_run_id
+from hypergraph.runners._shared.types import (
+    ErrorHandling,
+    GraphState,
+    MapResult,
+    PauseExecution,
+    RunResult,
+    RunStatus,
+    _generate_run_id,
+    build_restored_run_log,
+)
 from hypergraph.runners._shared.validation import (
     precompute_input_validation,
     resolve_runtime_selected,
@@ -666,6 +675,8 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                             status=RunStatus.COMPLETED,
                             run_id=restore_run_id,
                             workflow_id=restore_run_id,
+                            log=build_restored_run_log(graph.name or "", restore_run_id),
+                            restored=True,
                         )
                     )
                     continue
