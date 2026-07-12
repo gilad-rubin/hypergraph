@@ -62,7 +62,7 @@ class _SpanState:
     depth: int = 0
     parent_span_id: str | None = None
     is_map: bool = False
-    map_size: int = 0
+    map_size: int | None = None
     completed: int = 0
     map_parent: str | None = None
     failures: int = 0
@@ -202,6 +202,8 @@ class _ProgressTracker:
 
     def _map_view(self, span_id: str) -> _TaskView:
         info = self.spans[span_id]
+        if info.map_size is None:
+            raise RuntimeError("Cannot render progress for a map without a known size.")
         return _TaskView(
             key=span_id,
             description=self._map_description(info.display_name, info.depth),
@@ -379,7 +381,7 @@ class _ProgressTracker:
         message: _ProgressMessage | None = None
         if span_info.map_parent:
             map_info = self.spans.get(span_info.map_parent)
-            if map_info is not None:
+            if map_info is not None and map_info.map_size is not None:
                 map_info.completed += 1
                 if event.status in (RunStatus.FAILED, RunStatus.PARTIAL):
                     map_info.failures += 1

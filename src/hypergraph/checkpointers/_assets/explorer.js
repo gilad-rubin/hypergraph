@@ -18,21 +18,35 @@
   }
   var data=JSON.parse(dataEl.textContent||"{}");
   var config=JSON.parse(configEl.textContent||"{}");
-  var runs=(data.runs||[]);
-  var stepsByRun=(data.steps_by_run||{});
+  var hasOwn=Object.prototype.hasOwnProperty;
+  var ownValue=function(object, key){
+    return object&&hasOwn.call(object,key)?object[key]:undefined;
+  };
+  var runs=Array.isArray(data.runs)?data.runs:[];
+  var stepsByRun=data.steps_by_run&&typeof data.steps_by_run==="object"?data.steps_by_run:null;
+  var stepsFor=function(runId){
+    var steps=ownValue(stepsByRun,runId);
+    return Array.isArray(steps)?steps:[];
+  };
   var statusColors=config.status_palette;
   var defaultStatusColors=config.default_status_colors;
   if(!statusColors||!defaultStatusColors) {
     throw new Error("Checkpointer explorer status palette is missing.");
   }
-  root.__hgExplorerBound=true;
-  var runsById={};
-  var childrenByParent={};
+  var runsById=Object.create(null);
+  var childrenByParent=Object.create(null);
+  var runFor=function(runId){
+    return ownValue(runsById,runId)||null;
+  };
+  var childrenFor=function(runId){
+    var children=ownValue(childrenByParent,runId);
+    return Array.isArray(children)?children:[];
+  };
   for(var i=0;i<runs.length;i++) {
     var run=runs[i];
     runsById[run.id]=run;
     if(run.parent_run_id) {
-      if(!childrenByParent[run.parent_run_id]) childrenByParent[run.parent_run_id]=[];
+      if(!hasOwn.call(childrenByParent,run.parent_run_id)) childrenByParent[run.parent_run_id]=[];
       childrenByParent[run.parent_run_id].push(run.id);
     }
   }
@@ -64,10 +78,10 @@
   };
   var runButton=function(run){
     var active=state.runId===run.id;
-    var stepCount=(stepsByRun[run.id]||[]).length;
-    var childCount=(childrenByParent[run.id]||[]).length;
+    var stepCount=stepsFor(run.id).length;
+    var childCount=childrenFor(run.id).length;
     return (
-      '<button type="button" data-run-target="'+esc(run.id)+'" style="text-align:left; padding:10px 12px; border-radius:10px; border:1px solid '+(active?'#2563eb':'#e5e7eb')+'; background:'+(active?'#eff6ff':'#ffffff')+'; cursor:pointer">' +
+      '<button type="button" data-run-target="'+esc(run.id)+'" aria-label="'+esc(run.id)+'" style="text-align:left; padding:10px 12px; border-radius:10px; border:1px solid '+(active?'#2563eb':'#e5e7eb')+'; background:'+(active?'#eff6ff':'#ffffff')+'; cursor:pointer">' +
       '<div style="display:flex; justify-content:space-between; gap:8px; align-items:center">' +
       '<span style="font-weight:700; font-family:ui-monospace, monospace; color:#111827">'+esc(run.id)+'</span>' +
       badge(run.status) +
@@ -81,14 +95,14 @@
   };
   var relatedLineage=function(run){
     var ids=[];
-    var seen={};
+    var seen=Object.create(null);
     var current=run;
     while(current){
       if(seen[current.id]) break;
       seen[current.id]=true;
       ids.unshift(current.id);
       var parentId=current.forked_from||current.retry_of;
-      current=parentId ? runsById[parentId] : null;
+      current=parentId?runFor(parentId):null;
     }
     var descendants=[];
     for(var i=0;i<runs.length;i++) {
@@ -131,8 +145,8 @@
       badge(run.status) +
       (lineageParent?'<button type="button" data-run-target="'+esc(lineageParent)+'" style="padding:6px 10px; border-radius:8px; border:1px solid #e5e7eb; background:#ffffff; cursor:pointer">Open source</button>':'') +
       '</div></div>';
-    var steps=(stepsByRun[run.id]||[]);
-    var children=(childrenByParent[run.id]||[]);
+    var steps=stepsFor(run.id);
+    var children=childrenFor(run.id);
     summaryEl.innerHTML = [
       summaryCard('Duration', esc(fmtDuration(run.duration_ms))),
       summaryCard('Steps', esc(String(steps.length||run.node_count||0))),
@@ -146,8 +160,8 @@
     }).join('');
   };
   var renderOverview=function(run){
-    var steps=(stepsByRun[run.id]||[]);
-    var children=(childrenByParent[run.id]||[]);
+    var steps=stepsFor(run.id);
+    var children=childrenFor(run.id);
     var items=[
       ['Created', fmtDate(run.created_at)],
       ['Completed', fmtDate(run.completed_at)],
@@ -162,7 +176,7 @@
     meta += '</div>';
     var childHtml = children.length
       ? '<div style="margin-top:12px"><div style="font-weight:700; margin-bottom:6px">Child Runs</div>' +
-        children.map(function(id){ var child=runsById[id]; return child?'<div style="margin:4px 0"><button type="button" data-run-target="'+esc(id)+'" style="padding:0; border:none; background:none; color:#2563eb; cursor:pointer; font-family:ui-monospace, monospace">'+esc(id)+'</button> '+badge(child.status)+'</div>':''; }).join('') +
+        children.map(function(id){ var child=runFor(id); return child?'<div style="margin:4px 0"><button type="button" data-run-target="'+esc(id)+'" style="padding:0; border:none; background:none; color:#2563eb; cursor:pointer; font-family:ui-monospace, monospace">'+esc(id)+'</button> '+badge(child.status)+'</div>':''; }).join('') +
         '</div>'
       : '';
     var stepSummary = steps.length
@@ -173,7 +187,7 @@
     return meta + childHtml + stepSummary;
   };
   var renderSteps=function(run){
-    var steps=(stepsByRun[run.id]||[]);
+    var steps=stepsFor(run.id);
     if(!steps.length) return '<div style="color:#6b7280">No steps loaded for this run.</div>';
     if(state.stepIndex===null) state.stepIndex=steps[0].index;
     var selected=null;
@@ -225,7 +239,7 @@
     var rel=relatedLineage(run);
     var ancestorHtml=rel.ancestors.length
       ? rel.ancestors.map(function(id){
-          var item=runsById[id];
+          var item=runFor(id);
           if(!item) return '';
           var selected=(id===run.id);
           return '<div style="margin:4px 0">'+(selected?'&rarr; ':'')+'<button type="button" data-run-target="'+esc(id)+'" style="padding:0; border:none; background:none; color:#2563eb; cursor:pointer; font-family:ui-monospace, monospace">'+esc(id)+'</button> '+badge(item.status)+'</div>';
@@ -233,7 +247,7 @@
       : '<div style="color:#6b7280">No lineage in loaded data.</div>';
     var descendantHtml=rel.descendants.length
       ? rel.descendants.map(function(id){
-          var item=runsById[id];
+          var item=runFor(id);
           return item?'<div style="margin:4px 0"><button type="button" data-run-target="'+esc(id)+'" style="padding:0; border:none; background:none; color:#2563eb; cursor:pointer; font-family:ui-monospace, monospace">'+esc(id)+'</button> '+badge(item.status)+'</div>':'';
         }).join('')
       : '<div style="color:#6b7280">No direct fork/retry descendants in loaded data.</div>';
@@ -259,11 +273,11 @@
   };
   var render=function(){
     renderRunList();
-    var run=state.runId ? runsById[state.runId] : null;
+    var run=state.runId?runFor(state.runId):null;
     renderHeader(run);
     renderBody(run);
   };
-  root.addEventListener('click', function(event){
+  var onClick=function(event){
     var runTarget=event.target.closest('[data-run-target]');
     if(runTarget){
       state.runId=runTarget.getAttribute('data-run-target');
@@ -285,6 +299,8 @@
       state.stepIndex=Number(stepTarget.getAttribute('data-step-index'));
       render();
     }
-  });
+  };
   render();
+  root.addEventListener('click',onClick);
+  root.__hgExplorerBound=true;
 })();
