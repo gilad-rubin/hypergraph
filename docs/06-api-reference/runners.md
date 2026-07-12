@@ -478,6 +478,9 @@ governs which DataFrame columns feed graph inputs (every DataFrame column
 passes through either way), while `graph.select(...)` governs which output
 columns appear.
 
+Selected emit-only ordering signals never become DataFrame columns, matching
+`run()`.
+
 ```python
 graph = Graph([clean, count], name="text_pipeline").select("word_count")
 

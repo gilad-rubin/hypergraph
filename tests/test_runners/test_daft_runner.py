@@ -392,6 +392,79 @@ def test_daft_runner_map_dataframe_select_prunes_renamed_multi_output_graphnode(
     assert result_df.collect().to_pydict()["public_lo"] == [4, 9]
 
 
+def test_daft_runner_map_dataframe_select_emit_only_keeps_passthrough_columns():
+    """Selecting only an emit signal should add no DataFrame output column."""
+    import daft
+
+    @node(output_name="value", emit="finished")
+    def produce_value(x: int) -> int:
+        return x + 1
+
+    graph = Graph([produce_value], name="df_select_emit_only").select("finished")
+    runner = DaftRunner()
+    run_result = runner.run(graph, {"x": 2})
+    df = daft.from_pydict({"x": [2], "passthrough": ["keep"]})
+
+    result_df = runner.map_dataframe(graph, df, columns=["x"])
+
+    assert result_df.column_names == ["x", "passthrough"]
+    assert result_df.collect().to_pydict() == {"x": [2], "passthrough": ["keep"]}
+    assert result_df.column_names[len(df.column_names) :] == list(run_result.values)
+
+
+def test_daft_runner_map_dataframe_select_mixed_emit_preserves_data_order():
+    """Emit-only selections are omitted without reordering selected data outputs."""
+    import daft
+
+    @node(output_name=("left", "right"), emit="finished")
+    def split_value(x: int) -> tuple[int, int]:
+        return x - 1, x + 1
+
+    graph = Graph([split_value], name="df_select_mixed_emit").select(
+        "right",
+        "finished",
+        "left",
+    )
+    runner = DaftRunner()
+    run_result = runner.run(graph, {"x": 5})
+    df = daft.from_pydict({"x": [5], "passthrough": ["keep"]})
+
+    result_df = runner.map_dataframe(graph, df, columns=["x"])
+
+    assert result_df.column_names == ["x", "passthrough", "right", "left"]
+    assert result_df.collect().to_pydict() == {
+        "x": [5],
+        "passthrough": ["keep"],
+        "right": [6],
+        "left": [4],
+    }
+    assert result_df.column_names[len(df.column_names) :] == list(run_result.values)
+
+
+def test_daft_runner_map_dataframe_select_keeps_data_name_also_emitted():
+    """A name emitted by one node remains data when another node produces it."""
+    import daft
+
+    @node(output_name="seed", emit="shared")
+    def emit_shared(x: int) -> int:
+        return x + 1
+
+    @node(output_name="shared", wait_for="shared")
+    def produce_shared(seed: int) -> int:
+        return seed * 2
+
+    graph = Graph([emit_shared, produce_shared], name="df_select_emit_data_overlap").select("shared")
+    runner = DaftRunner()
+    run_result = runner.run(graph, {"x": 2})
+    df = daft.from_pydict({"x": [2], "passthrough": ["keep"]})
+
+    result_df = runner.map_dataframe(graph, df, columns=["x"])
+
+    assert result_df.column_names == ["x", "passthrough", "shared"]
+    assert result_df.collect().to_pydict()["shared"] == [6]
+    assert result_df.column_names[len(df.column_names) :] == list(run_result.values)
+
+
 def test_daft_runner_rejects_cycle_graph():
     """DaftRunner should reject graphs with cycles/gates."""
     from hypergraph import END, route

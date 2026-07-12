@@ -294,7 +294,8 @@ class DaftRunner(BaseRunner):
             from graph execution. If the graph has an output selection set
             via ``graph.select(...)``, only the selected outputs are added —
             unselected (intermediate) output columns are projected away,
-            matching ``run()`` and ``map()``.
+            matching ``run()`` and ``map()``. Selected emit-only ordering
+            signals are not materialized as DataFrame columns.
 
         Note:
             ``columns=`` and ``graph.select(...)`` compose independently:
@@ -524,7 +525,9 @@ def _project_selected_outputs(
     """
     if graph.selected is None:
         return result_df
-    return result_df.select(*input_column_names, *graph.selected)
+    emit_only_outputs = graph._get_emit_only_outputs()
+    selected_data_outputs = tuple(output for output in graph.selected if output not in emit_only_outputs)
+    return result_df.select(*input_column_names, *selected_data_outputs)
 
 
 def _check_column_overlap(
