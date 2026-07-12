@@ -93,6 +93,32 @@ Hypergraph emits:
 - Span events for supersteps, routing, cache hits, pauses, stops, forks, resumes, and retries
 - Explicit attributes such as `workflow_id`, `run_id`, `item_index`, `graph_name`, `node_name`, and batch summary counts
 
+### Tag Spans and Keep the Global Tracer Untouched
+
+`OpenTelemetryProcessor` accepts two constructor options for embedding
+hypergraph telemetry inside a host platform:
+
+```python
+from opentelemetry.sdk.trace import TracerProvider
+from hypergraph.events.otel import OpenTelemetryProcessor
+
+provider = TracerProvider()  # private provider — configure exporters yourself
+
+processor = OpenTelemetryProcessor(
+    extra_attributes={"deployment.environment": "staging"},
+    tracer_provider=provider,
+)
+```
+
+- `extra_attributes` is merged onto **every** span the processor creates —
+  run root spans (`graph …`/`map …`) and node spans alike. All spans rather
+  than the root only: it is cheap, and lets backends filter on any span.
+  Hypergraph's own attributes win on key collisions.
+- `tracer_provider` writes spans on the provider you pass instead of the
+  global one. The global tracer provider is neither consulted nor modified —
+  a host can keep its provider fully private. With the default `None`, the
+  tracer is looked up on the global provider exactly as before.
+
 Typical hierarchy:
 
 ```text
@@ -213,6 +239,45 @@ result = await runner.run(graph, inputs,
 ```
 
 The async runner calls `on_event_async` when available, falling back to `on_event` for sync processors. You can mix sync and async processors in the same list.
+
+## Carry Processors on the Graph
+
+Instead of threading `event_processors=` through every call site, a graph can
+carry its own default processors. The instrumented graph survives being handed
+to any runner:
+
+```python
+instrumented = graph.with_processors(OpenTelemetryProcessor())
+
+SyncRunner().run(instrumented, inputs)                  # spans exported
+await AsyncRunner().map(instrumented, items, map_over="x")  # spans exported
+```
+
+`with_processors(...)` returns a **new** graph (immutable, like `bind()`), and
+is accumulative — each call appends to what the graph already carries. The
+repr shows what a graph carries:
+
+```python
+>>> instrumented
+Graph: my_graph | 3 nodes | 2 edges | no cycles · 1 processor
+```
+
+Two contracts hold (see the [Events API Reference](../06-api-reference/events.md#overview)):
+
+1. Processors observe only and are failure-isolated — a raising processor is
+   logged, never breaking the run.
+2. Carried processors **merge** with call-site processors, never replace:
+   runners dispatch to `[*graph.default_event_processors, *event_processors]`.
+
+Notes:
+
+- `map()` delivers the top-level map events and every per-item event to
+  carried processors; `map_iter()` delegates through `run()` per item, so
+  carried processors observe each item (there is no top-level map span).
+- Nested `GraphNode` sub-runs forward carried processors like call-site ones,
+  so an outer graph's processor observes inner-graph events too.
+- `DaftRunner` does not support events — it warns and ignores carried
+  processors, exactly as it does for explicit `event_processors`.
 
 ## Multiple Processors
 
