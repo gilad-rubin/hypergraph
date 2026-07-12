@@ -10,7 +10,7 @@ from __future__ import annotations
 from hypergraph import AsyncRunner, Graph, InterruptNode, node
 from hypergraph.checkpointers import MemoryCheckpointer
 from hypergraph.checkpointers.types import StepStatus
-from hypergraph.runners._shared.helpers import plan_interrupt_batch
+from hypergraph.runners._shared.scheduling import plan_interrupt_batch
 
 
 @node(output_name="side_out")

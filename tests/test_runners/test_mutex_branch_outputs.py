@@ -6,13 +6,10 @@ import pytest
 
 from hypergraph import AsyncRunner, Graph, RunStatus, SyncRunner, ifelse, node
 from hypergraph.checkpointers.types import Checkpoint, StepRecord, StepStatus
-from hypergraph.runners._shared.helpers import (
-    _has_input,
-    _unversioned_execution_can_own_value,
-    apply_node_result,
-    initialize_state,
-)
+from hypergraph.runners._shared.readiness import apply_node_result
+from hypergraph.runners._shared.state_restore import initialize_state
 from hypergraph.runners._shared.types import GraphState, NodeExecution
+from hypergraph.runners._shared.value_resolution import _unversioned_execution_can_own_value, has_input
 
 
 def same_graph() -> Graph:
@@ -173,7 +170,7 @@ def test_missing_output_versions_do_not_accept_later_undeclared_writer() -> None
         },
     )
 
-    assert not _has_input("o1", consumer, graph, state)
+    assert not has_input("o1", consumer, graph, state)
 
 
 def test_missing_output_versions_still_accept_current_declared_writer() -> None:
@@ -192,7 +189,7 @@ def test_missing_output_versions_still_accept_current_declared_writer() -> None:
         },
     )
 
-    assert _has_input("o1", consumer, graph, state)
+    assert has_input("o1", consumer, graph, state)
 
 
 def test_unversioned_owner_uses_explicit_execution_sequence() -> None:

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.runners._shared.helpers import collect_as_lists, graphnode_child_workflow_id, map_inputs_to_func_params
+from hypergraph.runners._shared.outputs import collect_as_lists
+from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id
 
 if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
@@ -44,7 +45,7 @@ class SyncGraphNodeExecutor:
             Dict mapping output names to their values
         """
         # Translate renamed input keys back to original inner graph names
-        inner_inputs = map_inputs_to_func_params(node, inputs)
+        inner_inputs = node.map_inputs_to_params(inputs)
         child_workflow_id = graphnode_child_workflow_id(ctx.workflow_id, node.name, state)
         map_config = node.map_config
 

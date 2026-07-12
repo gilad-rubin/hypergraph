@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
 
-from hypergraph.runners._shared.helpers import _UNSET_SELECT
+from hypergraph.runners._shared.outputs import SELECT_UNSET
 from hypergraph.runners._shared.types import ErrorHandling, MapResult, RunnerCapabilities, RunResult
 
 if TYPE_CHECKING:
@@ -41,7 +41,7 @@ class BaseRunner(ABC):
         graph: Graph,
         values: dict[str, Any] | None = None,
         *,
-        select: str | list[str] = _UNSET_SELECT,
+        select: str | list[str] = SELECT_UNSET,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
@@ -82,7 +82,7 @@ class BaseRunner(ABC):
         map_over: str | list[str],
         map_mode: Literal["zip", "product"] = "zip",
         clone: bool | list[str] = False,
-        select: str | list[str] = _UNSET_SELECT,
+        select: str | list[str] = SELECT_UNSET,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         event_processors: list[EventProcessor] | None = None,
         show_progress: bool | None = None,

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.runners._shared.helpers import map_inputs_to_func_params, wrap_outputs
+from hypergraph.runners._shared.outputs import wrap_outputs
 from hypergraph.runners._shared.routing_validation import validate_routing_decision
 
 if TYPE_CHECKING:
@@ -29,7 +29,7 @@ def execute_ifelse(
     Returns:
         Empty dict (gates produce no data outputs).
     """
-    func_inputs = map_inputs_to_func_params(node, inputs)
+    func_inputs = node.map_inputs_to_params(inputs)
     result = node.func(**func_inputs)
 
     if not isinstance(result, bool):
@@ -57,7 +57,7 @@ def execute_route(
     Returns:
         Empty dict (gates produce no data outputs).
     """
-    func_inputs = map_inputs_to_func_params(node, inputs)
+    func_inputs = node.map_inputs_to_params(inputs)
     decision = node.func(**func_inputs)
 
     if decision is None and node.fallback is not None:

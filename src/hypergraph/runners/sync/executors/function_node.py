@@ -5,10 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.cache_observer import node_cache_observer
-from hypergraph.runners._shared.helpers import (
-    map_inputs_to_func_params,
-    wrap_outputs,
-)
+from hypergraph.runners._shared.outputs import wrap_outputs
 
 if TYPE_CHECKING:
     from hypergraph.nodes.function import FunctionNode
@@ -42,7 +39,7 @@ class SyncFunctionNodeExecutor:
             Dict mapping output names to their values
         """
         # Map renamed inputs back to original function parameter names
-        func_inputs = map_inputs_to_func_params(node, inputs)
+        func_inputs = node.map_inputs_to_params(inputs)
 
         # Inject NodeContext if the node declares one
         if getattr(node, "_context_param", None) is not None:

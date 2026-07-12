@@ -22,7 +22,7 @@ from hypergraph.exceptions import (
     WorkflowAlreadyCompletedError,
     WorkflowForkError,
 )
-from hypergraph.runners._shared.helpers import get_ready_nodes
+from hypergraph.runners._shared.readiness import get_ready_nodes
 from hypergraph.runners._shared.types import GraphState
 
 aiosqlite = pytest.importorskip("aiosqlite")

@@ -2,7 +2,7 @@
 
 from hypergraph import AsyncRunner, Graph, RunStatus, SyncRunner, node
 from hypergraph.nodes.gate import END, route
-from hypergraph.runners._shared.helpers import build_execution_plan, compute_execution_scope
+from hypergraph.runners._shared.scheduling import build_execution_plan, compute_execution_scope
 
 
 class TestExecutionPlan:

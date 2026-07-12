@@ -14,7 +14,7 @@ from hypergraph.exceptions import (
     WorkflowStoppedError,
 )
 from hypergraph.runners._shared.event_metadata import RunLineage
-from hypergraph.runners._shared.helpers import is_interrupt_resume_payload
+from hypergraph.runners._shared.state_restore import is_interrupt_resume_payload
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph

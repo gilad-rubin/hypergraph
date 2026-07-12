@@ -220,7 +220,7 @@ class GraphNodeOperation(DaftOperation):
     def apply(self, df: daft.DataFrame) -> daft.DataFrame:
         import daft as daft_mod
 
-        from hypergraph.runners._shared.helpers import address_for_node_input
+        from hypergraph.runners._shared.value_resolution import address_for_node_input
 
         node = self.node
         # GraphNode inputs are already projected to DataFrame column names:
@@ -245,15 +245,12 @@ class GraphNodeOperation(DaftOperation):
 
         @daft_mod.func(return_dtype=daft_mod.DataType.python())
         def execute_graph(*args: Any) -> Any:
-            from hypergraph.runners._shared.helpers import (
-                collect_as_lists,
-                map_inputs_to_func_params,
-            )
+            from hypergraph.runners._shared.outputs import collect_as_lists
             from hypergraph.runners.sync.runner import SyncRunner
 
             raw_inputs = {**bound, **dict(zip(inner_param_names, args, strict=True))}
             # Translate renamed input keys back to original inner graph names
-            inner_inputs = map_inputs_to_func_params(node, raw_inputs)
+            inner_inputs = node.map_inputs_to_params(raw_inputs)
             runner = SyncRunner(cache=cache)
 
             if map_config:
@@ -309,7 +306,7 @@ def create_operation(
     """Route a node to the appropriate DaftOperation class."""
     from hypergraph.nodes.function import FunctionNode
     from hypergraph.nodes.graph_node import GraphNode
-    from hypergraph.runners._shared.helpers import address_for_node_input
+    from hypergraph.runners._shared.value_resolution import address_for_node_input
 
     # Determine which bound values apply to this node. GraphNode bound values
     # are keyed by their resolved parent-facing address; store them under the

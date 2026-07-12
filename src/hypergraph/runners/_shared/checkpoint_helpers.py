@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.checkpointers.types import StepRecord, StepStatus, _utcnow
-from hypergraph.runners._shared.helpers import graphnode_child_workflow_id
+from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id
 
 if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Checkpoint

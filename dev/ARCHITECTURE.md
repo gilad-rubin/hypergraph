@@ -93,13 +93,18 @@ Practical mental model:
 - `checkpoint_helpers.py` — Build persisted `StepRecord`s from runtime state
 - `event_helpers.py` — Emit lifecycle events
 - `gate_execution.py` — Route/ifelse decision execution
-- `helpers.py` — Input resolution, output storage, active-scope computation, SCC planning, and localized readiness scheduling
 - `input_normalization.py` — Normalize user inputs for execution
+- `map_inputs.py` — Map input cloning and zip/product expansion
+- `outputs.py` — Output wrapping, selection, and mapped-output collection
 - `protocols.py` — executor protocols for sync and async runners
+- `readiness.py` — Gate activation, readiness, staleness, and result application
 - `run_log.py` — always-on `RunLog` collection helpers
+- `scheduling.py` — Active-scope computation, SCC planning, frontier scheduling, and interrupt batching
+- `state_restore.py` — Fresh/checkpoint state initialization, coercion, and workflow IDs
 - `template_sync.py` / `template_async.py` — Template Method base for runner lifecycle. Threads runtime select, entrypoint config, and checkpoint semantics into validation and execution.
 - `types.py` — `GraphState`, `RunResult`, `RunStatus`, `PauseInfo`, `RunLog`, `MapLog`, `ExecutionContext`
 - `validation.py` — Runner-level validation, runtime select resolution, InputSpec scoping
+- `value_resolution.py` — Input addressing, availability, precedence, and collection
 
 **Rule**: Sync and async runners have parallel implementations. Adding a feature to one means adding it to both.
 
