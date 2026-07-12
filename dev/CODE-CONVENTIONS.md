@@ -115,6 +115,7 @@ Every user-facing type has two representations:
 
 Rules:
 - `__repr__` must be scannable: type name, key fields, pipe-separated
+- New `_repr_html_` methods must start with the `plain_reprs()` guard from `hypergraph._repr` (return `None` when it is `True`, so plain display mode falls back to the text repr); the sweep test in `tests/test_display_mode.py` enforces this
 - `_repr_html_` uses inline CSS (no `<style>` tags — stripped by some renderers)
 - Enums show `.value` (`"completed"`), never `<Enum.X: 'y'>`
 - Durations formatted via `format_duration_ms()` from `_utils.py`

@@ -1,5 +1,7 @@
 # Execution & Runtime Types
 
+> **Status: design intent** (written 2026-05). This spec describes the target design, not current behavior. The implemented API is documented under `docs/`.
+
 **Reference for execution state, results, events, and observability types.**
 
 These types represent the runtime layer of hypergraph - what happens when graphs execute.

@@ -122,25 +122,58 @@ result = await runner.run(rag_pipeline, {"query": "How do I use hypergraph?"})
 
 ## Consuming Streaming Events
 
-`ctx.stream()` emits `StreamingChunkEvent`s through the event system. Consume them with an event processor or via `.iter()`:
+`ctx.stream()` emits `StreamingChunkEvent`s through the event system. Consume them with an event processor:
 
 ```python
 from hypergraph import TypedEventProcessor, StreamingChunkEvent
 
-# Option 1: Event processor (works with run())
 class StreamToWebSocket(TypedEventProcessor):
     def on_streaming_chunk(self, event: StreamingChunkEvent):
         websocket.send(event.chunk)
 
 result = await runner.run(graph, values, event_processors=[StreamToWebSocket()])
-
-# Option 2: .iter() for interactive sessions (Phase 2)
-async with runner.iter(graph, workflow_id="chat-1", **values) as handle:
-    async for event in handle:
-        match event:
-            case StreamingChunkEvent(chunk=chunk):
-                send_to_client(chunk)
 ```
+
+> **Planned, not implemented:** a `runner.iter()` API that exposes a run's events as an async iterator is a design decision, not a shipped feature — no runner has an `.iter()` method today. See [ADR 0002](../adr/0002-stream-materialization-through-runner-with-sinks.md) for the decision record. Until it ships, event processors are the way to consume streaming chunks.
+
+## Streaming Batch Results with map_iter()
+
+Streaming also applies at the batch level. When you map a graph over many inputs, `runner.map_iter()` yields each item's `RunResult` as it completes — instead of buffering the whole batch into one `MapResult` like `runner.map()` does:
+
+```python
+queries = [
+    "How do I install hypergraph?",
+    "What is a nested graph?",
+    "How does caching work?",
+]
+
+runner = AsyncRunner()
+
+async for index, result in runner.map_iter(
+    rag_pipeline,
+    {"query": queries},
+    map_over="query",
+):
+    send_to_client(index, result["response"])
+```
+
+- **Incremental** — each `(index, result)` pair is yielded as soon as that item finishes; `index` is the input item's position, so you can correlate results even when they arrive out of order.
+- **Bounded memory** — nothing accumulates: the sync form pulls one input item at a time through a lazy generator; the async form buffers completed results in a bounded queue, so a slow consumer pauses production (backpressure).
+- **Concurrent (async)** — `AsyncRunner.map_iter()` runs items concurrently and yields in completion order; pass `max_concurrency=` to cap the parallelism. `SyncRunner.map_iter()` runs items one at a time and yields in input order.
+- **Error handling** — the default `error_handling="raise"` re-raises when a failed item is reached; `error_handling="continue"` yields the failed `RunResult` and keeps going.
+
+The sync form is a plain generator:
+
+```python
+from hypergraph import SyncRunner
+
+runner = SyncRunner()
+
+for index, result in runner.map_iter(rag_pipeline, {"query": queries}, map_over="query"):
+    print(f"[{index}] {result['response']}")
+```
+
+See [Batch Processing](../05-how-to/batch-processing.md) for the buffering counterpart, `runner.map()`.
 
 ## Multi-Turn Streaming with Stop
 

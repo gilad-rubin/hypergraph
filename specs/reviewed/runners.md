@@ -1,5 +1,7 @@
 # Runners
 
+> **Status: design intent** (written 2026-05). This spec describes the target design, not current behavior. The implemented API is documented under `docs/`.
+
 **Graphs define structure. Runners execute them.**
 
 A `Graph` is a pure data structure describing computation flow. A `Runner` takes that structure and actually executes it—handling scheduling, concurrency, caching, and error propagation.

@@ -80,7 +80,8 @@ def visualize(
         show_bounded_inputs: Whether to include bound INPUT/INPUT_GROUP nodes.
         show_external_inputs: Deprecated alias for ``show_inputs``.
         filepath: Path to save standalone HTML (default: display in notebook).
-        _debug_overlays: Internal flag to enable debug overlays.
+        _debug_overlays: Internal metadata-only diagnostic flag; it does not
+            enable visible overlays.
 
     Returns:
         A cell-output object when displaying in a notebook; ``None`` when

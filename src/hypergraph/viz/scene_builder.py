@@ -80,8 +80,9 @@ def build_initial_scene(
         scene_nodes.append(scene_node)
 
     for ext in ir.external_inputs:
-        # Bound external inputs are hidden by default; the renderer opts in
-        # via show_bounded_inputs=True (e.g. in debug overlays).
+        # Bound external inputs are hidden by default; callers opt in via
+        # show_bounded_inputs=True, independently of the metadata-only
+        # _debug_overlays flag.
         if ext.is_bound and not show_bounded_inputs:
             continue
         # show_inputs=False removes INPUT nodes (and their edges) entirely,
