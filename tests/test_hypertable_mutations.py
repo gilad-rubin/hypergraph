@@ -658,7 +658,7 @@ class TestFingerprintCorrectness:
 
         table_a._ensure_analyzed()
         graph_inputs = {"text": "hello"}
-        fp_a = table_a._compute_row_fingerprint(graph_inputs)
+        fp_a = table_a._provenance_policy.root_fingerprint(graph_inputs)
 
         emb_b = Embedder(model_name="model-b", dim=3)
         table_b = (
@@ -672,7 +672,7 @@ class TestFingerprintCorrectness:
         )
 
         table_b._ensure_analyzed()
-        fp_b = table_b._compute_row_fingerprint(graph_inputs)
+        fp_b = table_b._provenance_policy.root_fingerprint(graph_inputs)
         assert fp_a != fp_b
 
 

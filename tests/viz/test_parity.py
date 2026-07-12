@@ -268,6 +268,7 @@ def _fanout_ir(inner_inputs: tuple[str, ...]):
     from hypergraph import Graph
     from hypergraph.graph import Graph as _Graph
     from hypergraph.materialization import HyperTable
+    from hypergraph.materialization._hypertable_viz import fanout_map_fields, fanout_viz_edges
     from hypergraph.materialization._lancedb_store import LanceDBStore
 
     store = LanceDBStore(tempfile.mkdtemp() + "/store")
@@ -277,9 +278,9 @@ def _fanout_ir(inner_inputs: tuple[str, ...]):
     nodes = list(table._graph.nodes.values())
     nodes.extend(table._map_over_nodes)
     combined = _Graph(nodes, name=table._spec.name)
-    extra = table._fanout_viz_edges()
+    extra = fanout_viz_edges(table._graph, table._spec, table._map_over_nodes)
     flat = combined.to_flat_graph(extra_edges=extra)
-    for (src, tgt), fields in table._fanout_map_fields().items():
+    for (src, tgt), fields in fanout_map_fields(table._graph, table._spec, table._map_over_nodes).items():
         if flat.has_edge(src, tgt):
             flat[src][tgt]["map_fields"] = list(fields)
     return build_graph_ir(flat)

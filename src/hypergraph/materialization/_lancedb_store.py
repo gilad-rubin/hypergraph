@@ -194,6 +194,7 @@ class LanceDBStore(TableStore):
             tbl = self._tables[table_name]
             schema = tbl.schema
 
+        record_batches: list[pa.RecordBatch] = []
         for row in rows:
             for field_obj in schema:
                 if field_obj.name not in row:
@@ -210,15 +211,19 @@ class LanceDBStore(TableStore):
                     arrays.append(pa.array([inner_arr], type=field_obj.type))
                 else:
                     arrays.append(pa.array([val], type=field_obj.type))
+            record_batches.append(pa.record_batch(arrays, schema=schema))
 
-            record_batch = pa.record_batch(arrays, schema=schema)
-            tbl.add(record_batch)
+        tbl.add(pa.Table.from_batches(record_batches, schema=schema))
 
     def delete_rows(self, table_name: str, where: RowPredicate) -> int:
         tbl = self._readable(table_name)
         if tbl is None:
             return 0
-        at = tbl.to_arrow()
+        predicate_columns = list(dict.fromkeys(self._predicate_columns(where)))
+        available = {field.name for field in tbl.schema}
+        if any(column not in available for column in predicate_columns):
+            return 0
+        at = self._read_arrow(tbl, predicate_columns, extra=[])
         matching = len(_apply_arrow_predicate(at, where))
         if matching == 0:
             return 0
@@ -230,7 +235,7 @@ class LanceDBStore(TableStore):
         tbl = self._readable(table_name)
         if tbl is None:
             return 0
-        at = tbl.to_arrow()
+        at = self._read_arrow(tbl, ["_write_gen"], extra=[])
         if len(at) == 0:
             return 0
         return pc.max(at.column("_write_gen")).as_py()
@@ -305,17 +310,10 @@ class LanceDBStore(TableStore):
         new_columns = {name: arrow_type for name, arrow_type in new_columns.items() if name not in existing}
         if not new_columns:
             return [f.name for f in tbl.schema]
-        existing_data = tbl.to_arrow()
-        new_fields = list(tbl.schema) + [pa.field(name, arrow_type) for name, arrow_type in new_columns.items()]
-        new_schema = pa.schema(new_fields)
-        self._db.drop_table(table_name)
-        tbl = self._db.create_table(table_name, schema=new_schema)
-        if len(existing_data) > 0:
-            for name, arrow_type in new_columns.items():
-                existing_data = existing_data.append_column(name, pa.array([None] * len(existing_data), type=arrow_type))
-            tbl.add(existing_data)
-        self._tables[table_name] = tbl
-        return [f.name for f in new_schema]
+        new_fields = [pa.field(name, arrow_type, nullable=True) for name, arrow_type in new_columns.items()]
+        tbl.add_columns(pa.schema(new_fields))
+        tbl.checkout_latest()
+        return [f.name for f in tbl.schema]
 
     # --- Internal ---
 

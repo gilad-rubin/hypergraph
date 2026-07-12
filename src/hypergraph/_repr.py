@@ -247,25 +247,21 @@ _BORDER_LIGHT = ALIGNUI_WIDGET_THEME["border_sub"]
 _LINK = ALIGNUI_WIDGET_THEME["link"]
 _ERROR_BG = ALIGNUI_WIDGET_THEME["error_bg"]
 
-STATUS_COLORS: dict[str, str] = {
-    "completed": ALIGNUI_WIDGET_THEME["success_text"],
-    "failed": ALIGNUI_WIDGET_THEME["error_text"],
-    "partial": ALIGNUI_WIDGET_THEME["warning_text"],
-    "cached": ALIGNUI_WIDGET_THEME["info_text"],
-    "restored": ALIGNUI_WIDGET_THEME["info_text"],
-    "active": ALIGNUI_WIDGET_THEME["warning_text"],
-    "paused": ALIGNUI_WIDGET_THEME["feature_text"],
+STATUS_PALETTE: dict[str, tuple[str, str]] = {
+    "completed": (ALIGNUI_WIDGET_THEME["success_text"], ALIGNUI_WIDGET_THEME["success_bg"]),
+    "failed": (ALIGNUI_WIDGET_THEME["error_text"], ALIGNUI_WIDGET_THEME["error_bg"]),
+    "partial": (ALIGNUI_WIDGET_THEME["warning_text"], ALIGNUI_WIDGET_THEME["warning_bg"]),
+    "cached": (ALIGNUI_WIDGET_THEME["info_text"], ALIGNUI_WIDGET_THEME["info_bg"]),
+    "restored": (ALIGNUI_WIDGET_THEME["info_text"], ALIGNUI_WIDGET_THEME["info_bg"]),
+    "active": (ALIGNUI_WIDGET_THEME["warning_text"], ALIGNUI_WIDGET_THEME["warning_bg"]),
+    "paused": (ALIGNUI_WIDGET_THEME["feature_text"], ALIGNUI_WIDGET_THEME["feature_bg"]),
+    # Preserve the explorer's established stopped badge instead of inventing
+    # a new theme treatment during the ownership refactor.
+    "stopped": ("#92400e", "#fff7ed"),
 }
 
-_BADGE_BG: dict[str, str] = {
-    "completed": ALIGNUI_WIDGET_THEME["success_bg"],
-    "failed": ALIGNUI_WIDGET_THEME["error_bg"],
-    "partial": ALIGNUI_WIDGET_THEME["warning_bg"],
-    "cached": ALIGNUI_WIDGET_THEME["info_bg"],
-    "restored": ALIGNUI_WIDGET_THEME["info_bg"],
-    "active": ALIGNUI_WIDGET_THEME["warning_bg"],
-    "paused": ALIGNUI_WIDGET_THEME["feature_bg"],
-}
+STATUS_COLORS: dict[str, str] = {status: colors[0] for status, colors in STATUS_PALETTE.items()}
+_BADGE_BG: dict[str, str] = {status: colors[1] for status, colors in STATUS_PALETTE.items()}
 
 # Shared inline styles
 _FONT = FONT_MONO_STYLE

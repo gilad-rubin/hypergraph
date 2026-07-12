@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from hypergraph.events._progress_renderers import (
+    _NotebookRenderer,
+    _require_rich,
+    _RichTTYRenderer,
+)
 from hypergraph.events.rich_progress import RichProgressProcessor
 from hypergraph.events.types import (
     InnerCacheEvent,
@@ -25,21 +31,17 @@ def _make_processor() -> tuple[RichProgressProcessor, MagicMock]:
     """Create a RichProgressProcessor with a mocked Progress object."""
     proc = RichProgressProcessor(transient=True, force_mode="tty")
     mock_progress = MagicMock()
-    # Mock tasks list for description updates
-    mock_progress.tasks = {}
-    # add_task returns incrementing task IDs
+    renderer = proc._renderer
+    assert isinstance(renderer, _RichTTYRenderer)
     task_counter = [0]
 
     def _add_task(desc, **kwargs):
         tid = task_counter[0]
         task_counter[0] += 1
-        mock_task = MagicMock()
-        mock_task.description = desc
-        mock_progress.tasks[tid] = mock_task
         return tid
 
     mock_progress.add_task.side_effect = _add_task
-    proc._progress = mock_progress
+    renderer._progress = mock_progress
     proc._started = True
     return proc, mock_progress
 
@@ -153,7 +155,8 @@ class TestSingleRun:
         proc.on_node_start(_node_start(node_name="load"))
         proc.on_node_end(_node_end(node_name="load"))
 
-        mock.advance.assert_called_once_with(0, 1)
+        completed = [call.kwargs["completed"] for call in mock.update.call_args_list if "completed" in call.kwargs]
+        assert completed == [1]
 
     def test_total_is_1_for_single_run(self):
         proc, mock = _make_processor()
@@ -210,8 +213,8 @@ class TestSingleRun:
 
         proc.on_inner_cache(_inner_cache(parent_span_id="inner_node", node_name="shared", hit=True))
 
-        outer_bar = proc._node_bars[proc._spans["outer_node"].node_bar_key]
-        inner_bar = proc._node_bars[proc._spans["inner_node"].node_bar_key]
+        outer_bar = proc._tracker.node_bars[proc._tracker.spans["outer_node"].node_bar_key]
+        inner_bar = proc._tracker.node_bars[proc._tracker.spans["inner_node"].node_bar_key]
 
         assert outer_bar.inner_cache_hits == 0
         assert inner_bar.inner_cache_hits == 1
@@ -257,8 +260,8 @@ class TestMapOperation:
         proc.on_run_start(_run_start(run_id="r2", span_id="item1", parent_span_id="map1"))
         proc.on_run_end(_run_end(run_id="r2", span_id="item1", parent_span_id="map1"))
 
-        # advance called on map task (task_id=0)
-        mock.advance.assert_called_with(0, 1)
+        completed = [call.kwargs["completed"] for call in mock.update.call_args_list if "completed" in call.kwargs]
+        assert completed[-1] == 1
 
     def test_node_bars_reused_across_items(self):
         proc, mock = _make_processor()
@@ -304,8 +307,9 @@ class TestMapOperation:
 
         # add_task: 1 for map bar + 1 for "load" node (reused)
         assert mock.add_task.call_count == 2
-        # advance called twice for node bar
-        assert mock.advance.call_count == 2
+        # The reused logical task receives exact completed snapshots.
+        completed = [call.kwargs["completed"] for call in mock.update.call_args_list if "completed" in call.kwargs]
+        assert completed == [1, 2]
 
     def test_child_nodes_have_tree_characters(self):
         proc, mock = _make_processor()
@@ -473,7 +477,7 @@ class TestNodeError:
             )
         )
 
-        mock.advance.assert_called()
+        assert any(call.kwargs.get("completed") == 1 for call in mock.update.call_args_list)
         stats_calls = [c for c in mock.update.call_args_list if "stats" in c.kwargs]
         assert "1✗" in stats_calls[-1].kwargs["stats"]
 
@@ -504,19 +508,22 @@ class TestLifecycle:
 class TestNotebookRefresh:
     def test_notebook_uses_manual_refresh(self):
         proc = RichProgressProcessor(force_mode="notebook")
-        live = getattr(proc._progress, "live", None)
-        assert proc._manual_notebook_refresh is True
-        assert bool(getattr(live, "auto_refresh", False)) is False
+        renderer = proc._renderer
+        assert isinstance(renderer, _NotebookRenderer)
+        assert not hasattr(renderer._progress, "live")
 
-    def test_refresh_skips_when_manual_refresh_disabled(self):
+    def test_refresh_throttles_inside_interval(self):
         proc = RichProgressProcessor(force_mode="notebook")
+        renderer = proc._renderer
+        assert isinstance(renderer, _NotebookRenderer)
         mock_progress = MagicMock()
-        proc._progress = mock_progress
-        proc._manual_notebook_refresh = False
+        renderer._progress = mock_progress
+        renderer._last_refresh = time.monotonic()
 
-        proc._refresh()
+        renderer._refresh()
 
         mock_progress.refresh.assert_not_called()
+        assert renderer._refresh_dirty is True
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +534,4 @@ class TestNotebookRefresh:
 class TestImportGuard:
     def test_raises_without_rich(self):
         with patch.dict("sys.modules", {"rich": None}), pytest.raises(ImportError, match="rich"):
-            from hypergraph.events.rich_progress import _require_rich
-
             _require_rich()

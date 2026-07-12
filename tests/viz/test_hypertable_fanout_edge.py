@@ -17,6 +17,7 @@ import pytest
 
 from hypergraph import Graph, node
 from hypergraph.materialization import HyperTable
+from hypergraph.materialization._hypertable_viz import fanout_map_fields, fanout_viz_edges
 from hypergraph.materialization._lancedb_store import LanceDBStore
 
 
@@ -53,8 +54,8 @@ def _combined_flat_graph(table: HyperTable):
     nodes = list(table._graph.nodes.values())
     nodes.extend(table._map_over_nodes)
     combined = _Graph(nodes, name=table._spec.name)
-    flat = combined.to_flat_graph(extra_edges=table._fanout_viz_edges())
-    for (src, tgt), fields in table._fanout_map_fields().items():
+    flat = combined.to_flat_graph(extra_edges=fanout_viz_edges(table._graph, table._spec, table._map_over_nodes))
+    for (src, tgt), fields in fanout_map_fields(table._graph, table._spec, table._map_over_nodes).items():
         if flat.has_edge(src, tgt):
             flat[src][tgt]["map_fields"] = list(fields)
     return flat
@@ -162,7 +163,7 @@ def test_two_children_each_get_their_own_fanout_edge(store):
     )
     table._ensure_analyzed()
 
-    edges = table._fanout_viz_edges()
+    edges = fanout_viz_edges(table._graph, table._spec, table._map_over_nodes)
 
     assert ("produce_a", "a_node", ("items_a",)) in edges
     assert ("produce_b", "b_node", ("items_b",)) in edges
@@ -192,12 +193,7 @@ def test_fanout_pairing_is_positional_not_name_matched():
     spec = analyze_table(root_graph, "doc_id", {}, map_over_nodes)
     assert [c.map_input for c in spec.children] == ["items", "items"]
 
-    table = HyperTable.__new__(HyperTable)
-    table._spec = spec
-    table._map_over_nodes = map_over_nodes
-    table._boundary_node = lambda child_spec: root_graph.nodes.get("produce_items")
-
-    edges = table._fanout_viz_edges()
+    edges = fanout_viz_edges(root_graph, spec, map_over_nodes)
 
     assert ("produce_items", "clean_node", ("items",)) in edges
     assert ("produce_items", "shout_node", ("items",)) in edges
@@ -448,22 +444,19 @@ def test_unresolvable_schema_yields_no_fields_not_a_raise():
     class _ChildSpec:
         map_input = "items"
 
-    table = HyperTable.__new__(HyperTable)
-
     class _Spec:
         children = [_ChildSpec()]
 
-    table._spec = _Spec()
-    table._map_over_nodes = [_MapNode()]
-    table._boundary_node = lambda child_spec: _RaisingProducer()
+    class _Graph:
+        nodes = {"producer": _RaisingProducer()}
 
     # Patch return_type to raise, simulating an annotation that resolves at
     # analysis time but not here.
-    import hypergraph.materialization._hypertable as ht
+    import hypergraph.materialization._hypertable_viz as hypertable_viz
 
-    original = ht.return_type
-    ht.return_type = lambda node: (_ for _ in ()).throw(NameError("Unresolved"))
+    original = hypertable_viz.return_type
+    hypertable_viz.return_type = lambda node: (_ for _ in ()).throw(NameError("Unresolved"))
     try:
-        assert table._fanout_map_fields() == {("producer", "items_node"): ()}
+        assert fanout_map_fields(_Graph(), _Spec(), [_MapNode()]) == {("producer", "items_node"): ()}
     finally:
-        ht.return_type = original
+        hypertable_viz.return_type = original

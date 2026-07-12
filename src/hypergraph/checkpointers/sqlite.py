@@ -6,7 +6,8 @@ import asyncio
 import contextlib
 import json
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -44,6 +45,100 @@ _PUBLIC_STEP_FILTER_WITH_ALIAS = (
 )
 _RETENTION_ROW_COLS = "id, step_index, superstep, node_name, values_data, created_at, completed_at"
 _DELETE_BATCH_SIZE = 500
+_STEP_UPSERT_SQL = """
+    INSERT INTO steps (
+        run_id, superstep, node_name, step_index, status,
+        input_versions, values_data, duration_ms, cached,
+        decision, error, node_type, created_at, completed_at, child_run_id, partial
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(run_id, superstep, node_name) DO UPDATE SET
+        status = excluded.status,
+        values_data = excluded.values_data,
+        duration_ms = excluded.duration_ms,
+        cached = excluded.cached,
+        decision = excluded.decision,
+        error = excluded.error,
+        node_type = excluded.node_type,
+        completed_at = excluded.completed_at,
+        partial = excluded.partial
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class _RetentionRow:
+    id: int
+    step_index: int
+    superstep: int
+    node_name: str
+    values_data: bytes | None
+    created_at: str | None
+    completed_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _RetentionPlan:
+    kept_rows: tuple[_RetentionRow, ...]
+    dropped_rows: tuple[_RetentionRow, ...]
+    baseline_superstep: int
+
+
+def _decode_retention_rows(rows: Sequence[tuple[Any, ...]]) -> tuple[_RetentionRow, ...]:
+    decoded: list[_RetentionRow] = []
+    for row in rows:
+        row_id, step_index, superstep, node_name, values_data, created_at, completed_at = row
+        decoded.append(
+            _RetentionRow(
+                id=int(row_id),
+                step_index=int(step_index),
+                superstep=int(superstep),
+                node_name=str(node_name),
+                values_data=values_data,
+                created_at=created_at,
+                completed_at=completed_at,
+            )
+        )
+    return tuple(decoded)
+
+
+def _plan_retention(
+    rows: Sequence[_RetentionRow],
+    retention: Literal["full", "latest", "windowed"],
+    window: int | None,
+) -> _RetentionPlan | None:
+    if retention == "full":
+        return None
+
+    if retention == "latest":
+        latest_by_node: dict[str, _RetentionRow] = {}
+        for row in rows:
+            if row.node_name != _RETENTION_BASELINE_NODE_NAME:
+                latest_by_node[row.node_name] = row
+        kept_rows = tuple(latest_by_node.values())
+        kept_ids = {row.id for row in kept_rows}
+        dropped_rows = tuple(row for row in rows if row.id not in kept_ids)
+        return _RetentionPlan(
+            kept_rows=kept_rows,
+            dropped_rows=dropped_rows,
+            baseline_superstep=min((row.superstep for row in kept_rows), default=0) - 1,
+        )
+
+    if retention == "windowed" and window is not None:
+        non_baseline_rows = tuple(row for row in rows if row.node_name != _RETENTION_BASELINE_NODE_NAME)
+        if not non_baseline_rows:
+            return None
+        max_superstep = max(row.superstep for row in non_baseline_rows)
+        cutoff = max_superstep - window + 1
+        if cutoff <= 0:
+            return None
+        kept_rows = tuple(row for row in non_baseline_rows if row.superstep >= cutoff)
+        dropped_rows = tuple(row for row in rows if row.node_name == _RETENTION_BASELINE_NODE_NAME or row.superstep < cutoff)
+        return _RetentionPlan(
+            kept_rows=kept_rows,
+            dropped_rows=dropped_rows,
+            baseline_superstep=cutoff - 1,
+        )
+
+    return None
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -283,23 +378,7 @@ class SqliteCheckpointer(Checkpointer):
         decision_json = json.dumps(record.decision) if record.decision is not None else None
 
         await self._db.execute(
-            """
-            INSERT INTO steps (
-                run_id, superstep, node_name, step_index, status,
-                input_versions, values_data, duration_ms, cached,
-                decision, error, node_type, created_at, completed_at, child_run_id, partial
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(run_id, superstep, node_name) DO UPDATE SET
-                status = excluded.status,
-                values_data = excluded.values_data,
-                duration_ms = excluded.duration_ms,
-                cached = excluded.cached,
-                decision = excluded.decision,
-                error = excluded.error,
-                node_type = excluded.node_type,
-                completed_at = excluded.completed_at,
-                partial = excluded.partial
-            """,
+            _STEP_UPSERT_SQL,
             (
                 record.run_id,
                 record.superstep,
@@ -1021,23 +1100,7 @@ class SqliteCheckpointer(Checkpointer):
         decision_json = json.dumps(record.decision) if record.decision is not None else None
 
         db.execute(
-            """
-            INSERT INTO steps (
-                run_id, superstep, node_name, step_index, status,
-                input_versions, values_data, duration_ms, cached,
-                decision, error, node_type, created_at, completed_at, child_run_id, partial
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(run_id, superstep, node_name) DO UPDATE SET
-                status = excluded.status,
-                values_data = excluded.values_data,
-                duration_ms = excluded.duration_ms,
-                cached = excluded.cached,
-                decision = excluded.decision,
-                error = excluded.error,
-                node_type = excluded.node_type,
-                completed_at = excluded.completed_at,
-                partial = excluded.partial
-            """,
+            _STEP_UPSERT_SQL,
             (
                 record.run_id,
                 record.superstep,
@@ -1060,10 +1123,10 @@ class SqliteCheckpointer(Checkpointer):
         self._apply_retention_policy_sync(record.run_id)
         db.commit()
 
-    def _merge_retained_state(self, rows: list[tuple[Any, ...]]) -> dict[str, Any]:
+    def _merge_retained_state(self, rows: Sequence[_RetentionRow]) -> dict[str, Any]:
         state: dict[str, Any] = {}
         for row in rows:
-            values_blob = row[4]
+            values_blob = row.values_data
             if values_blob is None:
                 continue
             values = self._serializer.deserialize(values_blob)
@@ -1071,24 +1134,28 @@ class SqliteCheckpointer(Checkpointer):
                 state.update(values)
         return state
 
-    def _baseline_timestamp(self, kept_rows: list[tuple[Any, ...]], dropped_rows: list[tuple[Any, ...]]) -> datetime:
+    def _baseline_timestamp(
+        self,
+        kept_rows: Sequence[_RetentionRow],
+        dropped_rows: Sequence[_RetentionRow],
+    ) -> datetime:
         if kept_rows:
-            kept_times = [_parse_dt(row[6]) or _parse_dt(row[5]) for row in kept_rows]
+            kept_times = [_parse_dt(row.completed_at) or _parse_dt(row.created_at) for row in kept_rows]
             anchor = min(time for time in kept_times if time is not None)
             try:
                 return anchor - timedelta(microseconds=1)
             except OverflowError:
                 return anchor
 
-        dropped_times = [_parse_dt(row[6]) or _parse_dt(row[5]) for row in dropped_rows]
+        dropped_times = [_parse_dt(row.completed_at) or _parse_dt(row.created_at) for row in dropped_rows]
         return max((time for time in dropped_times if time is not None), default=datetime.now(timezone.utc))
 
     def _retention_baseline_params(
         self,
         run_id: str,
         *,
-        dropped_rows: list[tuple[Any, ...]],
-        kept_rows: list[tuple[Any, ...]],
+        dropped_rows: Sequence[_RetentionRow],
+        kept_rows: Sequence[_RetentionRow],
         baseline_superstep: int,
     ) -> tuple[Any, ...] | None:
         values = self._merge_retained_state(dropped_rows)
@@ -1100,7 +1167,7 @@ class SqliteCheckpointer(Checkpointer):
             run_id,
             baseline_superstep,
             _RETENTION_BASELINE_NODE_NAME,
-            min(int(row[1]) for row in dropped_rows),
+            min(row.step_index for row in dropped_rows),
             StepStatus.COMPLETED.value,
             "{}",
             self._serializer.serialize(values),
@@ -1125,46 +1192,27 @@ class SqliteCheckpointer(Checkpointer):
         for start in range(0, len(ids), _DELETE_BATCH_SIZE):
             yield ids[start : start + _DELETE_BATCH_SIZE]
 
-    @staticmethod
-    def _retention_baseline_insert_sql() -> str:
-        return """
-            INSERT INTO steps (
-                run_id, superstep, node_name, step_index, status,
-                input_versions, values_data, duration_ms, cached,
-                decision, error, node_type, created_at, completed_at, child_run_id, partial
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(run_id, superstep, node_name) DO UPDATE SET
-                status = excluded.status,
-                values_data = excluded.values_data,
-                duration_ms = excluded.duration_ms,
-                cached = excluded.cached,
-                decision = excluded.decision,
-                error = excluded.error,
-                node_type = excluded.node_type,
-                completed_at = excluded.completed_at,
-                partial = excluded.partial
-        """
-
-    async def _retention_rows_async(self, run_id: str) -> list[tuple[Any, ...]]:
+    async def _retention_rows_async(self, run_id: str) -> tuple[_RetentionRow, ...]:
         cursor = await self._db.execute(
             f"SELECT {_RETENTION_ROW_COLS} FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
             (run_id,),
         )
-        return await cursor.fetchall()
+        return _decode_retention_rows(await cursor.fetchall())
 
-    def _retention_rows_sync(self, run_id: str) -> list[tuple[Any, ...]]:
+    def _retention_rows_sync(self, run_id: str) -> tuple[_RetentionRow, ...]:
         db = self._sync_db()
-        return db.execute(
+        rows = db.execute(
             f"SELECT {_RETENTION_ROW_COLS} FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
             (run_id,),
         ).fetchall()
+        return _decode_retention_rows(rows)
 
     async def _compact_retention_async(
         self,
         run_id: str,
         *,
-        dropped_rows: list[tuple[Any, ...]],
-        kept_rows: list[tuple[Any, ...]],
+        dropped_rows: Sequence[_RetentionRow],
+        kept_rows: Sequence[_RetentionRow],
         baseline_superstep: int,
     ) -> None:
         if not dropped_rows:
@@ -1176,18 +1224,18 @@ class SqliteCheckpointer(Checkpointer):
             kept_rows=kept_rows,
             baseline_superstep=baseline_superstep,
         )
-        ids = [int(row[0]) for row in dropped_rows]
+        ids = [row.id for row in dropped_rows]
         for batch in self._delete_step_id_batches(ids):
             await self._db.execute(self._delete_steps_sql(batch), batch)
         if baseline_params is not None:
-            await self._db.execute(self._retention_baseline_insert_sql(), baseline_params)
+            await self._db.execute(_STEP_UPSERT_SQL, baseline_params)
 
     def _compact_retention_sync(
         self,
         run_id: str,
         *,
-        dropped_rows: list[tuple[Any, ...]],
-        kept_rows: list[tuple[Any, ...]],
+        dropped_rows: Sequence[_RetentionRow],
+        kept_rows: Sequence[_RetentionRow],
         baseline_superstep: int,
     ) -> None:
         if not dropped_rows:
@@ -1199,12 +1247,12 @@ class SqliteCheckpointer(Checkpointer):
             kept_rows=kept_rows,
             baseline_superstep=baseline_superstep,
         )
-        ids = [int(row[0]) for row in dropped_rows]
+        ids = [row.id for row in dropped_rows]
         db = self._sync_db()
         for batch in self._delete_step_id_batches(ids):
             db.execute(self._delete_steps_sql(batch), batch)
         if baseline_params is not None:
-            db.execute(self._retention_baseline_insert_sql(), baseline_params)
+            db.execute(_STEP_UPSERT_SQL, baseline_params)
 
     async def _apply_retention_policy_async(self, run_id: str) -> None:
         """Apply configured retention policy after persisting a step (async)."""
@@ -1213,39 +1261,13 @@ class SqliteCheckpointer(Checkpointer):
             return
 
         rows = await self._retention_rows_async(run_id)
-        if retention == "latest":
-            latest_by_node: dict[str, tuple[Any, ...]] = {}
-            for row in rows:
-                if row[3] == _RETENTION_BASELINE_NODE_NAME:
-                    continue
-                latest_by_node[str(row[3])] = row
-            kept_rows = list(latest_by_node.values())
-            kept_ids = {row[0] for row in kept_rows}
-            dropped_rows = [row for row in rows if row[0] not in kept_ids]
-            baseline_superstep = min((int(row[2]) for row in kept_rows), default=0) - 1
+        plan = _plan_retention(rows, retention, self.policy.window)
+        if plan is not None:
             await self._compact_retention_async(
                 run_id,
-                dropped_rows=dropped_rows,
-                kept_rows=kept_rows,
-                baseline_superstep=baseline_superstep,
-            )
-            return
-
-        if retention == "windowed" and self.policy.window is not None:
-            non_baseline_rows = [row for row in rows if row[3] != _RETENTION_BASELINE_NODE_NAME]
-            if not non_baseline_rows:
-                return
-            max_superstep = max(int(row[2]) for row in non_baseline_rows)
-            cutoff = max_superstep - self.policy.window + 1
-            if cutoff <= 0:
-                return
-            kept_rows = [row for row in rows if row[3] != _RETENTION_BASELINE_NODE_NAME and int(row[2]) >= cutoff]
-            dropped_rows = [row for row in rows if row[3] == _RETENTION_BASELINE_NODE_NAME or int(row[2]) < cutoff]
-            await self._compact_retention_async(
-                run_id,
-                dropped_rows=dropped_rows,
-                kept_rows=kept_rows,
-                baseline_superstep=cutoff - 1,
+                dropped_rows=plan.dropped_rows,
+                kept_rows=plan.kept_rows,
+                baseline_superstep=plan.baseline_superstep,
             )
 
     def _apply_retention_policy_sync(self, run_id: str) -> None:
@@ -1255,39 +1277,13 @@ class SqliteCheckpointer(Checkpointer):
             return
 
         rows = self._retention_rows_sync(run_id)
-        if retention == "latest":
-            latest_by_node: dict[str, tuple[Any, ...]] = {}
-            for row in rows:
-                if row[3] == _RETENTION_BASELINE_NODE_NAME:
-                    continue
-                latest_by_node[str(row[3])] = row
-            kept_rows = list(latest_by_node.values())
-            kept_ids = {row[0] for row in kept_rows}
-            dropped_rows = [row for row in rows if row[0] not in kept_ids]
-            baseline_superstep = min((int(row[2]) for row in kept_rows), default=0) - 1
+        plan = _plan_retention(rows, retention, self.policy.window)
+        if plan is not None:
             self._compact_retention_sync(
                 run_id,
-                dropped_rows=dropped_rows,
-                kept_rows=kept_rows,
-                baseline_superstep=baseline_superstep,
-            )
-            return
-
-        if retention == "windowed" and self.policy.window is not None:
-            non_baseline_rows = [row for row in rows if row[3] != _RETENTION_BASELINE_NODE_NAME]
-            if not non_baseline_rows:
-                return
-            max_superstep = max(int(row[2]) for row in non_baseline_rows)
-            cutoff = max_superstep - self.policy.window + 1
-            if cutoff <= 0:
-                return
-            kept_rows = [row for row in rows if row[3] != _RETENTION_BASELINE_NODE_NAME and int(row[2]) >= cutoff]
-            dropped_rows = [row for row in rows if row[3] == _RETENTION_BASELINE_NODE_NAME or int(row[2]) < cutoff]
-            self._compact_retention_sync(
-                run_id,
-                dropped_rows=dropped_rows,
-                kept_rows=kept_rows,
-                baseline_superstep=cutoff - 1,
+                dropped_rows=plan.dropped_rows,
+                kept_rows=plan.kept_rows,
+                baseline_superstep=plan.baseline_superstep,
             )
 
     def update_run_status_sync(

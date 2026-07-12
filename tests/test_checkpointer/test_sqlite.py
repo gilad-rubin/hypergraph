@@ -1,8 +1,9 @@
 """Tests for SqliteCheckpointer."""
 
 import asyncio
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -14,6 +15,7 @@ from hypergraph.checkpointers import (
     StepStatus,
     WorkflowStatus,
 )
+from hypergraph.checkpointers.serializers import JsonSerializer, Serializer
 
 # Skip all tests if aiosqlite is not installed
 aiosqlite = pytest.importorskip("aiosqlite")
@@ -43,6 +45,20 @@ def _make_step(run_id="wf-1", superstep=0, node_name="embed", index=0, **kwargs)
         index=index,
         **defaults,
     )
+
+
+class _FailOnDemandSerializer(Serializer):
+    def __init__(self) -> None:
+        self.fail = False
+        self._json = JsonSerializer()
+
+    def serialize(self, value: Any) -> bytes:
+        if self.fail:
+            raise RuntimeError("baseline serialization failed")
+        return self._json.serialize(value)
+
+    def deserialize(self, data: bytes) -> Any:
+        return self._json.deserialize(data)
 
 
 class TestRunLifecycle:
@@ -230,6 +246,43 @@ class TestStepPersistence:
         steps = checkpointer.steps("wf-1")
         assert len(steps) == 1
         assert steps[0].values == {"v": 2}
+
+    async def test_upsert_preserves_fields_outside_the_update_policy(self, checkpointer):
+        await checkpointer.create_run("wf-1")
+        original_created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        replacement_created_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        await checkpointer.save_step(
+            _make_step(
+                index=7,
+                input_versions={"source": 1},
+                values={"v": 1},
+                created_at=original_created_at,
+                child_run_id="child-original",
+            )
+        )
+
+        await checkpointer.save_step(
+            _make_step(
+                index=99,
+                input_versions={"source": 2},
+                values={"v": 2},
+                status=StepStatus.FAILED,
+                error="replacement",
+                created_at=replacement_created_at,
+                child_run_id="child-replacement",
+                partial=True,
+            )
+        )
+
+        [step] = checkpointer.steps("wf-1")
+        assert step.index == 7
+        assert step.input_versions == {"source": 1}
+        assert step.created_at == original_created_at
+        assert step.child_run_id == "child-original"
+        assert step.values == {"v": 2}
+        assert step.status is StepStatus.FAILED
+        assert step.error == "replacement"
+        assert step.partial is True
 
     async def test_get_steps_by_superstep(self, checkpointer):
         await checkpointer.create_run("wf-1")
@@ -652,6 +705,57 @@ class TestRetentionPolicyBehavior:
 
         assert checkpointer.state("wf-latest-state") == {"x": 1}
         assert checkpointer.checkpoint("wf-latest-state").values == {"x": 1}
+
+    async def test_baseline_serialization_finishes_before_delete_and_failure_rolls_back(self, tmp_path, monkeypatch):
+        path = tmp_path / "retention-serialization.db"
+        serializer = _FailOnDemandSerializer()
+        checkpointer = SqliteCheckpointer(path, serializer=serializer)
+        await checkpointer.create_run("wf-serialize")
+        await checkpointer.save_step(
+            _make_step(
+                run_id="wf-serialize",
+                superstep=0,
+                node_name="a",
+                index=0,
+                values={"x": 1},
+            )
+        )
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="latest")
+
+        connection_type = type(checkpointer._db)
+        original_execute = connection_type.execute
+        delete_statements: list[str] = []
+
+        async def track_execute(connection, sql, parameters=None):
+            if sql.lstrip().startswith("DELETE FROM steps"):
+                delete_statements.append(sql)
+            return await original_execute(connection, sql, parameters)
+
+        monkeypatch.setattr(connection_type, "execute", track_execute)
+        serializer.fail = True
+        with pytest.raises(RuntimeError, match="baseline serialization failed"):
+            await checkpointer.save_step(
+                _make_step(
+                    run_id="wf-serialize",
+                    superstep=1,
+                    node_name="a",
+                    index=1,
+                    status=StepStatus.FAILED,
+                    values=None,
+                    error="boom",
+                )
+            )
+
+        assert delete_statements == []
+        await checkpointer.close()
+
+        reopened = SqliteCheckpointer(path)
+        try:
+            steps = reopened.steps("wf-serialize")
+            assert [(step.superstep, step.node_name, step.values) for step in steps] == [(0, "a", {"x": 1})]
+            assert reopened.state("wf-serialize") == {"x": 1}
+        finally:
+            await reopened.close()
 
     async def test_windowed_retention_keeps_recent_supersteps(self, checkpointer):
         """windowed retention should compact values before the latest N supersteps."""

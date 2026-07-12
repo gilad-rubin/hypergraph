@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from unittest.mock import patch
 
+from hypergraph.events._progress_renderers import _LogRenderer, _NotebookRenderer, _RichTTYRenderer
 from hypergraph.events.rich_progress import RichProgressProcessor
 from hypergraph.events.types import (
     NodeEndEvent,
@@ -164,7 +165,7 @@ class TestNonTTYMapMilestones:
             proc.on_run_start(_run_start("item1", parent="map1", graph="process"))
             proc.on_run_end(_run_end("item1", parent="map1", graph="process", status=RunStatus.PARTIAL))
 
-            map_info = proc._spans["map1"]
+            map_info = proc._tracker.spans["map1"]
             assert map_info.failures == 1
             assert map_info.succeeded == 0
         finally:
@@ -177,22 +178,21 @@ class TestNonTTYAutoDetect:
     def test_auto_detects_nontty(self):
         with patch("hypergraph.events.rich_progress._detect_mode", return_value="non-tty"):
             proc = RichProgressProcessor(force_mode="auto")
-            assert proc._tty_mode is False
+            assert isinstance(proc._renderer, _LogRenderer)
 
     def test_auto_detects_tty(self):
         with patch("hypergraph.events.rich_progress._detect_mode", return_value="tty"):
             proc = RichProgressProcessor(force_mode="auto")
-            assert proc._tty_mode is True
+            assert isinstance(proc._renderer, _RichTTYRenderer)
 
     def test_auto_detects_notebook(self):
         with patch("hypergraph.events.rich_progress._detect_mode", return_value="notebook"):
             proc = RichProgressProcessor(force_mode="auto")
-            assert proc._tty_mode is True
-            assert proc._notebook is True
+            assert isinstance(proc._renderer, _NotebookRenderer)
 
     def test_force_nontty(self):
         proc = RichProgressProcessor(force_mode="non-tty")
-        assert proc._tty_mode is False
+        assert isinstance(proc._renderer, _LogRenderer)
 
     def test_shutdown_nontty_no_error(self):
         proc = _make_processor()
