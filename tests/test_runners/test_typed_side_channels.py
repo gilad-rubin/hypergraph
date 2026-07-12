@@ -613,17 +613,17 @@ class TestFailureEvidenceAttributionBoundaries:
             error_handling="continue",
         )
 
-        assert result.error is cache_error
+        assert result.error is cache_cause
         assert result.node_failures == ()
         assert result.failure is None
 
-        with pytest.raises(ExecutionError) as exc_info:
+        with pytest.raises(RuntimeError) as exc_info:
             SyncRunner(cache=ExplodingCache()).run(
                 Graph([cached_node], name="cache_graph"),
                 {"x": 5},
             )
 
-        assert exc_info.value is cache_error
+        assert exc_info.value is cache_cause
         assert get_failure_evidence(exc_info.value) == ()
 
     async def test_async_cache_execution_error_retains_identity_without_evidence(self):

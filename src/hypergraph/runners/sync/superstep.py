@@ -102,16 +102,7 @@ def run_superstep_sync(
         # Check cache before execution
         cache_key, cached_outputs = ("", None)
         if cache is not None:
-            try:
-                cache_key, cached_outputs = check_cache(node, inputs, cache)
-            except ExecutionError as e:
-                error = ExecutionError(
-                    e,
-                    e.partial_state,
-                    attempted_node_names=e.attempted_node_names,
-                    node_errors=e.node_errors,
-                )
-                raise error from e
+            cache_key, cached_outputs = check_cache(node, inputs, cache)
 
         if cached_outputs is not None:
             outputs = cached_outputs

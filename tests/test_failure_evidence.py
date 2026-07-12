@@ -320,7 +320,7 @@ def test_sync_map_raise_masks_stale_infrastructure_execution_error() -> None:
         def set(self, key: str, value: Any) -> None:
             raise AssertionError("cache set must not run")
 
-    with pytest.raises(ExecutionError) as exc_info:
+    with pytest.raises(RuntimeError) as exc_info:
         SyncRunner(cache=StaleEvidenceCache()).map(
             Graph([cached_node_that_must_not_run], name="stale-cache-map"),
             {"x": [5]},
@@ -328,7 +328,7 @@ def test_sync_map_raise_masks_stale_infrastructure_execution_error() -> None:
             error_handling="raise",
         )
 
-    assert exc_info.value is cache_error
+    assert exc_info.value is cause
     assert get_failure_evidence(exc_info.value) == ()
 
 
