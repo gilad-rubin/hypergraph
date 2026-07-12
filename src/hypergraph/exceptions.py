@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -11,6 +12,13 @@ if TYPE_CHECKING:
 
     from hypergraph.runners._shared.results import FailureEvidence
     from hypergraph.runners._shared.state import GraphState
+
+
+_CURRENT_FAILURE_EVIDENCE_INVOCATION: ContextVar[object | None] = ContextVar(
+    "_CURRENT_FAILURE_EVIDENCE_INVOCATION",
+    default=None,
+)
+_ANY_FAILURE_EVIDENCE_INVOCATION = object()
 
 
 class MissingInputError(Exception):
@@ -135,15 +143,40 @@ class ExecutionError(Exception):
 
 
 class _NodeExecutionError(ExecutionError):
-    """Runner-owned wrapper proving failure arose at the executor boundary."""
+    """Runner-owned wrapper proving failure arose in the current invocation."""
+
+    def __init__(
+        self,
+        cause: BaseException,
+        partial_state: GraphState,
+        attempted_node_names: tuple[str, ...] = (),
+        node_errors: Mapping[str, BaseException] | None = None,
+        node_failures: tuple[FailureEvidence, ...] = (),
+        *,
+        invocation_token: object | None,
+    ) -> None:
+        self._invocation_token = invocation_token
+        super().__init__(
+            cause,
+            partial_state,
+            attempted_node_names,
+            node_errors,
+            node_failures,
+        )
 
 
 class _FailureEvidenceCarrier(Exception):
     """Typed suppressed context used when map re-raises a child error."""
 
-    def __init__(self, error: BaseException, node_failures: tuple[FailureEvidence, ...]) -> None:
+    def __init__(
+        self,
+        error: BaseException,
+        node_failures: tuple[FailureEvidence, ...],
+        invocation_token: object | None,
+    ) -> None:
         self.error = error
         self.node_failures = tuple(node_failures)
+        self._invocation_token = invocation_token
         super().__init__()
 
 
@@ -154,13 +187,38 @@ def _failure_evidence_context(
 ) -> Iterator[None]:
     """Install typed evidence as the standard context for a caller re-raise."""
     try:
-        raise _FailureEvidenceCarrier(error, node_failures)
+        raise _FailureEvidenceCarrier(
+            error,
+            node_failures,
+            _get_failure_evidence_invocation(),
+        )
     except _FailureEvidenceCarrier:
         yield
 
 
+def _get_failure_evidence_invocation() -> object | None:
+    """Return the nearest GraphNode invocation token in this execution context."""
+    return _CURRENT_FAILURE_EVIDENCE_INVOCATION.get()
+
+
+@contextmanager
+def _bind_failure_evidence_invocation(invocation_token: object | None) -> Iterator[None]:
+    """Bind a GraphNode invocation token for its delegated executor call."""
+    if invocation_token is None:
+        yield
+        return
+
+    reset_token = _CURRENT_FAILURE_EVIDENCE_INVOCATION.set(invocation_token)
+    try:
+        yield
+    finally:
+        _CURRENT_FAILURE_EVIDENCE_INVOCATION.reset(reset_token)
+
+
 def _get_failure_evidence_from_context(
     error: BaseException | None,
+    *,
+    invocation_token: object = _ANY_FAILURE_EVIDENCE_INVOCATION,
 ) -> tuple[FailureEvidence, ...] | None:
     """Return evidence from trusted context, or None when none is present."""
     if error is None:
@@ -170,12 +228,24 @@ def _get_failure_evidence_from_context(
     current = BaseException.__getattribute__(error, "__context__")
     while current is not None and id(current) not in seen:
         seen.add(id(current))
+        if type(current) is _NodeExecutionError:
+            if current.__cause__ is not error:
+                return ()
+            if invocation_token is not _ANY_FAILURE_EVIDENCE_INVOCATION and current._invocation_token is not invocation_token:
+                return ()
+            return current.node_failures
         if isinstance(current, _NodeExecutionError):
-            return current.node_failures if current.__cause__ is error else ()
+            return ()
         if isinstance(current, ExecutionError):
             return ()
+        if type(current) is _FailureEvidenceCarrier:
+            if current.error is not error:
+                return ()
+            if invocation_token is not _ANY_FAILURE_EVIDENCE_INVOCATION and current._invocation_token is not invocation_token:
+                return ()
+            return current.node_failures
         if isinstance(current, _FailureEvidenceCarrier):
-            return current.node_failures if current.error is error else ()
+            return ()
         current = BaseException.__getattribute__(current, "__context__")
     return None
 

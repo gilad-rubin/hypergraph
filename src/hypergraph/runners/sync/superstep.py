@@ -6,7 +6,13 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.exceptions import ExecutionError, _get_failure_evidence_from_context, _NodeExecutionError
+from hypergraph.exceptions import (
+    ExecutionError,
+    _bind_failure_evidence_invocation,
+    _get_failure_evidence_from_context,
+    _get_failure_evidence_invocation,
+    _NodeExecutionError,
+)
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.graph_node import GraphNode
 from hypergraph.runners._shared.caching import (
@@ -196,11 +202,14 @@ def run_superstep_sync(
                 # can attribute itself to this exact span.
                 span_token = set_current_node_span(NodeSpanRef(run_id=run_id, span_id=node_span_id, node_name=node.name, graph_name=graph.name))
                 evidence_inputs = dict(inputs)
+                parent_invocation_token = _get_failure_evidence_invocation()
+                invocation_token = object() if isinstance(node, GraphNode) else None
                 try:
                     try:
                         # Execute node. This is the only boundary that creates
                         # FailureEvidence; surrounding work is infrastructure.
-                        outputs = executor(node, new_state, inputs, ctx)
+                        with _bind_failure_evidence_invocation(invocation_token):
+                            outputs = executor(node, new_state, inputs, ctx)
                     except BaseException as executor_error:
                         if isinstance(executor_error, PauseExecution):
                             raise
@@ -221,7 +230,14 @@ def run_superstep_sync(
                                     )
                                 )
                             if isinstance(node, GraphNode):
-                                inner_failures = _get_failure_evidence_from_context(executor_error) or ()
+                                assert invocation_token is not None
+                                inner_failures = (
+                                    _get_failure_evidence_from_context(
+                                        executor_error,
+                                        invocation_token=invocation_token,
+                                    )
+                                    or ()
+                                )
                                 node_failures = tuple(replace(failure, node_name=f"{node.name}/{failure.node_name}") for failure in inner_failures)
                             else:
                                 node_failures = (
@@ -242,6 +258,7 @@ def run_superstep_sync(
                                 attempted_node_names=tuple(attempted_node_names),
                                 node_errors={node.name: executor_error},
                                 node_failures=node_failures,
+                                invocation_token=parent_invocation_token,
                             )
                             raise executor_failure from executor_error
                         raise

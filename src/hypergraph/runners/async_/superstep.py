@@ -8,7 +8,13 @@ from contextvars import ContextVar
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.exceptions import ExecutionError, _get_failure_evidence_from_context, _NodeExecutionError
+from hypergraph.exceptions import (
+    ExecutionError,
+    _bind_failure_evidence_invocation,
+    _get_failure_evidence_from_context,
+    _get_failure_evidence_invocation,
+    _NodeExecutionError,
+)
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.graph_node import GraphNode
 from hypergraph.runners._shared.caching import (
@@ -206,12 +212,15 @@ async def run_superstep_async(
             # can attribute itself to this exact span even under concurrency.
             span_token = set_current_node_span(NodeSpanRef(run_id=run_id, span_id=node_span_id, node_name=node.name, graph_name=graph.name))
             evidence_inputs = dict(inputs)
+            parent_invocation_token = _get_failure_evidence_invocation()
+            invocation_token = object() if isinstance(node, GraphNode) else None
             try:
                 try:
                     # Pass new_state so routing decisions are stored in the
                     # updated state. This exact executor boundary is the only
                     # place that creates FailureEvidence.
-                    outputs = await executor(node, new_state, inputs, ctx)
+                    with _bind_failure_evidence_invocation(invocation_token):
+                        outputs = await executor(node, new_state, inputs, ctx)
                 except BaseException as executor_error:
                     if isinstance(executor_error, PauseExecution):
                         raise
@@ -232,7 +241,14 @@ async def run_superstep_async(
                                 )
                             )
                         if isinstance(node, GraphNode):
-                            inner_failures = _get_failure_evidence_from_context(executor_error) or ()
+                            assert invocation_token is not None
+                            inner_failures = (
+                                _get_failure_evidence_from_context(
+                                    executor_error,
+                                    invocation_token=invocation_token,
+                                )
+                                or ()
+                            )
                             node_failures = tuple(replace(failure, node_name=f"{node.name}/{failure.node_name}") for failure in inner_failures)
                         else:
                             node_failures = (
@@ -253,6 +269,7 @@ async def run_superstep_async(
                             attempted_node_names=(node.name,),
                             node_errors={node.name: executor_error},
                             node_failures=node_failures,
+                            invocation_token=parent_invocation_token,
                         )
                         raise executor_failure from executor_error
                     raise
@@ -357,14 +374,22 @@ async def run_superstep_async(
 
     if first_error is not None:
         attempted = tuple(node.name for node in ready_nodes)
-        error_type = _NodeExecutionError if node_failures else ExecutionError
-        error = error_type(
-            first_error,
-            new_state,
-            attempted_node_names=attempted,
-            node_errors=node_errors,
-            node_failures=tuple(node_failures),
-        )
+        if node_failures:
+            error = _NodeExecutionError(
+                first_error,
+                new_state,
+                attempted_node_names=attempted,
+                node_errors=node_errors,
+                node_failures=tuple(node_failures),
+                invocation_token=_get_failure_evidence_invocation(),
+            )
+        else:
+            error = ExecutionError(
+                first_error,
+                new_state,
+                attempted_node_names=attempted,
+                node_errors=node_errors,
+            )
         raise error from first_error
 
     return new_state

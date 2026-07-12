@@ -443,6 +443,38 @@ class TestFailureEvidenceAttributionBoundaries:
         assert "TOP-SECRET" not in repr(result)
         assert "TOP-SECRET" not in repr(result.to_dict())
 
+    def test_sync_graph_node_does_not_replay_evidence_from_previous_run(self):
+        reused_error = RuntimeError("reused across runs")
+
+        @node(output_name="first_out")
+        def first_failure(secret: str) -> str:
+            raise reused_error
+
+        with pytest.raises(RuntimeError) as exc_info:
+            SyncRunner().run(Graph([first_failure], name="first"), {"secret": "TOP-SECRET"})
+
+        assert exc_info.value is reused_error
+        assert get_failure_evidence(reused_error)[0].inputs == {"secret": "TOP-SECRET"}
+
+        @node(output_name="child_out")
+        def child_node(x: int) -> int:
+            return x
+
+        graph_node = Graph([child_node], name="child").as_node(name="custom_graph_node")
+        runner = SyncRunner()
+
+        def raise_reused_error(node, state, inputs, ctx):
+            raise reused_error
+
+        runner._executors[type(graph_node)] = raise_reused_error
+        result = runner.run(Graph([graph_node], name="second"), {"x": 5}, error_handling="continue")
+
+        assert result.error is reused_error
+        assert result.node_failures == ()
+        assert result.failure is None
+        assert "TOP-SECRET" not in repr(result)
+        assert "TOP-SECRET" not in repr(result.to_dict())
+
     async def test_async_graph_node_does_not_copy_raw_execution_error_evidence(self):
         cause = RuntimeError("custom async graph executor failed")
         raw_error = ExecutionError(
@@ -481,6 +513,38 @@ class TestFailureEvidenceAttributionBoundaries:
         )
 
         assert result.error is raw_error
+        assert result.node_failures == ()
+        assert result.failure is None
+        assert "TOP-SECRET" not in repr(result)
+        assert "TOP-SECRET" not in repr(result.to_dict())
+
+    async def test_async_graph_node_does_not_replay_evidence_from_previous_run(self):
+        reused_error = RuntimeError("reused across async runs")
+
+        @node(output_name="first_out")
+        async def first_failure(secret: str) -> str:
+            raise reused_error
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await AsyncRunner().run(Graph([first_failure], name="first"), {"secret": "TOP-SECRET"})
+
+        assert exc_info.value is reused_error
+        assert get_failure_evidence(reused_error)[0].inputs == {"secret": "TOP-SECRET"}
+
+        @node(output_name="child_out")
+        def child_node(x: int) -> int:
+            return x
+
+        graph_node = Graph([child_node], name="child").as_node(name="custom_graph_node")
+        runner = AsyncRunner()
+
+        async def raise_reused_error(node, state, inputs, ctx):
+            raise reused_error
+
+        runner._executors[type(graph_node)] = raise_reused_error
+        result = await runner.run(Graph([graph_node], name="second"), {"x": 5}, error_handling="continue")
+
+        assert result.error is reused_error
         assert result.node_failures == ()
         assert result.failure is None
         assert "TOP-SECRET" not in repr(result)

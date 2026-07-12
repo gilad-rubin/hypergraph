@@ -332,6 +332,43 @@ def test_sync_map_raise_masks_stale_infrastructure_execution_error() -> None:
     assert get_failure_evidence(exc_info.value) == ()
 
 
+def test_sync_graph_node_rejects_stale_map_carrier_from_previous_call() -> None:
+    reused_error = RuntimeError("reused after sync map")
+
+    @node(output_name="first_out")
+    def first_failure(secret: str) -> str:
+        raise reused_error
+
+    with pytest.raises(RuntimeError) as exc_info:
+        SyncRunner().map(
+            Graph([first_failure], name="first-map"),
+            {"secret": ["TOP-SECRET"]},
+            map_over="secret",
+        )
+
+    assert exc_info.value is reused_error
+    assert get_failure_evidence(reused_error)[0].inputs == {"secret": "TOP-SECRET"}
+
+    @node(output_name="child_out")
+    def child_node(x: int) -> int:
+        return x
+
+    graph_node = Graph([child_node], name="child").as_node(name="custom_graph_node")
+    runner = SyncRunner()
+
+    def raise_reused_error(node, state, inputs, ctx):
+        raise reused_error
+
+    runner._executors[type(graph_node)] = raise_reused_error
+    result = runner.run(Graph([graph_node], name="second"), {"x": 5}, error_handling="continue")
+
+    assert result.error is reused_error
+    assert result.node_failures == ()
+    assert result.failure is None
+    assert "TOP-SECRET" not in repr(result)
+    assert "TOP-SECRET" not in repr(result.to_dict())
+
+
 @pytest.mark.asyncio
 async def test_async_map_attaches_source_item_indexes() -> None:
     results = await AsyncRunner().map(
@@ -402,6 +439,44 @@ async def test_async_map_raise_accessor_retains_failing_item_index() -> None:
     assert len(failures) == 1
     assert failures[0].item_index == 1
     assert failures[0].inputs == {"x": 3}
+
+
+@pytest.mark.asyncio
+async def test_async_graph_node_rejects_stale_map_carrier_from_previous_call() -> None:
+    reused_error = RuntimeError("reused after async map")
+
+    @node(output_name="first_out")
+    async def first_failure(secret: str) -> str:
+        raise reused_error
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await AsyncRunner().map(
+            Graph([first_failure], name="first-map"),
+            {"secret": ["TOP-SECRET"]},
+            map_over="secret",
+        )
+
+    assert exc_info.value is reused_error
+    assert get_failure_evidence(reused_error)[0].inputs == {"secret": "TOP-SECRET"}
+
+    @node(output_name="child_out")
+    def child_node(x: int) -> int:
+        return x
+
+    graph_node = Graph([child_node], name="child").as_node(name="custom_graph_node")
+    runner = AsyncRunner()
+
+    async def raise_reused_error(node, state, inputs, ctx):
+        raise reused_error
+
+    runner._executors[type(graph_node)] = raise_reused_error
+    result = await runner.run(Graph([graph_node], name="second"), {"x": 5}, error_handling="continue")
+
+    assert result.error is reused_error
+    assert result.node_failures == ()
+    assert result.failure is None
+    assert "TOP-SECRET" not in repr(result)
+    assert "TOP-SECRET" not in repr(result.to_dict())
 
 
 def test_sync_nested_failure_is_qualified_once_per_boundary() -> None:
