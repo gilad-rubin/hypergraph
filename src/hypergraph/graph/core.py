@@ -1481,9 +1481,12 @@ class Graph:
         name = self.name or "unnamed"
         return f"Graph: {name} | {plural(n_nodes, 'node')} | {plural(n_edges, 'edge')}{prop_str}"
 
-    def _repr_html_(self) -> str:
-        from hypergraph._repr import _code, html_detail, html_panel, html_table, status_badge, theme_wrap, widget_state_key
+    def _repr_html_(self) -> str | None:
+        from hypergraph._repr import _code, html_detail, html_panel, html_table, plain_reprs, status_badge, theme_wrap, widget_state_key
         from hypergraph._utils import plural
+
+        if plain_reprs():
+            return None
 
         n_nodes = len(self._nodes)
         n_edges = self._nx_graph.number_of_edges()

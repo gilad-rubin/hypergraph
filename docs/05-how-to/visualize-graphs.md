@@ -164,3 +164,26 @@ print(trace.outgoing_edges)  # [{'to': 'add_one', 'value': 'doubled', 'type': 'd
 
 edge_trace = debugger.trace_edge("double", "add_one")
 ```
+
+## Agent-Friendly Display Mode
+
+Every hypergraph object shown at the end of a notebook cell — a `Graph`, a `RunResult`, a checkpointer — stores its rich HTML widget in the `.ipynb` file. A single displayed `Graph` adds ~800 KB. When an agent runs the notebook and reads it back, that HTML is wasted context.
+
+Plain display mode makes implicit display fall back to the compact text reprs instead:
+
+```python
+import hypergraph
+
+hypergraph.set_display_mode("plain")
+
+graph    # Graph: pipeline | 2 nodes | 1 edge | no cycles   (~100 bytes, not ~800 KB)
+result   # RunResult(status=completed, values={'doubled': 4}, ...)
+```
+
+Or set it from the environment — it is read at display time, so setting it after import works too:
+
+```bash
+export HYPERGRAPH_DISPLAY=plain
+```
+
+A `set_display_mode()` call overrides the environment variable. Explicit visualization stays rich in plain mode: `graph.visualize()` and `graph.to_mermaid()` still render the full output — an agent that asks for the widget gets the widget. Switch back anytime with `hypergraph.set_display_mode("rich")`.

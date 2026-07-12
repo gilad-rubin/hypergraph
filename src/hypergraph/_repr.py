@@ -10,9 +10,87 @@ from __future__ import annotations
 import hashlib
 import html as _html
 import itertools
+import os
 from typing import Any
 
 from hypergraph._utils import format_datetime, format_duration_ms, plural
+
+# ---------------------------------------------------------------------------
+# Display mode — rich HTML widgets (default) vs plain text reprs
+# ---------------------------------------------------------------------------
+
+_DISPLAY_MODES = ("rich", "plain")
+_DISPLAY_ENV_VAR = "HYPERGRAPH_DISPLAY"
+
+# Explicit mode set via set_display_mode(); None means "follow the env var".
+_display_mode: str | None = None
+
+
+def set_display_mode(mode: str) -> None:
+    """Set how hypergraph objects display in notebooks.
+
+    In ``"plain"`` mode every implicit ``_repr_html_`` in the package returns
+    None, so notebook display falls back to the compact text ``__repr__``.
+    Explicit calls such as ``graph.visualize()`` stay rich. Calling this
+    function overrides the ``HYPERGRAPH_DISPLAY`` environment variable.
+
+    Args:
+        mode: ``"rich"`` for full HTML widgets (the default) or ``"plain"``
+            for compact text reprs.
+
+    Raises:
+        ValueError: If ``mode`` is not one of the valid modes.
+    """
+    global _display_mode
+    if mode not in _DISPLAY_MODES:
+        raise ValueError(
+            f"Invalid display mode {mode!r}.\n\n"
+            f"Valid modes: {list(_DISPLAY_MODES)}\n\n"
+            f'How to fix: Call set_display_mode("rich") or set_display_mode("plain").'
+        )
+    _display_mode = mode
+
+
+def get_display_mode() -> str:
+    """Return the effective display mode.
+
+    Precedence: the value passed to :func:`set_display_mode` if it was called,
+    else the ``HYPERGRAPH_DISPLAY`` environment variable (read at call time,
+    so setting it after import works), else ``"rich"``.
+
+    Returns:
+        Either ``"rich"`` or ``"plain"``.
+
+    Raises:
+        ValueError: If the ``HYPERGRAPH_DISPLAY`` environment variable is set
+            to a value other than ``"rich"`` or ``"plain"``.
+    """
+    if _display_mode is not None:
+        return _display_mode
+    env = os.environ.get(_DISPLAY_ENV_VAR)
+    if env is None:
+        return "rich"
+    if env not in _DISPLAY_MODES:
+        raise ValueError(
+            f"Invalid {_DISPLAY_ENV_VAR} value {env!r}.\n\n"
+            f"Valid values: {list(_DISPLAY_MODES)}\n\n"
+            f"How to fix: Set {_DISPLAY_ENV_VAR}=plain (or =rich), or unset it."
+        )
+    return env
+
+
+def plain_reprs() -> bool:
+    """Whether implicit ``_repr_html_`` methods should return None.
+
+    Used as the first-line guard of every implicit ``_repr_html_`` in the
+    package: returning None makes IPython fall back to the ``text/plain``
+    repr, keeping notebook files compact for agent-run workflows.
+
+    Returns:
+        True when the effective display mode is ``"plain"``.
+    """
+    return get_display_mode() == "plain"
+
 
 # ---------------------------------------------------------------------------
 # Theme — light-dark() for automatic dark/light adaptation

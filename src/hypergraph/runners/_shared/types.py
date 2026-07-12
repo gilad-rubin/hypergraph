@@ -269,7 +269,7 @@ class RunResult:
             return
         pretty_printer.text(repr(self))
 
-    def _repr_html_(self) -> str:
+    def _repr_html_(self) -> str | None:
         from hypergraph._repr import (
             ERROR_COLOR,
             duration_html,
@@ -277,11 +277,15 @@ class RunResult:
             html_detail,
             html_kv,
             html_panel,
+            plain_reprs,
             status_badge,
             theme_wrap,
             values_html,
             widget_state_key,
         )
+
+        if plain_reprs():
+            return None
 
         kvs = [html_kv("Status", status_badge(self.status.value))]
         if self.log:
@@ -489,17 +493,21 @@ class MapResult:
             return
         pretty_printer.text(repr(self))
 
-    def _repr_html_(self) -> str:
+    def _repr_html_(self) -> str | None:
         from hypergraph._repr import (
             ERROR_COLOR,
             duration_html,
             html_detail,
             html_kv,
             html_panel,
+            plain_reprs,
             status_badge,
             theme_wrap,
             widget_state_key,
         )
+
+        if plain_reprs():
+            return None
 
         n = len(self.results)
         n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
@@ -1088,16 +1096,20 @@ class RunLog:
             return
         pretty_printer.text(str(self))
 
-    def _repr_html_(self) -> str:
+    def _repr_html_(self) -> str | None:
         from hypergraph._repr import (
             _code,
             duration_html,
             html_panel,
             html_table,
+            plain_reprs,
             status_badge,
             theme_wrap,
             widget_state_key,
         )
+
+        if plain_reprs():
+            return None
 
         headers = ["Step", "Node", "Status", "Duration"]
         has_decisions = any(s.decision is not None for s in self.steps)
@@ -1263,7 +1275,7 @@ class MapLog:
             return
         pretty_printer.text(str(self))
 
-    def _repr_html_(self) -> str:
+    def _repr_html_(self) -> str | None:
         from hypergraph._repr import (
             BORDER_COLOR,
             MUTED_COLOR,
@@ -1274,11 +1286,15 @@ class MapLog:
             html_filter_paginate_script,
             html_panel,
             html_table_with_row_attrs,
+            plain_reprs,
             status_badge,
             theme_wrap,
             unique_dom_id,
             widget_state_key,
         )
+
+        if plain_reprs():
+            return None
 
         headers = ["Item", "Duration", "Status", "Nodes"]
         rows = []

@@ -190,8 +190,11 @@ class SqliteCheckpointer(Checkpointer):
         """Database path."""
         return self._path
 
-    def _repr_html_(self) -> str:
-        from hypergraph._repr import _code, theme_wrap, widget_state_key
+    def _repr_html_(self) -> str | None:
+        from hypergraph._repr import _code, plain_reprs, theme_wrap, widget_state_key
+
+        if plain_reprs():
+            return None
 
         state_key = widget_state_key("checkpointer", self._path)
         try:
