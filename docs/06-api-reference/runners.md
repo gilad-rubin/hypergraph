@@ -249,7 +249,7 @@ caps = runner.capabilities
 
 caps.supports_cycles       # True
 caps.supports_async_nodes  # False
-caps.supports_streaming    # False
+caps.supports_streaming    # True (map_iter + ctx.stream chunks)
 caps.returns_coroutine     # False
 caps.supports_interrupts   # False
 ```
@@ -800,7 +800,7 @@ caps = runner.capabilities
 
 caps.supports_cycles       # True
 caps.supports_async_nodes  # True
-caps.supports_streaming    # False (Phase 2)
+caps.supports_streaming    # True (map_iter + ctx.stream chunks)
 caps.returns_coroutine     # True
 caps.supports_interrupts   # True
 ```
@@ -839,7 +839,14 @@ class RunResult:
     workflow_id: str | None     # Optional workflow tracking
     error: BaseException | None # Exception if FAILED
     pause: PauseInfo | None     # Pause info if PAUSED (InterruptNode)
+    log: RunLog | None          # Execution trace, if collected
+    checkpoint_ok: bool         # False when a best-effort async step save failed
+    checkpoint_errors: tuple[str, ...]  # String-only checkpoint save errors
 ```
+
+With async checkpoint durability, step saves are best-effort: a persistence gap
+does not change the execution status. Check `checkpoint_ok` and
+`checkpoint_errors` when durable history is required.
 
 ### Convenience Properties
 
@@ -886,7 +893,7 @@ This is useful for debugging — you can inspect which nodes completed successfu
 result.summary()   # "3 nodes | 12ms | 0 errors | slowest: generate (8ms)"
 
 # JSON-serializable metadata (no raw values or exception objects)
-result.to_dict()   # {"status": "completed", "run_id": "run-abc", "log": {...}}
+result.to_dict()   # {"status": "completed", "run_id": "run-abc", "checkpoint_ok": True, "checkpoint_errors": [], "log": {...}}
 ```
 
 ---
@@ -918,6 +925,10 @@ results.failed       # True if any failed
 results.partial      # True if some items completed and some failed
 results.stopped      # True if any item stopped and none failed/paused
 results.failures     # List of failed RunResult items
+
+# Derived durability aggregation (properties, not dataclass fields)
+results.checkpoint_ok      # True only when every item persisted successfully
+results.checkpoint_errors  # Tuple of save errors in stable item order
 
 # Progressive disclosure
 results.summary()    # "3 items | 3 completed | 12ms"

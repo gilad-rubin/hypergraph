@@ -18,7 +18,13 @@ from hypergraph.runners._shared.event_metadata import (
     RunContext,
     RunLineage,
 )
-from hypergraph.runners._shared.helpers import ExecutionFrontier, compute_execution_scope, graphnode_child_workflow_id, initialize_state
+from hypergraph.runners._shared.helpers import (
+    ExecutionFrontier,
+    compute_execution_scope,
+    graphnode_child_workflow_id,
+    initialize_state,
+    plan_interrupt_batch,
+)
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 from hypergraph.runners._shared.stop import StopSignal, get_stop_signal, reset_stop_signal, set_stop_signal
 from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
@@ -165,12 +171,15 @@ class AsyncRunner(AsyncRunnerTemplate):
         workflow_id: str | None = None,
         checkpoint: Any | None = None,
         step_buffer: list[Any] | None = None,
+        checkpoint_save_errors: list[str] | None = None,
         _complete_on_stop: bool = False,
         item_index: int | None = None,
     ) -> GraphState:
         """Execute graph until no more ready nodes or max_iterations reached.
 
         On failure, raises ExecutionError wrapping the cause and partial state.
+        Background step-save failures (durability "async") are appended to
+        ``checkpoint_save_errors`` as string reprs for the template to surface.
         """
         state = initialize_state(graph, values, checkpoint=checkpoint)
         scope = compute_execution_scope(graph)
@@ -217,6 +226,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                 item_index=item_index,
                 provided_values=values,
                 is_resuming=(checkpoint is not None if self._checkpointer_instance is not None else True),
+                checkpoint_error_sink=checkpoint_save_errors.append if checkpoint_save_errors is not None else None,
                 emit_fn=dispatcher.emit if dispatcher.active else None,
             )
 
@@ -239,9 +249,9 @@ class AsyncRunner(AsyncRunnerTemplate):
                 if not ready_nodes:
                     continue
 
-                interrupts = [node for node in ready_nodes if node.is_interrupt]
-                if interrupts:
-                    ready_nodes = [interrupts[0]]
+                # Isolate interrupts BEFORE ready_node_names is captured below,
+                # so checkpoint metadata records exactly the executed batch.
+                ready_nodes = plan_interrupt_batch(ready_nodes)
 
                 if dispatcher.active:
                     from hypergraph.events.types import SuperstepStartEvent, _generate_span_id
@@ -290,7 +300,9 @@ class AsyncRunner(AsyncRunnerTemplate):
                         run_span_id=run_span_id,
                         superstep_idx=superstep_idx,
                     )
-                except PauseExecution:
+                except PauseExecution as pause:
+                    if pause.partial_state is not None:
+                        state = pause.partial_state
                     # Save step records before propagating the pause.
                     # The interrupt node gets a "paused" status record.
                     if has_checkpointer:
@@ -314,9 +326,9 @@ class AsyncRunner(AsyncRunnerTemplate):
                     raise
                 except ExecutionError as e:
                     superstep_error = e
-                    state = e.partial_state  # type: ignore[assignment]
-                    attempted_node_names = getattr(e, "_attempted_node_names", None)
-                    node_errors = getattr(e, "_node_errors", None)
+                    state = e.partial_state
+                    attempted_node_names = e.attempted_node_names
+                    node_errors = e.node_errors
                 except Exception as e:
                     superstep_error = ExecutionError(e, state)
                     attempted_node_names = ()
@@ -349,8 +361,8 @@ class AsyncRunner(AsyncRunnerTemplate):
                 superstep_idx += 1
 
         except PauseExecution as pause:
-            pause._partial_state = state  # type: ignore[attr-defined]
-            pause._stopped = signal.is_set  # type: ignore[attr-defined]
+            pause.partial_state = state
+            pause.stopped = signal.is_set
             raise
         finally:
             # Clean up signal registry
@@ -362,6 +374,8 @@ class AsyncRunner(AsyncRunnerTemplate):
                 results = await asyncio.gather(*save_tasks, return_exceptions=True)
                 failures = [r for r in results if isinstance(r, BaseException)]
                 if failures:
+                    if checkpoint_save_errors is not None:
+                        checkpoint_save_errors.extend(repr(f) for f in failures)
                     import logging
 
                     logger = logging.getLogger("hypergraph.checkpointers")
@@ -380,8 +394,8 @@ class AsyncRunner(AsyncRunnerTemplate):
                 reset_concurrency_limiter(token)
 
         # Propagate stopped flag to the template layer
-        state._stopped = signal.is_set  # type: ignore[attr-defined]
-        state._stop_info = signal.info  # type: ignore[attr-defined]
+        state.stopped = signal.is_set
+        state.stop_info = signal.info
         return state
 
     async def _save_superstep_records(

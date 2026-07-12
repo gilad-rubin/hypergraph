@@ -524,6 +524,24 @@ def get_ready_nodes_in_component(
     )
 
 
+def plan_interrupt_batch(ready_nodes: list[HyperNode]) -> list[HyperNode]:
+    """Isolate interrupt nodes so a pause cannot cancel sibling work.
+
+    ``PauseExecution`` extends ``BaseException``; raised inside
+    ``asyncio.gather`` it would cancel all sibling tasks mid-flight. When any
+    interrupt node is ready, run exactly one interrupt alone this superstep —
+    the other ready nodes are deferred to the next superstep, where they
+    remain ready. Batches without interrupts pass through unchanged.
+
+    Must be applied once, before the runner captures the batch's node names
+    for checkpoint metadata, so recorded batch == executed batch.
+    """
+    interrupts = [node for node in ready_nodes if node.is_interrupt]
+    if interrupts:
+        return [interrupts[0]]
+    return ready_nodes
+
+
 def find_missing_resume_seed_inputs(
     graph: Graph,
     state: GraphState,

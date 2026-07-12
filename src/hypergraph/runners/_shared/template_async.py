@@ -9,7 +9,7 @@ import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from hypergraph.exceptions import (
     ExecutionError,
@@ -48,6 +48,7 @@ from hypergraph.runners._shared.input_normalization import (
 )
 from hypergraph.runners._shared.run_log import RunLogCollector
 from hypergraph.runners._shared.types import (
+    CheckpointErrorSink,
     ErrorHandling,
     GraphState,
     MapResult,
@@ -85,6 +86,8 @@ _MAP_SIGNATURE_CONFIG_KEY = "map_item_signature"
 class AsyncRunnerTemplate(BaseRunner, ABC):
     """Template implementation for async run/map lifecycle."""
 
+    _accepts_checkpoint_error_sink: ClassVar[Literal[True]] = True
+
     @property
     @abstractmethod
     def supported_node_types(self) -> set[type[HyperNode]]:
@@ -117,10 +120,16 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         workflow_id: str | None = None,
         checkpoint: Any | None = None,
         step_buffer: list[Any] | None = None,
+        checkpoint_save_errors: list[str] | None = None,
         _complete_on_stop: bool = False,
         item_index: int | None = None,
     ) -> GraphState:
-        """Execute graph and return final state."""
+        """Execute graph and return final state.
+
+        ``checkpoint_save_errors`` is a caller-owned sink: implementations
+        append string reprs of background step-save failures (durability
+        "async") so the template can surface them on the RunResult.
+        """
         ...
 
     @abstractmethod
@@ -211,6 +220,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         _run_config: dict[str, Any] | None = None,
         _complete_on_stop: bool = False,
         _item_index: int | None = None,
+        _checkpoint_error_sink: CheckpointErrorSink | None = None,
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
@@ -383,6 +393,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         # Step buffer for "exit" durability — records are flushed after run completes
         step_buffer: list[Any] = []
+        # Sink for background step-save failures ("async" durability) —
+        # surfaced as result.checkpoint_ok / result.checkpoint_errors.
+        checkpoint_save_errors: list[str] = []
 
         try:
             state = await self._execute_graph_impl_async(
@@ -397,19 +410,20 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 workflow_id=workflow_id,
                 checkpoint=resume_checkpoint,
                 step_buffer=step_buffer,
+                checkpoint_save_errors=checkpoint_save_errors,
                 _complete_on_stop=_complete_on_stop,
                 item_index=_item_index,
             )
             output_values = filter_outputs(state, graph, select, on_missing)
             total_duration_ms = (time.time() - start_time) * 1000
-            was_stopped = getattr(state, "_stopped", False)
+            was_stopped = state.stopped
             status = RunStatus.STOPPED if was_stopped else RunStatus.COMPLETED
 
             # Emit StopRequestedEvent if stopped
             if was_stopped and dispatcher.active:
                 from hypergraph.events.types import StopRequestedEvent
 
-                stop_info = getattr(state, "_stop_info", None)
+                stop_info = state.stop_info
                 await dispatcher.emit_async(
                     StopRequestedEvent(
                         run_id=run_id,
@@ -428,6 +442,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 run_id=run_id,
                 workflow_id=workflow_id,
                 log=collector.build(graph.name, run_id, total_duration_ms),
+                checkpoint_ok=not checkpoint_save_errors,
+                checkpoint_errors=tuple(checkpoint_save_errors),
             )
             await self._emit_run_end_async(
                 dispatcher,
@@ -459,8 +475,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 )
             return result
         except PauseExecution as pause:
-            partial_state = getattr(pause, "_partial_state", None)
-            was_stopped = getattr(pause, "_stopped", False)
+            partial_state = pause.partial_state
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             total_duration_ms = (time.time() - start_time) * 1000
             if dispatcher.active:
@@ -512,10 +527,12 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 workflow_id=workflow_id,
                 pause=pause.pause_info,
                 log=collector.build(graph.name, run_id, total_duration_ms),
+                checkpoint_ok=not checkpoint_save_errors,
+                checkpoint_errors=tuple(checkpoint_save_errors),
             )
         except Exception as e:
             error = e
-            partial_state = getattr(e, "_partial_state", None)
+            partial_state = None
             if isinstance(e, ExecutionError):
                 error = e.__cause__ or e
                 partial_state = e.partial_state
@@ -568,8 +585,13 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 workflow_id=workflow_id,
                 error=error,
                 log=collector.build(graph.name, run_id, total_duration_ms),
+                checkpoint_ok=not checkpoint_save_errors,
+                checkpoint_errors=tuple(checkpoint_save_errors),
             )
         finally:
+            if _checkpoint_error_sink is not None:
+                for checkpoint_error in checkpoint_save_errors:
+                    _checkpoint_error_sink(checkpoint_error)
             if _parent_span_id is None and dispatcher.active:
                 await self._shutdown_dispatcher_async(dispatcher)
 
@@ -592,6 +614,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         _parent_span_id: str | None = None,
         _parent_run_id: str | None = None,
         _item_index: int | None = None,
+        _checkpoint_error_sink: CheckpointErrorSink | None = None,
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
@@ -645,6 +668,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 f"Too many map tasks without a concurrency limit: {len(input_variations)}. "
                 f"Set max_concurrency or keep inputs at <= {MAX_UNBOUNDED_MAP_TASKS}."
             )
+        item_checkpoint_errors: list[list[str]] = [[] for _ in input_variations]
 
         dispatcher = self._create_dispatcher(event_processors)
         map_run_id, map_span_id = await self._emit_run_start_async(
@@ -719,6 +743,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     _validation_ctx=ctx,
                     _run_config={_MAP_SIGNATURE_CONFIG_KEY: item_signature},
                     _item_index=idx,
+                    _checkpoint_error_sink=(item_checkpoint_errors[idx].append if _checkpoint_error_sink is not None else None),
                 )
             except Exception as e:
                 # Catch validation errors (e.g., MissingInputError) that raise
@@ -840,6 +865,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 )
             raise
         finally:
+            if _checkpoint_error_sink is not None:
+                for checkpoint_errors in item_checkpoint_errors:
+                    for checkpoint_error in checkpoint_errors:
+                        _checkpoint_error_sink(checkpoint_error)
             if token is not None:
                 self._reset_concurrency_limiter(token)
             if _parent_span_id is None and dispatcher.active:

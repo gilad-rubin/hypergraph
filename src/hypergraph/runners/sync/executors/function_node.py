@@ -48,7 +48,15 @@ class SyncFunctionNodeExecutor:
         if getattr(node, "_context_param", None) is not None:
             from hypergraph.runners._shared.node_context import build_node_context
 
-            func_inputs[node._context_param] = build_node_context(node.name, ctx.emit_fn, run_id=ctx.run_id)
+            func_inputs[node._context_param] = build_node_context(
+                node.name,
+                ctx.emit_fn,
+                run_id=ctx.run_id,
+                graph_name=ctx.graph_name,
+                workflow_id=ctx.workflow_id,
+                item_index=ctx.item_index,
+                parent_span_id=ctx.parent_span_id,
+            )
 
         # Call the function (with cache observer installed for hypercache telemetry)
         emit_fn = ctx.emit_fn if ctx.emit_fn is not None else lambda _: None

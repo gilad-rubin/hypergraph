@@ -1021,3 +1021,70 @@ class TestEdgeCases:
         assert result["result"] == 10
         assert result.stopped is False
         assert call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# 15. StreamingChunkEvent correlation fields (issue #110)
+# ---------------------------------------------------------------------------
+
+
+class CorrelationCollector:
+    """Captures full StreamingChunkEvents plus node span ids."""
+
+    def __init__(self):
+        self.chunk_events: list[StreamingChunkEvent] = []
+        self.node_spans: dict[str, str] = {}
+
+    def on_event(self, event):
+        from hypergraph.events.types import NodeStartEvent
+
+        if isinstance(event, StreamingChunkEvent):
+            self.chunk_events.append(event)
+        elif isinstance(event, NodeStartEvent):
+            self.node_spans[event.node_name] = event.span_id
+
+    def shutdown(self):
+        pass
+
+
+def _make_streaming_graph() -> Graph:
+    @node(output_name="out")
+    def streamer(x: int, ctx: NodeContext) -> int:
+        ctx.stream(f"chunk-{x}")
+        return x
+
+    return Graph([streamer], name="stream_graph")
+
+
+def _assert_chunk_correlated(collector: CorrelationCollector, workflow_id: str) -> None:
+    [event] = collector.chunk_events
+    assert event.chunk == "chunk-7"
+    assert event.node_name == "streamer"
+    assert event.graph_name == "stream_graph"
+    assert event.workflow_id == f"{workflow_id}/0"
+    assert event.item_index == 0
+    assert event.parent_span_id == collector.node_spans["streamer"]
+
+
+class TestStreamingChunkCorrelation:
+    def test_sync_chunk_carries_correlation_fields(self):
+        collector = CorrelationCollector()
+        SyncRunner().map(
+            _make_streaming_graph(),
+            {"x": [7]},
+            map_over="x",
+            workflow_id="wf-stream-sync",
+            event_processors=[collector],
+        )
+        _assert_chunk_correlated(collector, "wf-stream-sync")
+
+    async def test_async_chunk_carries_correlation_fields(self):
+        collector = CorrelationCollector()
+        await AsyncRunner().map(
+            _make_streaming_graph(),
+            {"x": [7]},
+            map_over="x",
+            workflow_id="wf-stream-async",
+            event_processors=[collector],
+        )
+        _assert_chunk_correlated(collector, "wf-stream-async")
