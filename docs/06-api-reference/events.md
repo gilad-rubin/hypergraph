@@ -80,8 +80,8 @@ class RunEndEvent(BaseEvent):
     batch_failed_items: int | None
     batch_paused_items: int | None
     batch_stopped_items: int | None
-    batch_restored_items: int | None
     batch_outcome: str | None
+    batch_restored_items: int | None
 ```
 
 For map parents, `batch_completed_items` remains inclusive of checkpoint-restored successes and `batch_restored_items` reports that subset. OpenTelemetry processors export the same value as `hypergraph.batch.restored_items`. Restored children were skipped, so they do not emit new child execution events.

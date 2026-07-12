@@ -204,6 +204,8 @@ def test_checkpointer_semantics_docs_mirror_high_drift_surfaces() -> None:
 
     assert "batch_restored_items" in RunEndEvent.__dataclass_fields__
     assert "batch_restored_items: int | None" in events
+    run_end_event = _scoped_section(events, "### RunEndEvent")
+    assert run_end_event.index("batch_outcome: str | None") < run_end_event.index("batch_restored_items: int | None")
     assert "hypergraph.batch.restored_items" in events
     assert "Restored children" in events
 

@@ -131,7 +131,7 @@ class MemoryCheckpointer(Checkpointer):
         if status is not None:
             runs = [run for run in runs if run.status == status]
         if graph_name is not None:
-            runs = [run for run in runs if run.graph_name == graph_name]
+            runs = [run for run in runs if (run.graph_name or "") == graph_name]
         if since is not None:
             boundary = _normalize_since(since)
             runs = [run for run in runs if run.created_at >= boundary]

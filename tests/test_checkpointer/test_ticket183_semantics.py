@@ -136,6 +136,15 @@ async def test_default_count_runs_omits_parent_filter_for_third_party_backends()
     assert checkpointer.seen_parent_run_id is None
 
 
+async def test_empty_graph_name_filter_matches_existing_sync_semantics(async_checkpointer):
+    await async_checkpointer.create_run("unnamed")
+    await async_checkpointer.create_run("named", graph_name="named")
+
+    assert [run.id for run in await async_checkpointer.list_runs(graph_name="", limit=None)] == ["unnamed"]
+    if isinstance(async_checkpointer, SqliteCheckpointer):
+        assert [run.id for run in async_checkpointer.runs(graph_name="", limit=None)] == ["unnamed"]
+
+
 async def test_retention_carriers_are_hidden_but_state_remains_folded(async_checkpointer):
     run_id = "retention-source"
     async_checkpointer.policy = CheckpointPolicy(durability="sync", retention="latest")
