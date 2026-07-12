@@ -15,7 +15,7 @@ from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id
 if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Checkpoint
     from hypergraph.graph import Graph
-    from hypergraph.runners._shared.types import GraphState
+    from hypergraph.runners._shared.state import GraphState
 
 
 def build_superstep_records(

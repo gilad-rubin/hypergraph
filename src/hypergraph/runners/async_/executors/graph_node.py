@@ -8,12 +8,13 @@ from typing import TYPE_CHECKING, Any
 from hypergraph.exceptions import IncompatibleRunnerError
 from hypergraph.runners._shared.outputs import collect_as_lists
 from hypergraph.runners._shared.protocols import CheckpointErrorSinkRunner
+from hypergraph.runners._shared.results import PauseInfo, RunResult, RunStatus
+from hypergraph.runners._shared.state import PauseExecution
 from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id
-from hypergraph.runners._shared.types import PauseExecution, PauseInfo, RunResult, RunStatus
 
 if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
-    from hypergraph.runners._shared.types import ExecutionContext, GraphState
+    from hypergraph.runners._shared.state import ExecutionContext, GraphState
     from hypergraph.runners.async_.runner import AsyncRunner
 
 

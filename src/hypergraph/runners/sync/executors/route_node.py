@@ -8,7 +8,7 @@ from hypergraph.runners._shared.gate_execution import execute_route
 
 if TYPE_CHECKING:
     from hypergraph.nodes.gate import RouteNode
-    from hypergraph.runners._shared.types import ExecutionContext, GraphState
+    from hypergraph.runners._shared.state import ExecutionContext, GraphState
 
 
 class SyncRouteNodeExecutor:

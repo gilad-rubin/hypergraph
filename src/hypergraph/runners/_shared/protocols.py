@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, TypeVar, run
 
 if TYPE_CHECKING:
     from hypergraph.nodes.base import HyperNode
-    from hypergraph.runners._shared.types import ExecutionContext, GraphState
+    from hypergraph.runners._shared.state import ExecutionContext, GraphState
 
 N = TypeVar("N", bound="HyperNode", contravariant=True)
 

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import networkx as nx
 
 from hypergraph.nodes.base import HyperNode
-from hypergraph.runners._shared.types import GraphState
+from hypergraph.runners._shared.state import GraphState
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph

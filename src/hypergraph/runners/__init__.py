@@ -1,19 +1,21 @@
 """Execution runners for hypergraph."""
 
-from hypergraph.runners._shared.types import (
+from hypergraph.runners._shared.results import (
     ErrorHandling,
-    GraphState,
     MapLog,
     MapResult,
-    NodeExecution,
     NodeRecord,
     NodeStats,
-    PauseExecution,
     PauseInfo,
     RunLog,
-    RunnerCapabilities,
     RunResult,
     RunStatus,
+)
+from hypergraph.runners._shared.state import (
+    GraphState,
+    NodeExecution,
+    PauseExecution,
+    RunnerCapabilities,
 )
 from hypergraph.runners.async_ import AsyncRunner
 from hypergraph.runners.base import BaseRunner

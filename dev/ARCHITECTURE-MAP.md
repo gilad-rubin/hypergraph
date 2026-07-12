@@ -160,7 +160,9 @@ Key files:
 - `src/hypergraph/runners/_shared/state_restore.py`
 - `src/hypergraph/runners/_shared/outputs.py`
 - `src/hypergraph/runners/_shared/map_inputs.py`
-- `src/hypergraph/runners/_shared/types.py`
+- `src/hypergraph/runners/_shared/results.py`
+- `src/hypergraph/runners/_shared/state.py`
+- `src/hypergraph/runners/_shared/types.py` (compatibility re-exports)
 - `src/hypergraph/runners/_shared/protocols.py`
 - `src/hypergraph/runners/_shared/template_sync.py`
 - `src/hypergraph/runners/_shared/template_async.py`

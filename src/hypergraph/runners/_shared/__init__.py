@@ -12,16 +12,14 @@ from hypergraph.runners._shared.protocols import (
     NodeExecutor,
 )
 from hypergraph.runners._shared.readiness import get_ready_nodes
-from hypergraph.runners._shared.state_restore import initialize_state
-from hypergraph.runners._shared.types import (
+from hypergraph.runners._shared.results import PauseInfo, RunResult, RunStatus
+from hypergraph.runners._shared.state import (
     GraphState,
     NodeExecution,
     PauseExecution,
-    PauseInfo,
     RunnerCapabilities,
-    RunResult,
-    RunStatus,
 )
+from hypergraph.runners._shared.state_restore import initialize_state
 from hypergraph.runners._shared.validation import (
     validate_inputs,
     validate_node_types,

@@ -10,7 +10,7 @@ import pytest
 from hypergraph import END, AsyncRunner, Graph, interrupt, node, route
 from hypergraph.runners._shared.readiness import get_ready_nodes
 from hypergraph.runners._shared.scheduling import compute_execution_scope
-from hypergraph.runners._shared.types import GraphState
+from hypergraph.runners._shared.state import GraphState
 
 # --- Nodes (mirrors the notebook) ---
 
@@ -76,7 +76,7 @@ class TestInterruptSharedCycleScheduling:
         assert "ask" in ready_names
 
         # Simulate ask executing (skip path: returns user_input from state)
-        from hypergraph.runners._shared.types import NodeExecution
+        from hypergraph.runners._shared.state import NodeExecution
 
         state.node_executions["ask"] = NodeExecution(
             node_name="ask",
@@ -132,7 +132,7 @@ class TestInterruptSharedCycleScheduling:
         """
         scope = compute_execution_scope(GRAPH)
         state = GraphState()
-        from hypergraph.runners._shared.types import NodeExecution
+        from hypergraph.runners._shared.state import NodeExecution
 
         state.update_value("messages", [])
         state.update_value("user_input", "hello")

@@ -22,14 +22,13 @@ from hypergraph.runners._shared.outputs import (
     validate_error_handling,
     validate_on_missing,
 )
-from hypergraph.runners._shared.types import (
-    GraphState,
+from hypergraph.runners._shared.results import (
     MapResult,
-    RunnerCapabilities,
     RunResult,
     RunStatus,
-    _generate_run_id,
+    generate_run_id,
 )
+from hypergraph.runners._shared.state import GraphState, RunnerCapabilities
 from hypergraph.runners._shared.validation import (
     precompute_input_validation,
     resolve_runtime_selected,
@@ -149,14 +148,14 @@ class DaftRunner(BaseRunner):
             return RunResult(
                 values=output,
                 status=RunStatus.COMPLETED,
-                run_id=_generate_run_id(),
+                run_id=generate_run_id(),
             )
         except Exception as exc:
             if error_handling == "continue":
                 return RunResult(
                     values={},
                     status=RunStatus.FAILED,
-                    run_id=_generate_run_id(),
+                    run_id=generate_run_id(),
                     error=exc,
                 )
             raise
@@ -250,7 +249,7 @@ class DaftRunner(BaseRunner):
 
         return MapResult(
             results=tuple(results),
-            run_id=_generate_run_id(),
+            run_id=generate_run_id(),
             total_duration_ms=total_duration,
             map_over=tuple(map_over_list),
             map_mode=map_mode,
@@ -410,7 +409,7 @@ class DaftRunner(BaseRunner):
                     RunResult(
                         values=output,
                         status=RunStatus.COMPLETED,
-                        run_id=_generate_run_id(),
+                        run_id=generate_run_id(),
                     )
                 )
             return results
@@ -430,7 +429,7 @@ class DaftRunner(BaseRunner):
                     RunResult(
                         values=output,
                         status=RunStatus.COMPLETED,
-                        run_id=_generate_run_id(),
+                        run_id=generate_run_id(),
                     )
                 )
             except Exception as exc:
@@ -438,7 +437,7 @@ class DaftRunner(BaseRunner):
                     RunResult(
                         values={},
                         status=RunStatus.FAILED,
-                        run_id=_generate_run_id(),
+                        run_id=generate_run_id(),
                         error=exc,
                     )
                 )

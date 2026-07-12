@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from hypergraph.checkpointers.types import StepRecord, StepStatus
 from hypergraph.nodes.base import HyperNode
-from hypergraph.runners._shared.types import GraphState, NodeExecution
+from hypergraph.runners._shared.state import GraphState, NodeExecution
 
 if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Checkpoint

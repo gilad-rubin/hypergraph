@@ -6,7 +6,8 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.nodes.base import HyperNode
-from hypergraph.runners._shared.types import ErrorHandling, GraphState, RunResult, RunStatus
+from hypergraph.runners._shared.results import ErrorHandling, RunResult, RunStatus
+from hypergraph.runners._shared.state import GraphState
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph

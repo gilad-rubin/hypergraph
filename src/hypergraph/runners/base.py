@@ -6,7 +6,8 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.runners._shared.outputs import SELECT_UNSET
-from hypergraph.runners._shared.types import ErrorHandling, MapResult, RunnerCapabilities, RunResult
+from hypergraph.runners._shared.results import ErrorHandling, MapResult, RunResult
+from hypergraph.runners._shared.state import RunnerCapabilities
 
 if TYPE_CHECKING:
     from hypergraph.events.processor import EventProcessor

@@ -19,7 +19,7 @@ from hypergraph.events.types import (
     RouteDecisionEvent,
     SuperstepStartEvent,
 )
-from hypergraph.runners._shared.types import NodeRecord, RunLog
+from hypergraph.runners._shared.results import NodeRecord, RunLog
 
 
 class RunLogCollector(TypedEventProcessor):

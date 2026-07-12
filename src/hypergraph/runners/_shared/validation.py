@@ -7,7 +7,7 @@ from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import IncompatibleRunnerError, MissingInputError
-from hypergraph.runners._shared.types import RunnerCapabilities
+from hypergraph.runners._shared.state import RunnerCapabilities
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph

@@ -212,7 +212,7 @@ class TestValueComparisonSafety:
 
     def test_update_value_with_array_like(self):
         """update_value should handle array-like values without raising."""
-        from hypergraph.runners._shared.types import GraphState
+        from hypergraph.runners._shared.state import GraphState
 
         class ArrayLike:
             """Mock array-like that raises on truth test."""
@@ -237,7 +237,7 @@ class TestValueComparisonSafety:
 
     def test_update_value_with_same_object(self):
         """update_value with same object should not increment version."""
-        from hypergraph.runners._shared.types import GraphState
+        from hypergraph.runners._shared.state import GraphState
 
         state = GraphState()
         obj = {"key": "value"}

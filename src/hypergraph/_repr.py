@@ -724,3 +724,104 @@ def error_html(error: BaseException | str | None) -> str:
     text = f"{type(error).__name__}: {error}" if isinstance(error, BaseException) else str(error)
     escaped = _html.escape(text)
     return f'<div style="color:{ERROR_COLOR}; {_FONT}; font-size:0.85em; padding:4px 8px; background:{_ERROR_BG}; {_RADIUS}; margin-top:4px"><b>Error:</b> {escaped}</div>'
+
+
+# ---------------------------------------------------------------------------
+# Runner presentation boundary
+# ---------------------------------------------------------------------------
+
+
+def render_run_result_repr(result: Any) -> str:
+    from hypergraph._runner_repr import render_run_result_repr as render
+
+    return render(result)
+
+
+def render_run_result_pretty(result: Any, pretty_printer: Any, cycle: bool) -> None:
+    from hypergraph._runner_repr import render_run_result_pretty as render
+
+    render(result, pretty_printer, cycle)
+
+
+def render_run_result_html(result: Any) -> str:
+    from hypergraph._runner_repr import render_run_result_html as render
+
+    return render(result)
+
+
+def render_map_result_repr(result: Any) -> str:
+    from hypergraph._runner_repr import render_map_result_repr as render
+
+    return render(result)
+
+
+def render_map_result_pretty(result: Any, pretty_printer: Any, cycle: bool) -> None:
+    from hypergraph._runner_repr import render_map_result_pretty as render
+
+    render(result, pretty_printer, cycle)
+
+
+def render_map_result_html(result: Any) -> str:
+    from hypergraph._runner_repr import render_map_result_html as render
+
+    return render(result)
+
+
+def render_node_record_repr(record: Any) -> str:
+    from hypergraph._runner_repr import render_node_record_repr as render
+
+    return render(record)
+
+
+def render_node_stats_repr(stats: Any) -> str:
+    from hypergraph._runner_repr import render_node_stats_repr as render
+
+    return render(stats)
+
+
+def render_run_log_str(log: Any) -> str:
+    from hypergraph._runner_repr import render_run_log_str as render
+
+    return render(log)
+
+
+def render_run_log_repr(log: Any) -> str:
+    from hypergraph._runner_repr import render_run_log_repr as render
+
+    return render(log)
+
+
+def render_run_log_pretty(log: Any, pretty_printer: Any, cycle: bool) -> None:
+    from hypergraph._runner_repr import render_run_log_pretty as render
+
+    render(log, pretty_printer, cycle)
+
+
+def render_run_log_html(log: Any) -> str:
+    from hypergraph._runner_repr import render_run_log_html as render
+
+    return render(log)
+
+
+def render_map_log_str(log: Any) -> str:
+    from hypergraph._runner_repr import render_map_log_str as render
+
+    return render(log)
+
+
+def render_map_log_repr(log: Any) -> str:
+    from hypergraph._runner_repr import render_map_log_repr as render
+
+    return render(log)
+
+
+def render_map_log_pretty(log: Any, pretty_printer: Any, cycle: bool) -> None:
+    from hypergraph._runner_repr import render_map_log_pretty as render
+
+    render(log, pretty_printer, cycle)
+
+
+def render_map_log_html(log: Any) -> str:
+    from hypergraph._runner_repr import render_map_log_html as render
+
+    return render(log)

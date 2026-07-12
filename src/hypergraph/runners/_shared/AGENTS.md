@@ -2,7 +2,8 @@
 
 The scheduling and state engine. Read this before modifying the focused
 `scheduling.py`, `readiness.py`, `value_resolution.py`, `state_restore.py`,
-`outputs.py`, `map_inputs.py`, `types.py`, or `template_*.py` modules.
+`outputs.py`, `map_inputs.py`, `results.py`, `state.py`, or `template_*.py`
+modules. Treat `types.py` as a compatibility re-export surface only.
 
 ## Node Readiness (`get_ready_nodes`)
 

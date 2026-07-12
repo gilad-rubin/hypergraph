@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from hypergraph.graph.validation import GraphConfigError
 from hypergraph.nodes.base import HyperNode
-from hypergraph.runners._shared.types import GraphState
+from hypergraph.runners._shared.state import GraphState
 
 if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Checkpoint

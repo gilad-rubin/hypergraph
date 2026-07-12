@@ -28,7 +28,7 @@ from hypergraph.checkpointers.types import (
     StepTable,
     WorkflowStatus,
 )
-from hypergraph.runners._shared.types import MapLog, MapResult, NodeRecord, NodeStats, RunLog, RunResult, RunStatus
+from hypergraph.runners._shared.results import MapLog, MapResult, NodeRecord, NodeStats, RunLog, RunResult, RunStatus
 
 # ---------------------------------------------------------------------------
 # format_duration_ms

@@ -28,7 +28,7 @@ from hypergraph.runners._shared.observability import (
     set_current_node_span,
 )
 from hypergraph.runners._shared.readiness import apply_node_result
-from hypergraph.runners._shared.types import ExecutionContext, GraphState, PauseExecution
+from hypergraph.runners._shared.state import ExecutionContext, GraphState, PauseExecution
 from hypergraph.runners._shared.value_resolution import address_for_node_input, collect_inputs_for_node
 
 if TYPE_CHECKING:

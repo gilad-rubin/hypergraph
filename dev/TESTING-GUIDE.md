@@ -162,7 +162,7 @@ For subtle scheduling bugs, test `get_ready_nodes` directly against `GraphState`
 ```python
 from hypergraph.runners._shared.readiness import get_ready_nodes
 from hypergraph.runners._shared.scheduling import compute_execution_scope
-from hypergraph.runners._shared.types import GraphState, NodeExecution
+from hypergraph.runners._shared.state import GraphState, NodeExecution
 
 scope = compute_execution_scope(graph)
 state = GraphState()

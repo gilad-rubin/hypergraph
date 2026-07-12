@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from hypergraph.runners._shared.types import GraphState
+    from hypergraph.runners._shared.state import GraphState
 
 
 class MissingInputError(Exception):

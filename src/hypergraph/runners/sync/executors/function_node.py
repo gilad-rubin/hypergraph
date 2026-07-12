@@ -9,7 +9,7 @@ from hypergraph.runners._shared.outputs import wrap_outputs
 
 if TYPE_CHECKING:
     from hypergraph.nodes.function import FunctionNode
-    from hypergraph.runners._shared.types import ExecutionContext, GraphState
+    from hypergraph.runners._shared.state import ExecutionContext, GraphState
 
 
 class SyncFunctionNodeExecutor:

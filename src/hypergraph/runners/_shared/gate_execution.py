@@ -13,7 +13,7 @@ from hypergraph.runners._shared.routing_validation import validate_routing_decis
 
 if TYPE_CHECKING:
     from hypergraph.nodes.gate import IfElseNode, RouteNode
-    from hypergraph.runners._shared.types import GraphState
+    from hypergraph.runners._shared.state import GraphState
 
 
 def execute_ifelse(

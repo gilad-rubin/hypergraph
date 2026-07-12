@@ -9,7 +9,7 @@ import pytest
 
 from hypergraph import Graph, MapResult, RunResult, RunStatus, node
 from hypergraph.runners import AsyncRunner, SyncRunner
-from hypergraph.runners._shared.types import MapLog, NodeRecord, NodeStats, RunLog
+from hypergraph.runners._shared.results import MapLog, NodeRecord, NodeStats, RunLog
 
 # === Fixtures ===
 

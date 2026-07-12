@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from hypergraph.runners._shared.types import RunResult
+    from hypergraph.runners._shared.results import RunResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +49,7 @@ class BatchSummary:
     @classmethod
     def from_results(cls, results: Sequence[RunResult]) -> BatchSummary:
         """Build a summary from mapped child run results."""
-        from hypergraph.runners._shared.types import RunStatus, aggregate_run_status
+        from hypergraph.runners._shared.results import RunStatus, aggregate_run_status
 
         total_items = len(results)
         completed_items = sum(1 for result in results if result.status == RunStatus.COMPLETED)

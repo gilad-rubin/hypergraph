@@ -7,7 +7,7 @@ import pytest
 from hypergraph import Graph, node
 from hypergraph.exceptions import IncompatibleRunnerError
 from hypergraph.nodes.gate import ifelse, route
-from hypergraph.runners._shared.types import RunnerCapabilities
+from hypergraph.runners._shared.state import RunnerCapabilities
 from hypergraph.runners._shared.validation import validate_runner_compatibility
 
 # ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@ from hypergraph.runners.async_.superstep import get_concurrency_limiter
 
 if TYPE_CHECKING:
     from hypergraph.nodes.function import FunctionNode
-    from hypergraph.runners._shared.types import ExecutionContext, GraphState
+    from hypergraph.runners._shared.state import ExecutionContext, GraphState
 
 
 class AsyncFunctionNodeExecutor:

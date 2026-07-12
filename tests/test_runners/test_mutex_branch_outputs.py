@@ -7,8 +7,8 @@ import pytest
 from hypergraph import AsyncRunner, Graph, RunStatus, SyncRunner, ifelse, node
 from hypergraph.checkpointers.types import Checkpoint, StepRecord, StepStatus
 from hypergraph.runners._shared.readiness import apply_node_result
+from hypergraph.runners._shared.state import GraphState, NodeExecution
 from hypergraph.runners._shared.state_restore import initialize_state
-from hypergraph.runners._shared.types import GraphState, NodeExecution
 from hypergraph.runners._shared.value_resolution import _unversioned_execution_can_own_value, has_input
 
 

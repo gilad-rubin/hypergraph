@@ -9,7 +9,7 @@ from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id
 
 if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
-    from hypergraph.runners._shared.types import ExecutionContext, GraphState
+    from hypergraph.runners._shared.state import ExecutionContext, GraphState
     from hypergraph.runners.sync.runner import SyncRunner
 
 

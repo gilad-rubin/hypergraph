@@ -19,13 +19,13 @@ import pytest
 from hypergraph import Graph, node
 from hypergraph.exceptions import ExecutionError
 from hypergraph.runners._shared.readiness import get_ready_nodes
-from hypergraph.runners._shared.state_restore import initialize_state
-from hypergraph.runners._shared.types import (
+from hypergraph.runners._shared.results import PauseInfo
+from hypergraph.runners._shared.state import (
     ExecutionContext,
     GraphState,
     PauseExecution,
-    PauseInfo,
 )
+from hypergraph.runners._shared.state_restore import initialize_state
 from hypergraph.runners.async_.executors import AsyncFunctionNodeExecutor
 from hypergraph.runners.async_.superstep import run_superstep_async
 from hypergraph.runners.sync.executors import SyncFunctionNodeExecutor

@@ -13,7 +13,7 @@ from hypergraph.exceptions import (
     MissingInputError,
     WorkflowAlreadyCompletedError,
 )
-from hypergraph.runners._shared.types import RunStatus
+from hypergraph.runners._shared.results import RunStatus
 
 aiosqlite = pytest.importorskip("aiosqlite")
 

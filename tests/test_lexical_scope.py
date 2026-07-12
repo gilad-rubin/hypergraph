@@ -160,7 +160,7 @@ def test_bind_with_dict_value_for_non_subgraph_key_passes_through_as_value():
 
 def test_changed_namespaced_input_marks_graphnode_as_stale_on_replay():
     from hypergraph.runners._shared.readiness import _is_stale
-    from hypergraph.runners._shared.types import GraphState, NodeExecution
+    from hypergraph.runners._shared.state import GraphState, NodeExecution
 
     @node(output_name="doubled")
     def double(x: int) -> int:

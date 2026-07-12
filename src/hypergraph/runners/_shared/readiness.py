@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from hypergraph.nodes.base import HyperNode
 from hypergraph.runners._shared.scheduling import ExecutionComponent, compute_startup_predecessors
-from hypergraph.runners._shared.types import GraphState, NodeExecution
+from hypergraph.runners._shared.state import GraphState, NodeExecution
 from hypergraph.runners._shared.value_resolution import (
     address_for_node_input,
     graphnode_has_resume_values,

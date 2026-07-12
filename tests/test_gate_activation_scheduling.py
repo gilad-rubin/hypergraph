@@ -11,7 +11,7 @@ from hypergraph import END, AsyncRunner, Graph, interrupt, node, route
 from hypergraph.runners._shared import readiness as readiness_module
 from hypergraph.runners._shared.readiness import gate_permits_startup, get_ready_nodes
 from hypergraph.runners._shared.scheduling import compute_execution_scope
-from hypergraph.runners._shared.types import GraphState, NodeExecution
+from hypergraph.runners._shared.state import GraphState, NodeExecution
 
 # --- Fixtures ---
 
