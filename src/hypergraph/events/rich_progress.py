@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal
 from hypergraph.events._progress_renderers import (
     _make_progress_renderer,
 )
-from hypergraph.events._progress_tracker import _ProgressTracker, _ProgressUpdate
+from hypergraph.events._progress_tracker import _ProgressTracker
 from hypergraph.events.processor import AsyncEventProcessor, TypedEventProcessor
 
 if TYPE_CHECKING:
@@ -87,28 +87,25 @@ class RichProgressProcessor(TypedEventProcessor, AsyncEventProcessor):
             self._renderer.start()
             self._started = True
 
-    def _emit(self, update: _ProgressUpdate) -> None:
-        self._renderer.emit(update)
-
     def on_run_start(self, event: RunStartEvent) -> None:
         self._ensure_started()
-        self._emit(self._tracker.on_run_start(event))
+        self._renderer.emit(self._tracker.on_run_start(event))
 
     def on_node_start(self, event: NodeStartEvent) -> None:
         self._ensure_started()
-        self._emit(self._tracker.on_node_start(event))
+        self._renderer.emit(self._tracker.on_node_start(event))
 
     def on_node_end(self, event: NodeEndEvent) -> None:
-        self._emit(self._tracker.on_node_end(event))
+        self._renderer.emit(self._tracker.on_node_end(event))
 
     def on_node_error(self, event: NodeErrorEvent) -> None:
-        self._emit(self._tracker.on_node_error(event))
+        self._renderer.emit(self._tracker.on_node_error(event))
 
     def on_inner_cache(self, event: InnerCacheEvent) -> None:
-        self._emit(self._tracker.on_inner_cache(event))
+        self._renderer.emit(self._tracker.on_inner_cache(event))
 
     def on_run_end(self, event: RunEndEvent) -> None:
-        self._emit(self._tracker.on_run_end(event))
+        self._renderer.emit(self._tracker.on_run_end(event))
 
     def shutdown(self) -> None:
         if self._started:

@@ -17,20 +17,20 @@ def _safe_json_payload(payload: dict[str, Any]) -> str:
     return json.dumps(payload).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 
 
-_EXPLORER_ASSET_SHA256 = "d6fcfe7189f28985a2940d802a5e07e7dcb5093c28e95641bc663121482009d3"
+_EXPLORER_ASSET_SHA256 = "9909428d38a1ec32738c16eb54d8a72f1f4bb6a38b03858709b86286c35b413d"
 
 
 def _read_explorer_asset() -> str:
-    """Read and validate the complete packaged offline explorer asset."""
-    source = files("hypergraph.checkpointers._assets").joinpath("explorer.js").read_text(encoding="utf-8")
-    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    """Read and validate the exact packaged offline explorer bytes."""
+    source = files("hypergraph.checkpointers._assets").joinpath("explorer.js").read_bytes()
+    digest = hashlib.sha256(source).hexdigest()
     if digest != _EXPLORER_ASSET_SHA256:
         raise RuntimeError(
             "The packaged checkpointer explorer asset is corrupt.\n\n"
             "The complete explorer.js content does not match this Hypergraph build.\n\n"
             "How to fix: Reinstall hypergraph from a complete wheel."
         )
-    return source
+    return source.decode("utf-8")
 
 
 def _aggregate_workflow_status(

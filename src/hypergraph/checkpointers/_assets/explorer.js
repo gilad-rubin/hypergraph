@@ -81,7 +81,7 @@
     var stepCount=stepsFor(run.id).length;
     var childCount=childrenFor(run.id).length;
     return (
-      '<button type="button" data-run-target="'+esc(run.id)+'" aria-label="'+esc(run.id)+'" style="text-align:left; padding:10px 12px; border-radius:10px; border:1px solid '+(active?'#2563eb':'#e5e7eb')+'; background:'+(active?'#eff6ff':'#ffffff')+'; cursor:pointer">' +
+      '<button type="button" data-run-target="'+esc(run.id)+'" style="text-align:left; padding:10px 12px; border-radius:10px; border:1px solid '+(active?'#2563eb':'#e5e7eb')+'; background:'+(active?'#eff6ff':'#ffffff')+'; cursor:pointer">' +
       '<div style="display:flex; justify-content:space-between; gap:8px; align-items:center">' +
       '<span style="font-weight:700; font-family:ui-monospace, monospace; color:#111827">'+esc(run.id)+'</span>' +
       badge(run.status) +
