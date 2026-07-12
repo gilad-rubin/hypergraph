@@ -102,10 +102,12 @@ class OpenTelemetryProcessor(TypedEventProcessor):
                 consulted nor modified.
         """
         _require_opentelemetry()
+        from opentelemetry import context as otel_context
         from opentelemetry import trace
         from opentelemetry.trace import Link, Status, StatusCode
 
         self._trace = trace
+        self._context_api = otel_context
         if tracer_provider is not None:
             self._tracer = tracer_provider.get_tracer(tracer_name)
         else:
@@ -116,8 +118,64 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         self._StatusCode = StatusCode
         self._spans: dict[str, Any] = {}
         self._contexts: dict[str, Any] = {}
+        self._tokens: dict[str, Any] = {}
         self._workflow_span_contexts: OrderedDict[str, Any] = OrderedDict()
         self._workflow_span_contexts_lock = Lock()
+
+    # -- Ambient context activation -------------------------------------------
+    #
+    # Beyond projecting events into spans, this processor makes each span the
+    # AMBIENT OTel context for the code it covers: the run root around the run,
+    # each node span around that node's body. Third-party instrumentation
+    # (openinference, agent SDKs) that starts spans inside a node body then
+    # parents them under the node span automatically — zero coupling.
+    #
+    # This works because event dispatch brackets execution IN the executing
+    # context: the sync runner emits node start/end synchronously around the
+    # executor call in one thread, and the async runner emits them inside the
+    # same per-node asyncio task that awaits the executor (each task owns a
+    # contextvars copy, so concurrent nodes and concurrent map items cannot
+    # see each other's attach). Span parentage bookkeeping (explicit
+    # ``context=parent_ctx`` at span creation) is unchanged — activation only
+    # changes what ``opentelemetry.context.get_current()`` returns inside the
+    # bracketed code.
+
+    def _attach_ambient(self, span_id: str) -> None:
+        """Make the span's context ambient; remember the token for detach."""
+        ctx = self._contexts.get(span_id)
+        if ctx is None:
+            return
+        self._tokens[span_id] = self._context_api.attach(ctx)
+
+    def _detach_ambient(self, span_id: str) -> None:
+        """Restore the previous ambient context.
+
+        Only called from event handlers that run in the same context that
+        attached (run end, node end, node error — guaranteed by the runner
+        templates). If that invariant ever breaks, ``opentelemetry.context``
+        logs a loud "Failed to detach context" error rather than raising.
+        """
+        token = self._tokens.pop(span_id, None)
+        if token is None:
+            return
+        self._context_api.detach(token)
+
+    def _detach_ambient_if_current(self, span_id: str) -> None:
+        """Detach only when this execution unit provably owns the attach.
+
+        Used where cross-context arrival is NORMAL: an async pause raises out
+        of the node's asyncio task without a node end/error event, so the
+        InterruptEvent (and shutdown) observe the token from a different
+        context whose contextvars copy is already gone. Detaching there would
+        make OTel log "Failed to detach context" on a healthy path; dropping
+        the token is safe because the attach only ever mutated the dead task's
+        context copy.
+        """
+        token = self._tokens.pop(span_id, None)
+        if token is None:
+            return
+        if self._context_api.get_current() is self._contexts.get(span_id):
+            self._context_api.detach(token)
 
     def _get_linked_workflow_context(self, workflow_id: str | None) -> Any | None:
         """Return a recent workflow span context, or None if evicted/missing."""
@@ -177,6 +235,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         )
         self._spans[event.span_id] = span
         self._contexts[event.span_id] = self._trace.set_span_in_context(span)
+        self._attach_ambient(event.span_id)
 
         if event.is_resume:
             span.add_event(
@@ -205,6 +264,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
             )
 
     def on_run_end(self, event: RunEndEvent) -> None:
+        self._detach_ambient(event.span_id)
         span = self._spans.pop(event.span_id, None)
         self._contexts.pop(event.span_id, None)
         if span is None:
@@ -258,8 +318,10 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         )
         self._spans[event.span_id] = span
         self._contexts[event.span_id] = self._trace.set_span_in_context(span)
+        self._attach_ambient(event.span_id)
 
     def on_node_end(self, event: NodeEndEvent) -> None:
+        self._detach_ambient(event.span_id)
         span = self._spans.pop(event.span_id, None)
         self._contexts.pop(event.span_id, None)
         if span is None:
@@ -275,6 +337,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         span.end()
 
     def on_node_error(self, event: NodeErrorEvent) -> None:
+        self._detach_ambient(event.span_id)
         span = self._spans.pop(event.span_id, None)
         self._contexts.pop(event.span_id, None)
         if span is None:
@@ -365,6 +428,10 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         # InterruptEvent should normally reuse the paused node span id.
         # If a fallback run span id slips through, don't end the parent span early.
         if event.span_id in self._spans and event.span_id != event.parent_span_id:
+            # An async pause raises out of the node's task without a node
+            # end/error event, so this event arrives in the run's context —
+            # the node's context copy died with its task (drop the token).
+            self._detach_ambient_if_current(event.span_id)
             paused_span = self._spans.pop(event.span_id)
             self._contexts.pop(event.span_id, None)
             paused_span.end()
@@ -385,6 +452,13 @@ class OpenTelemetryProcessor(TypedEventProcessor):
 
     def shutdown(self) -> None:
         """End any remaining spans while preserving bounded lineage history."""
+        # Leftover tokens exist only on abnormal exits (e.g. BaseException
+        # escaping the run template). Detach newest-first, and only where this
+        # execution unit owns the attach — cross-context leftovers died with
+        # their task's context copy and are dropped.
+        for span_id in reversed(list(self._tokens)):
+            self._detach_ambient_if_current(span_id)
+        self._tokens.clear()
         for span in self._spans.values():
             span.end()
         self._spans.clear()
