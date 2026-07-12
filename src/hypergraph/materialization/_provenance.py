@@ -170,13 +170,11 @@ class Provenance:
         graph: Any,
         spec: TableSpec,
         components: Mapping[str, Any],
-        nodes: tuple[Any, ...],
         column_graphs: dict[int, Any],
     ) -> None:
         self.graph = graph
         self.spec = spec
         self.components = components
-        self.nodes = nodes
         self._column_graphs = column_graphs
 
     def derived_columns(self, spec: TableSpec | None = None) -> list[Any]:

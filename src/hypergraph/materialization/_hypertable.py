@@ -19,11 +19,9 @@ from hypergraph.materialization._schema import (
     node_func,
 )
 from hypergraph.materialization._types import RecipeDrift, TableStatus
-from hypergraph.materialization._writes import (
-    RunGraph,
-    WriteOperation,
-    Writes,
-)
+from hypergraph.materialization._write_actions import RunGraph, WriteOperation
+from hypergraph.materialization._write_executor import WriteExecutor
+from hypergraph.materialization._writes import WritePlanner
 from hypergraph.materialization._writes import (
     dedup_child_rows as _dedup_child_rows,
 )
@@ -95,7 +93,8 @@ class HyperTable:
         self._column_graphs: dict[int, Any] = {}
         self._provenance_obj: Provenance | None = None
         self._indexes_obj: IndexPolicy | None = None
-        self._writes_obj: Writes | None = None
+        self._write_planner_obj: WritePlanner | None = None
+        self._write_executor_obj: WriteExecutor | None = None
 
     def bind(self, **components: Any) -> HyperTable:
         merged = {**self._components, **components}
@@ -152,17 +151,21 @@ class HyperTable:
             self._graph,
             self._spec,
             self._components,
-            tuple(self._nodes),
             self._column_graphs,
         )
         self._indexes_obj = IndexPolicy(self._store, self._spec, self._provenance_obj)
-        self._writes_obj = Writes(
+        self._write_planner_obj = WritePlanner(
             self._graph,
             self._spec,
             self._identity,
-            self._store,
             self._components,
             self._on_error,
+            self._provenance_obj,
+        )
+        self._write_executor_obj = WriteExecutor(
+            self._store,
+            self._spec,
+            self._identity,
             self._provenance_obj,
         )
 
@@ -179,10 +182,16 @@ class HyperTable:
         return self._indexes_obj
 
     @property
-    def _writes(self) -> Writes:
-        if self._writes_obj is None:
-            raise RuntimeError("HyperTable writes requested before graph analysis")
-        return self._writes_obj
+    def _write_planner(self) -> WritePlanner:
+        if self._write_planner_obj is None:
+            raise RuntimeError("HyperTable write planner requested before graph analysis")
+        return self._write_planner_obj
+
+    @property
+    def _write_executor(self) -> WriteExecutor:
+        if self._write_executor_obj is None:
+            raise RuntimeError("HyperTable write executor requested before graph analysis")
+        return self._write_executor_obj
 
     def _resolve_store(self):
         from hypergraph.materialization._table_store import TableStore
@@ -227,7 +236,7 @@ class HyperTable:
                         return complete.value
                     continue
             else:
-                response = self._writes.executor.apply(action)
+                response = self._write_executor.apply(action)
             try:
                 action = operation.send(response)
             except StopIteration as complete:
@@ -250,7 +259,7 @@ class HyperTable:
                         return complete.value
                     continue
             else:
-                response = self._writes.executor.apply(action)
+                response = self._write_executor.apply(action)
             try:
                 action = operation.send(response)
             except StopIteration as complete:
@@ -483,7 +492,7 @@ class HyperTable:
             def_hash = compute_definition_hash(node_func(c.produced_by))
             explained[c.name] = {
                 "provenance": def_hash,
-                "source": self._writes.journal.resolve(def_hash),
+                "source": self._write_executor.journal.resolve(def_hash),
             }
         return explained
 
@@ -495,12 +504,12 @@ class HyperTable:
         config/bound-value payload hash) and get the readable payload back.
         """
         self._ensure_analyzed()
-        return self._writes.journal.resolve(stamp)
+        return self._write_executor.journal.resolve(stamp)
 
     def journal_rows(self) -> list[dict[str, Any]]:
         """Every journaled ``(hash, kind, payload, first_seen_at)`` row — the raw recipe journal."""
         self._ensure_analyzed()
-        return self._writes.journal.rows()
+        return self._write_executor.journal.rows()
 
     def children(self, parent_id: str, *, include_status: bool = False) -> list[dict[str, Any]]:
         self._ensure_analyzed()
@@ -595,13 +604,13 @@ class HyperTable:
     def set_children(self, where: Any = None, **fields: Any) -> int:
         """Bulk metadata update for child rows matching a predicate."""
         self._ensure_analyzed()
-        operation = self._writes.plans.set_children(tuple(_where_predicate(where)), fields)
+        operation = self._write_planner.set_children(tuple(_where_predicate(where)), fields)
         return self._drive_sync(operation)
 
     def set(self, where: Any, **fields: Any) -> Any:
         """Bulk metadata update for all rows matching a predicate."""
         self._ensure_analyzed()
-        operation = self._writes.plans.set_rows(tuple(_where_predicate(where)), fields)
+        operation = self._write_planner.set_rows(tuple(_where_predicate(where)), fields)
         if self._is_async_runner():
             return self._drive_async(operation)
         return self._drive_sync(operation)
@@ -617,7 +626,7 @@ class HyperTable:
     def insert(self, *args, **kwargs) -> Any:
         self._require_runner()
         self._ensure_analyzed()
-        operation = self._writes.plans.insert(self._insert_items(*args, **kwargs))
+        operation = self._write_planner.insert(self._insert_items(*args, **kwargs))
         if self._is_async_runner():
             return self._drive_async(operation)
         return self._drive_sync(operation)
@@ -626,7 +635,7 @@ class HyperTable:
         """Update a row. Re-derives downstream if source columns changed."""
         self._require_runner()
         self._ensure_analyzed()
-        operation = self._writes.plans.update(identity_value, changes)
+        operation = self._write_planner.update(identity_value, changes)
         if self._is_async_runner():
             return self._drive_async(operation)
         return self._drive_sync(operation)
@@ -634,7 +643,7 @@ class HyperTable:
     def delete(self, identity_value: str) -> Any:
         """Delete a row and cascade-delete its children."""
         self._ensure_analyzed()
-        operation = self._writes.plans.delete(identity_value)
+        operation = self._write_planner.delete(identity_value)
         if self._is_async_runner():
             return self._drive_async(operation)
         return self._drive_sync(operation)
@@ -643,7 +652,7 @@ class HyperTable:
         """Reconcile: insert new, update changed, delete missing, skip unchanged."""
         self._require_runner()
         self._ensure_analyzed()
-        operation = self._writes.plans.sync(items)
+        operation = self._write_planner.sync(items)
         if self._is_async_runner():
             return self._drive_async(operation)
         return self._drive_sync(operation)
@@ -652,7 +661,7 @@ class HyperTable:
         """Re-derive one column for all rows using current bound components."""
         self._require_runner()
         self._ensure_analyzed()
-        operation = self._writes.plans.derive_column(column, backfill=False)
+        operation = self._write_planner.derive_column(column, backfill=False)
         if self._is_async_runner():
             return self._drive_async(operation)
         return self._drive_sync(operation)
@@ -661,7 +670,7 @@ class HyperTable:
         """Derive a new column for existing rows that have NULL."""
         self._require_runner()
         self._ensure_analyzed()
-        operation = self._writes.plans.derive_column(column, backfill=True)
+        operation = self._write_planner.derive_column(column, backfill=True)
         if self._is_async_runner():
             return self._drive_async(operation)
         return self._drive_sync(operation)
