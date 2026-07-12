@@ -97,13 +97,17 @@ def test_invalid_lancedb_batch_leaves_no_committed_prefix(tmp_path) -> None:
     store = LanceDBStore(path)
     spec = _store_spec()
     store.open(spec, [])
+    rows = [_row("good", 1), _row("bad", "not-an-int"), _row("later", 3)]
+    for row in rows:
+        del row["content"]
 
     with pytest.raises((pa.ArrowInvalid, pa.ArrowTypeError)):
-        store.write_rows("t", [_row("good", 1), _row("bad", "not-an-int")])
+        store.write_rows("t", rows)
 
     fresh = LanceDBStore(path)
     fresh.open(spec, [])
     assert fresh.read_rows("t") == []
+    assert ["content" in row for row in rows] == [True, True, False]
 
 
 def test_failed_lancedb_add_leaves_no_committed_rows(tmp_path, monkeypatch) -> None:
