@@ -158,8 +158,10 @@ Key files:
 - `src/hypergraph/runners/_shared/readiness.py`
 - `src/hypergraph/runners/_shared/value_resolution.py`
 - `src/hypergraph/runners/_shared/state_restore.py`
+- `src/hypergraph/runners/_shared/lineage.py`
 - `src/hypergraph/runners/_shared/outputs.py`
 - `src/hypergraph/runners/_shared/map_inputs.py`
+- `src/hypergraph/runners/_shared/map_resume.py`
 - `src/hypergraph/runners/_shared/results.py`
 - `src/hypergraph/runners/_shared/state.py`
 - `src/hypergraph/runners/_shared/types.py` (compatibility re-exports)
@@ -511,8 +513,10 @@ src/hypergraph/
 │   │   ├── readiness.py
 │   │   ├── value_resolution.py
 │   │   ├── state_restore.py
+│   │   ├── lineage.py
 │   │   ├── outputs.py
 │   │   ├── map_inputs.py
+│   │   ├── map_resume.py
 │   │   ├── results.py
 │   │   ├── state.py
 │   │   ├── types.py                  compatibility re-exports

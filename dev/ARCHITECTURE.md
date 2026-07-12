@@ -94,7 +94,9 @@ Practical mental model:
 - `event_helpers.py` — Emit lifecycle events
 - `gate_execution.py` — Route/ifelse decision execution
 - `input_normalization.py` — Normalize user inputs for execution
+- `lineage.py` — Own workflow resume, fork, and retry decisions
 - `map_inputs.py` — Map input cloning and zip/product expansion
+- `map_resume.py` — Own map-item signature, index, and claim decisions
 - `outputs.py` — Output wrapping, selection, and mapped-output collection
 - `protocols.py` — executor protocols for sync and async runners
 - `readiness.py` — Gate activation, readiness, staleness, and result application
