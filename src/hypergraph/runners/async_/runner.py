@@ -51,6 +51,7 @@ from hypergraph.runners.async_.superstep import (
 if TYPE_CHECKING:
     from hypergraph.cache import CacheBackend
     from hypergraph.checkpointers.base import Checkpointer
+    from hypergraph.checkpointers.types import Checkpoint
     from hypergraph.events.dispatcher import EventDispatcher
     from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
@@ -169,7 +170,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
         workflow_id: str | None = None,
-        checkpoint: Any | None = None,
+        checkpoint: Checkpoint | None = None,
         step_buffer: list[Any] | None = None,
         checkpoint_save_errors: list[str] | None = None,
         _complete_on_stop: bool = False,

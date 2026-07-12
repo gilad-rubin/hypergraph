@@ -239,6 +239,7 @@ class TestNodeExecution:
         assert execution.node_name == "test_node"
         assert execution.input_versions == {"x": 1, "y": 2}
         assert execution.outputs == {"result": 42}
+        assert execution.sequence == -1
 
 
 class TestGraphState:
@@ -299,6 +300,12 @@ class TestGraphState:
     def test_copy_creates_independent_state(self):
         state = GraphState()
         state.update_value("x", 1)
+        state.node_executions["producer"] = NodeExecution(
+            node_name="producer",
+            input_versions={"x": 1},
+            outputs={"result": 1},
+            sequence=7,
+        )
 
         copied = state.copy()
         copied.update_value("x", 2)
@@ -314,6 +321,7 @@ class TestGraphState:
         assert copied.values["y"] == 3
         assert copied.versions["x"] == 2
         assert copied.versions["y"] == 1
+        assert copied.node_executions["producer"].sequence == 7
 
 
 class TestMapResult:

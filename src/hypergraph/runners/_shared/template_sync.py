@@ -74,6 +74,7 @@ from hypergraph.runners._shared.validation import (
 from hypergraph.runners.base import BaseRunner
 
 if TYPE_CHECKING:
+    from hypergraph.checkpointers.types import Checkpoint
     from hypergraph.events.dispatcher import EventDispatcher
     from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
@@ -113,7 +114,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
         workflow_id: str | None = None,
-        checkpoint: Any | None = None,
+        checkpoint: Checkpoint | None = None,
         step_buffer: list[Any] | None = None,
         _complete_on_stop: bool = False,
         item_index: int | None = None,
@@ -203,7 +204,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
         show_progress: bool | None = None,
-        checkpoint: Any | None = None,
+        checkpoint: Checkpoint | None = None,
         workflow_id: str | None = None,
         override_workflow: bool = False,
         fork_from: str | None = None,

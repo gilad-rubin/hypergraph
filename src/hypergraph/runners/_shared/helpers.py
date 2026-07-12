@@ -24,6 +24,7 @@ from hypergraph.runners._shared.types import (
 )
 
 if TYPE_CHECKING:
+    from hypergraph.checkpointers.types import Checkpoint
     from hypergraph.graph import Graph
     from hypergraph.nodes.graph_node import GraphNode
 
@@ -746,6 +747,13 @@ def apply_node_result(
         state.update_value(name, value)
 
     output_versions = {name: state.get_version(name) for name in outputs}
+    sequence = (
+        max(
+            (execution.sequence for execution in state.node_executions.values() if execution.sequence >= 0),
+            default=-1,
+        )
+        + 1
+    )
 
     state.node_executions[node.name] = NodeExecution(
         node_name=node.name,
@@ -755,6 +763,7 @@ def apply_node_result(
         wait_for_versions=wait_for_versions,
         duration_ms=duration_ms,
         cached=cached,
+        sequence=sequence,
     )
 
     for gate_name in graph.controlled_by.get(node.name, []):
@@ -1003,14 +1012,14 @@ def _unversioned_execution_can_own_value(param: str, node_name: str, state: Grap
     if execution is None or param not in execution.outputs or param in execution.output_versions:
         return False
 
-    seen = False
-    for executed_name, executed in state.node_executions.items():
-        if executed_name == node_name:
-            seen = True
-            continue
-        if seen and param in executed.outputs:
-            return False
-    return True
+    candidates = [
+        (candidate.sequence, position, executed_name)
+        for position, (executed_name, candidate) in enumerate(state.node_executions.items())
+        if param in candidate.outputs
+    ]
+    sequenced = [candidate for candidate in candidates if candidate[0] >= 0]
+    owner = max(sequenced, key=lambda candidate: (candidate[0], candidate[1]))[2] if sequenced else candidates[-1][2]
+    return owner == node_name
 
 
 def _needs_execution(node: HyperNode, graph: Graph, state: GraphState) -> bool:
@@ -1181,7 +1190,7 @@ def _resolve_input(
 def build_resume_validation_values(
     graph: Graph,
     normalized_values: dict[str, Any],
-    resume_checkpoint: Any | None,
+    resume_checkpoint: Checkpoint | None,
 ) -> dict[str, Any]:
     """Build canonical validation inputs for resume/fork/retry runs."""
     validation_values = dict(normalized_values)
@@ -1194,7 +1203,7 @@ def build_resume_validation_values(
         if input_name in resume_checkpoint.values:
             validation_values[input_name] = resume_checkpoint.values[input_name]
             continue
-        if any(input_name in (step.input_versions or {}) for step in getattr(resume_checkpoint, "steps", ())):
+        if any(input_name in (step.input_versions or {}) for step in resume_checkpoint.steps):
             # The checkpoint may omit original graph inputs once downstream
             # state is sufficient to resume. A prior consumed version is enough
             # to satisfy canonical key-presence validation.
@@ -1251,7 +1260,7 @@ def initialize_state(
     graph: Graph,
     values: dict[str, Any],
     *,
-    checkpoint: Any | None = None,
+    checkpoint: Checkpoint | None = None,
 ) -> GraphState:
     """Initialize execution state with provided input values.
 
@@ -1465,6 +1474,7 @@ def initialize_state_with_checkpoint(
             output_versions={},
             duration_ms=step.duration_ms,
             cached=step.cached,
+            sequence=step.index,
         )
         if step.decision is not None:
             decision = step.decision

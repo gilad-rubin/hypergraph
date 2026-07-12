@@ -953,6 +953,7 @@ class NodeExecution:
         wait_for_versions: Version numbers of wait_for names at execution time
         duration_ms: Wall-clock execution time in milliseconds
         cached: Whether this execution was a cache hit
+        sequence: Durable execution order, or -1 for legacy unsequenced records
     """
 
     node_name: str
@@ -962,6 +963,7 @@ class NodeExecution:
     wait_for_versions: dict[str, int] = field(default_factory=dict)
     duration_ms: float = 0.0
     cached: bool = False
+    sequence: int = -1
 
 
 @dataclass

@@ -13,6 +13,7 @@ from hypergraph.checkpointers.types import StepRecord, StepStatus, _utcnow
 from hypergraph.runners._shared.helpers import graphnode_child_workflow_id
 
 if TYPE_CHECKING:
+    from hypergraph.checkpointers.types import Checkpoint
     from hypergraph.graph import Graph
     from hypergraph.runners._shared.types import GraphState
 
@@ -174,7 +175,7 @@ def _error_for_node(
     return node_errors.get(node_name, superstep_error)
 
 
-def checkpoint_offsets(checkpoint: Any | None) -> tuple[int, int]:
+def checkpoint_offsets(checkpoint: Checkpoint | None) -> tuple[int, int]:
     """Compute (superstep_offset, step_offset) from a checkpoint's steps.
 
     When resuming a workflow, new steps must not collide with existing ones.
@@ -183,7 +184,7 @@ def checkpoint_offsets(checkpoint: Any | None) -> tuple[int, int]:
     """
     if checkpoint is None:
         return 0, 0
-    steps = getattr(checkpoint, "steps", None)
+    steps = checkpoint.steps
     if not steps:
         return 0, 0
     superstep_offset = max(s.superstep for s in steps) + 1
