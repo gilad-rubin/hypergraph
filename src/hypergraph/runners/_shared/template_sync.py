@@ -244,9 +244,12 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             validate_node_types(graph, self.supported_node_types)
             validate_delegated_runners(graph, self.capabilities)
 
-        if self._checkpointer is not None and _validation_ctx is None and workflow_id is None:
+        if self._checkpointer is not None and _validation_ctx is None and workflow_id is None and fork_from is None:
             workflow_id = generate_workflow_id()
-        sync_cp = self._get_sync_checkpointer(workflow_id)
+        sync_checkpointer_key = workflow_id
+        if sync_checkpointer_key is None:
+            sync_checkpointer_key = fork_from if fork_from is not None else retry_from
+        sync_cp = self._get_sync_checkpointer(sync_checkpointer_key)
         if _validation_ctx is None and (fork_from is not None or retry_from is not None) and sync_cp is None:
             raise ValueError("fork_from/retry_from require a checkpointer and workflow persistence to be enabled.")
         resume_checkpoint = None

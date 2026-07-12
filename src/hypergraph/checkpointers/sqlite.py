@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from hypergraph.checkpointers._migrate import ensure_schema
-from hypergraph.checkpointers.base import _UNSET, Checkpointer, CheckpointPolicy, _normalize_since
+from hypergraph.checkpointers.base import _UNSET, Checkpointer, CheckpointPolicy, _normalize_since, _resolve_fork_workflow_id
 from hypergraph.checkpointers.presenters import render_checkpointer_explorer_html
 from hypergraph.checkpointers.serializers import JsonSerializer, Serializer
 from hypergraph.checkpointers.types import (
@@ -466,22 +466,6 @@ class SqliteCheckpointer(Checkpointer):
         )
         rows = await cursor.fetchall()
         return StepTable(self._row_to_step(row) for row in rows)
-
-    async def fork_workflow_async(
-        self,
-        source_run_id: str,
-        *,
-        workflow_id: str | None = None,
-        superstep: int | None = None,
-    ) -> tuple[str, Checkpoint]:
-        """Prepare a fork checkpoint + target workflow id."""
-        await self._ensure_db()
-        source = await self.get_run_async(source_run_id)
-        if source is None:
-            raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
-        checkpoint = await self.get_checkpoint(source_run_id, superstep=superstep)
-        new_workflow_id = workflow_id or f"{source_run_id}-fork-{uuid.uuid4().hex[:6]}"
-        return new_workflow_id, checkpoint
 
     async def retry_workflow_async(
         self,
@@ -947,8 +931,8 @@ class SqliteCheckpointer(Checkpointer):
         """Prepare a fork checkpoint + target workflow id (sync)."""
         if self.get_run(source_run_id) is None:
             raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
+        new_workflow_id = _resolve_fork_workflow_id(source_run_id, workflow_id)
         checkpoint = self.checkpoint(source_run_id, superstep=superstep)
-        new_workflow_id = workflow_id or f"{source_run_id}-fork-{uuid.uuid4().hex[:6]}"
         return new_workflow_id, checkpoint
 
     def retry_workflow(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -16,6 +17,8 @@ from hypergraph.checkpointers import (
     StepStatus,
     WorkflowStatus,
 )
+from hypergraph.exceptions import WorkflowForkError
+from hypergraph.runners import RunStatus
 
 
 @pytest.fixture(params=["memory", "sqlite"])
@@ -26,6 +29,17 @@ async def async_checkpointer(request: pytest.FixtureRequest, tmp_path):
         yield checkpointer
     finally:
         await checkpointer.close()
+
+
+@pytest.fixture
+def sync_checkpointer(tmp_path):
+    checkpointer = SqliteCheckpointer(str(tmp_path / "sync-runs.db"))
+    checkpointer._sync_db()
+    try:
+        yield checkpointer
+    finally:
+        if checkpointer._sync_conn is not None:
+            checkpointer._sync_conn.close()
 
 
 async def test_async_run_filters_distinguish_omitted_parent_from_none(async_checkpointer):
@@ -238,3 +252,193 @@ async def test_retention_carriers_are_hidden_but_state_remains_folded(async_chec
         )
         assert sync_result["total"] == 20
         assert calls == 2
+
+
+async def test_async_fork_ids_are_source_derived_and_retry_ids_stay_generic(async_checkpointer):
+    @node(output_name="doubled")
+    def double(x: int) -> int:
+        return x * 2
+
+    runner = AsyncRunner(checkpointer=async_checkpointer)
+    graph = Graph([double])
+    await runner.run(graph, {"x": 1}, workflow_id="source-a")
+    await runner.run(graph, {"x": 2}, workflow_id="source-b")
+    source_a_before = await async_checkpointer.get_run_async("source-a")
+    source_b_before = await async_checkpointer.get_run_async("source-b")
+
+    direct_id, _ = await async_checkpointer.fork_workflow_async("source-a")
+    assert re.fullmatch(r"source-a-fork-[0-9a-f]{6}", direct_id)
+
+    fork_a = await runner.run(graph, {"x": 10}, fork_from="source-a")
+    fork_b = await runner.run(graph, {"x": 20}, fork_from="source-b")
+    explicit = await runner.run(
+        graph,
+        {"x": 30},
+        fork_from="source-a",
+        workflow_id="exact-fork-target",
+    )
+
+    assert re.fullmatch(r"source-a-fork-[0-9a-f]{6}", fork_a.workflow_id or "")
+    assert re.fullmatch(r"source-b-fork-[0-9a-f]{6}", fork_b.workflow_id or "")
+    assert explicit.workflow_id == "exact-fork-target"
+    assert (await async_checkpointer.get_run_async(fork_a.workflow_id)).forked_from == "source-a"
+    assert (await async_checkpointer.get_run_async(fork_b.workflow_id)).forked_from == "source-b"
+    assert await async_checkpointer.get_run_async("source-a") == source_a_before
+    assert await async_checkpointer.get_run_async("source-b") == source_b_before
+
+    should_fail = True
+
+    @node(output_name="seed")
+    def seed(x: int) -> int:
+        return x
+
+    @node(output_name="out")
+    def flaky(seed: int) -> int:
+        if should_fail:
+            raise RuntimeError("transient")
+        return seed * 10
+
+    retry_graph = Graph([seed, flaky])
+    failed = await runner.run(
+        retry_graph,
+        {"x": 5},
+        workflow_id="async-retry-source",
+        error_handling="continue",
+    )
+    assert failed.status == RunStatus.FAILED
+    should_fail = False
+
+    retried = await runner.run(retry_graph.with_entrypoint("flaky"), retry_from="async-retry-source")
+    assert (retried.workflow_id or "").startswith("run-")
+    assert not (retried.workflow_id or "").startswith("async-retry-source-")
+
+
+async def test_async_fork_rejects_missing_and_nested_sources(async_checkpointer):
+    @node(output_name="doubled")
+    def double(x: int) -> int:
+        return x * 2
+
+    runner = AsyncRunner(checkpointer=async_checkpointer)
+    graph = Graph([double])
+    await runner.map(graph, {"x": [1]}, map_over="x", workflow_id="nested-parent")
+
+    count_before = await async_checkpointer.count_runs()
+    with pytest.raises((ValueError, WorkflowForkError), match="Unknown source"):
+        await runner.run(graph, {"x": 2}, fork_from="missing-source")
+    assert await async_checkpointer.count_runs() == count_before
+
+    with pytest.raises(WorkflowForkError, match="How to fix:"):
+        await runner.run(graph, {"x": 3}, fork_from="nested-parent/0")
+    assert await async_checkpointer.count_runs() == count_before
+
+    explicit_id, checkpoint = await async_checkpointer.fork_workflow_async(
+        "nested-parent/0",
+        workflow_id="explicit-nested-target",
+    )
+    assert explicit_id == "explicit-nested-target"
+    assert checkpoint.source_run_id == "nested-parent/0"
+    assert await async_checkpointer.count_runs() == count_before
+
+    explicit = await runner.run(
+        graph,
+        {"x": 4},
+        fork_from="nested-parent/0",
+        workflow_id="runner-nested-target",
+    )
+    assert explicit.workflow_id == "runner-nested-target"
+    assert (await async_checkpointer.get_run_async("runner-nested-target")).forked_from == "nested-parent/0"
+
+
+def test_sync_fork_ids_are_source_derived_and_retry_ids_stay_generic(sync_checkpointer):
+    @node(output_name="doubled")
+    def double(x: int) -> int:
+        return x * 2
+
+    runner = SyncRunner(checkpointer=sync_checkpointer)
+    graph = Graph([double])
+    runner.run(graph, {"x": 1}, workflow_id="sync-source-a")
+    runner.run(graph, {"x": 2}, workflow_id="sync-source-b")
+    source_a_before = sync_checkpointer.get_run("sync-source-a")
+    source_b_before = sync_checkpointer.get_run("sync-source-b")
+
+    direct_id, _ = sync_checkpointer.fork_workflow("sync-source-a")
+    assert re.fullmatch(r"sync-source-a-fork-[0-9a-f]{6}", direct_id)
+
+    fork_a = runner.run(graph, {"x": 10}, fork_from="sync-source-a")
+    fork_b = runner.run(graph, {"x": 20}, fork_from="sync-source-b")
+    explicit = runner.run(
+        graph,
+        {"x": 30},
+        fork_from="sync-source-a",
+        workflow_id="sync-exact-fork-target",
+    )
+
+    assert re.fullmatch(r"sync-source-a-fork-[0-9a-f]{6}", fork_a.workflow_id or "")
+    assert re.fullmatch(r"sync-source-b-fork-[0-9a-f]{6}", fork_b.workflow_id or "")
+    assert explicit.workflow_id == "sync-exact-fork-target"
+    assert sync_checkpointer.get_run(fork_a.workflow_id).forked_from == "sync-source-a"
+    assert sync_checkpointer.get_run(fork_b.workflow_id).forked_from == "sync-source-b"
+    assert sync_checkpointer.get_run("sync-source-a") == source_a_before
+    assert sync_checkpointer.get_run("sync-source-b") == source_b_before
+
+    should_fail = True
+
+    @node(output_name="seed")
+    def seed(x: int) -> int:
+        return x
+
+    @node(output_name="out")
+    def flaky(seed: int) -> int:
+        if should_fail:
+            raise RuntimeError("transient")
+        return seed * 10
+
+    retry_graph = Graph([seed, flaky])
+    failed = runner.run(
+        retry_graph,
+        {"x": 5},
+        workflow_id="sync-retry-source",
+        error_handling="continue",
+    )
+    assert failed.status == RunStatus.FAILED
+    should_fail = False
+
+    retried = runner.run(retry_graph.with_entrypoint("flaky"), retry_from="sync-retry-source")
+    assert (retried.workflow_id or "").startswith("run-")
+    assert not (retried.workflow_id or "").startswith("sync-retry-source-")
+
+
+def test_sync_fork_rejects_missing_and_nested_sources(sync_checkpointer):
+    @node(output_name="doubled")
+    def double(x: int) -> int:
+        return x * 2
+
+    runner = SyncRunner(checkpointer=sync_checkpointer)
+    graph = Graph([double])
+    runner.map(graph, {"x": [1]}, map_over="x", workflow_id="sync-nested-parent")
+
+    count_before = len(sync_checkpointer.runs(limit=None))
+    with pytest.raises((ValueError, WorkflowForkError), match="Unknown source"):
+        runner.run(graph, {"x": 2}, fork_from="sync-missing-source")
+    assert len(sync_checkpointer.runs(limit=None)) == count_before
+
+    with pytest.raises(WorkflowForkError, match="How to fix:"):
+        runner.run(graph, {"x": 3}, fork_from="sync-nested-parent/0")
+    assert len(sync_checkpointer.runs(limit=None)) == count_before
+
+    explicit_id, checkpoint = sync_checkpointer.fork_workflow(
+        "sync-nested-parent/0",
+        workflow_id="sync-explicit-nested-target",
+    )
+    assert explicit_id == "sync-explicit-nested-target"
+    assert checkpoint.source_run_id == "sync-nested-parent/0"
+    assert len(sync_checkpointer.runs(limit=None)) == count_before
+
+    explicit = runner.run(
+        graph,
+        {"x": 4},
+        fork_from="sync-nested-parent/0",
+        workflow_id="sync-runner-nested-target",
+    )
+    assert explicit.workflow_id == "sync-runner-nested-target"
+    assert sync_checkpointer.get_run("sync-runner-nested-target").forked_from == "sync-nested-parent/0"

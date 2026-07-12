@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from hypergraph.checkpointers.types import Checkpoint, Run, StepRecord, WorkflowStatus
+from hypergraph.exceptions import WorkflowForkError
 
 _UNSET = object()
 
@@ -18,6 +19,19 @@ def _normalize_since(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _resolve_fork_workflow_id(source_run_id: str, workflow_id: str | None) -> str:
+    """Keep an explicit target or derive one for a top-level source."""
+    if workflow_id is not None:
+        return workflow_id
+    if "/" in source_run_id:
+        raise WorkflowForkError(
+            f"Cannot auto-derive a top-level workflow_id from nested source {source_run_id!r}.\n\n"
+            "How to fix:\n"
+            "  Top-level callers should pass an explicit slash-free workflow_id for the new fork."
+        )
+    return f"{source_run_id}-fork-{uuid.uuid4().hex[:6]}"
 
 
 @dataclass
@@ -157,8 +171,11 @@ class Checkpointer(ABC):
         superstep: int | None = None,
     ) -> tuple[str, Checkpoint]:
         """Prepare a fork by materializing a checkpoint and suggested workflow_id."""
+        source = await self.get_run_async(source_run_id)
+        if source is None:
+            raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
+        new_workflow_id = _resolve_fork_workflow_id(source_run_id, workflow_id)
         checkpoint = await self.get_checkpoint(source_run_id, superstep=superstep)
-        new_workflow_id = workflow_id or f"{source_run_id}-fork-{uuid.uuid4().hex[:6]}"
         return new_workflow_id, checkpoint
 
     async def retry_workflow_async(

@@ -262,7 +262,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         resume_checkpoint = None
         skip_missing_input_validation = False
         if checkpointer is not None and _validation_ctx is None:
-            if workflow_id is None:
+            if workflow_id is None and fork_from is None:
                 workflow_id = generate_workflow_id()
             if fork_from is not None and retry_from is not None:
                 raise ValueError("Cannot pass both fork_from and retry_from. Choose one lineage source.")
