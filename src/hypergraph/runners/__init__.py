@@ -2,6 +2,7 @@
 
 from hypergraph.runners._shared.results import (
     ErrorHandling,
+    FailureEvidence,
     MapLog,
     MapResult,
     NodeRecord,
@@ -25,6 +26,7 @@ from hypergraph.runners.sync import SyncRunner
 __all__ = [
     # Core types
     "ErrorHandling",
+    "FailureEvidence",
     "RunStatus",
     "PauseExecution",
     "PauseInfo",

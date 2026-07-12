@@ -33,6 +33,7 @@ ROOT_EXPORTS = (
     "DaftRunner",
     "BaseRunner",
     "ErrorHandling",
+    "FailureEvidence",
     "PauseInfo",
     "RunResult",
     "MapResult",
@@ -43,6 +44,7 @@ ROOT_EXPORTS = (
     "InfiniteLoopError",
     "IncompatibleRunnerError",
     "ExecutionError",
+    "get_failure_evidence",
     "WorkflowAlreadyCompletedError",
     "GraphChangedError",
     "WorkflowForkError",
@@ -87,6 +89,7 @@ ROOT_EXPORTS = (
 
 RUNNER_EXPORTS = (
     "ErrorHandling",
+    "FailureEvidence",
     "RunStatus",
     "PauseExecution",
     "PauseInfo",
@@ -107,6 +110,7 @@ RUNNER_EXPORTS = (
 
 RESULT_NAMES = (
     "ErrorHandling",
+    "FailureEvidence",
     "RunStatus",
     "aggregate_run_status",
     "RunResult",
@@ -168,12 +172,13 @@ def test_legacy_public_and_canonical_identities() -> None:
         assert getattr(legacy_types, name) is getattr(canonical_state, name)
     assert legacy_types._generate_run_id is canonical_results.generate_run_id
 
-    for name in RUNNER_EXPORTS[:13]:
+    for name in RUNNER_EXPORTS[:14]:
         owner = canonical_state if name in STATE_NAMES else canonical_results
         assert getattr(runners, name) is getattr(owner, name)
 
     for name in (
         "ErrorHandling",
+        "FailureEvidence",
         "PauseInfo",
         "RunResult",
         "MapResult",
@@ -195,6 +200,7 @@ def test_canonical_modules_and_legacy_pickle_lookups() -> None:
     canonical_results, canonical_state = _canonical_modules()
     result_classes = (
         "RunStatus",
+        "FailureEvidence",
         "RunResult",
         "MapResult",
         "PauseInfo",

@@ -11,6 +11,8 @@ from hypergraph.exceptions import (
     ExecutionError,
     MissingInputError,
     WorkflowAlreadyRunningError,
+    _failure_evidence_context,
+    _NodeExecutionError,
 )
 from hypergraph.runners._shared.event_metadata import (
     DEFAULT_RUN_CONTEXT,
@@ -511,9 +513,12 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         except Exception as e:
             error = e
             partial_state = None
+            node_failures = ()
             if isinstance(e, ExecutionError):
                 error = e.__cause__ or e
                 partial_state = e.partial_state
+                if isinstance(e, _NodeExecutionError):
+                    node_failures = e.node_failures
 
             self._emit_run_end_sync(
                 dispatcher,
@@ -548,6 +553,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 run_id=run_id,
                 workflow_id=workflow_id,
                 error=error,
+                node_failures=node_failures,
                 log=collector.build(graph.name, run_id, total_duration_ms),
             )
         finally:
@@ -703,7 +709,12 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     result = build_pre_run_failed_result(e)
                 results.append(result)
                 if error_handling == "raise" and result.status == RunStatus.FAILED:
-                    raise result.error  # type: ignore[misc]
+                    error = result.error
+                    assert error is not None, "FAILED status requires an error"
+                    if result.node_failures:
+                        with _failure_evidence_context(error, result.node_failures):
+                            raise error from None
+                    raise error
 
             batch_summary = BatchSummary.from_results(results)
 
@@ -829,11 +840,17 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     error_handling="continue",
                     show_progress=False,
                     _validation_ctx=ctx,
+                    _item_index=idx,
                 )
             except Exception as e:  # per-item validation error (e.g. missing input) → failed row
                 result = build_pre_run_failed_result(e)
             if error_handling == "raise" and result.status == RunStatus.FAILED:
-                raise result.error  # type: ignore[misc]
+                error = result.error
+                assert error is not None, "FAILED status requires an error"
+                if result.node_failures:
+                    with _failure_evidence_context(error, result.node_failures):
+                        raise error from None
+                raise error
             yield idx, result
 
 
