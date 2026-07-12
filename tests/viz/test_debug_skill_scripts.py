@@ -3,6 +3,8 @@
 import importlib.util
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -25,6 +27,8 @@ SCENE_BUILDER_SOURCE = ROOT / "src/hypergraph/viz/scene_builder.py"
 ARCHITECTURE_MAP = ROOT / "dev/ARCHITECTURE-MAP.md"
 VIZ_LAYOUT_NOTEBOOK = ROOT / "notebooks/test_viz_layout.ipynb"
 GALLERY_SCRIPT = ROOT / "scripts/render_notebook_viz.py"
+DEEP_NESTED_BENCHMARK = ROOT / "scripts/benchmark_deep_nested.py"
+OBSOLETE_IR_PARITY_SCRIPT = ROOT / "scripts/render_ir_parity.py"
 
 
 def _markdown_section(text: str, heading: str) -> str:
@@ -319,6 +323,55 @@ def test_active_debug_guidance_has_no_positive_overlay_claims() -> None:
             positive_claims[str(path.relative_to(ROOT))] = matches
 
     assert not positive_claims, f"active current-behavior guidance promises visible overlays: {positive_claims}"
+
+
+def test_deep_nested_benchmark_uses_only_current_viz_pipeline() -> None:
+    source = DEEP_NESTED_BENCHMARK.read_text()
+    stale_claims = (
+        "use_ir=",
+        "LEGACY_SKIP_THRESHOLD",
+        "Legacy path",
+        "Precomputed states",
+        "render_graph",
+        "2^k states",
+    )
+    remaining = [claim for claim in stale_claims if claim in source]
+
+    assert not remaining, f"deep-nested benchmark retains removed pipeline guidance: {remaining}"
+    assert "build_graph_ir" in source and "visualize(graph, filepath=" in source
+
+
+def test_deep_nested_benchmark_small_cli_writes_current_html(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, str(DEEP_NESTED_BENCHMARK), "1", "1"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    artifact = tmp_path / "outputs/benchmark/deep_nested_k1.html"
+
+    assert result.returncode == 0, f"benchmark CLI failed with exit {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert artifact.is_file() and artifact.stat().st_size > 0, f"benchmark did not write a non-empty current HTML artifact: {artifact}"
+
+
+def test_obsolete_ir_parity_migration_script_is_removed() -> None:
+    assert not OBSOLETE_IR_PARITY_SCRIPT.exists(), "render_ir_parity.py compares two paths that now share current IR machinery"
+
+
+def test_viz_scripts_have_no_removed_pipeline_guidance() -> None:
+    forbidden = re.compile(
+        r"use_ir=|LEGACY_SKIP_THRESHOLD|legacy 2\^N|render_graph.{0,80}legacy|Precomputed states",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    stale: dict[str, list[str]] = {}
+    for path in sorted((ROOT / "scripts").glob("*.py")):
+        matches = [match.group(0) for match in forbidden.finditer(path.read_text())]
+        if matches:
+            stale[path.name] = matches
+
+    assert not stale, f"active scripts retain removed renderer migration guidance: {stale}"
 
 
 def test_debug_script_has_no_removed_state_table_machinery() -> None:
