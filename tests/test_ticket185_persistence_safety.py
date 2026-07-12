@@ -106,6 +106,26 @@ def test_invalid_lancedb_batch_leaves_no_committed_prefix(tmp_path) -> None:
     assert fresh.read_rows("t") == []
 
 
+def test_failed_lancedb_add_leaves_no_committed_rows(tmp_path, monkeypatch) -> None:
+    path = str(tmp_path / "failed-add")
+    store = LanceDBStore(path)
+    spec = _store_spec()
+    store.open(spec, [])
+
+    table_type = type(store._tables["t"])
+
+    def fail_add(table, data, *args, **kwargs):
+        raise RuntimeError("simulated add failure")
+
+    monkeypatch.setattr(table_type, "add", fail_add)
+    with pytest.raises(RuntimeError, match="simulated add failure"):
+        store.write_rows("t", [_row("a", 1), _row("b", 2)])
+
+    fresh = LanceDBStore(path)
+    fresh.open(spec, [])
+    assert fresh.read_rows("t") == []
+
+
 def test_write_rows_preserves_missing_field_null_fill_on_input_rows(tmp_path) -> None:
     store = LanceDBStore(str(tmp_path / "null-fill"))
     store.open(_store_spec(), [])
@@ -137,6 +157,7 @@ def test_evolve_schema_never_enters_a_drop_table_data_loss_window(tmp_path, monk
     store.open(spec, [])
     original = _row("a", 1, content=b"irreplaceable")
     store.write_rows("t", [original])
+    before_version = store._tables["t"].version
 
     connection_type = type(store._db)
     original_drop = connection_type.drop_table
@@ -150,10 +171,13 @@ def test_evolve_schema_never_enters_a_drop_table_data_loss_window(tmp_path, monk
     columns = store.evolve_schema("t", {"tag": pa.utf8()})
 
     assert "tag" in columns
+    assert store._tables["t"].version == before_version + 1
     fresh = LanceDBStore(path)
     fresh.open(spec, [])
     assert fresh.read_rows("t", columns=["cid", "content", "tag"]) == [{"cid": "a", "content": b"irreplaceable", "tag": None}]
+    fresh_version = fresh._tables["t"].version
     assert "tag" in fresh.evolve_schema("t", {"tag": pa.utf8()})
+    assert fresh._tables["t"].version == fresh_version
 
 
 @node(output_name="derived")
