@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from importlib.resources import files
 
@@ -73,9 +74,16 @@ def test_explorer_asset_is_a_real_package_resource() -> None:
 def test_missing_and_corrupt_explorer_assets_fail_loudly(monkeypatch) -> None:
     import hypergraph.checkpointers.presenters as presenters
 
+    canonical_resource = files("hypergraph.checkpointers._assets").joinpath("explorer.js")
+    canonical_source = canonical_resource.read_text(encoding="utf-8")
+    canonical_bytes = canonical_resource.read_bytes()
+
     class _MissingResource:
         def joinpath(self, _name: str) -> _MissingResource:
             return self
+
+        def read_bytes(self) -> bytes:
+            raise FileNotFoundError("explorer.js missing")
 
         def read_text(self, *, encoding: str) -> str:
             raise FileNotFoundError("explorer.js missing")
@@ -85,6 +93,9 @@ def test_missing_and_corrupt_explorer_assets_fail_loudly(monkeypatch) -> None:
         presenters._read_explorer_asset()
 
     class _CorruptResource(_MissingResource):
+        def read_bytes(self) -> bytes:
+            return b"not the explorer"
+
         def read_text(self, *, encoding: str) -> str:
             return "not the explorer"
 
@@ -93,10 +104,25 @@ def test_missing_and_corrupt_explorer_assets_fail_loudly(monkeypatch) -> None:
         presenters._read_explorer_asset()
 
     class _TruncatedResource(_MissingResource):
+        def read_bytes(self) -> bytes:
+            return b"/* hypergraph-checkpointer-explorer */"
+
         def read_text(self, *, encoding: str) -> str:
             return "/* hypergraph-checkpointer-explorer */"
 
     monkeypatch.setattr(presenters, "files", lambda _package: _TruncatedResource())
+    with pytest.raises(RuntimeError, match="corrupt"):
+        presenters._read_explorer_asset()
+
+    class _ChangedPhysicalBytesResource(_MissingResource):
+        def read_bytes(self) -> bytes:
+            return canonical_bytes.replace(b"\n", b"\r\n")
+
+        def read_text(self, *, encoding: str) -> str:
+            # Text-mode universal-newline decoding hides the physical mutation.
+            return canonical_source
+
+    monkeypatch.setattr(presenters, "files", lambda _package: _ChangedPhysicalBytesResource())
     with pytest.raises(RuntimeError, match="corrupt"):
         presenters._read_explorer_asset()
 
@@ -249,8 +275,16 @@ def test_real_dom_accepts_workflow_ids_that_are_object_prototype_names() -> None
         assert page_errors == []
         assert root.locator("[data-run-target]").count() >= 3
         assert "constructor" in root.locator("[data-hg-explorer-header]").inner_text()
-        for run_id in ("__proto__", "toString"):
-            root.get_by_role("button", name=run_id, exact=True).first.click()
+        statuses = {
+            "__proto__": "completed",
+            "toString": "stopped",
+        }
+        for run_id, status in statuses.items():
+            button = root.get_by_role(
+                "button",
+                name=re.compile(rf"^{re.escape(run_id)}\s+{status}\s+pipeline\b", re.IGNORECASE),
+            ).first
+            button.click()
             assert run_id in root.locator("[data-hg-explorer-header]").inner_text()
         assert root.evaluate("node => node.__hgExplorerBound") is True
         browser.close()
