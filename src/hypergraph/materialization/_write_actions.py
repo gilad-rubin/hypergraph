@@ -29,41 +29,6 @@ def _thaw_rows(rows: _Rows) -> list[dict[str, Any]]:
     return [_thaw(row) for row in rows]
 
 
-def normalize_to_dict(item: Any) -> dict[str, Any]:
-    """Convert a mapped child item to a plain dict if it is not one already."""
-    if isinstance(item, dict):
-        return item
-    if hasattr(item, "model_dump"):
-        return item.model_dump(mode="python")
-    if hasattr(item, "__dataclass_fields__"):
-        from dataclasses import asdict
-
-        return asdict(item)
-    return dict(item)
-
-
-def dedup_rows(rows: list[dict[str, Any]], identity: str) -> list[dict[str, Any]]:
-    """Keep only the highest write generation for each root identity."""
-    best: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        identity_value = str(row.get(identity, ""))
-        existing = best.get(identity_value)
-        if existing is None or row.get("_write_gen", 0) > existing.get("_write_gen", 0):
-            best[identity_value] = row
-    return list(best.values())
-
-
-def dedup_child_rows(rows: list[dict[str, Any]], identity: str) -> list[dict[str, Any]]:
-    """Keep only the highest write generation for each parent/child identity."""
-    best: dict[tuple[str, str], dict[str, Any]] = {}
-    for row in rows:
-        key = (str(row.get("_parent_id", "")), str(row.get(identity, "")))
-        existing = best.get(key)
-        if existing is None or row.get("_write_gen", 0) > existing.get("_write_gen", 0):
-            best[key] = row
-    return list(best.values())
-
-
 @dataclass(frozen=True, slots=True)
 class RunGraph:
     """The only colored action: execute this graph with these inputs."""
