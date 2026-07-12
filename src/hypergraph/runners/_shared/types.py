@@ -656,8 +656,10 @@ def _map_items_drilldown(
     total = len(results)
     status_counts: dict[str, int] = {"all": total}
     for result in results:
-        display_status = "restored" if result.restored else result.status.value
-        status_counts[display_status] = status_counts.get(display_status, 0) + 1
+        status = result.status.value
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if result.restored:
+            status_counts["restored"] = status_counts.get("restored", 0) + 1
 
     # Intelligent default: moderate batches open at 50, larger ones at 100 to
     # reduce unnecessary paging while keeping the view readable.
@@ -673,12 +675,13 @@ def _map_items_drilldown(
     parts: list[str] = []
     for i, r in enumerate(results):
         display_status = "restored" if r.restored else r.status.value
+        filter_status = f"{r.status.value} restored" if r.restored else r.status.value
         dur = duration_html(r.log.total_duration_ms) if r.log and not r.restored else "—"
         err_label = f' — <span style="color:{ERROR_COLOR}">{type(r.error).__name__}</span>' if r.error else ""
         summary = f"Item {i}: {status_badge(display_status)} {dur}{err_label}"
         # Render the full RunResult HTML inside each item's expandable section.
         item_html = html_detail(summary, r._repr_html_(), state_key=f"item-{i}")
-        parts.append(f'<div data-hg-map-item="1" data-status="{display_status}" style="display:block">{item_html}</div>')
+        parts.append(f'<div data-hg-map-item="1" data-status="{filter_status}" style="display:block">{item_html}</div>')
 
     controls = html_filter_paginate_controls(
         filter_id=filter_id,
@@ -1484,23 +1487,26 @@ class MapLog:
         trace_items = []
         n_items = len(self.items)
         status_counts: dict[str, int] = {"all": n_items}
-        n_completed = 0
         for i, log in enumerate(self.items):
             restored = self._restored_flags[i]
             status = "restored" if restored else ("failed" if log.errors else "completed")
+            filter_status = "completed restored" if restored else status
             if not log.errors:
-                n_completed += 1
-            status_counts[status] = status_counts.get(status, 0) + 1
+                status_counts["completed"] = status_counts.get("completed", 0) + 1
+            else:
+                status_counts["failed"] = status_counts.get("failed", 0) + 1
+            if restored:
+                status_counts["restored"] = status_counts.get("restored", 0) + 1
             n_nodes = len({s.node_name for s in log.steps})
             duration = duration_html(None if restored else log.total_duration_ms)
             rows.append([str(i), duration, status_badge(status), str(n_nodes)])
-            row_attrs.append({"data-hg-map-log-item": "1", "data-status": status})
+            row_attrs.append({"data-hg-map-log-item": "1", "data-status": filter_status})
 
             summary = f'Item {i}: {status_badge(status)} {duration} <span style="color:{MUTED_COLOR}">({plural(n_nodes, "node")})</span>'
             trace_detail = html_detail(summary, log._repr_html_(), state_key=f"map-log-item-{i}")
             trace_items.append(
                 '<div data-hg-map-log-item="1" '
-                f'data-status="{status}" '
+                f'data-status="{filter_status}" '
                 'style="display:block; margin:0 0 8px 0; padding:6px 8px; '
                 f"border:1px solid {BORDER_COLOR}; border-radius:10px; "
                 f'background:{SURFACE_COLOR}">'

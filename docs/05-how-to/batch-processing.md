@@ -423,7 +423,7 @@ retried = await runner.run(
 )
 ```
 
-If you pass runtime values with an existing workflow ID, `run()` raises `InputOverrideRequiresForkError`.
+If you pass runtime values while resuming an ordinary active or failed workflow ID, `run()` raises `InputOverrideRequiresForkError`. Stopped workflows use the explicit-signal rule above, and paused workflows accept interrupt responses.
 If graph structure changed for an existing workflow ID, `run()` raises `GraphChangedError`.
 
 ### Resuming Batches

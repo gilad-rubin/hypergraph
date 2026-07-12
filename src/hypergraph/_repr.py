@@ -576,7 +576,7 @@ def html_filter_paginate_script(
         "for(var i=0;i<all.length;i++){"
         "var it=all[i];"
         f"var st=(it.getAttribute('{_html.escape(status_attr, quote=True)}')||'');"
-        "if(want==='all'||st===want)filtered.push(it);"
+        "if(want==='all'||st.split(/\\s+/).indexOf(want)>=0)filtered.push(it);"
         "}"
         "var total=filtered.length;"
         "var pages=(size<0)?1:Math.max(1,Math.ceil(total/size));"

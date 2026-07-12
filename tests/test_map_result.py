@@ -498,7 +498,13 @@ class TestMapResultProgressiveDisclosure:
         assert "1 restored" in mapped.log.summary()
         assert "avg 100ms/item" in mapped.log.summary()
         assert "restored" in str(mapped.log).lower()
-        assert "restored" in (mapped._repr_html_() or "").lower()
+        mapped_html = mapped._repr_html_() or ""
+        map_log_html = mapped.log._repr_html_() or ""
+        assert "restored" in mapped_html.lower()
+        assert "Completed (2)" in mapped_html
+        assert "Restored (1)" in mapped_html
+        assert "Completed (2)" in map_log_html
+        assert "Restored (1)" in map_log_html
         assert "restored" in (restored._repr_html_() or "").lower()
 
         same_log_but_not_restored = RunResult(
