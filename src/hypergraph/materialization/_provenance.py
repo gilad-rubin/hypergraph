@@ -337,6 +337,10 @@ class Provenance:
             if column.role == "source" and column.content_key and column.name in row
         }
 
+    def source_inputs(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        """Reconstruct root graph inputs from stored source columns."""
+        return {column.name: _normalize_value(row[column.name]) for column in self.spec.columns if column.role == "source" and column.name in row}
+
     @staticmethod
     def column_is_null(value: Any) -> bool:
         import math
