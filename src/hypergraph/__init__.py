@@ -38,6 +38,7 @@ from hypergraph.exceptions import (
     WorkflowAlreadyCompletedError,
     WorkflowAlreadyRunningError,
     WorkflowForkError,
+    WorkflowStoppedError,
 )
 from hypergraph.graph import Graph, GraphConfigError, InputSpec
 from hypergraph.nodes import (
@@ -114,6 +115,7 @@ __all__ = [
     "WorkflowForkError",
     "InputOverrideRequiresForkError",
     "WorkflowAlreadyRunningError",
+    "WorkflowStoppedError",
     # RunLog
     "RunLog",
     "MapLog",

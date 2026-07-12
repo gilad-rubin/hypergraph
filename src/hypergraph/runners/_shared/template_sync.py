@@ -18,6 +18,7 @@ from hypergraph.exceptions import (
     WorkflowAlreadyCompletedError,
     WorkflowAlreadyRunningError,
     WorkflowForkError,
+    WorkflowStoppedError,
 )
 from hypergraph.runners._shared.event_metadata import (
     DEFAULT_RUN_CONTEXT,
@@ -268,7 +269,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     previous_hash = (existing_run.config or {}).get("graph_struct_hash")
                     if previous_hash is not None and previous_hash != graph_hash:
                         raise GraphChangedError(workflow_id)
-                    if normalized_values and not is_interrupt_resume_payload(graph, normalized_values):
+                    if existing_run.status.value == "stopped":
+                        if not normalized_values:
+                            raise WorkflowStoppedError(workflow_id)
+                    elif normalized_values and not is_interrupt_resume_payload(graph, normalized_values):
                         raise InputOverrideRequiresForkError(workflow_id)
                     if existing_run.status.value == "completed":
                         raise WorkflowAlreadyCompletedError(workflow_id)

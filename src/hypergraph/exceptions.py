@@ -131,6 +131,20 @@ class WorkflowAlreadyCompletedError(Exception):
         super().__init__(f"Workflow '{workflow_id}' is already completed. Fork to create a new lineage.")
 
 
+class WorkflowStoppedError(Exception):
+    """Raised when a stopped workflow is rerun without an explicit signal."""
+
+    def __init__(self, workflow_id: str) -> None:
+        self.workflow_id = workflow_id
+        super().__init__(
+            f"Workflow '{workflow_id}' is stopped and cannot resume without an explicit signal.\n\n"
+            "The stopped workflow keeps its partial checkpoint state and lineage.\n\n"
+            "How to fix:\n"
+            "  Pass a non-empty runtime value mapping to resume the same workflow_id, "
+            "or pass override_workflow=True to fork a new lineage."
+        )
+
+
 class GraphChangedError(Exception):
     """Raised when graph structure changed for an existing workflow lineage."""
 
