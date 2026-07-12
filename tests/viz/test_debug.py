@@ -410,3 +410,38 @@ class TestExtractDebugData:
         captured = capsys.readouterr()
         assert "Edge Validation Report" in captured.out
         assert "Nodes:" in captured.out
+
+
+class TestEdgeValueNames:
+    """Regression: debug read `value_name` (singular) but flat-graph edges
+    carry `value_names` (plural) — every edge reported an empty value."""
+
+    def test_debug_dump_edge_carries_value_name(self):
+        """B3.1: debug_dump edge entries contain the actual value name(s)."""
+        graph = Graph(nodes=[double, add_one])
+        debugger = VizDebugger(graph)
+
+        dump = debugger.debug_dump()
+
+        edge = next(e for e in dump["edges"] if e["source"] == "double" and e["target"] == "add_one")
+        assert edge["value_name"] == "doubled"
+
+    def test_analyze_missing_edge_carries_value_names(self):
+        """B3.2: _analyze_missing_edge reports real value names on the
+        neighbouring edges, not None."""
+        graph = Graph(nodes=[double, add_one, triple])
+        debugger = VizDebugger(graph)
+
+        # double -> triple does not exist; the analysis lists double's real
+        # out-edges (double -> add_one, carrying "doubled").
+        edge = debugger.trace_edge("double", "triple")
+        assert edge.edge_found is False
+        from_source = edge.analysis["edges_from_source"]
+        assert {"to": "add_one", "value": "doubled"} in from_source
+
+        # triple -> add_one does not exist; the analysis lists add_one's real
+        # in-edges (from double, carrying "doubled").
+        edge = debugger.trace_edge("triple", "add_one")
+        assert edge.edge_found is False
+        to_target = edge.analysis["edges_to_target"]
+        assert {"from": "double", "value": "doubled"} in to_target

@@ -852,13 +852,28 @@ class TestMaxConcurrency:
         assert result["value"] == [2, 4, 6]
 
     async def test_map_over_with_product_mode_and_concurrency(self):
-        """Product mode map_over respects concurrency limits."""
+        """Product mode map_over runs all mapped items concurrently.
+
+        Structural parallelism proof (no wall-clock asserts — they flake
+        under CPU contention with xdist): every mapped call must be in
+        flight simultaneously before ANY may complete. If execution were
+        serialized, the first item would wait on the barrier forever and
+        the wait_for timeout would fail the test.
+        """
         import asyncio
-        import time
+
+        total_items = 4  # product of [1,2] x [10,20]
+        arrived = 0
+        all_arrived = asyncio.Event()
 
         @node(output_name="sum")
         async def slow_add(a: int, b: int) -> int:
-            await asyncio.sleep(0.02)
+            nonlocal arrived
+            arrived += 1
+            if arrived == total_items:
+                all_arrived.set()
+            # Deadlocks (→ TimeoutError) unless all items overlap in flight.
+            await asyncio.wait_for(all_arrived.wait(), timeout=15)
             return a + b
 
         inner = Graph([slow_add], name="inner")
@@ -866,17 +881,13 @@ class TestMaxConcurrency:
 
         runner = AsyncRunner()
 
-        # Product of [1,2] x [10,20] = 4 combinations
         # a, b are owned by inner GraphNode → addressed by its parent-facing key
-        start = time.time()
         result = await runner.run(outer, {"a": [1, 2], "b": [10, 20]})
-        elapsed = time.time() - start
 
         assert result.status == RunStatus.COMPLETED
         assert len(result["sum"]) == 4
         assert sorted(result["sum"]) == [11, 12, 21, 22]
-        # All 4 run in parallel: ~0.02s
-        assert elapsed < 0.1, f"Expected parallel, got {elapsed:.3f}s"
+        assert arrived == total_items
 
     async def test_error_in_nested_map_with_concurrency(self):
         """Errors propagate correctly from nested maps with concurrency."""
