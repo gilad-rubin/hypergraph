@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from functools import lru_cache
 from importlib.resources import files
 from typing import Literal
@@ -14,6 +13,7 @@ from hypergraph.runners._shared._inspect_serialization import (
     serialized_value_to_wire,
 )
 from hypergraph.runners._shared.results import FailureEvidence
+from hypergraph.runners.inspection import InspectionDisplay as InspectionDisplay
 
 _INSPECT_SCHEMA = "hypergraph.inspect/v1"
 InspectionDeliveryState = Literal["live", "stale", "saved"]
@@ -260,15 +260,3 @@ def render_map_inspection(artifact: MapInspection) -> str:
         delivery_label="Saved snapshot",
     )
     return render_inspection_payload(payload)
-
-
-@dataclass(frozen=True, slots=True)
-class InspectionDisplay:
-    """Explicit rich display returned by run and map result inspection."""
-
-    artifact: RunInspection | MapInspection
-
-    def _repr_html_(self) -> str:
-        if isinstance(self.artifact, MapInspection):
-            return render_map_inspection(self.artifact)
-        return render_run_inspection(self.artifact)

@@ -9,10 +9,10 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph._utils import plural
+from hypergraph.runners.inspection import InspectionDisplay
 
 if TYPE_CHECKING:
     from hypergraph.runners._shared._inspect import MapInspection, RunInspection
-    from hypergraph.runners._shared._inspect_html import InspectionDisplay
 
 ErrorHandling = Literal["raise", "continue"]
 
@@ -151,7 +151,7 @@ class RunResult:
         """First attributable node failure, if one exists."""
         return self.node_failures[0] if self.node_failures else None
 
-    def inspect(self) -> InspectionDisplay:
+    def inspect(self) -> InspectionDisplay[Any]:
         """Return an explicit rich inspection view for this settled result.
 
         Runs created with ``inspect=True`` include shallow successful-node
@@ -159,7 +159,6 @@ class RunResult:
         inspectable but say truthfully which values were not captured.
         """
         from hypergraph.runners._shared._inspect import degraded_run_inspection
-        from hypergraph.runners._shared._inspect_html import InspectionDisplay
 
         artifact = self._inspection
         if artifact is None:
@@ -521,10 +520,9 @@ class MapResult:
         results.get("doubled", 0) → [2, 4, 0, 6, 8]"""
         return [r.get(key, default) for r in self.results]
 
-    def inspect(self) -> InspectionDisplay:
+    def inspect(self) -> InspectionDisplay[Any]:
         """Return an explicit rich inspection view for this settled batch."""
         from hypergraph.runners._shared._inspect import degraded_map_inspection
-        from hypergraph.runners._shared._inspect_html import InspectionDisplay
 
         artifact = self._inspection
         if artifact is None:
