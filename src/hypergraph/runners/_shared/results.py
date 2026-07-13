@@ -351,7 +351,12 @@ class MapResult:
         if any(index < 0 or index >= requested_count for index in indexes) or any(
             left >= right for left, right in zip(indexes, indexes[1:], strict=False)
         ):
-            raise ValueError("unstarted_item_indexes must be sorted, unique, non-negative, and within the requested map scope")
+            raise ValueError(
+                "unstarted_item_indexes must be sorted, unique, non-negative, "
+                "and within the requested map scope.\n\n"
+                "How to fix: Pass each unstarted original input index once, in "
+                "ascending order, within requested_count."
+            )
 
     # --- Sequence protocol (read-only backward compat) ---
 

@@ -217,3 +217,37 @@ async def test_async_empty_background_map_is_a_real_empty_result() -> None:
     assert await first_handle.result(raise_on_failure=False) is first
     assert second.results == ()
     assert recorder.events == []
+
+
+def test_sync_blocking_maps_preserve_full_and_empty_requested_scope() -> None:
+    @node(output_name="doubled")
+    def double(value: int) -> int:
+        return value * 2
+
+    runner = SyncRunner()
+    graph = Graph([double])
+
+    full = runner.map(graph, {"value": [1, 2]}, map_over="value")
+    empty = runner.map(graph, {"value": []}, map_over="value")
+
+    assert full.requested_count == len(full) == 2
+    assert full.unstarted_item_indexes == ()
+    assert empty.requested_count == len(empty) == 0
+    assert empty.unstarted_item_indexes == ()
+
+
+async def test_async_blocking_maps_preserve_full_and_empty_requested_scope() -> None:
+    @node(output_name="doubled")
+    async def double(value: int) -> int:
+        return value * 2
+
+    runner = AsyncRunner()
+    graph = Graph([double])
+
+    full = await runner.map(graph, {"value": [1, 2]}, map_over="value")
+    empty = await runner.map(graph, {"value": []}, map_over="value")
+
+    assert full.requested_count == len(full) == 2
+    assert full.unstarted_item_indexes == ()
+    assert empty.requested_count == len(empty) == 0
+    assert empty.unstarted_item_indexes == ()

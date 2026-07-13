@@ -416,11 +416,12 @@ class TestMapResultRequestedScope:
         ],
     )
     def test_invalid_unstarted_indexes_are_rejected(self, unstarted_item_indexes):
-        with pytest.raises(ValueError, match="unstarted_item_indexes"):
+        with pytest.raises(ValueError, match="unstarted_item_indexes") as raised:
             _make_map_result(
                 [_make_result()],
                 unstarted_item_indexes=unstarted_item_indexes,
             )
+        assert "How to fix:" in str(raised.value)
 
     def test_sparse_scope_is_visible_without_fabricating_item_rows(self):
         mapped = _make_map_result(
