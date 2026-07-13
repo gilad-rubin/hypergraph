@@ -136,13 +136,6 @@ def run_superstep_sync(
                     inputs=inputs,
                     started_at_ms=inspection_time_ms,
                 )
-                inspection_session.finish_node(
-                    span_id=node_span_id,
-                    outputs=outputs,
-                    ended_at_ms=inspection_time_ms,
-                    duration_ms=0.0,
-                    cached=True,
-                )
             if active:
                 dispatcher.emit(start_evt)
                 dispatcher.emit(
@@ -348,15 +341,6 @@ def run_superstep_sync(
                         )
                     )
 
-                if inspection_session is not None:
-                    inspection_session.finish_node(
-                        span_id=node_span_id,
-                        outputs=outputs,
-                        ended_at_ms=time.perf_counter() * 1000,
-                        duration_ms=duration_ms,
-                        cached=False,
-                    )
-
             except BaseException as e:
                 duration_ms = (time.time() - node_start) * 1000
                 if inspection_session is not None and isinstance(e, Exception) and not isinstance(e, _NodeExecutionError):
@@ -406,15 +390,35 @@ def run_superstep_sync(
 
         # Record wait_for versions
         wait_for_versions = {name: state.get_version(name) for name in node.wait_for}
-        apply_node_result(
-            graph,
-            new_state,
-            node,
-            outputs,
-            input_versions,
-            wait_for_versions,
-            duration_ms=0.0 if cached_outputs is not None else duration_ms,
-            cached=cached_outputs is not None,
-        )
+        cached = cached_outputs is not None
+        applied_duration_ms = 0.0 if cached else duration_ms
+        try:
+            apply_node_result(
+                graph,
+                new_state,
+                node,
+                outputs,
+                input_versions,
+                wait_for_versions,
+                duration_ms=applied_duration_ms,
+                cached=cached,
+            )
+        except Exception:
+            if inspection_session is not None:
+                inspection_session.abort_node(
+                    span_id=node_span_id,
+                    ended_at_ms=time.perf_counter() * 1000,
+                    duration_ms=applied_duration_ms,
+                )
+            raise
+
+        if inspection_session is not None:
+            inspection_session.finish_node(
+                span_id=node_span_id,
+                outputs=outputs,
+                ended_at_ms=time.perf_counter() * 1000,
+                duration_ms=applied_duration_ms,
+                cached=cached,
+            )
 
     return new_state

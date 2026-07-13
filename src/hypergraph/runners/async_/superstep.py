@@ -110,7 +110,7 @@ async def run_superstep_async(
 
     async def execute_one(
         node: HyperNode,
-    ) -> tuple[HyperNode, dict[str, Any], dict[str, int], dict[str, int], float, bool]:
+    ) -> tuple[HyperNode, dict[str, Any], dict[str, int], dict[str, int], float, bool, str]:
         """Execute a single node with event emission."""
         inputs = collect_inputs_for_node(node, graph, state, provided_values)
         # Record input versions under the same parent-facing key the staleness
@@ -154,13 +154,6 @@ async def run_superstep_async(
                     inputs=inputs,
                     started_at_ms=inspection_time_ms,
                 )
-                inspection_session.finish_node(
-                    span_id=node_span_id,
-                    outputs=outputs,
-                    ended_at_ms=inspection_time_ms,
-                    duration_ms=0.0,
-                    cached=True,
-                )
             if active:
                 await dispatcher.emit_async(start_evt)
                 await dispatcher.emit_async(
@@ -203,7 +196,7 @@ async def run_superstep_async(
                         superstep=superstep_idx,
                     )
                 )
-            return node, outputs, input_versions, wait_for_versions, 0.0, True
+            return node, outputs, input_versions, wait_for_versions, 0.0, True, node_span_id
 
         # Emit NodeStartEvent
         node_span_id, start_evt = build_node_start_event(
@@ -368,16 +361,7 @@ async def run_superstep_async(
                     )
                 )
 
-            if inspection_session is not None:
-                inspection_session.finish_node(
-                    span_id=node_span_id,
-                    outputs=outputs,
-                    ended_at_ms=time.perf_counter() * 1000,
-                    duration_ms=duration_ms,
-                    cached=False,
-                )
-
-            return node, outputs, input_versions, wait_for_versions, duration_ms, False
+            return node, outputs, input_versions, wait_for_versions, duration_ms, False, node_span_id
         except PauseExecution as exc:
             exc.span_id = node_span_id
             raise
@@ -413,7 +397,9 @@ async def run_superstep_async(
     control_flow_error: BaseException | None = None
     node_errors: dict[str, BaseException] = {}
     node_failures: list[FailureEvidence] = []
-    for node, result in zip(ready_nodes, results, strict=True):
+    settled_inspection = current_inspection()
+    inspection_session = settled_inspection[0] if settled_inspection is not None else None
+    for result_index, (node, result) in enumerate(zip(ready_nodes, results, strict=True)):
         if isinstance(result, BaseException):
             if first_error is None:
                 first_error = (result.__cause__ or result) if isinstance(result, _NodeExecutionError) else result
@@ -425,17 +411,39 @@ async def run_superstep_async(
             else:
                 node_errors[node.name] = result
             continue
-        node, outputs, input_versions, wait_for_versions, duration_ms, cached = result
-        apply_node_result(
-            graph,
-            new_state,
-            node,
-            outputs,
-            input_versions,
-            wait_for_versions,
-            duration_ms=duration_ms,
-            cached=cached,
-        )
+        node, outputs, input_versions, wait_for_versions, duration_ms, cached, node_span_id = result
+        try:
+            apply_node_result(
+                graph,
+                new_state,
+                node,
+                outputs,
+                input_versions,
+                wait_for_versions,
+                duration_ms=duration_ms,
+                cached=cached,
+            )
+        except Exception:
+            if inspection_session is not None:
+                for pending in results[result_index:]:
+                    if isinstance(pending, BaseException):
+                        continue
+                    _, _, _, _, pending_duration_ms, _, pending_span_id = pending
+                    inspection_session.abort_node(
+                        span_id=pending_span_id,
+                        ended_at_ms=time.perf_counter() * 1000,
+                        duration_ms=pending_duration_ms,
+                    )
+            raise
+
+        if inspection_session is not None:
+            inspection_session.finish_node(
+                span_id=node_span_id,
+                outputs=outputs,
+                ended_at_ms=time.perf_counter() * 1000,
+                duration_ms=duration_ms,
+                cached=cached,
+            )
 
     if control_flow_error is not None:
         # Pause/cancellation/system-exit control flow must not be hidden by an

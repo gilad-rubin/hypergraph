@@ -6,7 +6,7 @@ import dataclasses
 
 import pytest
 
-from hypergraph import AsyncRunner, Graph, RunResult, RunStatus, SyncRunner, interrupt, node
+from hypergraph import AsyncRunner, Graph, InMemoryCache, RunResult, RunStatus, SyncRunner, interrupt, node
 from hypergraph.checkpointers import MemoryCheckpointer, SqliteCheckpointer
 
 
@@ -399,3 +399,101 @@ def test_inspection_does_not_report_completed_after_cache_write_failure() -> Non
     assert artifact.nodes[0].failure is None
     assert artifact.failures == ()
     assert result.node_failures == ()
+
+
+@pytest.mark.parametrize("cache_enabled", [False, True])
+def test_sync_inspection_completes_only_after_state_application(monkeypatch, cache_enabled: bool) -> None:
+    from hypergraph.runners.sync import superstep
+
+    class StateApplyError(RuntimeError):
+        pass
+
+    @node(output_name="answer", cache=cache_enabled)
+    def calculate(value: int) -> int:
+        return value * 2
+
+    graph = Graph([calculate], name="sync-state-apply-inspection")
+    runner = SyncRunner(cache=InMemoryCache())
+    if cache_enabled:
+        runner.run(graph, {"value": 6})
+
+    def fail_apply(*args: object, **kwargs: object) -> None:
+        raise StateApplyError("state application failed after executor success")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(superstep, "apply_node_result", fail_apply)
+        failed = runner.run(
+            graph,
+            {"value": 6},
+            inspect=True,
+            error_handling="continue",
+        )
+
+    failed_artifact = failed.inspect().artifact
+    assert failed_artifact.status == "failed"
+    assert [item.status for item in failed_artifact.nodes] == ["failed"]
+    assert failed_artifact.nodes[0].failure is None
+    assert failed_artifact.failures == ()
+    assert failed.node_failures == ()
+
+    succeeded = runner.run(graph, {"value": 6}, inspect=True)
+    successful_node = succeeded.inspect().artifact.nodes[0]
+    assert successful_node.status == "completed"
+    assert successful_node.outputs == {"answer": 12}
+    assert successful_node.cached is cache_enabled
+    assert successful_node.duration_ms >= 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cache_enabled", [False, True])
+async def test_async_inspection_settles_all_executors_after_state_application_failure(
+    monkeypatch,
+    cache_enabled: bool,
+) -> None:
+    from hypergraph.runners.async_ import superstep
+
+    class StateApplyError(RuntimeError):
+        pass
+
+    @node(output_name="left", cache=cache_enabled)
+    async def calculate_left(value: int) -> int:
+        return value * 2
+
+    @node(output_name="right", cache=cache_enabled)
+    async def calculate_right(value: int) -> int:
+        return value * 3
+
+    graph = Graph([calculate_left, calculate_right], name="async-state-apply-inspection")
+    runner = AsyncRunner(cache=InMemoryCache())
+    if cache_enabled:
+        await runner.run(graph, {"value": 6})
+
+    def fail_apply(*args: object, **kwargs: object) -> None:
+        raise StateApplyError("state application failed after executors succeeded")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(superstep, "apply_node_result", fail_apply)
+        failed = await runner.run(
+            graph,
+            {"value": 6},
+            inspect=True,
+            error_handling="continue",
+        )
+
+    failed_artifact = failed.inspect().artifact
+    assert failed_artifact.status == "failed"
+    assert [item.status for item in failed_artifact.nodes] == ["failed", "failed"]
+    assert all(item.failure is None for item in failed_artifact.nodes)
+    assert failed_artifact.failures == ()
+    assert failed.node_failures == ()
+    assert all(item.status != "running" for item in failed_artifact.nodes)
+
+    succeeded = await runner.run(graph, {"value": 6}, inspect=True)
+    successful_nodes = succeeded.inspect().artifact.nodes
+    assert [item.status for item in successful_nodes] == ["completed", "completed"]
+    assert {item.qualified_name: item.outputs for item in successful_nodes} == {
+        "calculate_left": {"left": 12},
+        "calculate_right": {"right": 18},
+    }
+    assert all(item.cached is cache_enabled for item in successful_nodes)
+    assert all(item.duration_ms >= 0 for item in successful_nodes)
