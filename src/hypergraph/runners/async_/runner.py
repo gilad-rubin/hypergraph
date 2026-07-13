@@ -111,6 +111,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         self._checkpointer_instance = checkpointer
         self._show_progress = show_progress
         self._active_workflows = _ActiveWorkflows()
+        self._background_tasks: set[asyncio.Task[Any]] = set()
         self._executors: dict[type[HyperNode], AsyncNodeExecutor] = {
             FunctionNode: AsyncFunctionNodeExecutor(),
             GraphNode: AsyncGraphNodeExecutor(self),
@@ -195,6 +196,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                 **input_values,
             ),
             reservation,
+            self._background_tasks,
         )
 
     def start_map(
@@ -241,6 +243,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                 **input_values,
             ),
             reservation,
+            self._background_tasks,
         )
 
     @property

@@ -13,6 +13,7 @@ import logging
 import os
 import pickle
 import secrets
+import threading
 from collections import OrderedDict
 from contextlib import suppress
 from typing import Any, Protocol
@@ -24,6 +25,8 @@ class CacheBackend(Protocol):
     """Protocol for cache backends.
 
     Implementations must provide get() and set() methods.
+    Backends shared across overlapping background executions must make those
+    operations safe for concurrent callers.
     """
 
     def get(self, key: str) -> tuple[bool, Any]:
@@ -51,21 +54,24 @@ class InMemoryCache:
     def __init__(self, max_size: int | None = None) -> None:
         self._max_size = max_size
         self._data: OrderedDict[str, Any] = OrderedDict()
+        self._lock = threading.Lock()
 
     def get(self, key: str) -> tuple[bool, Any]:
         """Return (hit, value). Moves key to end for LRU tracking."""
-        if key not in self._data:
-            return False, None
-        self._data.move_to_end(key)
-        return True, self._data[key]
+        with self._lock:
+            if key not in self._data:
+                return False, None
+            self._data.move_to_end(key)
+            return True, self._data[key]
 
     def set(self, key: str, value: Any) -> None:
         """Store a value. Evicts least-recently-used entry if at capacity."""
-        if key in self._data:
-            self._data.move_to_end(key)
-        self._data[key] = value
-        if self._max_size is not None and len(self._data) > self._max_size:
-            self._data.popitem(last=False)
+        with self._lock:
+            if key in self._data:
+                self._data.move_to_end(key)
+            self._data[key] = value
+            if self._max_size is not None and len(self._data) > self._max_size:
+                self._data.popitem(last=False)
 
 
 _HMAC_KEY_FILENAME = ".hypergraph_hmac_key"

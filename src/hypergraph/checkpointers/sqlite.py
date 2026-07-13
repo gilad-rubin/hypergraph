@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import threading
 import uuid
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -221,6 +222,7 @@ class SqliteCheckpointer(Checkpointer):
         self._serializer = serializer or JsonSerializer()
         self._db: Any = None
         self._sync_conn: Any = None
+        self._sync_lock = threading.RLock()
         self._init_lock: asyncio.Lock | None = None
         self._aiosqlite = _require_aiosqlite()
 
@@ -231,11 +233,14 @@ class SqliteCheckpointer(Checkpointer):
         This fallback only exists to avoid unraisable GC-time warnings when an
         async sqlite connection is accidentally dropped without teardown.
         """
-        sync_conn = getattr(self, "_sync_conn", None)
+        sync_lock = getattr(self, "_sync_lock", None)
         with contextlib.suppress(Exception):
-            if sync_conn is not None:
-                sync_conn.close()
-                self._sync_conn = None
+            if sync_lock is not None:
+                with sync_lock:
+                    sync_conn = getattr(self, "_sync_conn", None)
+                    if sync_conn is not None:
+                        sync_conn.close()
+                        self._sync_conn = None
 
         db = getattr(self, "_db", None)
         if db is None:
@@ -254,19 +259,20 @@ class SqliteCheckpointer(Checkpointer):
         """Gather quick DB stats for display (uses sync connection)."""
         import os
 
-        stats: dict[str, Any] = {"path": self._path}
-        try:
-            stats["size_bytes"] = os.path.getsize(self._path)
-        except OSError:
-            stats["size_bytes"] = None
-        try:
-            db = self._sync_db()
-            (stats["run_count"],) = db.execute("SELECT COUNT(*) FROM runs").fetchone()
-            (stats["step_count"],) = db.execute(f"SELECT COUNT(*) FROM steps WHERE {_PUBLIC_STEP_FILTER}").fetchone()
-        except Exception:
-            stats["run_count"] = None
-            stats["step_count"] = None
-        return stats
+        with self._sync_lock:
+            stats: dict[str, Any] = {"path": self._path}
+            try:
+                stats["size_bytes"] = os.path.getsize(self._path)
+            except OSError:
+                stats["size_bytes"] = None
+            try:
+                db = self._sync_db()
+                (stats["run_count"],) = db.execute("SELECT COUNT(*) FROM runs").fetchone()
+                (stats["step_count"],) = db.execute(f"SELECT COUNT(*) FROM steps WHERE {_PUBLIC_STEP_FILTER}").fetchone()
+            except Exception:
+                stats["run_count"] = None
+                stats["step_count"] = None
+            return stats
 
     def __repr__(self) -> str:
         from hypergraph._utils import plural
@@ -341,17 +347,19 @@ class SqliteCheckpointer(Checkpointer):
         """Set up schema using sync connection (migration logic is sync)."""
         import sqlite3
 
-        conn = sqlite3.connect(self._connect_path, uri=self._connect_uri)
-        try:
-            ensure_schema(conn)
-        finally:
-            conn.close()
+        with self._sync_lock:
+            conn = sqlite3.connect(self._connect_path, uri=self._connect_uri)
+            try:
+                ensure_schema(conn)
+            finally:
+                conn.close()
 
     async def close(self) -> None:
         """Close database connections."""
-        if self._sync_conn is not None:
-            self._sync_conn.close()
-            self._sync_conn = None
+        with self._sync_lock:
+            if self._sync_conn is not None:
+                self._sync_conn.close()
+                self._sync_conn = None
         if self._db is not None:
             await self._db.close()
             self._db = None
@@ -738,41 +746,48 @@ class SqliteCheckpointer(Checkpointer):
 
         Creates/migrates schema if needed so sync reads work standalone.
         """
-        if self._sync_conn is None:
-            import sqlite3
+        with self._sync_lock:
+            if self._sync_conn is None:
+                import sqlite3
 
-            # WAL mode allows concurrent readers alongside async writes
-            # without "database is locked" errors
-            conn = sqlite3.connect(self._connect_path, uri=self._connect_uri)
-            conn.execute("PRAGMA journal_mode=WAL")
-            ensure_schema(conn)
-            self._sync_conn = conn
-        return self._sync_conn
+                # WAL mode allows concurrent readers alongside async writes.
+                # Access is serialized because one cached connection is shared
+                # by background workers and their caller.
+                conn = sqlite3.connect(
+                    self._connect_path,
+                    uri=self._connect_uri,
+                    check_same_thread=False,
+                )
+                conn.execute("PRAGMA journal_mode=WAL")
+                ensure_schema(conn)
+                self._sync_conn = conn
+            return self._sync_conn
 
     def state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:
         """Get accumulated state synchronously.
 
         Same as ``get_state`` but uses stdlib ``sqlite3`` — no await needed.
         """
-        db = self._sync_db()
-        if superstep is not None:
-            cursor = db.execute(
-                f"SELECT values_data FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY {_STEP_TIME_ORDER}",
-                (run_id, superstep),
-            )
-        else:
-            cursor = db.execute(
-                f"SELECT values_data FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
-                (run_id,),
-            )
+        with self._sync_lock:
+            db = self._sync_db()
+            if superstep is not None:
+                cursor = db.execute(
+                    f"SELECT values_data FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY {_STEP_TIME_ORDER}",
+                    (run_id, superstep),
+                )
+            else:
+                cursor = db.execute(
+                    f"SELECT values_data FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
+                    (run_id,),
+                )
 
-        state: dict[str, Any] = {}
-        for (values_blob,) in cursor:
-            if values_blob is not None:
-                values = self._serializer.deserialize(values_blob)
-                if values:
-                    state.update(values)
-        return state
+            state: dict[str, Any] = {}
+            for (values_blob,) in cursor:
+                if values_blob is not None:
+                    values = self._serializer.deserialize(values_blob)
+                    if values:
+                        state.update(values)
+            return state
 
     def steps(
         self,
@@ -782,28 +797,30 @@ class SqliteCheckpointer(Checkpointer):
         show_internal: bool = False,
     ) -> list[StepRecord]:
         """Get step records synchronously."""
-        db = self._sync_db()
-        conditions = ["run_id = ?"]
-        params: list[Any] = [run_id]
-        if superstep is not None:
-            conditions.append("superstep <= ?")
-            params.append(superstep)
-        if not show_internal:
-            conditions.append(_PUBLIC_STEP_FILTER)
-        cursor = db.execute(
-            f"SELECT {_STEPS_COLS} FROM steps WHERE {' AND '.join(conditions)} ORDER BY {_STEP_TIME_ORDER}",
-            params,
-        )
-        return StepTable(self._row_to_step(row) for row in cursor.fetchall())
+        with self._sync_lock:
+            db = self._sync_db()
+            conditions = ["run_id = ?"]
+            params: list[Any] = [run_id]
+            if superstep is not None:
+                conditions.append("superstep <= ?")
+                params.append(superstep)
+            if not show_internal:
+                conditions.append(_PUBLIC_STEP_FILTER)
+            cursor = db.execute(
+                f"SELECT {_STEPS_COLS} FROM steps WHERE {' AND '.join(conditions)} ORDER BY {_STEP_TIME_ORDER}",
+                params,
+            )
+            return StepTable(self._row_to_step(row) for row in cursor.fetchall())
 
     def get_run(self, run_id: str) -> Run | None:
         """Get run metadata synchronously."""
-        db = self._sync_db()
-        cursor = db.execute(f"SELECT {_RUNS_COLS} FROM runs WHERE id = ?", (run_id,))
-        row = cursor.fetchone()
-        if row is None:
-            return None
-        return self._row_to_run(row)
+        with self._sync_lock:
+            db = self._sync_db()
+            cursor = db.execute(f"SELECT {_RUNS_COLS} FROM runs WHERE id = ?", (run_id,))
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return self._row_to_run(row)
 
     def runs(
         self,
@@ -822,34 +839,35 @@ class SqliteCheckpointer(Checkpointer):
                 None → top-level only (no parent).
                 "X" → children of run X.
         """
-        db = self._sync_db()
-        conditions = []
-        params: list[Any] = []
+        with self._sync_lock:
+            db = self._sync_db()
+            conditions = []
+            params: list[Any] = []
 
-        if status is not None:
-            conditions.append("status = ?")
-            params.append(status.value)
-        if graph_name is not None:
-            conditions.append("graph_name = ?")
-            params.append(graph_name)
-        if since is not None:
-            conditions.append("created_at >= ?")
-            params.append(_normalize_since(since).isoformat())
-        if parent_run_id is not _UNSET:
-            if parent_run_id is None:
-                conditions.append("parent_run_id IS NULL")
-            else:
-                conditions.append("parent_run_id = ?")
-                params.append(parent_run_id)
+            if status is not None:
+                conditions.append("status = ?")
+                params.append(status.value)
+            if graph_name is not None:
+                conditions.append("graph_name = ?")
+                params.append(graph_name)
+            if since is not None:
+                conditions.append("created_at >= ?")
+                params.append(_normalize_since(since).isoformat())
+            if parent_run_id is not _UNSET:
+                if parent_run_id is None:
+                    conditions.append("parent_run_id IS NULL")
+                else:
+                    conditions.append("parent_run_id = ?")
+                    params.append(parent_run_id)
 
-        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-        query = f"SELECT {_RUNS_COLS} FROM runs{where} ORDER BY created_at DESC"
-        if limit is not None:
-            query += " LIMIT ?"
-            params.append(limit)
+            where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+            query = f"SELECT {_RUNS_COLS} FROM runs{where} ORDER BY created_at DESC"
+            if limit is not None:
+                query += " LIMIT ?"
+                params.append(limit)
 
-        cursor = db.execute(query, params)
-        return RunTable(self._row_to_run(row) for row in cursor.fetchall())
+            cursor = db.execute(query, params)
+            return RunTable(self._row_to_run(row) for row in cursor.fetchall())
 
     def lineage(
         self,
@@ -863,142 +881,147 @@ class SqliteCheckpointer(Checkpointer):
         Shows root ancestor + all fork descendants in tree order. When
         ``include_steps=True`` each run can be expanded to inspect its steps.
         """
-        selected = self.get_run(workflow_id)
-        if selected is None:
-            raise ValueError(f"Unknown workflow_id: {workflow_id!r}")
+        with self._sync_lock:
+            selected = self.get_run(workflow_id)
+            if selected is None:
+                raise ValueError(f"Unknown workflow_id: {workflow_id!r}")
 
-        root = selected
-        seen_ancestors = {root.id}
-        while _lineage_parent_id(root):
-            parent_id = _lineage_parent_id(root)
-            if parent_id is None:
-                break
-            parent = self.get_run(parent_id)
-            if parent is None or parent.id in seen_ancestors:
-                break
-            root = parent
-            seen_ancestors.add(root.id)
-
-        db = self._sync_db()
-        run_by_id: dict[str, Run] = {root.id: root}
-        children_by_parent: dict[str, list[Run]] = {}
-
-        queue: list[str] = [root.id]
-        while queue and len(run_by_id) < max_runs:
-            parent_id = queue.pop(0)
-            cursor = db.execute(
-                f"SELECT {_RUNS_COLS} FROM runs WHERE forked_from = ? OR retry_of = ? ORDER BY created_at ASC LIMIT ?",
-                (parent_id, parent_id, max_runs),
-            )
-            children = [self._row_to_run(row) for row in cursor.fetchall()]
-            children_by_parent[parent_id] = children
-            for child in children:
-                if child.id in run_by_id:
-                    continue
-                run_by_id[child.id] = child
-                if len(run_by_id) >= max_runs:
+            root = selected
+            seen_ancestors = {root.id}
+            while _lineage_parent_id(root):
+                parent_id = _lineage_parent_id(root)
+                if parent_id is None:
                     break
-                queue.append(child.id)
+                parent = self.get_run(parent_id)
+                if parent is None or parent.id in seen_ancestors:
+                    break
+                root = parent
+                seen_ancestors.add(root.id)
 
-        rows: list[LineageRow] = [LineageRow(lane="● ", run=root, depth=0, is_selected=(root.id == workflow_id))]
+            db = self._sync_db()
+            run_by_id: dict[str, Run] = {root.id: root}
+            children_by_parent: dict[str, list[Run]] = {}
 
-        def _walk(parent_id: str, *, flags: list[bool], depth: int) -> None:
-            children = children_by_parent.get(parent_id, [])
-            for idx, child in enumerate(children):
-                has_next = idx < len(children) - 1
-                prefix = "".join("│  " if flag else "   " for flag in flags)
-                lane = f"{prefix}{'├─ ' if has_next else '└─ '}"
-                rows.append(
-                    LineageRow(
-                        lane=lane,
-                        run=child,
-                        depth=depth,
-                        is_selected=(child.id == workflow_id),
-                    )
+            queue: list[str] = [root.id]
+            while queue and len(run_by_id) < max_runs:
+                parent_id = queue.pop(0)
+                cursor = db.execute(
+                    f"SELECT {_RUNS_COLS} FROM runs WHERE forked_from = ? OR retry_of = ? ORDER BY created_at ASC LIMIT ?",
+                    (parent_id, parent_id, max_runs),
                 )
-                _walk(child.id, flags=[*flags, has_next], depth=depth + 1)
+                children = [self._row_to_run(row) for row in cursor.fetchall()]
+                children_by_parent[parent_id] = children
+                for child in children:
+                    if child.id in run_by_id:
+                        continue
+                    run_by_id[child.id] = child
+                    if len(run_by_id) >= max_runs:
+                        break
+                    queue.append(child.id)
 
-        _walk(root.id, flags=[], depth=1)
+            rows: list[LineageRow] = [LineageRow(lane="● ", run=root, depth=0, is_selected=(root.id == workflow_id))]
 
-        steps_by_run: dict[str, StepTable] | None = None
-        if include_steps:
-            steps_by_run = {row.run.id: self.steps(row.run.id) for row in rows}
+            def _walk(parent_id: str, *, flags: list[bool], depth: int) -> None:
+                children = children_by_parent.get(parent_id, [])
+                for idx, child in enumerate(children):
+                    has_next = idx < len(children) - 1
+                    prefix = "".join("│  " if flag else "   " for flag in flags)
+                    lane = f"{prefix}{'├─ ' if has_next else '└─ '}"
+                    rows.append(
+                        LineageRow(
+                            lane=lane,
+                            run=child,
+                            depth=depth,
+                            is_selected=(child.id == workflow_id),
+                        )
+                    )
+                    _walk(child.id, flags=[*flags, has_next], depth=depth + 1)
 
-        return LineageView(
-            rows,
-            selected_run_id=workflow_id,
-            root_run_id=root.id,
-            steps_by_run=steps_by_run,
-        )
+            _walk(root.id, flags=[], depth=1)
+
+            steps_by_run: dict[str, StepTable] | None = None
+            if include_steps:
+                steps_by_run = {row.run.id: self.steps(row.run.id) for row in rows}
+
+            return LineageView(
+                rows,
+                selected_run_id=workflow_id,
+                root_run_id=root.id,
+                steps_by_run=steps_by_run,
+            )
 
     def search(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
         """Search steps using FTS5 (sync)."""
-        db = self._sync_db()
+        with self._sync_lock:
+            db = self._sync_db()
 
-        if field is not None and field not in self._FTS_FIELDS:
-            raise ValueError(f"Invalid search field: {field!r}. Must be one of {sorted(self._FTS_FIELDS)}")
-        fts_query = f"{field}:{query}" if field else query
+            if field is not None and field not in self._FTS_FIELDS:
+                raise ValueError(f"Invalid search field: {field!r}. Must be one of {sorted(self._FTS_FIELDS)}")
+            fts_query = f"{field}:{query}" if field else query
 
-        # Use aliased column refs that match _STEPS_COLS order
-        cols = ", ".join(f"s.{c.strip()}" for c in _STEPS_COLS.split(","))
-        cursor = db.execute(
-            f"""
-            SELECT {cols} FROM steps s
-            JOIN steps_fts fts ON s.id = fts.rowid
-            WHERE steps_fts MATCH ? AND {_PUBLIC_STEP_FILTER_WITH_ALIAS}
-            ORDER BY {_STEP_TIME_ORDER_DESC_WITH_ALIAS}
-            LIMIT ?
-            """,
-            (fts_query, limit),
-        )
-        return StepTable(self._row_to_step(row) for row in cursor.fetchall())
+            # Use aliased column refs that match _STEPS_COLS order
+            cols = ", ".join(f"s.{c.strip()}" for c in _STEPS_COLS.split(","))
+            cursor = db.execute(
+                f"""
+                SELECT {cols} FROM steps s
+                JOIN steps_fts fts ON s.id = fts.rowid
+                WHERE steps_fts MATCH ? AND {_PUBLIC_STEP_FILTER_WITH_ALIAS}
+                ORDER BY {_STEP_TIME_ORDER_DESC_WITH_ALIAS}
+                LIMIT ?
+                """,
+                (fts_query, limit),
+            )
+            return StepTable(self._row_to_step(row) for row in cursor.fetchall())
 
     def values(self, run_id: str, *, key: str | None = None) -> dict[str, Any]:
         """Get run output values synchronously. Optionally filter to a single key."""
-        full_state = self.state(run_id)
-        if key is not None:
-            return {key: full_state[key]} if key in full_state else {}
-        return full_state
+        with self._sync_lock:
+            full_state = self.state(run_id)
+            if key is not None:
+                return {key: full_state[key]} if key in full_state else {}
+            return full_state
 
     def stats(self, run_id: str) -> dict[str, Any]:
         """Get per-node duration/frequency stats for a run."""
-        db = self._sync_db()
-        cursor = db.execute(
-            f"""
-            SELECT node_name, node_type,
-                   COUNT(*) as step_runs,
-                   SUM(duration_ms) as total_ms,
-                   AVG(duration_ms) as avg_ms,
-                   MAX(duration_ms) as max_ms,
-                   SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as errors,
-                   SUM(cached) as cache_hits
-            FROM steps WHERE run_id = ? AND {_PUBLIC_STEP_FILTER}
-            GROUP BY node_name
-            ORDER BY total_ms DESC
-            """,
-            (run_id,),
-        )
-        return {
-            row[0]: {
-                "node_type": row[1],
-                "steps": row[2],
-                "total_ms": row[3],
-                "avg_ms": round(row[4], 3) if row[4] else 0,
-                "max_ms": row[5],
-                "errors": row[6],
-                "cache_hits": row[7],
+        with self._sync_lock:
+            db = self._sync_db()
+            cursor = db.execute(
+                f"""
+                SELECT node_name, node_type,
+                       COUNT(*) as step_runs,
+                       SUM(duration_ms) as total_ms,
+                       AVG(duration_ms) as avg_ms,
+                       MAX(duration_ms) as max_ms,
+                       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as errors,
+                       SUM(cached) as cache_hits
+                FROM steps WHERE run_id = ? AND {_PUBLIC_STEP_FILTER}
+                GROUP BY node_name
+                ORDER BY total_ms DESC
+                """,
+                (run_id,),
+            )
+            return {
+                row[0]: {
+                    "node_type": row[1],
+                    "steps": row[2],
+                    "total_ms": row[3],
+                    "avg_ms": round(row[4], 3) if row[4] else 0,
+                    "max_ms": row[5],
+                    "errors": row[6],
+                    "cache_hits": row[7],
+                }
+                for row in cursor.fetchall()
             }
-            for row in cursor.fetchall()
-        }
 
     def checkpoint(self, run_id: str, *, superstep: int | None = None) -> Checkpoint:
         """Get a checkpoint synchronously."""
-        return Checkpoint(
-            values=self.state(run_id, superstep=superstep),
-            steps=self.steps(run_id, superstep=superstep),
-            source_run_id=run_id,
-            source_superstep=superstep,
-        )
+        with self._sync_lock:
+            return Checkpoint(
+                values=self.state(run_id, superstep=superstep),
+                steps=self.steps(run_id, superstep=superstep),
+                source_run_id=run_id,
+                source_superstep=superstep,
+            )
 
     def fork_workflow(
         self,
@@ -1008,11 +1031,12 @@ class SqliteCheckpointer(Checkpointer):
         superstep: int | None = None,
     ) -> tuple[str, Checkpoint]:
         """Prepare a fork checkpoint + target workflow id (sync)."""
-        if self.get_run(source_run_id) is None:
-            raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
-        new_workflow_id = _resolve_fork_workflow_id(source_run_id, workflow_id)
-        checkpoint = self.checkpoint(source_run_id, superstep=superstep)
-        return new_workflow_id, checkpoint
+        with self._sync_lock:
+            if self.get_run(source_run_id) is None:
+                raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
+            new_workflow_id = _resolve_fork_workflow_id(source_run_id, workflow_id)
+            checkpoint = self.checkpoint(source_run_id, superstep=superstep)
+            return new_workflow_id, checkpoint
 
     def retry_workflow(
         self,
@@ -1022,16 +1046,17 @@ class SqliteCheckpointer(Checkpointer):
         superstep: int | None = None,
     ) -> tuple[str, Checkpoint]:
         """Prepare a retry checkpoint + target workflow id (sync)."""
-        db = self._sync_db()
-        if self.get_run(source_run_id) is None:
-            raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
-        (retry_count,) = db.execute("SELECT COUNT(*) FROM runs WHERE retry_of = ?", (source_run_id,)).fetchone()
-        retry_index = int(retry_count or 0) + 1
-        checkpoint = self.checkpoint(source_run_id, superstep=superstep)
-        checkpoint.retry_of = source_run_id
-        checkpoint.retry_index = retry_index
-        new_workflow_id = workflow_id or f"{source_run_id}-retry-{retry_index}"
-        return new_workflow_id, checkpoint
+        with self._sync_lock:
+            db = self._sync_db()
+            if self.get_run(source_run_id) is None:
+                raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
+            (retry_count,) = db.execute("SELECT COUNT(*) FROM runs WHERE retry_of = ?", (source_run_id,)).fetchone()
+            retry_index = int(retry_count or 0) + 1
+            checkpoint = self.checkpoint(source_run_id, superstep=superstep)
+            checkpoint.retry_of = source_run_id
+            checkpoint.retry_index = retry_index
+            new_workflow_id = workflow_id or f"{source_run_id}-retry-{retry_index}"
+            return new_workflow_id, checkpoint
 
     # === Sync Writes (SyncCheckpointerProtocol) ===
 
@@ -1048,80 +1073,82 @@ class SqliteCheckpointer(Checkpointer):
         config: dict[str, Any] | None = None,
     ) -> Run:
         """Create or reset a run record synchronously (upsert)."""
-        db = self._sync_db()
-        now = datetime.now(timezone.utc)
-        config_json = json.dumps(config) if config is not None else None
-        db.execute(
-            "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, duration_ms = NULL, node_count = 0, "
-            "error_count = 0, completed_at = NULL, parent_run_id = ?, forked_from = ?, "
-            "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?",
-            (
-                run_id,
-                WorkflowStatus.ACTIVE.value,
-                graph_name or "",
-                now.isoformat(),
-                parent_run_id,
-                forked_from,
-                fork_superstep,
-                retry_of,
-                retry_index,
-                config_json,
-                WorkflowStatus.ACTIVE.value,
-                graph_name or "",
-                parent_run_id,
-                forked_from,
-                fork_superstep,
-                retry_of,
-                retry_index,
-                config_json,
-            ),
-        )
-        db.commit()
-        return Run(
-            id=run_id,
-            status=WorkflowStatus.ACTIVE,
-            graph_name=graph_name,
-            parent_run_id=parent_run_id,
-            forked_from=forked_from,
-            fork_superstep=fork_superstep,
-            retry_of=retry_of,
-            retry_index=retry_index,
-            config=config,
-            created_at=now,
-        )
+        with self._sync_lock:
+            db = self._sync_db()
+            now = datetime.now(timezone.utc)
+            config_json = json.dumps(config) if config is not None else None
+            db.execute(
+                "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, duration_ms = NULL, node_count = 0, "
+                "error_count = 0, completed_at = NULL, parent_run_id = ?, forked_from = ?, "
+                "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?",
+                (
+                    run_id,
+                    WorkflowStatus.ACTIVE.value,
+                    graph_name or "",
+                    now.isoformat(),
+                    parent_run_id,
+                    forked_from,
+                    fork_superstep,
+                    retry_of,
+                    retry_index,
+                    config_json,
+                    WorkflowStatus.ACTIVE.value,
+                    graph_name or "",
+                    parent_run_id,
+                    forked_from,
+                    fork_superstep,
+                    retry_of,
+                    retry_index,
+                    config_json,
+                ),
+            )
+            db.commit()
+            return Run(
+                id=run_id,
+                status=WorkflowStatus.ACTIVE,
+                graph_name=graph_name,
+                parent_run_id=parent_run_id,
+                forked_from=forked_from,
+                fork_superstep=fork_superstep,
+                retry_of=retry_of,
+                retry_index=retry_index,
+                config=config,
+                created_at=now,
+            )
 
     def save_step_sync(self, record: StepRecord) -> None:
         """Save a step with upsert semantics synchronously."""
-        db = self._sync_db()
-        values_blob = self._serializer.serialize(record.values) if record.values is not None else None
-        input_versions_json = json.dumps(record.input_versions)
-        decision_json = json.dumps(record.decision) if record.decision is not None else None
+        with self._sync_lock:
+            db = self._sync_db()
+            values_blob = self._serializer.serialize(record.values) if record.values is not None else None
+            input_versions_json = json.dumps(record.input_versions)
+            decision_json = json.dumps(record.decision) if record.decision is not None else None
 
-        db.execute(
-            _STEP_UPSERT_SQL,
-            (
-                record.run_id,
-                record.superstep,
-                record.node_name,
-                record.index,
-                record.status.value,
-                input_versions_json,
-                values_blob,
-                record.duration_ms,
-                int(record.cached),
-                decision_json,
-                record.error,
-                record.node_type,
-                record.created_at.isoformat(),
-                record.completed_at.isoformat() if record.completed_at else None,
-                record.child_run_id,
-                int(record.partial),
-            ),
-        )
-        self._apply_retention_policy_sync(record.run_id)
-        db.commit()
+            db.execute(
+                _STEP_UPSERT_SQL,
+                (
+                    record.run_id,
+                    record.superstep,
+                    record.node_name,
+                    record.index,
+                    record.status.value,
+                    input_versions_json,
+                    values_blob,
+                    record.duration_ms,
+                    int(record.cached),
+                    decision_json,
+                    record.error,
+                    record.node_type,
+                    record.created_at.isoformat(),
+                    record.completed_at.isoformat() if record.completed_at else None,
+                    record.child_run_id,
+                    int(record.partial),
+                ),
+            )
+            self._apply_retention_policy_sync(record.run_id)
+            db.commit()
 
     def _merge_retained_state(self, rows: Sequence[_RetentionRow]) -> dict[str, Any]:
         state: dict[str, Any] = {}
@@ -1200,12 +1227,13 @@ class SqliteCheckpointer(Checkpointer):
         return _decode_retention_rows(await cursor.fetchall())
 
     def _retention_rows_sync(self, run_id: str) -> tuple[_RetentionRow, ...]:
-        db = self._sync_db()
-        rows = db.execute(
-            f"SELECT {_RETENTION_ROW_COLS} FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
-            (run_id,),
-        ).fetchall()
-        return _decode_retention_rows(rows)
+        with self._sync_lock:
+            db = self._sync_db()
+            rows = db.execute(
+                f"SELECT {_RETENTION_ROW_COLS} FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
+                (run_id,),
+            ).fetchall()
+            return _decode_retention_rows(rows)
 
     async def _compact_retention_async(
         self,
@@ -1238,21 +1266,22 @@ class SqliteCheckpointer(Checkpointer):
         kept_rows: Sequence[_RetentionRow],
         baseline_superstep: int,
     ) -> None:
-        if not dropped_rows:
-            return
+        with self._sync_lock:
+            if not dropped_rows:
+                return
 
-        baseline_params = self._retention_baseline_params(
-            run_id,
-            dropped_rows=dropped_rows,
-            kept_rows=kept_rows,
-            baseline_superstep=baseline_superstep,
-        )
-        ids = [row.id for row in dropped_rows]
-        db = self._sync_db()
-        for batch in self._delete_step_id_batches(ids):
-            db.execute(self._delete_steps_sql(batch), batch)
-        if baseline_params is not None:
-            db.execute(_STEP_UPSERT_SQL, baseline_params)
+            baseline_params = self._retention_baseline_params(
+                run_id,
+                dropped_rows=dropped_rows,
+                kept_rows=kept_rows,
+                baseline_superstep=baseline_superstep,
+            )
+            ids = [row.id for row in dropped_rows]
+            db = self._sync_db()
+            for batch in self._delete_step_id_batches(ids):
+                db.execute(self._delete_steps_sql(batch), batch)
+            if baseline_params is not None:
+                db.execute(_STEP_UPSERT_SQL, baseline_params)
 
     async def _apply_retention_policy_async(self, run_id: str) -> None:
         """Apply configured retention policy after persisting a step (async)."""
@@ -1272,19 +1301,20 @@ class SqliteCheckpointer(Checkpointer):
 
     def _apply_retention_policy_sync(self, run_id: str) -> None:
         """Apply configured retention policy after persisting a step (sync)."""
-        retention = self.policy.retention
-        if retention == "full":
-            return
+        with self._sync_lock:
+            retention = self.policy.retention
+            if retention == "full":
+                return
 
-        rows = self._retention_rows_sync(run_id)
-        plan = _plan_retention(rows, retention, self.policy.window)
-        if plan is not None:
-            self._compact_retention_sync(
-                run_id,
-                dropped_rows=plan.dropped_rows,
-                kept_rows=plan.kept_rows,
-                baseline_superstep=plan.baseline_superstep,
-            )
+            rows = self._retention_rows_sync(run_id)
+            plan = _plan_retention(rows, retention, self.policy.window)
+            if plan is not None:
+                self._compact_retention_sync(
+                    run_id,
+                    dropped_rows=plan.dropped_rows,
+                    kept_rows=plan.kept_rows,
+                    baseline_superstep=plan.baseline_superstep,
+                )
 
     def update_run_status_sync(
         self,
@@ -1296,29 +1326,30 @@ class SqliteCheckpointer(Checkpointer):
         error_count: int | None = None,
     ) -> None:
         """Update run status with optional stats synchronously."""
-        db = self._sync_db()
-        completed_at = (
-            datetime.now(timezone.utc).isoformat()
-            if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.PARTIAL, WorkflowStatus.STOPPED}
-            else None
-        )
+        with self._sync_lock:
+            db = self._sync_db()
+            completed_at = (
+                datetime.now(timezone.utc).isoformat()
+                if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.PARTIAL, WorkflowStatus.STOPPED}
+                else None
+            )
 
-        sets = ["status = ?", "completed_at = ?"]
-        params: list[Any] = [status.value, completed_at]
+            sets = ["status = ?", "completed_at = ?"]
+            params: list[Any] = [status.value, completed_at]
 
-        if duration_ms is not None:
-            sets.append("duration_ms = ?")
-            params.append(duration_ms)
-        if node_count is not None:
-            sets.append("node_count = ?")
-            params.append(node_count)
-        if error_count is not None:
-            sets.append("error_count = ?")
-            params.append(error_count)
+            if duration_ms is not None:
+                sets.append("duration_ms = ?")
+                params.append(duration_ms)
+            if node_count is not None:
+                sets.append("node_count = ?")
+                params.append(node_count)
+            if error_count is not None:
+                sets.append("error_count = ?")
+                params.append(error_count)
 
-        params.append(run_id)
-        db.execute(
-            f"UPDATE runs SET {', '.join(sets)} WHERE id = ?",
-            params,
-        )
-        db.commit()
+            params.append(run_id)
+            db.execute(
+                f"UPDATE runs SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
+            db.commit()

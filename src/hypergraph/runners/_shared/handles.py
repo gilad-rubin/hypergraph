@@ -128,6 +128,7 @@ def _launch_async_execution(
     loop: asyncio.AbstractEventLoop,
     operation: Callable[[], Awaitable[_T]],
     reservation: _WorkflowReservation,
+    live_tasks: set[asyncio.Task[Any]],
 ) -> AsyncHandle[_T]:
     """Launch one asynchronous runner operation under its parent stop signal."""
 
@@ -144,4 +145,6 @@ def _launch_async_execution(
         coroutine.close()
         reservation.release()
         raise
+    live_tasks.add(task)
+    task.add_done_callback(live_tasks.discard)
     return AsyncHandle(task, reservation.signal)
