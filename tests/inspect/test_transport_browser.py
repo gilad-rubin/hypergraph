@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import re
 from collections.abc import Iterator
 from dataclasses import replace
@@ -142,6 +143,20 @@ def _frame(page: Page, widget_id: str):
     assert frame is not None
     frame.wait_for_selector("[data-hypergraph-inspect]")
     return frame
+
+
+def _defer_child_ready(shell: str) -> str:
+    match = re.search(r'srcdoc="([^"]*)"', shell)
+    assert match is not None
+    child_document = html.unescape(match.group(1))
+    child_document, replacements = re.subn(
+        r"window\.__hypergraphInspectTransport\.installChild\((\{.*?\})\);",
+        r"window.__deferredHypergraphInspectConfig=\1;",
+        child_document,
+        count=1,
+    )
+    assert replacements == 1
+    return shell[: match.start(1)] + html.escape(child_document, quote=True) + shell[match.end(1) :]
 
 
 def _replace_channel(page: Page, envelope: InspectionEnvelope) -> None:
@@ -409,6 +424,52 @@ def test_parent_accepts_ready_only_from_expected_frame_with_exact_identity(
     page.close()
 
 
+def test_pre_ready_queue_keeps_newest_sequence_when_older_arrives_late(
+    browser: Browser,
+) -> None:
+    initial = _envelope(
+        _run(graph_name="initial"),
+        widget_id="widget-pre-ready-order",
+        nonce="nonce-pre-ready-order",
+        sequence=1,
+    )
+    page = browser.new_page()
+    page.set_content(
+        _defer_child_ready(render_notebook_shell(initial, handshake_timeout_ms=2_000)) + render_payload_channel(initial),
+        wait_until="load",
+    )
+    frame = _frame(page, "widget-pre-ready-order")
+    key = "widget-pre-ready-order::nonce-pre-ready-order"
+    assert page.evaluate("key => window.__hypergraphInspectHosts[key].ready", key) is False
+
+    newest = _envelope(
+        _run(graph_name="newest", status="failed"),
+        widget_id="widget-pre-ready-order",
+        nonce="nonce-pre-ready-order",
+        sequence=3,
+    )
+    late_older = _envelope(
+        _run(graph_name="late-older", status="completed"),
+        widget_id="widget-pre-ready-order",
+        nonce="nonce-pre-ready-order",
+        sequence=2,
+    )
+    _replace_channel(page, newest)
+    _replace_channel(page, late_older)
+
+    frame.evaluate(
+        """() => window.__hypergraphInspectTransport.installChild(
+          window.__deferredHypergraphInspectConfig
+        )"""
+    )
+    frame.get_by_text("newest", exact=True).wait_for(timeout=1_000)
+
+    assert frame.locator("[data-hg-title]").inner_text() == "newest"
+    assert frame.locator("[data-hg-summary]").get_by_text("failed", exact=True).is_visible()
+    assert frame.evaluate("window.__hypergraphInspectBridgeState.lastSequence") == 3
+    page.close()
+
+
 def test_start_failure_keeps_the_exact_bounded_error_visible(browser: Browser) -> None:
     initial = _envelope(
         _run(),
@@ -456,6 +517,57 @@ def test_shell_without_a_payload_channel_never_claims_to_be_live(browser: Browse
         "Live updates are unavailable. Showing the last confirmed snapshot; this view is not live.",
         exact=True,
     ).is_visible()
+    page.close()
+
+
+def test_missing_ready_handshake_marks_live_fallback_stale_without_refresh(
+    browser: Browser,
+) -> None:
+    running = _envelope(
+        _run(status="running"),
+        widget_id="widget-live-stale",
+        nonce="nonce-live-stale",
+        sequence=1,
+    )
+    shell = render_notebook_shell(running, handshake_timeout_ms=200)
+    broken_shell = re.sub(
+        r'srcdoc="[^"]*"',
+        'srcdoc="&lt;!doctype html&gt;&lt;html&gt;&lt;body&gt;no bridge&lt;/body&gt;&lt;/html&gt;"',
+        shell,
+        count=1,
+    )
+    requests: list[str] = []
+    page = browser.new_page()
+    page.on("request", lambda request: requests.append(request.url))
+    page.set_content(broken_shell + render_payload_channel(running), wait_until="load")
+    page.evaluate(
+        """() => {
+          const frame = document.querySelector('[data-hg-inspect-frame="widget-live-stale"]');
+          window.__frameBeforeTimeout = frame;
+          window.__windowBeforeTimeout = frame.contentWindow;
+          window.__srcdocBeforeTimeout = frame.getAttribute('srcdoc');
+        }"""
+    )
+
+    status = page.locator('[data-hg-inspect-host-status="widget-live-stale"]')
+    page.wait_for_function("document.querySelector('[data-hg-inspect-host-status=\"widget-live-stale\"]').dataset.state === 'stale'")
+    fallback = page.locator('[data-hg-inspect-channel-fallback="widget-live-stale"]')
+
+    assert "saved snapshot" in status.inner_text().lower()
+    assert "not live" in status.inner_text().lower()
+    assert fallback.is_visible()
+    assert fallback.locator("strong").inner_text() == "Live inspection unavailable"
+    assert "customer_enrichment is running" in fallback.inner_text()
+    assert "2 captured nodes" in fallback.inner_text()
+    assert page.evaluate(
+        """() => {
+          const frame = document.querySelector('[data-hg-inspect-frame="widget-live-stale"]');
+          return frame === window.__frameBeforeTimeout
+            && frame.contentWindow === window.__windowBeforeTimeout
+            && frame.getAttribute('srcdoc') === window.__srcdocBeforeTimeout;
+        }"""
+    )
+    assert all(url in {"about:blank", "about:srcdoc"} for url in requests)
     page.close()
 
 

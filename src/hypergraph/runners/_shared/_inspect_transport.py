@@ -272,9 +272,9 @@ def render_payload_channel(envelope: InspectionEnvelope) -> str:
         "var envelope=JSON.parse(source.textContent||'{}');"
         "var queues=window.__hypergraphInspectQueues||(window.__hypergraphInspectQueues=Object.create(null));"
         f"var key={key};"
-        "queues[key]={envelope:envelope,channelId:channel.id};"
         "var hosts=window.__hypergraphInspectHosts;"
         "if(hosts&&hosts[key])hosts[key].deliver(envelope,channel.id);"
+        "else queues[key]={envelope:envelope,channelId:channel.id};"
         "})();</script></div>"
     )
 

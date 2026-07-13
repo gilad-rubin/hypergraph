@@ -36,6 +36,21 @@
     channel.setAttribute("data-delivered", "true");
   }
 
+  function markLiveChannelFallbackStale(channelId, envelope) {
+    var delivery = envelope && envelope.payload && envelope.payload.delivery;
+    if (!channelId || !delivery || delivery.state !== "live") return;
+    var channel = global.document.getElementById(channelId);
+    if (!channel) return;
+    var fallback = channel.querySelector("[data-hg-inspect-channel-fallback]");
+    if (!fallback) return;
+    var label = fallback.querySelector("strong");
+    if (label && label.textContent === "Live") {
+      label.textContent = "Live inspection unavailable";
+    }
+    fallback.hidden = false;
+    fallback.setAttribute("data-delivery-state", "stale");
+  }
+
   function installParent(config) {
     var frame = global.document.getElementById(config.frameId);
     var status = global.document.getElementById(config.statusId);
@@ -45,6 +60,7 @@
     var state = {
       ready: false,
       readyCount: 0,
+      handshakeTimedOut: false,
       lastSentSequence: 0,
       deliver: deliver,
     };
@@ -53,8 +69,14 @@
     function deliver(envelope, channelId) {
       if (!exactIdentity(envelope, config) || envelope.type !== UPDATE) return false;
       if (!Number.isInteger(envelope.sequence) || envelope.sequence <= state.lastSentSequence) return false;
+      if (!state.ready || !frame.contentWindow) {
+        var queued = queues[key];
+        if (queued && envelope.sequence <= queued.envelope.sequence) return false;
+        queues[key] = { envelope: envelope, channelId: channelId };
+        if (state.handshakeTimedOut) markLiveChannelFallbackStale(channelId, envelope);
+        return false;
+      }
       queues[key] = { envelope: envelope, channelId: channelId };
-      if (!state.ready || !frame.contentWindow) return false;
 
       // sandbox="allow-scripts" gives srcdoc an opaque origin, so there is no
       // stable target origin. Exact contentWindow source checks plus version,
@@ -95,9 +117,12 @@
     global.addEventListener("message", receive);
     global.setTimeout(function () {
       if (state.ready) return;
+      state.handshakeTimedOut = true;
       status.hidden = false;
       status.setAttribute("data-state", "stale");
       status.textContent = "The interactive inspector did not connect. Showing the latest saved snapshot below; this view is not live.";
+      var queued = queues[key];
+      if (queued) markLiveChannelFallbackStale(queued.channelId, queued.envelope);
     }, config.handshakeTimeoutMs);
   }
 
