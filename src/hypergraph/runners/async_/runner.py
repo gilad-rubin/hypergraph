@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import ExecutionError, InfiniteLoopError, WorkflowAlreadyRunningError
 from hypergraph.nodes.base import HyperNode
@@ -18,7 +18,10 @@ from hypergraph.runners._shared.event_metadata import (
     RunContext,
     RunLineage,
 )
+from hypergraph.runners._shared.handles import AsyncHandle
+from hypergraph.runners._shared.outputs import SELECT_UNSET
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
+from hypergraph.runners._shared.results import RunResult
 from hypergraph.runners._shared.scheduling import (
     ExecutionFrontier,
     compute_execution_scope,
@@ -129,6 +132,71 @@ class AsyncRunner(AsyncRunnerTemplate):
         signal = self._active_signals.get(workflow_id)
         if signal is not None:
             signal.set(info=info)
+
+    def start_run(
+        self,
+        graph: Graph,
+        values: dict[str, Any] | None = None,
+        *,
+        select: str | list[str] = SELECT_UNSET,
+        on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        entrypoint: str | None = None,
+        max_iterations: int | None = None,
+        max_concurrency: int | None = None,
+        event_processors: list[EventProcessor] | None = None,
+        show_progress: bool | None = None,
+        checkpoint: Checkpoint | None = None,
+        workflow_id: str | None = None,
+        **input_values: Any,
+    ) -> AsyncHandle[RunResult]:
+        """Start one graph execution in the background.
+
+        Args:
+            graph: The graph to execute.
+            values: Optional graph inputs as a dictionary.
+            select: Which outputs to return.
+            on_missing: How to handle missing selected outputs.
+            entrypoint: Optional explicit cycle entrypoint.
+            max_iterations: Maximum iterations for cyclic graphs.
+            max_concurrency: Maximum number of nodes executing concurrently.
+            event_processors: Optional processors for execution events.
+            show_progress: Override runner-level progress display.
+            checkpoint: Optional checkpoint from which to resume.
+            workflow_id: Optional workflow identifier.
+            **input_values: Graph input shorthand.
+
+        Returns:
+            A process-local handle for the live execution.
+
+        Raises:
+            RuntimeError: If called without a running event loop.
+        """
+        loop = asyncio.get_running_loop()
+        signal = StopSignal()
+
+        async def _execute() -> RunResult:
+            signal_token = set_stop_signal(signal)
+            try:
+                return await self.run(
+                    graph,
+                    values,
+                    select=select,
+                    on_missing=on_missing,
+                    entrypoint=entrypoint,
+                    max_iterations=max_iterations,
+                    max_concurrency=max_concurrency,
+                    error_handling="continue",
+                    event_processors=event_processors,
+                    show_progress=show_progress,
+                    checkpoint=checkpoint,
+                    workflow_id=workflow_id,
+                    **input_values,
+                )
+            finally:
+                reset_stop_signal(signal_token)
+
+        task = loop.create_task(_execute())
+        return AsyncHandle(task, signal)
 
     @property
     def _checkpointer(self) -> Checkpointer | None:

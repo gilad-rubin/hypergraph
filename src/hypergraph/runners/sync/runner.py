@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import threading
+from concurrent.futures import Future
+from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import ExecutionError, InfiniteLoopError, WorkflowAlreadyRunningError
 from hypergraph.nodes.base import HyperNode
@@ -16,7 +18,10 @@ from hypergraph.runners._shared.event_metadata import (
     RunContext,
     RunLineage,
 )
+from hypergraph.runners._shared.handles import SyncHandle
+from hypergraph.runners._shared.outputs import SELECT_UNSET
 from hypergraph.runners._shared.protocols import NodeExecutor
+from hypergraph.runners._shared.results import RunResult
 from hypergraph.runners._shared.scheduling import ExecutionFrontier, compute_execution_scope
 from hypergraph.runners._shared.state import ExecutionContext, GraphState, RunnerCapabilities
 from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id, initialize_state
@@ -106,6 +111,72 @@ class SyncRunner(SyncRunnerTemplate):
         signal = self._active_signals.get(workflow_id)
         if signal is not None:
             signal.set(info=info)
+
+    def start_run(
+        self,
+        graph: Graph,
+        values: dict[str, Any] | None = None,
+        *,
+        select: str | list[str] = SELECT_UNSET,
+        on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        entrypoint: str | None = None,
+        max_iterations: int | None = None,
+        event_processors: list[EventProcessor] | None = None,
+        show_progress: bool | None = None,
+        checkpoint: Checkpoint | None = None,
+        workflow_id: str | None = None,
+        **input_values: Any,
+    ) -> SyncHandle[RunResult]:
+        """Start one graph execution in the background.
+
+        Args:
+            graph: The graph to execute.
+            values: Optional graph inputs as a dictionary.
+            select: Which outputs to return.
+            on_missing: How to handle missing selected outputs.
+            entrypoint: Optional explicit cycle entrypoint.
+            max_iterations: Maximum iterations for cyclic graphs.
+            event_processors: Optional processors for execution events.
+            show_progress: Override runner-level progress display.
+            checkpoint: Optional checkpoint from which to resume.
+            workflow_id: Optional workflow identifier.
+            **input_values: Graph input shorthand.
+
+        Returns:
+            A process-local handle for the live execution.
+        """
+        future: Future[RunResult] = Future()
+        signal = StopSignal()
+
+        def _execute() -> None:
+            try:
+                signal_token = set_stop_signal(signal)
+                try:
+                    result = self.run(
+                        graph,
+                        values,
+                        select=select,
+                        on_missing=on_missing,
+                        entrypoint=entrypoint,
+                        max_iterations=max_iterations,
+                        error_handling="continue",
+                        event_processors=event_processors,
+                        show_progress=show_progress,
+                        checkpoint=checkpoint,
+                        workflow_id=workflow_id,
+                        **input_values,
+                    )
+                finally:
+                    reset_stop_signal(signal_token)
+            except BaseException as error:
+                future.set_exception(error)
+            else:
+                future.set_result(result)
+
+        thread = threading.Thread(target=_execute, daemon=True)
+        handle = SyncHandle(future, signal, thread)
+        thread.start()
+        return handle
 
     @property
     def _checkpointer(self) -> Checkpointer | None:
