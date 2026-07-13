@@ -356,8 +356,10 @@ satisfies all of:
    readiness medians are each at most **110%** of the matched current-iframe
    baseline. This relative margin absorbs ordinary headless-host variation
    while rejecting a material transport regression.
-3. All ten compatibility rows pass, including a visible script-free graph in
-   unsigned JupyterLab and JS-disabled output.
+3. All applicable compatibility rows pass, including a visible script-free
+   graph in unsigned JupyterLab and JS-disabled output. VS Code Restricted Mode
+   remains the documented host-policy exception because it suppresses all rich
+   notebook output.
 4. `visualize()` and `filepath=` remain compatible; saved reopen needs no
    kernel, network, manual widget-state action, or Hypergraph server.
 
@@ -375,9 +377,9 @@ Split the answer at the real ownership boundary.
 
 The graph-output implementation lives in
 [Compress saved notebook graph output and add truthful static topology](https://github.com/gilad-rubin/hypergraph/issues/224).
-Do not enlarge #213's already broad render-path cleanup; the work necessarily
-overlaps `src/hypergraph/viz/widget.py`, so #224 is an explicit dependency of
-#213.
+Do not enlarge issue `#213`'s already broad render-path cleanup; the work
+necessarily overlaps `src/hypergraph/viz/widget.py`, so `#224` is an explicit
+dependency of issue `#213`.
 
 1. Keep the trusted `graph.visualize()` experience as a self-contained
    sandboxed iframe. No widget MIME or anywidget dependency.
@@ -414,9 +416,9 @@ preferred seam; anywidget is not required by the measured design:
 2. Initialize one immutable live shell and a versioned, nonce-bound update
    channel. Later updates carry serialized semantic inspect-artifact state
    only, never renderer/vendor assets, graph HTML, or another document shell.
-3. Coalesce latest-state updates to at most 4-5 Hz. Terminal and error updates
-   bypass throttling. Reject wrong widget IDs, versions, nonces, sources, and
-   non-monotonic sequences.
+3. Coalesce latest-state updates to at most **4 Hz** (one send per 250 ms).
+   Terminal and error updates bypass throttling. Reject wrong widget IDs,
+   versions, nonces, sources, and non-monotonic sequences.
 4. Preserve iframe identity plus user selection, expansion, zoom, scroll, and
    table-page state across ordinary updates.
 5. Persist the terminal view so it reopens with no kernel, network, manual
@@ -437,9 +439,7 @@ postMessage direction, including the VS Code witness above.
 ## Reproduction summary
 
 Temporary notebooks, exports, Jupyter state, and browser files lived under the
-OS temporary directory and were deleted. Core commands are listed first below;
-the last two historical probe invocations reference temporary scripts that were
-deleted after evidence capture:
+OS temporary directory and were deleted. These core commands remain runnable:
 
 ```console
 git rev-parse HEAD
@@ -449,6 +449,13 @@ find src/hypergraph/viz/assets -maxdepth 1 -type f -name '*.js' -print0 | xargs 
 uv run pytest tests/viz/test_payload_size.py tests/viz/test_compatibility_matrix.py \
   -W error -W 'ignore::pytest.PytestUnraisableExceptionWarning' -q
 UV_CACHE_DIR=/private/tmp/uv-cache uvx --from 'notebook==7.5.1' jupyter lab --version
+```
+
+The compression and Jupyter candidate probes used these historical-only
+invocations. Their temporary scripts were deleted after evidence capture, so
+these are provenance rather than runnable reproduction steps:
+
+```console
 PYTHONPATH=.:/private/tmp uv run --with zopfli --with rjsmin \
   --with csscompressor python /private/tmp/hg92_base64_probe.py
 PYTHONPATH=. uv run python /private/tmp/hg92_jupyter_probe.py
