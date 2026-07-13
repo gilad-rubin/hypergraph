@@ -251,7 +251,11 @@ def render_map_result_repr(result: MapResult) -> str:
         completed_ms = sum(item.log.total_duration_ms for item in timed_completed_items if item.log is not None)
         avg = completed_ms / len(timed_completed_items)
         avg_part = f", avg {format_duration_ms(avg)}/item"
-    return f"MapResult({plural(n, 'item')}: {status}{checkpoint_part}{avg_part}, map_over={result.map_over!r})"
+    if result.unstarted_item_indexes:
+        scope = f"{n} of {plural(result.requested_count, 'item')} settled, {plural(len(result.unstarted_item_indexes), 'unstarted item')}"
+    else:
+        scope = plural(n, "item")
+    return f"MapResult({scope}: {status}{checkpoint_part}{avg_part}, map_over={result.map_over!r})"
 
 
 def render_map_result_pretty(result: MapResult, pretty_printer: Any, cycle: bool) -> None:
@@ -270,10 +274,20 @@ def render_map_result_html(result: MapResult) -> str:
     n_completed = sum(1 for item in result.results if item.status == RunStatus.COMPLETED)
     n_failed = sum(1 for item in result.results if item.status == RunStatus.FAILED)
     n_restored = result.restored_count
-    kvs = [
-        html_kv("Items", str(n)),
-        html_kv("Status", status_badge(result.status.value)),
-    ]
+    if result.unstarted_item_indexes:
+        kvs = [
+            html_kv("Settled", str(n)),
+            html_kv("Requested", str(result.requested_count)),
+            html_kv("Unstarted", str(len(result.unstarted_item_indexes))),
+            html_kv("Status", status_badge(result.status.value)),
+        ]
+        scope = f"{n} of {plural(result.requested_count, 'item')} settled, {plural(len(result.unstarted_item_indexes), 'unstarted item')}"
+    else:
+        kvs = [
+            html_kv("Items", str(n)),
+            html_kv("Status", status_badge(result.status.value)),
+        ]
+        scope = plural(n, "item")
     if n_completed:
         kvs.append(html_kv("Completed", str(n_completed)))
     if n_failed:
@@ -294,18 +308,26 @@ def render_map_result_html(result: MapResult) -> str:
         avg = completed_ms / len(timed_completed_items)
         kvs.append(html_kv("Avg/item", duration_html(avg)))
     body = " &nbsp;|&nbsp; ".join(kvs)
+    unstarted_indexes = set(result.unstarted_item_indexes)
+    item_indexes = tuple(index for index in range(result.requested_count) if index not in unstarted_indexes)
     items_html = _map_items_drilldown(
         result.results,
         scope_key=widget_state_key("map-result-items", result.run_id or "", result.graph_name, n),
+        item_indexes=item_indexes,
     )
     body += html_detail(f"Per-item breakdown ({plural(n, 'item')})", items_html, state_key="per-item-breakdown")
     return theme_wrap(
-        html_panel(f"MapResult: {result.graph_name} ({plural(n, 'item')})", body),
+        html_panel(f"MapResult: {result.graph_name} ({scope})", body),
         state_key=widget_state_key("map-result", result.run_id or "", result.graph_name, n),
     )
 
 
-def _map_items_drilldown(results: tuple[RunResult, ...], *, scope_key: str = "map-items") -> str:
+def _map_items_drilldown(
+    results: tuple[RunResult, ...],
+    *,
+    scope_key: str = "map-items",
+    item_indexes: tuple[int, ...] | None = None,
+) -> str:
     """Render nested drill-down for MapResult items."""
     total = len(results)
     status_counts: dict[str, int] = {"all": total}
@@ -326,12 +348,13 @@ def _map_items_drilldown(results: tuple[RunResult, ...], *, scope_key: str = "ma
 
     parts: list[str] = []
     for i, result in enumerate(results):
+        item_index = item_indexes[i] if item_indexes is not None else i
         display_status = "restored" if result.restored else result.status.value
         filter_status = f"{result.status.value} restored" if result.restored else result.status.value
         duration = duration_html(result.log.total_duration_ms) if result.log and not result.restored else "—"
         error_label = f' — <span style="color:{ERROR_COLOR}">{type(result.error).__name__}</span>' if result.error else ""
-        summary = f"Item {i}: {status_badge(display_status)} {duration}{error_label}"
-        item_html = html_detail(summary, result._repr_html_(), state_key=f"item-{i}")
+        summary = f"Item {item_index}: {status_badge(display_status)} {duration}{error_label}"
+        item_html = html_detail(summary, result._repr_html_(), state_key=f"item-{item_index}")
         parts.append(f'<div data-hg-map-item="1" data-status="{filter_status}" style="display:block">{item_html}</div>')
 
     controls = html_filter_paginate_controls(

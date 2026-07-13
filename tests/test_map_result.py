@@ -370,6 +370,103 @@ class TestMapResultAggregateStatus:
         assert mr.failures == []
 
 
+class TestMapResultRequestedScope:
+    def test_full_batch_defaults_to_no_unstarted_items(self):
+        mapped = _make_map_result([_make_result(), _make_result()])
+
+        assert mapped.requested_count == 2
+        assert mapped.unstarted_item_indexes == ()
+        assert mapped.to_dict()["requested_count"] == 2
+        assert mapped.to_dict()["unstarted_item_indexes"] == []
+
+    def test_curtailed_scope_is_stopped_without_hiding_real_failures(self):
+        failure = _make_result(status=RunStatus.FAILED, error=ValueError("real failure"))
+        stopped = _make_result(status=RunStatus.STOPPED)
+        mapped = _make_map_result(
+            [failure, stopped],
+            unstarted_item_indexes=(2, 3, 4),
+        )
+
+        assert len(mapped) == 2
+        assert mapped.requested_count == 5
+        assert mapped.unstarted_item_indexes == (2, 3, 4)
+        assert mapped.status == RunStatus.STOPPED
+        assert mapped.stopped is True
+        assert mapped.failed is True
+        assert mapped.partial is False
+        assert mapped.failures == [failure]
+
+    def test_stop_does_not_dominate_when_requested_scope_was_not_curtailed(self):
+        failure = _make_result(status=RunStatus.FAILED, error=ValueError("real failure"))
+        stopped = _make_result(status=RunStatus.STOPPED)
+        mapped = _make_map_result([failure, stopped])
+
+        assert mapped.unstarted_item_indexes == ()
+        assert mapped.status == RunStatus.FAILED
+        assert mapped.stopped is False
+        assert mapped.failed is True
+
+    @pytest.mark.parametrize(
+        "unstarted_item_indexes",
+        [
+            (-1,),
+            (2, 1),
+            (1, 1),
+            (2,),
+        ],
+    )
+    def test_invalid_unstarted_indexes_are_rejected(self, unstarted_item_indexes):
+        with pytest.raises(ValueError, match="unstarted_item_indexes"):
+            _make_map_result(
+                [_make_result()],
+                unstarted_item_indexes=unstarted_item_indexes,
+            )
+
+    def test_sparse_scope_is_visible_without_fabricating_item_rows(self):
+        mapped = _make_map_result(
+            [_make_result(), _make_result()],
+            unstarted_item_indexes=(2, 3, 4),
+        )
+
+        serialized = mapped.to_dict()
+        assert serialized["item_count"] == 2
+        assert serialized["requested_count"] == 5
+        assert serialized["unstarted_item_indexes"] == [2, 3, 4]
+        assert len(serialized["items"]) == 2
+        assert "2 of 5 items" in mapped.summary().lower()
+        assert "3 unstarted" in mapped.summary().lower()
+        assert "2 of 5 items" in repr(mapped).lower()
+        assert "3 unstarted" in repr(mapped).lower()
+        html = mapped._repr_html_() or ""
+        assert "Requested" in html
+        assert "Unstarted" in html
+        assert "5" in html
+        assert "3" in html
+
+    def test_equality_preserves_existing_real_result_sequence_semantics(self):
+        real_results = [_make_result(), _make_result()]
+        full = _make_map_result(real_results)
+        curtailed = _make_map_result(
+            real_results,
+            unstarted_item_indexes=(2, 3),
+        )
+
+        assert full.requested_count != curtailed.requested_count
+        assert full == curtailed
+
+    def test_sparse_html_labels_real_rows_with_original_input_indexes(self):
+        mapped = _make_map_result(
+            [_make_result(), _make_result()],
+            unstarted_item_indexes=(0, 2),
+        )
+
+        html = mapped._repr_html_() or ""
+        assert "Item 1:" in html
+        assert "Item 3:" in html
+        assert "Item 0:" not in html
+        assert "Item 2:" not in html
+
+
 class TestMapResultCheckpointEvidence:
     def test_empty_and_healthy_maps_have_clean_checkpoint_evidence(self):
         empty = _make_map_result([])

@@ -341,6 +341,17 @@ class MapResult:
     map_over: tuple[str, ...]
     map_mode: str  # "zip" | "product"
     graph_name: str
+    unstarted_item_indexes: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Normalize and validate indexes for inputs curtailed before start."""
+        indexes = tuple(self.unstarted_item_indexes)
+        object.__setattr__(self, "unstarted_item_indexes", indexes)
+        requested_count = len(self.results) + len(indexes)
+        if any(index < 0 or index >= requested_count for index in indexes) or any(
+            left >= right for left, right in zip(indexes, indexes[1:], strict=False)
+        ):
+            raise ValueError("unstarted_item_indexes must be sorted, unique, non-negative, and within the requested map scope")
 
     # --- Sequence protocol (read-only backward compat) ---
 
@@ -378,28 +389,36 @@ class MapResult:
     # --- Aggregate properties ---
 
     @property
+    def requested_count(self) -> int:
+        """Number of requested inputs, including those never started."""
+        return len(self.results) + len(self.unstarted_item_indexes)
+
+    @property
     def status(self) -> RunStatus:
         """Batch-level aggregate status.
 
         PARTIAL when some items completed and some failed — the common case
         for large batches where a few items hit transient errors.
         FAILED when at least one item failed and none completed. Empty → COMPLETED.
+        STOPPED when cooperative stop leaves requested inputs unstarted.
         """
+        if self.unstarted_item_indexes:
+            return RunStatus.STOPPED
         return aggregate_run_status(self.results)
 
     @property
     def completed(self) -> bool:
-        """True if all items completed (or empty)."""
+        """Whether the batch aggregate completed (including an empty map)."""
         return self.status == RunStatus.COMPLETED
 
     @property
     def paused(self) -> bool:
-        """True if any item is paused (and none failed)."""
+        """Whether the batch aggregate paused."""
         return self.status == RunStatus.PAUSED
 
     @property
     def stopped(self) -> bool:
-        """True if any item stopped (and none failed or paused)."""
+        """Whether the batch aggregate stopped."""
         return self.status == RunStatus.STOPPED
 
     @property
@@ -472,7 +491,13 @@ class MapResult:
         n_paused = sum(1 for r in self.results if r.status == RunStatus.PAUSED)
         n_stopped = sum(1 for r in self.results if r.status == RunStatus.STOPPED)
         n_restored = self.restored_count
-        parts = [plural(n, "item")]
+        if self.unstarted_item_indexes:
+            parts = [
+                f"{n} of {plural(self.requested_count, 'item')} settled",
+                plural(len(self.unstarted_item_indexes), "unstarted item"),
+            ]
+        else:
+            parts = [plural(n, "item")]
         status_parts = []
         if n_completed:
             status_parts.append(f"{n_completed} completed")
@@ -509,6 +534,8 @@ class MapResult:
             "checkpoint_ok": self.checkpoint_ok,
             "checkpoint_errors": list(self.checkpoint_errors),
             "item_count": len(self.results),
+            "requested_count": self.requested_count,
+            "unstarted_item_indexes": list(self.unstarted_item_indexes),
             "completed_count": n_completed,
             "restored_count": self.restored_count,
             "failed_count": n_failed,
