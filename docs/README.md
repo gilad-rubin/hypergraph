@@ -92,6 +92,7 @@ understand planned work.
 | `adr/` | Canonical durable decisions; later ADRs supersede earlier decisions explicitly |
 | `changelog.md` | Historical record of shipped change sets |
 | `prd/` and `07-design/roadmap.md` | Intent and planning, not evidence of current behavior |
+| `research/` | Dated investigations and decision evidence; intent, not evidence of shipped behavior |
 
 For background execution specifically, the
 [task guide](05-how-to/control-background-execution.md),
