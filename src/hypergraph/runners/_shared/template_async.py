@@ -65,7 +65,12 @@ from hypergraph.runners._shared.state_restore import (
     initialize_state,
     validate_workflow_id,
 )
-from hypergraph.runners._shared.stop import get_stop_signal
+from hypergraph.runners._shared.stop import (
+    _WorkflowReservation,
+    get_stop_signal,
+    reset_stop_signal,
+    set_stop_signal,
+)
 from hypergraph.runners._shared.validation import (
     precompute_input_validation,
     resolve_runtime_selected,
@@ -234,6 +239,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         _complete_on_stop: bool = False,
         _item_index: int | None = None,
         _checkpoint_error_sink: CheckpointErrorSink | None = None,
+        _reservation: _WorkflowReservation | None = None,
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
@@ -366,42 +372,57 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             # them into nested GraphNode sub-runs, exactly like call-site
             # processors.
             event_processors = [*graph.default_event_processors, *(event_processors or [])]
-        collector = RunLogCollector()
-        all_processors = [collector] + (event_processors or [])
-        dispatcher = self._create_dispatcher(all_processors)
-        run_id, run_span_id = await self._emit_run_start_async(
-            dispatcher,
-            graph,
-            _parent_span_id,
-            context=run_context,
-            lineage=run_lineage,
-        )
-        start_time = time.time()
-
-        # Checkpointer lifecycle — upsert run record
-        if has_checkpointer:
-            run_config = {
-                "graph_struct_hash": graph.structural_hash,
-                "graph_code_hash": graph.code_hash,
-            }
-            if _run_config:
-                run_config.update(_run_config)
-            await checkpointer.create_run(
-                workflow_id,
-                graph_name=graph.name,
-                parent_run_id=_parent_run_id,
-                forked_from=run_lineage.forked_from,
-                fork_superstep=run_lineage.fork_superstep,
-                retry_of=run_lineage.retry_of,
-                retry_index=run_lineage.retry_index,
-                config=run_config,
+        reservation = _reservation or self._active_workflows.reserve(workflow_id)
+        dispatcher = None
+        signal_token = None
+        try:
+            reservation.bind(workflow_id)
+            signal_token = set_stop_signal(reservation.signal)
+            collector = RunLogCollector()
+            all_processors = [collector] + (event_processors or [])
+            dispatcher = self._create_dispatcher(all_processors)
+            run_id, run_span_id = await self._emit_run_start_async(
+                dispatcher,
+                graph,
+                _parent_span_id,
+                context=run_context,
+                lineage=run_lineage,
             )
+            start_time = time.time()
 
-        # Step buffer for "exit" durability — records are flushed after run completes
-        step_buffer: list[Any] = []
-        # Sink for background step-save failures ("async" durability) —
-        # surfaced as result.checkpoint_ok / result.checkpoint_errors.
-        checkpoint_save_errors: list[str] = []
+            # Checkpointer lifecycle — upsert run record
+            if has_checkpointer:
+                run_config = {
+                    "graph_struct_hash": graph.structural_hash,
+                    "graph_code_hash": graph.code_hash,
+                }
+                if _run_config:
+                    run_config.update(_run_config)
+                await checkpointer.create_run(
+                    workflow_id,
+                    graph_name=graph.name,
+                    parent_run_id=_parent_run_id,
+                    forked_from=run_lineage.forked_from,
+                    fork_superstep=run_lineage.fork_superstep,
+                    retry_of=run_lineage.retry_of,
+                    retry_index=run_lineage.retry_index,
+                    config=run_config,
+                )
+
+            # Step buffer for "exit" durability — records are flushed after run completes
+            step_buffer: list[Any] = []
+            # Sink for background step-save failures ("async" durability) —
+            # surfaced as result.checkpoint_ok / result.checkpoint_errors.
+            checkpoint_save_errors: list[str] = []
+        except BaseException:
+            try:
+                if dispatcher is not None and _parent_span_id is None and dispatcher.active:
+                    await self._shutdown_dispatcher_async(dispatcher)
+            finally:
+                if signal_token is not None:
+                    reset_stop_signal(signal_token)
+                reservation.release()
+            raise
 
         try:
             state = await self._execute_graph_impl_async(
@@ -594,11 +615,15 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 checkpoint_errors=checkpoint_save_errors,
             )
         finally:
-            if _checkpoint_error_sink is not None:
-                for checkpoint_error in checkpoint_save_errors:
-                    _checkpoint_error_sink(checkpoint_error)
-            if _parent_span_id is None and dispatcher.active:
-                await self._shutdown_dispatcher_async(dispatcher)
+            try:
+                if _checkpoint_error_sink is not None:
+                    for checkpoint_error in checkpoint_save_errors:
+                        _checkpoint_error_sink(checkpoint_error)
+                if _parent_span_id is None and dispatcher.active:
+                    await self._shutdown_dispatcher_async(dispatcher)
+            finally:
+                reset_stop_signal(signal_token)
+                reservation.release()
 
     async def map(
         self,
@@ -620,6 +645,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         _parent_run_id: str | None = None,
         _item_index: int | None = None,
         _checkpoint_error_sink: CheckpointErrorSink | None = None,
+        _reservation: _WorkflowReservation | None = None,
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
@@ -675,43 +701,62 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             )
         item_checkpoint_errors: list[list[str]] = [[] for _ in input_variations]
 
-        # Graph-carried processors merge into the top-level map dispatcher only;
-        # the per-item self.run(...) calls below re-merge them per item, so
-        # forwarding the merged list would double-deliver every item event.
-        dispatcher = self._create_dispatcher([*graph.default_event_processors, *(event_processors or [])])
-        map_run_id, map_span_id = await self._emit_run_start_async(
-            dispatcher,
-            graph,
-            _parent_span_id,
-            context=RunContext(workflow_id=workflow_id, item_index=_item_index),
-            is_map=True,
-            map_size=len(input_variations),
-            lineage=RunLineage(parent_workflow_id=_parent_run_id),
-        )
-        start_time = time.time()
+        reservation = _reservation or self._active_workflows.reserve(workflow_id)
+        dispatcher = None
+        signal_token = None
+        token = None
+        try:
+            reservation.bind(workflow_id)
+            signal_token = set_stop_signal(reservation.signal)
 
-        # Create parent batch run if checkpointing
-        checkpointer = self._checkpointer
-        has_checkpointer = checkpointer is not None and workflow_id is not None
-        if has_checkpointer:
-            await checkpointer.create_run(
-                workflow_id,
-                graph_name=graph.name,
-                parent_run_id=_parent_run_id,
-                config={
-                    "graph_struct_hash": graph.structural_hash,
-                    "graph_code_hash": graph.code_hash,
-                },
+            # Graph-carried processors merge into the top-level map dispatcher only;
+            # the per-item self.run(...) calls below re-merge them per item, so
+            # forwarding the merged list would double-deliver every item event.
+            dispatcher = self._create_dispatcher([*graph.default_event_processors, *(event_processors or [])])
+            map_run_id, map_span_id = await self._emit_run_start_async(
+                dispatcher,
+                graph,
+                _parent_span_id,
+                context=RunContext(workflow_id=workflow_id, item_index=_item_index),
+                is_map=True,
+                map_size=len(input_variations),
+                lineage=RunLineage(parent_workflow_id=_parent_run_id),
             )
+            start_time = time.time()
 
-        # Resume: find completed child runs to skip by stable input signature.
-        completed_runs = await _get_completed_child_runs(checkpointer, workflow_id)
-        completed_by_signature, completed_by_index = index_completed_child_runs(completed_runs, workflow_id)
+            # Create parent batch run if checkpointing
+            checkpointer = self._checkpointer
+            has_checkpointer = checkpointer is not None and workflow_id is not None
+            if has_checkpointer:
+                await checkpointer.create_run(
+                    workflow_id,
+                    graph_name=graph.name,
+                    parent_run_id=_parent_run_id,
+                    config={
+                        "graph_struct_hash": graph.structural_hash,
+                        "graph_code_hash": graph.code_hash,
+                    },
+                )
 
-        existing_limiter = self._get_concurrency_limiter()
-        token = self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
-        map_stop_signal = get_stop_signal()
-        claimed_indexes: set[int] = set()
+            # Resume: find completed child runs to skip by stable input signature.
+            completed_runs = await _get_completed_child_runs(checkpointer, workflow_id)
+            completed_by_signature, completed_by_index = index_completed_child_runs(completed_runs, workflow_id)
+
+            existing_limiter = self._get_concurrency_limiter()
+            token = self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
+            map_stop_signal = get_stop_signal()
+            claimed_indexes: set[int] = set()
+        except BaseException:
+            try:
+                if token is not None:
+                    self._reset_concurrency_limiter(token)
+                if dispatcher is not None and _parent_span_id is None and dispatcher.active:
+                    await self._shutdown_dispatcher_async(dispatcher)
+            finally:
+                if signal_token is not None:
+                    reset_stop_signal(signal_token)
+                reservation.release()
+            raise
 
         async def _run_map_item(idx: int, variation_inputs: dict[str, Any]) -> RunResult:
             """Execute one map variation, or restore from checkpoint if completed."""
@@ -901,14 +946,18 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 )
             raise
         finally:
-            if _checkpoint_error_sink is not None:
-                for checkpoint_errors in item_checkpoint_errors:
-                    for checkpoint_error in checkpoint_errors:
-                        _checkpoint_error_sink(checkpoint_error)
-            if token is not None:
-                self._reset_concurrency_limiter(token)
-            if _parent_span_id is None and dispatcher.active:
-                await self._shutdown_dispatcher_async(dispatcher)
+            try:
+                if _checkpoint_error_sink is not None:
+                    for checkpoint_errors in item_checkpoint_errors:
+                        for checkpoint_error in checkpoint_errors:
+                            _checkpoint_error_sink(checkpoint_error)
+                if token is not None:
+                    self._reset_concurrency_limiter(token)
+                if _parent_span_id is None and dispatcher.active:
+                    await self._shutdown_dispatcher_async(dispatcher)
+            finally:
+                reset_stop_signal(signal_token)
+                reservation.release()
 
     async def map_iter(
         self,

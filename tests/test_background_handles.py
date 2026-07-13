@@ -19,6 +19,7 @@ from hypergraph import (
     RunStatus,
     StopRequestedEvent,
     SyncRunner,
+    WorkflowAlreadyRunningError,
     get_failure_evidence,
     node,
 )
@@ -610,3 +611,286 @@ async def test_stopped_background_map_aligns_events_sqlite_and_otel(tmp_path) ->
     finally:
         await checkpointer.close()
         span_processor.shutdown()
+
+
+@pytest.mark.parametrize("first_source", ["handle", "runner"])
+def test_handle_and_runner_stop_share_one_first_request(first_source: str) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    recorder = _RecordingProcessor()
+    first_info = {"reason": "handle requested stop first"}
+
+    @node(output_name="processed")
+    def process_item(item: int) -> int:
+        entered.set()
+        if not release.wait(timeout=5):
+            raise AssertionError("stopped run did not release its claimed node")
+        return item * 10
+
+    runner = SyncRunner()
+    handle = runner.start_run(
+        Graph([process_item]),
+        item=1,
+        workflow_id="shared-stop-signal",
+        event_processors=[recorder],
+    )
+
+    try:
+        assert entered.wait(timeout=5), "background node never started"
+        replacement_info = {"reason": "must not replace first metadata"}
+        if first_source == "handle":
+            handle.stop(info=first_info)
+            runner.stop("shared-stop-signal", info=replacement_info)
+        else:
+            runner.stop("shared-stop-signal", info=first_info)
+            handle.stop(info=replacement_info)
+    finally:
+        release.set()
+
+    result = handle.result(raise_on_failure=False)
+    stop_events = [event for event in recorder.events if isinstance(event, StopRequestedEvent) and event.run_id == result.run_id]
+
+    assert result.status is RunStatus.STOPPED
+    assert len(stop_events) == 1
+    assert stop_events[0].info is first_info
+
+
+async def test_runner_stop_targets_background_map_parent_reservation() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    recorder = _RecordingProcessor()
+    first_info = {"reason": "runner stopped the parent map"}
+
+    @node(output_name="processed")
+    async def process_item(item: int) -> int:
+        entered.set()
+        await release.wait()
+        return item * 10
+
+    runner = AsyncRunner()
+    handle = runner.start_map(
+        Graph([process_item]),
+        {"item": [1]},
+        map_over="item",
+        workflow_id="background-map-parent",
+        event_processors=[recorder],
+    )
+
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        runner.stop("background-map-parent", info=first_info)
+        handle.stop(info={"reason": "must not replace runner metadata"})
+    finally:
+        release.set()
+
+    batch = await asyncio.wait_for(handle.result(raise_on_failure=False), timeout=5)
+    parent_stop_events = [event for event in recorder.events if isinstance(event, StopRequestedEvent) and event.run_id == batch.run_id]
+
+    assert batch.status is RunStatus.STOPPED
+    assert len(parent_stop_events) == 1
+    assert parent_stop_events[0].info is first_info
+
+
+def test_sync_workflow_reservation_is_atomic_before_handle_return() -> None:
+    contender_count = 32
+    barrier = threading.Barrier(contender_count + 1)
+    release = threading.Event()
+    result_lock = threading.Lock()
+    body_lock = threading.Lock()
+    handles = []
+    direct_errors: list[BaseException] = []
+    body_entries = 0
+
+    @node(output_name="processed")
+    def process_item(item: int) -> int:
+        nonlocal body_entries
+        with body_lock:
+            body_entries += 1
+        if not release.wait(timeout=5):
+            raise AssertionError("reservation hammer did not release its winner")
+        return item * 10
+
+    runner = SyncRunner()
+    graph = Graph([process_item])
+
+    def contend() -> None:
+        barrier.wait(timeout=5)
+        try:
+            handle = runner.start_run(
+                graph,
+                item=1,
+                workflow_id="job-42",
+            )
+        except BaseException as error:
+            with result_lock:
+                direct_errors.append(error)
+        else:
+            with result_lock:
+                handles.append(handle)
+
+    contenders = [threading.Thread(target=contend) for _ in range(contender_count)]
+    for contender in contenders:
+        contender.start()
+    barrier.wait(timeout=5)
+    for contender in contenders:
+        contender.join(timeout=5)
+        assert not contender.is_alive(), "a reservation contender thread leaked"
+
+    release.set()
+    settled_errors: list[BaseException] = []
+    for handle in handles:
+        try:
+            handle.result(raise_on_failure=False)
+        except BaseException as error:
+            settled_errors.append(error)
+
+    assert len(handles) == 1
+    assert len(direct_errors) == contender_count - 1
+    assert all(isinstance(error, WorkflowAlreadyRunningError) for error in direct_errors)
+    assert settled_errors == []
+    assert body_entries == 1
+
+
+async def test_async_workflow_reservation_precedes_task_execution() -> None:
+    release = asyncio.Event()
+    handles = []
+    direct_errors: list[BaseException] = []
+    body_entries = 0
+
+    @node(output_name="processed")
+    async def process_item(item: int) -> int:
+        nonlocal body_entries
+        body_entries += 1
+        await release.wait()
+        return item * 10
+
+    runner = AsyncRunner()
+    graph = Graph([process_item])
+
+    for _ in range(32):
+        try:
+            handles.append(
+                runner.start_run(
+                    graph,
+                    item=1,
+                    workflow_id="job-42",
+                )
+            )
+        except BaseException as error:
+            direct_errors.append(error)
+
+    release.set()
+    settled_errors: list[BaseException] = []
+    for handle in handles:
+        try:
+            await asyncio.wait_for(
+                handle.result(raise_on_failure=False),
+                timeout=5,
+            )
+        except BaseException as error:
+            settled_errors.append(error)
+
+    assert len(handles) == 1
+    assert len(direct_errors) == 31
+    assert all(isinstance(error, WorkflowAlreadyRunningError) for error in direct_errors)
+    assert settled_errors == []
+    assert body_entries == 1
+
+
+def test_background_map_reserves_parent_id_against_blocking_run() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    rejected_events = _RecordingProcessor()
+
+    @node(output_name="processed")
+    def process_item(item: int) -> int:
+        if item == 0:
+            entered.set()
+            if not release.wait(timeout=5):
+                raise AssertionError("active background map did not release")
+        return item * 10
+
+    runner = SyncRunner()
+    graph = Graph([process_item])
+    active = runner.start_map(
+        graph,
+        {"item": [0]},
+        map_over="item",
+        workflow_id="mixed-workflow",
+    )
+
+    try:
+        assert entered.wait(timeout=5), "background map item never started"
+        with pytest.raises(WorkflowAlreadyRunningError):
+            runner.run(
+                graph,
+                item=99,
+                workflow_id="mixed-workflow",
+                event_processors=[rejected_events],
+            )
+    finally:
+        release.set()
+        active.result(raise_on_failure=False)
+
+    assert rejected_events.events == []
+
+
+def test_blocking_run_reserves_id_before_background_map_return() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    rejected_events = _RecordingProcessor()
+    active_results = []
+    active_errors: list[BaseException] = []
+
+    @node(output_name="processed")
+    def process_item(item: int) -> int:
+        if item == 0:
+            entered.set()
+            if not release.wait(timeout=5):
+                raise AssertionError("active blocking run did not release")
+        return item * 10
+
+    runner = SyncRunner()
+    graph = Graph([process_item])
+
+    def run_active() -> None:
+        try:
+            active_results.append(
+                runner.run(
+                    graph,
+                    item=0,
+                    workflow_id="mixed-workflow",
+                )
+            )
+        except BaseException as error:
+            active_errors.append(error)
+
+    active_thread = threading.Thread(target=run_active)
+    active_thread.start()
+    assert entered.wait(timeout=5), "blocking run never started"
+
+    unexpected_handle = None
+    direct_error = None
+    try:
+        try:
+            unexpected_handle = runner.start_map(
+                graph,
+                {"item": [99]},
+                map_over="item",
+                workflow_id="mixed-workflow",
+                event_processors=[rejected_events],
+            )
+        except BaseException as error:
+            direct_error = error
+    finally:
+        release.set()
+        active_thread.join(timeout=5)
+        assert not active_thread.is_alive(), "active blocking run thread leaked"
+        if unexpected_handle is not None:
+            unexpected_handle.result(raise_on_failure=False)
+
+    assert isinstance(direct_error, WorkflowAlreadyRunningError)
+    assert unexpected_handle is None
+    assert rejected_events.events == []
+    assert active_errors == []
+    assert len(active_results) == 1

@@ -10,7 +10,7 @@ from typing import Any, Generic, TypeVar
 
 from hypergraph.exceptions import _failure_evidence_context
 from hypergraph.runners._shared.results import MapResult, RunResult
-from hypergraph.runners._shared.stop import StopSignal, reset_stop_signal, set_stop_signal
+from hypergraph.runners._shared.stop import StopSignal, _WorkflowReservation
 
 _T = TypeVar("_T")
 
@@ -95,40 +95,53 @@ class SyncHandle(Generic[_T]):
                 self._thread.join()
 
 
-def _launch_sync_execution(operation: Callable[[], _T]) -> SyncHandle[_T]:
+def _launch_sync_execution(
+    operation: Callable[[], _T],
+    reservation: _WorkflowReservation,
+) -> SyncHandle[_T]:
     """Launch one synchronous runner operation under its parent stop signal."""
     future: Future[_T] = Future()
-    signal = StopSignal()
 
     def _execute() -> None:
         try:
-            signal_token = set_stop_signal(signal)
-            try:
-                result = operation()
-            finally:
-                reset_stop_signal(signal_token)
+            result = operation()
         except BaseException as error:
+            reservation.release()
             future.set_exception(error)
         else:
+            # Release before Future completion makes ``handle.done`` observable,
+            # so immediate same-ID reuse cannot see a stale live claim.
+            reservation.release()
             future.set_result(result)
 
     thread = threading.Thread(target=_execute, daemon=True)
-    handle = SyncHandle(future, signal, thread)
-    thread.start()
+    handle = SyncHandle(future, reservation.signal, thread)
+    try:
+        thread.start()
+    except BaseException:
+        reservation.release()
+        raise
     return handle
 
 
-def _launch_async_execution(operation: Callable[[], Awaitable[_T]]) -> AsyncHandle[_T]:
+def _launch_async_execution(
+    loop: asyncio.AbstractEventLoop,
+    operation: Callable[[], Awaitable[_T]],
+    reservation: _WorkflowReservation,
+) -> AsyncHandle[_T]:
     """Launch one asynchronous runner operation under its parent stop signal."""
-    loop = asyncio.get_running_loop()
-    signal = StopSignal()
 
     async def _execute() -> _T:
-        signal_token = set_stop_signal(signal)
         try:
             return await operation()
         finally:
-            reset_stop_signal(signal_token)
+            reservation.release()
 
-    task = loop.create_task(_execute())
-    return AsyncHandle(task, signal)
+    coroutine = _execute()
+    try:
+        task = loop.create_task(coroutine)
+    except BaseException:
+        coroutine.close()
+        reservation.release()
+        raise
+    return AsyncHandle(task, reservation.signal)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any, Literal
 
-from hypergraph.exceptions import ExecutionError, InfiniteLoopError, WorkflowAlreadyRunningError
+from hypergraph.exceptions import ExecutionError, InfiniteLoopError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
@@ -34,7 +34,7 @@ from hypergraph.runners._shared.state import (
     RunnerCapabilities,
 )
 from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id, initialize_state
-from hypergraph.runners._shared.stop import StopSignal, get_stop_signal, reset_stop_signal, set_stop_signal
+from hypergraph.runners._shared.stop import _ActiveWorkflows, get_stop_signal
 from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
 from hypergraph.runners.async_.executors import (
     AsyncFunctionNodeExecutor,
@@ -109,7 +109,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         self._cache = cache
         self._checkpointer_instance = checkpointer
         self._show_progress = show_progress
-        self._active_signals: dict[str, StopSignal] = {}
+        self._active_workflows = _ActiveWorkflows()
         self._executors: dict[type[HyperNode], AsyncNodeExecutor] = {
             FunctionNode: AsyncFunctionNodeExecutor(),
             GraphNode: AsyncGraphNodeExecutor(self),
@@ -129,9 +129,7 @@ class AsyncRunner(AsyncRunnerTemplate):
             info: Optional metadata attached to the stop signal.
                   Accessible via ``StopRequestedEvent.info``.
         """
-        signal = self._active_signals.get(workflow_id)
-        if signal is not None:
-            signal.set(info=info)
+        self._active_workflows.stop(workflow_id, info=info)
 
     def start_run(
         self,
@@ -171,7 +169,10 @@ class AsyncRunner(AsyncRunnerTemplate):
         Raises:
             RuntimeError: If called without a running event loop.
         """
+        loop = asyncio.get_running_loop()
+        reservation = self._active_workflows.reserve(workflow_id)
         return _launch_async_execution(
+            loop,
             lambda: self.run(
                 graph,
                 values,
@@ -185,8 +186,10 @@ class AsyncRunner(AsyncRunnerTemplate):
                 show_progress=show_progress,
                 checkpoint=checkpoint,
                 workflow_id=workflow_id,
+                _reservation=reservation,
                 **input_values,
-            )
+            ),
+            reservation,
         )
 
     def start_map(
@@ -207,7 +210,10 @@ class AsyncRunner(AsyncRunnerTemplate):
         **input_values: Any,
     ) -> AsyncHandle[MapResult]:
         """Start a settled map execution in the background."""
+        loop = asyncio.get_running_loop()
+        reservation = self._active_workflows.reserve(workflow_id)
         return _launch_async_execution(
+            loop,
             lambda: self.map(
                 graph,
                 values,
@@ -222,8 +228,10 @@ class AsyncRunner(AsyncRunnerTemplate):
                 event_processors=event_processors,
                 show_progress=show_progress,
                 workflow_id=workflow_id,
+                _reservation=reservation,
                 **input_values,
-            )
+            ),
+            reservation,
         )
 
     @property
@@ -299,15 +307,8 @@ class AsyncRunner(AsyncRunnerTemplate):
         node_order = {name: i for i, name in enumerate(graph._nodes)} if has_checkpointer else {}
         save_tasks: list[asyncio.Task[None]] = []
 
-        # Set up StopSignal for this run.
-        # Inherit parent signal so nested graphs see the outer stop.
-        parent_signal = get_stop_signal()
-        signal = StopSignal(parent=parent_signal)
-        if workflow_id is not None:
-            if workflow_id in self._active_signals:
-                raise WorkflowAlreadyRunningError(workflow_id)
-            self._active_signals[workflow_id] = signal
-        signal_token = set_stop_signal(signal)
+        signal = get_stop_signal()
+        assert signal is not None, "run template must install a workflow stop signal"
 
         try:
             superstep_idx = 0
@@ -461,10 +462,6 @@ class AsyncRunner(AsyncRunnerTemplate):
             pause.stopped = signal.is_set
             raise
         finally:
-            # Clean up signal registry
-            reset_stop_signal(signal_token)
-            if workflow_id is not None:
-                self._active_signals.pop(workflow_id, None)
             # Await any background save tasks before returning
             if save_tasks:
                 results = await asyncio.gather(*save_tasks, return_exceptions=True)

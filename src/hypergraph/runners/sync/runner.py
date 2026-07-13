@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal
 
-from hypergraph.exceptions import ExecutionError, InfiniteLoopError, WorkflowAlreadyRunningError
+from hypergraph.exceptions import ExecutionError, InfiniteLoopError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
@@ -23,7 +23,7 @@ from hypergraph.runners._shared.results import MapResult, RunResult
 from hypergraph.runners._shared.scheduling import ExecutionFrontier, compute_execution_scope
 from hypergraph.runners._shared.state import ExecutionContext, GraphState, RunnerCapabilities
 from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id, initialize_state
-from hypergraph.runners._shared.stop import StopSignal, get_stop_signal, reset_stop_signal, set_stop_signal
+from hypergraph.runners._shared.stop import _ActiveWorkflows, get_stop_signal
 from hypergraph.runners._shared.template_sync import SyncRunnerTemplate
 from hypergraph.runners.sync.executors import (
     SyncFunctionNodeExecutor,
@@ -88,7 +88,7 @@ class SyncRunner(SyncRunnerTemplate):
         self._cache = cache
         self._checkpointer_instance = checkpointer
         self._show_progress = show_progress
-        self._active_signals: dict[str, StopSignal] = {}
+        self._active_workflows = _ActiveWorkflows()
         self._executors: dict[type[HyperNode], NodeExecutor] = {
             FunctionNode: SyncFunctionNodeExecutor(),
             GraphNode: SyncGraphNodeExecutor(self),
@@ -106,9 +106,7 @@ class SyncRunner(SyncRunnerTemplate):
             workflow_id: The workflow to stop.
             info: Optional metadata attached to the stop signal.
         """
-        signal = self._active_signals.get(workflow_id)
-        if signal is not None:
-            signal.set(info=info)
+        self._active_workflows.stop(workflow_id, info=info)
 
     def start_run(
         self,
@@ -143,6 +141,7 @@ class SyncRunner(SyncRunnerTemplate):
         Returns:
             A process-local handle for the live execution.
         """
+        reservation = self._active_workflows.reserve(workflow_id)
         return _launch_sync_execution(
             lambda: self.run(
                 graph,
@@ -156,8 +155,10 @@ class SyncRunner(SyncRunnerTemplate):
                 show_progress=show_progress,
                 checkpoint=checkpoint,
                 workflow_id=workflow_id,
+                _reservation=reservation,
                 **input_values,
-            )
+            ),
+            reservation,
         )
 
     def start_map(
@@ -177,6 +178,7 @@ class SyncRunner(SyncRunnerTemplate):
         **input_values: Any,
     ) -> SyncHandle[MapResult]:
         """Start a settled map execution in the background."""
+        reservation = self._active_workflows.reserve(workflow_id)
         return _launch_sync_execution(
             lambda: self.map(
                 graph,
@@ -191,8 +193,10 @@ class SyncRunner(SyncRunnerTemplate):
                 event_processors=event_processors,
                 show_progress=show_progress,
                 workflow_id=workflow_id,
+                _reservation=reservation,
                 **input_values,
-            )
+            ),
+            reservation,
         )
 
     @property
@@ -253,15 +257,8 @@ class SyncRunner(SyncRunnerTemplate):
         superstep_offset, step_counter = checkpoint_offsets(checkpoint)
         node_order = {name: i for i, name in enumerate(graph._nodes)} if sync_cp else {}
 
-        # Set up StopSignal for this run.
-        # Inherit parent signal so nested graphs see the outer stop.
-        parent_signal = get_stop_signal()
-        signal = StopSignal(parent=parent_signal)
-        if workflow_id is not None:
-            if workflow_id in self._active_signals:
-                raise WorkflowAlreadyRunningError(workflow_id)
-            self._active_signals[workflow_id] = signal
-        signal_token = set_stop_signal(signal)
+        signal = get_stop_signal()
+        assert signal is not None, "run template must install a workflow stop signal"
 
         superstep_idx = 0
         frontier = ExecutionFrontier.from_scope(scope, max_iterations)
@@ -377,14 +374,10 @@ class SyncRunner(SyncRunnerTemplate):
 
                 superstep_idx += 1
         finally:
-            # Clean up signal registry
-            reset_stop_signal(signal_token)
-            if workflow_id is not None:
-                self._active_signals.pop(workflow_id, None)
+            # Expose cooperative-stop truth even when execution exits early.
+            state.stopped = signal.is_set
+            state.stop_info = signal.info
 
-        # Propagate stopped flag to the template layer
-        state.stopped = signal.is_set
-        state.stop_info = signal.info
         return state
 
     # Template hook implementations
