@@ -1,0 +1,520 @@
+"""Real-browser falsifiers for the notebook shell/channel bridge."""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterator
+from dataclasses import replace
+
+import pytest
+from playwright.sync_api import Browser, Page, sync_playwright
+
+from hypergraph.runners._shared._inspect import (
+    MapInspection,
+    MapItemInspection,
+    NodeInspection,
+    RunInspection,
+)
+from hypergraph.runners._shared._inspect_serialization import serialize_value
+from hypergraph.runners._shared._inspect_transport import (
+    INSPECTION_PROTOCOL_VERSION,
+    InspectionDelivery,
+    InspectionEnvelope,
+    inspection_envelope_to_wire,
+    render_notebook_shell,
+    render_payload_channel,
+)
+
+
+@pytest.fixture(scope="module")
+def browser() -> Iterator[Browser]:
+    with sync_playwright() as runtime:
+        instance = runtime.chromium.launch(headless=True)
+        yield instance
+        instance.close()
+
+
+def _node(index: int, *, item_index: int | None = None) -> NodeInspection:
+    return NodeInspection(
+        run_id=f"run-{item_index if item_index is not None else 'single'}",
+        span_id=f"span-{item_index}-{index}",
+        node_name=f"node_{index}",
+        qualified_name=f"research/node_{index}",
+        graph_name="research",
+        item_index=item_index,
+        superstep=index,
+        sequence=index,
+        status="completed",
+        values_captured=True,
+        inputs={"customer_id": f"customer-{item_index}", "step": index},
+        outputs={"decision": "approved", "step": index * 2},
+        started_at_ms=float(index * 20),
+        ended_at_ms=float(index * 20 + 10),
+        duration_ms=10.0,
+    )
+
+
+def _run(
+    *,
+    graph_name: str = "customer_enrichment",
+    status: str = "running",
+    terminal: bool = False,
+    item_index: int | None = None,
+    node_count: int = 2,
+) -> RunInspection:
+    return RunInspection(
+        run_id=f"run-{item_index if item_index is not None else 'single'}",
+        graph_name=graph_name,
+        workflow_id="workflow-customers",
+        item_index=item_index,
+        status=status,
+        nodes=tuple(_node(index, item_index=item_index) for index in range(node_count)),
+        failures=(),
+        total_duration_ms=float(node_count * 20),
+        captured=True,
+        terminal=terminal,
+    )
+
+
+def _map(*, terminal: bool = False, status: str = "running") -> MapInspection:
+    items = tuple(
+        MapItemInspection(
+            item_index=index,
+            status="completed",
+            requested_inputs={"customer_id": f"customer-{index}"},
+            run=_run(
+                status="completed",
+                terminal=True,
+                item_index=index,
+                node_count=3,
+            ),
+        )
+        for index in range(30)
+    )
+    return MapInspection(
+        run_id="map-customers",
+        graph_name="customer_enrichment",
+        workflow_id="workflow-customers",
+        status=status,
+        map_over=("customer_id",),
+        map_mode="zip",
+        requested_count=30,
+        items=items,
+        unstarted_item_indexes=(),
+        total_duration_ms=600.0,
+        captured=True,
+        terminal=terminal,
+    )
+
+
+def _envelope(
+    artifact: RunInspection | MapInspection,
+    *,
+    widget_id: str,
+    nonce: str,
+    sequence: int,
+    state: str = "live",
+) -> InspectionEnvelope:
+    label = {
+        "live": "Live",
+        "saved": "Saved snapshot",
+        "stale": "Live inspection unavailable",
+    }[state]
+    return InspectionEnvelope(
+        protocol_version=INSPECTION_PROTOCOL_VERSION,
+        widget_id=widget_id,
+        nonce=nonce,
+        sequence=sequence,
+        delivery=InspectionDelivery(state=state, label=label),  # type: ignore[arg-type]
+        artifact=artifact,
+    )
+
+
+def _mount(page: Page, envelope: InspectionEnvelope, *, timeout_ms: int = 500) -> None:
+    page.set_content(
+        render_notebook_shell(envelope, handshake_timeout_ms=timeout_ms) + render_payload_channel(envelope),
+        wait_until="load",
+    )
+
+
+def _frame(page: Page, widget_id: str):
+    frame = page.frame(name=f"{widget_id}-frame")
+    assert frame is not None
+    frame.wait_for_selector("[data-hypergraph-inspect]")
+    return frame
+
+
+def _replace_channel(page: Page, envelope: InspectionEnvelope) -> None:
+    markup = render_payload_channel(envelope)
+    runtime_match = re.search(
+        r"<script data-hg-inspect-channel-runtime>(.*?)</script>",
+        markup,
+        flags=re.DOTALL,
+    )
+    assert runtime_match is not None
+    runtime = runtime_match.group(1)
+    page.evaluate(
+        """markup => {
+          const template = document.createElement('template');
+          template.innerHTML = markup;
+          const incoming = template.content.firstElementChild;
+          const old = document.getElementById(incoming.id);
+          if (old) old.remove();
+          document.body.appendChild(incoming);
+        }""",
+        markup,
+    )
+    page.add_script_tag(content=runtime)
+
+
+def test_bridge_rejects_wrong_identity_source_and_non_monotonic_sequence(
+    browser: Browser,
+) -> None:
+    page = browser.new_page()
+    first = _envelope(
+        _run(graph_name="first-graph"),
+        widget_id="widget-one",
+        nonce="nonce-one",
+        sequence=1,
+    )
+    second = _envelope(
+        _run(graph_name="second-graph"),
+        widget_id="widget-two",
+        nonce="nonce-two",
+        sequence=1,
+    )
+    page.set_content(
+        render_notebook_shell(first) + render_payload_channel(first) + render_notebook_shell(second) + render_payload_channel(second),
+        wait_until="load",
+    )
+    first_frame = _frame(page, "widget-one")
+    second_frame = _frame(page, "widget-two")
+    assert first_frame.locator("[data-hg-title]").inner_text() == "first-graph"
+    assert second_frame.locator("[data-hg-title]").inner_text() == "second-graph"
+
+    accepted = _envelope(
+        _run(graph_name="newest", status="failed"),
+        widget_id="widget-one",
+        nonce="nonce-one",
+        sequence=3,
+    )
+    old = _envelope(
+        _run(graph_name="old", status="completed"),
+        widget_id="widget-one",
+        nonce="nonce-one",
+        sequence=2,
+    )
+    wrong_nonce = replace(old, nonce="wrong", sequence=4)
+    wrong_version = inspection_envelope_to_wire(replace(old, sequence=5))
+    wrong_version["version"] = 2
+
+    for message in (
+        inspection_envelope_to_wire(accepted),
+        inspection_envelope_to_wire(old),
+        inspection_envelope_to_wire(wrong_nonce),
+        wrong_version,
+        inspection_envelope_to_wire(replace(accepted, widget_id="widget-two", sequence=6)),
+    ):
+        page.evaluate(
+            "([name, message]) => window.frames[name].postMessage(message, '*')",
+            ["widget-one-frame", message],
+        )
+
+    assert first_frame.locator("[data-hg-title]").inner_text() == "newest"
+    assert first_frame.locator("[data-hg-summary]").get_by_text("failed", exact=True).is_visible()
+    assert second_frame.locator("[data-hg-title]").inner_text() == "second-graph"
+
+    attacker_message = inspection_envelope_to_wire(
+        _envelope(
+            _run(graph_name="attacker", status="completed"),
+            widget_id="widget-one",
+            nonce="nonce-one",
+            sequence=7,
+        )
+    )
+    page.evaluate(
+        """([name, message]) => {
+          const attacker = document.createElement('iframe');
+          document.body.appendChild(attacker);
+          attacker.contentWindow.eval(
+            `parent.frames[${JSON.stringify(name)}].postMessage(${JSON.stringify(message)}, '*')`
+          );
+        }""",
+        ["widget-one-frame", attacker_message],
+    )
+
+    assert first_frame.locator("[data-hg-title]").inner_text() == "newest"
+    page.close()
+
+
+def test_payload_updates_preserve_iframe_identity_and_local_renderer_state(
+    browser: Browser,
+) -> None:
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    initial = _envelope(
+        _map(),
+        widget_id="widget-state",
+        nonce="nonce-state",
+        sequence=1,
+    )
+    _mount(page, initial)
+    frame = _frame(page, "widget-state")
+    page.evaluate(
+        """() => {
+          const frame = document.querySelector('[data-hg-inspect-frame="widget-state"]');
+          window.__frameBefore = frame;
+          window.__windowBefore = frame.contentWindow;
+          window.__srcdocBefore = frame.getAttribute('srcdoc');
+        }"""
+    )
+    before = frame.evaluate(
+        """() => {
+          const root = document.querySelector('[data-hypergraph-inspect]');
+          const state = root.__hypergraphInspect.state;
+          state.activeView = 'graph';
+          state.selectedItem = 21;
+          state.selectedExecution = 'run-21|span-21-1|1|1';
+          state.filter = 'completed';
+          state.page = 2;
+          state.detailsOpen['node.run-21|span-21-1|1|1.inputs'] = true;
+          state.tablePages['node.21.table'] = 2;
+          state.graphViewport.zoom = 130;
+          state.graphViewport.panX = 8;
+          state.graphViewport.panY = 12;
+          state.graphViewport.expanded['research'] = true;
+          document.querySelector('[data-hg-items]').scrollTop = 18;
+          document.querySelector('[data-hg-main]').scrollTop = 24;
+          document.querySelector('[data-hg-detail]').scrollTop = 12;
+          return JSON.parse(JSON.stringify(state));
+        }"""
+    )
+
+    updated = _envelope(
+        _map(status="completed"),
+        widget_id="widget-state",
+        nonce="nonce-state",
+        sequence=2,
+    )
+    _replace_channel(page, updated)
+    frame.wait_for_function("document.querySelector('[data-hypergraph-inspect]').__hypergraphInspect.payload().map.status === 'completed'")
+    after = frame.evaluate(
+        """() => JSON.parse(JSON.stringify(
+          document.querySelector('[data-hypergraph-inspect]').__hypergraphInspect.state
+        ))"""
+    )
+
+    assert page.evaluate(
+        """() => {
+          const frame = document.querySelector('[data-hg-inspect-frame="widget-state"]');
+          return frame === window.__frameBefore
+            && frame.contentWindow === window.__windowBefore
+            && frame.getAttribute('srcdoc') === window.__srcdocBefore;
+        }"""
+    )
+    for key in ("activeView", "selectedItem", "selectedExecution", "filter", "page"):
+        assert after[key] == before[key]
+    assert after["detailsOpen"] == before["detailsOpen"]
+    assert after["tablePages"] == before["tablePages"]
+    assert after["graphViewport"] == before["graphViewport"]
+    assert after["scroll"] == before["scroll"]
+    page.close()
+
+
+def test_saved_terminal_two_output_replay_is_interactive_without_a_kernel(
+    browser: Browser,
+) -> None:
+    initial = _envelope(
+        _run(),
+        widget_id="widget-saved",
+        nonce="nonce-saved",
+        sequence=1,
+    )
+    terminal = _envelope(
+        _run(status="completed", terminal=True),
+        widget_id="widget-saved",
+        nonce="nonce-saved",
+        sequence=2,
+        state="saved",
+    )
+    saved_outputs = render_notebook_shell(initial) + render_payload_channel(terminal)
+
+    page = browser.new_page()
+    page.set_content(saved_outputs, wait_until="load")
+    frame = _frame(page, "widget-saved")
+
+    assert frame.get_by_text("Saved snapshot", exact=True).is_visible()
+    assert frame.locator("[data-hg-summary]").get_by_text("completed", exact=True).is_visible()
+    frame.get_by_role("tab", name="Graph").click()
+    assert frame.locator('[data-hg-panel="graph"]').is_visible()
+    frame.get_by_role("tab", name="Timeline").click()
+    assert frame.locator("[data-hg-timeline-row]").count() == 2
+    page.close()
+
+
+def test_parent_accepts_ready_only_from_expected_frame_with_exact_identity(
+    browser: Browser,
+) -> None:
+    initial = _envelope(
+        _run(),
+        widget_id="widget-ready",
+        nonce="nonce-ready",
+        sequence=1,
+    )
+    shell = render_notebook_shell(initial, handshake_timeout_ms=2_000)
+    shell_without_child_bridge = re.sub(
+        r'srcdoc="[^"]*"',
+        'srcdoc="&lt;!doctype html&gt;&lt;html&gt;&lt;body&gt;ready source test&lt;/body&gt;&lt;/html&gt;"',
+        shell,
+        count=1,
+    )
+    page = browser.new_page()
+    page.set_content(shell_without_child_bridge, wait_until="load")
+    expected = page.frame(name="widget-ready-frame")
+    assert expected is not None
+    key = "widget-ready::nonce-ready"
+    assert page.evaluate("key => window.__hypergraphInspectHosts[key].ready", key) is False
+
+    page.evaluate(
+        """() => {
+          const attacker = document.createElement('iframe');
+          attacker.name = 'ready-attacker';
+          document.body.appendChild(attacker);
+        }"""
+    )
+    attacker = page.frame(name="ready-attacker")
+    assert attacker is not None
+    exact_ready = {
+        "type": "hypergraph.inspect.ready",
+        "version": 1,
+        "widget_id": "widget-ready",
+        "nonce": "nonce-ready",
+    }
+    attacker.evaluate("message => parent.postMessage(message, '*')", exact_ready)
+    assert page.evaluate("key => window.__hypergraphInspectHosts[key].ready", key) is False
+
+    wrong_messages = [
+        {**exact_ready, "version": 2},
+        {**exact_ready, "widget_id": "widget-other"},
+        {**exact_ready, "nonce": "nonce-other"},
+    ]
+    for message in wrong_messages:
+        expected.evaluate("value => parent.postMessage(value, '*')", message)
+    assert page.evaluate("key => window.__hypergraphInspectHosts[key].ready", key) is False
+
+    expected.evaluate("message => parent.postMessage(message, '*')", exact_ready)
+
+    assert page.evaluate("key => window.__hypergraphInspectHosts[key].ready", key) is True
+    assert page.evaluate("key => window.__hypergraphInspectHosts[key].readyCount", key) == 1
+    assert page.locator('[data-hg-inspect-host-status="widget-ready"]').is_hidden()
+    page.close()
+
+
+def test_start_failure_keeps_the_exact_bounded_error_visible(browser: Browser) -> None:
+    initial = _envelope(
+        _run(),
+        widget_id="widget-start-error",
+        nonce="nonce-start-error",
+        sequence=1,
+    )
+    failed = replace(
+        initial,
+        sequence=2,
+        delivery=InspectionDelivery(
+            state="stale",
+            label="Live inspection unavailable",
+        ),
+        message=serialize_value(ValueError("missing required input: customer_id")),
+    )
+    page = browser.new_page()
+    page.set_content(
+        render_notebook_shell(initial) + render_payload_channel(failed),
+        wait_until="load",
+    )
+    frame = _frame(page, "widget-start-error")
+    fallback = page.locator('[data-hg-inspect-channel-fallback="widget-start-error"]')
+
+    assert frame.get_by_text("Live inspection unavailable", exact=True).is_visible()
+    assert fallback.is_visible()
+    assert "ValueError: missing required input: customer_id" in fallback.inner_text()
+    page.close()
+
+
+def test_shell_without_a_payload_channel_never_claims_to_be_live(browser: Browser) -> None:
+    initial = _envelope(
+        _run(),
+        widget_id="widget-orphan",
+        nonce="nonce-orphan",
+        sequence=1,
+    )
+    page = browser.new_page()
+    page.set_content(render_notebook_shell(initial), wait_until="load")
+    frame = _frame(page, "widget-orphan")
+
+    assert frame.get_by_text("Waiting for live inspection", exact=True).is_visible()
+    assert frame.locator("[data-hypergraph-inspect]").get_attribute("data-delivery-state") == "stale"
+    assert frame.get_by_text(
+        "Live updates are unavailable. Showing the last confirmed snapshot; this view is not live.",
+        exact=True,
+    ).is_visible()
+    page.close()
+
+
+def test_missing_ready_handshake_exposes_stale_saved_fallback(browser: Browser) -> None:
+    terminal = _envelope(
+        _run(status="completed", terminal=True),
+        widget_id="widget-stale",
+        nonce="nonce-stale",
+        sequence=1,
+        state="saved",
+    )
+    shell = render_notebook_shell(terminal, handshake_timeout_ms=25)
+    broken_shell = re.sub(
+        r'srcdoc="[^"]*"',
+        'srcdoc="&lt;!doctype html&gt;&lt;html&gt;&lt;body&gt;no bridge&lt;/body&gt;&lt;/html&gt;"',
+        shell,
+        count=1,
+    )
+    page = browser.new_page()
+    page.set_content(broken_shell + render_payload_channel(terminal), wait_until="load")
+
+    status = page.locator('[data-hg-inspect-host-status="widget-stale"]')
+    status.wait_for(state="visible")
+    page.wait_for_function("document.querySelector('[data-hg-inspect-host-status=\"widget-stale\"]').dataset.state === 'stale'")
+    assert "interactive inspector did not connect" in status.inner_text().lower()
+    fallback = page.locator('[data-hg-inspect-channel-fallback="widget-stale"]')
+    assert "Saved snapshot" in fallback.inner_text()
+    assert "completed" in fallback.inner_text()
+    page.close()
+
+
+@pytest.mark.parametrize("width", [1280, 360])
+def test_transport_is_offline_inert_and_fits_the_viewport(
+    browser: Browser,
+    width: int,
+) -> None:
+    errors: list[Exception] = []
+    requests: list[str] = []
+    page = browser.new_page(viewport={"width": width, "height": 800})
+    page.on("pageerror", lambda error: errors.append(error))
+    page.on("request", lambda request: requests.append(request.url))
+    hostile = _envelope(
+        _run(graph_name='</script><img src="https://remote.invalid/x" onerror="window.pwned=1">'),
+        widget_id=f"widget-{width}",
+        nonce=f"nonce-{width}",
+        sequence=1,
+    )
+    _mount(page, hostile)
+    frame = _frame(page, f"widget-{width}")
+
+    assert errors == []
+    assert all(url in {"about:blank", "about:srcdoc"} for url in requests)
+    assert page.evaluate("window.pwned") is None
+    assert frame.evaluate("window.pwned") is None
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    assert frame.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    assert frame.locator('meta[http-equiv="Content-Security-Policy"]').get_attribute("content") == (
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+        "img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; "
+        "object-src 'none'; base-uri 'none'; form-action 'none'"
+    )
+    page.close()
