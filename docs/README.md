@@ -80,6 +80,25 @@ workflow = Graph(nodes=[
 
 Test pieces independently. Reuse across workflows.
 
+## Documentation Authority
+
+Use current-behavior docs as evidence for shipped APIs; use intent docs only to
+understand planned work.
+
+| Location | Authority |
+|---|---|
+| `01-introduction/` through `06-api-reference/`, plus `08-hypertable/` | Canon for current user-facing behavior |
+| `../examples/` | Canonical runnable patterns; examples must match the real API |
+| `adr/` | Canonical durable decisions; later ADRs supersede earlier decisions explicitly |
+| `changelog.md` | Historical record of shipped change sets |
+| `prd/` and `07-design/roadmap.md` | Intent and planning, not evidence of current behavior |
+
+For background execution specifically, the
+[task guide](05-how-to/control-background-execution.md),
+[runner reference](06-api-reference/runners.md), and executable examples are
+the current-behavior surfaces. ADRs 0003 and 0004 explain why that API has its
+minimal shape.
+
 ## Documentation
 
 ### Getting Started
@@ -110,6 +129,7 @@ Test pieces independently. Reuse across workflows.
 
 ### How-To Guides
 - [Batch Processing](05-how-to/batch-processing.md) - Process multiple inputs with runner.map()
+- [Control Work After It Starts](05-how-to/control-background-execution.md) - Background handles, cooperative stop, and process recovery
 - [Rename and Adapt](05-how-to/rename-and-adapt.md) - Reuse functions in different contexts
 - [Integrate with LLMs](05-how-to/integrate-with-llms.md) - Patterns for OpenAI, Anthropic, and others
 - [Test Without Framework](05-how-to/test-without-framework.md) - Test nodes as pure functions
@@ -123,6 +143,7 @@ Test pieces independently. Reuse across workflows.
 - [Runners](06-api-reference/runners.md) - SyncRunner, AsyncRunner, and execution model
 - [Events](06-api-reference/events.md) - Event types, processors, and RichProgressProcessor
 - [InputSpec](06-api-reference/inputspec.md) - Input categorization and requirements
+- [Checkpointers](06-api-reference/checkpointers.md) - Persistence, resume, fork/retry lineage, and inspection
 
 ### HyperTable (Incremental Tables)
 - [Overview](08-hypertable/overview.md) - What HyperTable is, when to use it

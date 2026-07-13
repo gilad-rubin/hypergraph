@@ -3,7 +3,7 @@
 A checkpointer persists every step of a run so it can be resumed, forked, retried, or inspected after the process exits. It is opt-in: a graph runs exactly the same with or without one, and existing `run()`/`map()` behavior is unchanged when `checkpointer=None`.
 
 {% hint style="info" %}
-This page covers the checkpointer subsystem itself — the `Checkpointer` ABC, `CheckpointPolicy`, and lineage (fork/retry) mechanics. For `run()`/`map()` parameter semantics (`workflow_id`, `fork_from`, `retry_from`, `override_workflow`), see [Runners](runners.md#run). For the `map()` batch-checkpointing walkthrough, see [Batch Processing](../05-how-to/batch-processing.md#checkpointing-with-map).
+This page covers the checkpointer subsystem itself — the `Checkpointer` ABC, `CheckpointPolicy`, and lineage (fork/retry) mechanics. For `run()`/`map()` parameter semantics (`workflow_id`, `fork_from`, `retry_from`, `override_workflow`), see [Runners](runners.md#run). For live background control versus durable recovery, see [Control Work After It Starts](../05-how-to/control-background-execution.md#use-a-checkpointer-for-recovery-not-handle-reconnection). For the `map()` batch-checkpointing walkthrough, see [Batch Processing](../05-how-to/batch-processing.md#checkpointing-with-map).
 {% endhint %}
 
 ## Turning It On
@@ -50,6 +50,36 @@ SqliteCheckpointer(":memory:")
 
 `MemoryCheckpointer` is a simpler async-only, in-process alternative with no SQLite dependency — good for unit tests that don't need durability across restarts.
 
+## Background Handles and Process Recovery
+
+`start_run()` and `start_map()` use the same checkpoint policies and workflow
+lineage as blocking execution. A handle is only the current process's live
+control channel; it is not persisted and cannot be discovered or reconnected
+from another process.
+
+```python
+handle = runner.start_run(graph, values, workflow_id="order-100")
+result = await handle.result(raise_on_failure=False)
+
+# Durable evidence is queryable separately.
+persisted = checkpointer.get_run("order-100")
+```
+
+A persisted `ACTIVE` row records the latest lifecycle transition. It does not
+prove that a worker is still alive. After process loss, opening the
+checkpointer and calling `start_run()` creates a new execution under the
+ordinary resume contract; it does not reconnect to the old handle.
+
+For a stopped background map, persistence contains one parent row plus child
+rows for real claimed outcomes only. Inputs listed in
+`MapResult.unstarted_item_indexes` have no child checkpoint row. The parent
+workflow status is `STOPPED` when stop curtailed requested scope.
+
+Background execution adds no durability default. Sync runner writes remain
+synchronous; async and exit modes retain their existing guarantees and report
+best-effort gaps through `result.checkpoint_ok` and
+`result.checkpoint_errors`.
+
 ## Checkpointer ABC
 
 Every checkpointer implements the same contract, so runners don't need to know which backend is behind `checkpointer=`:
@@ -67,6 +97,11 @@ Every checkpointer implements the same contract, so runners don't need to know w
 | `search_async(query, field=None, limit=20)` | FTS search over step values. Returns `[]` if unsupported. |
 
 `graph_name`, `since`, `status`, and `parent_run_id` compose with AND before `limit` is applied. `since` is inclusive; naive datetimes mean UTC and aware datetimes are normalized to UTC. The same rules apply to SQLite's sync `runs()` adapter.
+
+`SqliteCheckpointer` supports runner-managed use across accepted background
+executions. For any other shared backend, follow its documented concurrency
+contract. A custom checkpointer shared by overlapping handles is responsible
+for making each logical operation concurrency-safe.
 
 Steps are the source of truth — state is always computed by folding steps, never stored as a separate mutable blob. Public step views hide internal `__retained_state__` / `RetentionBaseline` carrier rows by default, while state reconstruction folds the raw internal stream. This keeps `latest` and `windowed` retention reconstructible without showing phantom nodes in checkpoints, search, statistics, or lineage views. Use `show_internal=True` only when debugging the retention mechanism itself.
 
@@ -172,7 +207,7 @@ Use this to audit which forks/retries came from which source run, and their stat
 
 | Error | Raised when |
 |---|---|
-| `WorkflowAlreadyRunningError` | A second `run()` starts for a `workflow_id` that already has an active run. At most one active `run()` per `workflow_id` — use different `workflow_id`s for concurrent runs. |
+| `WorkflowAlreadyRunningError` | A second run or map starts for a `workflow_id` that already has an active execution. At most one active execution per `workflow_id`; use different IDs for independently controlled work. |
 | `WorkflowForkError` | A fork targets an existing workflow, or a nested source is used without an explicit top-level target. |
 | `WorkflowStoppedError` | A stopped workflow is rerun without either a non-empty runtime value mapping or `override_workflow=True`. The rejection happens before new run events or persistence writes. |
 
@@ -275,6 +310,7 @@ See [Human-in-the-Loop](../03-patterns/07-human-in-the-loop.md) for the interrup
 
 - [Human-in-the-Loop](../03-patterns/07-human-in-the-loop.md) — pause/resume mechanics, cyclic-graph entrypoints
 - [Runners](runners.md#run) — `workflow_id`, `fork_from`, `retry_from` parameter reference
+- [Control Work After It Starts](../05-how-to/control-background-execution.md) — process-local handles versus durable recovery
 - [Batch Processing — Checkpointing with map()](../05-how-to/batch-processing.md#checkpointing-with-map) — parent/child batch runs
 
 ## Cleanup

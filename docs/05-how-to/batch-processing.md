@@ -194,11 +194,20 @@ word_counts = results.get("word_count", 0)  # [2, 2, 0, 2, ...]
 results.run_id              # Unique batch ID
 results.total_duration_ms   # Wall-clock time for the entire batch
 results.map_over            # ("text",)
+results.requested_count     # Requested inputs, including unstarted work
+results.unstarted_item_indexes  # Original indexes never claimed after stop
 results.restored_count      # Checkpoint-skipped successes (subset of completed)
 
 # JSON-serializable export (for logging, dashboards, agents)
 results.to_dict()           # Full batch metadata + per-item results
 ```
+
+For an ordinary completed or empty map,
+`results.requested_count == len(results)` and
+`results.unstarted_item_indexes == ()`. If cooperative stop curtails a
+background map, `len(results)` counts only real claimed outcomes while
+`requested_count` preserves the original scope. No placeholder `RunResult` is
+created for an input that never started.
 
 ## Error Handling
 
@@ -261,6 +270,48 @@ result = runner.run(batch, {"path": "data.txt"})
 wrapped graph has an `@interrupt`, graph construction raises a
 `GraphConfigError`. For human-in-the-loop batch workflows, use
 `AsyncRunner.map()` with one item per run instead.
+
+## Keep Control While a Batch Runs
+
+Use `start_map()` when the application must accept another action—such as a
+user's Stop request—before the batch settles:
+
+```python
+# Before: the caller waits here for the entire batch.
+batch = runner.map(order_graph, {"order_id": order_ids}, map_over="order_id")
+
+# After: the caller immediately receives a live control handle.
+handle = runner.start_map(
+    order_graph,
+    {"order_id": order_ids},
+    map_over="order_id",
+)
+show_stop_button()
+
+# Later, if Maya stops the batch:
+handle.stop(info={"requested_by": "Maya"})
+batch = handle.result(raise_on_failure=False)
+```
+
+Background mapping captures item failures and continues claiming siblings
+until the batch settles or stop curtails it. Default `result()` then raises the
+first real failed item in original input order; `raise_on_failure=False`
+returns the settled batch with `failures` intact.
+
+```python
+print(len(batch))                    # real claimed outcomes only
+print(batch.requested_count)         # original requested scope
+print(batch.unstarted_item_indexes)  # sorted original indexes never claimed
+```
+
+A curtailed batch has `status == RunStatus.STOPPED` even when a real attempted
+item failed. In that case `batch.stopped` and `batch.failed` are both true, and
+`batch.failures` preserves the failure. A stop received only after every input
+settles does not rewrite the ordinary completed/partial/failed aggregation.
+
+See [Control Work After It Starts](control-background-execution.md) for sync
+and async submission, cancellation isolation, duplicate workflow IDs, and
+process recovery.
 
 ## runner.map() vs map_over
 

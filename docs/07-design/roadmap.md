@@ -23,6 +23,9 @@ Core features are working and stable. API may still change before 1.0.
 - `SyncRunner` for sequential execution
 - `AsyncRunner` with concurrency control (`max_concurrency`)
 - Batch processing with `runner.map()` (zip and product modes)
+- Process-local `SyncHandle` / `AsyncHandle` from `start_run()` and `start_map()`
+- Cooperative stop for live runs, nested graphs, and sparse stopped maps
+- `DaftRunner` for columnar and distributed DAG execution
 
 ### Checkpointing and Durability
 - `SqliteCheckpointer` for persistent run history
@@ -63,6 +66,7 @@ Core features are working and stable. API may still change before 1.0.
 - Event system with `EventProcessor`, `AsyncEventProcessor`, `TypedEventProcessor`
 - `RichProgressProcessor` for hierarchical Rich progress bars
 - Event types: `RunStartEvent`, `RunEndEvent`, `NodeStartEvent`, `NodeEndEvent`, `NodeErrorEvent`, `RouteDecisionEvent`, `InterruptEvent`, `CacheHitEvent`, `StopRequestedEvent`
+- `OpenTelemetryProcessor` with graph/map/node spans and truthful batch outcomes
 
 ### Visualization
 - `graph.visualize()` for interactive graph rendering in notebooks
@@ -79,11 +83,6 @@ Core features are working and stable. API may still change before 1.0.
 
 ## Coming Soon
 
-### Observability Integrations
-- Integration with tracing systems (OpenTelemetry)
-- Structured logging for each node execution
-- Performance metrics (latency, token usage)
-
 ### Materialization Enhancements
 - Pin/override semantics for manually setting derived column values
 - Streaming writes via `Sink` protocol (built, not yet integrated with HyperTable)
@@ -93,8 +92,7 @@ Core features are working and stable. API may still change before 1.0.
 ## Future Considerations
 
 ### Distributed Execution
-- Integration with Daft for distributed processing
-- Parallel execution across machines
+- Additional distributed runner backends beyond Daft
 - Automatic data partitioning
 
 ### Execution Trace Visualization

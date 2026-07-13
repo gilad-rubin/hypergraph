@@ -1,10 +1,14 @@
 # Background maps collect item failures before result retrieval
 
-**Status:** Partially superseded by [ADR 0004](0004-background-handles-control-live-work.md), which removes `wait()` and assigns settled status and failure data exclusively to results. The collection-versus-retrieval decision remains accepted. Implementation is tracked by [issue #155](https://github.com/gilad-rubin/hypergraph/issues/155); `start_map()` is not a shipped API until that implementation merges.
+**Status:** Partially superseded by [ADR 0004](0004-background-handles-control-live-work.md), which removes `wait()` and assigns settled status and failure data exclusively to results. The collection-versus-retrieval decision remains accepted and is implemented by the change set tracked in [issue #155](https://github.com/gilad-rubin/hypergraph/issues/155).
 
 Background execution must let a caller regain control immediately and inspect the eventual batch without losing later item outcomes. Reusing blocking `map(error_handling="raise")` would not provide one scheduling contract: sync mapping stops at the first failed item, bounded async mapping stops claiming new items after a failure is observed, and unbounded async mapping may already have started every item.
 
 We therefore separate collection from retrieval.
+
+> **Superseded handle detail:** references to `wait()` below preserve the
+> original decision record. ADR 0004 removed that method; the shipped handles
+> expose only `done`, `stop(...)`, and `result(...)`.
 
 ## Decision
 
@@ -17,7 +21,7 @@ We therefore separate collection from retrieval.
 - A batch-level failure that prevents construction of a `MapResult` still propagates from `wait()` and `result()`. `raise_on_failure` governs captured mapped-item failures only.
 - Blocking `map()` keeps its existing `error_handling="raise" | "continue"` contract.
 
-The planned user-facing shape is:
+The original proposed user-facing shape was:
 
 ```python
 handle = runner.start_map(document_graph, {"document": documents}, map_over="document")
@@ -48,4 +52,4 @@ for item_index, item in enumerate(batch.results):
 
 - A failed background batch can continue consuming resources and producing item-level side effects. Callers use `handle.stop()` when they intend to curtail work.
 - `handle.result()` remains exception-first by default, matching blocking runner calls and Python future/task retrieval conventions, while diagnostic callers opt into `raise_on_failure=False`.
-- Implementing issue #155 must add the public API reference, practical how-to, runnable sync and async examples, and documentation contract tests in the same PR as the code.
+- Issue #155's implementation ships the public API reference, practical how-to, runnable sync and async examples, and documentation contract tests with the code.

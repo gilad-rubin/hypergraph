@@ -303,17 +303,17 @@ class InputOverrideRequiresForkError(Exception):
 
 
 class WorkflowAlreadyRunningError(Exception):
-    """Raised when a second run() starts for a workflow_id that already has an active run.
+    """Raised when an execution starts for a workflow_id that is already active.
 
-    At most one active ``run()`` per ``workflow_id``.  If you need concurrent
-    runs, use different workflow IDs.
+    At most one active execution per ``workflow_id``. If you need independently
+    controlled work, use different workflow IDs.
     """
 
     def __init__(self, workflow_id: str) -> None:
         self.workflow_id = workflow_id
         super().__init__(
-            f"Workflow '{workflow_id}' already has an active run. "
-            f"Only one run() per workflow_id at a time.\n\n"
+            f"Workflow '{workflow_id}' already has an active execution. "
+            f"Only one active execution per workflow_id at a time.\n\n"
             f"How to fix:\n"
-            f"  Wait for the current run to complete, or use a different workflow_id."
+            f"  Wait for the current execution to complete, or use a different workflow_id."
         )

@@ -1,6 +1,6 @@
 # Background handles control live work; results own settled truth
 
-**Status:** Accepted on 2026-07-13; implementation is tracked by [issue #155](https://github.com/gilad-rubin/hypergraph/issues/155). `start_run()` and `start_map()` are not shipped APIs until that implementation merges. This ADR supersedes ADR 0003 only where ADR 0003 proposed `wait()`; its background-map collection and retrieval policy remains accepted.
+**Status:** Accepted on 2026-07-13 and implemented by the change set tracked in [issue #155](https://github.com/gilad-rubin/hypergraph/issues/155). This ADR supersedes ADR 0003 only where ADR 0003 proposed `wait()`; its background-map collection and retrieval policy remains accepted.
 
 A background handle exists to let one Python process control a live Hypergraph execution without turning the handle into a second result model or a durable job reference. We keep the control surface minimal and preserve execution truth on `RunResult` and `MapResult`.
 

@@ -4,6 +4,23 @@
 
 ### Added
 
+- **Background run and map handles** — `SyncRunner.start_run()` /
+  `start_map()` and `AsyncRunner.start_run()` / `start_map()` return
+  process-local `SyncHandle` / `AsyncHandle` controls with only `done`,
+  cooperative `stop(info=...)`, and `result(raise_on_failure=...)`. Async start
+  calls return a handle without `await`, and cancelling one result waiter does
+  not cancel framework-owned execution. Blocking runner behavior is unchanged.
+
+- **Truthful stopped-map scope** — curtailed background maps keep only real
+  claimed `RunResult` children and expose the original scope through
+  `MapResult.requested_count` and `unstarted_item_indexes`. Parent event,
+  checkpoint, and OTel outcomes align on `STOPPED`; existing batch counts
+  continue to count real outcomes only.
+
+- **Background-control guides and examples** — added the task-based control
+  guide plus runnable synchronous and asynchronous examples covering immediate
+  return, retrieval policy, cooperative stop, and waiter cancellation.
+
 - **Truthful restored-map provenance** — checkpoint-skipped map children now return `RunResult(restored=True)` with a visible non-error `NodeRecord(status="restored")`. `MapResult.restored_count`, `MapLog.restored_count`, `RunEndEvent.batch_restored_items`, and `hypergraph.batch.restored_items` expose the restored subset while completed counts stay inclusive. Duration averages include only fresh completed items with real logs.
 
 - **Internal-step inspection escape hatch** — `get_steps(..., show_internal=True)`, SQLite `steps(...)`, and `RunInspector.steps(...)` can expose retention carrier rows for debugging; public views hide them by default while state reconstruction still folds them.
@@ -29,6 +46,11 @@
 - **`set_children` parent scoping** — the cleanup predicate in `set_children` now includes `_parent_id`, preventing accidental deletion of another parent's children when child identity values overlap.
 
 ### Changed
+
+- **Active workflow identity covers every execution shape** — a runner permits
+  only one active execution per `workflow_id`; duplicate blocking/background
+  starts fail before a second handle is returned. Different IDs are
+  independently controllable without a parallelism or start-order guarantee.
 
 - **GraphNode boundary projection (breaking refinement)** — `Graph.as_node()` is flat by default again: a wrapped graph's inputs and outputs appear in the parent graph under their local names. Use `Graph.as_node(namespaced=True)` to project a boundary under the resolved GraphNode name, e.g. `retrieval.query` and `retrieval.docs`. ([#97](https://github.com/gilad-rubin/hypergraph/issues/97))
 

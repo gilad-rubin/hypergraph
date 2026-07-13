@@ -197,7 +197,19 @@ Important types:
 - `ExecutionContext`: per-node execution environment threaded into executors
 - `GraphState`: runtime mutable state
 - `RunResult` / `MapResult`: execution outputs
+- `SyncHandle` / `AsyncHandle`: process-local control and retrieval for one live background execution
 - `RunLog` / `MapLog` / `NodeRecord`: always-on trace surfaces
+
+Background handles do not form a second execution kernel. `start_run()` and
+`start_map()` reserve an optional workflow identity, launch the same
+`run()`/`map()` lifecycle with captured failure policy, and return a minimal
+control object. Settled status and evidence remain on results.
+
+Active workflow ownership is runner-local and atomic across blocking and
+background run/map entrypoints. The reservation's exact stop signal is bound
+into the lifecycle before events or persistence mutate external state. One
+active execution per workflow ID is the invariant; distinct IDs are accepted
+without a physical parallelism or start-order promise.
 
 ### The Scheduler
 
@@ -238,6 +250,8 @@ Current split of responsibilities:
   - top-level dispatcher and run-status handling
   - batch persistence behavior
 - concrete runner modules
+  - public `start_run()` / `start_map()` submission
+  - active workflow reservation and cooperative stop ownership
   - scheduler loop
   - frontier stepping
   - superstep orchestration
@@ -337,6 +351,11 @@ Architecturally, the important point is:
    - notebooks and scripts query persisted runs without participating in execution
 
 That split is why `inspection.py` exists. It keeps inspection consumers from reaching directly into backend-specific helper methods.
+
+Background handles belong to neither durable mode. They are process-local live
+control channels. A persisted `ACTIVE` row is historical lifecycle state, not
+worker liveness; recovery creates a new execution under the resume contract.
+Stopped sparse maps persist only the parent plus real claimed children.
 
 ### Backends And Helpers
 
@@ -517,6 +536,8 @@ src/hypergraph/
 │   │   ├── outputs.py
 │   │   ├── map_inputs.py
 │   │   ├── map_resume.py
+│   │   ├── handles.py
+│   │   ├── stop.py
 │   │   ├── results.py
 │   │   ├── state.py
 │   │   ├── types.py                  compatibility re-exports

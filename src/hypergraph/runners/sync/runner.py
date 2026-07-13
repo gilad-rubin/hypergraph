@@ -98,13 +98,13 @@ class SyncRunner(SyncRunnerTemplate):
         }
 
     def stop(self, workflow_id: str, *, info: Any = None) -> None:
-        """Request cooperative stop for an active run.
+        """Request cooperative stop for an active run or map.
 
         No-op if the workflow_id is not currently running.
         Thread-safe: uses threading.Event internally for sync runner.
 
         Args:
-            workflow_id: The workflow to stop.
+            workflow_id: The active workflow execution to stop.
             info: Optional metadata attached to the stop signal.
         """
         self._active_workflows.stop(workflow_id, info=info)

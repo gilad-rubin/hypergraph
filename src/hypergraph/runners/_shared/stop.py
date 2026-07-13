@@ -1,7 +1,7 @@
 """Stop signal internals — not part of the public API.
 
 StopSignal wraps a threading.Event with optional metadata.  The runner
-creates one per active run and stores it in a contextvar so nested graphs
+creates one per active execution and stores it in a contextvar so nested graphs
 can read it without explicit wiring.
 
 threading.Event is used (not asyncio.Event) because runner.stop() is

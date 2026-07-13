@@ -1,6 +1,6 @@
 # Events API Reference
 
-The event system lets you observe graph execution without modifying your workflow logic. Events are emitted at key points — run start/end, node start/end, routing decisions — and delivered to processors you provide.
+The event system lets you observe graph execution without modifying your workflow logic. Events are emitted at key points — run start/end, node start/end, routing decisions — and delivered to processors you provide. The same processors can be passed to blocking `run()` / `map()` and background `start_run()` / `start_map()` calls.
 
 - **Event types** - Immutable dataclasses for each execution milestone
 - **EventProcessor** - Sync base class for consuming events
@@ -104,6 +104,13 @@ class RunEndEvent(BaseEvent):
 
 For map parents, `batch_completed_items` remains inclusive of checkpoint-restored successes and `batch_restored_items` reports that subset. OpenTelemetry processors export the same value as `hypergraph.batch.restored_items`. Restored children were skipped, so they do not emit new child execution events.
 
+All existing batch counts describe real settled child outcomes. If cooperative
+stop curtails a background map, unstarted inputs are not included in
+`batch_total_items` or any child count and do not emit child start/end events.
+Requested scope is available on `MapResult.requested_count` and
+`MapResult.unstarted_item_indexes`; no new event count field is added. The
+parent event's `status` and `batch_outcome` still report `"stopped"`.
+
 ### NodeStartEvent
 
 Emitted when a node begins execution.
@@ -186,7 +193,8 @@ class InterruptEvent(BaseEvent):
 
 ### StopRequestedEvent
 
-Emitted when a stop is requested on a workflow.
+Emitted when a cooperative stop is first accepted. The first request owns
+`info`; repeated requests do not emit replacement metadata.
 
 ```python
 @dataclass(frozen=True)
@@ -194,6 +202,11 @@ class StopRequestedEvent(BaseEvent):
     graph_name: str              # Graph being stopped
     info: object                 # Optional stop metadata
 ```
+
+A stopped background map emits exactly one parent-level stop event, including
+when stop arrives before any child is claimed. Claimed children may emit their
+own stop events at child graph boundaries; those do not replace the parent
+event.
 
 ### StreamingChunkEvent
 

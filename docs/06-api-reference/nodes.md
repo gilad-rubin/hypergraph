@@ -1208,7 +1208,10 @@ llm_reply.outputs  # ("response",)
 
 #### `stop_requested: bool`
 
-Read-only. `True` when `runner.stop(workflow_id)` has been called. The node checks this cooperatively and decides when to break.
+Read-only. `True` when cooperative stop was requested through either
+`runner.stop(workflow_id)` or the `SyncHandle` / `AsyncHandle` returned by a
+background start method. The node checks this cooperatively and decides when
+to break.
 
 ```python
 @node(output_name="results")
@@ -1220,6 +1223,11 @@ async def process_batch(items: list, ctx: NodeContext) -> list:
         results.append(await process(item))
     return results
 ```
+
+A handle can request stop even when the execution has no workflow ID. The same
+signal propagates through nested graphs; it does not hard-cancel a thread or
+async task. See
+[Control Work After It Starts](../05-how-to/control-background-execution.md#request-a-cooperative-stop).
 
 ### Methods
 
