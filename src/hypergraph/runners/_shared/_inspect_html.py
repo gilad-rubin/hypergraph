@@ -2,142 +2,263 @@
 
 from __future__ import annotations
 
-import html
+import json
 from dataclasses import dataclass
-from typing import Any
+from functools import lru_cache
+from importlib.resources import files
+from typing import Literal
 
 from hypergraph.runners._shared._inspect import MapInspection, RunInspection
+from hypergraph.runners._shared._inspect_serialization import (
+    serialize_value,
+    serialized_value_to_wire,
+)
+
+_INSPECT_SCHEMA = "hypergraph.inspect/v1"
+InspectionDeliveryState = Literal["live", "stale", "saved"]
 
 
-def _safe_repr(value: Any, *, limit: int = 20_000) -> str:
-    try:
-        rendered = repr(value)
-    except Exception as error:
-        rendered = f"<unrenderable {type(value).__name__}: {type(error).__name__}>"
-    if len(rendered) > limit:
-        return f"{rendered[: limit - 1]}… <truncated; original characters={len(rendered)}>"
-    return rendered
+def _serialized(value: object) -> dict[str, object]:
+    return serialized_value_to_wire(serialize_value(value))
 
 
-def _safe_str(value: Any) -> str:
-    try:
-        return str(value)
-    except Exception as error:
-        return f"<unrenderable {type(value).__name__}: {type(error).__name__}>"
+def _failure_wire(failure: object | None) -> dict[str, object] | None:
+    if failure is None:
+        return None
+    return {
+        "node_name": failure.node_name,  # type: ignore[attr-defined]
+        "error": _serialized(failure.error),  # type: ignore[attr-defined]
+        "inputs": _serialized(failure.inputs),  # type: ignore[attr-defined]
+        "superstep": failure.superstep,  # type: ignore[attr-defined]
+        "duration_ms": failure.duration_ms,  # type: ignore[attr-defined]
+        "graph_name": failure.graph_name,  # type: ignore[attr-defined]
+        "workflow_id": failure.workflow_id,  # type: ignore[attr-defined]
+        "item_index": failure.item_index,  # type: ignore[attr-defined]
+    }
 
 
-def _render_mapping(
-    values: dict[str, Any] | None,
-    *,
-    values_captured: bool,
-    restored: bool,
-) -> str:
-    if values is None:
-        if restored and not values_captured:
-            message = "restored values not captured"
-        else:
-            message = "not captured; rerun with inspect=True" if not values_captured else "not available"
-        return f'<p class="hg-inspect-missing">{html.escape(message)}</p>'
-    rows = "".join(
-        f"<tr><th>{html.escape(str(name))}</th><td><code>{html.escape(_safe_repr(value))}</code></td></tr>" for name, value in values.items()
+def _node_wire(node: object) -> dict[str, object]:
+    inputs = node.inputs  # type: ignore[attr-defined]
+    outputs = node.outputs  # type: ignore[attr-defined]
+    return {
+        "run_id": node.run_id,  # type: ignore[attr-defined]
+        "span_id": node.span_id,  # type: ignore[attr-defined]
+        "node_name": node.node_name,  # type: ignore[attr-defined]
+        "qualified_name": node.qualified_name,  # type: ignore[attr-defined]
+        "graph_name": node.graph_name,  # type: ignore[attr-defined]
+        "item_index": node.item_index,  # type: ignore[attr-defined]
+        "superstep": node.superstep,  # type: ignore[attr-defined]
+        "sequence": node.sequence,  # type: ignore[attr-defined]
+        "status": node.status,  # type: ignore[attr-defined]
+        "values_captured": node.values_captured,  # type: ignore[attr-defined]
+        "inputs": _serialized(inputs) if inputs is not None else None,
+        "outputs": _serialized(outputs) if outputs is not None else None,
+        "failure": _failure_wire(node.failure),  # type: ignore[attr-defined]
+        "started_at_ms": node.started_at_ms,  # type: ignore[attr-defined]
+        "ended_at_ms": node.ended_at_ms,  # type: ignore[attr-defined]
+        "duration_ms": node.duration_ms,  # type: ignore[attr-defined]
+        "cached": node.cached,  # type: ignore[attr-defined]
+    }
+
+
+def _run_wire(artifact: RunInspection) -> dict[str, object]:
+    error = getattr(artifact, "error", None)
+    return {
+        "run_id": artifact.run_id,
+        "graph_name": artifact.graph_name,
+        "workflow_id": artifact.workflow_id,
+        "item_index": artifact.item_index,
+        "status": artifact.status,
+        "total_duration_ms": artifact.total_duration_ms,
+        "captured": artifact.captured,
+        "terminal": artifact.terminal,
+        "error": _serialized(error) if error is not None else None,
+        "nodes": [_node_wire(node) for node in artifact.nodes],
+        "failures": [_failure_wire(failure) for failure in artifact.failures],
+    }
+
+
+def _map_wire(artifact: MapInspection) -> dict[str, object]:
+    error = getattr(artifact, "error", None)
+    items = [
+        {
+            "item_index": item.item_index,
+            "status": item.status,
+            "requested_inputs": (_serialized(item.requested_inputs) if item.requested_inputs is not None else None),
+            "run": _run_wire(item.run) if item.run is not None else None,
+            "restored": item.restored,
+        }
+        for item in artifact.items
+    ]
+    statuses = [item.status for item in artifact.items]
+    pending = max(
+        0,
+        artifact.requested_count - len(artifact.items) - len(artifact.unstarted_item_indexes),
     )
-    return f'<table class="hg-inspect-values"><tbody>{rows}</tbody></table>'
+    return {
+        "run_id": artifact.run_id,
+        "graph_name": artifact.graph_name,
+        "workflow_id": artifact.workflow_id,
+        "status": artifact.status,
+        "map_over": list(artifact.map_over),
+        "map_mode": artifact.map_mode,
+        "requested_count": artifact.requested_count,
+        "total_duration_ms": artifact.total_duration_ms,
+        "captured": artifact.captured,
+        "terminal": artifact.terminal,
+        "error": _serialized(error) if error is not None else None,
+        "counts": {
+            "requested": artifact.requested_count,
+            "claimed": len(artifact.items),
+            "completed": artifact.completed_count,
+            "failed": artifact.failed_count,
+            "running": statuses.count("running"),
+            "paused": statuses.count("paused"),
+            "stopped": statuses.count("stopped"),
+            "restored": artifact.restored_count,
+            "unstarted": artifact.unstarted_count,
+            "pending": pending,
+        },
+        "items": items,
+        "unstarted_item_indexes": list(artifact.unstarted_item_indexes),
+    }
+
+
+def _script_safe_json(payload: dict[str, object]) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(",", ":"),
+    )
+    return encoded.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
+@lru_cache(maxsize=2)
+def _read_asset(name: str) -> str:
+    """Read one packaged renderer asset without a network or runtime dependency."""
+    return files("hypergraph.runners._shared.assets").joinpath(name).read_text(encoding="utf-8")
+
+
+def render_inspection_payload(payload: dict[str, object]) -> str:
+    """Render one already-built payload into the immutable offline shell."""
+    kind = str(payload["kind"])
+    return (
+        f"<style data-hg-inspect-style>{_read_asset('inspect.css')}</style>"
+        f'<section class="hg-inspect{" hg-inspect-map" if kind == "map" else ""}" '
+        f'data-hypergraph-inspect="{kind}" data-inspect-schema="{_INSPECT_SCHEMA}">'
+        '<header class="hg-inspect-header">'
+        '<div><div class="hg-inspect-eyebrow">Hypergraph inspect</div>'
+        '<h2 class="hg-inspect-title" data-hg-title>Loading inspection…</h2>'
+        '<code class="hg-inspect-run-id" data-hg-run-id></code></div>'
+        '<div class="hg-inspect-header-meta">'
+        '<span class="hg-inspect-delivery" data-hg-delivery>'
+        '<span class="hg-inspect-dot" aria-hidden="true"></span>'
+        "<span data-hg-delivery-label>Saved snapshot</span></span>"
+        '<span class="hg-inspect-badge" data-hg-sequence></span>'
+        "</div></header>"
+        '<div class="hg-inspect-summary" data-hg-summary '
+        'aria-label="Execution summary"></div>'
+        '<div class="hg-inspect-alert" data-hg-alert role="status" '
+        'aria-live="polite" hidden>'
+        "<span data-hg-alert-text></span>"
+        '<button type="button" class="hg-inspect-button" '
+        'data-action="show-failure" data-hg-show-failure>Show failure</button>'
+        "</div>"
+        f'<div class="hg-inspect-body" data-hg-body data-kind="{kind}">'
+        '<aside class="hg-inspect-items" data-hg-items aria-label="Map items">'
+        '<div class="hg-inspect-section-title">Items</div>'
+        '<label class="hg-inspect-field-label">Status'
+        '<select class="hg-inspect-select" data-hg-filter>'
+        '<option value="all">All</option><option value="failed">Failed</option>'
+        '<option value="running">Running</option>'
+        '<option value="completed">Completed</option>'
+        '<option value="restored">Restored</option>'
+        '<option value="unstarted">Unstarted</option>'
+        "</select></label>"
+        '<div class="hg-inspect-item-list" data-hg-item-list></div>'
+        '<div class="hg-inspect-pager">'
+        '<button type="button" class="hg-inspect-button" '
+        'data-action="prev-page" data-hg-prev-page>Prev</button>'
+        "<span data-hg-page-label></span>"
+        '<button type="button" class="hg-inspect-button" '
+        'data-action="next-page" data-hg-next-page>Next</button>'
+        "</div></aside>"
+        '<main class="hg-inspect-main" data-hg-main>'
+        '<nav class="hg-inspect-tabs" role="tablist" aria-label="Inspect view">'
+        '<button type="button" class="hg-inspect-tab" role="tab" '
+        'data-action="view" data-hg-view="items">Items</button>'
+        '<button type="button" class="hg-inspect-tab" role="tab" '
+        'data-action="view" data-hg-view="timeline">Timeline</button>'
+        '<button type="button" class="hg-inspect-tab" role="tab" '
+        'data-action="view" data-hg-view="graph">Graph</button>'
+        "</nav>"
+        '<section class="hg-inspect-panel" role="tabpanel" '
+        'data-hg-panel="items"></section>'
+        '<section class="hg-inspect-panel" role="tabpanel" '
+        'data-hg-panel="timeline"></section>'
+        '<section class="hg-inspect-panel" role="tabpanel" '
+        'data-hg-panel="graph"></section>'
+        "</main>"
+        '<aside class="hg-inspect-detail" data-hg-detail '
+        'aria-label="Selected execution details"></aside>'
+        "</div>"
+        '<footer class="hg-inspect-footer">'
+        "<span data-hg-state-proof>View state is local to this snapshot.</span>"
+        "<span data-hg-delivery-note>"
+        "Saved output is locally interactive without a kernel or network."
+        "</span></footer>"
+        "<noscript>JavaScript is required for local drill-down; the semantic "
+        "payload remains embedded in this saved output.</noscript>"
+        f'<script type="application/json" data-hg-inspect-payload>'
+        f"{_script_safe_json(payload)}</script>"
+        f"<script data-hg-inspect-runtime>{_read_asset('inspect.js')}</script>"
+        "</section>"
+    )
+
+
+def build_inspection_payload(
+    artifact: RunInspection | MapInspection,
+    *,
+    delivery_state: InspectionDeliveryState,
+    delivery_label: str,
+) -> dict[str, object]:
+    """Build the one semantic wire shared by saved and live delivery."""
+    if isinstance(artifact, MapInspection):
+        return {
+            "schema": _INSPECT_SCHEMA,
+            "kind": "map",
+            "default_view": "items",
+            "delivery": {"state": delivery_state, "label": delivery_label},
+            "map": _map_wire(artifact),
+        }
+    return {
+        "schema": _INSPECT_SCHEMA,
+        "kind": "run",
+        "default_view": "timeline",
+        "delivery": {"state": delivery_state, "label": delivery_label},
+        "run": _run_wire(artifact),
+    }
 
 
 def render_run_inspection(artifact: RunInspection) -> str:
-    """Render one run artifact without executing or trusting captured values."""
-    node_sections: list[str] = []
-    for node in artifact.nodes:
-        status = html.escape(node.status)
-        failure_html = ""
-        if node.failure is not None:
-            failure_html = (
-                '<section class="hg-inspect-error"><h4>Error</h4>'
-                f"<code>{html.escape(type(node.failure.error).__name__)}: "
-                f"{html.escape(_safe_str(node.failure.error))}</code></section>"
-            )
-        node_sections.append(
-            '<details class="hg-inspect-node" open>'
-            "<summary>"
-            f"<strong>{html.escape(node.qualified_name)}</strong> "
-            f'<span data-status="{status}">{status}</span> '
-            f"<span>{node.duration_ms:.3f} ms</span>"
-            f"{' <span>cached</span>' if node.cached else ''}"
-            "</summary>"
-            '<div class="hg-inspect-grid">'
-            "<section><h4>Inputs</h4>"
-            f"{_render_mapping(node.inputs, values_captured=node.values_captured, restored=node.status == 'restored')}</section>"
-            "<section><h4>Outputs</h4>"
-            f"{_render_mapping(node.outputs, values_captured=node.values_captured, restored=node.status == 'restored')}</section>"
-            "</div>"
-            f"{failure_html}"
-            "</details>"
-        )
-
-    captured_note = (
-        "Captured values are shallow snapshots. Treat saved output as sensitive."
-        if artifact.captured
-        else "Successful-node values were not captured; rerun with inspect=True."
+    """Render one run artifact as a semantic, versioned saved snapshot."""
+    payload = build_inspection_payload(
+        artifact,
+        delivery_state="saved",
+        delivery_label="Saved snapshot",
     )
-    return (
-        '<div class="hg-inspect" data-hypergraph-inspect="run">'
-        "<style>"
-        ".hg-inspect{font:14px/1.45 system-ui,sans-serif;color:inherit;border:1px solid #8884;border-radius:10px;overflow:hidden}"
-        ".hg-inspect header,.hg-inspect footer{padding:12px 14px;background:#8881}"
-        ".hg-inspect h3,.hg-inspect h4,.hg-inspect p{margin:0}"
-        ".hg-inspect-node{padding:10px 14px;border-top:1px solid #8883}"
-        ".hg-inspect-node summary{cursor:pointer;display:flex;gap:8px;align-items:center}"
-        ".hg-inspect-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}"
-        ".hg-inspect-values{width:100%;border-collapse:collapse}.hg-inspect-values th,.hg-inspect-values td{text-align:left;vertical-align:top;padding:4px;border-top:1px solid #8882}"
-        ".hg-inspect-values code{white-space:pre-wrap;overflow-wrap:anywhere}.hg-inspect-missing{opacity:.65}"
-        "@media(max-width:600px){.hg-inspect-grid{grid-template-columns:1fr}}"
-        "</style>"
-        "<header>"
-        f"<h3>{html.escape(artifact.graph_name or 'Hypergraph run')}</h3>"
-        f"<p>{html.escape(artifact.status)} · {html.escape(artifact.run_id)} · "
-        f"{artifact.total_duration_ms:.3f} ms</p>"
-        "</header>"
-        f"{''.join(node_sections)}"
-        f"<footer><p>{html.escape(captured_note)}</p></footer>"
-        "</div>"
-    )
+    return render_inspection_payload(payload)
 
 
 def render_map_inspection(artifact: MapInspection) -> str:
-    """Render one batch artifact with original-index child drill-down."""
-    item_sections: list[str] = []
-    for item in artifact.items:
-        requested = _render_mapping(
-            item.requested_inputs,
-            values_captured=artifact.captured,
-            restored=False,
-        )
-        run = render_run_inspection(item.run) if item.run is not None else '<p class="hg-inspect-missing">run has not published yet</p>'
-        item_sections.append(
-            '<details class="hg-inspect-map-item">'
-            f"<summary><strong>Item {item.item_index}</strong> "
-            f'<span data-status="{html.escape(item.status)}">'
-            f"{html.escape(item.status)}</span></summary>"
-            "<section><h4>Requested map inputs</h4>"
-            f"{requested}</section>{run}</details>"
-        )
-
-    unstarted = ""
-    if artifact.unstarted_item_indexes:
-        indexes = ", ".join(str(index) for index in artifact.unstarted_item_indexes)
-        unstarted = f'<p class="hg-inspect-unstarted">Unstarted item indexes: {html.escape(indexes)}</p>'
-    return (
-        '<div class="hg-inspect hg-inspect-map" data-hypergraph-inspect="map">'
-        "<header>"
-        f"<h3>{html.escape(artifact.graph_name or 'Hypergraph map')}</h3>"
-        f"<p>{html.escape(artifact.status)} · "
-        f"{html.escape(artifact.run_id or 'no run id')} · "
-        f"requested {artifact.requested_count} · completed {artifact.completed_count} · "
-        f"failed {artifact.failed_count} · restored {artifact.restored_count} · "
-        f"unstarted {artifact.unstarted_count}</p>"
-        f"{unstarted}</header>{''.join(item_sections)}"
-        "</div>"
+    """Render one map artifact as a semantic original-index snapshot."""
+    payload = build_inspection_payload(
+        artifact,
+        delivery_state="saved",
+        delivery_label="Saved snapshot",
     )
+    return render_inspection_payload(payload)
 
 
 @dataclass(frozen=True, slots=True)
