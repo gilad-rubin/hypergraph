@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from hypergraph import AsyncRunner, Graph, RunStatus, SyncRunner, node
+from hypergraph.runners._shared._inspect import MapInspectionSession
 
 
 class _ExplodingGetCache:
@@ -31,6 +32,53 @@ class _ExplodingSetCache:
 
     def set(self, key: str, value: Any) -> None:
         raise self.error
+
+
+def test_terminal_map_session_ignores_late_child_publication_and_settlement() -> None:
+    @node(output_name="answer")
+    def identity(value: int) -> int:
+        return value
+
+    completed = SyncRunner().run(
+        Graph([identity], name="completed-map-sibling"),
+        {"value": 1},
+        inspect=True,
+    )
+    session = MapInspectionSession(
+        graph_name="terminal-map",
+        workflow_id="terminal-map",
+        requested_count=3,
+        map_over=("value",),
+        map_mode="zip",
+    )
+    session.bind_run("terminal-map-run")
+    session.claim_item(item_index=0, requested_inputs={"value": 1}, workflow_id="terminal-map/0")
+    session.settle_item(item_index=0, result=completed)
+    late_child = session.claim_item(item_index=1, requested_inputs={"value": 2}, workflow_id="terminal-map/1")
+    session.claim_item(item_index=2, requested_inputs={"value": 3}, workflow_id="terminal-map/2")
+
+    terminal = session.finish(
+        status="failed",
+        total_duration_ms=1.0,
+        error=RuntimeError("batch failed"),
+    )
+    assert [(item.item_index, item.status) for item in terminal.items] == [
+        (0, "completed"),
+        (1, "failed"),
+        (2, "failed"),
+    ]
+    assert terminal.items[0].run is completed.inspect().artifact
+
+    with pytest.raises(RuntimeError, match="terminal"):
+        session.claim_item(item_index=3, requested_inputs={"value": 4}, workflow_id="terminal-map/3")
+    session.bind_run("terminal-map-run")
+    with pytest.raises(RuntimeError, match="another batch run"):
+        session.bind_run("different-map-run")
+    assert session.finish(status="completed", total_duration_ms=3.0) is terminal
+    late_child.finish(status="completed", total_duration_ms=2.0)
+    session.settle_item(item_index=2, result=completed)
+
+    assert session.snapshot() is terminal
 
 
 async def test_nested_infrastructure_failure_settles_every_terminal_node_sync_and_async() -> None:

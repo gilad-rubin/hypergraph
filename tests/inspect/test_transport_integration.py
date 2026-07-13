@@ -8,11 +8,13 @@ import subprocess
 import sys
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from hypergraph import AsyncRunner, Graph, SyncRunner, interrupt, node
+from hypergraph import AsyncRunner, Graph, SqliteCheckpointer, SyncRunner, interrupt, node
+from hypergraph.checkpointers import MemoryCheckpointer
 from hypergraph.runners._shared import _inspect_transport
 from hypergraph.runners._shared._inspect import MapInspection, RunInspection
 from hypergraph.runners._shared.input_normalization import runner_option_names
@@ -21,6 +23,7 @@ from hypergraph.runners._shared.input_normalization import runner_option_names
 class _RecordingTransport:
     def __init__(self, initial_artifact: RunInspection | MapInspection) -> None:
         self.initial_artifact = initial_artifact
+        self.session: Any | None = None
         self.attach_threads: list[int] = []
         self.attach_loops: list[asyncio.AbstractEventLoop | None] = []
         self.publication_threads: list[int] = []
@@ -29,6 +32,7 @@ class _RecordingTransport:
         self.closed = False
 
     def attach(self, session: Any) -> None:
+        self.session = session
         self.attach_threads.append(threading.get_ident())
         try:
             loop = asyncio.get_running_loop()
@@ -112,6 +116,355 @@ def _graph(name: str = "transport-graph") -> Graph:
         return value * 2
 
     return Graph([double], name=name)
+
+
+class _HostileRepr:
+    def __init__(self, error: RuntimeError) -> None:
+        self.error = error
+
+    def __repr__(self) -> str:
+        raise self.error
+
+
+def _repr_boundary_graph(name: str) -> Graph:
+    @node(output_name="kind")
+    def identify(value: object) -> str:
+        return type(value).__name__
+
+    return Graph([identify], name=name)
+
+
+def _fail_top_level_release_once(
+    runner: SyncRunner | AsyncRunner,
+    *,
+    workflow_id: str,
+    error: RuntimeError,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reserve = runner._active_workflows.reserve
+
+    def reserve_with_failing_release(current_workflow_id: str | None) -> Any:
+        reservation = reserve(current_workflow_id)
+        if current_workflow_id != workflow_id:
+            return reservation
+        release = reservation.release
+        pending_failure = True
+
+        def fail_once() -> None:
+            nonlocal pending_failure
+            if pending_failure:
+                pending_failure = False
+                raise error
+            release()
+
+        monkeypatch.setattr(reservation, "release", fail_once)
+        return reservation
+
+    monkeypatch.setattr(runner._active_workflows, "reserve", reserve_with_failing_release)
+
+
+def _assert_failed_terminal_artifact(
+    artifact: RunInspection,
+    error: BaseException,
+) -> None:
+    assert artifact.terminal is True
+    assert artifact.status == "failed"
+    assert artifact.error is error
+    assert artifact.failures == ()
+    assert artifact.nodes
+    assert all(item.status == "failed" for item in artifact.nodes)
+
+
+def _assert_failed_terminal_map_artifact(
+    artifact: MapInspection,
+    error: BaseException,
+) -> None:
+    assert artifact.terminal is True
+    assert artifact.status == "failed"
+    assert artifact.error is error
+    assert [(item.item_index, item.status) for item in artifact.items] == [
+        (0, "completed"),
+        (1, "failed"),
+    ]
+    assert artifact.unstarted_item_indexes == (2,)
+    assert artifact.items[0].run is not None
+    assert artifact.items[0].run.terminal is True
+    assert artifact.items[1].run is None or artifact.items[1].run.failures == ()
+    assert all(node.status != "running" for item in artifact.items if item.run is not None for node in item.run.nodes)
+
+
+@pytest.mark.asyncio
+async def test_sync_and_async_run_baseexception_settles_inspection_before_escape(
+    factory: _FactoryRecorder,
+) -> None:
+    sync_error = KeyboardInterrupt("SYNC-FATAL-NODE")
+
+    @node(output_name="answer")
+    def sync_interrupt(value: int) -> int:
+        raise sync_error
+
+    with pytest.raises(KeyboardInterrupt) as sync_raised:
+        SyncRunner().run(
+            Graph([sync_interrupt], name="sync-fatal-inspection"),
+            {"value": 1},
+            inspect=True,
+        )
+    sync_artifact = factory.transports[-1].artifacts[-1]
+
+    async_started = asyncio.Event()
+    async_release = asyncio.Event()
+
+    @node(output_name="answer")
+    async def async_wait(value: int) -> int:
+        async_started.set()
+        await async_release.wait()
+        return value
+
+    async_task = asyncio.create_task(
+        AsyncRunner().run(
+            Graph([async_wait], name="async-fatal-inspection"),
+            {"value": 1},
+            inspect=True,
+        )
+    )
+    await async_started.wait()
+    async_task.cancel("ASYNC-FATAL-NODE")
+    with pytest.raises(asyncio.CancelledError) as async_raised:
+        await async_task
+    async_artifact = factory.transports[-1].artifacts[-1]
+
+    assert sync_raised.value is sync_error
+    assert isinstance(sync_artifact, RunInspection)
+    assert isinstance(async_artifact, RunInspection)
+    _assert_failed_terminal_artifact(sync_artifact, sync_error)
+    _assert_failed_terminal_artifact(async_artifact, async_raised.value)
+
+
+@pytest.mark.asyncio
+async def test_sync_and_async_map_baseexception_settles_batch_and_blocks_late_child_updates(
+    factory: _FactoryRecorder,
+) -> None:
+    sync_error = KeyboardInterrupt("SYNC-FATAL-MAP")
+
+    @node(output_name="answer")
+    def sync_interrupt(value: int) -> int:
+        raise sync_error
+
+    with pytest.raises(KeyboardInterrupt) as sync_raised:
+        SyncRunner().map(
+            Graph([sync_interrupt], name="sync-fatal-map-inspection"),
+            {"value": [1, 2]},
+            map_over="value",
+            inspect=True,
+        )
+    sync_artifact = factory.transports[-1].artifacts[-1]
+
+    async_started_values: list[int] = []
+    async_started = asyncio.Event()
+    async_release = asyncio.Event()
+
+    @node(output_name="answer")
+    async def async_wait(value: int) -> int:
+        async_started_values.append(value)
+        if len(async_started_values) == 2:
+            async_started.set()
+        await async_release.wait()
+        return value
+
+    async_task = asyncio.create_task(
+        AsyncRunner().map(
+            Graph([async_wait], name="async-fatal-map-inspection"),
+            {"value": [1, 2, 3]},
+            map_over="value",
+            max_concurrency=2,
+            inspect=True,
+        )
+    )
+    await async_started.wait()
+    async_transport = factory.transports[-1]
+    async_task.cancel("ASYNC-FATAL-MAP")
+    with pytest.raises(asyncio.CancelledError) as async_raised:
+        await async_task
+
+    assert async_transport.session is not None
+    terminal_revision = async_transport.session.snapshot().revision
+    await asyncio.sleep(0)
+    async_artifact = async_transport.session.snapshot()
+
+    assert sync_raised.value is sync_error
+    assert isinstance(sync_artifact, MapInspection)
+    assert isinstance(async_artifact, MapInspection)
+    for artifact, error in (
+        (sync_artifact, sync_error),
+        (async_artifact, async_raised.value),
+    ):
+        assert artifact.terminal is True
+        assert artifact.status == "failed"
+        assert artifact.error is error
+        assert artifact.items
+        assert all(item.status != "running" for item in artifact.items)
+        assert all(item.run is None or item.run.terminal for item in artifact.items)
+        assert all(node.status != "running" for item in artifact.items if item.run is not None for node in item.run.nodes)
+    assert async_artifact.revision == terminal_revision
+
+
+@pytest.mark.asyncio
+async def test_sync_and_async_map_hostile_repr_settles_claimed_items_and_keeps_original_error(
+    factory: _FactoryRecorder,
+    tmp_path: Path,
+) -> None:
+    sync_plain_value = _HostileRepr(RuntimeError("SYNC-PLAIN-REPR"))
+    sync_plain = SyncRunner().map(
+        _repr_boundary_graph("sync-plain-hostile-map"),
+        {"value": [1, sync_plain_value, 3]},
+        map_over="value",
+        inspect=True,
+    )
+    assert [result["kind"] for result in sync_plain] == ["int", "_HostileRepr", "int"]
+    assert sync_plain.inspect().artifact.status == "completed"
+    assert "repr failed (RuntimeError)" in sync_plain.inspect()._repr_html_()
+
+    async_plain_value = _HostileRepr(RuntimeError("ASYNC-PLAIN-REPR"))
+    async_plain = await AsyncRunner().map(
+        _repr_boundary_graph("async-plain-hostile-map"),
+        {"value": [1, async_plain_value, 3]},
+        map_over="value",
+        max_concurrency=1,
+        inspect=True,
+    )
+    assert [result["kind"] for result in async_plain] == ["int", "_HostileRepr", "int"]
+    assert async_plain.inspect().artifact.status == "completed"
+    assert "repr failed (RuntimeError)" in async_plain.inspect()._repr_html_()
+
+    sync_error = RuntimeError("SYNC-MAP-SIGNATURE-REPR")
+    sync_checkpointer = SqliteCheckpointer(str(tmp_path / "sync-hostile-map.db"))
+    sync_checkpointer._sync_db()
+    try:
+        with pytest.raises(RuntimeError) as sync_raised:
+            SyncRunner(checkpointer=sync_checkpointer).map(
+                _repr_boundary_graph("sync-hostile-map"),
+                {"value": [1, _HostileRepr(sync_error), 3]},
+                map_over="value",
+                workflow_id="sync-hostile-map",
+                inspect=True,
+            )
+    finally:
+        if sync_checkpointer._sync_conn is not None:
+            sync_checkpointer._sync_conn.close()
+    sync_artifact = factory.transports[-1].artifacts[-1]
+
+    async_error = RuntimeError("ASYNC-MAP-SIGNATURE-REPR")
+    async_checkpointer = MemoryCheckpointer()
+    with pytest.raises(RuntimeError) as async_raised:
+        await AsyncRunner(checkpointer=async_checkpointer).map(
+            _repr_boundary_graph("async-hostile-map"),
+            {"value": [1, _HostileRepr(async_error), 3]},
+            map_over="value",
+            max_concurrency=1,
+            workflow_id="async-hostile-map",
+            inspect=True,
+        )
+    await async_checkpointer.close()
+    async_artifact = factory.transports[-1].artifacts[-1]
+
+    assert sync_raised.value is sync_error
+    assert async_raised.value is async_error
+    assert isinstance(sync_artifact, MapInspection)
+    assert isinstance(async_artifact, MapInspection)
+    _assert_failed_terminal_map_artifact(sync_artifact, sync_error)
+    _assert_failed_terminal_map_artifact(async_artifact, async_error)
+
+
+@pytest.mark.asyncio
+async def test_final_release_failure_replaces_success_before_terminal_publication(
+    factory: _FactoryRecorder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sync_run_error = RuntimeError("SYNC-RUN-RELEASE")
+    sync_run = SyncRunner()
+    _fail_top_level_release_once(
+        sync_run,
+        workflow_id="sync-release-run",
+        error=sync_run_error,
+        monkeypatch=monkeypatch,
+    )
+    with pytest.raises(RuntimeError) as sync_run_raised:
+        sync_run.run(
+            _graph("sync-release-run"),
+            {"value": 1},
+            workflow_id="sync-release-run",
+            inspect=True,
+        )
+    assert sync_run_raised.value is sync_run_error
+    sync_run_artifacts = factory.transports[-1].artifacts
+
+    sync_map_error = RuntimeError("SYNC-MAP-RELEASE")
+    sync_map = SyncRunner()
+    _fail_top_level_release_once(
+        sync_map,
+        workflow_id="sync-release-map",
+        error=sync_map_error,
+        monkeypatch=monkeypatch,
+    )
+    with pytest.raises(RuntimeError) as sync_map_raised:
+        sync_map.map(
+            _graph("sync-release-map"),
+            {"value": [1]},
+            map_over="value",
+            workflow_id="sync-release-map",
+            inspect=True,
+        )
+    assert sync_map_raised.value is sync_map_error
+    sync_map_artifacts = factory.transports[-1].artifacts
+
+    async_run_error = RuntimeError("ASYNC-RUN-RELEASE")
+    async_run = AsyncRunner()
+    _fail_top_level_release_once(
+        async_run,
+        workflow_id="async-release-run",
+        error=async_run_error,
+        monkeypatch=monkeypatch,
+    )
+    with pytest.raises(RuntimeError) as async_run_raised:
+        await async_run.run(
+            _graph("async-release-run"),
+            {"value": 1},
+            workflow_id="async-release-run",
+            inspect=True,
+        )
+    assert async_run_raised.value is async_run_error
+    async_run_artifacts = factory.transports[-1].artifacts
+
+    async_map_error = RuntimeError("ASYNC-MAP-RELEASE")
+    async_map = AsyncRunner()
+    _fail_top_level_release_once(
+        async_map,
+        workflow_id="async-release-map",
+        error=async_map_error,
+        monkeypatch=monkeypatch,
+    )
+    with pytest.raises(RuntimeError) as async_map_raised:
+        await async_map.map(
+            _graph("async-release-map"),
+            {"value": [1]},
+            map_over="value",
+            max_concurrency=1,
+            workflow_id="async-release-map",
+            inspect=True,
+        )
+    assert async_map_raised.value is async_map_error
+    async_map_artifacts = factory.transports[-1].artifacts
+
+    for artifacts, error in (
+        (sync_run_artifacts, sync_run_error),
+        (sync_map_artifacts, sync_map_error),
+        (async_run_artifacts, async_run_error),
+        (async_map_artifacts, async_map_error),
+    ):
+        terminal = [artifact for artifact in artifacts if artifact.terminal]
+        assert terminal == [artifacts[-1]]
+        assert terminal[0].status == "failed"
+        assert terminal[0].error is error
 
 
 def test_direct_sync_run_and_map_open_once_and_preserve_settled_identity(
@@ -592,39 +945,67 @@ class _AsyncDoubleBoundaryRunner(AsyncRunner):
         return await super()._emit_run_end_async(*args, **kwargs)
 
 
-def test_sync_failure_reporting_error_uses_final_propagated_stale_truth(
+@pytest.mark.parametrize("map_only", [False, True])
+def test_sync_failure_reporting_error_terminalizes_with_final_propagated_truth(
     factory: _FactoryRecorder,
+    map_only: bool,
 ) -> None:
     first = RuntimeError("SYNC-SUCCESS-BOUNDARY-BOOM")
     final = RuntimeError("SYNC-ERROR-REPORTING-BOOM")
+    runner = _SyncDoubleBoundaryRunner(first, final)
     with pytest.raises(RuntimeError) as raised:
-        _SyncDoubleBoundaryRunner(first, final).run(
-            _graph("sync-double-boundary"),
-            {"value": 1},
-            inspect=True,
-        )
+        if map_only:
+            runner.map(
+                _graph("sync-double-boundary-map"),
+                {"value": [1]},
+                map_over="value",
+                inspect=True,
+            )
+        else:
+            runner.run(
+                _graph("sync-double-boundary-run"),
+                {"value": 1},
+                inspect=True,
+            )
 
     assert raised.value is final
-    assert factory.transports[-1].failures == [final]
-    assert not any(item.terminal for item in factory.transports[-1].artifacts)
+    assert factory.transports[-1].failures == []
+    artifact = factory.transports[-1].artifacts[-1]
+    assert artifact.terminal is True
+    assert artifact.status == "failed"
+    assert artifact.error is final
 
 
 @pytest.mark.asyncio
-async def test_async_failure_reporting_error_uses_final_propagated_stale_truth(
+@pytest.mark.parametrize("map_only", [False, True])
+async def test_async_failure_reporting_error_terminalizes_with_final_propagated_truth(
     factory: _FactoryRecorder,
+    map_only: bool,
 ) -> None:
     first = RuntimeError("ASYNC-SUCCESS-BOUNDARY-BOOM")
     final = RuntimeError("ASYNC-ERROR-REPORTING-BOOM")
+    runner = _AsyncDoubleBoundaryRunner(first, final)
     with pytest.raises(RuntimeError) as raised:
-        await _AsyncDoubleBoundaryRunner(first, final).run(
-            _graph("async-double-boundary"),
-            {"value": 1},
-            inspect=True,
-        )
+        if map_only:
+            await runner.map(
+                _graph("async-double-boundary-map"),
+                {"value": [1]},
+                map_over="value",
+                inspect=True,
+            )
+        else:
+            await runner.run(
+                _graph("async-double-boundary-run"),
+                {"value": 1},
+                inspect=True,
+            )
 
     assert raised.value is final
-    assert factory.transports[-1].failures == [final]
-    assert not any(item.terminal for item in factory.transports[-1].artifacts)
+    assert factory.transports[-1].failures == []
+    artifact = factory.transports[-1].artifacts[-1]
+    assert artifact.terminal is True
+    assert artifact.status == "failed"
+    assert artifact.error is final
 
 
 @pytest.mark.asyncio
@@ -801,7 +1182,11 @@ async def test_direct_reservation_failures_settle_exact_run_and_map_shells(
                     inspect=True,
                 )
         assert raised.value is error
-        assert factory.transports[-1].failures == [error]
+        assert factory.transports[-1].failures == []
+        artifact = factory.transports[-1].artifacts[-1]
+        assert artifact.terminal is True
+        assert artifact.status == "failed"
+        assert artifact.error is error
 
 
 class _SyncShutdownFailureRunner(SyncRunner):
@@ -899,7 +1284,11 @@ async def test_async_pause_shutdown_failure_never_publishes_paused_terminal(
 
     assert raised.value is error
     assert not any(item.terminal and item.status == "paused" for item in factory.transports[-1].artifacts)
-    assert factory.transports[-1].failures == [error]
+    assert factory.transports[-1].failures == []
+    artifact = factory.transports[-1].artifacts[-1]
+    assert artifact.terminal is True
+    assert artifact.status == "failed"
+    assert artifact.error is error
 
 
 @pytest.mark.asyncio
@@ -938,40 +1327,59 @@ async def test_direct_lineage_and_progress_setup_failures_settle_exact_shells(
         fail_progress,
     )
     progress_operations = (
-        lambda: SyncRunner().run(
-            _graph("sync-progress-run"),
-            {"value": 1},
-            inspect=True,
-            show_progress=True,
+        (
+            lambda: SyncRunner().run(
+                _graph("sync-progress-run"),
+                {"value": 1},
+                inspect=True,
+                show_progress=True,
+            ),
+            True,
         ),
-        lambda: SyncRunner().map(
-            _graph("sync-progress-map"),
-            {"value": [1]},
-            map_over="value",
-            inspect=True,
-            show_progress=True,
+        (
+            lambda: SyncRunner().map(
+                _graph("sync-progress-map"),
+                {"value": [1]},
+                map_over="value",
+                inspect=True,
+                show_progress=True,
+            ),
+            False,
         ),
-        lambda: AsyncRunner().run(
-            _graph("async-progress-run"),
-            {"value": 1},
-            inspect=True,
-            show_progress=True,
+        (
+            lambda: AsyncRunner().run(
+                _graph("async-progress-run"),
+                {"value": 1},
+                inspect=True,
+                show_progress=True,
+            ),
+            True,
         ),
-        lambda: AsyncRunner().map(
-            _graph("async-progress-map"),
-            {"value": [1]},
-            map_over="value",
-            inspect=True,
-            show_progress=True,
+        (
+            lambda: AsyncRunner().map(
+                _graph("async-progress-map"),
+                {"value": [1]},
+                map_over="value",
+                inspect=True,
+                show_progress=True,
+            ),
+            False,
         ),
     )
-    for operation in progress_operations:
+    for operation, attached in progress_operations:
         with pytest.raises(RuntimeError) as raised:
             result = operation()
             if python_inspect.isawaitable(result):
                 await result
         assert raised.value is error
-        assert factory.transports[-1].failures == [error]
+        if attached:
+            assert factory.transports[-1].failures == []
+            artifact = factory.transports[-1].artifacts[-1]
+            assert artifact.terminal is True
+            assert artifact.status == "failed"
+            assert artifact.error is error
+        else:
+            assert factory.transports[-1].failures == [error]
 
 
 @pytest.mark.asyncio
@@ -990,4 +1398,9 @@ async def test_async_unbounded_map_rejection_settles_exact_shell(
             map_over="value",
             inspect=True,
         )
-    assert factory.transports[-1].failures == [raised.value]
+    assert factory.transports[-1].failures == []
+    artifact = factory.transports[-1].artifacts[-1]
+    assert artifact.terminal is True
+    assert artifact.status == "failed"
+    assert artifact.error is raised.value
+    assert artifact.unstarted_item_indexes == (0,)

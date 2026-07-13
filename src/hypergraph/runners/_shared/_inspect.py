@@ -483,6 +483,10 @@ class MapInspectionSession:
     def bind_run(self, run_id: str | None) -> None:
         """Bind the parent batch run ID, including ``None`` for an empty map."""
         with self._lock:
+            if self._artifact.terminal:
+                if self._artifact.run_id == run_id:
+                    return
+                raise RuntimeError("MapInspectionSession is already bound to another batch run.")
             if self._artifact.run_id not in {"pending", run_id}:
                 raise RuntimeError("MapInspectionSession is already bound to another batch run.")
             self._replace_artifact_locked(run_id=run_id)
@@ -496,6 +500,8 @@ class MapInspectionSession:
     ) -> InspectionSession:
         """Record one real scheduler claim and return its child session."""
         with self._lock:
+            if self._artifact.terminal:
+                raise RuntimeError("Cannot claim a map item after inspection is terminal.")
             if any(item.item_index == item_index for item in self._artifact.items):
                 raise RuntimeError(f"Map item {item_index} was already claimed.")
             item = MapItemInspection(
@@ -530,9 +536,14 @@ class MapInspectionSession:
 
     def settle_item(self, *, item_index: int, result: RunResult) -> None:
         """Attach the exact settled child artifact, or an honest degraded one."""
+        with self._lock:
+            if self._artifact.terminal:
+                return
         run = result._inspection or degraded_run_inspection(result)
         status: MapItemInspectionStatus = "restored" if result.restored else result.status.value
         with self._lock:
+            if self._artifact.terminal:
+                return
             current = self._item_locked(item_index)
             if current.run is run and current.status == status:
                 return
@@ -558,8 +569,36 @@ class MapInspectionSession:
     ) -> MapInspection:
         """Publish the terminal batch snapshot and return it."""
         with self._lock:
+            if self._artifact.terminal:
+                return self._artifact
+            claimed_terminal_status = cast(
+                MapItemInspectionStatus,
+                status if status in {"failed", "paused", "stopped"} else "failed",
+            )
+            settled_items: list[MapItemInspection] = []
+            for item in self._artifact.items:
+                if item.status != "running":
+                    settled_items.append(item)
+                    continue
+                run = item.run
+                if run is not None and not run.terminal:
+                    settled_nodes = tuple(replace(node, status=claimed_terminal_status) if node.status == "running" else node for node in run.nodes)
+                    run = replace(
+                        run,
+                        status=claimed_terminal_status,
+                        nodes=settled_nodes,
+                        terminal=True,
+                    )
+                settled_items.append(
+                    replace(
+                        item,
+                        status=claimed_terminal_status,
+                        run=run,
+                    )
+                )
             self._replace_artifact_locked(
                 status=status,
+                items=tuple(settled_items),
                 unstarted_item_indexes=tuple(unstarted_item_indexes),
                 total_duration_ms=total_duration_ms,
                 terminal=True,
@@ -614,6 +653,8 @@ class MapInspectionSession:
         urgent: bool,
     ) -> None:
         with self._lock:
+            if self._artifact.terminal:
+                return
             current = self._item_locked(item_index)
             if current.run is not None:
                 if current.run.terminal and not run.terminal:
