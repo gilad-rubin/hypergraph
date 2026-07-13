@@ -632,6 +632,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     status=RunStatus.FAILED.value,
                     total_duration_ms=total_duration_ms,
                     failures=tuple(node_failures),
+                    error=error,
                 )
                 if owns_inspection and inspection_session is not None
                 else None

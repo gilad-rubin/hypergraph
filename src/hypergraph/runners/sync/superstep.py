@@ -291,7 +291,15 @@ def run_superstep_sync(
                                     span_id=node_span_id,
                                     failure=inspection_failure,
                                     ended_at_ms=time.perf_counter() * 1000,
+                                    duration_ms=duration_ms,
                                     record_failure=record_failure,
+                                )
+                            elif inspection_session is not None:
+                                inspection_session.abort_node(
+                                    span_id=node_span_id,
+                                    error=executor_error,
+                                    ended_at_ms=time.perf_counter() * 1000,
+                                    duration_ms=duration_ms,
                                 )
                             executor_failure = _NodeExecutionError(
                                 executor_error,
@@ -346,6 +354,7 @@ def run_superstep_sync(
                 if inspection_session is not None and isinstance(e, Exception) and not isinstance(e, _NodeExecutionError):
                     inspection_session.abort_node(
                         span_id=node_span_id,
+                        error=e,
                         ended_at_ms=time.perf_counter() * 1000,
                         duration_ms=duration_ms,
                     )
@@ -403,10 +412,11 @@ def run_superstep_sync(
                 duration_ms=applied_duration_ms,
                 cached=cached,
             )
-        except Exception:
+        except Exception as error:
             if inspection_session is not None:
                 inspection_session.abort_node(
                     span_id=node_span_id,
+                    error=error,
                     ended_at_ms=time.perf_counter() * 1000,
                     duration_ms=applied_duration_ms,
                 )

@@ -9,9 +9,10 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal
+from types import MappingProxyType
+from typing import Any, Literal, cast
 
 from hypergraph.runners._shared.results import FailureEvidence, MapResult, RunResult
 
@@ -39,8 +40,8 @@ class NodeInspection:
     sequence: int
     status: NodeInspectionStatus
     values_captured: bool
-    inputs: dict[str, Any] | None = field(default=None, repr=False, compare=False)
-    outputs: dict[str, Any] | None = field(default=None, repr=False, compare=False)
+    inputs: Mapping[str, Any] | None = field(default=None, repr=False, compare=False)
+    outputs: Mapping[str, Any] | None = field(default=None, repr=False, compare=False)
     failure: FailureEvidence | None = field(default=None, repr=False, compare=False)
     started_at_ms: float | None = None
     ended_at_ms: float | None = None
@@ -50,9 +51,9 @@ class NodeInspection:
     def __post_init__(self) -> None:
         """Own only the top-level mappings; contained values retain identity."""
         if self.inputs is not None:
-            object.__setattr__(self, "inputs", dict(self.inputs))
+            object.__setattr__(self, "inputs", MappingProxyType(dict(self.inputs)))
         if self.outputs is not None:
-            object.__setattr__(self, "outputs", dict(self.outputs))
+            object.__setattr__(self, "outputs", MappingProxyType(dict(self.outputs)))
 
     @property
     def execution_id(self) -> tuple[str, str, int, int]:
@@ -74,6 +75,7 @@ class RunInspection:
     total_duration_ms: float
     captured: bool
     terminal: bool
+    error: BaseException | None = field(default=None, repr=False, compare=False)
 
 
 MapItemInspectionStatus = Literal[
@@ -92,7 +94,7 @@ class MapItemInspection:
 
     item_index: int
     status: MapItemInspectionStatus
-    requested_inputs: dict[str, Any] | None = field(
+    requested_inputs: Mapping[str, Any] | None = field(
         default=None,
         repr=False,
         compare=False,
@@ -103,7 +105,7 @@ class MapItemInspection:
     def __post_init__(self) -> None:
         """Own the requested-input mapping without copying contained values."""
         if self.requested_inputs is not None:
-            object.__setattr__(self, "requested_inputs", dict(self.requested_inputs))
+            object.__setattr__(self, "requested_inputs", MappingProxyType(dict(self.requested_inputs)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,6 +283,7 @@ class InspectionSession:
         self,
         *,
         span_id: str,
+        error: BaseException,
         ended_at_ms: float,
         duration_ms: float,
     ) -> None:
@@ -292,6 +295,8 @@ class InspectionSession:
                 ended_at_ms=ended_at_ms,
                 duration_ms=duration_ms,
             )
+            if self._artifact.error is None:
+                self._artifact = replace(self._artifact, error=error)
             artifact, subscribers = self._publication_locked()
         self._notify(subscribers, artifact, urgent=True)
 
@@ -323,6 +328,7 @@ class InspectionSession:
         span_id: str,
         failure: FailureEvidence,
         ended_at_ms: float,
+        duration_ms: float,
         record_failure: bool = True,
     ) -> None:
         """Mark a failed execution and optionally publish its leaf evidence."""
@@ -332,13 +338,14 @@ class InspectionSession:
                 status="failed",
                 failure=failure,
                 ended_at_ms=ended_at_ms,
-                duration_ms=failure.duration_ms,
+                duration_ms=duration_ms,
             )
             if record_failure:
                 self._failure_span_ids.add(span_id)
             self._artifact = replace(
                 self._artifact,
                 failures=tuple(node.failure for node in self._artifact.nodes if node.span_id in self._failure_span_ids and node.failure is not None),
+                error=self._artifact.error if self._artifact.error is not None else failure.error,
             )
             artifact, subscribers = self._publication_locked()
         self._notify(subscribers, artifact, urgent=True)
@@ -349,16 +356,24 @@ class InspectionSession:
         status: str,
         total_duration_ms: float,
         failures: tuple[FailureEvidence, ...] = (),
+        error: BaseException | None = None,
     ) -> RunInspection:
         """Publish the terminal snapshot and return it."""
         with self._lock:
             terminal_failures = failures or self._artifact.failures
+            settled_status = cast(
+                NodeInspectionStatus,
+                status if status in {"completed", "failed", "paused", "stopped"} else "failed",
+            )
+            settled_nodes = tuple(replace(node, status=settled_status) if node.status == "running" else node for node in self._artifact.nodes)
             self._artifact = replace(
                 self._artifact,
                 status=status,
+                nodes=settled_nodes,
                 failures=tuple(terminal_failures),
                 total_duration_ms=total_duration_ms,
                 terminal=True,
+                error=error,
             )
             artifact, subscribers = self._publication_locked()
         self._notify(subscribers, artifact, urgent=True)
@@ -630,11 +645,18 @@ def current_inspection() -> tuple[InspectionSession, tuple[str, ...]] | None:
 
 def degraded_run_inspection(result: RunResult) -> RunInspection:
     """Build an honest view from always-on facts when values were not captured."""
-    failures_by_key = {(failure.node_name, failure.superstep): failure for failure in result.node_failures}
+    failure_indexes_by_key: dict[tuple[str, int], list[int]] = {}
+    for failure_index, failure in enumerate(result.node_failures):
+        failure_indexes_by_key.setdefault((failure.node_name, failure.superstep), []).append(failure_index)
+    unmatched_failure_indexes = set(range(len(result.node_failures)))
     nodes: list[NodeInspection] = []
     if result.log is not None:
         for sequence, step in enumerate(result.log.steps):
-            failure = failures_by_key.get((step.node_name, step.superstep))
+            matching_indexes = failure_indexes_by_key.get((step.node_name, step.superstep), [])
+            failure_index = matching_indexes.pop(0) if matching_indexes else None
+            failure = result.node_failures[failure_index] if failure_index is not None else None
+            if failure_index is not None:
+                unmatched_failure_indexes.remove(failure_index)
             nodes.append(
                 NodeInspection(
                     run_id=result.run_id,
@@ -653,6 +675,26 @@ def degraded_run_inspection(result: RunResult) -> RunInspection:
                     cached=step.cached,
                 )
             )
+    for failure_index in sorted(unmatched_failure_indexes):
+        failure = result.node_failures[failure_index]
+        sequence = len(nodes)
+        nodes.append(
+            NodeInspection(
+                run_id=result.run_id,
+                span_id=f"{result.run_id}:failure:{sequence}",
+                node_name=failure.node_name.rsplit("/", 1)[-1],
+                qualified_name=failure.node_name,
+                graph_name=failure.graph_name,
+                item_index=failure.item_index,
+                superstep=failure.superstep,
+                sequence=sequence,
+                status="failed",
+                values_captured=False,
+                inputs=failure.inputs,
+                failure=failure,
+                duration_ms=failure.duration_ms,
+            )
+        )
     return RunInspection(
         run_id=result.run_id,
         graph_name=result.log.graph_name if result.log is not None else "",
@@ -664,6 +706,7 @@ def degraded_run_inspection(result: RunResult) -> RunInspection:
         total_duration_ms=(result.log.total_duration_ms if result.log is not None else 0.0),
         captured=False,
         terminal=True,
+        error=result.error,
     )
 
 

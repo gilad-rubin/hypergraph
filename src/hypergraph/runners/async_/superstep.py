@@ -311,7 +311,15 @@ async def run_superstep_async(
                                 span_id=node_span_id,
                                 failure=inspection_failure,
                                 ended_at_ms=time.perf_counter() * 1000,
+                                duration_ms=duration_ms,
                                 record_failure=record_failure,
+                            )
+                        elif inspection_session is not None:
+                            inspection_session.abort_node(
+                                span_id=node_span_id,
+                                error=executor_error,
+                                ended_at_ms=time.perf_counter() * 1000,
+                                duration_ms=duration_ms,
                             )
                         executor_failure = _NodeExecutionError(
                             executor_error,
@@ -369,6 +377,7 @@ async def run_superstep_async(
             if inspection_session is not None and not isinstance(exc, _NodeExecutionError):
                 inspection_session.abort_node(
                     span_id=node_span_id,
+                    error=exc,
                     ended_at_ms=time.perf_counter() * 1000,
                     duration_ms=(time.time() - node_start) * 1000,
                 )
@@ -423,7 +432,7 @@ async def run_superstep_async(
                 duration_ms=duration_ms,
                 cached=cached,
             )
-        except Exception:
+        except Exception as error:
             if inspection_session is not None:
                 for pending in results[result_index:]:
                     if isinstance(pending, BaseException):
@@ -431,6 +440,7 @@ async def run_superstep_async(
                     _, _, _, _, pending_duration_ms, _, pending_span_id = pending
                     inspection_session.abort_node(
                         span_id=pending_span_id,
+                        error=error,
                         ended_at_ms=time.perf_counter() * 1000,
                         duration_ms=pending_duration_ms,
                     )
