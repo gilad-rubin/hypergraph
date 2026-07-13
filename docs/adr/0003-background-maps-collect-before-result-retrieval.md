@@ -1,6 +1,6 @@
 # Background maps collect item failures before result retrieval
 
-**Status:** Accepted on 2026-07-13; implementation is tracked by [issue #155](https://github.com/gilad-rubin/hypergraph/issues/155). `start_map()` is not a shipped API until that implementation merges.
+**Status:** Partially superseded by [ADR 0004](0004-background-handles-control-live-work.md), which removes `wait()` and assigns settled status and failure data exclusively to results. The collection-versus-retrieval decision remains accepted. Implementation is tracked by [issue #155](https://github.com/gilad-rubin/hypergraph/issues/155); `start_map()` is not a shipped API until that implementation merges.
 
 Background execution must let a caller regain control immediately and inspect the eventual batch without losing later item outcomes. Reusing blocking `map(error_handling="raise")` would not provide one scheduling contract: sync mapping stops at the first failed item, bounded async mapping stops claiming new items after a failure is observed, and unbounded async mapping may already have started every item.
 
