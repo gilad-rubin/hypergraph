@@ -214,6 +214,8 @@ def test_background_handle_docs_pin_public_contract() -> None:
     assert "Control Work After It Starts](05-how-to/control-background-execution.md)" in docs_readme
     assert "AsyncRunner.start_*()` are ordinary methods" in guide
     assert "Use a Checkpointer for Recovery, Not Handle Reconnection" in guide
+    assert "instead of tunneling into `run()`" in guide
+    assert "put it inside `values={...}`" in guide
     assert "Parent `RunEndEvent` and OpenTelemetry batch counts" in guide
     assert "All existing batch counts describe real settled child outcomes" in events
     assert "no new event count field is added" in events

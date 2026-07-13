@@ -296,7 +296,9 @@ the existing completion boundary.
 `start_run()` accepts `checkpoint=` and `workflow_id=`, but intentionally omits
 the lineage-changing `override_workflow`, `fork_from`, and `retry_from`
 shortcuts. Perform a fork or retry through the checkpointer first, then start
-the resulting checkpoint and workflow ID.
+the resulting checkpoint and workflow ID. Passing one of those names directly
+raises `TypeError` instead of tunneling into `run()`; if it is genuinely a graph
+input, put it inside `values={...}`.
 
 ## Complete Examples
 

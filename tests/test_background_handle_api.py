@@ -190,6 +190,72 @@ async def test_async_start_methods_reject_error_handling_as_an_option(
     assert "unexpected keyword argument 'error_handling'" in str(direct_error)
 
 
+def test_sync_start_run_rejects_lineage_options_but_accepts_same_named_inputs_in_values() -> None:
+    @node(output_name="seen")
+    def echo_lineage_names(
+        override_workflow: bool,
+        fork_from: str,
+        retry_from: str,
+    ) -> tuple[bool, str, str]:
+        return override_workflow, fork_from, retry_from
+
+    runner = SyncRunner()
+    graph = Graph([echo_lineage_names])
+    values = {
+        "override_workflow": True,
+        "fork_from": "source",
+        "retry_from": "failed",
+    }
+
+    accepted = runner.start_run(graph, values).result()
+    assert accepted["seen"] == (True, "source", "failed")
+
+    for option, direct_value in values.items():
+        remaining_values = {name: value for name, value in values.items() if name != option}
+        with pytest.raises(TypeError, match=rf"unexpected keyword argument '{option}'") as caught:
+            runner.start_run(
+                graph,
+                remaining_values,
+                **{option: direct_value},
+            )
+
+        assert "How to fix:" in str(caught.value)
+        assert "values={" in str(caught.value)
+
+
+async def test_async_start_run_rejects_lineage_options_but_accepts_same_named_inputs_in_values() -> None:
+    @node(output_name="seen")
+    async def echo_lineage_names(
+        override_workflow: bool,
+        fork_from: str,
+        retry_from: str,
+    ) -> tuple[bool, str, str]:
+        return override_workflow, fork_from, retry_from
+
+    runner = AsyncRunner()
+    graph = Graph([echo_lineage_names])
+    values = {
+        "override_workflow": True,
+        "fork_from": "source",
+        "retry_from": "failed",
+    }
+
+    accepted = await runner.start_run(graph, values).result()
+    assert accepted["seen"] == (True, "source", "failed")
+
+    for option, direct_value in values.items():
+        remaining_values = {name: value for name, value in values.items() if name != option}
+        with pytest.raises(TypeError, match=rf"unexpected keyword argument '{option}'") as caught:
+            runner.start_run(
+                graph,
+                remaining_values,
+                **{option: direct_value},
+            )
+
+        assert "How to fix:" in str(caught.value)
+        assert "values={" in str(caught.value)
+
+
 def test_sync_result_propagates_failure_when_no_run_result_exists() -> None:
     @node(output_name="never")
     async def async_only() -> int:

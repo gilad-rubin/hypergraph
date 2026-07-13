@@ -57,6 +57,33 @@ def reject_background_error_handling_option(
     )
 
 
+def reject_background_lineage_options(
+    input_values: dict[str, Any],
+    *,
+    start_method: str,
+) -> None:
+    """Keep lineage-changing runner options out of background starts.
+
+    Args:
+        input_values: Graph inputs supplied through keyword shorthand.
+        start_method: Qualified public method name for the error message.
+
+    Raises:
+        TypeError: If a lineage-changing option was supplied directly.
+    """
+    for option in ("override_workflow", "fork_from", "retry_from"):
+        if option not in input_values:
+            continue
+        raise TypeError(
+            f"{start_method}() got an unexpected keyword argument "
+            f"'{option}'.\n\n"
+            "How to fix: Background starts do not perform lineage changes. "
+            "Prepare the checkpoint and workflow ID first, then pass them via "
+            "checkpoint=... and workflow_id=.... To pass a graph input with "
+            f"this name, use values={{'{option}': ...}}."
+        )
+
+
 def validate_max_concurrency(max_concurrency: int | None) -> None:
     """Reject a concurrency limit that can never admit execution.
 
