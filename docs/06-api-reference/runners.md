@@ -755,7 +755,7 @@ Execute a graph asynchronously.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `entrypoint` - Runtime entrypoint overrides are not supported. Configure entrypoints on the graph via `Graph(..., entrypoint=...)` or `graph.with_entrypoint(...)`.
 - `max_iterations` - Max local iterations per cyclic execution region (SCC) (default: 1000)
-- `max_concurrency` - Max parallel node executions (default: unlimited)
+- `max_concurrency` - Max parallel node executions (default: unlimited); when provided, it must be at least `1`.
 - `error_handling` - How to handle node execution errors:
   - `"raise"` (default): Re-raise the original exception. Clean traceback, no wrapper.
   - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
@@ -847,7 +847,7 @@ Execute graph multiple times concurrently.
 - `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)` before execution.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `entrypoint` - Runtime entrypoint overrides are not supported.
-- `max_concurrency` - Shared limit across all executions
+- `max_concurrency` - Shared limit across all executions; when provided, it must be at least `1`.
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
@@ -934,7 +934,9 @@ result = await handle.result()
 
 As with the synchronous forms, background start methods omit
 `error_handling`; `start_run()` also omits the lineage-changing
-`override_workflow`, `fork_from`, and `retry_from` shortcuts.
+`override_workflow`, `fork_from`, and `retry_from` shortcuts. A provided
+`max_concurrency` must be at least `1`; invalid limits fail retrieval loudly
+instead of producing an empty result or a handle that never settles.
 
 ### capabilities
 

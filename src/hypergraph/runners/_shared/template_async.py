@@ -76,6 +76,7 @@ from hypergraph.runners._shared.validation import (
     resolve_runtime_selected,
     validate_delegated_runners,
     validate_item_inputs,
+    validate_max_concurrency,
     validate_node_types,
     validate_runner_compatibility,
 )
@@ -243,6 +244,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
+        validate_max_concurrency(max_concurrency)
         run_option_names = runner_option_names(self.run)
         map_option_names = runner_option_names(self.map)
         validation_ctx = _validation_ctx
@@ -649,6 +651,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
+        validate_max_concurrency(max_concurrency)
         run_option_names = runner_option_names(self.run)
         map_option_names = runner_option_names(self.map)
         validate_error_handling(error_handling)
@@ -988,8 +991,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         map_option_names = runner_option_names(self.map)
         validate_error_handling(error_handling)
         validate_on_missing(on_missing)
-        if max_concurrency is not None and max_concurrency < 1:
-            raise ValueError(f"max_concurrency must be >= 1, got {max_concurrency}")
+        validate_max_concurrency(max_concurrency)
         effective_selected = resolve_runtime_selected(select, graph)
         ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=effective_selected)
         normalized_values = normalize_inputs(

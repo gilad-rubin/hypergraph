@@ -57,6 +57,24 @@ def reject_background_error_handling_option(
     )
 
 
+def validate_max_concurrency(max_concurrency: int | None) -> None:
+    """Reject a concurrency limit that can never admit execution.
+
+    Args:
+        max_concurrency: Optional upper bound for concurrent async work.
+
+    Raises:
+        ValueError: If the provided limit is less than one.
+    """
+    if max_concurrency is None or max_concurrency >= 1:
+        return
+    raise ValueError(
+        f"max_concurrency must be >= 1, got {max_concurrency}.\n\n"
+        "How to fix: Pass None for the default concurrency behavior, or pass "
+        "a positive integer."
+    )
+
+
 def precompute_input_validation(
     graph: Graph,
     *,

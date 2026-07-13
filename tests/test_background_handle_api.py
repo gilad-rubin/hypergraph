@@ -257,3 +257,67 @@ async def test_async_map_repeated_retrieval_returns_same_object() -> None:
 
     assert second is first
     assert first["doubled"] == [2, 4]
+
+
+@pytest.mark.parametrize("operation", ["run", "map"])
+async def test_async_blocking_operations_reject_zero_max_concurrency(
+    operation: str,
+) -> None:
+    @node(output_name="doubled")
+    async def double(value: int) -> int:
+        return value * 2
+
+    runner = AsyncRunner()
+    graph = Graph([double])
+
+    with pytest.raises(ValueError, match="max_concurrency must be >= 1"):
+        if operation == "run":
+            await asyncio.wait_for(
+                runner.run(graph, value=1, max_concurrency=0),
+                timeout=0.25,
+            )
+        else:
+            await runner.map(
+                graph,
+                {"value": [1, 2]},
+                map_over="value",
+                max_concurrency=0,
+            )
+
+
+async def test_async_background_map_rejects_zero_max_concurrency_without_result() -> None:
+    @node(output_name="doubled")
+    async def double(value: int) -> int:
+        return value * 2
+
+    handle = AsyncRunner().start_map(
+        Graph([double]),
+        {"value": [1, 2]},
+        map_over="value",
+        max_concurrency=0,
+    )
+
+    errors = []
+    for raise_on_failure in (False, True):
+        with pytest.raises(ValueError, match="max_concurrency must be >= 1") as caught:
+            await handle.result(raise_on_failure=raise_on_failure)
+        errors.append(caught.value)
+
+    assert errors[0] is errors[1]
+
+
+async def test_async_background_run_rejects_zero_max_concurrency_without_hanging() -> None:
+    @node(output_name="doubled")
+    async def double(value: int) -> int:
+        return value * 2
+
+    handle = AsyncRunner().start_run(
+        Graph([double]),
+        value=1,
+        max_concurrency=0,
+    )
+
+    with pytest.raises(ValueError, match="max_concurrency must be >= 1"):
+        await asyncio.wait_for(handle.result(raise_on_failure=False), timeout=1)
+
+    assert handle.done is True
