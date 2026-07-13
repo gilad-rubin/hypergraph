@@ -235,12 +235,14 @@ class SqliteCheckpointer(Checkpointer):
         """
         sync_lock = getattr(self, "_sync_lock", None)
         with contextlib.suppress(Exception):
-            if sync_lock is not None:
-                with sync_lock:
+            if sync_lock is not None and sync_lock.acquire(blocking=False):
+                try:
                     sync_conn = getattr(self, "_sync_conn", None)
                     if sync_conn is not None:
                         sync_conn.close()
                         self._sync_conn = None
+                finally:
+                    sync_lock.release()
 
         db = getattr(self, "_db", None)
         if db is None:

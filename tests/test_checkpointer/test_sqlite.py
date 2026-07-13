@@ -1,6 +1,7 @@
 """Tests for SqliteCheckpointer."""
 
 import asyncio
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -392,6 +393,30 @@ class TestCheckpoint:
 
 
 class TestLazyInit:
+    def test_finalizer_does_not_wait_for_busy_sync_connection(self, tmp_path):
+        cp = SqliteCheckpointer(str(tmp_path / "busy-finalizer.db"))
+        cp._sync_db()
+        finalized = threading.Event()
+
+        def finalize() -> None:
+            try:
+                cp.__del__()
+            finally:
+                finalized.set()
+
+        finalizer = threading.Thread(target=finalize)
+        cp._sync_lock.acquire()
+        try:
+            finalizer.start()
+            assert finalized.wait(timeout=0.5), "best-effort finalizer waited for the busy sync lock"
+            assert cp._sync_conn is not None
+        finally:
+            cp._sync_lock.release()
+            finalizer.join(timeout=2)
+            cp.__del__()
+
+        assert not finalizer.is_alive()
+
     async def test_lazy_initialize(self, tmp_path):
         """Checkpointer auto-initializes on first use."""
         cp = SqliteCheckpointer(str(tmp_path / "lazy.db"))
