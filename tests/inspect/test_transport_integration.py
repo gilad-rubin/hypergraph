@@ -965,6 +965,107 @@ async def test_map_children_and_nested_graphs_never_open_duplicate_widgets(
     assert len(factory.calls) == 3
 
 
+def test_sync_mapped_nested_inspection_keeps_leaf_item_truth_in_one_widget(
+    factory: _FactoryRecorder,
+) -> None:
+    class InnerItemError(Exception):
+        pass
+
+    @node(output_name="doubled")
+    def double_or_fail(value: int) -> int:
+        if value == -1:
+            raise InnerItemError("cannot double inner item -1")
+        return value * 2
+
+    inner = Graph([double_or_fail], name="sync-mapped-inner")
+    child = inner.as_node(name="child").map_over(
+        "value",
+        error_handling="continue",
+    )
+    result = SyncRunner().run(
+        Graph([child], name="sync-mapped-outer"),
+        {"value": [2, -1, 5]},
+        inspect=True,
+    )
+    artifact = result.inspect().artifact
+    leaves = [item for item in artifact.nodes if item.qualified_name == "child/double_or_fail"]
+
+    assert result["doubled"] == [4, None, 10]
+    assert len(factory.calls) == 1
+    assert [item.item_index for item in leaves] == [0, 1, 2]
+    assert [item.status for item in leaves] == ["completed", "failed", "completed"]
+    assert [item.inputs for item in leaves] == [
+        {"value": 2},
+        {"value": -1},
+        {"value": 5},
+    ]
+    assert leaves[0].outputs == {"doubled": 4}
+    assert leaves[2].outputs == {"doubled": 10}
+    assert leaves[1].failure is not None
+    assert leaves[1].failure.node_name == "child/double_or_fail"
+    assert leaves[1].failure.item_index == 1
+    assert leaves[1].failure.inputs == {"value": -1}
+    assert isinstance(leaves[1].failure.error, InnerItemError)
+    assert str(leaves[1].failure.error) == "cannot double inner item -1"
+    assert [(failure.node_name, failure.item_index) for failure in artifact.failures] == [
+        ("child/double_or_fail", 1),
+    ]
+    container = next(item for item in artifact.nodes if item.qualified_name == "child")
+    assert container.inputs == {"value": [2, -1, 5]}
+    assert container.outputs == {"doubled": [4, None, 10]}
+
+
+@pytest.mark.asyncio
+async def test_async_mapped_nested_inspection_keeps_leaf_item_truth_in_one_widget(
+    factory: _FactoryRecorder,
+) -> None:
+    class InnerItemError(Exception):
+        pass
+
+    @node(output_name="doubled")
+    async def double_or_fail(value: int) -> int:
+        if value == -1:
+            raise InnerItemError("cannot double async inner item -1")
+        return value * 2
+
+    inner = Graph([double_or_fail], name="async-mapped-inner")
+    child = inner.as_node(name="child").map_over(
+        "value",
+        error_handling="continue",
+    )
+    result = await AsyncRunner().run(
+        Graph([child], name="async-mapped-outer"),
+        {"value": [2, -1, 5]},
+        inspect=True,
+    )
+    artifact = result.inspect().artifact
+    leaves = [item for item in artifact.nodes if item.qualified_name == "child/double_or_fail"]
+
+    assert result["doubled"] == [4, None, 10]
+    assert len(factory.calls) == 1
+    assert [item.item_index for item in leaves] == [0, 1, 2]
+    assert [item.status for item in leaves] == ["completed", "failed", "completed"]
+    assert [item.inputs for item in leaves] == [
+        {"value": 2},
+        {"value": -1},
+        {"value": 5},
+    ]
+    assert leaves[0].outputs == {"doubled": 4}
+    assert leaves[2].outputs == {"doubled": 10}
+    assert leaves[1].failure is not None
+    assert leaves[1].failure.node_name == "child/double_or_fail"
+    assert leaves[1].failure.item_index == 1
+    assert leaves[1].failure.inputs == {"value": -1}
+    assert isinstance(leaves[1].failure.error, InnerItemError)
+    assert str(leaves[1].failure.error) == "cannot double async inner item -1"
+    assert [(failure.node_name, failure.item_index) for failure in artifact.failures] == [
+        ("child/double_or_fail", 1),
+    ]
+    container = next(item for item in artifact.nodes if item.qualified_name == "child")
+    assert container.inputs == {"value": [2, -1, 5]}
+    assert container.outputs == {"doubled": [4, None, 10]}
+
+
 @pytest.mark.asyncio
 async def test_inspect_false_and_factory_failure_are_observational(
     monkeypatch: pytest.MonkeyPatch,
