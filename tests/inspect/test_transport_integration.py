@@ -15,6 +15,7 @@ import pytest
 
 from hypergraph import AsyncRunner, Graph, SqliteCheckpointer, SyncRunner, interrupt, node
 from hypergraph.checkpointers import MemoryCheckpointer
+from hypergraph.checkpointers.types import StepRecord
 from hypergraph.runners._shared import _inspect_transport
 from hypergraph.runners._shared._inspect import MapInspection, RunInspection
 from hypergraph.runners._shared.input_normalization import runner_option_names
@@ -124,6 +125,11 @@ class _HostileRepr:
 
     def __repr__(self) -> str:
         raise self.error
+
+
+class _IndexedFailingSaveCheckpointer(MemoryCheckpointer):
+    async def save_step(self, record: StepRecord) -> None:
+        raise RuntimeError(f"checkpoint save failed for {record.run_id}:{record.index}")
 
 
 def _repr_boundary_graph(name: str) -> Graph:
@@ -465,6 +471,65 @@ async def test_final_release_failure_replaces_success_before_terminal_publicatio
         assert terminal == [artifacts[-1]]
         assert terminal[0].status == "failed"
         assert terminal[0].error is error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("map_only", [False, True])
+async def test_async_checkpoint_sink_failure_never_retries_delivered_gaps(
+    factory: _FactoryRecorder,
+    map_only: bool,
+) -> None:
+    @node(output_name="prepared")
+    def prepare(value: int) -> int:
+        return value * 2
+
+    @node(output_name="answer")
+    def finish(prepared: int) -> int:
+        return prepared + 1
+
+    marker = RuntimeError(f"{'MAP' if map_only else 'RUN'}-CHECKPOINT-SINK")
+    seen: list[str] = []
+
+    def fail_on_second_gap(error: str) -> None:
+        seen.append(error)
+        if len(seen) == 2:
+            raise marker
+
+    checkpointer = _IndexedFailingSaveCheckpointer()
+    runner = AsyncRunner(checkpointer=checkpointer)
+    workflow_id = "sink-map" if map_only else "sink-run"
+    with pytest.raises(RuntimeError) as raised:
+        if map_only:
+            await runner.map(
+                Graph([prepare], name="checkpoint-sink-map"),
+                {"value": [1, 2]},
+                map_over="value",
+                max_concurrency=1,
+                workflow_id=workflow_id,
+                inspect=True,
+                _checkpoint_error_sink=fail_on_second_gap,
+            )
+        else:
+            await runner.run(
+                Graph([prepare, finish], name="checkpoint-sink-run"),
+                {"value": 1},
+                workflow_id=workflow_id,
+                inspect=True,
+                _checkpoint_error_sink=fail_on_second_gap,
+            )
+    await checkpointer.close()
+
+    expected = (
+        [f"RuntimeError('checkpoint save failed for {workflow_id}/{index}:0')" for index in range(2)]
+        if map_only
+        else [f"RuntimeError('checkpoint save failed for {workflow_id}:{index}')" for index in range(2)]
+    )
+    assert raised.value is marker
+    assert seen == expected
+    artifact = factory.transports[-1].artifacts[-1]
+    assert artifact.terminal is True
+    assert artifact.status == "failed"
+    assert artifact.error is marker
 
 
 def test_direct_sync_run_and_map_open_once_and_preserve_settled_identity(

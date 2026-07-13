@@ -538,7 +538,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             # Sink for background step-save failures ("async" durability) —
             # surfaced as result.checkpoint_ok / result.checkpoint_errors.
             checkpoint_save_errors: list[str] = []
-            checkpoint_errors_forwarded = False
+            checkpoint_error_forwarding_started = False
         except BaseException as error:
             try:
                 try:
@@ -638,10 +638,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             if _parent_span_id is None:
                 await self._shutdown_dispatcher_async(dispatcher)
                 dispatcher = None
-            if _checkpoint_error_sink is not None and not checkpoint_errors_forwarded:
+            if _checkpoint_error_sink is not None and not checkpoint_error_forwarding_started:
+                checkpoint_error_forwarding_started = True
                 for checkpoint_error in checkpoint_save_errors:
                     _checkpoint_error_sink(checkpoint_error)
-                checkpoint_errors_forwarded = True
             if signal_token is not None:
                 reset_stop_signal(signal_token)
                 signal_token = None
@@ -713,10 +713,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 if dispatcher is not None and _parent_span_id is None:
                     await self._shutdown_dispatcher_async(dispatcher)
                     dispatcher = None
-                if _checkpoint_error_sink is not None and not checkpoint_errors_forwarded:
+                if _checkpoint_error_sink is not None and not checkpoint_error_forwarding_started:
+                    checkpoint_error_forwarding_started = True
                     for checkpoint_error in checkpoint_save_errors:
                         _checkpoint_error_sink(checkpoint_error)
-                    checkpoint_errors_forwarded = True
                 if signal_token is not None:
                     reset_stop_signal(signal_token)
                     signal_token = None
@@ -791,10 +791,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 if dispatcher is not None and _parent_span_id is None:
                     await self._shutdown_dispatcher_async(dispatcher)
                     dispatcher = None
-                if _checkpoint_error_sink is not None and not checkpoint_errors_forwarded:
+                if _checkpoint_error_sink is not None and not checkpoint_error_forwarding_started:
+                    checkpoint_error_forwarding_started = True
                     for checkpoint_error in checkpoint_save_errors:
                         _checkpoint_error_sink(checkpoint_error)
-                    checkpoint_errors_forwarded = True
                 if signal_token is not None:
                     reset_stop_signal(signal_token)
                     signal_token = None
@@ -834,10 +834,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         finally:
             try:
                 try:
-                    if _checkpoint_error_sink is not None and not checkpoint_errors_forwarded:
+                    if _checkpoint_error_sink is not None and not checkpoint_error_forwarding_started:
+                        checkpoint_error_forwarding_started = True
                         for checkpoint_error in checkpoint_save_errors:
                             _checkpoint_error_sink(checkpoint_error)
-                        checkpoint_errors_forwarded = True
                     if dispatcher is not None and _parent_span_id is None:
                         await self._shutdown_dispatcher_async(dispatcher)
                 finally:
@@ -1016,7 +1016,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 inspection_transport.fail_to_start(error)
             raise error
         item_checkpoint_errors: list[list[str]] = [[] for _ in input_variations]
-        checkpoint_errors_forwarded = False
+        checkpoint_error_forwarding_started = False
 
         try:
             reservation = _reservation or self._active_workflows.reserve(workflow_id)
@@ -1303,11 +1303,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             if _parent_span_id is None:
                 await self._shutdown_dispatcher_async(dispatcher)
                 dispatcher = None
-            if _checkpoint_error_sink is not None and not checkpoint_errors_forwarded:
+            if _checkpoint_error_sink is not None and not checkpoint_error_forwarding_started:
+                checkpoint_error_forwarding_started = True
                 for checkpoint_errors in item_checkpoint_errors:
                     for checkpoint_error in checkpoint_errors:
                         _checkpoint_error_sink(checkpoint_error)
-                checkpoint_errors_forwarded = True
             if token is not None:
                 self._reset_concurrency_limiter(token)
                 token = None
@@ -1355,11 +1355,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 if dispatcher is not None and _parent_span_id is None:
                     await self._shutdown_dispatcher_async(dispatcher)
                     dispatcher = None
-                if _checkpoint_error_sink is not None and not checkpoint_errors_forwarded:
+                if _checkpoint_error_sink is not None and not checkpoint_error_forwarding_started:
+                    checkpoint_error_forwarding_started = True
                     for checkpoint_errors in item_checkpoint_errors:
                         for checkpoint_error in checkpoint_errors:
                             _checkpoint_error_sink(checkpoint_error)
-                    checkpoint_errors_forwarded = True
                 if token is not None:
                     self._reset_concurrency_limiter(token)
                     token = None
@@ -1386,11 +1386,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         finally:
             try:
                 try:
-                    if _checkpoint_error_sink is not None and not checkpoint_errors_forwarded:
+                    if _checkpoint_error_sink is not None and not checkpoint_error_forwarding_started:
+                        checkpoint_error_forwarding_started = True
                         for checkpoint_errors in item_checkpoint_errors:
                             for checkpoint_error in checkpoint_errors:
                                 _checkpoint_error_sink(checkpoint_error)
-                        checkpoint_errors_forwarded = True
                     if token is not None:
                         self._reset_concurrency_limiter(token)
                     if dispatcher is not None and _parent_span_id is None:
