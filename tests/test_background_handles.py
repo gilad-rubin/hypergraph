@@ -9,9 +9,11 @@ import threading
 import pytest
 
 from hypergraph import (
+    AsyncEventProcessor,
     AsyncRunner,
     FailureEvidence,
     Graph,
+    RunEndEvent,
     RunStatus,
     SyncRunner,
     get_failure_evidence,
@@ -273,3 +275,200 @@ async def test_bounded_async_background_map_collects_later_items_after_failure()
     assert batch["processed"] == [0, None, 20, None, 40]
     assert evidence.item_index == 1
     assert handle.done is True
+
+
+def test_sync_stopped_map_contains_only_claimed_results() -> None:
+    entered: list[int] = []
+    failures: list[ValueError] = []
+    second_entered = threading.Event()
+    release_second = threading.Event()
+
+    @node(output_name="processed")
+    def process_item(item: int) -> int:
+        entered.append(item)
+        if item == 0:
+            failure = ValueError(f"item zero failed on run {len(failures)}")
+            failures.append(failure)
+            raise failure
+        if item == 1:
+            second_entered.set()
+            if not release_second.wait(timeout=5):
+                raise AssertionError("stopped map did not release its claimed item")
+        return item * 10
+
+    graph = Graph([process_item])
+    runner = SyncRunner()
+    early_handle = runner.start_map(
+        graph,
+        {"item": [0, 1, 2, 3, 4]},
+        map_over="item",
+    )
+
+    try:
+        assert second_entered.wait(timeout=5), "second map item was never claimed"
+        early_handle.stop(info={"reason": "user stopped early"})
+    finally:
+        release_second.set()
+
+    early_batch = early_handle.result(raise_on_failure=False)
+
+    with pytest.raises(ValueError) as raised:
+        early_handle.result()
+    evidence = _assert_raised_failure(raised.value, failures[0])
+
+    assert entered == [0, 1]
+    assert [result.status for result in early_batch] == [
+        RunStatus.FAILED,
+        RunStatus.STOPPED,
+    ]
+    assert early_batch.requested_count == 5
+    assert early_batch.unstarted_item_indexes == (2, 3, 4)
+    assert early_batch.status is RunStatus.STOPPED
+    assert early_batch.stopped is True
+    assert early_batch.failed is True
+    assert early_batch.partial is False
+    assert early_batch.failures == [early_batch[0]]
+    assert evidence.item_index == 0
+
+    late_handle = runner.start_map(
+        graph,
+        {"item": [0, 1, 2, 3, 4]},
+        map_over="item",
+    )
+    late_batch = late_handle.result(raise_on_failure=False)
+    late_handle.stop(info={"reason": "too late"})
+
+    assert entered == [0, 1, 0, 1, 2, 3, 4]
+    assert late_batch.requested_count == 5
+    assert late_batch.unstarted_item_indexes == ()
+    assert late_batch.status is RunStatus.PARTIAL
+    assert late_batch.stopped is False
+
+
+async def test_bounded_async_stopped_map_is_sparse_and_input_ordered() -> None:
+    failure = ValueError("item one failed before stop")
+    entered = [asyncio.Event() for _ in range(5)]
+    release_first = asyncio.Event()
+    failed_child_ended = asyncio.Event()
+    release_failed_child_end = asyncio.Event()
+    physical_completion_order: list[int] = []
+
+    class HoldFailedChildEnd(AsyncEventProcessor):
+        async def on_event_async(self, event) -> None:
+            if isinstance(event, RunEndEvent) and event.item_index == 1:
+                failed_child_ended.set()
+                await release_failed_child_end.wait()
+
+    @node(output_name="processed")
+    async def process_item(item: int) -> int:
+        entered[item].set()
+        if item == 0:
+            await release_first.wait()
+            physical_completion_order.append(item)
+            return item * 10
+        if item == 1:
+            physical_completion_order.append(item)
+            raise failure
+        raise AssertionError(f"unstarted item {item} entered the graph")
+
+    handle = AsyncRunner().start_map(
+        Graph([process_item]),
+        {"item": [0, 1, 2, 3, 4]},
+        map_over="item",
+        max_concurrency=2,
+        event_processors=[HoldFailedChildEnd()],
+    )
+
+    try:
+        await asyncio.wait_for(entered[0].wait(), timeout=5)
+        await asyncio.wait_for(entered[1].wait(), timeout=5)
+        await asyncio.wait_for(failed_child_ended.wait(), timeout=5)
+        handle.stop(info={"reason": "user stopped early"})
+    finally:
+        release_first.set()
+        release_failed_child_end.set()
+
+    batch = await asyncio.wait_for(handle.result(raise_on_failure=False), timeout=5)
+
+    with pytest.raises(ValueError) as raised:
+        await handle.result()
+    evidence = _assert_raised_failure(raised.value, failure)
+
+    assert physical_completion_order == [1, 0]
+    assert [event.is_set() for event in entered] == [True, True, False, False, False]
+    assert [result.status for result in batch] == [
+        RunStatus.STOPPED,
+        RunStatus.FAILED,
+    ]
+    assert batch.requested_count == 5
+    assert batch.unstarted_item_indexes == (2, 3, 4)
+    assert batch.status is RunStatus.STOPPED
+    assert batch.stopped is True
+    assert batch.failed is True
+    assert batch.partial is False
+    assert batch.failures == [batch[1]]
+    assert evidence.item_index == 1
+
+
+async def test_async_immediate_stop_before_first_yield_claims_nothing() -> None:
+    entered: list[int] = []
+
+    @node(output_name="processed")
+    async def process_item(item: int) -> int:
+        entered.append(item)
+        return item * 10
+
+    handle = AsyncRunner().start_map(
+        Graph([process_item]),
+        {"item": [0, 1, 2, 3]},
+        map_over="item",
+    )
+    handle.stop(info={"reason": "cancelled before launch"})
+
+    batch = await asyncio.wait_for(handle.result(raise_on_failure=False), timeout=5)
+
+    assert entered == []
+    assert batch.results == ()
+    assert batch.requested_count == 4
+    assert batch.unstarted_item_indexes == (0, 1, 2, 3)
+    assert batch.status is RunStatus.STOPPED
+
+
+async def test_unbounded_async_stop_after_fanout_keeps_all_results_real() -> None:
+    failure = ValueError("claimed item failed")
+    entered = [asyncio.Event() for _ in range(3)]
+    release = asyncio.Event()
+
+    @node(output_name="processed")
+    async def process_item(item: int) -> int:
+        entered[item].set()
+        if item == 0:
+            raise failure
+        await release.wait()
+        return item * 10
+
+    handle = AsyncRunner().start_map(
+        Graph([process_item]),
+        {"item": [0, 1, 2]},
+        map_over="item",
+    )
+
+    try:
+        for event in entered:
+            await asyncio.wait_for(event.wait(), timeout=5)
+        handle.stop(info={"reason": "after fanout"})
+    finally:
+        release.set()
+
+    batch = await asyncio.wait_for(handle.result(raise_on_failure=False), timeout=5)
+
+    assert [result.status for result in batch] == [
+        RunStatus.FAILED,
+        RunStatus.STOPPED,
+        RunStatus.STOPPED,
+    ]
+    assert batch.requested_count == 3
+    assert batch.unstarted_item_indexes == ()
+    assert batch.status is RunStatus.FAILED
+    assert batch.stopped is False
+    assert batch.failed is True

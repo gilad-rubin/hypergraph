@@ -65,6 +65,7 @@ from hypergraph.runners._shared.state_restore import (
     initialize_state,
     validate_workflow_id,
 )
+from hypergraph.runners._shared.stop import get_stop_signal
 from hypergraph.runners._shared.validation import (
     precompute_input_validation,
     resolve_runtime_selected,
@@ -709,6 +710,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         existing_limiter = self._get_concurrency_limiter()
         token = self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
+        map_stop_signal = get_stop_signal()
+        claimed_indexes: set[int] = set()
 
         async def _run_map_item(idx: int, variation_inputs: dict[str, Any]) -> RunResult:
             """Execute one map variation, or restore from checkpoint if completed."""
@@ -758,13 +761,15 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         try:
             if max_concurrency is None:
-                tasks = [_run_map_item(idx, v) for idx, v in enumerate(input_variations)]
-                gathered = await asyncio.gather(*tasks, return_exceptions=True)
                 results: list[RunResult] = []
-                for item in gathered:
-                    if isinstance(item, BaseException):
-                        raise item
-                    results.append(item)
+                if map_stop_signal is None or not map_stop_signal.is_set:
+                    claimed_indexes.update(range(len(input_variations)))
+                    tasks = [_run_map_item(idx, v) for idx, v in enumerate(input_variations)]
+                    gathered = await asyncio.gather(*tasks, return_exceptions=True)
+                    for item in gathered:
+                        if isinstance(item, BaseException):
+                            raise item
+                        results.append(item)
                 if error_handling == "raise":
                     for result in results:
                         if result.status == RunStatus.FAILED:
@@ -784,10 +789,13 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 async def _worker() -> None:
                     """Consume queue items and execute map variations."""
                     while not stop_event.is_set():
+                        if map_stop_signal is not None and map_stop_signal.is_set:
+                            return
                         try:
                             idx, v = queue.get_nowait()
                         except asyncio.QueueEmpty:
                             return
+                        claimed_indexes.add(idx)
                         result = await _run_map_item(idx, v)
                         results_list.append(result)
                         order.append(idx)
@@ -846,6 +854,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 map_over=tuple(map_over_list),
                 map_mode=map_mode,
                 graph_name=graph.name or "",
+                unstarted_item_indexes=(
+                    tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes)
+                    if map_stop_signal is not None and map_stop_signal.is_set
+                    else ()
+                ),
             )
         except Exception as e:
             await self._emit_run_end_async(

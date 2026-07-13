@@ -64,6 +64,7 @@ from hypergraph.runners._shared.state_restore import (
     initialize_state,
     validate_workflow_id,
 )
+from hypergraph.runners._shared.stop import get_stop_signal
 from hypergraph.runners._shared.validation import (
     precompute_input_validation,
     resolve_runtime_selected,
@@ -658,10 +659,15 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         # Resume: find completed child runs to skip by stable input signature.
         completed_runs = _get_completed_child_runs_sync(sync_cp, workflow_id)
         completed_by_signature, completed_by_index = index_completed_child_runs(completed_runs, workflow_id)
+        map_stop_signal = get_stop_signal()
+        claimed_indexes: set[int] = set()
 
         try:
             results = []
             for idx, variation_inputs in enumerate(input_variations):
+                if map_stop_signal is not None and map_stop_signal.is_set:
+                    break
+                claimed_indexes.add(idx)
                 child_workflow_id = f"{workflow_id}/{idx}" if workflow_id else None
                 item_signature = compute_map_item_signature(variation_inputs, map_over_list, map_mode)
 
@@ -750,6 +756,11 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 map_over=tuple(map_over_list),
                 map_mode=map_mode,
                 graph_name=graph.name or "",
+                unstarted_item_indexes=(
+                    tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes)
+                    if map_stop_signal is not None and map_stop_signal.is_set
+                    else ()
+                ),
             )
         except Exception as e:
             self._emit_run_end_sync(
