@@ -28,6 +28,31 @@ class _RecordingProcessor(EventProcessor):
         self.events.append(event)
 
 
+async def test_discarded_async_handle_observes_pre_result_failure() -> None:
+    @node(output_name="copied")
+    async def identity(required: int) -> int:
+        return required
+
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    unhandled_contexts: list[dict[str, object]] = []
+    loop.set_exception_handler(lambda _loop, context: unhandled_contexts.append(context))
+    try:
+        handle = AsyncRunner().start_run(Graph([identity]))
+        del handle
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+    assert [
+        (context.get("message"), type(context.get("exception")).__name__)
+        for context in unhandled_contexts
+        if context.get("message") == "Task exception was never retrieved"
+    ] == []
+
+
 def test_sync_stopped_map_has_only_real_child_events_logs_and_run_ids() -> None:
     entered_second = threading.Event()
     release_second = threading.Event()

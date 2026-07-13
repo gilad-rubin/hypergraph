@@ -145,6 +145,12 @@ def _launch_async_execution(
         coroutine.close()
         reservation.release()
         raise
+
+    def _observe_completion(completed: asyncio.Task[Any]) -> None:
+        live_tasks.discard(completed)
+        if not completed.cancelled():
+            completed.exception()
+
     live_tasks.add(task)
-    task.add_done_callback(live_tasks.discard)
+    task.add_done_callback(_observe_completion)
     return AsyncHandle(task, reservation.signal)
