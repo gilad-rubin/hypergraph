@@ -427,6 +427,7 @@ class InspectionCoalescer:
         initial_sequence: int = 0,
         initial_sent_at: float | None = None,
         initially_closed: bool = False,
+        initial_accepted_revision: int = -1,
     ) -> None:
         self._widget_id = widget_id
         self._nonce = nonce
@@ -440,6 +441,7 @@ class InspectionCoalescer:
         self._sequence = initial_sequence
         self._closed = initially_closed
         self._delivery_failed = False
+        self._latest_accepted_revision = initial_accepted_revision
 
     @property
     def closed(self) -> bool:
@@ -459,7 +461,7 @@ class InspectionCoalescer:
         delivery: InspectionDelivery | None = None,
         message: SerializedValue | None = None,
         close_after: bool = False,
-    ) -> None:
+    ) -> bool:
         """Offer one state without allowing presentation failure to escape."""
         handle_to_cancel: _ScheduledHandle | None = None
         token: object | None = None
@@ -467,17 +469,23 @@ class InspectionCoalescer:
         try:
             with self._lock:
                 if self._closed:
-                    return
+                    return False
+                if self._pending is not None and (self._pending.artifact.terminal or self._pending.close_after):
+                    return False
+                if artifact.revision < self._latest_accepted_revision:
+                    return False
                 effective_delivery = delivery or (
                     InspectionDelivery(state="saved", label="Saved snapshot") if artifact.terminal else InspectionDelivery(state="live", label="Live")
                 )
+                retain_immediate_delivery = self._pending is not None and self._pending.urgent and self._scheduled_token is not None
                 self._pending = _PendingDelivery(
                     artifact=artifact,
-                    urgent=urgent,
+                    urgent=urgent or retain_immediate_delivery,
                     delivery=effective_delivery,
                     message=message,
                     close_after=close_after,
                 )
+                self._latest_accepted_revision = artifact.revision
                 if urgent and self._scheduled_token is not None:
                     handle_to_cancel = self._scheduled_handle
                     self._scheduled_token = None
@@ -495,8 +503,10 @@ class InspectionCoalescer:
                 handle_to_cancel.cancel()
             if token is not None:
                 self._arm(token, deadline)
+            return True
         except Exception:
             self._mark_delivery_failed()
+            return False
 
     def _arm(self, token: object, deadline: float) -> None:
         handle = self._scheduler.call_at(
@@ -643,6 +653,7 @@ class NotebookInspectionTransport:
         self._scheduler = scheduler
         self._latest_artifact = initial_artifact
         self._unsubscribe: Callable[[], None] | None = None
+        self._attachment_lock = threading.RLock()
         self._coalescer = InspectionCoalescer(
             widget_id=widget_id,
             nonce=nonce,
@@ -651,6 +662,7 @@ class NotebookInspectionTransport:
             initial_sequence=1,
             initial_sent_at=scheduler.now(),
             initially_closed=initially_closed,
+            initial_accepted_revision=initial_artifact.revision,
         )
 
     @classmethod
@@ -700,18 +712,24 @@ class NotebookInspectionTransport:
         return self._coalescer.closed
 
     def publish(self, artifact: _InspectionArtifact, urgent: bool) -> None:
-        self._latest_artifact = artifact
-        self._coalescer.publish(artifact, urgent)
+        if self._coalescer.publish(artifact, urgent):
+            self._latest_artifact = artifact
 
     def attach(self, session: InspectionSession | MapInspectionSession) -> None:
         """Replay the current snapshot, then observe future session publications."""
-        if self.closed:
-            return
-        if self._unsubscribe is not None:
-            raise RuntimeError("Notebook inspection transport is already attached.")
-        snapshot = session.snapshot()
-        self._unsubscribe = session.subscribe(self.publish)
-        self.publish(snapshot, urgent=False)
+        with self._attachment_lock:
+            if self.closed:
+                return
+            if self._unsubscribe is not None:
+                raise RuntimeError("Notebook inspection transport is already attached.")
+
+            def publish(artifact: _InspectionArtifact, urgent: bool) -> None:
+                with self._attachment_lock:
+                    self.publish(artifact, urgent)
+
+            snapshot, unsubscribe = session.subscribe_with_snapshot(publish)
+            self._unsubscribe = unsubscribe
+            self.publish(snapshot, urgent=snapshot.terminal)
 
     def fail_to_start(self, error: BaseException) -> None:
         """Settle a pre-opened shell without fabricating an execution artifact."""
@@ -728,11 +746,19 @@ class NotebookInspectionTransport:
 
     def _deliver(self, envelope: InspectionEnvelope) -> None:
         self._latest_artifact = envelope.artifact
-        self._channel_handle.update(render_payload_channel(envelope))
+        try:
+            self._channel_handle.update(render_payload_channel(envelope))
+        except Exception:
+            self._detach()
+            raise
         if envelope.artifact.terminal or envelope.delivery.state == "stale":
+            self._detach()
+
+    def _detach(self) -> None:
+        with self._attachment_lock:
             unsubscribe, self._unsubscribe = self._unsubscribe, None
-            if unsubscribe is not None:
-                unsubscribe()
+        if unsubscribe is not None:
+            unsubscribe()
 
 
 def _is_notebook() -> bool:

@@ -14,18 +14,28 @@ if TYPE_CHECKING:
 _NON_OPTION_PARAMETER_NAMES = frozenset({"dataframe", "graph", "self", "values"})
 
 
-def runner_option_names(method: Any) -> frozenset[str]:
+def runner_option_names(
+    method: Any,
+    *,
+    include_private: bool = False,
+) -> frozenset[str]:
     """Return explicit runner control kwargs from a runner method signature."""
-    return _runner_option_names(getattr(method, "__func__", method))
+    return _runner_option_names(
+        getattr(method, "__func__", method),
+        include_private,
+    )
 
 
 @cache
-def _runner_option_names(method: Any) -> frozenset[str]:
+def _runner_option_names(
+    method: Any,
+    include_private: bool,
+) -> frozenset[str]:
     """Cached implementation for runner_option_names()."""
     return frozenset(
         name
         for name, param in inspect.signature(method).parameters.items()
-        if name not in _NON_OPTION_PARAMETER_NAMES and param.kind is inspect.Parameter.KEYWORD_ONLY
+        if name not in _NON_OPTION_PARAMETER_NAMES and (include_private or not name.startswith("_")) and param.kind is inspect.Parameter.KEYWORD_ONLY
     )
 
 

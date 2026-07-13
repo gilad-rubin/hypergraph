@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import heapq
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 import pytest
 
-from hypergraph.runners._shared._inspect import NodeInspection, RunInspection
+from hypergraph.runners._shared._inspect import (
+    InspectionSession,
+    MapInspectionSession,
+    NodeInspection,
+    RunInspection,
+)
 from hypergraph.runners._shared._inspect_transport import (
     INSPECTION_PROTOCOL_VERSION,
     InspectionCoalescer,
@@ -251,6 +257,148 @@ def test_error_and_terminal_preempt_the_window_and_cancel_stale_ordinary_work() 
     assert delivered[1].artifact.terminal is False
     assert delivered[2].artifact.terminal is True
     assert delivered[2].delivery.state == "saved"
+
+
+def test_pending_terminal_is_absorbing_when_older_and_later_callbacks_arrive() -> None:
+    """A terminal snapshot cannot be overwritten before its scheduled flush."""
+    scheduler = _ManualScheduler()
+    delivered: list[InspectionEnvelope] = []
+    coalescer = _coalescer(scheduler, delivered)
+
+    terminal = replace(_run(2, status="completed", terminal=True), revision=2)
+    older_running = replace(_run(1), revision=1)
+    accidental_later_running = replace(_run(3), revision=3)
+    accidental_later_terminal = replace(
+        terminal,
+        status="failed",
+        error=RuntimeError("late terminal mutation"),
+        revision=4,
+    )
+
+    coalescer.publish(terminal, urgent=True)
+    coalescer.publish(older_running, urgent=False)
+    coalescer.publish(accidental_later_running, urgent=False)
+    coalescer.publish(accidental_later_terminal, urgent=True)
+    scheduler.run_due()
+
+    assert [envelope.artifact for envelope in delivered] == [terminal]
+    assert coalescer.closed is True
+
+
+def test_newer_ordinary_revision_keeps_an_already_immediate_urgent_flush() -> None:
+    scheduler = _ManualScheduler()
+    delivered: list[InspectionEnvelope] = []
+    coalescer = _coalescer(scheduler, delivered)
+    coalescer.publish(replace(_run(0), revision=1), urgent=False)
+    scheduler.run_due()
+    scheduler.advance(0.1)
+
+    coalescer.publish(
+        replace(_run(1, status="failed", error=RuntimeError("urgent")), revision=2),
+        urgent=True,
+    )
+    latest = replace(_run(2), revision=3)
+    coalescer.publish(latest, urgent=False)
+    scheduler.run_due()
+
+    assert [envelope.sequence for envelope in delivered] == [1, 2]
+    assert delivered[-1].artifact is latest
+
+
+def test_run_session_reverse_notifications_preserve_terminal_revision() -> None:
+    scheduler = _ManualScheduler()
+    delivered: list[InspectionEnvelope] = []
+    coalescer = _coalescer(scheduler, delivered)
+    first_callback = threading.Event()
+    release_first = threading.Event()
+    session = InspectionSession(
+        graph_name="reverse-run",
+        workflow_id=None,
+        item_index=None,
+    )
+    session.bind_run("run-reverse")
+
+    def publish(artifact: RunInspection, urgent: bool) -> None:
+        if not artifact.terminal:
+            first_callback.set()
+            assert release_first.wait(timeout=5)
+        coalescer.publish(artifact, urgent)
+
+    session.subscribe(publish)
+    worker = threading.Thread(
+        target=lambda: session.start_node(
+            run_id="run-reverse",
+            span_id="span-reverse",
+            node_name="work",
+            qualified_name="work",
+            graph_name="reverse-run",
+            item_index=None,
+            superstep=0,
+            inputs={"value": 1},
+            started_at_ms=1.0,
+        )
+    )
+    worker.start()
+    assert first_callback.wait(timeout=5)
+    terminal = session.finish(
+        status="failed",
+        total_duration_ms=2.0,
+        error=RuntimeError("run boundary failed"),
+    )
+    release_first.set()
+    worker.join(timeout=5)
+    scheduler.run_due()
+
+    assert worker.is_alive() is False
+    assert delivered[-1].artifact is terminal
+    assert delivered[-1].artifact.terminal is True
+
+
+def test_map_session_reverse_notifications_preserve_terminal_revision() -> None:
+    scheduler = _ManualScheduler()
+    delivered: list[InspectionEnvelope] = []
+    coalescer = _coalescer(scheduler, delivered)
+    first_callback = threading.Event()
+    release_first = threading.Event()
+    session = MapInspectionSession(
+        graph_name="reverse-map",
+        workflow_id=None,
+        requested_count=1,
+        map_over=("value",),
+        map_mode="zip",
+    )
+    session.bind_run("batch-reverse")
+
+    def publish(artifact: object, urgent: bool) -> None:
+        if not artifact.terminal:  # type: ignore[attr-defined]
+            first_callback.set()
+            assert release_first.wait(timeout=5)
+        coalescer.publish(artifact, urgent)  # type: ignore[arg-type]
+
+    session.subscribe(publish)  # type: ignore[arg-type]
+    worker = threading.Thread(
+        target=lambda: session.claim_item(
+            item_index=0,
+            requested_inputs={"value": 1},
+            workflow_id=None,
+        )
+    )
+    worker.start()
+    assert first_callback.wait(timeout=5)
+    error = RuntimeError("batch boundary failed")
+    terminal = session.finish(
+        status="failed",
+        total_duration_ms=2.0,
+        unstarted_item_indexes=(),
+        error=error,
+    )
+    release_first.set()
+    worker.join(timeout=5)
+    scheduler.run_due()
+
+    assert worker.is_alive() is False
+    assert delivered[-1].artifact is terminal
+    assert terminal.error is error
 
 
 def test_delivery_failure_is_isolated_and_closes_the_observational_transport() -> None:

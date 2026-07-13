@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
+from dataclasses import replace
 
 import pytest
 from playwright.sync_api import Browser, sync_playwright
@@ -186,6 +187,98 @@ def test_run_boundary_error_is_visible_on_failed_node_without_failure_evidence(
     assert detail.get_by_text("RuntimeError: CACHE-SAVE-BOOM", exact=True).is_visible()
     assert "Smallest useful evidence" not in detail.inner_text()
     assert "failure = result.failure" not in detail.inner_text()
+    page.close()
+
+
+def test_map_boundary_error_renders_exactly_without_inventing_child_evidence(
+    browser: Browser,
+) -> None:
+    artifact = MapInspection(
+        run_id="batch-dispatcher-failure",
+        graph_name="customer_enrichment",
+        workflow_id=None,
+        status="failed",
+        map_over=("customer_id",),
+        map_mode="zip",
+        requested_count=1,
+        items=(),
+        unstarted_item_indexes=(0,),
+        total_duration_ms=12.0,
+        captured=True,
+        terminal=True,
+        error=RuntimeError("PARENT-DISPATCHER-BOOM"),
+    )
+
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    page.set_content(render_map_inspection(artifact))
+    root = page.locator('[data-hypergraph-inspect="map"]')
+
+    assert root.get_by_text("Exact batch exception", exact=True).is_visible()
+    assert root.get_by_text(
+        "RuntimeError: PARENT-DISPATCHER-BOOM",
+        exact=True,
+    ).is_visible()
+    assert "Smallest useful evidence" not in root.inner_text()
+    assert "failure = result.failure" not in root.inner_text()
+    page.close()
+
+
+def test_live_map_boundary_error_keeps_graph_tab_and_is_always_visible(
+    browser: Browser,
+) -> None:
+    initial = MapInspection(
+        run_id="batch-live-boundary",
+        graph_name="customer_enrichment",
+        workflow_id=None,
+        status="running",
+        map_over=("customer_id",),
+        map_mode="zip",
+        requested_count=1,
+        items=(MapItemInspection(0, "running", {"customer_id": "maya-23"}),),
+        unstarted_item_indexes=(),
+        total_duration_ms=0.0,
+        captured=True,
+        terminal=False,
+    )
+    failed = replace(
+        initial,
+        status="failed",
+        terminal=True,
+        error=RuntimeError("LIVE-PARENT-DISPATCHER-BOOM"),
+        revision=1,
+    )
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    page.set_content(render_map_inspection(initial))
+    root = page.locator('[data-hypergraph-inspect="map"]')
+    root.get_by_role("tab", name="Graph").click()
+
+    root.evaluate(
+        "(element, nextPayload) => element.__hypergraphInspect.updatePayload(nextPayload)",
+        build_inspection_payload(
+            failed,
+            delivery_state="saved",
+            delivery_label="Saved snapshot",
+        ),
+    )
+
+    assert root.get_by_role("tab", name="Graph").get_attribute("aria-selected") == "true"
+    assert (
+        root.locator("[data-hg-detail]")
+        .get_by_text(
+            "Exact batch exception",
+            exact=True,
+        )
+        .is_visible()
+    )
+    assert (
+        root.locator("[data-hg-detail]")
+        .get_by_text(
+            "RuntimeError: LIVE-PARENT-DISPATCHER-BOOM",
+            exact=True,
+        )
+        .is_visible()
+    )
+    assert root.get_by_role("button", name="Show failure").is_hidden()
     page.close()
 
 

@@ -460,6 +460,17 @@
     parent.appendChild(block);
   }
 
+  function appendBatchError(parent) {
+    var map = currentMap();
+    if (!map || !map.error) return;
+    var block = element("div", "hg-inspect-detail-block");
+    block.appendChild(element("div", "hg-inspect-section-title", "Exact batch exception"));
+    var error = element("div", "hg-inspect-error");
+    error.appendChild(code(errorText(map.error)));
+    block.appendChild(error);
+    parent.appendChild(block);
+  }
+
   function renderHeader() {
     var data = payload.kind === "map" ? payload.map : payload.run;
     data = data || {};
@@ -500,6 +511,13 @@
       return;
     }
     alertElement.removeAttribute("data-kind");
+    var map = currentMap();
+    if (map && map.error) {
+      alertElement.hidden = false;
+      showFailureElement.hidden = true;
+      alertTextElement.textContent = "The batch failed at its execution boundary. Exact exception evidence is shown in the detail panel.";
+      return;
+    }
     var failureItem = firstFailedItem();
     var run = payload.kind === "run" ? payload.run : failureItem && failureItem.run;
     var failureNode = firstFailedNode(run);
@@ -678,6 +696,7 @@
 
   function renderDetail() {
     detailElement.replaceChildren();
+    appendBatchError(detailElement);
     var run = currentRun();
     var node = nodeByExecutionId(state.selectedExecution);
     if (!run) {

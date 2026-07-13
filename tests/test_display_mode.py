@@ -131,7 +131,7 @@ class TestExplicitDisplayStaysRich:
 # (`graph.visualize()` or `result.inspect()`); the contract keeps these rich
 # even in plain mode.
 EXPLICIT_DISPLAY_EXCEPTIONS = {
-    "hypergraph.runners._shared._inspect_html.InspectionDisplay",
+    "hypergraph.runners.inspection.InspectionDisplay",
     "hypergraph.viz.widget._VizCellOutput",
 }
 
@@ -191,7 +191,7 @@ def _instance_factories() -> dict[str, object]:
             map_mode="zip",
             graph_name="g",
         ),
-        "hypergraph.runners._shared._inspect_html.InspectionDisplay": lambda: run_result.inspect(),
+        "hypergraph.runners.inspection.InspectionDisplay": lambda: run_result.inspect(),
         "hypergraph.runners._shared.results.RunLog": lambda: run_log,
         "hypergraph.runners._shared.results.MapLog": lambda: MapLog(graph_name="g", total_duration_ms=1.0, items=(run_log,)),
         "hypergraph.checkpointers.types.StepRecord": lambda: step,

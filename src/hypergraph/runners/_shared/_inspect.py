@@ -76,6 +76,7 @@ class RunInspection:
     captured: bool
     terminal: bool
     error: BaseException | None = field(default=None, repr=False, compare=False)
+    revision: int = field(default=0, repr=False, compare=False)
 
 
 MapItemInspectionStatus = Literal[
@@ -124,6 +125,8 @@ class MapInspection:
     total_duration_ms: float
     captured: bool
     terminal: bool
+    error: BaseException | None = field(default=None, repr=False, compare=False)
+    revision: int = field(default=0, repr=False, compare=False)
 
     @property
     def completed_count(self) -> int:
@@ -183,7 +186,7 @@ class InspectionSession:
         with self._lock:
             if self._artifact.run_id not in {"pending", run_id}:
                 raise RuntimeError("InspectionSession is already bound to another top-level run.")
-            self._artifact = replace(self._artifact, run_id=run_id)
+            self._replace_artifact_locked(run_id=run_id)
 
     def start_node(
         self,
@@ -216,8 +219,7 @@ class InspectionSession:
                 inputs=inputs,
                 started_at_ms=started_at_ms,
             )
-            self._artifact = replace(
-                self._artifact,
+            self._replace_artifact_locked(
                 nodes=(*self._artifact.nodes, node),
             )
             artifact, subscribers = self._publication_locked()
@@ -272,8 +274,7 @@ class InspectionSession:
                 duration_ms=duration_ms,
                 cached=cached,
             )
-            self._artifact = replace(
-                self._artifact,
+            self._replace_artifact_locked(
                 nodes=(*self._artifact.nodes, node),
             )
             artifact, subscribers = self._publication_locked()
@@ -296,7 +297,7 @@ class InspectionSession:
                 duration_ms=duration_ms,
             )
             if self._artifact.error is None:
-                self._artifact = replace(self._artifact, error=error)
+                self._replace_artifact_locked(error=error)
             artifact, subscribers = self._publication_locked()
         self._notify(subscribers, artifact, urgent=True)
 
@@ -342,8 +343,7 @@ class InspectionSession:
             )
             if record_failure:
                 self._failure_span_ids.add(span_id)
-            self._artifact = replace(
-                self._artifact,
+            self._replace_artifact_locked(
                 failures=tuple(node.failure for node in self._artifact.nodes if node.span_id in self._failure_span_ids and node.failure is not None),
                 error=self._artifact.error if self._artifact.error is not None else failure.error,
             )
@@ -366,8 +366,7 @@ class InspectionSession:
                 status if status in {"completed", "failed", "paused", "stopped"} else "failed",
             )
             settled_nodes = tuple(replace(node, status=settled_status) if node.status == "running" else node for node in self._artifact.nodes)
-            self._artifact = replace(
-                self._artifact,
+            self._replace_artifact_locked(
                 status=status,
                 nodes=settled_nodes,
                 failures=tuple(terminal_failures),
@@ -397,6 +396,25 @@ class InspectionSession:
 
         return unsubscribe
 
+    def subscribe_with_snapshot(
+        self,
+        callback: InspectionSubscriber,
+    ) -> tuple[RunInspection, Callable[[], None] | None]:
+        """Atomically subscribe and return the snapshot covered by that subscription."""
+        with self._lock:
+            artifact = self._artifact
+            if artifact.terminal:
+                return artifact, None
+            key = self._next_subscriber
+            self._next_subscriber += 1
+            self._subscribers[key] = callback
+
+        def unsubscribe() -> None:
+            with self._lock:
+                self._subscribers.pop(key, None)
+
+        return artifact, unsubscribe
+
     def _publication_locked(
         self,
     ) -> tuple[RunInspection, tuple[InspectionSubscriber, ...]]:
@@ -407,9 +425,16 @@ class InspectionSession:
         for index in range(len(nodes) - 1, -1, -1):
             if nodes[index].span_id == span_id:
                 nodes[index] = replace(nodes[index], **changes)
-                self._artifact = replace(self._artifact, nodes=tuple(nodes))
+                self._replace_artifact_locked(nodes=tuple(nodes))
                 return
         raise RuntimeError(f"No inspected node execution has span_id {span_id!r}.")
+
+    def _replace_artifact_locked(self, **changes: Any) -> None:
+        self._artifact = replace(
+            self._artifact,
+            revision=self._artifact.revision + 1,
+            **changes,
+        )
 
     @staticmethod
     def _notify(
@@ -460,7 +485,7 @@ class MapInspectionSession:
         with self._lock:
             if self._artifact.run_id not in {"pending", run_id}:
                 raise RuntimeError("MapInspectionSession is already bound to another batch run.")
-            self._artifact = replace(self._artifact, run_id=run_id)
+            self._replace_artifact_locked(run_id=run_id)
 
     def claim_item(
         self,
@@ -478,8 +503,7 @@ class MapInspectionSession:
                 status="running",
                 requested_inputs=requested_inputs,
             )
-            self._artifact = replace(
-                self._artifact,
+            self._replace_artifact_locked(
                 items=tuple(
                     sorted(
                         (*self._artifact.items, item),
@@ -530,15 +554,16 @@ class MapInspectionSession:
         status: str,
         total_duration_ms: float,
         unstarted_item_indexes: tuple[int, ...] = (),
+        error: BaseException | None = None,
     ) -> MapInspection:
         """Publish the terminal batch snapshot and return it."""
         with self._lock:
-            self._artifact = replace(
-                self._artifact,
+            self._replace_artifact_locked(
                 status=status,
                 unstarted_item_indexes=tuple(unstarted_item_indexes),
                 total_duration_ms=total_duration_ms,
                 terminal=True,
+                error=error,
             )
             artifact, subscribers = self._publication_locked()
         self._notify(subscribers, artifact, urgent=True)
@@ -562,6 +587,25 @@ class MapInspectionSession:
 
         return unsubscribe
 
+    def subscribe_with_snapshot(
+        self,
+        callback: MapInspectionSubscriber,
+    ) -> tuple[MapInspection, Callable[[], None] | None]:
+        """Atomically subscribe and return the snapshot covered by that subscription."""
+        with self._lock:
+            artifact = self._artifact
+            if artifact.terminal:
+                return artifact, None
+            key = self._next_subscriber
+            self._next_subscriber += 1
+            self._subscribers[key] = callback
+
+        def unsubscribe() -> None:
+            with self._lock:
+                self._subscribers.pop(key, None)
+
+        return artifact, unsubscribe
+
     def _publish_child(
         self,
         *,
@@ -571,6 +615,11 @@ class MapInspectionSession:
     ) -> None:
         with self._lock:
             current = self._item_locked(item_index)
+            if current.run is not None:
+                if current.run.terminal and not run.terminal:
+                    return
+                if run.revision < current.run.revision:
+                    return
             status: MapItemInspectionStatus = run.status
             self._replace_item_locked(
                 item_index,
@@ -590,9 +639,15 @@ class MapInspectionSession:
         item_index: int,
         replacement: MapItemInspection,
     ) -> None:
+        self._replace_artifact_locked(
+            items=tuple(replacement if item.item_index == item_index else item for item in self._artifact.items),
+        )
+
+    def _replace_artifact_locked(self, **changes: Any) -> None:
         self._artifact = replace(
             self._artifact,
-            items=tuple(replacement if item.item_index == item_index else item for item in self._artifact.items),
+            revision=self._artifact.revision + 1,
+            **changes,
         )
 
     def _publication_locked(

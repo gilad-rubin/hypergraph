@@ -8,6 +8,7 @@ import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 
@@ -73,20 +74,23 @@ class _QueuedOwnerScheduler:
 
 
 class _FakeDisplayHandle:
-    def __init__(self) -> None:
+    def __init__(self, *, fail_update: bool = False) -> None:
         self.updates: list[str] = []
         self.update_threads: list[int] = []
+        self.fail_update = fail_update
 
     def update(self, markup: str) -> None:
+        if self.fail_update:
+            raise RuntimeError("display update failed")
         self.updates.append(markup)
         self.update_threads.append(threading.get_ident())
 
 
 class _FakeNotebookDisplay:
-    def __init__(self, *, fail_channel: bool = False) -> None:
+    def __init__(self, *, fail_channel: bool = False, fail_update: bool = False) -> None:
         self.shells: list[str] = []
         self.channels: list[tuple[str, str]] = []
-        self.handle = _FakeDisplayHandle()
+        self.handle = _FakeDisplayHandle(fail_update=fail_update)
         self.fail_channel = fail_channel
 
     def display_shell(self, markup: str) -> None:
@@ -270,6 +274,47 @@ def test_attach_replays_current_session_before_future_publications() -> None:
     assert latest["payload"]["run"]["nodes"][0]["qualified_name"] == "load"
 
 
+def test_attach_rejects_snapshot_that_races_behind_newer_callback() -> None:
+    scheduler = _QueuedOwnerScheduler()
+    display = _FakeNotebookDisplay()
+    transport = NotebookInspectionTransport.create(
+        _artifact(),
+        display=display,
+        scheduler=scheduler,
+        widget_id="hg-inspect-attach-race",
+        nonce="nonce-attach-race",
+    )
+
+    class RacingSession(InspectionSession):
+        def subscribe_with_snapshot(self, callback: Any) -> Any:
+            older, unsubscribe = super().subscribe_with_snapshot(callback)
+            self.start_node(
+                run_id="run-attach-race",
+                span_id="span-newer",
+                node_name="newer",
+                qualified_name="newer",
+                graph_name="attach-race",
+                item_index=None,
+                superstep=0,
+                inputs={"value": 2},
+                started_at_ms=1.0,
+            )
+            return older, unsubscribe
+
+    session = RacingSession(
+        graph_name="attach-race",
+        workflow_id=None,
+        item_index=None,
+    )
+    session.bind_run("run-attach-race")
+
+    transport.attach(session)
+    scheduler.advance(0.25)
+
+    latest = _wire(display.handle.updates[-1])
+    assert latest["payload"]["run"]["nodes"][0]["qualified_name"] == "newer"
+
+
 def test_closed_stale_fallback_does_not_subscribe_or_receive_session_updates() -> None:
     scheduler = _QueuedOwnerScheduler(supports_cross_thread=False)
     display = _FakeNotebookDisplay()
@@ -292,6 +337,30 @@ def test_closed_stale_fallback_does_not_subscribe_or_receive_session_updates() -
 
     assert session._subscribers == {}  # type: ignore[attr-defined]
     assert display.handle.updates == []
+
+
+def test_failed_channel_update_closes_transport_and_unsubscribes_session() -> None:
+    scheduler = _QueuedOwnerScheduler()
+    display = _FakeNotebookDisplay(fail_update=True)
+    transport = NotebookInspectionTransport.create(
+        _artifact(),
+        display=display,
+        scheduler=scheduler,
+        widget_id="hg-inspect-broken-update",
+        nonce="nonce-broken-update",
+    )
+    session = InspectionSession(
+        graph_name="customer_enrichment",
+        workflow_id="workflow-customers",
+        item_index=None,
+    )
+
+    transport.attach(session)
+    scheduler.advance(0.25)
+
+    assert transport.closed is True
+    assert transport._coalescer.delivery_failed is True  # type: ignore[attr-defined]
+    assert session._subscribers == {}  # type: ignore[attr-defined]
 
 
 def test_start_failure_becomes_bounded_stale_transport_state() -> None:

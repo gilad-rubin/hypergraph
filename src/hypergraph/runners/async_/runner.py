@@ -177,32 +177,70 @@ class AsyncRunner(AsyncRunnerTemplate):
         reject_background_runner_options(
             input_values,
             start_method="AsyncRunner.start_run",
-            reserved_option_names=runner_option_names(self.run) | runner_option_names(self.map),
+            reserved_option_names=runner_option_names(
+                self.run,
+                include_private=True,
+            )
+            | runner_option_names(self.map, include_private=True),
         )
         loop = asyncio.get_running_loop()
-        reservation = self._active_workflows.reserve(workflow_id)
-        return _launch_async_execution(
-            loop,
-            lambda: self.run(
-                graph,
-                values,
-                select=select,
-                on_missing=on_missing,
-                entrypoint=entrypoint,
-                max_iterations=max_iterations,
-                max_concurrency=max_concurrency,
-                inspect=inspect,
-                error_handling="continue",
-                event_processors=event_processors,
-                show_progress=show_progress,
-                checkpoint=checkpoint,
+        inspection_session = None
+        inspection_transport = None
+        if inspect is True:
+            from hypergraph.runners._shared._inspect import InspectionSession
+            from hypergraph.runners._shared._inspect_transport import open_notebook_inspection_transport
+
+            inspection_session = InspectionSession(
+                graph_name=graph.name or "",
                 workflow_id=workflow_id,
-                _reservation=reservation,
-                **input_values,
-            ),
-            reservation,
-            self._background_tasks,
-        )
+                item_index=None,
+            )
+            try:
+                inspection_transport = open_notebook_inspection_transport(inspection_session.snapshot())
+                if inspection_transport is not None:
+                    inspection_transport.attach(inspection_session)
+            except Exception:
+                inspection_transport = None
+
+        try:
+            reservation = self._active_workflows.reserve(workflow_id)
+
+            async def execute() -> RunResult:
+                try:
+                    return await self.run(
+                        graph,
+                        values,
+                        select=select,
+                        on_missing=on_missing,
+                        entrypoint=entrypoint,
+                        max_iterations=max_iterations,
+                        max_concurrency=max_concurrency,
+                        inspect=inspect,
+                        error_handling="continue",
+                        event_processors=event_processors,
+                        show_progress=show_progress,
+                        checkpoint=checkpoint,
+                        workflow_id=workflow_id,
+                        _reservation=reservation,
+                        _inspection_session=inspection_session,
+                        _inspection_transport=inspection_transport,
+                        **input_values,
+                    )
+                except BaseException as error:
+                    if inspection_transport is not None:
+                        inspection_transport.fail_to_start(error)
+                    raise
+
+            return _launch_async_execution(
+                loop,
+                execute,
+                reservation,
+                self._background_tasks,
+            )
+        except BaseException as error:
+            if inspection_transport is not None:
+                inspection_transport.fail_to_start(error)
+            raise
 
     def start_map(
         self,
@@ -226,33 +264,76 @@ class AsyncRunner(AsyncRunnerTemplate):
         reject_background_runner_options(
             input_values,
             start_method="AsyncRunner.start_map",
-            reserved_option_names=runner_option_names(self.run) | runner_option_names(self.map),
+            reserved_option_names=runner_option_names(
+                self.run,
+                include_private=True,
+            )
+            | runner_option_names(self.map, include_private=True),
         )
         loop = asyncio.get_running_loop()
-        reservation = self._active_workflows.reserve(workflow_id)
-        return _launch_async_execution(
-            loop,
-            lambda: self.map(
-                graph,
-                values,
-                map_over=map_over,
-                map_mode=map_mode,
-                clone=clone,
-                select=select,
-                on_missing=on_missing,
-                entrypoint=entrypoint,
-                max_concurrency=max_concurrency,
-                inspect=inspect,
-                error_handling="continue",
-                event_processors=event_processors,
-                show_progress=show_progress,
+        inspection_transport = None
+        if inspect is True:
+            from hypergraph.runners._shared._inspect import MapInspection
+            from hypergraph.runners._shared._inspect_transport import open_notebook_inspection_transport
+
+            pending = MapInspection(
+                run_id="pending",
+                graph_name=graph.name or "",
                 workflow_id=workflow_id,
-                _reservation=reservation,
-                **input_values,
-            ),
-            reservation,
-            self._background_tasks,
-        )
+                status="running",
+                map_over=(map_over,) if isinstance(map_over, str) else tuple(map_over) if isinstance(map_over, list) else (),
+                map_mode=map_mode,
+                requested_count=0,
+                items=(),
+                unstarted_item_indexes=(),
+                total_duration_ms=0.0,
+                captured=True,
+                terminal=False,
+            )
+            try:
+                inspection_transport = open_notebook_inspection_transport(pending)
+            except Exception:
+                inspection_transport = None
+
+        try:
+            reservation = self._active_workflows.reserve(workflow_id)
+
+            async def execute() -> MapResult:
+                try:
+                    return await self.map(
+                        graph,
+                        values,
+                        map_over=map_over,
+                        map_mode=map_mode,
+                        clone=clone,
+                        select=select,
+                        on_missing=on_missing,
+                        entrypoint=entrypoint,
+                        max_concurrency=max_concurrency,
+                        inspect=inspect,
+                        error_handling="continue",
+                        event_processors=event_processors,
+                        show_progress=show_progress,
+                        workflow_id=workflow_id,
+                        _reservation=reservation,
+                        _inspection_transport=inspection_transport,
+                        **input_values,
+                    )
+                except BaseException as error:
+                    if inspection_transport is not None:
+                        inspection_transport.fail_to_start(error)
+                    raise
+
+            return _launch_async_execution(
+                loop,
+                execute,
+                reservation,
+                self._background_tasks,
+            )
+        except BaseException as error:
+            if inspection_transport is not None:
+                inspection_transport.fail_to_start(error)
+            raise
 
     @property
     def _checkpointer(self) -> Checkpointer | None:
