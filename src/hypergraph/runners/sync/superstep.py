@@ -242,6 +242,12 @@ def run_superstep_sync(
                             outputs = executor(node, new_state, inputs, ctx)
                     except BaseException as executor_error:
                         if isinstance(executor_error, PauseExecution):
+                            if inspection_session is not None:
+                                inspection_session.pause_node(
+                                    span_id=node_span_id,
+                                    ended_at_ms=time.perf_counter() * 1000,
+                                    duration_ms=(time.time() - node_start) * 1000,
+                                )
                             raise
                         if isinstance(executor_error, Exception):
                             duration_ms = (time.time() - node_start) * 1000
@@ -309,15 +315,6 @@ def run_superstep_sync(
 
                 duration_ms = (time.time() - node_start) * 1000
 
-                if inspection_session is not None:
-                    inspection_session.finish_node(
-                        span_id=node_span_id,
-                        outputs=outputs,
-                        ended_at_ms=time.perf_counter() * 1000,
-                        duration_ms=duration_ms,
-                        cached=False,
-                    )
-
                 # Store result in cache
                 if cache is not None and cache_key:
                     store_in_cache(node, outputs, new_state, cache, cache_key)
@@ -351,8 +348,23 @@ def run_superstep_sync(
                         )
                     )
 
+                if inspection_session is not None:
+                    inspection_session.finish_node(
+                        span_id=node_span_id,
+                        outputs=outputs,
+                        ended_at_ms=time.perf_counter() * 1000,
+                        duration_ms=duration_ms,
+                        cached=False,
+                    )
+
             except BaseException as e:
                 duration_ms = (time.time() - node_start) * 1000
+                if inspection_session is not None and isinstance(e, Exception) and not isinstance(e, _NodeExecutionError):
+                    inspection_session.abort_node(
+                        span_id=node_span_id,
+                        ended_at_ms=time.perf_counter() * 1000,
+                        duration_ms=duration_ms,
+                    )
                 if active and not node_error_event_attempted and not isinstance(e, _NodeExecutionError):
                     dispatcher.emit(
                         build_node_error_event(

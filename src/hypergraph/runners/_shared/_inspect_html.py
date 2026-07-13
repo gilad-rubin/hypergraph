@@ -26,9 +26,17 @@ def _safe_str(value: Any) -> str:
         return f"<unrenderable {type(value).__name__}: {type(error).__name__}>"
 
 
-def _render_mapping(values: dict[str, Any] | None, *, captured: bool) -> str:
+def _render_mapping(
+    values: dict[str, Any] | None,
+    *,
+    values_captured: bool,
+    restored: bool,
+) -> str:
     if values is None:
-        message = "not captured; rerun with inspect=True" if not captured else "not available"
+        if restored and not values_captured:
+            message = "restored values not captured"
+        else:
+            message = "not captured; rerun with inspect=True" if not values_captured else "not available"
         return f'<p class="hg-inspect-missing">{html.escape(message)}</p>'
     rows = "".join(
         f"<tr><th>{html.escape(str(name))}</th><td><code>{html.escape(_safe_repr(value))}</code></td></tr>" for name, value in values.items()
@@ -58,9 +66,9 @@ def render_run_inspection(artifact: RunInspection) -> str:
             "</summary>"
             '<div class="hg-inspect-grid">'
             "<section><h4>Inputs</h4>"
-            f"{_render_mapping(node.inputs, captured=artifact.captured)}</section>"
+            f"{_render_mapping(node.inputs, values_captured=node.values_captured, restored=node.status == 'restored')}</section>"
             "<section><h4>Outputs</h4>"
-            f"{_render_mapping(node.outputs, captured=artifact.captured)}</section>"
+            f"{_render_mapping(node.outputs, values_captured=node.values_captured, restored=node.status == 'restored')}</section>"
             "</div>"
             f"{failure_html}"
             "</details>"

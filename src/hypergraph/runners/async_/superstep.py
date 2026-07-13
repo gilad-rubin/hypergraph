@@ -262,6 +262,12 @@ async def run_superstep_async(
                         outputs = await executor(node, new_state, inputs, ctx)
                 except BaseException as executor_error:
                     if isinstance(executor_error, PauseExecution):
+                        if inspection_session is not None:
+                            inspection_session.pause_node(
+                                span_id=node_span_id,
+                                ended_at_ms=time.perf_counter() * 1000,
+                                duration_ms=(time.time() - node_start) * 1000,
+                            )
                         raise
                     if isinstance(executor_error, Exception):
                         duration_ms = (time.time() - node_start) * 1000
@@ -329,15 +335,6 @@ async def run_superstep_async(
 
             duration_ms = (time.time() - node_start) * 1000
 
-            if inspection_session is not None:
-                inspection_session.finish_node(
-                    span_id=node_span_id,
-                    outputs=outputs,
-                    ended_at_ms=time.perf_counter() * 1000,
-                    duration_ms=duration_ms,
-                    cached=False,
-                )
-
             # Store result in cache
             if cache is not None and cache_key:
                 store_in_cache(node, outputs, new_state, cache, cache_key)
@@ -371,11 +368,26 @@ async def run_superstep_async(
                     )
                 )
 
+            if inspection_session is not None:
+                inspection_session.finish_node(
+                    span_id=node_span_id,
+                    outputs=outputs,
+                    ended_at_ms=time.perf_counter() * 1000,
+                    duration_ms=duration_ms,
+                    cached=False,
+                )
+
             return node, outputs, input_versions, wait_for_versions, duration_ms, False
         except PauseExecution as exc:
             exc.span_id = node_span_id
             raise
         except Exception as exc:
+            if inspection_session is not None and not isinstance(exc, _NodeExecutionError):
+                inspection_session.abort_node(
+                    span_id=node_span_id,
+                    ended_at_ms=time.perf_counter() * 1000,
+                    duration_ms=(time.time() - node_start) * 1000,
+                )
             if active and not node_error_event_attempted and not isinstance(exc, _NodeExecutionError):
                 await dispatcher.emit_async(
                     build_node_error_event(

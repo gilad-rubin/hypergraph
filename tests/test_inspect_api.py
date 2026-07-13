@@ -6,7 +6,8 @@ import dataclasses
 
 import pytest
 
-from hypergraph import AsyncRunner, Graph, RunResult, RunStatus, SyncRunner, node
+from hypergraph import AsyncRunner, Graph, RunResult, RunStatus, SyncRunner, interrupt, node
+from hypergraph.checkpointers import MemoryCheckpointer, SqliteCheckpointer
 
 
 def test_sync_inspect_renders_captured_outputs_and_changes_with_real_input() -> None:
@@ -190,3 +191,211 @@ async def test_async_inspect_changes_rendered_behavior_with_real_input() -> None
     assert "async-independent-answer:18" not in first_html
     assert "async-independent-answer:18" in changed_html
     assert "async-independent-answer:4" not in changed_html
+
+
+@pytest.mark.asyncio
+async def test_async_inspection_marks_the_interrupt_boundary_paused() -> None:
+    @node(output_name="draft")
+    async def prepare(value: int) -> str:
+        return f"draft:{value}"
+
+    @interrupt(output_name="decision")
+    def review(draft: str) -> str | None:
+        return None
+
+    result = await AsyncRunner().run(
+        Graph([prepare, review], name="pause-inspection"),
+        {"value": 3},
+        inspect=True,
+    )
+    artifact = result.inspect().artifact
+    by_name = {item.qualified_name: item for item in artifact.nodes}
+
+    assert artifact.status == "paused"
+    assert by_name["prepare"].status == "completed"
+    assert by_name["prepare"].values_captured is True
+    assert by_name["review"].status == "paused"
+    assert by_name["review"].inputs == {"draft": "draft:3"}
+    assert by_name["review"].outputs is None
+    assert by_name["review"].values_captured is True
+    assert all(item.status != "running" for item in artifact.nodes)
+
+
+@pytest.mark.asyncio
+async def test_async_nested_interrupt_marks_container_and_leaf_paused() -> None:
+    @interrupt(output_name="decision")
+    def review(value: int) -> str | None:
+        return None
+
+    inner = Graph([review], name="inner-pause")
+    outer = Graph([inner.as_node(name="child")], name="outer-pause")
+
+    result = await AsyncRunner().run(outer, {"value": 7}, inspect=True)
+    artifact = result.inspect().artifact
+    by_name = {item.qualified_name: item for item in artifact.nodes}
+
+    assert artifact.status == "paused"
+    assert set(by_name) == {"child", "child/review"}
+    assert by_name["child"].status == "paused"
+    assert by_name["child/review"].status == "paused"
+    assert by_name["child/review"].inputs == {"value": 7}
+    assert all(item.status != "running" for item in artifact.nodes)
+
+
+@pytest.mark.asyncio
+async def test_async_resume_inspection_separates_restored_metadata_from_fresh_values() -> None:
+    restored_only_sentinel = "RESTORED-ONLY-SENTINEL"
+
+    @node(output_name="draft")
+    async def prepare(value: int) -> str:
+        return f"draft:{value}"
+
+    @node(output_name="checkpoint_secret")
+    async def remember_secret(value: int) -> str:
+        return restored_only_sentinel
+
+    @interrupt(output_name="decision")
+    def review(draft: str) -> str | None:
+        return None
+
+    @node(output_name="final")
+    async def finalize(decision: str) -> str:
+        return f"final:{decision}"
+
+    graph = Graph([prepare, remember_secret, review, finalize], name="resume-inspection")
+    checkpointer = MemoryCheckpointer()
+    runner = AsyncRunner(checkpointer=checkpointer)
+
+    paused = await runner.run(graph, {"value": 5}, workflow_id="inspect-resume")
+    assert paused.pause is not None
+    source_steps = {step.node_name: step for step in await checkpointer.get_steps("inspect-resume") if step.status.value == "completed"}
+
+    resumed = await runner.run(
+        graph,
+        {paused.pause.response_key: "approved"},
+        workflow_id="inspect-resume",
+        inspect=True,
+    )
+    artifact = resumed.inspect().artifact
+    by_name = {item.qualified_name: item for item in artifact.nodes}
+
+    assert artifact.captured is True
+    assert artifact.status == "completed"
+    assert [item.qualified_name for item in artifact.nodes if item.status == "restored"] == [
+        "prepare",
+        "remember_secret",
+    ]
+    for name in ("prepare", "remember_secret"):
+        restored = by_name[name]
+        assert restored.run_id == source_steps[name].run_id
+        assert restored.superstep == source_steps[name].superstep
+        assert restored.duration_ms == source_steps[name].duration_ms
+        assert restored.cached == source_steps[name].cached
+        assert restored.values_captured is False
+        assert restored.inputs is None
+        assert restored.outputs is None
+        assert not hasattr(restored, "input_versions")
+
+    assert by_name["review"].status == "completed"
+    assert by_name["review"].inputs == {"draft": "draft:5"}
+    assert by_name["review"].outputs == {"decision": "approved"}
+    assert by_name["review"].values_captured is True
+    assert by_name["finalize"].status == "completed"
+    assert by_name["finalize"].values_captured is True
+
+    html = resumed.inspect()._repr_html_()
+    assert "restored values not captured" in html
+    assert restored_only_sentinel not in html
+
+
+def test_sync_checkpoint_started_inspection_restores_metadata_without_values(tmp_path) -> None:
+    restored_only_sentinel = "SYNC-RESTORED-ONLY-SENTINEL"
+
+    @node(output_name="checkpoint_secret")
+    def remember_secret(value: int) -> str:
+        return restored_only_sentinel
+
+    @node(output_name="seeded")
+    def prepare(value: int) -> int:
+        return value
+
+    @node(output_name="fresh")
+    def calculate(seeded: int) -> str:
+        return f"fresh:{seeded}"
+
+    checkpointer = SqliteCheckpointer(str(tmp_path / "inspect-sync.db"))
+    checkpointer._sync_db()
+    try:
+        runner = SyncRunner(checkpointer=checkpointer)
+        runner.run(
+            Graph([remember_secret, prepare], name="sync-inspect-source"),
+            {"value": 4},
+            workflow_id="sync-inspect-source",
+        )
+        checkpoint = checkpointer.checkpoint("sync-inspect-source")
+        source_steps = {step.node_name: step for step in checkpoint.steps}
+        assert checkpoint.values["checkpoint_secret"] == restored_only_sentinel
+
+        resumed = runner.run(
+            Graph([calculate], name="sync-inspect-resume"),
+            checkpoint=checkpoint,
+            workflow_id="sync-inspect-fork",
+            inspect=True,
+        )
+    finally:
+        if checkpointer._sync_conn is not None:
+            checkpointer._sync_conn.close()
+
+    artifact = resumed.inspect().artifact
+    by_name = {item.qualified_name: item for item in artifact.nodes}
+
+    assert artifact.captured is True
+    assert by_name["remember_secret"].status == "restored"
+    assert by_name["remember_secret"].run_id == source_steps["remember_secret"].run_id
+    assert by_name["remember_secret"].superstep == source_steps["remember_secret"].superstep
+    assert by_name["remember_secret"].values_captured is False
+    assert by_name["remember_secret"].inputs is None
+    assert by_name["remember_secret"].outputs is None
+    assert by_name["prepare"].status == "restored"
+    assert by_name["prepare"].values_captured is False
+    assert by_name["prepare"].inputs is None
+    assert by_name["prepare"].outputs is None
+    assert by_name["calculate"].status == "completed"
+    assert by_name["calculate"].values_captured is True
+    assert by_name["calculate"].inputs == {"seeded": 4}
+    assert by_name["calculate"].outputs == {"fresh": "fresh:4"}
+
+    html = resumed.inspect()._repr_html_()
+    assert "restored values not captured" in html
+    assert restored_only_sentinel not in html
+
+
+def test_inspection_does_not_report_completed_after_cache_write_failure() -> None:
+    class CacheWriteError(RuntimeError):
+        pass
+
+    class FailingWriteCache:
+        def get(self, key: str) -> tuple[bool, object]:
+            return False, None
+
+        def set(self, key: str, value: object) -> None:
+            raise CacheWriteError(f"cache write failed:{key}")
+
+    @node(output_name="answer", cache=True)
+    def calculate(value: int) -> int:
+        return value * 2
+
+    result = SyncRunner(cache=FailingWriteCache()).run(
+        Graph([calculate], name="inspection-cache-failure"),
+        {"value": 6},
+        inspect=True,
+        error_handling="continue",
+    )
+    artifact = result.inspect().artifact
+
+    assert artifact.status == "failed"
+    assert len(artifact.nodes) == 1
+    assert artifact.nodes[0].status == "failed"
+    assert artifact.nodes[0].failure is None
+    assert artifact.failures == ()
+    assert result.node_failures == ()

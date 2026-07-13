@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Literal
 
+from hypergraph.checkpointers.types import StepStatus
 from hypergraph.exceptions import (
     ExecutionError,
     MissingInputError,
@@ -398,6 +399,21 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             if owns_inspection:
                 assert inspection_session is not None
                 inspection_session.bind_run(run_id)
+            if inspection_session is not None and resume_checkpoint is not None:
+                for step in sorted(resume_checkpoint.steps, key=lambda item: (item.superstep, item.index)):
+                    if step.status is StepStatus.COMPLETED:
+                        qualified_name = "/".join((*_inspection_path, step.node_name))
+                        inspection_session.restore_node(
+                            run_id=step.run_id,
+                            span_id=f"restored:{step.run_id}:{step.superstep}:{step.index}:{qualified_name}",
+                            node_name=step.node_name,
+                            qualified_name=qualified_name,
+                            graph_name=graph.name or "",
+                            item_index=_item_index,
+                            superstep=step.superstep,
+                            duration_ms=step.duration_ms,
+                            cached=step.cached,
+                        )
             start_time = time.time()
 
             # Checkpointer lifecycle — upsert run record

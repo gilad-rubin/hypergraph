@@ -38,6 +38,7 @@ class NodeInspection:
     superstep: int
     sequence: int
     status: NodeInspectionStatus
+    values_captured: bool
     inputs: dict[str, Any] | None = field(default=None, repr=False, compare=False)
     outputs: dict[str, Any] | None = field(default=None, repr=False, compare=False)
     failure: FailureEvidence | None = field(default=None, repr=False, compare=False)
@@ -140,6 +141,7 @@ class InspectionSession:
                 superstep=superstep,
                 sequence=sequence,
                 status="running",
+                values_captured=True,
                 inputs=inputs,
                 started_at_ms=started_at_ms,
             )
@@ -149,6 +151,80 @@ class InspectionSession:
             )
             artifact, subscribers = self._publication_locked()
         self._notify(subscribers, artifact, urgent=False)
+
+    def pause_node(
+        self,
+        *,
+        span_id: str,
+        ended_at_ms: float,
+        duration_ms: float,
+    ) -> None:
+        """Mark the executor boundary that raised a pause."""
+        with self._lock:
+            self._replace_node_locked(
+                span_id,
+                status="paused",
+                ended_at_ms=ended_at_ms,
+                duration_ms=duration_ms,
+            )
+            artifact, subscribers = self._publication_locked()
+        self._notify(subscribers, artifact, urgent=True)
+
+    def restore_node(
+        self,
+        *,
+        run_id: str,
+        span_id: str,
+        node_name: str,
+        qualified_name: str,
+        graph_name: str,
+        item_index: int | None,
+        superstep: int,
+        duration_ms: float,
+        cached: bool,
+    ) -> None:
+        """Publish checkpoint metadata without loading persisted values."""
+        with self._lock:
+            sequence = self._next_sequence
+            self._next_sequence += 1
+            node = NodeInspection(
+                run_id=run_id,
+                span_id=span_id,
+                node_name=node_name,
+                qualified_name=qualified_name,
+                graph_name=graph_name,
+                item_index=item_index,
+                superstep=superstep,
+                sequence=sequence,
+                status="restored",
+                values_captured=False,
+                duration_ms=duration_ms,
+                cached=cached,
+            )
+            self._artifact = replace(
+                self._artifact,
+                nodes=(*self._artifact.nodes, node),
+            )
+            artifact, subscribers = self._publication_locked()
+        self._notify(subscribers, artifact, urgent=False)
+
+    def abort_node(
+        self,
+        *,
+        span_id: str,
+        ended_at_ms: float,
+        duration_ms: float,
+    ) -> None:
+        """Mark infrastructure failure without inventing executor evidence."""
+        with self._lock:
+            self._replace_node_locked(
+                span_id,
+                status="failed",
+                ended_at_ms=ended_at_ms,
+                duration_ms=duration_ms,
+            )
+            artifact, subscribers = self._publication_locked()
+        self._notify(subscribers, artifact, urgent=True)
 
     def finish_node(
         self,
@@ -314,6 +390,7 @@ def degraded_run_inspection(result: RunResult) -> RunInspection:
                     superstep=step.superstep,
                     sequence=sequence,
                     status=step.status,
+                    values_captured=False,
                     inputs=failure.inputs if failure is not None else None,
                     failure=failure,
                     duration_ms=step.duration_ms,
