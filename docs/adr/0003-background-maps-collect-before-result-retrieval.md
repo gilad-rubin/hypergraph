@@ -36,7 +36,7 @@ for item_index, item in enumerate(batch.results):
         print(item.failure.item_index, item.failure.node_name)
 ```
 
-The async runner exposes the same operations as awaitables.
+`AsyncRunner.start_map()` returns its handle immediately without `await`. The async handle's `wait()` and `result()` methods are awaitable; for example, use `batch = await handle.result(raise_on_failure=False)`.
 
 ## Considered options
 
