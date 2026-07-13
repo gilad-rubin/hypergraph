@@ -203,6 +203,38 @@ result = runner.run(
 
 Nested graphs and `map()` runs show up as a span tree rather than a flat log, while rich inspect-only payloads stay inside Hypergraph. See [execution observability](docs/05-how-to/observe-execution.md) for the full setup and emitted span structure.
 
+### Control Work After It Starts
+
+Blocking runners remain the simplest path when a caller only needs the final
+answer. Background handles add a small live-control seam when an application
+must keep serving the user:
+
+```python
+# Before: the caller waits until every document settles.
+batch = runner.map(document_graph, {"document": documents}, map_over="document")
+
+# After: the caller immediately gets a process-local handle.
+handle = runner.start_map(
+    document_graph,
+    {"document": documents},
+    map_over="document",
+)
+
+# Maya clicks Stop while work is live.
+handle.stop(info={"requested_by": "Maya"})
+batch = handle.result(raise_on_failure=False)
+
+print(len(batch))                    # real claimed outcomes
+print(batch.requested_count)         # all requested documents
+print(batch.unstarted_item_indexes)  # inputs never claimed after stop
+```
+
+`AsyncRunner.start_run()` and `start_map()` also return their handle without
+`await`; only `await handle.result()` waits. Handles are process-local—use a
+checkpointer for durable history and a new execution after process loss, not
+for handle reconnection. See
+[Control Work After It Starts](docs/05-how-to/control-background-execution.md).
+
 See the docs for more patterns: [multi-agent orchestration](https://gilad-rubin.gitbook.io/hypergraph/patterns/05-multi-agent), [rename & adapt](docs/05-how-to/rename-and-adapt.md), [batch processing with map](https://gilad-rubin.gitbook.io/hypergraph/how-to-guides/batch-processing), [streaming](docs/03-patterns/06-streaming.md), and [caching](docs/03-patterns/08-caching.md).
 
 ## Key Features
@@ -312,7 +344,8 @@ Execution mental model:
   - `AsyncRunnerTemplate` for async orchestration
 - Shared input parsing for `values + kwargs` lives in:
   - `src/hypergraph/runners/_shared/input_normalization.py`
-- Future runner-level `.iter()` should reuse the same normalization rules.
+- Any future run-level event iterator should reuse the same normalization
+  rules; the shipped incremental batch API is `map_iter()`.
 
 ## Beyond AI/ML
 
@@ -329,6 +362,7 @@ Execution mental model:
 - [API Reference: Graph](https://gilad-rubin.gitbook.io/hypergraph/api-reference/graph) - Graph construction and validation
 - [API Reference: Gates](https://gilad-rubin.gitbook.io/hypergraph/api-reference/gates) - RouteNode, @route decorator, and END sentinel
 - [Observe Execution](https://gilad-rubin.gitbook.io/hypergraph/how-to-guides/observe-execution) - Progress bars and custom event processors
+- [Control Work After It Starts](docs/05-how-to/control-background-execution.md) - Background handles, cooperative stop, and durable recovery
 - [Human-in-the-Loop](docs/03-patterns/07-human-in-the-loop.md) - `@interrupt` decorator, pause/resume, and handler patterns
 - [Caching](docs/03-patterns/08-caching.md) - In-memory and disk caching for node results
 - [Visualize Graphs](docs/05-how-to/visualize-graphs.md) - Interactive graph visualization in notebooks and HTML

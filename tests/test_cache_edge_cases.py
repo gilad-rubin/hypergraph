@@ -390,10 +390,10 @@ class TestSharedCacheAcrossGraphs:
 
 
 class TestInMemoryCacheThreadSafety:
-    """Basic thread safety smoke test."""
+    """Thread safety for compound LRU operations."""
 
     def test_concurrent_writes_no_crash(self):
-        """Concurrent writes should not crash (CPython GIL protects dict)."""
+        """Concurrent writes should not corrupt the shared cache."""
         cache = InMemoryCache(max_size=100)
         errors = []
 

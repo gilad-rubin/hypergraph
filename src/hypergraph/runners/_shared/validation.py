@@ -32,6 +32,67 @@ class _InputValidationContext:
     interrupt_outputs: set[str]
 
 
+def reject_background_runner_options(
+    input_values: dict[str, Any],
+    *,
+    start_method: str,
+    reserved_option_names: frozenset[str],
+) -> None:
+    """Reject blocking runner controls hidden behind graph-input shorthand.
+
+    Args:
+        input_values: Graph inputs supplied through keyword shorthand.
+        start_method: Qualified public method name for the error message.
+        reserved_option_names: Explicit options owned by blocking runner APIs.
+
+    Raises:
+        TypeError: If a reserved option was supplied to a background start.
+    """
+    conflicts = sorted(set(input_values) & reserved_option_names)
+    if not conflicts:
+        return
+    option = conflicts[0]
+    problem = f"{start_method}() got an unexpected keyword argument '{option}'.\n\n"
+    if option == "error_handling":
+        raise TypeError(
+            problem + "How to fix: Background retrieval policy belongs to "
+            "handle.result(raise_on_failure=...). To pass a graph input "
+            "with this name, use values={'error_handling': ...}."
+        )
+    if option in {"override_workflow", "fork_from", "retry_from"} and start_method.endswith(".start_run"):
+        raise TypeError(
+            problem + "How to fix: Background starts do not perform lineage changes. "
+            "Prepare the checkpoint and workflow ID first, then pass them via "
+            "checkpoint=... and workflow_id=.... To pass a graph input with "
+            f"this name, use values={{'{option}': ...}}."
+        )
+    raise TypeError(
+        problem + f"{option}= is reserved by Hypergraph's blocking runner APIs and is "
+        f"not available on {start_method}().\n\n"
+        "How to fix: Remove this runner option from the background start. If "
+        f"your graph input is named '{option}', pass it through "
+        f"values={{'{option}': ...}}."
+    )
+
+
+def validate_max_concurrency(max_concurrency: int | None) -> None:
+    """Reject a concurrency limit that can never admit execution.
+
+    Args:
+        max_concurrency: Optional upper bound for concurrent async work.
+
+    Raises:
+        ValueError: If the provided limit is less than one.
+    """
+    if max_concurrency is None or max_concurrency >= 1:
+        return
+    raise ValueError(
+        f"max_concurrency must be >= 1, got {max_concurrency}.\n\n"
+        "How to fix: Pass None for the default concurrency behavior, or pass "
+        "a positive integer."
+    )
+
+
 def precompute_input_validation(
     graph: Graph,
     *,

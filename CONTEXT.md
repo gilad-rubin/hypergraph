@@ -97,7 +97,19 @@ _Avoid_: Start node, root node
 
 ## Background execution
 
-Vocabulary for background execution. The durable collection and retrieval decision is recorded in [ADR 0003](docs/adr/0003-background-maps-collect-before-result-retrieval.md).
+Vocabulary for background execution. Collection and retrieval are recorded in [ADR 0003](docs/adr/0003-background-maps-collect-before-result-retrieval.md); handle ownership and stopped-batch truth are recorded in [ADR 0004](docs/adr/0004-background-handles-control-live-work.md).
+
+**Execution handle**:
+A process-local reference to one live graph execution and its cooperative control channel, through which its Execution result can be retrieved.
+_Avoid_: Durable handle, job handle, workflow reference
+
+**Execution result**:
+The settled record of what happened during one run or batch, including its terminal outcome and failure data.
+_Avoid_: Handle status, handle failure
+
+**Checkpointed execution**:
+A graph execution whose completed boundaries are persisted so they can seed a later execution after process loss. Its persisted state does not preserve the liveness or control channel of the original execution.
+_Avoid_: Durable job, reconnected handle
 
 **Retrieval policy**:
 The caller's choice when retrieving a stored execution result: return the result or raise a captured failure. A retrieval policy does not control which work is scheduled.
@@ -106,6 +118,17 @@ _Avoid_: Presentation policy, execution policy
 **Settled background batch**:
 A background batch that is no longer executing. Settled does not mean successful; the batch may contain completed, failed, paused, or stopped item outcomes.
 _Avoid_: Complete batch, successful batch
+
+**Unstarted map item**:
+A requested map input that the scheduler never claimed because the batch settled after cooperative stop. It was never attempted, so its original input index remains attributable but it has no RunResult.
+_Avoid_: Stopped result, skipped run
+
+### Relationships
+
+- An **Execution handle** controls live work; an **Execution result** describes the settled outcome.
+- An **Execution handle** ceases to exist with its owning process, whether or not the execution is checkpointed.
+- Resuming a **Checkpointed execution** creates a new live execution from persisted state; it does not reconnect to the previous **Execution handle**.
+- A persisted active status describes recorded lifecycle state. It is not proof that a worker is alive and does not grant ownership of that worker.
 
 ## Materialization
 

@@ -36,6 +36,7 @@
 ## How-To Guides
 
 * [Batch Processing](05-how-to/batch-processing.md)
+* [Control Work After It Starts](05-how-to/control-background-execution.md)
 * [Declare Edges Explicitly](05-how-to/declare-edges-explicitly.md)
 * [Nodes from Component Methods](05-how-to/nodes-from-component-methods.md)
 * [Rename and Adapt](05-how-to/rename-and-adapt.md)

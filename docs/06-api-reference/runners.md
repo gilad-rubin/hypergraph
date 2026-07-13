@@ -5,16 +5,22 @@ Runners execute graphs. They handle the execution loop, node scheduling, and con
 - **SyncRunner** - Sequential execution for synchronous nodes
 - **DaftRunner** - Columnar execution via Daft for DAG-only graphs (batch, distributed)
 - **AsyncRunner** - Concurrent execution with async support and `max_concurrency`
+- **SyncHandle / AsyncHandle** - Process-local control of live background work
 - **RunResult** - Output values, status, and error information
 - **map()** - Batch processing with zip or cartesian product modes
 
 ## Overview
 
-| Runner | Async Nodes | Cycles | Distributed | Returns |
-|--------|-------------|--------|-------------|---------|
-| `SyncRunner` | No | Yes | No | `RunResult` |
-| `DaftRunner` | Yes (Daft-native) | No | Yes | `RunResult` / `MapResult` |
-| `AsyncRunner` | Yes | Yes | No | `Coroutine[RunResult]` |
+| Runner | Async Nodes | Cycles | Distributed | Blocking return | Background start |
+|--------|-------------|--------|-------------|-----------------|------------------|
+| `SyncRunner` | No | Yes | No | `RunResult` / `MapResult` | `SyncHandle` |
+| `DaftRunner` | Yes (Daft-native) | No | Yes | `RunResult` / `MapResult` | Not supported |
+| `AsyncRunner` | Yes | Yes | No | Awaitable `RunResult` / `MapResult` | `AsyncHandle` |
+
+Use `run()` / `map()` when the caller should wait for the result. Use
+`start_run()` / `start_map()` when the application must regain control while
+work is live—for example, to serve a Stop button. See
+[Control Work After It Starts](../05-how-to/control-background-execution.md).
 
 ## SyncRunner
 
@@ -65,9 +71,11 @@ def run(
     *,
     select: str | list[str] = _UNSET_SELECT,
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    entrypoint: str | None = None,
     max_iterations: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    show_progress: bool | None = None,
     checkpoint: Checkpoint | None = None,
     workflow_id: str | None = None,
     override_workflow: bool = False,
@@ -87,11 +95,13 @@ Execute a graph once.
   - `"ignore"` (default): silently omit missing outputs
   - `"warn"`: warn about missing outputs, return what's available
   - `"error"`: raise error if any selected output is missing
+- `entrypoint` - Runtime entrypoint overrides are not supported. Configure the graph with `Graph(..., entrypoint=...)` or `graph.with_entrypoint(...)`.
 - `max_iterations` - Max local iterations per cyclic execution region (SCC) (default: 1000)
 - `error_handling` - How to handle node execution errors:
   - `"raise"` (default): Re-raise the original exception (e.g., `ValueError`). Clean traceback, no wrapper.
   - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
 - `event_processors` - Optional list of [event processors](events.md) to observe execution, merged after any processors the graph carries (see [Graph-Carried Processors](events.md#graph-carried-processors))
+- `show_progress` - Override the runner-level progress setting for this call.
 - `checkpoint` - Optional low-level checkpoint snapshot (`values + steps`) for explicit fork restores.
 - `workflow_id` - Optional workflow identifier for lineage tracking. With a checkpointer:
   - omitted on a fresh or retry run: a generic `run-...` ID is generated
@@ -178,8 +188,10 @@ def map(
     clone: bool | list[str] = False,
     select: str | list[str] = _UNSET_SELECT,
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    entrypoint: str | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    show_progress: bool | None = None,
     workflow_id: str | None = None,
     **input_values: Any,
 ) -> MapResult: ...
@@ -195,10 +207,12 @@ Execute a graph multiple times with different inputs.
 - `clone` - Deep-copy mutable values for each iteration. `True` clones all non-`map_over` values; pass a list of names to clone selectively. Prevents cross-iteration mutation.
 - `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)` before execution.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
+- `entrypoint` - Runtime entrypoint overrides are not supported; configure it on the graph.
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
 - `event_processors` - Optional list of [event processors](events.md) to observe execution, merged after any processors the graph carries (see [Graph-Carried Processors](events.md#graph-carried-processors))
+- `show_progress` - Override the runner-level progress setting for this call.
 - `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. Creates a parent batch run with per-item child runs (`{workflow_id}/0`, `{workflow_id}/1`, ...). On re-run, completed items are skipped. See [Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
 - `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
 
@@ -234,6 +248,59 @@ results = runner.map(
 )
 if results.failed:
     print(f"{len(results.failures)} items failed")
+```
+
+### start_run() and start_map()
+
+```python
+def start_run(
+    self,
+    graph: Graph,
+    values: dict[str, Any] | None = None,
+    *,
+    select: str | list[str] = _UNSET_SELECT,
+    on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    entrypoint: str | None = None,
+    max_iterations: int | None = None,
+    event_processors: list[EventProcessor] | None = None,
+    show_progress: bool | None = None,
+    checkpoint: Checkpoint | None = None,
+    workflow_id: str | None = None,
+    **input_values: Any,
+) -> SyncHandle[RunResult]: ...
+
+def start_map(
+    self,
+    graph: Graph,
+    values: dict[str, Any] | None = None,
+    *,
+    map_over: str | list[str],
+    map_mode: Literal["zip", "product"] = "zip",
+    clone: bool | list[str] = False,
+    select: str | list[str] = _UNSET_SELECT,
+    on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    entrypoint: str | None = None,
+    event_processors: list[EventProcessor] | None = None,
+    show_progress: bool | None = None,
+    workflow_id: str | None = None,
+    **input_values: Any,
+) -> SyncHandle[MapResult]: ...
+```
+
+Both methods return immediately with a process-local
+[`SyncHandle`](#synchandle-and-asynchandle). Their parameters match the
+corresponding blocking operation except that background retrieval owns failure
+policy, so there is no `error_handling`. `start_run()` also omits
+`override_workflow`, `fork_from`, and `retry_from`; prepare lineage changes
+through the checkpointer before starting the resulting checkpoint and ID.
+Passing any blocking runner control absent from the `start_*()` signature
+directly raises `TypeError` before launch; use `values={...}` when the name
+belongs to the graph rather than the runner.
+
+```python
+handle = runner.start_run(graph, {"order_id": "order-100"})
+do_other_work()
+result = handle.result()
 ```
 
 ### capabilities
@@ -308,6 +375,7 @@ def run(
     max_iterations: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    show_progress: bool | None = None,
     **input_values: Any,
 ) -> RunResult: ...
 ```
@@ -323,6 +391,7 @@ Execute a graph once via a 1-row Daft plan.
 - `max_iterations` - Accepted for API compatibility but not used (DaftRunner does not support cycles)
 - `error_handling` - `"raise"` re-raises the original exception; `"continue"` returns a failed `RunResult`
 - `event_processors` - Accepted but ignored with a warning (DaftRunner does not support events)
+- `show_progress` - Accepted for runner API compatibility; Daft does not use Hypergraph progress processors.
 - `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
 
 **Example:**
@@ -355,8 +424,9 @@ def map(
     clone: bool | list[str] = False,
     select: str | list[str] = _UNSET_SELECT,
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
-    error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    show_progress: bool | None = None,
+    error_handling: Literal["raise", "continue"] = "raise",
     **input_values: Any,
 ) -> MapResult: ...
 ```
@@ -377,6 +447,7 @@ entrypoint when your data is a Python collection.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `error_handling` - `"raise"` re-raises the first failed item's original exception; `"continue"` falls back to per-item execution and preserves failures inside `MapResult`
 - `event_processors` - Accepted but ignored with a warning
+- `show_progress` - Accepted for runner API compatibility; Daft does not use Hypergraph progress processors.
 - `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
 
 **Example:**
@@ -519,6 +590,10 @@ caps.supports_events          # False
 caps.supports_distributed     # True
 caps.supports_checkpointing   # False
 ```
+
+`DaftRunner` does not implement `start_run()` or `start_map()`. It translates
+an operation into a Daft query plan; use Daft's execution controls when that
+plan needs job-level orchestration.
 
 ### @stateful
 
@@ -664,6 +739,7 @@ async def run(
     max_concurrency: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    show_progress: bool | None = None,
     checkpoint: Checkpoint | None = None,
     workflow_id: str | None = None,
     override_workflow: bool = False,
@@ -682,11 +758,12 @@ Execute a graph asynchronously.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `entrypoint` - Runtime entrypoint overrides are not supported. Configure entrypoints on the graph via `Graph(..., entrypoint=...)` or `graph.with_entrypoint(...)`.
 - `max_iterations` - Max local iterations per cyclic execution region (SCC) (default: 1000)
-- `max_concurrency` - Max parallel node executions (default: unlimited)
+- `max_concurrency` - Max parallel node executions (default: unlimited); when provided, it must be at least `1`.
 - `error_handling` - How to handle node execution errors:
   - `"raise"` (default): Re-raise the original exception. Clean traceback, no wrapper.
   - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
 - `event_processors` - Optional list of [event processors](events.md) to observe execution, merged after any processors the graph carries (see [Graph-Carried Processors](events.md#graph-carried-processors)) (supports `AsyncEventProcessor`)
+- `show_progress` - Override the runner-level progress setting for this call.
 - `checkpoint` - Optional low-level checkpoint snapshot (`values + steps`) for explicit fork restores.
 - `workflow_id` - Optional workflow identifier for lineage tracking. With a checkpointer:
   - omitted on a fresh or retry run: a generic `run-...` ID is generated
@@ -756,6 +833,7 @@ async def map(
     max_concurrency: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    show_progress: bool | None = None,
     workflow_id: str | None = None,
     **input_values: Any,
 ) -> MapResult: ...
@@ -772,11 +850,12 @@ Execute graph multiple times concurrently.
 - `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)` before execution.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `entrypoint` - Runtime entrypoint overrides are not supported.
-- `max_concurrency` - Shared limit across all executions
+- `max_concurrency` - Shared limit across all executions; when provided, it must be at least `1`.
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
 - `event_processors` - Optional list of [event processors](events.md) to observe execution, merged after any processors the graph carries (see [Graph-Carried Processors](events.md#graph-carried-processors))
+- `show_progress` - Override the runner-level progress setting for this call.
 - `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. Creates per-item child runs that can be skipped on re-run. See [Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
 - `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
 
@@ -808,6 +887,62 @@ For very large batches, prefer setting `max_concurrency` explicitly. If `max_con
 and the fan-out is extremely large, `AsyncRunner.map()` raises `ValueError` to avoid unbounded
 task creation.
 
+### start_run() and start_map()
+
+```python
+def start_run(
+    self,
+    graph: Graph,
+    values: dict[str, Any] | None = None,
+    *,
+    select: str | list[str] = _UNSET_SELECT,
+    on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    entrypoint: str | None = None,
+    max_iterations: int | None = None,
+    max_concurrency: int | None = None,
+    event_processors: list[EventProcessor] | None = None,
+    show_progress: bool | None = None,
+    checkpoint: Checkpoint | None = None,
+    workflow_id: str | None = None,
+    **input_values: Any,
+) -> AsyncHandle[RunResult]: ...
+
+def start_map(
+    self,
+    graph: Graph,
+    values: dict[str, Any] | None = None,
+    *,
+    map_over: str | list[str],
+    map_mode: Literal["zip", "product"] = "zip",
+    clone: bool | list[str] = False,
+    select: str | list[str] = _UNSET_SELECT,
+    on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    entrypoint: str | None = None,
+    max_concurrency: int | None = None,
+    event_processors: list[EventProcessor] | None = None,
+    show_progress: bool | None = None,
+    workflow_id: str | None = None,
+    **input_values: Any,
+) -> AsyncHandle[MapResult]: ...
+```
+
+These are ordinary methods, not coroutine functions. Call them from a running
+event loop without `await`, then await the handle's result:
+
+```python
+handle = runner.start_run(graph, {"order_id": "order-200"})
+serve_other_requests()
+result = await handle.result()
+```
+
+As with the synchronous forms, background start methods omit
+`error_handling`; `start_run()` also omits the lineage-changing
+`override_workflow`, `fork_from`, and `retry_from` shortcuts. A provided
+`max_concurrency` must be at least `1`; invalid limits fail retrieval loudly
+instead of producing an empty result or a handle that never settles. Passing a
+blocking runner control absent from the `start_*()` signature directly raises
+`TypeError` before launch; use `values={...}` when that name is a graph input.
+
 ### capabilities
 
 ```python
@@ -825,6 +960,66 @@ caps.supports_streaming    # True (map_iter + ctx.stream chunks)
 caps.returns_coroutine     # True
 caps.supports_interrupts   # True
 ```
+
+---
+
+## SyncHandle and AsyncHandle
+
+Process-local handles control one live background execution and retrieve its
+settled result. Both types use composition; neither subclasses
+`concurrent.futures.Future` nor `asyncio.Task`.
+
+```python
+class SyncHandle(Generic[T]):
+    @property
+    def done(self) -> bool: ...
+
+    def stop(self, *, info: Any = None) -> None: ...
+
+    def result(self, *, raise_on_failure: bool = True) -> T: ...
+
+
+class AsyncHandle(Generic[T]):
+    @property
+    def done(self) -> bool: ...
+
+    def stop(self, *, info: Any = None) -> None: ...
+
+    async def result(self, *, raise_on_failure: bool = True) -> T: ...
+```
+
+Both types are exported from `hypergraph` and `hypergraph.runners`:
+
+```python
+from hypergraph import AsyncHandle, SyncHandle
+
+handle.done                                  # bool property
+handle.stop(info={"requested_by": "Maya"})  # synchronous, cooperative, returns None
+handle.result(raise_on_failure=True)         # await only for AsyncHandle
+```
+
+`SyncHandle.result()` blocks the caller. `AsyncHandle.result()` is a coroutine.
+The handle itself is not awaitable. Cancelling one task awaiting an async
+result cancels that waiter only; it does not cancel framework-owned execution.
+
+Default retrieval raises the original captured node failure after execution
+settles. Pass `raise_on_failure=False` to receive the failed `RunResult` or
+`MapResult`. Failures that prevent construction of a result propagate in both
+modes.
+
+Settled truth stays on results, so handles do **not** provide `status`,
+`wait()`, `failure`, `failures`, `failed_item_indexes`, `view`, `inspect`,
+`cancel()`, `cancelled()`, `exception()`, `add_done_callback()`, `running()`,
+or a handle-level `__await__`. They also have no lookup, reconnect,
+serialization, lease, worker, or durable-job API.
+
+`stop()` is a cooperative request. The first accepted call owns its `info`;
+later calls and calls after settlement return `None` without rewriting the
+outcome. A handle can stop work started without a workflow ID. With an ID,
+`runner.stop(workflow_id, info=...)` controls the same execution.
+
+See [Control Work After It Starts](../05-how-to/control-background-execution.md)
+for complete sync/async examples, sparse stopped maps, and process recovery.
 
 ---
 
@@ -877,6 +1072,7 @@ does not change the execution status. Check `checkpoint_ok` and
 result.completed  # True if status == COMPLETED
 result.paused     # True if status == PAUSED
 result.failed     # True if status == FAILED
+result.stopped    # True if status == STOPPED
 result.failure    # First FailureEvidence, or None
 ```
 
@@ -1033,8 +1229,10 @@ results.status       # RunStatus.COMPLETED, PARTIAL, FAILED, PAUSED, or STOPPED
 results.completed    # True if all completed
 results.failed       # True if any failed
 results.partial      # True if some items completed and some failed
-results.stopped      # True if any item stopped and none failed/paused
+results.stopped      # True if status is STOPPED, including curtailed scope
 results.failures     # List of failed RunResult items
+results.requested_count          # Real outcomes + inputs never started
+results.unstarted_item_indexes   # Sorted original indexes never claimed
 results.restored_count  # Restored successes (a subset of completed items)
 
 # Derived durability aggregation (properties, not dataclass fields)
@@ -1059,17 +1257,38 @@ class MapResult:
     map_over: tuple[str, ...]        # Parameter names iterated
     map_mode: str                    # "zip" or "product"
     graph_name: str                  # Name of the executed graph
+    unstarted_item_indexes: tuple[int, ...] = ()
 ```
+
+`requested_count` is a derived property:
+
+```python
+results.requested_count == len(results) + len(results.unstarted_item_indexes)
+```
+
+For a completed or genuinely empty map, `unstarted_item_indexes == ()` and
+`requested_count == len(results)`. When cooperative stop curtails a batch,
+`results` contains only real claimed outcomes; Hypergraph does not fabricate
+item results, logs, events, run IDs, or checkpoint rows for unstarted inputs.
 
 ### Status Precedence
 
 Empty batch -> `COMPLETED`.
 
+- `STOPPED` when cooperative stop leaves requested input indexes unstarted,
+  even if one real attempted item failed. `failed` and `failures` still expose
+  that real failure, and `partial` remains false.
+
 - `FAILED` when at least one item failed and none completed.
 - `PARTIAL` when some items completed and some failed.
 - `PAUSED` if any item paused and no item failed.
-- `STOPPED` if any item stopped and no item failed or paused.
+- `STOPPED` if any item stopped and no item failed or paused when no requested
+  inputs remain unstarted.
 - `COMPLETED` when all items completed.
+
+If stop arrives only after every requested item settles,
+`unstarted_item_indexes == ()` and ordinary failure-first aggregation remains
+in force.
 
 ---
 

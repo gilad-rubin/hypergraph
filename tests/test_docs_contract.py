@@ -7,7 +7,18 @@ import inspect
 from pathlib import Path
 from typing import get_args, get_type_hints
 
-from hypergraph import FailureEvidence, Graph, MapResult, RunResult, WorkflowStoppedError
+from hypergraph import (
+    AsyncHandle,
+    AsyncRunner,
+    DaftRunner,
+    FailureEvidence,
+    Graph,
+    MapResult,
+    RunResult,
+    SyncHandle,
+    SyncRunner,
+    WorkflowStoppedError,
+)
 from hypergraph.checkpointers import Checkpointer, MemoryCheckpointer, SqliteCheckpointer, SqliteRunInspector
 from hypergraph.events import RunEndEvent
 from hypergraph.runners._shared.results import NodeRecord
@@ -43,6 +54,26 @@ def _function_def(path: str, name: str) -> ast.FunctionDef:
         if isinstance(node, ast.FunctionDef) and node.name == name:
             return node
     raise AssertionError(f"Could not find function {name!r} in {path}")
+
+
+def _documented_function_defs(section: str) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    code = section.split("```python\n", maxsplit=1)[1].split("\n```", maxsplit=1)[0]
+    tree = ast.parse(code)
+    return {node.name: node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+def _parameter_names(function: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[str, ...]:
+    arguments = function.args
+    names = [
+        *(argument.arg for argument in arguments.posonlyargs),
+        *(argument.arg for argument in arguments.args),
+        *(argument.arg for argument in arguments.kwonlyargs),
+    ]
+    if arguments.vararg is not None:
+        names.append(arguments.vararg.arg)
+    if arguments.kwarg is not None:
+        names.append(arguments.kwarg.arg)
+    return tuple(names)
 
 
 def test_public_docs_track_current_api_contracts() -> None:
@@ -112,6 +143,86 @@ def test_public_docs_track_current_api_contracts() -> None:
     assert run_result_docs is not None
     assert "STOPPED" in run_result_docs
     assert "PARTIAL" not in run_result_docs
+
+
+def test_background_handle_docs_pin_public_contract() -> None:
+    runners = _read("docs/06-api-reference/runners.md")
+    guide = _read("docs/05-how-to/control-background-execution.md")
+    summary = _read("docs/SUMMARY.md")
+    docs_readme = _read("docs/README.md")
+    events = _read("docs/06-api-reference/events.md")
+
+    runner_sections = {
+        SyncRunner: _scoped_section(_scoped_section(runners, "## SyncRunner"), "### start_run() and start_map()"),
+        AsyncRunner: _scoped_section(_scoped_section(runners, "## AsyncRunner"), "### start_run() and start_map()"),
+    }
+    expected_returns = {
+        (SyncRunner, "start_run"): "SyncHandle[RunResult]",
+        (SyncRunner, "start_map"): "SyncHandle[MapResult]",
+        (AsyncRunner, "start_run"): "AsyncHandle[RunResult]",
+        (AsyncRunner, "start_map"): "AsyncHandle[MapResult]",
+    }
+    for runner_type, section in runner_sections.items():
+        documented = _documented_function_defs(section)
+        assert set(documented) == {"start_run", "start_map"}
+        for method_name, function in documented.items():
+            runtime_method = getattr(runner_type, method_name)
+            assert _parameter_names(function) == tuple(inspect.signature(runtime_method).parameters)
+            assert ast.unparse(function.returns) == expected_returns[(runner_type, method_name)]
+            assert "error_handling" not in inspect.signature(runtime_method).parameters
+
+    assert not hasattr(DaftRunner, "start_run")
+    assert not hasattr(DaftRunner, "start_map")
+    assert "does not implement `start_run()` or `start_map()`" in _scoped_section(runners, "## DaftRunner")
+
+    handle_section = _scoped_section(runners, "## SyncHandle and AsyncHandle")
+    for handle_type in (SyncHandle, AsyncHandle):
+        public_members = {name for name in handle_type.__dict__ if not name.startswith("_")}
+        assert public_members == {"done", "stop", "result"}
+        assert isinstance(inspect.getattr_static(handle_type, "done"), property)
+        assert tuple(inspect.signature(handle_type.stop).parameters) == ("self", "info")
+        assert tuple(inspect.signature(handle_type.result).parameters) == ("self", "raise_on_failure")
+    assert not inspect.iscoroutinefunction(SyncHandle.stop)
+    assert not inspect.iscoroutinefunction(AsyncHandle.stop)
+    assert not inspect.iscoroutinefunction(SyncHandle.result)
+    assert inspect.iscoroutinefunction(AsyncHandle.result)
+    for excluded_surface in (
+        "`status`",
+        "`wait()`",
+        "`failure`",
+        "`failures`",
+        "`failed_item_indexes`",
+        "`view`",
+        "`inspect`",
+        "`cancel()`",
+        "`cancelled()`",
+        "`exception()`",
+        "`add_done_callback()`",
+        "`running()`",
+        "`__await__`",
+    ):
+        assert excluded_surface in handle_section
+
+    assert MapResult.__dataclass_fields__["unstarted_item_indexes"].default == ()
+    assert isinstance(inspect.getattr_static(MapResult, "requested_count"), property)
+    map_result = _scoped_section(runners, "## MapResult")
+    assert "unstarted_item_indexes: tuple[int, ...] = ()" in map_result
+    assert "results.requested_count == len(results) + len(results.unstarted_item_indexes)" in map_result
+    assert "does not fabricate" in map_result
+
+    assert "Control Work After It Starts](05-how-to/control-background-execution.md)" in summary
+    assert "Control Work After It Starts](05-how-to/control-background-execution.md)" in docs_readme
+    assert "AsyncRunner.start_*()` are ordinary methods" in guide
+    assert "Use a Checkpointer for Recovery, Not Handle Reconnection" in guide
+    assert "instead of tunneling into `run()`" in guide
+    assert "put it inside `values={...}`" in guide
+    assert "complete stopped batch" not in guide
+    assert "settled stopped batch" in guide
+    assert "Parent `RunEndEvent` and OpenTelemetry batch counts" in guide
+    assert "All existing batch counts describe real settled child outcomes" in events
+    assert "no new event count field is added" in events
+    assert "requested_count" not in RunEndEvent.__dataclass_fields__
+    assert "unstarted_item_indexes" not in RunEndEvent.__dataclass_fields__
 
 
 def test_cyclic_docs_examples_configure_entrypoints() -> None:

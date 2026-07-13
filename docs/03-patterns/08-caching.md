@@ -112,6 +112,28 @@ class RedisCache(CacheBackend):
         redis.set(key, pickle.dumps(value))
 ```
 
+### Background Execution and Shared Backends
+
+Background executions started by one runner share that runner's cache:
+
+```python
+cache = InMemoryCache(max_size=1000)
+runner = SyncRunner(cache=cache)
+
+first = runner.start_run(graph, {"text": "alpha"}, workflow_id="job-a")
+second = runner.start_run(graph, {"text": "beta"}, workflow_id="job-b")
+
+first.result()
+second.result()
+```
+
+Different workflow IDs are independently accepted, but the API does not
+promise physical parallelism or start order. `InMemoryCache` protects its
+compound LRU operations when executions overlap. For any other shared cache,
+follow that backend's documented concurrency contract. A custom backend must
+provide its own safety; `get()` and `set()` may be called from different worker
+threads or tasks.
+
 ## How Cache Keys Work
 
 Cache keys are computed from:

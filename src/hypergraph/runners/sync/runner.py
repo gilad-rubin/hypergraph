@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
-from hypergraph.exceptions import ExecutionError, InfiniteLoopError, WorkflowAlreadyRunningError
+from hypergraph.exceptions import ExecutionError, InfiniteLoopError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
@@ -16,12 +16,17 @@ from hypergraph.runners._shared.event_metadata import (
     RunContext,
     RunLineage,
 )
+from hypergraph.runners._shared.handles import SyncHandle, _launch_sync_execution
+from hypergraph.runners._shared.input_normalization import runner_option_names
+from hypergraph.runners._shared.outputs import SELECT_UNSET
 from hypergraph.runners._shared.protocols import NodeExecutor
+from hypergraph.runners._shared.results import MapResult, RunResult
 from hypergraph.runners._shared.scheduling import ExecutionFrontier, compute_execution_scope
 from hypergraph.runners._shared.state import ExecutionContext, GraphState, RunnerCapabilities
 from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id, initialize_state
-from hypergraph.runners._shared.stop import StopSignal, get_stop_signal, reset_stop_signal, set_stop_signal
+from hypergraph.runners._shared.stop import _ActiveWorkflows, get_stop_signal
 from hypergraph.runners._shared.template_sync import SyncRunnerTemplate
+from hypergraph.runners._shared.validation import reject_background_runner_options
 from hypergraph.runners.sync.executors import (
     SyncFunctionNodeExecutor,
     SyncGraphNodeExecutor,
@@ -85,7 +90,7 @@ class SyncRunner(SyncRunnerTemplate):
         self._cache = cache
         self._checkpointer_instance = checkpointer
         self._show_progress = show_progress
-        self._active_signals: dict[str, StopSignal] = {}
+        self._active_workflows = _ActiveWorkflows()
         self._executors: dict[type[HyperNode], NodeExecutor] = {
             FunctionNode: SyncFunctionNodeExecutor(),
             GraphNode: SyncGraphNodeExecutor(self),
@@ -94,18 +99,117 @@ class SyncRunner(SyncRunnerTemplate):
         }
 
     def stop(self, workflow_id: str, *, info: Any = None) -> None:
-        """Request cooperative stop for an active run.
+        """Request cooperative stop for an active run or map.
 
         No-op if the workflow_id is not currently running.
         Thread-safe: uses threading.Event internally for sync runner.
 
         Args:
-            workflow_id: The workflow to stop.
+            workflow_id: The active workflow execution to stop.
             info: Optional metadata attached to the stop signal.
         """
-        signal = self._active_signals.get(workflow_id)
-        if signal is not None:
-            signal.set(info=info)
+        self._active_workflows.stop(workflow_id, info=info)
+
+    def start_run(
+        self,
+        graph: Graph,
+        values: dict[str, Any] | None = None,
+        *,
+        select: str | list[str] = SELECT_UNSET,
+        on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        entrypoint: str | None = None,
+        max_iterations: int | None = None,
+        event_processors: list[EventProcessor] | None = None,
+        show_progress: bool | None = None,
+        checkpoint: Checkpoint | None = None,
+        workflow_id: str | None = None,
+        **input_values: Any,
+    ) -> SyncHandle[RunResult]:
+        """Start one graph execution in the background.
+
+        Args:
+            graph: The graph to execute.
+            values: Optional graph inputs as a dictionary.
+            select: Which outputs to return.
+            on_missing: How to handle missing selected outputs.
+            entrypoint: Optional explicit cycle entrypoint.
+            max_iterations: Maximum iterations for cyclic graphs.
+            event_processors: Optional processors for execution events.
+            show_progress: Override runner-level progress display.
+            checkpoint: Optional checkpoint from which to resume.
+            workflow_id: Optional workflow identifier.
+            **input_values: Graph input shorthand.
+
+        Returns:
+            A process-local handle for the live execution.
+        """
+        reject_background_runner_options(
+            input_values,
+            start_method="SyncRunner.start_run",
+            reserved_option_names=runner_option_names(self.run) | runner_option_names(self.map),
+        )
+        reservation = self._active_workflows.reserve(workflow_id)
+        return _launch_sync_execution(
+            lambda: self.run(
+                graph,
+                values,
+                select=select,
+                on_missing=on_missing,
+                entrypoint=entrypoint,
+                max_iterations=max_iterations,
+                error_handling="continue",
+                event_processors=event_processors,
+                show_progress=show_progress,
+                checkpoint=checkpoint,
+                workflow_id=workflow_id,
+                _reservation=reservation,
+                **input_values,
+            ),
+            reservation,
+        )
+
+    def start_map(
+        self,
+        graph: Graph,
+        values: dict[str, Any] | None = None,
+        *,
+        map_over: str | list[str],
+        map_mode: Literal["zip", "product"] = "zip",
+        clone: bool | list[str] = False,
+        select: str | list[str] = SELECT_UNSET,
+        on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        entrypoint: str | None = None,
+        event_processors: list[EventProcessor] | None = None,
+        show_progress: bool | None = None,
+        workflow_id: str | None = None,
+        **input_values: Any,
+    ) -> SyncHandle[MapResult]:
+        """Start a settled map execution in the background."""
+        reject_background_runner_options(
+            input_values,
+            start_method="SyncRunner.start_map",
+            reserved_option_names=runner_option_names(self.run) | runner_option_names(self.map),
+        )
+        reservation = self._active_workflows.reserve(workflow_id)
+        return _launch_sync_execution(
+            lambda: self.map(
+                graph,
+                values,
+                map_over=map_over,
+                map_mode=map_mode,
+                clone=clone,
+                select=select,
+                on_missing=on_missing,
+                entrypoint=entrypoint,
+                error_handling="continue",
+                event_processors=event_processors,
+                show_progress=show_progress,
+                workflow_id=workflow_id,
+                _reservation=reservation,
+                **input_values,
+            ),
+            reservation,
+        )
 
     @property
     def _checkpointer(self) -> Checkpointer | None:
@@ -165,15 +269,8 @@ class SyncRunner(SyncRunnerTemplate):
         superstep_offset, step_counter = checkpoint_offsets(checkpoint)
         node_order = {name: i for i, name in enumerate(graph._nodes)} if sync_cp else {}
 
-        # Set up StopSignal for this run.
-        # Inherit parent signal so nested graphs see the outer stop.
-        parent_signal = get_stop_signal()
-        signal = StopSignal(parent=parent_signal)
-        if workflow_id is not None:
-            if workflow_id in self._active_signals:
-                raise WorkflowAlreadyRunningError(workflow_id)
-            self._active_signals[workflow_id] = signal
-        signal_token = set_stop_signal(signal)
+        signal = get_stop_signal()
+        assert signal is not None, "run template must install a workflow stop signal"
 
         superstep_idx = 0
         frontier = ExecutionFrontier.from_scope(scope, max_iterations)
@@ -289,14 +386,10 @@ class SyncRunner(SyncRunnerTemplate):
 
                 superstep_idx += 1
         finally:
-            # Clean up signal registry
-            reset_stop_signal(signal_token)
-            if workflow_id is not None:
-                self._active_signals.pop(workflow_id, None)
+            # Expose cooperative-stop truth even when execution exits early.
+            state.stopped = signal.is_set
+            state.stop_info = signal.info
 
-        # Propagate stopped flag to the template layer
-        state.stopped = signal.is_set
-        state.stop_info = signal.info
         return state
 
     # Template hook implementations

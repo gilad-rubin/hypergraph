@@ -1,6 +1,6 @@
 # Observe Execution
 
-Hypergraph's event system lets you observe graph execution without modifying your workflow logic. Pass event processors to `runner.run()` or `runner.map()` to receive events as they happen.
+Hypergraph's event system lets you observe graph execution without modifying your workflow logic. Pass event processors to blocking `runner.run()` / `runner.map()` or background `runner.start_run()` / `runner.start_map()` calls to receive events as they happen.
 
 ## Rich Progress Bars
 
@@ -211,12 +211,25 @@ Parent `map` spans export aggregate outcome attributes instead of vague blobs:
 - `hypergraph.batch.stopped_items`
 - `hypergraph.batch.outcome`
 
+These counts describe real settled child outcomes. If Maya stops a ten-item
+background map after four items were claimed, OTel exports counts for those
+four real children and `hypergraph.batch.outcome="stopped"`. Read
+`MapResult.requested_count == 10` and `unstarted_item_indexes` for the requested
+scope; Hypergraph does not add synthetic child spans or a new OTel requested
+count.
+
 Rich native debugging data stays inside Hypergraph on purpose:
 
 - Raw inputs and outputs
 - Checkpoint snapshots
 - Streamed chunks
 - Inspect-only UI payloads
+
+`StopRequestedEvent.info` preserves the first accepted stop request. The OTel
+stop span event records that the request occurred but intentionally does not
+export the arbitrary `info` payload. Repeating `handle.stop(...)` or
+`runner.stop(...)` does not rewrite native event metadata. A stopped background
+map always emits one parent-level stop event, even if no child was claimed.
 
 ## Custom Event Processors
 

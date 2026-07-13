@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from hypergraph.runners._shared.results import RunResult
+    from hypergraph.runners._shared.results import MapResult, RunResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +66,12 @@ class BatchSummary:
             restored_items=restored_items,
             outcome=aggregate_run_status(results).value,
         )
+
+    @classmethod
+    def from_map_result(cls, result: MapResult) -> BatchSummary:
+        """Build real-child counts with the map's semantic terminal outcome."""
+        summary = cls.from_results(result.results)
+        return replace(summary, outcome=result.status.value)
 
     @property
     def event_status_value(self) -> str:

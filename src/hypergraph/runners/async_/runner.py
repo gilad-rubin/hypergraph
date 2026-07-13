@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
-from hypergraph.exceptions import ExecutionError, InfiniteLoopError, WorkflowAlreadyRunningError
+from hypergraph.exceptions import ExecutionError, InfiniteLoopError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
@@ -18,7 +18,11 @@ from hypergraph.runners._shared.event_metadata import (
     RunContext,
     RunLineage,
 )
+from hypergraph.runners._shared.handles import AsyncHandle, _launch_async_execution
+from hypergraph.runners._shared.input_normalization import runner_option_names
+from hypergraph.runners._shared.outputs import SELECT_UNSET
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
+from hypergraph.runners._shared.results import MapResult, RunResult
 from hypergraph.runners._shared.scheduling import (
     ExecutionFrontier,
     compute_execution_scope,
@@ -31,8 +35,9 @@ from hypergraph.runners._shared.state import (
     RunnerCapabilities,
 )
 from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id, initialize_state
-from hypergraph.runners._shared.stop import StopSignal, get_stop_signal, reset_stop_signal, set_stop_signal
+from hypergraph.runners._shared.stop import _ActiveWorkflows, get_stop_signal
 from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
+from hypergraph.runners._shared.validation import reject_background_runner_options
 from hypergraph.runners.async_.executors import (
     AsyncFunctionNodeExecutor,
     AsyncGraphNodeExecutor,
@@ -106,7 +111,8 @@ class AsyncRunner(AsyncRunnerTemplate):
         self._cache = cache
         self._checkpointer_instance = checkpointer
         self._show_progress = show_progress
-        self._active_signals: dict[str, StopSignal] = {}
+        self._active_workflows = _ActiveWorkflows()
+        self._background_tasks: set[asyncio.Task[Any]] = set()
         self._executors: dict[type[HyperNode], AsyncNodeExecutor] = {
             FunctionNode: AsyncFunctionNodeExecutor(),
             GraphNode: AsyncGraphNodeExecutor(self),
@@ -116,19 +122,132 @@ class AsyncRunner(AsyncRunnerTemplate):
         }
 
     def stop(self, workflow_id: str, *, info: Any = None) -> None:
-        """Request cooperative stop for an active run.
+        """Request cooperative stop for an active run or map.
 
         No-op if the workflow_id is not currently running.
         Thread-safe: can be called from any thread or coroutine.
 
         Args:
-            workflow_id: The workflow to stop.
+            workflow_id: The active workflow execution to stop.
             info: Optional metadata attached to the stop signal.
                   Accessible via ``StopRequestedEvent.info``.
         """
-        signal = self._active_signals.get(workflow_id)
-        if signal is not None:
-            signal.set(info=info)
+        self._active_workflows.stop(workflow_id, info=info)
+
+    def start_run(
+        self,
+        graph: Graph,
+        values: dict[str, Any] | None = None,
+        *,
+        select: str | list[str] = SELECT_UNSET,
+        on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        entrypoint: str | None = None,
+        max_iterations: int | None = None,
+        max_concurrency: int | None = None,
+        event_processors: list[EventProcessor] | None = None,
+        show_progress: bool | None = None,
+        checkpoint: Checkpoint | None = None,
+        workflow_id: str | None = None,
+        **input_values: Any,
+    ) -> AsyncHandle[RunResult]:
+        """Start one graph execution in the background.
+
+        Args:
+            graph: The graph to execute.
+            values: Optional graph inputs as a dictionary.
+            select: Which outputs to return.
+            on_missing: How to handle missing selected outputs.
+            entrypoint: Optional explicit cycle entrypoint.
+            max_iterations: Maximum iterations for cyclic graphs.
+            max_concurrency: Maximum number of nodes executing concurrently.
+            event_processors: Optional processors for execution events.
+            show_progress: Override runner-level progress display.
+            checkpoint: Optional checkpoint from which to resume.
+            workflow_id: Optional workflow identifier.
+            **input_values: Graph input shorthand.
+
+        Returns:
+            A process-local handle for the live execution.
+
+        Raises:
+            RuntimeError: If called without a running event loop.
+        """
+        reject_background_runner_options(
+            input_values,
+            start_method="AsyncRunner.start_run",
+            reserved_option_names=runner_option_names(self.run) | runner_option_names(self.map),
+        )
+        loop = asyncio.get_running_loop()
+        reservation = self._active_workflows.reserve(workflow_id)
+        return _launch_async_execution(
+            loop,
+            lambda: self.run(
+                graph,
+                values,
+                select=select,
+                on_missing=on_missing,
+                entrypoint=entrypoint,
+                max_iterations=max_iterations,
+                max_concurrency=max_concurrency,
+                error_handling="continue",
+                event_processors=event_processors,
+                show_progress=show_progress,
+                checkpoint=checkpoint,
+                workflow_id=workflow_id,
+                _reservation=reservation,
+                **input_values,
+            ),
+            reservation,
+            self._background_tasks,
+        )
+
+    def start_map(
+        self,
+        graph: Graph,
+        values: dict[str, Any] | None = None,
+        *,
+        map_over: str | list[str],
+        map_mode: Literal["zip", "product"] = "zip",
+        clone: bool | list[str] = False,
+        select: str | list[str] = SELECT_UNSET,
+        on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        entrypoint: str | None = None,
+        max_concurrency: int | None = None,
+        event_processors: list[EventProcessor] | None = None,
+        show_progress: bool | None = None,
+        workflow_id: str | None = None,
+        **input_values: Any,
+    ) -> AsyncHandle[MapResult]:
+        """Start a settled map execution in the background."""
+        reject_background_runner_options(
+            input_values,
+            start_method="AsyncRunner.start_map",
+            reserved_option_names=runner_option_names(self.run) | runner_option_names(self.map),
+        )
+        loop = asyncio.get_running_loop()
+        reservation = self._active_workflows.reserve(workflow_id)
+        return _launch_async_execution(
+            loop,
+            lambda: self.map(
+                graph,
+                values,
+                map_over=map_over,
+                map_mode=map_mode,
+                clone=clone,
+                select=select,
+                on_missing=on_missing,
+                entrypoint=entrypoint,
+                max_concurrency=max_concurrency,
+                error_handling="continue",
+                event_processors=event_processors,
+                show_progress=show_progress,
+                workflow_id=workflow_id,
+                _reservation=reservation,
+                **input_values,
+            ),
+            reservation,
+            self._background_tasks,
+        )
 
     @property
     def _checkpointer(self) -> Checkpointer | None:
@@ -203,15 +322,8 @@ class AsyncRunner(AsyncRunnerTemplate):
         node_order = {name: i for i, name in enumerate(graph._nodes)} if has_checkpointer else {}
         save_tasks: list[asyncio.Task[None]] = []
 
-        # Set up StopSignal for this run.
-        # Inherit parent signal so nested graphs see the outer stop.
-        parent_signal = get_stop_signal()
-        signal = StopSignal(parent=parent_signal)
-        if workflow_id is not None:
-            if workflow_id in self._active_signals:
-                raise WorkflowAlreadyRunningError(workflow_id)
-            self._active_signals[workflow_id] = signal
-        signal_token = set_stop_signal(signal)
+        signal = get_stop_signal()
+        assert signal is not None, "run template must install a workflow stop signal"
 
         try:
             superstep_idx = 0
@@ -365,10 +477,6 @@ class AsyncRunner(AsyncRunnerTemplate):
             pause.stopped = signal.is_set
             raise
         finally:
-            # Clean up signal registry
-            reset_stop_signal(signal_token)
-            if workflow_id is not None:
-                self._active_signals.pop(workflow_id, None)
             # Await any background save tasks before returning
             if save_tasks:
                 results = await asyncio.gather(*save_tasks, return_exceptions=True)

@@ -175,6 +175,19 @@ for index, result in runner.map_iter(rag_pipeline, {"query": queries}, map_over=
 
 See [Batch Processing](../05-how-to/batch-processing.md) for the buffering counterpart, `runner.map()`.
 
+### map_iter() Is Not a Background Handle
+
+Choose by what the caller needs:
+
+- `map_iter()` streams completed item results to the consumer and does not
+  accumulate a `MapResult`.
+- `start_map()` returns a process-local control handle immediately, accumulates
+  the settled `MapResult`, and supports cooperative `handle.stop()`.
+
+Handles do not expose an item iterator. If a UI needs both live progress and a
+final background result, attach an event processor to `start_map()` and
+retrieve the result from the handle after settlement.
+
 ## Multi-Turn Streaming with Stop
 
 Stream responses in a conversation loop with stop support:
@@ -222,6 +235,20 @@ To stop mid-stream from another coroutine or endpoint:
 ```python
 runner.stop(workflow_id, info={"kind": "user_stop"})
 ```
+
+When the code that serves the Stop action already owns a background handle, no
+workflow ID is required:
+
+```python
+handle = runner.start_run(streaming_chat, values)
+# Later:
+handle.stop(info={"kind": "user_stop"})
+result = await handle.result(raise_on_failure=False)
+```
+
+Both forms set the same cooperative signal. They do not hard-cancel the
+framework task; streaming nodes observe `ctx.stop_requested` and return at a
+safe boundary.
 
 ## Error Handling in Streams
 

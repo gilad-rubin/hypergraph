@@ -59,6 +59,7 @@ from hypergraph.nodes import (
     route,
 )
 from hypergraph.runners import (
+    AsyncHandle,
     AsyncRunner,
     BaseRunner,
     DaftRunner,
@@ -72,6 +73,7 @@ from hypergraph.runners import (
     RunLog,
     RunResult,
     RunStatus,
+    SyncHandle,
     SyncRunner,
 )
 from hypergraph.runners._shared.node_context import NodeContext
@@ -96,6 +98,8 @@ __all__ = [
     "Graph",
     "InputSpec",
     # Runners
+    "SyncHandle",
+    "AsyncHandle",
     "SyncRunner",
     "AsyncRunner",
     "DaftRunner",

@@ -130,6 +130,25 @@ def _assert_nested_checkpoint_failures(result, *run_ids: str) -> None:
 
 
 class TestAsyncDurabilityBestEffort:
+    async def test_background_handle_preserves_best_effort_failure_evidence(self):
+        checkpointer = FailingSaveCheckpointer()
+        checkpointer.policy = CheckpointPolicy(durability="async")
+        runner = AsyncRunner(checkpointer=checkpointer)
+
+        handle = runner.start_run(
+            Graph([double]),
+            {"x": 5},
+            workflow_id="wf-background-best-effort",
+        )
+        result = await handle.result()
+
+        assert result.completed
+        assert result["doubled"] == 10
+        assert checkpointer.save_attempts > 0
+        assert result.checkpoint_ok is False
+        assert result.checkpoint_errors
+        assert any("disk full" in error for error in result.checkpoint_errors)
+
     async def test_async_durability_failure_completes_but_flags_checkpoint(self):
         checkpointer = FailingSaveCheckpointer()
         checkpointer.policy = CheckpointPolicy(durability="async")

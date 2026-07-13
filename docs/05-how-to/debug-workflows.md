@@ -1,11 +1,30 @@
 # Debug Workflows
 
-Two tools for understanding graph execution, from quick in-process inspection to cross-process persistence.
+Three surfaces answer different questions about live control, settled evidence,
+and durable history.
 
 | Tool | When to Use | Setup | Scope |
 |------|-------------|-------|-------|
+| **Background handle** | "Can I stop this live execution?" | Call `start_run()` / `start_map()` | Process-local, live work |
 | **RunLog** | "What happened in this run?" | Zero — always on | In-process, current run |
 | **Checkpointer** | "What happened yesterday?" | Pass to runner | Cross-process, persisted |
+
+A handle intentionally does not duplicate status, failures, or logs. Retrieve
+the settled `RunResult` / `MapResult`, then inspect the same result surfaces as
+blocking execution:
+
+```python
+handle = runner.start_run(graph, values)
+handle.stop(info={"reason": "user request"})
+result = handle.result(raise_on_failure=False)
+
+print(result.status)
+print(result.log)
+```
+
+For an async runner, await `handle.result(...)`. See
+[Control Work After It Starts](control-background-execution.md) for the live
+control contract.
 
 ## RunLog — Always-On Run Trace
 
@@ -112,6 +131,11 @@ if results.failed:
 
 `results.log` also returns a single batch-level `MapLog` (`graph_name`, `total_duration_ms`, `items` — a tuple of the per-item `RunLog`s, plus aggregate `.errors` and `restored_count`), for when you want one object instead of iterating `results` yourself. A checkpoint-skipped item has `RunResult.restored=True` and a visible synthetic `NodeRecord(status="restored")`; terminal and HTML views show it as restored, never as failed or as fake `0ms` work.
 
+When stop curtails a background map, `results.log.items` covers only real
+claimed outcomes. Compare `len(results)` with `results.requested_count` and
+read `results.unstarted_item_indexes` for inputs that never ran; those inputs
+have no synthetic node record, run log, or child run ID.
+
 ### runner.map() vs map_over for debugging
 
 The batch pattern you choose affects what debugging data is available:
@@ -128,6 +152,11 @@ Both patterns now support checkpointing. `runner.map()` creates a hierarchical s
 ## Checkpointer — Persistent Run History
 
 The Checkpointer persists every step to a database, enabling cross-process inspection, crash recovery, and time-travel debugging.
+
+A persisted `ACTIVE` status is execution history, not proof that a Python
+worker or background handle is still alive. Handles cannot be looked up or
+reconnected after process loss. A recovery process opens the checkpointer and
+starts a new execution under the existing resume rules.
 
 ### Quick Start
 
@@ -362,6 +391,7 @@ cp.runs()
 | "What values were produced at step 3?" | Checkpointer (`cp.state("<id>", superstep=3)`) |
 | "What failed runs exist?" | Checkpointer (`cp.runs(status=WorkflowStatus.FAILED)`) |
 | "What paused runs can I resume?" | Checkpointer (`cp.runs(status=WorkflowStatus.PAUSED)`) |
+| "Can this process stop the work that is live now?" | Background handle (`handle.stop(...)`) |
 | "What did the nested graph produce?" | Checkpointer (`cp.values("<parent-id>/<node-name>")`) |
 | "What happened in batch item 5?" | Checkpointer (`cp.steps("<batch-id>/5")`) |
 | "Find all steps that hit a specific error" | Checkpointer (`cp.search("error message")`) |
