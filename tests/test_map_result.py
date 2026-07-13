@@ -455,12 +455,15 @@ class TestMapResultRequestedScope:
         assert full.requested_count != curtailed.requested_count
         assert full == curtailed
 
-    def test_equal_empty_results_have_equal_hashes_across_requested_scope(self):
+    def test_map_result_is_unhashable_across_requested_scope(self):
         full = _make_map_result([])
         curtailed = _make_map_result([], unstarted_item_indexes=(0, 1))
+        settled = _make_map_result([_make_result()])
 
         assert full == curtailed
-        assert hash(full) == hash(curtailed)
+        for mapped in (full, curtailed, settled):
+            with pytest.raises(TypeError, match="unhashable type: 'MapResult'"):
+                hash(mapped)
 
     def test_sparse_html_labels_real_rows_with_original_input_indexes(self):
         mapped = _make_map_result(

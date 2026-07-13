@@ -324,7 +324,7 @@ def build_pre_run_failed_result(error: BaseException) -> RunResult:
     )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class MapResult:
     """Result of a batch map() execution.
 
@@ -391,9 +391,9 @@ class MapResult:
             return list(self.results) == other
         return NotImplemented
 
-    def __hash__(self) -> int:
-        """Hash the same real-result sequence used by equality."""
-        return hash(self.results)
+    # Equality is list-like and RunResult items are mutable, so hashing would
+    # either violate the equality contract or work only for empty batches.
+    __hash__ = None
 
     # --- Aggregate properties ---
 
