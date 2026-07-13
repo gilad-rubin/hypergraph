@@ -6,9 +6,13 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph._utils import plural
+
+if TYPE_CHECKING:
+    from hypergraph.runners._shared._inspect import RunInspection
+    from hypergraph.runners._shared._inspect_html import InspectionDisplay
 
 ErrorHandling = Literal["raise", "continue"]
 
@@ -120,6 +124,7 @@ class RunResult:
     checkpoint_errors: tuple[str, ...] = ()
     restored: bool = False
     node_failures: tuple[FailureEvidence, ...] = ()
+    _inspection: RunInspection | None = field(default=None, repr=False, compare=False)
 
     @property
     def stopped(self) -> bool:
@@ -145,6 +150,21 @@ class RunResult:
     def failure(self) -> FailureEvidence | None:
         """First attributable node failure, if one exists."""
         return self.node_failures[0] if self.node_failures else None
+
+    def inspect(self) -> InspectionDisplay:
+        """Return an explicit rich inspection view for this settled result.
+
+        Runs created with ``inspect=True`` include shallow successful-node
+        input/output snapshots. Ordinary and restored results remain
+        inspectable but say truthfully which values were not captured.
+        """
+        from hypergraph.runners._shared._inspect import degraded_run_inspection
+        from hypergraph.runners._shared._inspect_html import InspectionDisplay
+
+        artifact = self._inspection
+        if artifact is None:
+            artifact = degraded_run_inspection(self)
+        return InspectionDisplay(artifact)
 
     def summary(self) -> str:
         """One-line overview: 'completed | 3 nodes | 12ms' or 'failed: ValueError'."""
@@ -235,6 +255,7 @@ def build_terminal_run_result(
     workflow_id: str | None,
     log: RunLog,
     checkpoint_errors: Sequence[str] = (),
+    inspection: RunInspection | None = None,
 ) -> RunResult:
     """Build a completed or stopped result with durability evidence."""
     errors = tuple(checkpoint_errors)
@@ -246,6 +267,7 @@ def build_terminal_run_result(
         log=log,
         checkpoint_ok=not errors,
         checkpoint_errors=errors,
+        _inspection=inspection,
     )
 
 
@@ -257,6 +279,7 @@ def build_paused_run_result(
     pause: PauseInfo,
     log: RunLog,
     checkpoint_errors: Sequence[str] = (),
+    inspection: RunInspection | None = None,
 ) -> RunResult:
     """Build a paused result with durability evidence."""
     errors = tuple(checkpoint_errors)
@@ -269,6 +292,7 @@ def build_paused_run_result(
         log=log,
         checkpoint_ok=not errors,
         checkpoint_errors=errors,
+        _inspection=inspection,
     )
 
 
@@ -281,6 +305,7 @@ def build_failed_run_result(
     log: RunLog,
     node_failures: Sequence[FailureEvidence] = (),
     checkpoint_errors: Sequence[str] = (),
+    inspection: RunInspection | None = None,
 ) -> RunResult:
     """Build a failed result with durability evidence."""
     errors = tuple(checkpoint_errors)
@@ -294,6 +319,7 @@ def build_failed_run_result(
         log=log,
         checkpoint_ok=not errors,
         checkpoint_errors=errors,
+        _inspection=inspection,
     )
 
 

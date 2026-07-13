@@ -15,6 +15,7 @@ from hypergraph.exceptions import (
 )
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.graph_node import GraphNode
+from hypergraph.runners._shared._inspect import current_inspection
 from hypergraph.runners._shared.caching import (
     check_cache,
     restore_routing_decision,
@@ -104,6 +105,11 @@ def run_superstep_sync(
         if cache is not None:
             cache_key, cached_outputs = check_cache(node, inputs, cache)
 
+        inspection_context = current_inspection()
+        inspection_session = inspection_context[0] if inspection_context is not None else None
+        inspection_path = inspection_context[1] if inspection_context is not None else ()
+        qualified_name = "/".join((*inspection_path, node.name))
+
         if cached_outputs is not None:
             outputs = cached_outputs
             restore_routing_decision(node, outputs, new_state)
@@ -117,6 +123,26 @@ def run_superstep_sync(
                 item_index=ctx_base.item_index,
                 superstep=superstep_idx,
             )
+            inspection_time_ms = time.perf_counter() * 1000
+            if inspection_session is not None:
+                inspection_session.start_node(
+                    run_id=run_id,
+                    span_id=node_span_id,
+                    node_name=node.name,
+                    qualified_name=qualified_name,
+                    graph_name=graph.name or "",
+                    item_index=ctx_base.item_index,
+                    superstep=superstep_idx if superstep_idx is not None else 0,
+                    inputs=inputs,
+                    started_at_ms=inspection_time_ms,
+                )
+                inspection_session.finish_node(
+                    span_id=node_span_id,
+                    outputs=outputs,
+                    ended_at_ms=inspection_time_ms,
+                    duration_ms=0.0,
+                    cached=True,
+                )
             if active:
                 dispatcher.emit(start_evt)
                 dispatcher.emit(
@@ -170,6 +196,19 @@ def run_superstep_sync(
                 item_index=ctx_base.item_index,
                 superstep=superstep_idx,
             )
+            inspection_started_at_ms = time.perf_counter() * 1000
+            if inspection_session is not None:
+                inspection_session.start_node(
+                    run_id=run_id,
+                    span_id=node_span_id,
+                    node_name=node.name,
+                    qualified_name=qualified_name,
+                    graph_name=graph.name or "",
+                    item_index=ctx_base.item_index,
+                    superstep=superstep_idx if superstep_idx is not None else 0,
+                    inputs=inputs,
+                    started_at_ms=inspection_started_at_ms,
+                )
             if active:
                 dispatcher.emit(start_evt)
 
@@ -243,6 +282,12 @@ def run_superstep_sync(
                                         item_index=ctx_base.item_index,
                                     ),
                                 )
+                            if inspection_session is not None and node_failures:
+                                inspection_session.fail_node(
+                                    span_id=node_span_id,
+                                    failure=node_failures[0],
+                                    ended_at_ms=time.perf_counter() * 1000,
+                                )
                             executor_failure = _NodeExecutionError(
                                 executor_error,
                                 new_state,
@@ -257,6 +302,15 @@ def run_superstep_sync(
                     reset_current_node_span(span_token)
 
                 duration_ms = (time.time() - node_start) * 1000
+
+                if inspection_session is not None:
+                    inspection_session.finish_node(
+                        span_id=node_span_id,
+                        outputs=outputs,
+                        ended_at_ms=time.perf_counter() * 1000,
+                        duration_ms=duration_ms,
+                        cached=False,
+                    )
 
                 # Store result in cache
                 if cache is not None and cache_key:

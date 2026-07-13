@@ -119,6 +119,7 @@ class SyncRunner(SyncRunnerTemplate):
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
+        inspect: bool = False,
         event_processors: list[EventProcessor] | None = None,
         show_progress: bool | None = None,
         checkpoint: Checkpoint | None = None,
@@ -134,6 +135,7 @@ class SyncRunner(SyncRunnerTemplate):
             on_missing: How to handle missing selected outputs.
             entrypoint: Optional explicit cycle entrypoint.
             max_iterations: Maximum iterations for cyclic graphs.
+            inspect: Capture node inputs/outputs for live and settled inspection.
             event_processors: Optional processors for execution events.
             show_progress: Override runner-level progress display.
             checkpoint: Optional checkpoint from which to resume.
@@ -157,6 +159,7 @@ class SyncRunner(SyncRunnerTemplate):
                 on_missing=on_missing,
                 entrypoint=entrypoint,
                 max_iterations=max_iterations,
+                inspect=inspect,
                 error_handling="continue",
                 event_processors=event_processors,
                 show_progress=show_progress,

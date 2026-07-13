@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import (
@@ -14,6 +15,7 @@ from hypergraph.exceptions import (
     _failure_evidence_context,
     _NodeExecutionError,
 )
+from hypergraph.runners._shared._inspect import InspectionSession, inspection_scope
 from hypergraph.runners._shared.event_metadata import (
     DEFAULT_RUN_CONTEXT,
     DEFAULT_RUN_LINEAGE,
@@ -212,6 +214,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
+        inspect: bool = False,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
         show_progress: bool | None = None,
@@ -227,9 +230,17 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         _complete_on_stop: bool = False,
         _item_index: int | None = None,
         _reservation: _WorkflowReservation | None = None,
+        _inspection_session: InspectionSession | None = None,
+        _inspection_path: tuple[str, ...] = (),
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
+        if not isinstance(inspect, bool):
+            raise TypeError(
+                f"inspect must be a bool, got {type(inspect).__name__}.\n\n"
+                "How to fix: Pass inspect=True to capture node values or "
+                "inspect=False to keep only always-on run facts."
+            )
         run_option_names = runner_option_names(self.run)
         map_option_names = runner_option_names(self.map)
         validation_ctx = _validation_ctx
@@ -350,6 +361,14 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 )
 
         max_iter = max_iterations or self.default_max_iterations
+        inspection_session = _inspection_session
+        owns_inspection = inspection_session is None and inspect
+        if owns_inspection:
+            inspection_session = InspectionSession(
+                graph_name=graph.name or "",
+                workflow_id=workflow_id,
+                item_index=_item_index,
+            )
         effective_show_progress = show_progress if show_progress is not None else getattr(self, "_show_progress", False)
         if effective_show_progress:
             from hypergraph.runners._shared.scheduling import ensure_progress_processor
@@ -377,6 +396,9 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 context=run_context,
                 lineage=run_lineage,
             )
+            if owns_inspection:
+                assert inspection_session is not None
+                inspection_session.bind_run(run_id)
             start_time = time.time()
 
             # Checkpointer lifecycle — upsert run record
@@ -410,20 +432,22 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             raise
 
         try:
-            state = self._execute_graph_impl(
-                graph,
-                normalized_values,
-                max_iter,
-                dispatcher=dispatcher,
-                run_id=run_id,
-                run_span_id=run_span_id,
-                event_processors=event_processors,
-                workflow_id=workflow_id,
-                checkpoint=resume_checkpoint,
-                step_buffer=step_buffer,
-                _complete_on_stop=_complete_on_stop,
-                item_index=_item_index,
-            )
+            inspection_context = inspection_scope(inspection_session, _inspection_path) if inspection_session is not None else nullcontext()
+            with inspection_context:
+                state = self._execute_graph_impl(
+                    graph,
+                    normalized_values,
+                    max_iter,
+                    dispatcher=dispatcher,
+                    run_id=run_id,
+                    run_span_id=run_span_id,
+                    event_processors=event_processors,
+                    workflow_id=workflow_id,
+                    checkpoint=resume_checkpoint,
+                    step_buffer=step_buffer,
+                    _complete_on_stop=_complete_on_stop,
+                    item_index=_item_index,
+                )
             output_values = filter_outputs(state, graph, select, on_missing)
             total_duration_ms = (time.time() - start_time) * 1000
             was_stopped = state.stopped
@@ -446,12 +470,21 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     )
                 )
 
+            inspection = (
+                inspection_session.finish(
+                    status=status.value,
+                    total_duration_ms=total_duration_ms,
+                )
+                if owns_inspection and inspection_session is not None
+                else None
+            )
             result = build_terminal_run_result(
                 values=output_values,
                 status=status,
                 run_id=run_id,
                 workflow_id=workflow_id,
                 log=collector.build(graph.name, run_id, total_duration_ms),
+                inspection=inspection,
             )
             self._emit_run_end_sync(
                 dispatcher,
@@ -525,12 +558,21 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     node_count=step_count,
                     error_count=error_count,
                 )
+            inspection = (
+                inspection_session.finish(
+                    status=RunStatus.PAUSED.value,
+                    total_duration_ms=total_duration_ms,
+                )
+                if owns_inspection and inspection_session is not None
+                else None
+            )
             return build_paused_run_result(
                 values=partial_values,
                 run_id=run_id,
                 workflow_id=workflow_id,
                 pause=pause.pause_info,
                 log=collector.build(graph.name, run_id, total_duration_ms),
+                inspection=inspection,
             )
         except Exception as e:
             error = e
@@ -565,10 +607,19 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 _, _step_off = _cp_offsets(resume_checkpoint)
                 _flush_and_fail(sync_cp, workflow_id, step_buffer, collector, start_time, step_offset=_step_off)
 
+            total_duration_ms = (time.time() - start_time) * 1000
+            inspection = (
+                inspection_session.finish(
+                    status=RunStatus.FAILED.value,
+                    total_duration_ms=total_duration_ms,
+                    failures=tuple(node_failures),
+                )
+                if owns_inspection and inspection_session is not None
+                else None
+            )
             if error_handling == "raise":
                 raise error from None
 
-            total_duration_ms = (time.time() - start_time) * 1000
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             return build_failed_run_result(
                 values=partial_values,
@@ -577,6 +628,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 error=error,
                 node_failures=node_failures,
                 log=collector.build(graph.name, run_id, total_duration_ms),
+                inspection=inspection,
             )
         finally:
             try:
