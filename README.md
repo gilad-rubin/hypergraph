@@ -185,23 +185,46 @@ result = await runner.run(graph, {
 
 ### Native Debugging and OTel Export
 
-- **Native-first** - Hypergraph's inspect UI, `RunView`, failure display, and checkpoint history stay the primary debugging tools.
+- **Native-first** - In supported notebooks, `inspect=True` opens one live view while capturing execution evidence; `result.inspect()` returns an explicit settled display.
 - **OTel opt-in** - Add `OpenTelemetryProcessor()` only when you want to export execution data to Jaeger, Honeycomb, Datadog, or another tracing backend.
 - **Structured spans** - Hypergraph exports graph/map run spans, child node spans, and explicit attributes such as `workflow_id`, `run_id`, `item_index`, `graph_name`, and `node_name`.
 
 ```python
 from hypergraph import SyncRunner
+
+# Before: correlate the status, log, and failure surfaces by hand.
+result = SyncRunner().run(graph, values, error_handling="continue")
+print(result.status, result.log, result.failure)
+
+# After: opt into successful values and open one explicit inspection view.
+result = SyncRunner().run(
+    graph,
+    values,
+    inspect=True,
+    error_handling="continue",
+)
+result.inspect()
+```
+
+Current-process inspection does not require a checkpointer. Add one only for
+resume, fork, retry, restart, or historical queries. Use OpenTelemetry when the
+same run must reach an external backend:
+
+```python
+from hypergraph import SyncRunner
 from hypergraph.events.otel import OpenTelemetryProcessor
 
-runner = SyncRunner()
-result = runner.run(
+result = SyncRunner().run(
     graph,
-    {"query": "What changed in our RAG index?"},
+    values,
     event_processors=[OpenTelemetryProcessor()],
 )
 ```
 
-Nested graphs and `map()` runs show up as a span tree rather than a flat log, while rich inspect-only payloads stay inside Hypergraph. See [execution observability](docs/05-how-to/observe-execution.md) for the full setup and emitted span structure.
+Nested graphs and `map()` runs show up as a span tree rather than a flat log,
+while captured inspect values stay inside Hypergraph. See
+[Debug Workflows](docs/05-how-to/debug-workflows.md) for native inspection and
+[execution observability](docs/05-how-to/observe-execution.md) for OTel setup.
 
 ### Control Work After It Starts
 

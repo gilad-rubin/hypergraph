@@ -6,6 +6,34 @@ A checkpointer persists every step of a run so it can be resumed, forked, retrie
 This page covers the checkpointer subsystem itself — the `Checkpointer` ABC, `CheckpointPolicy`, and lineage (fork/retry) mechanics. For `run()`/`map()` parameter semantics (`workflow_id`, `fork_from`, `retry_from`, `override_workflow`), see [Runners](runners.md#run). For live background control versus durable recovery, see [Control Work After It Starts](../05-how-to/control-background-execution.md#use-a-checkpointer-for-recovery-not-handle-reconnection). For the `map()` batch-checkpointing walkthrough, see [Batch Processing](../05-how-to/batch-processing.md#checkpointing-with-map).
 {% endhint %}
 
+## Current Inspection Is Separate from Persistence
+
+A current-process inspect view does not require a checkpointer. Use
+`inspect=True` when Maya needs the values and timeline for work executing now:
+
+```python
+from hypergraph import SyncRunner
+from hypergraph.checkpointers import SqliteCheckpointer
+
+# Before: a database was sometimes added only to inspect one current run.
+runner = SyncRunner(checkpointer=SqliteCheckpointer("./debug.db"))
+result = runner.run(graph, values, workflow_id="debug-1")
+
+# After: current inspection is process-local and needs no persistence setup.
+result = SyncRunner().run(graph, values, inspect=True)
+result.inspect()
+```
+
+Configure `SqliteCheckpointer` only when the use case also needs resume, fork,
+retry, restart, or history after the process exits. When a later execution
+restores completed work, restored nodes expose their status, timing metadata,
+and qualified path, but do not reconstruct successful inputs or outputs for
+the inspect view. Fresh nodes can capture their current values with
+`inspect=True`.
+
+See [Debug Workflows](../05-how-to/debug-workflows.md) for degraded views,
+capture limits, and saved-notebook sensitivity.
+
 ## Turning It On
 
 Pass a checkpointer to the runner, then pass a `workflow_id` to `run()`:
@@ -38,7 +66,7 @@ for step in checkpointer.steps("wf-1"):
 
 `SqliteCheckpointer` exposes both async methods (`get_run_async`, `get_steps`, used by `AsyncRunner`) and sync convenience methods (`get_run`, `steps`, `state`, `values`, `runs`, `lineage`) for reading results back after a run. `SyncRunner` also accepts a `checkpointer=` — it uses the sync write path (`create_run_sync`, `save_step_sync`) instead of the async one.
 
-Both durability requires an on-disk or shared-memory SQLite database:
+SQLite-backed durability requires an on-disk or shared-memory database:
 
 ```python
 # On disk — survives process restarts

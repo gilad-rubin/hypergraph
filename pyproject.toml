@@ -159,7 +159,7 @@ include = [
     "/src",
     "/README.md",
     "/LICENSE",
-    "/CHANGELOG.md",
+    "/docs/changelog.md",
 ]
 
 [tool.uv]

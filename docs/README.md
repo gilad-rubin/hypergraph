@@ -100,6 +100,10 @@ For background execution specifically, the
 the current-behavior surfaces. ADRs 0003 and 0004 explain why that API has its
 minimal shape.
 
+For native execution inspection, start with
+[Debug Workflows](05-how-to/debug-workflows.md), then use the
+[runner reference](06-api-reference/runners.md) for exact signatures.
+
 ## Documentation
 
 ### Getting Started
@@ -134,6 +138,7 @@ minimal shape.
 - [Rename and Adapt](05-how-to/rename-and-adapt.md) - Reuse functions in different contexts
 - [Integrate with LLMs](05-how-to/integrate-with-llms.md) - Patterns for OpenAI, Anthropic, and others
 - [Test Without Framework](05-how-to/test-without-framework.md) - Test nodes as pure functions
+- [Debug Workflows](05-how-to/debug-workflows.md) - Inspect current values and failures, or query durable history
 - [Observe Execution](05-how-to/observe-execution.md) - Progress bars, custom event processors, and monitoring
 - [Visualize Graphs](05-how-to/visualize-graphs.md) - Interactive graph visualization in notebooks and HTML
 

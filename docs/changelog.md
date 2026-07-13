@@ -4,6 +4,15 @@
 
 ### Added
 
+- **Native execution inspect mode** — before, users correlated result status,
+  logs, map indexes, values, and failures by hand. Now `SyncRunner` and
+  `AsyncRunner` accept `inspect=True` on `run()`, `map()`, `start_run()`, and
+  `start_map()`; settled `RunResult.inspect()` / `MapResult.inspect()` return
+  one explicit locally interactive display. Current inspection needs no
+  checkpointer, handles remain control-only, degraded results disclose values
+  that were not captured, and saved notebook output remains interactive
+  without a kernel while carrying the documented bounded sensitive values.
+
 - **Background run and map handles** — `SyncRunner.start_run()` /
   `start_map()` and `AsyncRunner.start_run()` / `start_map()` return
   process-local `SyncHandle` / `AsyncHandle` controls with only `done`,

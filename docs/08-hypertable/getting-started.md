@@ -468,6 +468,6 @@ children = docs.children("v1")
 
 ## What's Next
 
-- [Batch Processing](batch-processing.md) -- process many items through a graph with `runner.map()`
-- [Visualize Graphs](visualize-graphs.md) -- render your table's graph structure
-- [Testing Without Framework](test-without-framework.md) -- test node functions directly
+- [Batch Processing](../05-how-to/batch-processing.md) -- process many items through a graph with `runner.map()`
+- [Visualize Graphs](../05-how-to/visualize-graphs.md) -- render your table's graph structure
+- [Testing Without Framework](../05-how-to/test-without-framework.md) -- test node functions directly

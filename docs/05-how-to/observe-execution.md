@@ -2,6 +2,23 @@
 
 Hypergraph's event system lets you observe graph execution without modifying your workflow logic. Pass event processors to blocking `runner.run()` / `runner.map()` or background `runner.start_run()` / `runner.start_map()` calls to receive events as they happen.
 
+Use native inspection when a person needs to investigate one current run. Use
+events or OpenTelemetry when software must consume many runs:
+
+```python
+# Before: inspect status and logs separately after settlement.
+result = runner.run(graph, values, error_handling="continue")
+print(result.status, result.log, result.failure)
+
+# After: capture successful values and return one explicit inspect view.
+result = runner.run(graph, values, inspect=True, error_handling="continue")
+result.inspect()
+```
+
+The inspect view stays inside Hypergraph and does not require a checkpointer.
+See [Debug Workflows](debug-workflows.md) for capture limits, saved-notebook
+sensitivity, degraded views, and map failure drill-down.
+
 ## Rich Progress Bars
 
 The fastest way to observe execution — hierarchical progress bars powered by Rich.
@@ -67,7 +84,7 @@ processor = RichProgressProcessor(force_mode="tty")
 
 Use OpenTelemetry when you want Hypergraph runs to show up in external
 observability backends such as Jaeger, Honeycomb, Datadog, or Logfire.
-Hypergraph's native inspect UI, `RunView`, failure display, and checkpoint
+Hypergraph's native `result.inspect()` view, failure evidence, and checkpoint
 tools remain the primary debugging experience; OTel is the export layer.
 
 ```bash

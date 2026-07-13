@@ -346,3 +346,99 @@ def test_checkpointer_semantics_docs_mirror_high_drift_surfaces() -> None:
     assert "generic `run-...`" in runners
     assert "job-1-fork-a1b2c3" in checkpointers
     assert "nested source" in checkpointers
+
+
+def test_inspect_mode_docs_mirror_public_contract() -> None:
+    readme = _read("README.md")
+    docs_readme = _read("docs/README.md")
+    summary = _read("docs/SUMMARY.md")
+    debug = _read("docs/05-how-to/debug-workflows.md")
+    observe = _read("docs/05-how-to/observe-execution.md")
+    control = _read("docs/05-how-to/control-background-execution.md")
+    runners = _read("docs/06-api-reference/runners.md")
+    checkpointers = _read("docs/06-api-reference/checkpointers.md")
+    hypertable = _read("docs/08-hypertable/getting-started.md")
+    pyproject = _read("pyproject.toml")
+
+    assert "RunView" not in readme
+    assert "RunView" not in observe
+    assert "Debug Workflows](05-how-to/debug-workflows.md)" in summary
+    assert "Debug Workflows](05-how-to/debug-workflows.md)" in docs_readme
+
+    sync_section = _scoped_section(runners, "## SyncRunner")
+    async_section = _scoped_section(runners, "## AsyncRunner")
+    sync_start_section = _scoped_section(sync_section, "### start_run() and start_map()")
+    async_start_section = _scoped_section(async_section, "### start_run() and start_map()")
+    runner_sections = {
+        (SyncRunner, "run"): _scoped_section(sync_section, "### run()"),
+        (SyncRunner, "map"): _scoped_section(sync_section, "### map()"),
+        (SyncRunner, "start_run"): sync_start_section,
+        (SyncRunner, "start_map"): sync_start_section,
+        (AsyncRunner, "run"): _scoped_section(async_section, "### run()"),
+        (AsyncRunner, "map"): _scoped_section(async_section, "### map()"),
+        (AsyncRunner, "start_run"): async_start_section,
+        (AsyncRunner, "start_map"): async_start_section,
+    }
+    for (runner_type, method_name), section in runner_sections.items():
+        documented = _documented_function_defs(section)[method_name]
+        runtime_method = getattr(runner_type, method_name)
+        public_runtime_parameters = tuple(name for name in inspect.signature(runtime_method).parameters if name == "self" or not name.startswith("_"))
+        assert _parameter_names(documented) == public_runtime_parameters
+        inspect_parameter = next(argument for argument in documented.args.kwonlyargs if argument.arg == "inspect")
+        inspect_default = documented.args.kw_defaults[documented.args.kwonlyargs.index(inspect_parameter)]
+        assert isinstance(inspect_default, ast.Constant)
+        assert inspect_default.value is False
+
+    required_debug_truth = (
+        "RunResult",
+        "MapResult",
+        "inspect=True",
+        "result.inspect()",
+        "batch.inspect()",
+        "HYPERGRAPH_DISPLAY=plain",
+        "depth 6",
+        "100 mapping",
+        "200 sequence",
+        "200 rows",
+        "20 columns",
+        "20,000 characters",
+        'values={"inspect": "graph-owned"}',
+        "batch.failures",
+        "failure.item_index",
+        "graph.visualize()",
+        "not captured; rerun with inspect=True",
+    )
+    for truth in required_debug_truth:
+        assert truth in debug
+
+    assert "does not require a checkpointer" in debug
+    assert "restored nodes" in debug
+    assert "same object identities" in debug
+    assert "sensitive" in debug.lower()
+    normalized_debug = " ".join(debug.split())
+    assert "without a kernel" in normalized_debug
+    assert "executed slash-qualified paths" in normalized_debug
+    assert 'inspect="graph-owned"' not in debug
+
+    assert "inspect=True" in control
+    assert "result.inspect()" in control
+    assert "batch.inspect()" in control
+    assert "do not `await runner.start_run(...)`" in control
+    assert "does not expose" in control and "inspection" in control
+
+    assert "current-process inspect view" in checkpointers
+    assert "does not require a checkpointer" in checkpointers
+    assert "restored nodes" in checkpointers
+    assert "do not reconstruct successful inputs or outputs" in checkpointers
+
+    for text in (readme, debug, observe, control, runners):
+        assert "._repr_html_(" not in text
+        assert ".artifact" not in text
+        assert ".to_html(" not in text
+        assert ".save(" not in text
+
+    assert "../05-how-to/batch-processing.md" in hypertable
+    assert "../05-how-to/visualize-graphs.md" in hypertable
+    assert "../05-how-to/test-without-framework.md" in hypertable
+    assert '"/docs/changelog.md"' in pyproject
+    assert '"/CHANGELOG.md"' not in pyproject

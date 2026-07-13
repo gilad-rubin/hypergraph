@@ -22,6 +22,10 @@ Use `run()` / `map()` when the caller should wait for the result. Use
 work is live—for example, to serve a Stop button. See
 [Control Work After It Starts](../05-how-to/control-background-execution.md).
 
+All four methods on `SyncRunner` and `AsyncRunner` accept keyword-only
+`inspect: bool = False`. The value must be a real boolean; invalid values raise
+`TypeError` with guidance instead of silently enabling capture.
+
 ## SyncRunner
 
 Sequential execution for synchronous graphs.
@@ -73,6 +77,7 @@ def run(
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     entrypoint: str | None = None,
     max_iterations: int | None = None,
+    inspect: bool = False,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
     show_progress: bool | None = None,
@@ -97,6 +102,7 @@ Execute a graph once.
   - `"error"`: raise error if any selected output is missing
 - `entrypoint` - Runtime entrypoint overrides are not supported. Configure the graph with `Graph(..., entrypoint=...)` or `graph.with_entrypoint(...)`.
 - `max_iterations` - Max local iterations per cyclic execution region (SCC) (default: 1000)
+- `inspect` - Capture shallow successful-node inputs and outputs for live and settled inspection. Defaults to `False`; `.inspect()` still returns a degraded view from always-on facts.
 - `error_handling` - How to handle node execution errors:
   - `"raise"` (default): Re-raise the original exception (e.g., `ValueError`). Clean traceback, no wrapper.
   - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
@@ -113,6 +119,17 @@ Execute a graph once.
 - `retry_from` - Workflow ID to retry from directly (records retry lineage metadata). Without `workflow_id=`, runner naming remains generic `run-...`. Requires a checkpointer.
 - Lineage hashing: checkpoint compatibility uses a structural hash; a separate code hash is recorded for observability/caching workflows.
 - `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
+
+Because `inspect` is a runner option, a graph input with that name belongs in
+the values mapping:
+
+```python
+result = runner.run(
+    graph,
+    values={"inspect": "graph-owned"},
+    inspect=True,
+)
+```
 
 **Returns:** `RunResult` with outputs and status
 
@@ -149,10 +166,18 @@ result = runner.run(graph, values, event_processors=[RichProgressProcessor()])
 
 # Collect partial results instead of raising on failure
 from hypergraph import RunStatus
-result = runner.run(graph, {"x": 5}, error_handling="continue")
+result = runner.run(
+    graph,
+    {"x": 5},
+    inspect=True,
+    error_handling="continue",
+)
 if result.status == RunStatus.FAILED:
     print(result.error)        # the original exception
     print(result.values)       # outputs from nodes that completed before the failure
+
+# In a notebook, keep this as the final expression.
+result.inspect()
 
 # Fork from an existing run (workflow-id based)
 from hypergraph.checkpointers import SqliteCheckpointer
@@ -189,6 +214,7 @@ def map(
     select: str | list[str] = _UNSET_SELECT,
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     entrypoint: str | None = None,
+    inspect: bool = False,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
     show_progress: bool | None = None,
@@ -208,6 +234,7 @@ Execute a graph multiple times with different inputs.
 - `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)` before execution.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `entrypoint` - Runtime entrypoint overrides are not supported; configure it on the graph.
+- `inspect` - Capture shallow successful-node inputs and outputs for live and settled inspection. Defaults to `False`.
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
@@ -244,10 +271,13 @@ results = runner.map(
     graph,
     {"x": [1, 2, 3]},
     map_over="x",
+    inspect=True,
     error_handling="continue",
 )
 if results.failed:
     print(f"{len(results.failures)} items failed")
+
+results.inspect()
 ```
 
 ### start_run() and start_map()
@@ -292,7 +322,9 @@ def start_map(
 Both methods return immediately with a process-local
 [`SyncHandle`](#synchandle-and-asynchandle). Their parameters match the
 corresponding blocking operation except that background retrieval owns failure
-policy, so there is no `error_handling`. `start_run()` also omits
+policy, so there is no `error_handling`. Passing `inspect=True` captures values
+while the work is live; call `.inspect()` on the settled result, not the
+handle. `start_run()` also omits
 `override_workflow`, `fork_from`, and `retry_from`; prepare lineage changes
 through the checkpointer before starting the resulting checkpoint and ID.
 Passing any blocking runner control absent from the `start_*()` signature
@@ -300,9 +332,10 @@ directly raises `TypeError` before launch; use `values={...}` when the name
 belongs to the graph rather than the runner.
 
 ```python
-handle = runner.start_run(graph, {"order_id": "order-100"})
+handle = runner.start_run(graph, {"order_id": "order-100"}, inspect=True)
 do_other_work()
-result = handle.result()
+result = handle.result(raise_on_failure=False)
+result.inspect()
 ```
 
 ### capabilities
@@ -739,6 +772,7 @@ async def run(
     entrypoint: str | None = None,
     max_iterations: int | None = None,
     max_concurrency: int | None = None,
+    inspect: bool = False,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
     show_progress: bool | None = None,
@@ -761,6 +795,7 @@ Execute a graph asynchronously.
 - `entrypoint` - Runtime entrypoint overrides are not supported. Configure entrypoints on the graph via `Graph(..., entrypoint=...)` or `graph.with_entrypoint(...)`.
 - `max_iterations` - Max local iterations per cyclic execution region (SCC) (default: 1000)
 - `max_concurrency` - Max parallel node executions (default: unlimited); when provided, it must be at least `1`.
+- `inspect` - Capture shallow successful-node inputs and outputs for live and settled inspection. Defaults to `False`; `.inspect()` still returns a degraded view from always-on facts.
 - `error_handling` - How to handle node execution errors:
   - `"raise"` (default): Re-raise the original exception. Clean traceback, no wrapper.
   - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
@@ -794,7 +829,9 @@ result = await runner.run(
     graph,
     {"prompts": prompts},
     max_concurrency=10,
+    inspect=True,
 )
+result.inspect()
 ```
 
 ### Concurrency Control
@@ -833,6 +870,7 @@ async def map(
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     entrypoint: str | None = None,
     max_concurrency: int | None = None,
+    inspect: bool = False,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
     show_progress: bool | None = None,
@@ -853,6 +891,7 @@ Execute graph multiple times concurrently.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `entrypoint` - Runtime entrypoint overrides are not supported.
 - `max_concurrency` - Shared limit across all executions; when provided, it must be at least `1`.
+- `inspect` - Capture shallow successful-node inputs and outputs for live and settled inspection. Defaults to `False`.
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
@@ -881,8 +920,10 @@ results = await runner.map(
     {"doc": documents},
     map_over="doc",
     max_concurrency=20,
+    inspect=True,
     error_handling="continue",
 )
+results.inspect()
 ```
 
 For very large batches, prefer setting `max_concurrency` explicitly. If `max_concurrency=None`
@@ -934,9 +975,10 @@ These are ordinary methods, not coroutine functions. Call them from a running
 event loop without `await`, then await the handle's result:
 
 ```python
-handle = runner.start_run(graph, {"order_id": "order-200"})
+handle = runner.start_run(graph, {"order_id": "order-200"}, inspect=True)
 serve_other_requests()
-result = await handle.result()
+result = await handle.result(raise_on_failure=False)
+result.inspect()
 ```
 
 As with the synchronous forms, background start methods omit
@@ -1159,7 +1201,11 @@ results = SyncRunner().map(
     error_handling="continue",
 )
 
-[(item.failure.item_index, item.failure.inputs) for item in results.failures]
+[
+    (item.failure.item_index, item.failure.inputs)
+    for item in results.failures
+    if item.failure is not None
+]
 # [(0, {"raw_order": "missing-price"}), (1, {"raw_order": "missing-sku"})]
 ```
 
@@ -1186,13 +1232,48 @@ identity, and framework-injected `NodeContext` is excluded. Explicitly reading
 Those objects remain referenced until the `RunResult` or raised exception and
 its suppressed evidence context are collected.
 
-Raw inputs never appear in repr/HTML, `to_dict()`, run logs, events, checkpoints,
-or OpenTelemetry. Failed `RunResult.to_dict()` output includes safe
+Raw inputs never appear in the ordinary result repr/HTML, `to_dict()`, run
+logs, events, checkpoints, or OpenTelemetry. The explicit inspect display is
+the exception: with `inspect=True`, it intentionally contains bounded captured
+inputs and outputs. Failed `RunResult.to_dict()` output includes safe
 `node_failures` metadata—node path, error text/type, timing, graph/workflow, and
 item index—but no `inputs` or exception objects. Infrastructure failures that
 cannot be attributed to a node executor use `node_failures == ()` and
 `failure is None`. Daft integrations may likewise return no evidence until
 they execute through the core node seam.
+
+### inspect()
+
+```python
+def inspect(self) -> InspectionDisplay[Any]: ...
+```
+
+Return one explicit rich display for this settled result. Calling the method
+does not mutate the result and does not display anything by itself.
+
+```python
+# Before: read status, log, and failure separately.
+result = runner.run(graph, values, error_handling="continue")
+print(result.status, result.log, result.failure)
+
+# After: capture successful values, then return one joined view.
+result = runner.run(graph, values, inspect=True, error_handling="continue")
+result.inspect()
+```
+
+`inspect=True` does not require a checkpointer. Without that flag, `inspect()`
+returns a degraded view: successful values report `not captured; rerun with
+inspect=True`, while failures can still expose always-on `FailureEvidence`.
+Restored nodes report their real status and metadata but do not reconstruct
+successful values. Daft and custom/delegated runners may therefore produce the
+degraded settled view.
+
+Capture is shallow: top-level mappings are copied, while contained values keep
+their object identity until the result is collected. Saved notebook output can
+contain sensitive values. Rendering enforces per-value limits of depth 6, 100
+mapping items, 200 sequence items, tables of 200 rows by 20 columns, and 20,000
+text characters. See [Debug Workflows](../05-how-to/debug-workflows.md) for the
+full privacy and live-to-saved contract.
 
 ### Progressive Disclosure
 
@@ -1246,6 +1327,7 @@ results.checkpoint_errors  # Tuple of save errors in stable item order
 # Progressive disclosure
 results.summary()    # "3 items | 3 completed | avg 12ms/item"
 results.to_dict()    # JSON-serializable batch metadata + per-item results
+results.inspect()    # Explicit rich batch view
 ```
 
 Completed counts stay inclusive of restored successes. Duration averages use only freshly executed completed items with real logs; a fully restored map omits the average. `results.log` exposes the same `restored_count` and per-item provenance through `MapLog`.
@@ -1274,6 +1356,32 @@ For a completed or genuinely empty map, `unstarted_item_indexes == ()` and
 `requested_count == len(results)`. When cooperative stop curtails a batch,
 `results` contains only real claimed outcomes; Hypergraph does not fabricate
 item results, logs, events, run IDs, or checkpoint rows for unstarted inputs.
+
+### inspect()
+
+```python
+def inspect(self) -> InspectionDisplay[Any]: ...
+```
+
+Return one explicit batch display, opening on original map items. Use failure
+evidence to locate sparse or stopped items; an original item index is not a
+compact sequence position:
+
+```python
+failed = next(
+    result
+    for result in results.failures
+    if result.failure is not None and result.failure.item_index == 3
+)
+failure = failed.failure
+assert failure is not None
+print(failure.inputs)
+
+results.inspect()
+```
+
+The same degraded, sensitivity, limit, and no-checkpointer rules as
+`RunResult.inspect()` apply.
 
 ### Status Precedence
 

@@ -1,11 +1,12 @@
 # Debug Workflows
 
-Three surfaces answer different questions about live control, settled evidence,
+Four surfaces answer different questions about live control, current evidence,
 and durable history.
 
 | Tool | When to Use | Setup | Scope |
 |------|-------------|-------|-------|
 | **Background handle** | "Can I stop this live execution?" | Call `start_run()` / `start_map()` | Process-local, live work |
+| **Inspect mode** | "Which item and node produced this value or failure?" | Pass `inspect=True`; call `.inspect()` after settlement | Process-local live notebook view and explicit settled display |
 | **RunLog** | "What happened in this run?" | Zero — always on | In-process, current run |
 | **Checkpointer** | "What happened yesterday?" | Pass to runner | Cross-process, persisted |
 
@@ -26,9 +27,206 @@ For an async runner, await `handle.result(...)`. See
 [Control Work After It Starts](control-background-execution.md) for the live
 control contract.
 
+## Inspect One Current Execution
+
+Suppose Maya is reviewing three customer checks and one fails. Before inspect
+mode, she can find the failure, but the application has to correlate batch
+status, original item indexes, logs, node timing, and values itself:
+
+```python
+# Before: assemble the debugging story from separate result surfaces.
+batch = runner.map(
+    customer_review,
+    {
+        "customer_id": ["alex-10", "maya-23", "sam-04"],
+        "lifetime_value": [2400, 1200, 3100],
+    },
+    map_over=["customer_id", "lifetime_value"],
+    error_handling="continue",
+)
+
+print(batch.summary())
+for result in batch.failures:
+    failure = result.failure
+    if failure is not None:
+        print(failure.item_index, failure.inputs, failure.error)
+    else:
+        print(result.error)
+```
+
+After, opt into successful-value capture and leave `batch.inspect()` as the
+final notebook expression:
+
+```python
+# After: one explicit view joins the batch, items, timeline, values, and failure.
+batch = runner.map(
+    customer_review,
+    {
+        "customer_id": ["alex-10", "maya-23", "sam-04"],
+        "lifetime_value": [2400, 1200, 3100],
+    },
+    map_over=["customer_id", "lifetime_value"],
+    inspect=True,
+    error_handling="continue",
+)
+
+batch.inspect()
+```
+
+`runner.run(...)` returns a `RunResult`; `runner.map(...)` returns a
+`MapResult`. Both expose `.inspect()`:
+
+```python
+from hypergraph import AsyncRunner, SyncRunner
+
+result = SyncRunner().run(graph, values, inspect=True)
+result.inspect()
+
+result = await AsyncRunner().run(graph, values, inspect=True)
+result.inspect()
+```
+
+Calling `.inspect()` is explicit and has no hidden display side effect. In a
+notebook, the returned display value renders when it is the final expression.
+In a script, assign or return it like any other value.
+
+### Find a Mapped Failure by Original Index
+
+Original map item indexes are evidence, not compact sequence positions. Search
+the real failed children and compare `failure.item_index`:
+
+```python
+failed = next(
+    result
+    for result in batch.failures
+    if result.failure is not None and result.failure.item_index == 1
+)
+failure = failed.failure
+assert failure is not None
+
+print(failure.inputs)
+# {"customer_id": "maya-23", "lifetime_value": 1200}
+
+batch.inspect()
+```
+
+Do not assume `batch[1]` means original item 1 after a stopped sparse map;
+sequence positions contain only real claimed outcomes.
+
+### Keep a Graph Input Named `inspect`
+
+`inspect=` is a runner option and accepts only a boolean. Put a graph input
+with the same name inside `values`:
+
+```python
+result = runner.run(
+    graph,
+    values={"inspect": "graph-owned"},
+    inspect=True,
+)
+
+result.inspect()
+```
+
+### Use Inspection Without a Checkpointer
+
+`inspect=True` does not require a checkpointer for the current execution. The
+captured view belongs to the current Python process and result. Add a
+`SqliteCheckpointer` only when you also need resume, fork, retry, restart, or
+historical queries:
+
+```python
+# Current-process inspection: no database setup.
+result = SyncRunner().run(graph, values, inspect=True)
+result.inspect()
+```
+
+```python
+# Persistence is explicit because this workflow must resume after restart.
+from hypergraph.checkpointers import SqliteCheckpointer
+
+runner = SyncRunner(checkpointer=SqliteCheckpointer("./runs.db"))
+result = runner.run(graph, values, workflow_id="customer-review-42", inspect=True)
+result.inspect()
+```
+
+On a resumed run, restored nodes show their real status and metadata, but they
+do not reconstruct successful inputs or outputs that were never captured in
+the current process. Freshly executed nodes can still show newly captured
+values.
+
+### Understand Degraded Views
+
+`.inspect()` also works when the execution did not use `inspect=True`. It
+builds an honest degraded view from always-on status, log, and failure facts.
+Successful values say `not captured; rerun with inspect=True`; Hypergraph does
+not guess from final outputs, defaults, or checkpoint rows.
+
+Failed nodes can still show their always-on `FailureEvidence`, including the
+resolved failure inputs. This is why a degraded failure can be more detailed
+than a degraded success.
+
+### Treat Captured Values and Saved Notebooks as Sensitive
+
+Capture owns new top-level input/output mappings, but values inside those
+mappings retain the same object identities as the running application. The
+result therefore keeps references to those objects until the result is
+collected. A large model, open client, token, or customer record can stay alive
+longer than expected.
+
+Notebook output contains the serialized captured values. Treat the notebook
+as sensitive data before sharing or committing it. Serialization is bounded
+per value:
+
+- depth 6
+- 100 mapping items
+- 200 sequence items
+- 200 rows and 20 columns for tables
+- 20,000 characters of captured text
+
+Truncated values report their original size when it can be determined. A
+serialization or hostile `repr()` failure becomes a bounded typed placeholder
+and never changes the workflow outcome.
+
+Set `HYPERGRAPH_DISPLAY=plain` to suppress automatic notebook display while
+keeping capture and explicit `.inspect()` available:
+
+```bash
+HYPERGRAPH_DISPLAY=plain uv run python my_workflow.py
+```
+
+### Read Live, Saved, and Graph Views Correctly
+
+In a supported notebook, `inspect=True` opens one live view and updates its
+payload as work advances. The terminal output becomes a saved snapshot. After
+the notebook is saved, that output remains locally interactive without a
+kernel, Hypergraph server, or network connection; it is labelled as saved, not
+live.
+
+The Inspect **Graph** tab shows executed slash-qualified paths such as
+`worker/parser/parse_order`. It answers "what executed?" and preserves nested
+execution identity. Use `graph.visualize()` when you need the full configured
+topology, including paths that did not execute.
+
+The checked-in reference proves this exact state:
+
+| Original item | Result | Evidence |
+|---|---|---|
+| 0 | completed | `review_action="approve"` |
+| 1 | failed | `score_customer` received `customer_id="maya-23"` and raised `ValueError` |
+| 2 | completed | `review_action="approve"` |
+
+For the complete runnable scenario, see
+[`examples/inspect_mode.py`](../../examples/inspect_mode.py). GitBook and
+GitHub show the [generated HTML reference](../../examples/inspect-mode-reference.html)
+as source; download that file and open it locally for the interactive failure
+drill-down.
+
 ## RunLog — Always-On Run Trace
 
-Every `runner.run()` and `runner.map()` call returns a `RunResult` with a `.log` attribute — an always-on run trace that requires zero configuration.
+Every `runner.run()` call returns a `RunResult` with a `.log` attribute.
+`runner.map()` returns a `MapResult` with a batch log and per-item
+`RunResult.log` values. These always-on traces require zero configuration.
 
 ### Quick Start
 
@@ -385,6 +583,8 @@ cp.runs()
 
 | Question | Tool |
 |----------|------|
+| "Which current item and node produced this value?" | Inspect view (`inspect=True`, then `.inspect()`) |
+| "Can I inspect this result if capture was off?" | Degraded inspect view (`result.inspect()`) |
 | "What happened in the run I just finished?" | RunLog (`result.log`) |
 | "Which node was slowest?" | RunLog (`sorted(result.log.steps, key=...)`) or Checkpointer (`cp.stats(...)`) |
 | "What happened in yesterday's run?" | Checkpointer (`cp.runs()`, `cp.steps(...)`) |

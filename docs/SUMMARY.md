@@ -43,6 +43,7 @@
 * [Integrate with LLMs](05-how-to/integrate-with-llms.md)
 * [Use Hypergraph with Daft](05-how-to/daft-workflows.md)
 * [Test Without Framework](05-how-to/test-without-framework.md)
+* [Debug Workflows](05-how-to/debug-workflows.md)
 * [Observe Execution](05-how-to/observe-execution.md)
 * [Visualize Graphs](05-how-to/visualize-graphs.md)
 
