@@ -95,6 +95,18 @@ _Avoid_: Start node, root node
 - `link_inputs` was considered for shared input fan-out, but the MVP keeps **Exposed port** as the single boundary-flattening concept; `link_inputs` may be added later as direct-child input-only sugar.
 - Direction-specific expose was considered, but the MVP keeps **Exposed port** name-based across matching input and output directions.
 
+## Background execution
+
+Vocabulary for background execution. The durable collection and retrieval decision is recorded in [ADR 0003](docs/adr/0003-background-maps-collect-before-result-retrieval.md).
+
+**Retrieval policy**:
+The caller's choice when retrieving a stored execution result: return the result or raise a captured failure. A retrieval policy does not control which work is scheduled.
+_Avoid_: Presentation policy, execution policy
+
+**Settled background batch**:
+A background batch that is no longer executing. Settled does not mean successful; the batch may contain completed, failed, paused, or stopped item outcomes.
+_Avoid_: Complete batch, successful batch
+
 ## Materialization
 
 Vocabulary for `hypergraph.materialization` — incremental, declarative tables derived from a source. See [ADR 0001](docs/adr/0001-sync-and-async-derived-table-classes.md) and [ADR 0002](docs/adr/0002-stream-materialization-through-runner-with-sinks.md).
