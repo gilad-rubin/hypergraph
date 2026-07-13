@@ -818,7 +818,36 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                             with _failure_evidence_context(error, result.node_failures):
                                 raise error from None
 
-            batch_summary = BatchSummary.from_results(results)
+            total_duration_ms = (time.time() - start_time) * 1000
+            map_result = MapResult(
+                results=tuple(results),
+                run_id=map_run_id,
+                total_duration_ms=total_duration_ms,
+                map_over=tuple(map_over_list),
+                map_mode=map_mode,
+                graph_name=graph.name or "",
+                unstarted_item_indexes=(
+                    tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes)
+                    if map_stop_signal is not None and map_stop_signal.is_set
+                    else ()
+                ),
+            )
+            batch_summary = BatchSummary.from_map_result(map_result)
+
+            if map_stop_signal is not None and map_stop_signal.is_set and dispatcher.active:
+                from hypergraph.events.types import StopRequestedEvent
+
+                await dispatcher.emit_async(
+                    StopRequestedEvent(
+                        run_id=map_run_id,
+                        span_id=map_span_id,
+                        parent_span_id=_parent_span_id,
+                        workflow_id=workflow_id,
+                        item_index=_item_index,
+                        graph_name=graph.name,
+                        info=map_stop_signal.info,
+                    )
+                )
 
             await self._emit_run_end_async(
                 dispatcher,
@@ -831,7 +860,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 status=batch_summary.event_status_value,
                 batch_summary=batch_summary,
             )
-            total_duration_ms = (time.time() - start_time) * 1000
 
             # Persist parent batch run status
             if has_checkpointer:
@@ -847,19 +875,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     error_count=error_count,
                 )
 
-            return MapResult(
-                results=tuple(results),
-                run_id=map_run_id,
-                total_duration_ms=total_duration_ms,
-                map_over=tuple(map_over_list),
-                map_mode=map_mode,
-                graph_name=graph.name or "",
-                unstarted_item_indexes=(
-                    tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes)
-                    if map_stop_signal is not None and map_stop_signal.is_set
-                    else ()
-                ),
-            )
+            return map_result
         except Exception as e:
             await self._emit_run_end_async(
                 dispatcher,

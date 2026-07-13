@@ -35,26 +35,25 @@ class StopSignal:
         self._event: threading.Event = threading.Event()
         self._info: Any = None
         self._parent: StopSignal | None = parent
+        self._set_lock = threading.Lock()
 
     def set(self, info: Any = None) -> None:
-        """Set the stop signal with optional metadata."""
-        self._info = info
-        self._event.set()
+        """Accept the first stop request and preserve its optional metadata."""
+        with self._set_lock:
+            if self._event.is_set():
+                return
+            self._info = info
+            self._event.set()
 
     @property
     def is_set(self) -> bool:
         if self._event.is_set():
             return True
-        if self._parent is not None and self._parent.is_set:
-            # Inherit parent's info on first detection
-            if self._info is None:
-                self._info = self._parent.info
-            return True
-        return False
+        return self._parent is not None and self._parent.is_set
 
     @property
     def info(self) -> Any:
-        if self._info is not None:
+        if self._event.is_set():
             return self._info
         if self._parent is not None:
             return self._parent.info

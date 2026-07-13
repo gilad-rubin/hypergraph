@@ -11,14 +11,25 @@ import pytest
 from hypergraph import (
     AsyncEventProcessor,
     AsyncRunner,
+    EventProcessor,
     FailureEvidence,
     Graph,
     RunEndEvent,
+    RunStartEvent,
     RunStatus,
+    StopRequestedEvent,
     SyncRunner,
     get_failure_evidence,
     node,
 )
+
+
+class _RecordingProcessor(EventProcessor):
+    def __init__(self) -> None:
+        self.events: list[object] = []
+
+    def on_event(self, event) -> None:
+        self.events.append(event)
 
 
 def _assert_raised_failure(
@@ -412,6 +423,8 @@ async def test_bounded_async_stopped_map_is_sparse_and_input_ordered() -> None:
 
 async def test_async_immediate_stop_before_first_yield_claims_nothing() -> None:
     entered: list[int] = []
+    recorder = _RecordingProcessor()
+    first_info = {"reason": "cancelled before launch"}
 
     @node(output_name="processed")
     async def process_item(item: int) -> int:
@@ -422,22 +435,39 @@ async def test_async_immediate_stop_before_first_yield_claims_nothing() -> None:
         Graph([process_item]),
         {"item": [0, 1, 2, 3]},
         map_over="item",
+        event_processors=[recorder],
     )
-    handle.stop(info={"reason": "cancelled before launch"})
+    handle.stop(info=first_info)
+    handle.stop(info={"reason": "must not replace the first request"})
 
     batch = await asyncio.wait_for(handle.result(raise_on_failure=False), timeout=5)
+
+    parent_starts = [event for event in recorder.events if isinstance(event, RunStartEvent) and event.run_id == batch.run_id]
+    parent_stops = [event for event in recorder.events if isinstance(event, StopRequestedEvent) and event.run_id == batch.run_id]
+    parent_ends = [event for event in recorder.events if isinstance(event, RunEndEvent) and event.run_id == batch.run_id]
 
     assert entered == []
     assert batch.results == ()
     assert batch.requested_count == 4
     assert batch.unstarted_item_indexes == (0, 1, 2, 3)
     assert batch.status is RunStatus.STOPPED
+    assert len(parent_starts) == 1
+    assert len(parent_stops) == 1
+    assert parent_stops[0].info is first_info
+    assert len(parent_ends) == 1
+    assert parent_ends[0].status.value == "stopped"
+    assert parent_ends[0].batch_outcome == "stopped"
+    assert parent_ends[0].batch_total_items == 0
+    assert parent_ends[0].batch_failed_items == 0
+    assert parent_ends[0].batch_stopped_items == 0
+    assert recorder.events.index(parent_stops[0]) < recorder.events.index(parent_ends[0])
 
 
 async def test_unbounded_async_stop_after_fanout_keeps_all_results_real() -> None:
     failure = ValueError("claimed item failed")
     entered = [asyncio.Event() for _ in range(3)]
     release = asyncio.Event()
+    recorder = _RecordingProcessor()
 
     @node(output_name="processed")
     async def process_item(item: int) -> int:
@@ -451,6 +481,7 @@ async def test_unbounded_async_stop_after_fanout_keeps_all_results_real() -> Non
         Graph([process_item]),
         {"item": [0, 1, 2]},
         map_over="item",
+        event_processors=[recorder],
     )
 
     try:
@@ -472,3 +503,110 @@ async def test_unbounded_async_stop_after_fanout_keeps_all_results_real() -> Non
     assert batch.status is RunStatus.FAILED
     assert batch.stopped is False
     assert batch.failed is True
+    parent_end = next(event for event in recorder.events if isinstance(event, RunEndEvent) and event.run_id == batch.run_id)
+    assert parent_end.status.value == "failed"
+    assert parent_end.batch_outcome == "failed"
+    assert parent_end.batch_total_items == 3
+    assert parent_end.batch_failed_items == 1
+    assert parent_end.batch_stopped_items == 2
+
+
+async def test_stopped_background_map_aligns_events_sqlite_and_otel(tmp_path) -> None:
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+    try:
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    except ImportError:  # pragma: no cover - compatibility with older SDK layout
+        from opentelemetry.sdk.trace.export.in_memory import InMemorySpanExporter
+
+    from hypergraph.checkpointers import SqliteCheckpointer, WorkflowStatus
+    from hypergraph.events.otel import OpenTelemetryProcessor
+
+    failure = ValueError("claimed item failed")
+    entered = [asyncio.Event() for _ in range(4)]
+    release = asyncio.Event()
+    recorder = _RecordingProcessor()
+    first_info = {"reason": "operator stop"}
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    span_processor = SimpleSpanProcessor(exporter)
+    provider.add_span_processor(span_processor)
+    checkpointer = SqliteCheckpointer(str(tmp_path / "stopped-background-map.db"))
+
+    @node(output_name="processed")
+    async def process_item(item: int) -> int:
+        entered[item].set()
+        await release.wait()
+        if item == 0:
+            raise failure
+        return item * 10
+
+    handle = AsyncRunner(checkpointer=checkpointer).start_map(
+        Graph([process_item], name="stopped_batch"),
+        {"item": [0, 1, 2, 3]},
+        map_over="item",
+        max_concurrency=2,
+        workflow_id="background-batch",
+        event_processors=[
+            recorder,
+            OpenTelemetryProcessor(tracer_provider=provider),
+        ],
+    )
+
+    try:
+        await asyncio.wait_for(entered[0].wait(), timeout=5)
+        await asyncio.wait_for(entered[1].wait(), timeout=5)
+        handle.stop(info=first_info)
+        handle.stop(info={"reason": "must not replace the first request"})
+    finally:
+        release.set()
+
+    try:
+        batch = await asyncio.wait_for(handle.result(raise_on_failure=False), timeout=5)
+
+        parent_end = next(event for event in recorder.events if isinstance(event, RunEndEvent) and event.run_id == batch.run_id)
+        parent_stops = [event for event in recorder.events if isinstance(event, StopRequestedEvent) and event.run_id == batch.run_id]
+        child_start_indexes = {event.item_index for event in recorder.events if isinstance(event, RunStartEvent) and event.run_id != batch.run_id}
+        child_end_indexes = {event.item_index for event in recorder.events if isinstance(event, RunEndEvent) and event.run_id != batch.run_id}
+
+        assert [result.status for result in batch] == [
+            RunStatus.FAILED,
+            RunStatus.STOPPED,
+        ]
+        assert batch.unstarted_item_indexes == (2, 3)
+        assert batch.status is RunStatus.STOPPED
+        assert parent_end.status.value == "stopped"
+        assert parent_end.batch_outcome == "stopped"
+        assert parent_end.batch_total_items == 2
+        assert parent_end.batch_completed_items == 0
+        assert parent_end.batch_failed_items == 1
+        assert parent_end.batch_stopped_items == 1
+        assert len(parent_stops) == 1
+        assert parent_stops[0].info is first_info
+        assert recorder.events.index(parent_stops[0]) < recorder.events.index(parent_end)
+        assert child_start_indexes == {0, 1}
+        assert child_end_indexes == {0, 1}
+
+        persisted_runs = {run.id: run for run in checkpointer.runs()}
+        assert set(persisted_runs) == {
+            "background-batch",
+            "background-batch/0",
+            "background-batch/1",
+        }
+        assert persisted_runs["background-batch"].status is WorkflowStatus.STOPPED
+        assert persisted_runs["background-batch"].node_count == 2
+        assert persisted_runs["background-batch"].error_count == 1
+
+        map_span = next(span for span in exporter.get_finished_spans() if span.attributes.get("hypergraph.is_map") is True)
+        attributes = dict(map_span.attributes)
+        assert attributes["hypergraph.run.outcome"] == "stopped"
+        assert attributes["hypergraph.batch.outcome"] == "stopped"
+        assert attributes["hypergraph.batch.total_items"] == 2
+        assert attributes["hypergraph.batch.completed_items"] == 0
+        assert attributes["hypergraph.batch.failed_items"] == 1
+        assert attributes["hypergraph.batch.stopped_items"] == 1
+        assert not any("requested" in key or "unstarted" in key for key in attributes)
+    finally:
+        await checkpointer.close()
+        span_processor.shutdown()
