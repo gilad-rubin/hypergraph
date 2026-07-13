@@ -36,7 +36,7 @@
     channel.setAttribute("data-delivered", "true");
   }
 
-  function markLiveChannelFallbackStale(channelId, envelope) {
+  function markLiveChannelFallback(channelId, envelope, labelText, stateText) {
     var delivery = envelope && envelope.payload && envelope.payload.delivery;
     if (!channelId || !delivery || delivery.state !== "live") return;
     var channel = global.document.getElementById(channelId);
@@ -44,11 +44,9 @@
     var fallback = channel.querySelector("[data-hg-inspect-channel-fallback]");
     if (!fallback) return;
     var label = fallback.querySelector("strong");
-    if (label && label.textContent === "Live") {
-      label.textContent = "Live inspection unavailable";
-    }
+    if (label) label.textContent = labelText;
     fallback.hidden = false;
-    fallback.setAttribute("data-delivery-state", "stale");
+    fallback.setAttribute("data-delivery-state", stateText);
   }
 
   function installParent(config) {
@@ -65,15 +63,29 @@
       deliver: deliver,
     };
     hosts[key] = state;
+    var queuedBeforeReady = queues[key];
+    if (queuedBeforeReady) {
+      markLiveChannelFallback(
+        queuedBeforeReady.channelId,
+        queuedBeforeReady.envelope,
+        "Waiting for live inspection",
+        "waiting"
+      );
+    }
 
     function deliver(envelope, channelId) {
       if (!exactIdentity(envelope, config) || envelope.type !== UPDATE) return false;
       if (!Number.isInteger(envelope.sequence) || envelope.sequence <= state.lastSentSequence) return false;
       if (!state.ready || !frame.contentWindow) {
+        markLiveChannelFallback(
+          channelId,
+          envelope,
+          state.handshakeTimedOut ? "Live inspection unavailable" : "Waiting for live inspection",
+          state.handshakeTimedOut ? "stale" : "waiting"
+        );
         var queued = queues[key];
         if (queued && envelope.sequence <= queued.envelope.sequence) return false;
         queues[key] = { envelope: envelope, channelId: channelId };
-        if (state.handshakeTimedOut) markLiveChannelFallbackStale(channelId, envelope);
         return false;
       }
       queues[key] = { envelope: envelope, channelId: channelId };
@@ -122,7 +134,14 @@
       status.setAttribute("data-state", "stale");
       status.textContent = "The interactive inspector did not connect. Showing the latest saved snapshot below; this view is not live.";
       var queued = queues[key];
-      if (queued) markLiveChannelFallbackStale(queued.channelId, queued.envelope);
+      if (queued) {
+        markLiveChannelFallback(
+          queued.channelId,
+          queued.envelope,
+          "Live inspection unavailable",
+          "stale"
+        );
+      }
     }, config.handshakeTimeoutMs);
   }
 

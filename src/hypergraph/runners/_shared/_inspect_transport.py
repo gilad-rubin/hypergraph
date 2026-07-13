@@ -240,8 +240,9 @@ def _fallback_markup(envelope: InspectionEnvelope, payload: dict[str, object]) -
     if envelope.message is not None:
         message = serialized_value_to_wire(envelope.message)
         error_detail = f" {message.get('type_name', 'Error')}: {message.get('text', '')}"
+    delivery_label = "Waiting for live inspection" if envelope.delivery.state == "live" else envelope.delivery.label
     return (
-        f"<strong>{html.escape(envelope.delivery.label)}</strong> — "
+        f"<strong>{html.escape(delivery_label)}</strong> — "
         f"{html.escape(graph_name)} is {html.escape(status)}; "
         f"{html.escape(detail)}.{html.escape(error_detail)}"
     )
@@ -255,10 +256,12 @@ def render_payload_channel(envelope: InspectionEnvelope) -> str:
     channel_dom_id = _dom_id(envelope.widget_id, "payload-output")
     key = _script_safe_json(f"{envelope.widget_id}::{envelope.nonce}")
     channel_id_json = _script_safe_json(channel_dom_id)
+    fallback_state = "waiting" if envelope.delivery.state == "live" else envelope.delivery.state
     return (
         f'<div id="{html.escape(channel_dom_id, quote=True)}" '
         f'data-hg-inspect-channel="{html.escape(envelope.widget_id, quote=True)}">'
         f'<div data-hg-inspect-channel-fallback="{html.escape(envelope.widget_id, quote=True)}" '
+        f'data-delivery-state="{fallback_state}" '
         'role="status" style="box-sizing:border-box;margin:8px 0;padding:8px 10px;'
         'border:1px solid #d0d5dd;border-radius:8px;font:13px system-ui,sans-serif">'
         f"{_fallback_markup(envelope, payload)}</div>"
@@ -274,7 +277,8 @@ def render_payload_channel(envelope: InspectionEnvelope) -> str:
         f"var key={key};"
         "var hosts=window.__hypergraphInspectHosts;"
         "if(hosts&&hosts[key])hosts[key].deliver(envelope,channel.id);"
-        "else queues[key]={envelope:envelope,channelId:channel.id};"
+        "else if(!queues[key]||envelope.sequence>queues[key].envelope.sequence)"
+        "queues[key]={envelope:envelope,channelId:channel.id};"
         "})();</script></div>"
     )
 

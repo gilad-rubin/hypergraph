@@ -159,6 +159,23 @@ def _defer_child_ready(shell: str) -> str:
     return shell[: match.start(1)] + html.escape(child_document, quote=True) + shell[match.end(1) :]
 
 
+def _append_notebook_shell(page: Page, shell: str) -> None:
+    scripts = re.findall(r"<script(?: [^>]*)?>(.*?)</script>", shell, flags=re.DOTALL)
+    assert len(scripts) == 2
+    page.evaluate(
+        """markup => {
+          const template = document.createElement('template');
+          template.innerHTML = markup;
+          for (const node of Array.from(template.content.childNodes)) {
+            if (node.nodeName !== 'SCRIPT') document.body.appendChild(node);
+          }
+        }""",
+        shell,
+    )
+    for script in scripts:
+        page.add_script_tag(content=script)
+
+
 def _replace_channel(page: Page, envelope: InspectionEnvelope) -> None:
     markup = render_payload_channel(envelope)
     runtime_match = re.search(
@@ -470,6 +487,60 @@ def test_pre_ready_queue_keeps_newest_sequence_when_older_arrives_late(
     page.close()
 
 
+def test_channel_before_host_keeps_newest_sequence_until_ready(
+    browser: Browser,
+) -> None:
+    newest = _envelope(
+        _run(graph_name="newest-before-host", status="failed"),
+        widget_id="widget-channel-first",
+        nonce="nonce-channel-first",
+        sequence=3,
+    )
+    late_older = _envelope(
+        _run(graph_name="late-older-before-host", status="completed"),
+        widget_id="widget-channel-first",
+        nonce="nonce-channel-first",
+        sequence=2,
+    )
+    initial = _envelope(
+        _run(graph_name="initial-shell"),
+        widget_id="widget-channel-first",
+        nonce="nonce-channel-first",
+        sequence=1,
+    )
+    page = browser.new_page()
+    page.set_content(render_payload_channel(newest), wait_until="load")
+    channel_only_fallback = page.locator('[data-hg-inspect-channel-fallback="widget-channel-first"]')
+
+    assert channel_only_fallback.locator("strong").inner_text() == "Waiting for live inspection"
+    assert channel_only_fallback.get_attribute("data-delivery-state") == "waiting"
+
+    _replace_channel(page, late_older)
+    _append_notebook_shell(
+        page,
+        _defer_child_ready(render_notebook_shell(initial, handshake_timeout_ms=2_000)),
+    )
+    frame = _frame(page, "widget-channel-first")
+    fallback = page.locator('[data-hg-inspect-channel-fallback="widget-channel-first"]')
+
+    assert fallback.locator("strong").inner_text() == "Waiting for live inspection"
+    assert fallback.get_attribute("data-delivery-state") == "waiting"
+    frame.evaluate(
+        """() => window.__hypergraphInspectTransport.installChild(
+          window.__deferredHypergraphInspectConfig
+        )"""
+    )
+    frame.get_by_text("newest-before-host", exact=True).wait_for(timeout=1_000)
+
+    assert frame.locator("[data-hg-title]").inner_text() == "newest-before-host"
+    assert frame.locator("[data-hg-summary]").get_by_text("failed", exact=True).is_visible()
+    assert frame.get_by_text("Live", exact=True).is_visible()
+    assert frame.locator("[data-hypergraph-inspect]").get_attribute("data-delivery-state") == "live"
+    assert frame.evaluate("window.__hypergraphInspectBridgeState.lastSequence") == 3
+    assert fallback.is_hidden()
+    page.close()
+
+
 def test_start_failure_keeps_the_exact_bounded_error_visible(browser: Browser) -> None:
     initial = _envelope(
         _run(),
@@ -529,7 +600,7 @@ def test_missing_ready_handshake_marks_live_fallback_stale_without_refresh(
         nonce="nonce-live-stale",
         sequence=1,
     )
-    shell = render_notebook_shell(running, handshake_timeout_ms=200)
+    shell = render_notebook_shell(running, handshake_timeout_ms=500)
     broken_shell = re.sub(
         r'srcdoc="[^"]*"',
         'srcdoc="&lt;!doctype html&gt;&lt;html&gt;&lt;body&gt;no bridge&lt;/body&gt;&lt;/html&gt;"',
@@ -550,13 +621,22 @@ def test_missing_ready_handshake_marks_live_fallback_stale_without_refresh(
     )
 
     status = page.locator('[data-hg-inspect-host-status="widget-live-stale"]')
-    page.wait_for_function("document.querySelector('[data-hg-inspect-host-status=\"widget-live-stale\"]').dataset.state === 'stale'")
     fallback = page.locator('[data-hg-inspect-channel-fallback="widget-live-stale"]')
+
+    assert status.get_attribute("data-state") == "connecting"
+    assert fallback.is_visible()
+    assert fallback.locator("strong").inner_text() == "Waiting for live inspection"
+    assert fallback.get_attribute("data-delivery-state") == "waiting"
+    assert "customer_enrichment is running" in fallback.inner_text()
+    assert "2 captured nodes" in fallback.inner_text()
+
+    page.wait_for_function("document.querySelector('[data-hg-inspect-host-status=\"widget-live-stale\"]').dataset.state === 'stale'")
 
     assert "saved snapshot" in status.inner_text().lower()
     assert "not live" in status.inner_text().lower()
     assert fallback.is_visible()
     assert fallback.locator("strong").inner_text() == "Live inspection unavailable"
+    assert fallback.get_attribute("data-delivery-state") == "stale"
     assert "customer_enrichment is running" in fallback.inner_text()
     assert "2 captured nodes" in fallback.inner_text()
     assert page.evaluate(
