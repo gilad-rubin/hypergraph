@@ -455,6 +455,13 @@ class TestMapResultRequestedScope:
         assert full.requested_count != curtailed.requested_count
         assert full == curtailed
 
+    def test_equal_empty_results_have_equal_hashes_across_requested_scope(self):
+        full = _make_map_result([])
+        curtailed = _make_map_result([], unstarted_item_indexes=(0, 1))
+
+        assert full == curtailed
+        assert hash(full) == hash(curtailed)
+
     def test_sparse_html_labels_real_rows_with_original_input_indexes(self):
         mapped = _make_map_result(
             [_make_result(), _make_result()],

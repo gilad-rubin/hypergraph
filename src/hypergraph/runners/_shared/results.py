@@ -391,6 +391,10 @@ class MapResult:
             return list(self.results) == other
         return NotImplemented
 
+    def __hash__(self) -> int:
+        """Hash the same real-result sequence used by equality."""
+        return hash(self.results)
+
     # --- Aggregate properties ---
 
     @property
