@@ -418,7 +418,12 @@
 
   function failureSnippet(itemIndex) {
     if (payload.kind === "map") {
-      return "failure = batch[" + itemIndex + "].failure\nfailure.node_name\nfailure.inputs";
+      return "failure = next(\n"
+        + "    item.failure for item in batch.failures\n"
+        + "    if item.failure and item.failure.item_index == " + itemIndex + "\n"
+        + ")\n"
+        + "failure.node_name\n"
+        + "failure.inputs";
     }
     return "failure = result.failure\nfailure.node_name\nfailure.inputs";
   }
@@ -703,6 +708,14 @@
     detailElement.appendChild(renderCapture("Inputs", node.inputs || (node.failure && node.failure.inputs), node, "node." + executionId(node) + ".inputs"));
     detailElement.appendChild(renderCapture("Outputs", node.outputs, node, "node." + executionId(node) + ".outputs"));
     appendFailure(detailElement, node.failure, node.item_index === null || node.item_index === undefined ? state.selectedItem : node.item_index);
+    if (!node.failure && run.error) {
+      var runErrorBlock = element("div", "hg-inspect-detail-block");
+      runErrorBlock.appendChild(element("div", "hg-inspect-section-title", "Exact run exception"));
+      var runError = element("div", "hg-inspect-error");
+      runError.appendChild(code(errorText(run.error)));
+      runErrorBlock.appendChild(runError);
+      detailElement.appendChild(runErrorBlock);
+    }
     appendOrderedFailures(detailElement, run);
   }
 

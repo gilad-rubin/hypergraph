@@ -141,6 +141,54 @@ def test_run_ladder_navigates_relative_timeline_values_and_failure_evidence(
     page.close()
 
 
+def test_run_boundary_error_is_visible_on_failed_node_without_failure_evidence(
+    browser: Browser,
+) -> None:
+    failed_node = NodeInspection(
+        run_id="run-cache-save",
+        span_id="span-cache-save",
+        node_name="persist_customer",
+        qualified_name="persist_customer",
+        graph_name="customer_enrichment",
+        item_index=None,
+        superstep=0,
+        sequence=0,
+        status="failed",
+        values_captured=True,
+        inputs={"customer_id": "maya-23"},
+        outputs={"decision": "approved"},
+        failure=None,
+        started_at_ms=1_000.0,
+        ended_at_ms=1_020.0,
+        duration_ms=20.0,
+    )
+    artifact = RunInspection(
+        run_id="run-cache-save",
+        graph_name="customer_enrichment",
+        workflow_id="workflow-customers",
+        item_index=None,
+        status="failed",
+        nodes=(failed_node,),
+        failures=(),
+        total_duration_ms=20.0,
+        captured=True,
+        terminal=True,
+        error=RuntimeError("CACHE-SAVE-BOOM"),
+    )
+
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    page.set_content(render_run_inspection(artifact))
+    root = page.locator('[data-hypergraph-inspect="run"]')
+    detail = root.locator("[data-hg-detail]")
+
+    assert root.get_by_text("The run failed at persist_customer.", exact=False).is_visible()
+    assert detail.get_by_text("Exact run exception", exact=True).is_visible()
+    assert detail.get_by_text("RuntimeError: CACHE-SAVE-BOOM", exact=True).is_visible()
+    assert "Smallest useful evidence" not in detail.inner_text()
+    assert "failure = result.failure" not in detail.inner_text()
+    page.close()
+
+
 def test_later_map_failure_keeps_selection_until_show_failure(browser: Browser) -> None:
     completed_node = NodeInspection(
         run_id="run-item-0",
@@ -299,7 +347,7 @@ def test_later_map_failure_keeps_selection_until_show_failure(browser: Browser) 
     root.get_by_role("button", name="Show failure").click()
     assert root.locator('[data-item-index="1"]').get_attribute("aria-current") == "true"
     assert root.locator("[data-hg-detail]").get_by_text("maya-23", exact=True).is_visible()
-    assert "failure = batch[1].failure" in root.locator("[data-hg-detail]").inner_text()
+    assert "item.failure.item_index == 1" in root.locator("[data-hg-detail]").inner_text()
 
     root.locator("[data-hg-filter]").select_option("failed")
     assert root.locator("[data-hg-item-list] [data-item-index]").count() == 1
@@ -318,6 +366,91 @@ def test_later_map_failure_keeps_selection_until_show_failure(browser: Browser) 
     assert root.get_by_text("Snapshot · updates paused", exact=True).is_visible()
     assert "this view is not live" in root.locator("[data-hg-alert]").inner_text()
     assert root.get_by_role("button", name="Show failure").is_hidden()
+    page.close()
+
+
+def test_sparse_map_failure_snippet_uses_original_failure_identity(
+    browser: Browser,
+) -> None:
+    completed_run = RunInspection(
+        run_id="run-item-1",
+        graph_name="customer_enrichment",
+        workflow_id=None,
+        item_index=1,
+        status="completed",
+        nodes=(),
+        failures=(),
+        total_duration_ms=10.0,
+        captured=True,
+        terminal=True,
+    )
+    failure = FailureEvidence(
+        node_name="decide",
+        error=ValueError("manual review required"),
+        inputs={"customer_id": "maya-23"},
+        superstep=0,
+        duration_ms=25.0,
+        graph_name="customer_enrichment",
+        workflow_id=None,
+        item_index=3,
+    )
+    failed_node = NodeInspection(
+        run_id="run-item-3",
+        span_id="span-item-3",
+        node_name="decide",
+        qualified_name="decide",
+        graph_name="customer_enrichment",
+        item_index=3,
+        superstep=0,
+        sequence=0,
+        status="failed",
+        values_captured=True,
+        inputs={"customer_id": "maya-23"},
+        failure=failure,
+        started_at_ms=20.0,
+        ended_at_ms=45.0,
+        duration_ms=25.0,
+    )
+    failed_run = RunInspection(
+        run_id="run-item-3",
+        graph_name="customer_enrichment",
+        workflow_id=None,
+        item_index=3,
+        status="failed",
+        nodes=(failed_node,),
+        failures=(failure,),
+        total_duration_ms=25.0,
+        captured=True,
+        terminal=True,
+        error=failure.error,
+    )
+    artifact = MapInspection(
+        run_id="batch-sparse",
+        graph_name="customer_enrichment",
+        workflow_id=None,
+        status="stopped",
+        map_over=("customer_id",),
+        map_mode="zip",
+        requested_count=4,
+        items=(
+            MapItemInspection(1, "completed", {"customer_id": "ari-2"}, completed_run),
+            MapItemInspection(3, "failed", {"customer_id": "maya-23"}, failed_run),
+        ),
+        unstarted_item_indexes=(0, 2),
+        total_duration_ms=35.0,
+        captured=True,
+        terminal=True,
+    )
+
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    page.set_content(render_map_inspection(artifact))
+    root = page.locator('[data-hypergraph-inspect="map"]')
+    root.get_by_role("button", name="Show failure").click()
+    detail_text = root.locator("[data-hg-detail]").inner_text()
+
+    assert "item.failure for item in batch.failures" in detail_text
+    assert "item.failure.item_index == 3" in detail_text
+    assert "batch[3]" not in detail_text
     page.close()
 
 

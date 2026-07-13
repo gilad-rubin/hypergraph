@@ -8,11 +8,12 @@ from functools import lru_cache
 from importlib.resources import files
 from typing import Literal
 
-from hypergraph.runners._shared._inspect import MapInspection, RunInspection
+from hypergraph.runners._shared._inspect import MapInspection, NodeInspection, RunInspection
 from hypergraph.runners._shared._inspect_serialization import (
     serialize_value,
     serialized_value_to_wire,
 )
+from hypergraph.runners._shared.results import FailureEvidence
 
 _INSPECT_SCHEMA = "hypergraph.inspect/v1"
 InspectionDeliveryState = Literal["live", "stale", "saved"]
@@ -22,42 +23,42 @@ def _serialized(value: object) -> dict[str, object]:
     return serialized_value_to_wire(serialize_value(value))
 
 
-def _failure_wire(failure: object | None) -> dict[str, object] | None:
+def _failure_wire(failure: FailureEvidence | None) -> dict[str, object] | None:
     if failure is None:
         return None
     return {
-        "node_name": failure.node_name,  # type: ignore[attr-defined]
-        "error": _serialized(failure.error),  # type: ignore[attr-defined]
-        "inputs": _serialized(failure.inputs),  # type: ignore[attr-defined]
-        "superstep": failure.superstep,  # type: ignore[attr-defined]
-        "duration_ms": failure.duration_ms,  # type: ignore[attr-defined]
-        "graph_name": failure.graph_name,  # type: ignore[attr-defined]
-        "workflow_id": failure.workflow_id,  # type: ignore[attr-defined]
-        "item_index": failure.item_index,  # type: ignore[attr-defined]
+        "node_name": failure.node_name,
+        "error": _serialized(failure.error),
+        "inputs": _serialized(failure.inputs),
+        "superstep": failure.superstep,
+        "duration_ms": failure.duration_ms,
+        "graph_name": failure.graph_name,
+        "workflow_id": failure.workflow_id,
+        "item_index": failure.item_index,
     }
 
 
-def _node_wire(node: object) -> dict[str, object]:
-    inputs = node.inputs  # type: ignore[attr-defined]
-    outputs = node.outputs  # type: ignore[attr-defined]
+def _node_wire(node: NodeInspection) -> dict[str, object]:
+    inputs = node.inputs
+    outputs = node.outputs
     return {
-        "run_id": node.run_id,  # type: ignore[attr-defined]
-        "span_id": node.span_id,  # type: ignore[attr-defined]
-        "node_name": node.node_name,  # type: ignore[attr-defined]
-        "qualified_name": node.qualified_name,  # type: ignore[attr-defined]
-        "graph_name": node.graph_name,  # type: ignore[attr-defined]
-        "item_index": node.item_index,  # type: ignore[attr-defined]
-        "superstep": node.superstep,  # type: ignore[attr-defined]
-        "sequence": node.sequence,  # type: ignore[attr-defined]
-        "status": node.status,  # type: ignore[attr-defined]
-        "values_captured": node.values_captured,  # type: ignore[attr-defined]
+        "run_id": node.run_id,
+        "span_id": node.span_id,
+        "node_name": node.node_name,
+        "qualified_name": node.qualified_name,
+        "graph_name": node.graph_name,
+        "item_index": node.item_index,
+        "superstep": node.superstep,
+        "sequence": node.sequence,
+        "status": node.status,
+        "values_captured": node.values_captured,
         "inputs": _serialized(inputs) if inputs is not None else None,
         "outputs": _serialized(outputs) if outputs is not None else None,
-        "failure": _failure_wire(node.failure),  # type: ignore[attr-defined]
-        "started_at_ms": node.started_at_ms,  # type: ignore[attr-defined]
-        "ended_at_ms": node.ended_at_ms,  # type: ignore[attr-defined]
-        "duration_ms": node.duration_ms,  # type: ignore[attr-defined]
-        "cached": node.cached,  # type: ignore[attr-defined]
+        "failure": _failure_wire(node.failure),
+        "started_at_ms": node.started_at_ms,
+        "ended_at_ms": node.ended_at_ms,
+        "duration_ms": node.duration_ms,
+        "cached": node.cached,
     }
 
 
