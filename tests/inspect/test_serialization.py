@@ -252,7 +252,7 @@ def test_dataclasses_and_model_dump_values_use_bounded_mapping_shape() -> None:
     assert failed_field.reason == "getattr failed (RuntimeError)"
 
 
-def test_row_table_limits_are_exact_and_keep_original_dimensions() -> None:
+def test_row_table_limits_are_bounded_and_keep_proven_dimensions() -> None:
     rows = [{f"column-{column}": row * 100 + column for column in range(21)} for row in range(201)]
 
     serialized = serialize_value(rows)
@@ -263,6 +263,7 @@ def test_row_table_limits_are_exact_and_keep_original_dimensions() -> None:
     assert serialized.table is not None
     assert serialized.table.original_row_count == 201
     assert serialized.table.original_column_count == 21
+    assert serialized.table.original_column_count_exact is False
     assert serialized.table.rows_truncated is True
     assert serialized.table.columns_truncated is True
     assert len(serialized.table.rows) == 200
@@ -275,7 +276,143 @@ def test_row_table_limits_are_exact_and_keep_original_dimensions() -> None:
     assert isinstance(table, dict)
     assert table["original_row_count"] == 201
     assert table["original_column_count"] == 21
+    assert table["original_column_count_exact"] is False
     assert len(table["rows"]) == 200  # type: ignore[arg-type]
+
+
+def test_row_table_uses_heterogeneous_union_and_explicit_missing_cells() -> None:
+    rows = [
+        {},
+        {"customer_id": "maya-23", "risk": 0.9},
+        {"risk": 0.3, "decision": "review"},
+    ]
+
+    serialized = serialize_value(rows)
+
+    assert serialized.kind == "table"
+    assert serialized.truncated is False
+    assert serialized.table is not None
+    assert [column.text for column in serialized.table.columns] == [
+        "customer_id",
+        "risk",
+        "decision",
+    ]
+    assert serialized.table.original_column_count == 3
+    assert serialized.table.original_column_count_exact is True
+    assert serialized.table.columns_truncated is False
+
+    first_row = serialized.table.rows[0]
+    assert [cell.kind for cell in first_row.cells] == [
+        "placeholder",
+        "placeholder",
+        "placeholder",
+    ]
+    assert {cell.reason for cell in first_row.cells} == {"missing table cell"}
+    assert first_row.cells[0].type_name == "missing"
+
+    second_row = serialized.table.rows[1]
+    assert second_row.cells[0].text == "maya-23"
+    assert second_row.cells[1].value == 0.9
+    assert second_row.cells[2].reason == "missing table cell"
+
+    third_row = serialized.table.rows[2]
+    assert third_row.cells[0].reason == "missing table cell"
+    assert third_row.cells[1].value == 0.3
+    assert third_row.cells[2].text == "review"
+
+
+def test_row_table_union_over_column_cap_is_exact_when_safely_bounded() -> None:
+    rows = [
+        {f"column-{index}": index for index in range(20)},
+        {"column-20": 20},
+    ]
+
+    serialized = serialize_value(rows)
+
+    assert serialized.kind == "table"
+    assert serialized.truncated is True
+    assert serialized.table is not None
+    assert [column.text for column in serialized.table.columns] == [f"column-{index}" for index in range(20)]
+    assert serialized.table.original_column_count == 21
+    assert serialized.table.original_column_count_exact is True
+    assert serialized.table.columns_truncated is True
+    assert len(serialized.table.rows) == 2
+    assert len(serialized.table.rows[0].cells) == 20
+    assert len(serialized.table.rows[1].cells) == 20
+    assert all(cell.reason == "missing table cell" for cell in serialized.table.rows[1].cells)
+
+
+def test_row_table_wide_mapping_count_is_lower_bound_without_over_iteration() -> None:
+    class WideRow(Mapping[str, int]):
+        def __init__(self, prefix: str) -> None:
+            self.prefix = prefix
+
+        def __len__(self) -> int:
+            return 1_000_000
+
+        def __iter__(self) -> Iterator[str]:
+            for index in range(21):
+                if index == 20:
+                    raise AssertionError("serializer iterated a 21st wide-row key")
+                yield f"{self.prefix}-{index}"
+
+        def __getitem__(self, key: str) -> int:
+            return int(key.rsplit("-", 1)[1])
+
+    serialized = serialize_value([WideRow("first"), WideRow("second")])
+
+    assert serialized.kind == "table"
+    assert serialized.truncated is True
+    assert serialized.table is not None
+    assert len(serialized.table.columns) == 20
+    assert serialized.table.original_column_count == 1_000_000
+    assert serialized.table.original_column_count_exact is False
+    assert serialized.table.columns_truncated is True
+
+
+def test_row_table_schema_does_not_compare_invalid_unhashable_keys() -> None:
+    equality_calls = 0
+
+    class HostileKey:
+        __hash__ = None  # type: ignore[assignment]
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def __eq__(self, other: object) -> bool:
+            nonlocal equality_calls
+            equality_calls += 1
+            raise AssertionError("row-schema discovery compared hostile keys")
+
+        def __repr__(self) -> str:
+            return self.name
+
+    class IdentityRow(Mapping[object, int]):
+        def __init__(self, keys: list[object]) -> None:
+            self.keys = keys
+
+        def __len__(self) -> int:
+            return len(self.keys)
+
+        def __iter__(self) -> Iterator[object]:
+            yield from self.keys
+
+        def __getitem__(self, key: object) -> int:
+            for index, candidate in enumerate(self.keys):
+                if candidate is key:
+                    return index
+            raise KeyError(key)
+
+    keys = [HostileKey(f"key-{index}") for index in range(20)]
+    serialized = serialize_value([IdentityRow(keys), IdentityRow(keys)])
+
+    assert serialized.kind == "table"
+    assert serialized.table is not None
+    assert len(serialized.table.columns) == 20
+    assert serialized.table.original_column_count == 20
+    assert serialized.table.original_column_count_exact is False
+    assert serialized.table.columns_truncated is True
+    assert equality_calls == 0
 
 
 def test_dataframe_and_array_ducks_are_sliced_before_materialization() -> None:
@@ -408,3 +545,81 @@ def test_numbers_that_cannot_cross_strict_json_become_placeholders() -> None:
     assert serialized.type_name == "int"
     assert serialized.reason == "number exceeds 20000-character limit"
     assert json.loads(dump_serialized_value(serialized))["kind"] == "placeholder"
+
+
+def test_global_serialization_budget_bounds_alias_expansion() -> None:
+    leaf: object = {"value": "maya-23"}
+    for _ in range(6):
+        leaf = {f"k{index}": leaf for index in range(5)}
+
+    serialized = serialize_value(leaf)
+    encoded = dump_serialized_value(serialized)
+
+    assert serialized.kind == "mapping"
+    assert serialized.truncated is True
+    assert "serialization budget exhausted" in encoded
+    assert len(encoded.encode("utf-8")) < 500_000
+
+
+def test_global_text_budget_is_explicit_and_marks_ancestors_truncated() -> None:
+    serialized = serialize_value(["x" * 12_000, "y" * 12_000])
+
+    assert serialized.kind == "sequence"
+    assert serialized.truncated is True
+    assert serialized.items[0].kind == "text"
+    assert serialized.items[0].text == "x" * 12_000
+    assert serialized.items[1].kind == "placeholder"
+    assert serialized.items[1].reason == "serialization budget exhausted"
+
+
+def test_global_budget_charges_many_large_json_numbers() -> None:
+    serialized = serialize_value([10**1_000 for _ in range(200)])
+    encoded = dump_serialized_value(serialized)
+
+    assert serialized.kind == "sequence"
+    assert serialized.truncated is True
+    assert any(item.reason == "serialization budget exhausted" for item in serialized.items)
+    assert len(encoded.encode("utf-8")) < 500_000
+
+
+def test_type_names_cannot_bypass_the_global_payload_bound() -> None:
+    huge_name_mapping = type("X" * 4_096, (dict,), {})
+    leaf: object = huge_name_mapping({"value": "maya-23"})
+    for _ in range(5):
+        leaf = huge_name_mapping({f"k{index}": leaf for index in range(5)})
+
+    serialized = serialize_value(leaf)
+    encoded = dump_serialized_value(serialized)
+
+    assert len(serialized.type_name) <= 48
+    assert serialized.type_name.endswith("... (truncated)")
+    assert len(encoded.encode("utf-8")) < 500_000
+
+
+def test_datetime_subclass_type_name_uses_the_same_hard_bound() -> None:
+    huge_name_datetime = type("D" * 4_096, (datetime,), {})
+
+    serialized = serialize_value(huge_name_datetime(2026, 7, 14, 12, 30))
+
+    assert serialized.kind == "text"
+    assert len(serialized.type_name) <= 48
+    assert serialized.type_name.endswith("... (truncated)")
+    assert len(dump_serialized_value(serialized).encode("utf-8")) < 1_000
+
+
+def test_array_shape_dimensions_cannot_inject_unbounded_json_numbers() -> None:
+    class HugeShapeArray:
+        shape = (10**20_000,)
+
+        def __getitem__(self, key: object) -> object:
+            raise AssertionError("invalid huge shape must fail before slicing")
+
+        def tolist(self) -> list[object]:
+            raise AssertionError("invalid huge shape must fail before materialization")
+
+    serialized = serialize_value(HugeShapeArray())
+    encoded = dump_serialized_value(serialized)
+
+    assert serialized.kind == "placeholder"
+    assert serialized.reason == "array dimension exceeds platform container size"
+    assert len(encoded.encode("utf-8")) < 1_000

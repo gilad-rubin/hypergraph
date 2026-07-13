@@ -176,7 +176,7 @@ longer than expected.
 
 Notebook output contains the serialized captured values. Treat the notebook
 as sensitive data before sharing or committing it. Serialization is bounded
-per value:
+per top-level value:
 
 - depth 6
 - 100 mapping items
@@ -184,9 +184,35 @@ per value:
 - 200 rows and 20 columns for tables
 - 20,000 characters of captured text
 
-Truncated values report their original size when it can be determined. A
-serialization or hostile `repr()` failure becomes a bounded typed placeholder
-and never changes the workflow outcome.
+The per-container limits sit inside a global per-top-level value work budget.
+The 20,000-character ceiling is also aggregate across captured strings and
+JSON number text in that value, rather than restarting for every nested leaf.
+When either global budget is exhausted, the affected leaf says
+`serialization budget exhausted` and its ancestors are marked truncated. A
+serialization or hostile `repr()` failure likewise becomes a bounded typed
+placeholder and never changes the workflow outcome.
+
+Sparse row tables use the bounded union of keys across captured rows instead
+of treating the first row as the whole schema:
+
+```python
+rows = [{}, {"customer_id": "maya-23", "risk": 0.9}]
+```
+
+- **Before:** an empty first row could make the inspection look like a
+  two-row, zero-column table and hide Maya's values.
+- **After:** the view has `customer_id` and `risk` columns; the first row has
+  explicit `missing table cell` placeholders and the second row shows the
+  captured values.
+
+The displayed table still stops at 20 columns. Its source column count is
+exact when every source row was captured and each row could be fully scanned
+within the 20-key-per-row safety cap. Otherwise the count is a proven lower
+bound: for example, `2 × ≥21 table`. The view marks those columns truncated
+instead of presenting `21` as an exact count that Hypergraph did not prove.
+
+Truncated values report their original size or proven lower bound when it can
+be determined.
 
 Set `HYPERGRAPH_DISPLAY=plain` to suppress automatic notebook display while
 keeping capture and explicit `.inspect()` available:

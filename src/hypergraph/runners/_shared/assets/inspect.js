@@ -283,7 +283,8 @@
     var table = value.table || {};
     var rowCount = Number(table.original_row_count || 0);
     var columnCount = Number(table.original_column_count || 0);
-    details.appendChild(element("summary", "", rowCount + " × " + columnCount + " table"));
+    var columnCountLabel = table.original_column_count_exact === false ? "≥" + columnCount : String(columnCount);
+    details.appendChild(element("summary", "", rowCount + " × " + columnCountLabel + " table"));
     bindDetailsState(details, path);
     var body = element("div", "hg-inspect-value-body");
     var wrap = element("div", "hg-inspect-table-wrap");

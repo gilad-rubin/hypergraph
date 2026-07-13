@@ -679,6 +679,33 @@ def test_missing_ready_handshake_exposes_stale_saved_fallback(browser: Browser) 
     page.close()
 
 
+def test_inexact_heterogeneous_table_width_renders_as_a_lower_bound(browser: Browser) -> None:
+    rows = [
+        {f"column-{index}": index for index in range(21)},
+        {f"column-{index}": index + 100 for index in range(21)},
+    ]
+    node = replace(_node(0), outputs={"rows": rows})
+    artifact = replace(
+        _run(status="completed", terminal=True, node_count=1),
+        nodes=(node,),
+    )
+    envelope = _envelope(
+        artifact,
+        widget_id="widget-table-lower-bound",
+        nonce="nonce-table-lower-bound",
+        sequence=1,
+        state="saved",
+    )
+    page = browser.new_page()
+    _mount(page, envelope)
+    frame = _frame(page, "widget-table-lower-bound")
+
+    summaries = frame.locator("summary").all_text_contents()
+    assert "2 × ≥21 table" in summaries
+    assert "2 × 21 table" not in summaries
+    page.close()
+
+
 @pytest.mark.parametrize("width", [1280, 360])
 def test_transport_is_offline_inert_and_fits_the_viewport(
     browser: Browser,
