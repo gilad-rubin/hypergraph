@@ -4,22 +4,31 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
 from typing import Any, Generic, TypeVar
 
 from hypergraph.exceptions import _failure_evidence_context
-from hypergraph.runners._shared.results import RunResult
-from hypergraph.runners._shared.stop import StopSignal
+from hypergraph.runners._shared.results import MapResult, RunResult
+from hypergraph.runners._shared.stop import StopSignal, reset_stop_signal, set_stop_signal
 
 _T = TypeVar("_T")
 
 
-def _raise_run_result_failure(result: object) -> None:
-    if isinstance(result, RunResult) and result.failed:
-        error = result.error
-        assert error is not None, "FAILED status requires an error"
-        with _failure_evidence_context(error, result.node_failures):
-            raise error from None
+def _raise_result_failure(result: object) -> None:
+    if isinstance(result, RunResult):
+        run_results = (result,)
+    elif isinstance(result, MapResult):
+        run_results = result.results
+    else:
+        return
+
+    for run_result in run_results:
+        if run_result.failed:
+            error = run_result.error
+            assert error is not None, "FAILED status requires an error"
+            with _failure_evidence_context(error, run_result.node_failures):
+                raise error from None
 
 
 class AsyncHandle(Generic[_T]):
@@ -47,7 +56,7 @@ class AsyncHandle(Generic[_T]):
         """Wait until execution settles and return its result."""
         result = await asyncio.shield(self._task)
         if raise_on_failure:
-            _raise_run_result_failure(result)
+            _raise_result_failure(result)
         return result
 
 
@@ -79,8 +88,47 @@ class SyncHandle(Generic[_T]):
         try:
             result = self._future.result()
             if raise_on_failure:
-                _raise_run_result_failure(result)
+                _raise_result_failure(result)
             return result
         finally:
             if threading.current_thread() is not self._thread:
                 self._thread.join()
+
+
+def _launch_sync_execution(operation: Callable[[], _T]) -> SyncHandle[_T]:
+    """Launch one synchronous runner operation under its parent stop signal."""
+    future: Future[_T] = Future()
+    signal = StopSignal()
+
+    def _execute() -> None:
+        try:
+            signal_token = set_stop_signal(signal)
+            try:
+                result = operation()
+            finally:
+                reset_stop_signal(signal_token)
+        except BaseException as error:
+            future.set_exception(error)
+        else:
+            future.set_result(result)
+
+    thread = threading.Thread(target=_execute, daemon=True)
+    handle = SyncHandle(future, signal, thread)
+    thread.start()
+    return handle
+
+
+def _launch_async_execution(operation: Callable[[], Awaitable[_T]]) -> AsyncHandle[_T]:
+    """Launch one asynchronous runner operation under its parent stop signal."""
+    loop = asyncio.get_running_loop()
+    signal = StopSignal()
+
+    async def _execute() -> _T:
+        signal_token = set_stop_signal(signal)
+        try:
+            return await operation()
+        finally:
+            reset_stop_signal(signal_token)
+
+    task = loop.create_task(_execute())
+    return AsyncHandle(task, signal)

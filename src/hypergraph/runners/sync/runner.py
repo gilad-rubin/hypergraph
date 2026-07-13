@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import threading
-from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import ExecutionError, InfiniteLoopError, WorkflowAlreadyRunningError
@@ -18,10 +16,10 @@ from hypergraph.runners._shared.event_metadata import (
     RunContext,
     RunLineage,
 )
-from hypergraph.runners._shared.handles import SyncHandle
+from hypergraph.runners._shared.handles import SyncHandle, _launch_sync_execution
 from hypergraph.runners._shared.outputs import SELECT_UNSET
 from hypergraph.runners._shared.protocols import NodeExecutor
-from hypergraph.runners._shared.results import RunResult
+from hypergraph.runners._shared.results import MapResult, RunResult
 from hypergraph.runners._shared.scheduling import ExecutionFrontier, compute_execution_scope
 from hypergraph.runners._shared.state import ExecutionContext, GraphState, RunnerCapabilities
 from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id, initialize_state
@@ -145,38 +143,57 @@ class SyncRunner(SyncRunnerTemplate):
         Returns:
             A process-local handle for the live execution.
         """
-        future: Future[RunResult] = Future()
-        signal = StopSignal()
+        return _launch_sync_execution(
+            lambda: self.run(
+                graph,
+                values,
+                select=select,
+                on_missing=on_missing,
+                entrypoint=entrypoint,
+                max_iterations=max_iterations,
+                error_handling="continue",
+                event_processors=event_processors,
+                show_progress=show_progress,
+                checkpoint=checkpoint,
+                workflow_id=workflow_id,
+                **input_values,
+            )
+        )
 
-        def _execute() -> None:
-            try:
-                signal_token = set_stop_signal(signal)
-                try:
-                    result = self.run(
-                        graph,
-                        values,
-                        select=select,
-                        on_missing=on_missing,
-                        entrypoint=entrypoint,
-                        max_iterations=max_iterations,
-                        error_handling="continue",
-                        event_processors=event_processors,
-                        show_progress=show_progress,
-                        checkpoint=checkpoint,
-                        workflow_id=workflow_id,
-                        **input_values,
-                    )
-                finally:
-                    reset_stop_signal(signal_token)
-            except BaseException as error:
-                future.set_exception(error)
-            else:
-                future.set_result(result)
-
-        thread = threading.Thread(target=_execute, daemon=True)
-        handle = SyncHandle(future, signal, thread)
-        thread.start()
-        return handle
+    def start_map(
+        self,
+        graph: Graph,
+        values: dict[str, Any] | None = None,
+        *,
+        map_over: str | list[str],
+        map_mode: Literal["zip", "product"] = "zip",
+        clone: bool | list[str] = False,
+        select: str | list[str] = SELECT_UNSET,
+        on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        entrypoint: str | None = None,
+        event_processors: list[EventProcessor] | None = None,
+        show_progress: bool | None = None,
+        workflow_id: str | None = None,
+        **input_values: Any,
+    ) -> SyncHandle[MapResult]:
+        """Start a settled map execution in the background."""
+        return _launch_sync_execution(
+            lambda: self.map(
+                graph,
+                values,
+                map_over=map_over,
+                map_mode=map_mode,
+                clone=clone,
+                select=select,
+                on_missing=on_missing,
+                entrypoint=entrypoint,
+                error_handling="continue",
+                event_processors=event_processors,
+                show_progress=show_progress,
+                workflow_id=workflow_id,
+                **input_values,
+            )
+        )
 
     @property
     def _checkpointer(self) -> Checkpointer | None:

@@ -12,6 +12,7 @@ from hypergraph import (
     AsyncRunner,
     FailureEvidence,
     Graph,
+    RunStatus,
     SyncRunner,
     get_failure_evidence,
     node,
@@ -178,4 +179,97 @@ async def test_async_failed_run_retrieval_is_stable_across_return_first() -> Non
     assert returned.failure is first_evidence
     assert returned.node_failures == (first_evidence,)
     assert second_evidence is first_evidence
+    assert handle.done is True
+
+
+def test_sync_background_map_collects_all_items_before_raising() -> None:
+    failures = {
+        1: ValueError("item one failed"),
+        3: ValueError("item three failed"),
+    }
+    entered: list[int] = []
+
+    @node(output_name="processed")
+    def process_item(item: int) -> int:
+        entered.append(item)
+        if item in failures:
+            raise failures[item]
+        return item * 10
+
+    handle = SyncRunner().start_map(
+        Graph([process_item]),
+        {"item": [0, 1, 2, 3, 4]},
+        map_over="item",
+    )
+
+    with pytest.raises(ValueError) as raised:
+        handle.result()
+    evidence = _assert_raised_failure(raised.value, failures[1])
+    batch = handle.result(raise_on_failure=False)
+
+    assert entered == [0, 1, 2, 3, 4]
+    assert batch.requested_count == 5
+    assert batch.unstarted_item_indexes == ()
+    assert [result.status for result in batch] == [
+        RunStatus.COMPLETED,
+        RunStatus.FAILED,
+        RunStatus.COMPLETED,
+        RunStatus.FAILED,
+        RunStatus.COMPLETED,
+    ]
+    assert batch["processed"] == [0, None, 20, None, 40]
+    assert evidence.item_index == 1
+    assert handle.done is True
+
+
+async def test_bounded_async_background_map_collects_later_items_after_failure() -> None:
+    failures = {
+        1: ValueError("item one failed"),
+        3: ValueError("item three failed"),
+    }
+    entered = [asyncio.Event() for _ in range(5)]
+    release_first = asyncio.Event()
+
+    @node(output_name="processed")
+    async def process_item(item: int) -> int:
+        entered[item].set()
+        if item == 0:
+            await release_first.wait()
+        if item in failures:
+            raise failures[item]
+        return item * 10
+
+    handle = AsyncRunner().start_map(
+        Graph([process_item]),
+        {"item": [0, 1, 2, 3, 4]},
+        map_over="item",
+        max_concurrency=2,
+    )
+
+    try:
+        await asyncio.wait_for(entered[0].wait(), timeout=5)
+        await asyncio.wait_for(entered[1].wait(), timeout=5)
+        await asyncio.wait_for(entered[2].wait(), timeout=5)
+        assert handle.done is False
+    finally:
+        release_first.set()
+
+    batch = await asyncio.wait_for(handle.result(raise_on_failure=False), timeout=5)
+
+    with pytest.raises(ValueError) as raised:
+        await handle.result()
+    evidence = _assert_raised_failure(raised.value, failures[1])
+
+    assert all(event.is_set() for event in entered)
+    assert batch.requested_count == 5
+    assert batch.unstarted_item_indexes == ()
+    assert [result.status for result in batch] == [
+        RunStatus.COMPLETED,
+        RunStatus.FAILED,
+        RunStatus.COMPLETED,
+        RunStatus.FAILED,
+        RunStatus.COMPLETED,
+    ]
+    assert batch["processed"] == [0, None, 20, None, 40]
+    assert evidence.item_index == 1
     assert handle.done is True

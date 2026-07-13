@@ -18,10 +18,10 @@ from hypergraph.runners._shared.event_metadata import (
     RunContext,
     RunLineage,
 )
-from hypergraph.runners._shared.handles import AsyncHandle
+from hypergraph.runners._shared.handles import AsyncHandle, _launch_async_execution
 from hypergraph.runners._shared.outputs import SELECT_UNSET
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
-from hypergraph.runners._shared.results import RunResult
+from hypergraph.runners._shared.results import MapResult, RunResult
 from hypergraph.runners._shared.scheduling import (
     ExecutionFrontier,
     compute_execution_scope,
@@ -171,32 +171,60 @@ class AsyncRunner(AsyncRunnerTemplate):
         Raises:
             RuntimeError: If called without a running event loop.
         """
-        loop = asyncio.get_running_loop()
-        signal = StopSignal()
+        return _launch_async_execution(
+            lambda: self.run(
+                graph,
+                values,
+                select=select,
+                on_missing=on_missing,
+                entrypoint=entrypoint,
+                max_iterations=max_iterations,
+                max_concurrency=max_concurrency,
+                error_handling="continue",
+                event_processors=event_processors,
+                show_progress=show_progress,
+                checkpoint=checkpoint,
+                workflow_id=workflow_id,
+                **input_values,
+            )
+        )
 
-        async def _execute() -> RunResult:
-            signal_token = set_stop_signal(signal)
-            try:
-                return await self.run(
-                    graph,
-                    values,
-                    select=select,
-                    on_missing=on_missing,
-                    entrypoint=entrypoint,
-                    max_iterations=max_iterations,
-                    max_concurrency=max_concurrency,
-                    error_handling="continue",
-                    event_processors=event_processors,
-                    show_progress=show_progress,
-                    checkpoint=checkpoint,
-                    workflow_id=workflow_id,
-                    **input_values,
-                )
-            finally:
-                reset_stop_signal(signal_token)
-
-        task = loop.create_task(_execute())
-        return AsyncHandle(task, signal)
+    def start_map(
+        self,
+        graph: Graph,
+        values: dict[str, Any] | None = None,
+        *,
+        map_over: str | list[str],
+        map_mode: Literal["zip", "product"] = "zip",
+        clone: bool | list[str] = False,
+        select: str | list[str] = SELECT_UNSET,
+        on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        entrypoint: str | None = None,
+        max_concurrency: int | None = None,
+        event_processors: list[EventProcessor] | None = None,
+        show_progress: bool | None = None,
+        workflow_id: str | None = None,
+        **input_values: Any,
+    ) -> AsyncHandle[MapResult]:
+        """Start a settled map execution in the background."""
+        return _launch_async_execution(
+            lambda: self.map(
+                graph,
+                values,
+                map_over=map_over,
+                map_mode=map_mode,
+                clone=clone,
+                select=select,
+                on_missing=on_missing,
+                entrypoint=entrypoint,
+                max_concurrency=max_concurrency,
+                error_handling="continue",
+                event_processors=event_processors,
+                show_progress=show_progress,
+                workflow_id=workflow_id,
+                **input_values,
+            )
+        )
 
     @property
     def _checkpointer(self) -> Checkpointer | None:
