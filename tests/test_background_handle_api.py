@@ -79,6 +79,50 @@ def test_start_methods_mirror_only_public_blocking_options(
     assert inspect.iscoroutinefunction(start_method) is False
 
 
+@pytest.mark.parametrize(
+    ("runner_type", "start_name"),
+    [
+        (SyncRunner, "start_run"),
+        (SyncRunner, "start_map"),
+        (AsyncRunner, "start_run"),
+        (AsyncRunner, "start_map"),
+    ],
+)
+def test_start_methods_reject_every_excluded_runner_option_before_launch(
+    runner_type,
+    start_name: str,
+) -> None:
+    @node(output_name="copied")
+    def identity(value: int) -> int:
+        return value
+
+    reserved_options = {
+        name
+        for method_name in ("run", "map")
+        for name, parameter in inspect.signature(getattr(runner_type, method_name)).parameters.items()
+        if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    }
+    start_parameters = inspect.signature(getattr(runner_type, start_name)).parameters
+    excluded_options = sorted(reserved_options - set(start_parameters))
+    graph = Graph([identity])
+    values = {"value": [1]} if start_name == "start_map" else {"value": 1}
+    required_options = {"map_over": "value"} if start_name == "start_map" else {}
+
+    assert "error_handling" in excluded_options
+    assert "_reservation" in excluded_options
+    for option in excluded_options:
+        with pytest.raises(TypeError, match=rf"unexpected keyword argument '{option}'") as caught:
+            getattr(runner_type(), start_name)(
+                graph,
+                values,
+                **required_options,
+                **{option: object()},
+            )
+
+        assert "How to fix:" in str(caught.value)
+        assert "values={" in str(caught.value)
+
+
 def test_handle_exports_and_minimal_surface_are_exact() -> None:
     forbidden = {
         "status",
@@ -254,6 +298,46 @@ async def test_async_start_run_rejects_lineage_options_but_accepts_same_named_in
 
         assert "How to fix:" in str(caught.value)
         assert "values={" in str(caught.value)
+
+
+def test_sync_start_run_accepts_private_and_cross_method_input_names_in_values() -> None:
+    @node(output_name="seen")
+    def echo_reserved_names(
+        _complete_on_stop: str,
+        map_over: str,
+    ) -> tuple[str, str]:
+        return _complete_on_stop, map_over
+
+    result = (
+        SyncRunner()
+        .start_run(
+            Graph([echo_reserved_names]),
+            {"_complete_on_stop": "graph input", "map_over": "also graph input"},
+        )
+        .result()
+    )
+
+    assert result["seen"] == ("graph input", "also graph input")
+
+
+async def test_async_start_run_accepts_private_and_cross_method_input_names_in_values() -> None:
+    @node(output_name="seen")
+    async def echo_reserved_names(
+        _complete_on_stop: str,
+        map_over: str,
+    ) -> tuple[str, str]:
+        return _complete_on_stop, map_over
+
+    result = (
+        await AsyncRunner()
+        .start_run(
+            Graph([echo_reserved_names]),
+            {"_complete_on_stop": "graph input", "map_over": "also graph input"},
+        )
+        .result()
+    )
+
+    assert result["seen"] == ("graph input", "also graph input")
 
 
 def test_sync_result_propagates_failure_when_no_run_result_exists() -> None:

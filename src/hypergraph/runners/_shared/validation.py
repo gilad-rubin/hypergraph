@@ -32,56 +32,47 @@ class _InputValidationContext:
     interrupt_outputs: set[str]
 
 
-def reject_background_error_handling_option(
+def reject_background_runner_options(
     input_values: dict[str, Any],
     *,
     start_method: str,
+    reserved_option_names: frozenset[str],
 ) -> None:
-    """Keep background retrieval policy out of graph-input shorthand.
+    """Reject blocking runner controls hidden behind graph-input shorthand.
 
     Args:
         input_values: Graph inputs supplied through keyword shorthand.
         start_method: Qualified public method name for the error message.
+        reserved_option_names: Explicit options owned by blocking runner APIs.
 
     Raises:
-        TypeError: If ``error_handling`` was supplied as a start option.
+        TypeError: If a reserved option was supplied to a background start.
     """
-    if "error_handling" not in input_values:
+    conflicts = sorted(set(input_values) & reserved_option_names)
+    if not conflicts:
         return
-    raise TypeError(
-        f"{start_method}() got an unexpected keyword argument "
-        "'error_handling'.\n\n"
-        "How to fix: Background retrieval policy belongs to "
-        "handle.result(raise_on_failure=...). To pass a graph input "
-        "with this name, use values={'error_handling': ...}."
-    )
-
-
-def reject_background_lineage_options(
-    input_values: dict[str, Any],
-    *,
-    start_method: str,
-) -> None:
-    """Keep lineage-changing runner options out of background starts.
-
-    Args:
-        input_values: Graph inputs supplied through keyword shorthand.
-        start_method: Qualified public method name for the error message.
-
-    Raises:
-        TypeError: If a lineage-changing option was supplied directly.
-    """
-    for option in ("override_workflow", "fork_from", "retry_from"):
-        if option not in input_values:
-            continue
+    option = conflicts[0]
+    problem = f"{start_method}() got an unexpected keyword argument '{option}'.\n\n"
+    if option == "error_handling":
         raise TypeError(
-            f"{start_method}() got an unexpected keyword argument "
-            f"'{option}'.\n\n"
-            "How to fix: Background starts do not perform lineage changes. "
+            problem + "How to fix: Background retrieval policy belongs to "
+            "handle.result(raise_on_failure=...). To pass a graph input "
+            "with this name, use values={'error_handling': ...}."
+        )
+    if option in {"override_workflow", "fork_from", "retry_from"} and start_method.endswith(".start_run"):
+        raise TypeError(
+            problem + "How to fix: Background starts do not perform lineage changes. "
             "Prepare the checkpoint and workflow ID first, then pass them via "
             "checkpoint=... and workflow_id=.... To pass a graph input with "
             f"this name, use values={{'{option}': ...}}."
         )
+    raise TypeError(
+        problem + f"{option}= is reserved by Hypergraph's blocking runner APIs and is "
+        f"not available on {start_method}().\n\n"
+        "How to fix: Remove this runner option from the background start. If "
+        f"your graph input is named '{option}', pass it through "
+        f"values={{'{option}': ...}}."
+    )
 
 
 def validate_max_concurrency(max_concurrency: int | None) -> None:

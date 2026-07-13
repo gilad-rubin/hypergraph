@@ -17,6 +17,7 @@ from hypergraph.runners._shared.event_metadata import (
     RunLineage,
 )
 from hypergraph.runners._shared.handles import SyncHandle, _launch_sync_execution
+from hypergraph.runners._shared.input_normalization import runner_option_names
 from hypergraph.runners._shared.outputs import SELECT_UNSET
 from hypergraph.runners._shared.protocols import NodeExecutor
 from hypergraph.runners._shared.results import MapResult, RunResult
@@ -25,10 +26,7 @@ from hypergraph.runners._shared.state import ExecutionContext, GraphState, Runne
 from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id, initialize_state
 from hypergraph.runners._shared.stop import _ActiveWorkflows, get_stop_signal
 from hypergraph.runners._shared.template_sync import SyncRunnerTemplate
-from hypergraph.runners._shared.validation import (
-    reject_background_error_handling_option,
-    reject_background_lineage_options,
-)
+from hypergraph.runners._shared.validation import reject_background_runner_options
 from hypergraph.runners.sync.executors import (
     SyncFunctionNodeExecutor,
     SyncGraphNodeExecutor,
@@ -145,13 +143,10 @@ class SyncRunner(SyncRunnerTemplate):
         Returns:
             A process-local handle for the live execution.
         """
-        reject_background_error_handling_option(
+        reject_background_runner_options(
             input_values,
             start_method="SyncRunner.start_run",
-        )
-        reject_background_lineage_options(
-            input_values,
-            start_method="SyncRunner.start_run",
+            reserved_option_names=runner_option_names(self.run) | runner_option_names(self.map),
         )
         reservation = self._active_workflows.reserve(workflow_id)
         return _launch_sync_execution(
@@ -190,9 +185,10 @@ class SyncRunner(SyncRunnerTemplate):
         **input_values: Any,
     ) -> SyncHandle[MapResult]:
         """Start a settled map execution in the background."""
-        reject_background_error_handling_option(
+        reject_background_runner_options(
             input_values,
             start_method="SyncRunner.start_map",
+            reserved_option_names=runner_option_names(self.run) | runner_option_names(self.map),
         )
         reservation = self._active_workflows.reserve(workflow_id)
         return _launch_sync_execution(

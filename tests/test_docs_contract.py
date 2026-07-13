@@ -216,6 +216,8 @@ def test_background_handle_docs_pin_public_contract() -> None:
     assert "Use a Checkpointer for Recovery, Not Handle Reconnection" in guide
     assert "instead of tunneling into `run()`" in guide
     assert "put it inside `values={...}`" in guide
+    assert "complete stopped batch" not in guide
+    assert "settled stopped batch" in guide
     assert "Parent `RunEndEvent` and OpenTelemetry batch counts" in guide
     assert "All existing batch counts describe real settled child outcomes" in events
     assert "no new event count field is added" in events

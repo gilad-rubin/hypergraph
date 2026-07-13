@@ -19,6 +19,7 @@ from hypergraph.runners._shared.event_metadata import (
     RunLineage,
 )
 from hypergraph.runners._shared.handles import AsyncHandle, _launch_async_execution
+from hypergraph.runners._shared.input_normalization import runner_option_names
 from hypergraph.runners._shared.outputs import SELECT_UNSET
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 from hypergraph.runners._shared.results import MapResult, RunResult
@@ -36,10 +37,7 @@ from hypergraph.runners._shared.state import (
 from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id, initialize_state
 from hypergraph.runners._shared.stop import _ActiveWorkflows, get_stop_signal
 from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
-from hypergraph.runners._shared.validation import (
-    reject_background_error_handling_option,
-    reject_background_lineage_options,
-)
+from hypergraph.runners._shared.validation import reject_background_runner_options
 from hypergraph.runners.async_.executors import (
     AsyncFunctionNodeExecutor,
     AsyncGraphNodeExecutor,
@@ -174,13 +172,10 @@ class AsyncRunner(AsyncRunnerTemplate):
         Raises:
             RuntimeError: If called without a running event loop.
         """
-        reject_background_error_handling_option(
+        reject_background_runner_options(
             input_values,
             start_method="AsyncRunner.start_run",
-        )
-        reject_background_lineage_options(
-            input_values,
-            start_method="AsyncRunner.start_run",
+            reserved_option_names=runner_option_names(self.run) | runner_option_names(self.map),
         )
         loop = asyncio.get_running_loop()
         reservation = self._active_workflows.reserve(workflow_id)
@@ -224,9 +219,10 @@ class AsyncRunner(AsyncRunnerTemplate):
         **input_values: Any,
     ) -> AsyncHandle[MapResult]:
         """Start a settled map execution in the background."""
-        reject_background_error_handling_option(
+        reject_background_runner_options(
             input_values,
             start_method="AsyncRunner.start_map",
+            reserved_option_names=runner_option_names(self.run) | runner_option_names(self.map),
         )
         loop = asyncio.get_running_loop()
         reservation = self._active_workflows.reserve(workflow_id)

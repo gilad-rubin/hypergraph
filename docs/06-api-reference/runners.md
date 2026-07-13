@@ -293,8 +293,9 @@ corresponding blocking operation except that background retrieval owns failure
 policy, so there is no `error_handling`. `start_run()` also omits
 `override_workflow`, `fork_from`, and `retry_from`; prepare lineage changes
 through the checkpointer before starting the resulting checkpoint and ID.
-Passing one of those names directly raises `TypeError`; use `values={...}` when
-the name belongs to the graph rather than the runner.
+Passing any blocking runner control absent from the `start_*()` signature
+directly raises `TypeError` before launch; use `values={...}` when the name
+belongs to the graph rather than the runner.
 
 ```python
 handle = runner.start_run(graph, {"order_id": "order-100"})
@@ -939,8 +940,8 @@ As with the synchronous forms, background start methods omit
 `override_workflow`, `fork_from`, and `retry_from` shortcuts. A provided
 `max_concurrency` must be at least `1`; invalid limits fail retrieval loudly
 instead of producing an empty result or a handle that never settles. Passing a
-lineage shortcut directly raises `TypeError`; use `values={...}` when that name
-is a graph input.
+blocking runner control absent from the `start_*()` signature directly raises
+`TypeError` before launch; use `values={...}` when that name is a graph input.
 
 ### capabilities
 

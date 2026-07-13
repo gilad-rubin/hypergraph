@@ -236,7 +236,7 @@ checkpoint rows contain only claimed work, in original input order. A stopped
 batch may also have real failures: `batch.stopped` and `batch.failed` can both
 be true, while `batch.failures` retains those attempted-item failures. Default
 retrieval still raises the first real failed item; non-raising retrieval gives
-the complete stopped batch.
+the settled stopped batch.
 
 Parent `RunEndEvent` and OpenTelemetry batch counts also count real settled
 children only. The parent event status, `batch_outcome`, OTel outcome, and
@@ -298,7 +298,8 @@ the lineage-changing `override_workflow`, `fork_from`, and `retry_from`
 shortcuts. Perform a fork or retry through the checkpointer first, then start
 the resulting checkpoint and workflow ID. Passing one of those names directly
 raises `TypeError` instead of tunneling into `run()`; if it is genuinely a graph
-input, put it inside `values={...}`.
+input, put it inside `values={...}`. The same immediate boundary applies to any
+blocking runner option absent from the chosen `start_*()` signature.
 
 ## Complete Examples
 
