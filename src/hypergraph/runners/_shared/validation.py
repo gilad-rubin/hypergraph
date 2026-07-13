@@ -32,6 +32,31 @@ class _InputValidationContext:
     interrupt_outputs: set[str]
 
 
+def reject_background_error_handling_option(
+    input_values: dict[str, Any],
+    *,
+    start_method: str,
+) -> None:
+    """Keep background retrieval policy out of graph-input shorthand.
+
+    Args:
+        input_values: Graph inputs supplied through keyword shorthand.
+        start_method: Qualified public method name for the error message.
+
+    Raises:
+        TypeError: If ``error_handling`` was supplied as a start option.
+    """
+    if "error_handling" not in input_values:
+        return
+    raise TypeError(
+        f"{start_method}() got an unexpected keyword argument "
+        "'error_handling'.\n\n"
+        "How to fix: Background retrieval policy belongs to "
+        "handle.result(raise_on_failure=...). To pass a graph input "
+        "with this name, use values={'error_handling': ...}."
+    )
+
+
 def precompute_input_validation(
     graph: Graph,
     *,

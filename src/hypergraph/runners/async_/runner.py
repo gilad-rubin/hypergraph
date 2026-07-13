@@ -36,6 +36,7 @@ from hypergraph.runners._shared.state import (
 from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id, initialize_state
 from hypergraph.runners._shared.stop import _ActiveWorkflows, get_stop_signal
 from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
+from hypergraph.runners._shared.validation import reject_background_error_handling_option
 from hypergraph.runners.async_.executors import (
     AsyncFunctionNodeExecutor,
     AsyncGraphNodeExecutor,
@@ -169,6 +170,10 @@ class AsyncRunner(AsyncRunnerTemplate):
         Raises:
             RuntimeError: If called without a running event loop.
         """
+        reject_background_error_handling_option(
+            input_values,
+            start_method="AsyncRunner.start_run",
+        )
         loop = asyncio.get_running_loop()
         reservation = self._active_workflows.reserve(workflow_id)
         return _launch_async_execution(
@@ -210,6 +215,10 @@ class AsyncRunner(AsyncRunnerTemplate):
         **input_values: Any,
     ) -> AsyncHandle[MapResult]:
         """Start a settled map execution in the background."""
+        reject_background_error_handling_option(
+            input_values,
+            start_method="AsyncRunner.start_map",
+        )
         loop = asyncio.get_running_loop()
         reservation = self._active_workflows.reserve(workflow_id)
         return _launch_async_execution(
