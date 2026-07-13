@@ -6,7 +6,7 @@ import html
 from dataclasses import dataclass
 from typing import Any
 
-from hypergraph.runners._shared._inspect import RunInspection
+from hypergraph.runners._shared._inspect import MapInspection, RunInspection
 
 
 def _safe_repr(value: Any, *, limit: int = 20_000) -> str:
@@ -103,11 +103,50 @@ def render_run_inspection(artifact: RunInspection) -> str:
     )
 
 
+def render_map_inspection(artifact: MapInspection) -> str:
+    """Render one batch artifact with original-index child drill-down."""
+    item_sections: list[str] = []
+    for item in artifact.items:
+        requested = _render_mapping(
+            item.requested_inputs,
+            values_captured=artifact.captured,
+            restored=False,
+        )
+        run = render_run_inspection(item.run) if item.run is not None else '<p class="hg-inspect-missing">run has not published yet</p>'
+        item_sections.append(
+            '<details class="hg-inspect-map-item">'
+            f"<summary><strong>Item {item.item_index}</strong> "
+            f'<span data-status="{html.escape(item.status)}">'
+            f"{html.escape(item.status)}</span></summary>"
+            "<section><h4>Requested map inputs</h4>"
+            f"{requested}</section>{run}</details>"
+        )
+
+    unstarted = ""
+    if artifact.unstarted_item_indexes:
+        indexes = ", ".join(str(index) for index in artifact.unstarted_item_indexes)
+        unstarted = f'<p class="hg-inspect-unstarted">Unstarted item indexes: {html.escape(indexes)}</p>'
+    return (
+        '<div class="hg-inspect hg-inspect-map" data-hypergraph-inspect="map">'
+        "<header>"
+        f"<h3>{html.escape(artifact.graph_name or 'Hypergraph map')}</h3>"
+        f"<p>{html.escape(artifact.status)} · "
+        f"{html.escape(artifact.run_id or 'no run id')} · "
+        f"requested {artifact.requested_count} · completed {artifact.completed_count} · "
+        f"failed {artifact.failed_count} · restored {artifact.restored_count} · "
+        f"unstarted {artifact.unstarted_count}</p>"
+        f"{unstarted}</header>{''.join(item_sections)}"
+        "</div>"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class InspectionDisplay:
-    """Explicit rich display value returned by ``RunResult.inspect()``."""
+    """Explicit rich display returned by run and map result inspection."""
 
-    artifact: RunInspection
+    artifact: RunInspection | MapInspection
 
     def _repr_html_(self) -> str:
+        if isinstance(self.artifact, MapInspection):
+            return render_map_inspection(self.artifact)
         return render_run_inspection(self.artifact)

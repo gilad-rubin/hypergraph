@@ -6,6 +6,7 @@ import asyncio
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from hypergraph.checkpointers.types import StepStatus
@@ -16,7 +17,11 @@ from hypergraph.exceptions import (
     _failure_evidence_context,
     _NodeExecutionError,
 )
-from hypergraph.runners._shared._inspect import InspectionSession, inspection_scope
+from hypergraph.runners._shared._inspect import (
+    InspectionSession,
+    MapInspectionSession,
+    inspection_scope,
+)
 from hypergraph.runners._shared.event_metadata import (
     DEFAULT_RUN_CONTEXT,
     DEFAULT_RUN_LINEAGE,
@@ -375,8 +380,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         max_iter = max_iterations or self.default_max_iterations
         inspection_session = _inspection_session
-        owns_inspection = inspection_session is None and inspect
-        if owns_inspection:
+        owns_inspection = inspect
+        if owns_inspection and inspection_session is None:
             inspection_session = InspectionSession(
                 graph_name=graph.name or "",
                 workflow_id=workflow_id,
@@ -705,6 +710,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_concurrency: int | None = None,
+        inspect: bool = False,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
         show_progress: bool | None = None,
@@ -717,6 +723,12 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
+        if not isinstance(inspect, bool):
+            raise TypeError(
+                f"inspect must be a bool, got {type(inspect).__name__}.\n\n"
+                "How to fix: Pass inspect=True to capture map item values or "
+                "inspect=False to keep only always-on batch facts."
+            )
         validate_max_concurrency(max_concurrency)
         run_option_names = runner_option_names(self.run)
         map_option_names = runner_option_names(self.map)
@@ -754,8 +766,19 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
         input_variations = list(generate_map_inputs(normalized_values, map_over_list, map_mode, clone))
+        map_inspection_session = (
+            MapInspectionSession(
+                graph_name=graph.name or "",
+                workflow_id=workflow_id,
+                requested_count=len(input_variations),
+                map_over=tuple(map_over_list),
+                map_mode=map_mode,
+            )
+            if inspect
+            else None
+        )
         if not input_variations:
-            return MapResult(
+            map_result = MapResult(
                 results=(),
                 run_id=None,
                 total_duration_ms=0,
@@ -763,6 +786,16 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 map_mode=map_mode,
                 graph_name=graph.name or "",
             )
+            if map_inspection_session is not None:
+                map_inspection_session.bind_run(None)
+                map_result = replace(
+                    map_result,
+                    _inspection=map_inspection_session.finish(
+                        status=map_result.status.value,
+                        total_duration_ms=0.0,
+                    ),
+                )
+            return map_result
         if max_concurrency is None and len(input_variations) > MAX_UNBOUNDED_MAP_TASKS:
             raise ValueError(
                 f"Too many map tasks without a concurrency limit: {len(input_variations)}. "
@@ -791,6 +824,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 map_size=len(input_variations),
                 lineage=RunLineage(parent_workflow_id=_parent_run_id),
             )
+            if map_inspection_session is not None:
+                map_inspection_session.bind_run(map_run_id)
             start_time = time.time()
 
             # Create parent batch run if checkpointing
@@ -830,6 +865,15 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         async def _run_map_item(idx: int, variation_inputs: dict[str, Any]) -> RunResult:
             """Execute one map variation, or restore from checkpoint if completed."""
             child_workflow_id = f"{workflow_id}/{idx}" if workflow_id else None
+            child_inspection_session = (
+                map_inspection_session.claim_item(
+                    item_index=idx,
+                    requested_inputs=variation_inputs,
+                    workflow_id=child_workflow_id,
+                )
+                if map_inspection_session is not None
+                else None
+            )
             item_signature = compute_map_item_signature(variation_inputs, map_over_list, map_mode)
 
             # Skip completed items — restore result from checkpoint.
@@ -843,20 +887,27 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 state = await checkpointer.get_state(restore_run_id)
                 restored_state = GraphState(values=dict(state))
                 restored_values = filter_outputs(restored_state, graph, select, on_missing)
-                return build_restored_run_result(
+                result = build_restored_run_result(
                     values=restored_values,
                     graph_name=graph.name or "",
                     run_id=restore_run_id,
                 )
+                if map_inspection_session is not None:
+                    map_inspection_session.settle_item(
+                        item_index=idx,
+                        result=result,
+                    )
+                return result
 
             try:
-                return await self.run(
+                result = await self.run(
                     graph,
                     variation_inputs,
                     select=select,
                     on_missing=on_missing,
                     entrypoint=entrypoint,
                     max_concurrency=max_concurrency,
+                    inspect=inspect,
                     error_handling="continue",
                     event_processors=event_processors,
                     show_progress=False,
@@ -867,11 +918,18 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     _run_config={MAP_SIGNATURE_CONFIG_KEY: item_signature},
                     _item_index=idx,
                     _checkpoint_error_sink=(item_checkpoint_errors[idx].append if _checkpoint_error_sink is not None else None),
+                    _inspection_session=child_inspection_session,
                 )
             except Exception as e:
                 # Catch validation errors (e.g., MissingInputError) that raise
                 # before run()'s execution try block
-                return build_pre_run_failed_result(e)
+                result = build_pre_run_failed_result(e)
+            if map_inspection_session is not None:
+                map_inspection_session.settle_item(
+                    item_index=idx,
+                    result=result,
+                )
+            return result
 
         try:
             if max_concurrency is None:
@@ -933,6 +991,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                                 raise error from None
 
             total_duration_ms = (time.time() - start_time) * 1000
+            unstarted_item_indexes = (
+                tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes)
+                if map_stop_signal is not None and map_stop_signal.is_set
+                else ()
+            )
             map_result = MapResult(
                 results=tuple(results),
                 run_id=map_run_id,
@@ -940,12 +1003,17 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 map_over=tuple(map_over_list),
                 map_mode=map_mode,
                 graph_name=graph.name or "",
-                unstarted_item_indexes=(
-                    tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes)
-                    if map_stop_signal is not None and map_stop_signal.is_set
-                    else ()
-                ),
+                unstarted_item_indexes=unstarted_item_indexes,
             )
+            if map_inspection_session is not None:
+                map_result = replace(
+                    map_result,
+                    _inspection=map_inspection_session.finish(
+                        status=map_result.status.value,
+                        total_duration_ms=total_duration_ms,
+                        unstarted_item_indexes=unstarted_item_indexes,
+                    ),
+                )
             batch_summary = BatchSummary.from_map_result(map_result)
 
             if map_stop_signal is not None and map_stop_signal.is_set and dispatcher.active:
@@ -991,6 +1059,14 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
             return map_result
         except Exception as e:
+            total_ms = (time.time() - start_time) * 1000
+            if map_inspection_session is not None:
+                unstarted_item_indexes = tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes)
+                map_inspection_session.finish(
+                    status=RunStatus.FAILED.value,
+                    total_duration_ms=total_ms,
+                    unstarted_item_indexes=unstarted_item_indexes,
+                )
             await self._emit_run_end_async(
                 dispatcher,
                 map_run_id,
@@ -1004,7 +1080,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             if has_checkpointer:
                 from hypergraph.checkpointers.types import WorkflowStatus as _WS
 
-                total_ms = (time.time() - start_time) * 1000
                 error_count = sum(1 for r in results if r.status == RunStatus.FAILED)
                 await checkpointer.update_run_status(
                     workflow_id,

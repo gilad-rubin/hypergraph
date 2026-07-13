@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
-from hypergraph.runners._shared.results import FailureEvidence, RunResult
+from hypergraph.runners._shared.results import FailureEvidence, MapResult, RunResult
 
 NodeInspectionStatus = Literal[
     "running",
@@ -76,7 +76,76 @@ class RunInspection:
     terminal: bool
 
 
+MapItemInspectionStatus = Literal[
+    "running",
+    "completed",
+    "failed",
+    "paused",
+    "stopped",
+    "restored",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class MapItemInspection:
+    """Inspection evidence for one real claimed map item."""
+
+    item_index: int
+    status: MapItemInspectionStatus
+    requested_inputs: dict[str, Any] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    run: RunInspection | None = field(default=None, repr=False, compare=False)
+    restored: bool = False
+
+    def __post_init__(self) -> None:
+        """Own the requested-input mapping without copying contained values."""
+        if self.requested_inputs is not None:
+            object.__setattr__(self, "requested_inputs", dict(self.requested_inputs))
+
+
+@dataclass(frozen=True, slots=True)
+class MapInspection:
+    """One immutable batch artifact shared by live and settled views."""
+
+    run_id: str | None
+    graph_name: str
+    workflow_id: str | None
+    status: str
+    map_over: tuple[str, ...]
+    map_mode: str
+    requested_count: int
+    items: tuple[MapItemInspection, ...]
+    unstarted_item_indexes: tuple[int, ...]
+    total_duration_ms: float
+    captured: bool
+    terminal: bool
+
+    @property
+    def completed_count(self) -> int:
+        """Claimed children that completed, including restored children."""
+        return sum(item.status in {"completed", "restored"} for item in self.items)
+
+    @property
+    def failed_count(self) -> int:
+        """Claimed children that failed."""
+        return sum(item.status == "failed" for item in self.items)
+
+    @property
+    def restored_count(self) -> int:
+        """Completed children restored without executing again."""
+        return sum(item.restored for item in self.items)
+
+    @property
+    def unstarted_count(self) -> int:
+        """Requested inputs never claimed by the scheduler."""
+        return len(self.unstarted_item_indexes)
+
+
 InspectionSubscriber = Callable[[RunInspection, bool], None]
+MapInspectionSubscriber = Callable[[MapInspection, bool], None]
 
 
 class InspectionSession:
@@ -341,6 +410,193 @@ class InspectionSession:
                 callback(artifact, urgent)
 
 
+class MapInspectionSession:
+    """Thread-safe aggregation of real child runs into one batch artifact."""
+
+    def __init__(
+        self,
+        *,
+        graph_name: str,
+        workflow_id: str | None,
+        requested_count: int,
+        map_over: tuple[str, ...],
+        map_mode: str,
+    ) -> None:
+        self._lock = threading.RLock()
+        self._artifact = MapInspection(
+            run_id="pending",
+            graph_name=graph_name,
+            workflow_id=workflow_id,
+            status="running",
+            map_over=map_over,
+            map_mode=map_mode,
+            requested_count=requested_count,
+            items=(),
+            unstarted_item_indexes=(),
+            total_duration_ms=0.0,
+            captured=True,
+            terminal=False,
+        )
+        self._subscribers: dict[int, MapInspectionSubscriber] = {}
+        self._next_subscriber = 0
+
+    def bind_run(self, run_id: str | None) -> None:
+        """Bind the parent batch run ID, including ``None`` for an empty map."""
+        with self._lock:
+            if self._artifact.run_id not in {"pending", run_id}:
+                raise RuntimeError("MapInspectionSession is already bound to another batch run.")
+            self._artifact = replace(self._artifact, run_id=run_id)
+
+    def claim_item(
+        self,
+        *,
+        item_index: int,
+        requested_inputs: dict[str, Any],
+        workflow_id: str | None,
+    ) -> InspectionSession:
+        """Record one real scheduler claim and return its child session."""
+        with self._lock:
+            if any(item.item_index == item_index for item in self._artifact.items):
+                raise RuntimeError(f"Map item {item_index} was already claimed.")
+            item = MapItemInspection(
+                item_index=item_index,
+                status="running",
+                requested_inputs=requested_inputs,
+            )
+            self._artifact = replace(
+                self._artifact,
+                items=tuple(
+                    sorted(
+                        (*self._artifact.items, item),
+                        key=lambda current: current.item_index,
+                    )
+                ),
+            )
+            artifact, subscribers = self._publication_locked()
+        self._notify(subscribers, artifact, urgent=False)
+
+        child = InspectionSession(
+            graph_name=self._artifact.graph_name,
+            workflow_id=workflow_id,
+            item_index=item_index,
+        )
+        child.subscribe(
+            lambda run, urgent: self._publish_child(
+                item_index=item_index,
+                run=run,
+                urgent=urgent,
+            )
+        )
+        return child
+
+    def settle_item(self, *, item_index: int, result: RunResult) -> None:
+        """Attach the exact settled child artifact, or an honest degraded one."""
+        run = result._inspection or degraded_run_inspection(result)
+        status: MapItemInspectionStatus = "restored" if result.restored else result.status.value
+        with self._lock:
+            current = self._item_locked(item_index)
+            if current.run is run and current.status == status:
+                return
+            self._replace_item_locked(
+                item_index,
+                replace(
+                    current,
+                    status=status,
+                    run=run,
+                    restored=result.restored,
+                ),
+            )
+            artifact, subscribers = self._publication_locked()
+        self._notify(subscribers, artifact, urgent=status == "failed")
+
+    def finish(
+        self,
+        *,
+        status: str,
+        total_duration_ms: float,
+        unstarted_item_indexes: tuple[int, ...] = (),
+    ) -> MapInspection:
+        """Publish the terminal batch snapshot and return it."""
+        with self._lock:
+            self._artifact = replace(
+                self._artifact,
+                status=status,
+                unstarted_item_indexes=tuple(unstarted_item_indexes),
+                total_duration_ms=total_duration_ms,
+                terminal=True,
+            )
+            artifact, subscribers = self._publication_locked()
+        self._notify(subscribers, artifact, urgent=True)
+        return artifact
+
+    def snapshot(self) -> MapInspection:
+        """Return the latest immutable batch artifact."""
+        with self._lock:
+            return self._artifact
+
+    def subscribe(self, callback: MapInspectionSubscriber) -> Callable[[], None]:
+        """Subscribe to batch publications and return an unsubscriber."""
+        with self._lock:
+            key = self._next_subscriber
+            self._next_subscriber += 1
+            self._subscribers[key] = callback
+
+        def unsubscribe() -> None:
+            with self._lock:
+                self._subscribers.pop(key, None)
+
+        return unsubscribe
+
+    def _publish_child(
+        self,
+        *,
+        item_index: int,
+        run: RunInspection,
+        urgent: bool,
+    ) -> None:
+        with self._lock:
+            current = self._item_locked(item_index)
+            status: MapItemInspectionStatus = run.status
+            self._replace_item_locked(
+                item_index,
+                replace(current, status=status, run=run),
+            )
+            artifact, subscribers = self._publication_locked()
+        self._notify(subscribers, artifact, urgent=urgent)
+
+    def _item_locked(self, item_index: int) -> MapItemInspection:
+        for item in self._artifact.items:
+            if item.item_index == item_index:
+                return item
+        raise RuntimeError(f"Map item {item_index} has not been claimed.")
+
+    def _replace_item_locked(
+        self,
+        item_index: int,
+        replacement: MapItemInspection,
+    ) -> None:
+        self._artifact = replace(
+            self._artifact,
+            items=tuple(replacement if item.item_index == item_index else item for item in self._artifact.items),
+        )
+
+    def _publication_locked(
+        self,
+    ) -> tuple[MapInspection, tuple[MapInspectionSubscriber, ...]]:
+        return self._artifact, tuple(self._subscribers.values())
+
+    @staticmethod
+    def _notify(
+        subscribers: tuple[MapInspectionSubscriber, ...],
+        artifact: MapInspection,
+        *,
+        urgent: bool,
+    ) -> None:
+        for callback in subscribers:
+            with contextlib.suppress(Exception):
+                callback(artifact, urgent)
+
+
 @dataclass(frozen=True, slots=True)
 class _InspectionContext:
     session: InspectionSession
@@ -406,6 +662,35 @@ def degraded_run_inspection(result: RunResult) -> RunInspection:
         nodes=tuple(nodes),
         failures=result.node_failures,
         total_duration_ms=(result.log.total_duration_ms if result.log is not None else 0.0),
+        captured=False,
+        terminal=True,
+    )
+
+
+def degraded_map_inspection(result: MapResult) -> MapInspection:
+    """Build one honest batch view from always-on settled result facts."""
+    unstarted = set(result.unstarted_item_indexes)
+    item_indexes = tuple(index for index in range(result.requested_count) if index not in unstarted)
+    items = tuple(
+        MapItemInspection(
+            item_index=item_index,
+            status="restored" if item.restored else item.status.value,
+            run=item._inspection or degraded_run_inspection(item),
+            restored=item.restored,
+        )
+        for item_index, item in zip(item_indexes, result.results, strict=True)
+    )
+    return MapInspection(
+        run_id=result.run_id,
+        graph_name=result.graph_name,
+        workflow_id=None,
+        status=result.status.value,
+        map_over=result.map_over,
+        map_mode=result.map_mode,
+        requested_count=result.requested_count,
+        items=items,
+        unstarted_item_indexes=result.unstarted_item_indexes,
+        total_duration_ms=result.total_duration_ms,
         captured=False,
         terminal=True,
     )

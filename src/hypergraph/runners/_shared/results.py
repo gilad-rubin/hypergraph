@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from hypergraph._utils import plural
 
 if TYPE_CHECKING:
-    from hypergraph.runners._shared._inspect import RunInspection
+    from hypergraph.runners._shared._inspect import MapInspection, RunInspection
     from hypergraph.runners._shared._inspect_html import InspectionDisplay
 
 ErrorHandling = Literal["raise", "continue"]
@@ -368,6 +368,11 @@ class MapResult:
     map_mode: str  # "zip" | "product"
     graph_name: str
     unstarted_item_indexes: tuple[int, ...] = ()
+    _inspection: MapInspection | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         """Normalize and validate indexes for inputs curtailed before start."""
@@ -515,6 +520,16 @@ class MapResult:
         """Collect values across items with a default.
         results.get("doubled", 0) → [2, 4, 0, 6, 8]"""
         return [r.get(key, default) for r in self.results]
+
+    def inspect(self) -> InspectionDisplay:
+        """Return an explicit rich inspection view for this settled batch."""
+        from hypergraph.runners._shared._inspect import degraded_map_inspection
+        from hypergraph.runners._shared._inspect_html import InspectionDisplay
+
+        artifact = self._inspection
+        if artifact is None:
+            artifact = degraded_map_inspection(self)
+        return InspectionDisplay(artifact)
 
     # --- Progressive disclosure ---
 

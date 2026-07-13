@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.checkpointers.types import StepStatus
@@ -15,7 +16,11 @@ from hypergraph.exceptions import (
     _failure_evidence_context,
     _NodeExecutionError,
 )
-from hypergraph.runners._shared._inspect import InspectionSession, inspection_scope
+from hypergraph.runners._shared._inspect import (
+    InspectionSession,
+    MapInspectionSession,
+    inspection_scope,
+)
 from hypergraph.runners._shared.event_metadata import (
     DEFAULT_RUN_CONTEXT,
     DEFAULT_RUN_LINEAGE,
@@ -362,8 +367,8 @@ class SyncRunnerTemplate(BaseRunner, ABC):
 
         max_iter = max_iterations or self.default_max_iterations
         inspection_session = _inspection_session
-        owns_inspection = inspection_session is None and inspect
-        if owns_inspection:
+        owns_inspection = inspect
+        if owns_inspection and inspection_session is None:
             inspection_session = InspectionSession(
                 graph_name=graph.name or "",
                 workflow_id=workflow_id,
@@ -663,6 +668,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         select: str | list[str] = SELECT_UNSET,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
+        inspect: bool = False,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
         show_progress: bool | None = None,
@@ -674,6 +680,12 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
+        if not isinstance(inspect, bool):
+            raise TypeError(
+                f"inspect must be a bool, got {type(inspect).__name__}.\n\n"
+                "How to fix: Pass inspect=True to capture map item values or "
+                "inspect=False to keep only always-on batch facts."
+            )
         run_option_names = runner_option_names(self.run)
         map_option_names = runner_option_names(self.map)
         validate_error_handling(error_handling)
@@ -710,8 +722,19 @@ class SyncRunnerTemplate(BaseRunner, ABC):
 
         map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
         input_variations = list(generate_map_inputs(normalized_values, map_over_list, map_mode, clone))
+        map_inspection_session = (
+            MapInspectionSession(
+                graph_name=graph.name or "",
+                workflow_id=workflow_id,
+                requested_count=len(input_variations),
+                map_over=tuple(map_over_list),
+                map_mode=map_mode,
+            )
+            if inspect
+            else None
+        )
         if not input_variations:
-            return MapResult(
+            map_result = MapResult(
                 results=(),
                 run_id=None,
                 total_duration_ms=0,
@@ -719,6 +742,16 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 map_mode=map_mode,
                 graph_name=graph.name or "",
             )
+            if map_inspection_session is not None:
+                map_inspection_session.bind_run(None)
+                map_result = replace(
+                    map_result,
+                    _inspection=map_inspection_session.finish(
+                        status=map_result.status.value,
+                        total_duration_ms=0.0,
+                    ),
+                )
+            return map_result
 
         reservation = _reservation or self._active_workflows.reserve(workflow_id)
         dispatcher = None
@@ -740,6 +773,8 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 map_size=len(input_variations),
                 lineage=RunLineage(parent_workflow_id=_parent_run_id),
             )
+            if map_inspection_session is not None:
+                map_inspection_session.bind_run(map_run_id)
             start_time = time.time()
 
             # Create parent batch run if checkpointing
@@ -777,6 +812,15 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     break
                 claimed_indexes.add(idx)
                 child_workflow_id = f"{workflow_id}/{idx}" if workflow_id else None
+                child_inspection_session = (
+                    map_inspection_session.claim_item(
+                        item_index=idx,
+                        requested_inputs=variation_inputs,
+                        workflow_id=child_workflow_id,
+                    )
+                    if map_inspection_session is not None
+                    else None
+                )
                 item_signature = compute_map_item_signature(variation_inputs, map_over_list, map_mode)
 
                 # Skip completed items — restore result from checkpoint
@@ -790,13 +834,17 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     state = sync_cp.state(restore_run_id)
                     restored_state = GraphState(values=dict(state))
                     restored_values = filter_outputs(restored_state, graph, select, on_missing)
-                    results.append(
-                        build_restored_run_result(
-                            values=restored_values,
-                            graph_name=graph.name or "",
-                            run_id=restore_run_id,
-                        )
+                    result = build_restored_run_result(
+                        values=restored_values,
+                        graph_name=graph.name or "",
+                        run_id=restore_run_id,
                     )
+                    results.append(result)
+                    if map_inspection_session is not None:
+                        map_inspection_session.settle_item(
+                            item_index=idx,
+                            result=result,
+                        )
                     continue
 
                 try:
@@ -806,6 +854,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                         select=select,
                         on_missing=on_missing,
                         entrypoint=entrypoint,
+                        inspect=inspect,
                         error_handling="continue",
                         event_processors=event_processors,
                         show_progress=False,
@@ -815,6 +864,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                         _validation_ctx=ctx,
                         _run_config={MAP_SIGNATURE_CONFIG_KEY: item_signature},
                         _item_index=idx,
+                        _inspection_session=child_inspection_session,
                     )
                 except Exception as e:
                     # Catch validation errors (e.g., MissingInputError) that raise
@@ -822,6 +872,11 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     # and both map_iter variants.
                     result = build_pre_run_failed_result(e)
                 results.append(result)
+                if map_inspection_session is not None:
+                    map_inspection_session.settle_item(
+                        item_index=idx,
+                        result=result,
+                    )
                 if error_handling == "raise" and result.status == RunStatus.FAILED:
                     error = result.error
                     assert error is not None, "FAILED status requires an error"
@@ -829,6 +884,11 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                         raise error from None
 
             total_duration_ms = (time.time() - start_time) * 1000
+            unstarted_item_indexes = (
+                tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes)
+                if map_stop_signal is not None and map_stop_signal.is_set
+                else ()
+            )
             map_result = MapResult(
                 results=tuple(results),
                 run_id=map_run_id,
@@ -836,12 +896,17 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 map_over=tuple(map_over_list),
                 map_mode=map_mode,
                 graph_name=graph.name or "",
-                unstarted_item_indexes=(
-                    tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes)
-                    if map_stop_signal is not None and map_stop_signal.is_set
-                    else ()
-                ),
+                unstarted_item_indexes=unstarted_item_indexes,
             )
+            if map_inspection_session is not None:
+                map_result = replace(
+                    map_result,
+                    _inspection=map_inspection_session.finish(
+                        status=map_result.status.value,
+                        total_duration_ms=total_duration_ms,
+                        unstarted_item_indexes=unstarted_item_indexes,
+                    ),
+                )
             batch_summary = BatchSummary.from_map_result(map_result)
 
             if map_stop_signal is not None and map_stop_signal.is_set and dispatcher.active:
@@ -887,6 +952,14 @@ class SyncRunnerTemplate(BaseRunner, ABC):
 
             return map_result
         except Exception as e:
+            total_ms = (time.time() - start_time) * 1000
+            if map_inspection_session is not None:
+                unstarted_item_indexes = tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes)
+                map_inspection_session.finish(
+                    status=RunStatus.FAILED.value,
+                    total_duration_ms=total_ms,
+                    unstarted_item_indexes=unstarted_item_indexes,
+                )
             self._emit_run_end_sync(
                 dispatcher,
                 map_run_id,
@@ -900,7 +973,6 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             if sync_cp is not None:
                 from hypergraph.checkpointers.types import WorkflowStatus as _WS
 
-                total_ms = (time.time() - start_time) * 1000
                 error_count = sum(1 for r in results if r.status == RunStatus.FAILED)
                 sync_cp.update_run_status_sync(
                     workflow_id,

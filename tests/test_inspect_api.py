@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
+import threading
 
 import pytest
 
-from hypergraph import AsyncRunner, Graph, InMemoryCache, RunResult, RunStatus, SyncRunner, interrupt, node
+from hypergraph import (
+    AsyncRunner,
+    Graph,
+    InMemoryCache,
+    MapResult,
+    RunResult,
+    RunStatus,
+    SyncRunner,
+    interrupt,
+    node,
+)
 from hypergraph.checkpointers import MemoryCheckpointer, SqliteCheckpointer
 
 
@@ -36,6 +48,171 @@ def test_sync_inspect_renders_captured_outputs_and_changes_with_real_input() -> 
     assert "independent-answer:4" not in changed_html
 
 
+def test_sync_map_inspection_keeps_completed_siblings_after_failure_and_falsifies_output() -> None:
+    """One batch artifact preserves original item identity and real behavior."""
+
+    @node(output_name="prepared_customer")
+    def prepare(customer_id: str) -> str:
+        return f"prepared:{customer_id}"
+
+    @node(output_name="decision")
+    def decide(prepared_customer: str) -> str:
+        if prepared_customer == "prepared:maya-23":
+            raise ValueError("manual review required for maya-23")
+        return f"approved:{prepared_customer}"
+
+    graph = Graph([prepare, decide], name="customer-review-map")
+    runner = SyncRunner()
+
+    first = runner.map(
+        graph,
+        {"customer_id": ["ari-2", "maya-23", "noa-9"]},
+        map_over="customer_id",
+        inspect=True,
+        error_handling="continue",
+    )
+    changed = runner.map(
+        graph,
+        {"customer_id": ["ari-2", "maya-23", "tamar-11"]},
+        map_over="customer_id",
+        inspect=True,
+        error_handling="continue",
+    )
+
+    artifact = first.inspect().artifact
+    changed_artifact = changed.inspect().artifact
+
+    assert artifact.status == "partial"
+    assert artifact.requested_count == 3
+    assert artifact.completed_count == 2
+    assert artifact.failed_count == 1
+    assert artifact.restored_count == 0
+    assert artifact.unstarted_item_indexes == ()
+    assert [item.item_index for item in artifact.items] == [0, 1, 2]
+    assert [item.status for item in artifact.items] == ["completed", "failed", "completed"]
+    assert artifact.items[1].requested_inputs == {"customer_id": "maya-23"}
+    assert artifact.items[1].run is not None
+    assert artifact.items[1].run.failures[0].inputs == {"prepared_customer": "prepared:maya-23"}
+    assert artifact.items[0].run is not None
+    assert artifact.items[2].run is not None
+    assert artifact.items[0].run.nodes[-1].outputs == {"decision": "approved:prepared:ari-2"}
+    assert artifact.items[2].run.nodes[-1].outputs == {"decision": "approved:prepared:noa-9"}
+    assert changed_artifact.items[2].run is not None
+    assert changed_artifact.items[2].run.nodes[-1].outputs == {"decision": "approved:prepared:tamar-11"}
+
+
+def test_sync_start_map_inspection_returns_the_same_settled_artifact_without_handle_growth() -> None:
+    @node(output_name="doubled")
+    def double(value: int) -> int:
+        return value * 2
+
+    handle = SyncRunner().start_map(
+        Graph([double], name="sync-start-map-inspection"),
+        {"value": [3, 5]},
+        map_over="value",
+        inspect=True,
+    )
+    result = handle.result(raise_on_failure=False)
+    artifact = result.inspect().artifact
+
+    assert {name for name in vars(type(handle)) if not name.startswith("_")} == {
+        "done",
+        "stop",
+        "result",
+    }
+    assert artifact.captured is True
+    assert [item.run.nodes[-1].outputs for item in artifact.items if item.run] == [
+        {"doubled": 6},
+        {"doubled": 10},
+    ]
+    assert result[0].inspect().artifact is artifact.items[0].run
+    assert result[1].inspect().artifact is artifact.items[1].run
+
+
+def test_sync_stopped_map_inspection_has_claimed_items_and_sparse_unstarted_metadata() -> None:
+    second_entered = threading.Event()
+    release_second = threading.Event()
+    entered: list[int] = []
+
+    @node(output_name="processed")
+    def process(item: int) -> int:
+        entered.append(item)
+        if item == 0:
+            raise ValueError("item zero failed before stop")
+        if item == 1:
+            second_entered.set()
+            if not release_second.wait(timeout=5):
+                raise AssertionError("claimed item was not released")
+        return item * 10
+
+    handle = SyncRunner().start_map(
+        Graph([process], name="sparse-inspected-map"),
+        {"item": [0, 1, 2, 3, 4]},
+        map_over="item",
+        inspect=True,
+    )
+    try:
+        assert second_entered.wait(timeout=5), "second item was never claimed"
+        handle.stop(info={"reason": "operator stopped early"})
+    finally:
+        release_second.set()
+
+    result = handle.result(raise_on_failure=False)
+    artifact = result.inspect().artifact
+
+    assert entered == [0, 1]
+    assert artifact.status == "stopped"
+    assert artifact.requested_count == 5
+    assert [item.item_index for item in artifact.items] == [0, 1]
+    assert [item.status for item in artifact.items] == ["failed", "stopped"]
+    assert artifact.unstarted_item_indexes == (2, 3, 4)
+    assert artifact.unstarted_count == 3
+    assert all(item.item_index not in {2, 3, 4} for item in artifact.items)
+
+
+def test_sync_blocking_map_raise_keeps_the_error_and_terminal_live_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hypergraph.runners._shared import template_sync
+
+    failure = ValueError("map failure identity must survive")
+    executed: list[int] = []
+    sessions: list[template_sync.MapInspectionSession] = []
+    original_session_type = template_sync.MapInspectionSession
+
+    class RecordingMapInspectionSession(original_session_type):
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)  # type: ignore[arg-type]
+            sessions.append(self)
+
+    monkeypatch.setattr(template_sync, "MapInspectionSession", RecordingMapInspectionSession)
+
+    @node(output_name="answer")
+    def calculate(value: int) -> int:
+        executed.append(value)
+        if value == 1:
+            raise failure
+        return value * 10
+
+    with pytest.raises(ValueError) as raised:
+        SyncRunner().map(
+            Graph([calculate], name="raising-inspected-map"),
+            {"value": [0, 1, 2]},
+            map_over="value",
+            inspect=True,
+        )
+
+    assert raised.value is failure
+    assert executed == [0, 1]
+    assert len(sessions) == 1
+    artifact = sessions[0].snapshot()
+    assert artifact.status == "failed"
+    assert artifact.terminal is True
+    assert [item.item_index for item in artifact.items] == [0, 1]
+    assert [item.status for item in artifact.items] == ["completed", "failed"]
+    assert artifact.unstarted_item_indexes == (2,)
+
+
 def test_sync_inspect_option_is_boolean_and_named_graph_input_uses_values() -> None:
     @node(output_name="echoed")
     def echo(inspect: str) -> str:
@@ -55,6 +232,33 @@ def test_sync_inspect_option_is_boolean_and_named_graph_input_uses_values() -> N
         SyncRunner().run(graph, values={"inspect": "value"}, inspect="yes")  # type: ignore[arg-type]
 
 
+def test_sync_map_inspect_option_is_boolean_and_named_graph_input_uses_values() -> None:
+    @node(output_name="echoed")
+    def echo(inspect: str, value: int) -> str:
+        return f"{inspect}:{value}"
+
+    graph = Graph([echo], name="map-inspect-input-collision")
+    result = SyncRunner().map(
+        graph,
+        values={"inspect": "graph-owned value", "value": [1, 2]},
+        map_over="value",
+        inspect=True,
+    )
+
+    assert result["echoed"] == ["graph-owned value:1", "graph-owned value:2"]
+    assert [item.requested_inputs for item in result.inspect().artifact.items] == [
+        {"inspect": "graph-owned value", "value": 1},
+        {"inspect": "graph-owned value", "value": 2},
+    ]
+    with pytest.raises(TypeError, match="inspect must be a bool"):
+        SyncRunner().map(
+            graph,
+            values={"inspect": "value", "value": [1]},
+            map_over="value",
+            inspect="yes",  # type: ignore[arg-type]
+        )
+
+
 def test_result_without_capture_is_inspectable_but_does_not_invent_values() -> None:
     @node(output_name="secret_result")
     def calculate(secret_input: str) -> str:
@@ -70,6 +274,90 @@ def test_result_without_capture_is_inspectable_but_does_not_invent_values() -> N
     assert "not captured; rerun with inspect=True" in html
     assert "do-not-invent" not in html
     assert "derived:do-not-invent" not in html
+
+
+def test_map_without_capture_is_inspectable_but_does_not_invent_item_values() -> None:
+    @node(output_name="secret_result")
+    def calculate(secret_input: str) -> str:
+        return f"derived:{secret_input}"
+
+    result = SyncRunner().map(
+        Graph([calculate], name="degraded-map-inspection"),
+        {"secret_input": ["map-secret-a", "map-secret-b"]},
+        map_over="secret_input",
+    )
+    artifact = result.inspect().artifact
+    html = result.inspect()._repr_html_()
+
+    assert artifact.captured is False
+    assert [item.item_index for item in artifact.items] == [0, 1]
+    assert all(item.requested_inputs is None for item in artifact.items)
+    assert all(item.run is not None and item.run.captured is False for item in artifact.items)
+    assert all(
+        node.inputs is None and node.outputs is None and node.values_captured is False
+        for item in artifact.items
+        if item.run is not None
+        for node in item.run.nodes
+    )
+    assert "not captured; rerun with inspect=True" in html
+    assert "map-secret-a" not in html
+    assert "map-secret-b" not in html
+    assert "derived:map-secret-a" not in html
+    assert "derived:map-secret-b" not in html
+
+
+def test_degraded_map_reconstructs_original_indexes_around_sparse_unstarted_items() -> None:
+    @node(output_name="answer")
+    def calculate(value: int) -> int:
+        return value * 10
+
+    graph = Graph([calculate], name="degraded-original-index-map")
+    runner = SyncRunner()
+    first = runner.run(graph, {"value": 1})
+    second = runner.run(graph, {"value": 3})
+    curtailed = MapResult(
+        (first, second),
+        "curtailed-map-run",
+        1.0,
+        ("value",),
+        "zip",
+        graph.name or "",
+        (0, 2),
+    )
+
+    artifact = curtailed.inspect().artifact
+
+    assert artifact.requested_count == 4
+    assert artifact.unstarted_item_indexes == (0, 2)
+    assert [item.item_index for item in artifact.items] == [1, 3]
+    assert [item.run.run_id for item in artifact.items if item.run is not None] == [
+        first.run_id,
+        second.run_id,
+    ]
+    assert all(item.requested_inputs is None for item in artifact.items)
+
+
+def test_empty_inspected_map_returns_a_terminal_captured_batch_artifact() -> None:
+    @node(output_name="answer")
+    def calculate(value: int) -> int:
+        return value * 10
+
+    result = SyncRunner().map(
+        Graph([calculate], name="empty-inspected-map"),
+        {"value": []},
+        map_over="value",
+        inspect=True,
+    )
+    artifact = result.inspect().artifact
+
+    assert result.run_id is None
+    assert artifact.run_id is None
+    assert artifact.status == "completed"
+    assert artifact.requested_count == 0
+    assert artifact.items == ()
+    assert artifact.unstarted_item_indexes == ()
+    assert artifact.captured is True
+    assert artifact.terminal is True
 
 
 def test_inspection_data_does_not_change_result_compatibility_surfaces() -> None:
@@ -99,6 +387,49 @@ def test_inspection_data_does_not_change_result_compatibility_surfaces() -> None
     assert "_inspection" not in captured.to_dict()
     assert dataclasses.fields(RunResult)[-1].name == "_inspection"
     assert positional["answer"] == 8
+
+
+def test_map_inspection_data_is_final_private_and_preserves_old_surfaces() -> None:
+    private_sentinel = "PRIVATE-MAP-INSPECTION-SENTINEL"
+
+    @node(output_name="prepared")
+    def prepare(secret_input: str) -> str:
+        return f"{private_sentinel}:{secret_input}"
+
+    @node(output_name="public")
+    def publish(prepared: str) -> str:
+        return "safe-public-output"
+
+    graph = Graph([prepare, publish], name="map-inspection-compatibility").select("public")
+    captured = SyncRunner().map(
+        graph,
+        {"secret_input": ["customer-1"]},
+        map_over="secret_input",
+        inspect=True,
+    )
+    without_private_artifact = dataclasses.replace(captured, _inspection=None)
+    positional = MapResult(
+        captured.results,
+        "stable-map-run-id",
+        1.0,
+        ("secret_input",),
+        "zip",
+        "stable-graph-name",
+        (),
+    )
+
+    assert private_sentinel in captured.inspect()._repr_html_()
+    assert captured == without_private_artifact
+    assert captured == list(captured.results)
+    assert repr(captured) == repr(without_private_artifact)
+    assert captured.summary() == without_private_artifact.summary()
+    assert captured.to_dict() == without_private_artifact.to_dict()
+    assert "_inspection" not in captured.to_dict()
+    assert private_sentinel not in repr(captured)
+    assert private_sentinel not in captured.summary()
+    assert private_sentinel not in str(captured.to_dict())
+    assert dataclasses.fields(MapResult)[-1].name == "_inspection"
+    assert positional.requested_count == 1
 
 
 def test_sync_nested_inspection_uses_slash_paths_and_real_child_run_identity() -> None:
@@ -191,6 +522,205 @@ async def test_async_inspect_changes_rendered_behavior_with_real_input() -> None
     assert "async-independent-answer:18" not in first_html
     assert "async-independent-answer:18" in changed_html
     assert "async-independent-answer:4" not in changed_html
+
+
+@pytest.mark.asyncio
+async def test_async_map_inspection_keeps_original_indexes_when_items_finish_out_of_order() -> None:
+    entered = [asyncio.Event() for _ in range(3)]
+    release = [asyncio.Event() for _ in range(3)]
+    finished = [asyncio.Event() for _ in range(3)]
+    physical_completion_order: list[int] = []
+
+    @node(output_name="answer")
+    async def calculate(value: int) -> int:
+        entered[value].set()
+        await release[value].wait()
+        physical_completion_order.append(value)
+        finished[value].set()
+        return value * 10
+
+    pending = asyncio.create_task(
+        AsyncRunner().map(
+            Graph([calculate], name="async-map-order"),
+            {"value": [0, 1, 2]},
+            map_over="value",
+            max_concurrency=3,
+            inspect=True,
+        )
+    )
+    for event in entered:
+        await asyncio.wait_for(event.wait(), timeout=5)
+    for item_index in (1, 2, 0):
+        release[item_index].set()
+        await asyncio.wait_for(finished[item_index].wait(), timeout=5)
+
+    result = await asyncio.wait_for(pending, timeout=5)
+    artifact = result.inspect().artifact
+
+    assert physical_completion_order == [1, 2, 0]
+    assert [item.item_index for item in artifact.items] == [0, 1, 2]
+    assert [item.requested_inputs for item in artifact.items] == [
+        {"value": 0},
+        {"value": 1},
+        {"value": 2},
+    ]
+    assert [item.run.nodes[-1].outputs for item in artifact.items if item.run] == [
+        {"answer": 0},
+        {"answer": 10},
+        {"answer": 20},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_map_inspect_option_is_boolean_and_named_graph_input_uses_values() -> None:
+    @node(output_name="echoed")
+    async def echo(inspect: str, value: int) -> str:
+        return f"{inspect}:{value}"
+
+    graph = Graph([echo], name="async-map-inspect-input-collision")
+    result = await AsyncRunner().map(
+        graph,
+        values={"inspect": "graph-owned value", "value": [1, 2]},
+        map_over="value",
+        inspect=True,
+    )
+
+    assert result["echoed"] == ["graph-owned value:1", "graph-owned value:2"]
+    assert [item.requested_inputs for item in result.inspect().artifact.items] == [
+        {"inspect": "graph-owned value", "value": 1},
+        {"inspect": "graph-owned value", "value": 2},
+    ]
+    with pytest.raises(TypeError, match="inspect must be a bool"):
+        await AsyncRunner().map(
+            graph,
+            values={"inspect": "value", "value": [1]},
+            map_over="value",
+            inspect="yes",  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.asyncio
+async def test_async_start_map_inspection_returns_the_same_settled_artifact_without_handle_growth() -> None:
+    @node(output_name="doubled")
+    async def double(value: int) -> int:
+        return value * 2
+
+    handle = AsyncRunner().start_map(
+        Graph([double], name="async-start-map-inspection"),
+        {"value": [3, 5]},
+        map_over="value",
+        inspect=True,
+    )
+    result = await handle.result(raise_on_failure=False)
+    artifact = result.inspect().artifact
+
+    assert {name for name in vars(type(handle)) if not name.startswith("_")} == {
+        "done",
+        "stop",
+        "result",
+    }
+    assert artifact.captured is True
+    assert [item.run.nodes[-1].outputs for item in artifact.items if item.run] == [
+        {"doubled": 6},
+        {"doubled": 10},
+    ]
+    assert result[0].inspect().artifact is artifact.items[0].run
+    assert result[1].inspect().artifact is artifact.items[1].run
+
+
+@pytest.mark.asyncio
+async def test_async_blocking_map_raise_keeps_the_error_and_terminal_live_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hypergraph.runners._shared import template_async
+
+    failure = ValueError("async map failure identity must survive")
+    executed: list[int] = []
+    sessions: list[template_async.MapInspectionSession] = []
+    original_session_type = template_async.MapInspectionSession
+
+    class RecordingMapInspectionSession(original_session_type):
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)  # type: ignore[arg-type]
+            sessions.append(self)
+
+    monkeypatch.setattr(template_async, "MapInspectionSession", RecordingMapInspectionSession)
+
+    @node(output_name="answer")
+    async def calculate(value: int) -> int:
+        executed.append(value)
+        if value == 1:
+            raise failure
+        return value * 10
+
+    with pytest.raises(ValueError) as raised:
+        await AsyncRunner().map(
+            Graph([calculate], name="async-raising-inspected-map"),
+            {"value": [0, 1, 2]},
+            map_over="value",
+            max_concurrency=1,
+            inspect=True,
+        )
+
+    assert raised.value is failure
+    assert executed == [0, 1]
+    assert len(sessions) == 1
+    artifact = sessions[0].snapshot()
+    assert artifact.status == "failed"
+    assert artifact.terminal is True
+    assert [item.item_index for item in artifact.items] == [0, 1]
+    assert [item.status for item in artifact.items] == ["completed", "failed"]
+    assert artifact.unstarted_item_indexes == (2,)
+
+
+@pytest.mark.asyncio
+async def test_async_map_inspection_separates_restored_items_from_fresh_capture() -> None:
+    restored_only_secret = "RESTORED-MAP-OUTPUT-MUST-NOT-BE-INVENTED"
+    executed: list[int] = []
+
+    @node(output_name="answer")
+    async def calculate(value: int) -> str:
+        executed.append(value)
+        if value == 10:
+            return restored_only_secret
+        return f"fresh:{value * 2}"
+
+    runner = AsyncRunner(checkpointer=MemoryCheckpointer())
+    graph = Graph([calculate], name="partially-restored-inspected-map")
+    await runner.map(
+        graph,
+        {"value": [10]},
+        map_over="value",
+        workflow_id="map-inspection-restore",
+    )
+    executed.clear()
+
+    resumed = await runner.map(
+        graph,
+        {"value": [10, 20]},
+        map_over="value",
+        workflow_id="map-inspection-restore",
+        inspect=True,
+    )
+    artifact = resumed.inspect().artifact
+
+    assert executed == [20]
+    assert artifact.status == "completed"
+    assert artifact.requested_count == 2
+    assert artifact.completed_count == 2
+    assert artifact.restored_count == 1
+    assert [item.status for item in artifact.items] == ["restored", "completed"]
+    assert [item.restored for item in artifact.items] == [True, False]
+    assert artifact.items[0].requested_inputs == {"value": 10}
+    assert artifact.items[0].run is not None
+    assert artifact.items[0].run.captured is False
+    assert artifact.items[0].run.nodes[0].values_captured is False
+    assert artifact.items[0].run.nodes[0].inputs is None
+    assert artifact.items[0].run.nodes[0].outputs is None
+    assert artifact.items[1].run is resumed[1].inspect().artifact
+    assert artifact.items[1].run.captured is True
+    assert artifact.items[1].run.nodes[-1].outputs == {"answer": "fresh:40"}
+    assert restored_only_secret not in resumed.inspect()._repr_html_()
 
 
 @pytest.mark.asyncio
