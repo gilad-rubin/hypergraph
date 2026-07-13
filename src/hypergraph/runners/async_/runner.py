@@ -144,6 +144,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         entrypoint: str | None = None,
         max_iterations: int | None = None,
         max_concurrency: int | None = None,
+        inspect: bool = False,
         event_processors: list[EventProcessor] | None = None,
         show_progress: bool | None = None,
         checkpoint: Checkpoint | None = None,
@@ -160,6 +161,7 @@ class AsyncRunner(AsyncRunnerTemplate):
             entrypoint: Optional explicit cycle entrypoint.
             max_iterations: Maximum iterations for cyclic graphs.
             max_concurrency: Maximum number of nodes executing concurrently.
+            inspect: Capture node inputs/outputs for live and settled inspection.
             event_processors: Optional processors for execution events.
             show_progress: Override runner-level progress display.
             checkpoint: Optional checkpoint from which to resume.
@@ -189,6 +191,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                 entrypoint=entrypoint,
                 max_iterations=max_iterations,
                 max_concurrency=max_concurrency,
+                inspect=inspect,
                 error_handling="continue",
                 event_processors=event_processors,
                 show_progress=show_progress,

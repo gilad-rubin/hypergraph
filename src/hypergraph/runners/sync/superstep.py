@@ -283,10 +283,16 @@ def run_superstep_sync(
                                     ),
                                 )
                             if inspection_session is not None and node_failures:
+                                inspection_failure = replace(
+                                    node_failures[0],
+                                    node_name="/".join((*inspection_path, node_failures[0].node_name)),
+                                )
+                                record_failure = not (isinstance(node, GraphNode) and node.runner_override is None and node.map_config is None)
                                 inspection_session.fail_node(
                                     span_id=node_span_id,
-                                    failure=node_failures[0],
+                                    failure=inspection_failure,
                                     ended_at_ms=time.perf_counter() * 1000,
+                                    record_failure=record_failure,
                                 )
                             executor_failure = _NodeExecutionError(
                                 executor_error,

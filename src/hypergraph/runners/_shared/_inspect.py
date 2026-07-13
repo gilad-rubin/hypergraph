@@ -104,6 +104,7 @@ class InspectionSession:
         self._subscribers: dict[int, InspectionSubscriber] = {}
         self._next_subscriber = 0
         self._next_sequence = 0
+        self._failure_span_ids: set[str] = set()
 
     def bind_run(self, run_id: str) -> None:
         """Bind the top-level run ID before node execution begins."""
@@ -177,8 +178,9 @@ class InspectionSession:
         span_id: str,
         failure: FailureEvidence,
         ended_at_ms: float,
+        record_failure: bool = True,
     ) -> None:
-        """Publish attributable executor failure evidence immediately."""
+        """Mark a failed execution and optionally publish its leaf evidence."""
         with self._lock:
             self._replace_node_locked(
                 span_id,
@@ -187,9 +189,11 @@ class InspectionSession:
                 ended_at_ms=ended_at_ms,
                 duration_ms=failure.duration_ms,
             )
+            if record_failure:
+                self._failure_span_ids.add(span_id)
             self._artifact = replace(
                 self._artifact,
-                failures=(*self._artifact.failures, failure),
+                failures=tuple(node.failure for node in self._artifact.nodes if node.span_id in self._failure_span_ids and node.failure is not None),
             )
             artifact, subscribers = self._publication_locked()
         self._notify(subscribers, artifact, urgent=True)
@@ -272,11 +276,12 @@ _CURRENT_INSPECTION: contextvars.ContextVar[_InspectionContext | None] = context
 
 @contextlib.contextmanager
 def inspection_scope(
-    session: InspectionSession,
+    session: InspectionSession | None,
     path: tuple[str, ...] = (),
 ) -> Iterator[None]:
-    """Bind an inspection source to the current execution context."""
-    token = _CURRENT_INSPECTION.set(_InspectionContext(session=session, path=path))
+    """Bind or explicitly clear inspection for this runner execution."""
+    context = _InspectionContext(session=session, path=path) if session is not None else None
+    token = _CURRENT_INSPECTION.set(context)
     try:
         yield
     finally:

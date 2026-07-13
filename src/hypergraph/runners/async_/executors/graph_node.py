@@ -6,6 +6,7 @@ import inspect
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import IncompatibleRunnerError
+from hypergraph.runners._shared._inspect import current_inspection
 from hypergraph.runners._shared.outputs import collect_as_lists
 from hypergraph.runners._shared.protocols import CheckpointErrorSinkRunner
 from hypergraph.runners._shared.results import PauseInfo, RunResult, RunStatus
@@ -177,6 +178,12 @@ class AsyncGraphNodeExecutor:
             "_parent_run_id": ctx.workflow_id,
             "_item_index": ctx.item_index,
         }
+        if node.runner_override is None:
+            inspection_context = current_inspection()
+            if inspection_context is not None:
+                inspection_session, inspection_path = inspection_context
+                run_kwargs["_inspection_session"] = inspection_session
+                run_kwargs["_inspection_path"] = (*inspection_path, node.name)
         if runner.capabilities.supports_checkpointing:
             run_kwargs["fork_from"] = child_fork_from
             run_kwargs["retry_from"] = child_retry_from

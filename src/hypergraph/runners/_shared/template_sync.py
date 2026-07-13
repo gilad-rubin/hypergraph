@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import (
@@ -432,8 +431,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             raise
 
         try:
-            inspection_context = inspection_scope(inspection_session, _inspection_path) if inspection_session is not None else nullcontext()
-            with inspection_context:
+            with inspection_scope(inspection_session, _inspection_path):
                 state = self._execute_graph_impl(
                     graph,
                     normalized_values,
