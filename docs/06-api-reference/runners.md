@@ -1307,8 +1307,11 @@ status/counts, `First failure of N`, original item, qualified node, bounded
 inputs, exact exception (or an **Exception preview (bounded repr)** when only a
 safe representation exists), a short result-evidence snippet, and
 `docs/05-how-to/debug-workflows.md`. Preview truncation includes the original
-size. Input and exception code is copy-faithful, while copy-inert wrap
-opportunities keep an unbroken 20,000-character value inside a 360px page.
+size. An opaque repr retains its exception type once; a repr already beginning
+with that type is not prefixed again. Input and exception code is copy-faithful
+and uses valid `<pre><code>` nesting, while copy-inert wrap opportunities keep
+an unbroken 20,000-character value inside a 360px page. Recovery snippets use
+the same copy-inert wrapping without changing the copied Python code.
 `First failure of N` counts status-only failures once without duplicating
 top-level and embedded evidence. Hypergraph never auto-trusts or signs the
 notebook, calls a server trust endpoint, or weakens its sandbox. When active

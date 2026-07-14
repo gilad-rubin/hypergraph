@@ -447,9 +447,11 @@ def test_inspect_mode_docs_mirror_public_contract() -> None:
         assert "first failure of n" in normalized_delivery
         assert "exception preview" in normalized_delivery
         assert "bounded repr" in normalized_delivery
+        assert "opaque repr" in normalized_delivery
         assert "exact run exception" in normalized_delivery
         assert "exact batch exception" in normalized_delivery
         assert "copy-faithful" in normalized_delivery
+        assert "valid `<pre><code>`" in normalized_delivery
         assert "wrap opportunities" in normalized_delivery
         assert "status-only" in normalized_delivery
         assert 'error_handling="continue"' in notebook_delivery_docs

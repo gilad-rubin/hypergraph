@@ -321,9 +321,12 @@ summary. It uses native `<details>` and contains:
 - `First failure of N`, the original map item, and the qualified node
 - bounded captured inputs and exact exception type/text, or an explicitly
   labeled **Exception preview (bounded repr)** when only a safe representation
-  exists; truncated previews include the original character count
-- copy-faithful input and exception whitespace, with copy-inert wrap
-  opportunities so an unbroken 20,000-character value fits a 360px page
+  exists; an opaque repr is prefixed with its exception type once, while a repr
+  already beginning with that type is not duplicated; truncated previews
+  include the original character count
+- copy-faithful input and exception whitespace using valid `<pre><code>`
+  nesting, with copy-inert wrap opportunities so an unbroken 20,000-character
+  value fits a 360px page
 - a short `RunResult` / `MapResult` evidence snippet that reruns with
   `error_handling="continue"` before reading a result
 - the canonical guide path: `docs/05-how-to/debug-workflows.md`

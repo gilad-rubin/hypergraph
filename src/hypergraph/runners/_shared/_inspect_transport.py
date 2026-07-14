@@ -313,7 +313,16 @@ def _native_code_markup(text: str) -> str:
     escaped = _native_wrappable_markup(text)
     if text == " ".join(text.split()):
         return f"<code>{escaped}</code>"
-    return f"<code><pre>{escaped}</pre></code>"
+    return f"<pre><code>{escaped}</code></pre>"
+
+
+def _native_repr_with_type(error_type: str, error_repr: str) -> str:
+    """Keep an anchored repr type once without erasing opaque repr content."""
+    if error_repr.startswith(error_type):
+        remainder = error_repr[len(error_type) :]
+        if not remainder or remainder[0] in " \t\r\n([{<:":
+            return error_repr
+    return f"{error_type}: {error_repr}"
 
 
 def _native_inputs_markup(inputs: object) -> str:
@@ -429,7 +438,8 @@ def _native_exception_markup(
         if error.get("truncated") is True:
             original_size = error.get("original_size", "unknown")
             label = f"Exception preview (bounded repr; truncated from {original_size} characters)"
-        return f"<div>{html.escape(label)}: {_native_code_markup(str(error.get('text')))}</div>"
+        error_repr = _native_repr_with_type(error_type, str(error.get("text")))
+        return f"<div>{html.escape(label)}: {_native_code_markup(error_repr)}</div>"
 
     if kind == "exception":
         error_text = str(error.get("text"))
@@ -607,7 +617,7 @@ def _native_failure_markup(
         code = _continue_rerun_code(kind, data)
         code += "print(result.error)" if source == "run" else "print(result.summary())"
     code_label = "Smallest useful recovery code" if source in {"start", "batch"} else "Smallest useful result evidence"
-    facts.append(f"<p>{code_label}:</p><pre><code>{html.escape(code)}</code></pre>")
+    facts.append(f"<p>{code_label}:</p><pre><code>{_native_wrappable_markup(code)}</code></pre>")
     facts.append(f"<p>Debugging guide: <code>{_DEBUG_WORKFLOWS_DOC}</code></p>")
     return f"<details data-hg-inspect-native-failure><summary>{html.escape(title)}</summary>{''.join(facts)}</details>"
 
