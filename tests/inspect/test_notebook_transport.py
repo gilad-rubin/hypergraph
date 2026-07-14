@@ -253,9 +253,10 @@ def test_transport_emits_one_immutable_shell_and_one_stable_payload_display_id()
         "state": "saved",
         "label": "Saved snapshot",
     }
+    assert 'data-hg-inspect-portable-frame="hg-inspect-notebook"' in display.handle.updates[0]
 
 
-def test_shell_is_exactly_sandboxed_and_updates_are_payload_only() -> None:
+def test_shell_is_sandboxed_and_only_terminal_channel_is_portable() -> None:
     scheduler = _QueuedOwnerScheduler()
     display = _FakeNotebookDisplay()
     transport = NotebookInspectionTransport.create(
@@ -268,21 +269,33 @@ def test_shell_is_exactly_sandboxed_and_updates_are_payload_only() -> None:
 
     shell = display.shells[0]
     _, initial_channel = display.channels[0]
+    transport.publish(_artifact(status="running"), urgent=False)
+    scheduler.advance(0.25)
+    ordinary_update = display.handle.updates[0]
+
     transport.publish(_artifact(status="completed", terminal=True), urgent=True)
     scheduler.run_due()
-    update = display.handle.updates[0]
+    terminal_update = display.handle.updates[1]
 
     assert re.search(r'<iframe\b[^>]*\bsandbox="allow-scripts"', shell)
     assert "allow-same-origin" not in shell
     assert "default-src &#x27;none&#x27;" in shell
     assert "connect-src &#x27;none&#x27;" in shell
     assert "data-hg-inspect-runtime" in shell
-    for channel in (initial_channel, update):
+    for channel in (initial_channel, ordinary_update):
         assert "srcdoc=" not in channel
         assert "data-hg-inspect-style" not in channel
         assert "data-hg-inspect-runtime" not in channel
         assert "GraphIR" not in channel
         assert "hypergraph.inspect.update" in channel
+
+    assert 'data-hg-inspect-portable-frame="hg-inspect-notebook"' in terminal_update
+    assert 'sandbox="allow-scripts"' in terminal_update
+    assert "srcdoc=" in terminal_update
+    assert "default-src &#x27;none&#x27;" in terminal_update
+    assert "connect-src &#x27;none&#x27;" in terminal_update
+    assert "data-hg-inspect-runtime" in terminal_update
+    assert "hypergraph.inspect.update" in terminal_update
 
 
 def test_channel_json_is_script_safe_for_closing_tags_and_line_separators() -> None:

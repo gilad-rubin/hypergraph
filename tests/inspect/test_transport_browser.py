@@ -570,11 +570,107 @@ def test_append_mode_terminal_replay_preserves_iframe_state_and_exposes_failure(
     assert frame.evaluate("window.__hypergraphInspectBridgeState.lastSequence") == 3
     assert page.locator('[data-hg-inspect-channel="widget-append-live"]').count() == 3
     assert page.locator('[data-hg-inspect-channel-fallback="widget-append-live"]:visible').count() == 0
+    portable_frame = page.locator('[data-hg-inspect-portable-frame="widget-append-live"]')
+    assert portable_frame.count() == 1
+    assert portable_frame.is_hidden()
 
     root.get_by_role("button", name="Show failure").click()
     detail = root.locator("[data-hg-detail]")
     assert detail.get_by_text("maya-23", exact=True).is_visible()
     assert "Customer maya-23 requires manual review" in detail.inner_text()
+    page.close()
+
+
+def test_isolated_saved_outputs_leave_pending_shell_and_terminal_channel_portable(
+    browser: Browser,
+) -> None:
+    initial_artifact, terminal_artifact = _partial_customer_map()
+    pending_artifact = replace(
+        initial_artifact,
+        run_id="pending",
+        items=(),
+        total_duration_ms=0.0,
+    )
+    initial = _envelope(
+        pending_artifact,
+        widget_id="widget-isolated",
+        nonce="nonce-isolated",
+        sequence=1,
+    )
+    terminal = _envelope(
+        terminal_artifact,
+        widget_id="widget-isolated",
+        nonce="nonce-isolated",
+        sequence=3,
+        state="saved",
+    )
+
+    shell_page = browser.new_page()
+    shell_page.set_content(render_notebook_shell(initial), wait_until="load")
+    initial_frame = _frame(shell_page, "widget-isolated")
+    initial_root = initial_frame.locator('[data-hypergraph-inspect="map"]')
+    initial_summary = initial_root.locator("[data-hg-summary]")
+
+    assert initial_root.locator("[data-hg-run-id]").inner_text() == "pending"
+    assert initial_summary.get_by_text("Completed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "0"
+    assert initial_summary.get_by_text("Failed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "0"
+    shell_page.close()
+
+    errors: list[Exception] = []
+    requests: list[str] = []
+    terminal_page = browser.new_page(viewport={"width": 1280, "height": 900})
+    terminal_page.on("pageerror", lambda error: errors.append(error))
+    terminal_page.on("request", lambda request: requests.append(request.url))
+    terminal_page.set_content(render_payload_channel(terminal), wait_until="load")
+    portable_frame = terminal_page.frame(name="widget-isolated-portable-s3-frame")
+    assert portable_frame is not None
+    portable_frame.wait_for_selector('[data-hypergraph-inspect="map"]')
+    terminal_root = portable_frame.locator('[data-hypergraph-inspect="map"]')
+    terminal_summary = terminal_root.locator("[data-hg-summary]")
+
+    assert terminal_page.locator('[data-hg-inspect-portable-sequence="3"]').is_visible()
+    assert terminal_root.get_by_text("Saved snapshot", exact=True).is_visible()
+    assert terminal_summary.get_by_text("Completed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "2"
+    assert terminal_summary.get_by_text("Failed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "1"
+    terminal_root.get_by_role("button", name="Show failure").click()
+    detail = terminal_root.locator("[data-hg-detail]")
+    assert detail.get_by_text("maya-23", exact=True).is_visible()
+    assert "Customer maya-23 requires manual review" in detail.inner_text()
+    assert errors == []
+    assert all(url in {"about:blank", "about:srcdoc"} for url in requests)
+    terminal_page.close()
+
+
+def test_isolated_stale_channel_is_portable_and_keeps_exact_start_error(
+    browser: Browser,
+) -> None:
+    stale = replace(
+        _envelope(
+            _run(node_count=0),
+            widget_id="widget-isolated-stale",
+            nonce="nonce-isolated-stale",
+            sequence=2,
+            state="stale",
+        ),
+        message=serialize_value(RuntimeError("Notebook display setup failed")),
+    )
+    errors: list[Exception] = []
+    requests: list[str] = []
+    page = browser.new_page()
+    page.on("pageerror", lambda error: errors.append(error))
+    page.on("request", lambda request: requests.append(request.url))
+    page.set_content(render_payload_channel(stale), wait_until="load")
+
+    portable_frame = page.frame(name="widget-isolated-stale-portable-s2-frame")
+    assert portable_frame is not None
+    portable_frame.wait_for_selector('[data-hypergraph-inspect="run"]')
+    root = portable_frame.locator('[data-hypergraph-inspect="run"]')
+    assert root.get_by_text("Live inspection unavailable", exact=True).is_visible()
+    fallback = page.locator('[data-hg-inspect-channel-fallback="widget-isolated-stale"]')
+    assert fallback.is_visible()
+    assert "RuntimeError: Notebook display setup failed" in fallback.inner_text()
+    assert errors == []
+    assert all(url in {"about:blank", "about:srcdoc"} for url in requests)
     page.close()
 
 
