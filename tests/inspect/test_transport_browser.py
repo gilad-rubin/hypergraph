@@ -45,6 +45,10 @@ _PORTABLE_FRAME_TAG = re.compile(
     r"<iframe\b(?=[^>]*\bdata-hg-inspect-portable-frame=)[^>]*></iframe>",
     flags=re.IGNORECASE | re.DOTALL,
 )
+_PORTABLE_FRAME_SRCDOC = re.compile(
+    r"(<iframe\b(?=[^>]*\bdata-hg-inspect-portable-frame=)[^>]*?)\s+srcdoc=\"[^\"]*\"",
+    flags=re.IGNORECASE | re.DOTALL,
+)
 
 
 @pytest.fixture(scope="module")
@@ -963,6 +967,55 @@ def test_active_terminal_channel_without_portable_frame_keeps_native_summary_vis
     failure.locator("summary").click()
     failure_text = failure.inner_text()
     assert "First failure of 1" in failure_text
+    assert "score_customer" in failure_text
+    assert "customer_id=maya-23" in failure_text
+    assert "ValueError: Customer maya-23 requires manual review" in failure_text
+    assert errors == []
+    page.close()
+
+
+@pytest.mark.parametrize(
+    ("replacement", "expected_srcdoc"),
+    [(r'\1 srcdoc=""', ""), (r"\1", None)],
+    ids=["blank-srcdoc", "missing-srcdoc"],
+)
+def test_active_terminal_channel_with_unusable_portable_frame_keeps_native_summary_visible(
+    browser: Browser,
+    replacement: str,
+    expected_srcdoc: str | None,
+) -> None:
+    _, terminal_artifact = _partial_customer_map()
+    terminal = _envelope(
+        terminal_artifact,
+        widget_id="widget-unusable-portable-frame",
+        nonce="nonce-unusable-portable-frame",
+        sequence=3,
+        state="saved",
+    )
+    markup, replacements = _PORTABLE_FRAME_SRCDOC.subn(
+        replacement,
+        render_payload_channel(terminal),
+        count=1,
+    )
+
+    assert replacements == 1
+    assert len(re.findall(r"<script\b", markup, flags=re.IGNORECASE)) == 2
+    errors: list[Exception] = []
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.on("pageerror", lambda error: errors.append(error))
+    page.set_content(markup, wait_until="load")
+    frame = page.locator('iframe[title="Hypergraph saved execution inspection"]')
+    summary = page.locator("section").filter(has_text="Saved snapshot").filter(has_text="partial")
+
+    assert frame.count() == 1
+    assert frame.get_attribute("srcdoc") == expected_srcdoc
+    assert page.locator("script").count() == 2
+    assert summary.is_visible()
+    assert summary.get_by_text("Completed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "2"
+    assert summary.get_by_text("Failed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "1"
+    failure = summary.locator("details")
+    failure.locator("summary").click()
+    failure_text = failure.inner_text()
     assert "score_customer" in failure_text
     assert "customer_id=maya-23" in failure_text
     assert "ValueError: Customer maya-23 requires manual review" in failure_text

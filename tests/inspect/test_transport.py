@@ -15,11 +15,16 @@ from hypergraph.runners._shared._inspect import (
     NodeInspection,
     RunInspection,
 )
+from hypergraph.runners._shared._inspect_serialization import (
+    serialize_value,
+    serialized_value_to_wire,
+)
 from hypergraph.runners._shared._inspect_transport import (
     INSPECTION_PROTOCOL_VERSION,
     InspectionCoalescer,
     InspectionDelivery,
     InspectionEnvelope,
+    _native_failure_markup,
     inspection_envelope_to_wire,
 )
 
@@ -149,6 +154,50 @@ def test_envelope_has_one_typed_artifact_and_an_explicit_versioned_wire_boundary
     assert wire["payload"]["schema"] == "hypergraph.inspect/v1"
     assert wire["payload"]["delivery"] == {"state": "live", "label": "Live"}
     assert wire["payload"]["run"]["nodes"][0]["outputs"]["entries"][0]["value"]["value"] == 0
+
+
+def test_explicit_failure_without_stable_node_match_never_borrows_node_or_run_facts() -> None:
+    selected_failure = {
+        "node_name": "retry",
+        "error": None,
+        "inputs": serialized_value_to_wire(serialize_value({"attempt": 9})),
+        "superstep": 9,
+        "graph_name": "workflow",
+        "workflow_id": "workflow-live",
+        "item_index": None,
+    }
+    wrong_node_failure = {
+        **selected_failure,
+        "inputs": serialized_value_to_wire(serialize_value({"attempt": 1})),
+        "superstep": 1,
+    }
+    data = {
+        "status": "failed",
+        "item_index": None,
+        "failures": [selected_failure],
+        "nodes": [
+            {
+                "node_name": "retry",
+                "qualified_name": "outer/wrong/retry",
+                "graph_name": "workflow",
+                "item_index": None,
+                "superstep": 1,
+                "status": "failed",
+                "inputs": serialized_value_to_wire(serialize_value({"attempt": 1})),
+                "failure": wrong_node_failure,
+            }
+        ],
+        "error": serialized_value_to_wire(serialize_value(RuntimeError("run boundary error"))),
+    }
+
+    markup = _native_failure_markup(kind="run", data=data, message={})
+
+    assert "Qualified node: <code>retry</code>" in markup
+    assert "attempt=9" in markup
+    assert "outer/wrong/retry" not in markup
+    assert "attempt=1" not in markup
+    assert "run boundary error" not in markup
+    assert "Exact run exception" not in markup
 
 
 @pytest.mark.parametrize(
