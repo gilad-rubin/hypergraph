@@ -1295,14 +1295,26 @@ full privacy and live-to-saved contract.
 Structured rendering is limited to exact built-in `dict`, `list`, and `tuple`
 values, ordinary dataclasses, recognized Pydantic models, exact NumPy
 `ndarray` values, exact pandas `DataFrame` values, and a read-only mapping proxy
-(`MappingProxyType`) backed by an exact `dict`. Unsupported subclasses and
-custom protocols use a whole-value bounded `repr` fallback for each rendered
-occurrence instead of calling advertised traversal hooks. A proxy backed by a
-custom mapping uses the same whole-value bounded `repr` fallback rather than
-being traversed. `repr` is Python user code: Hypergraph cannot prevent or undo
-its side effects, and live rendering may call it for multiple snapshots.
-Raised `repr` exceptions become bounded typed placeholders without changing
-the run status or exception evidence.
+(`MappingProxyType`) backed by an exact `dict`.
+
+Trusted NumPy, pandas, and Pydantic adapters use canonical class provenance,
+not mutable public aliases. Replacing `numpy.ndarray`, `pandas.DataFrame`, or
+`pydantic.BaseModel` with a custom class does not make that class trusted.
+
+An exact pandas DataFrame is structured only when its storage is proven to use
+standard NumPy-backed storage. An ExtensionArray-backed DataFrame, including
+one backed by a user-defined extension array, becomes a bounded typed
+`unsupported extension-backed DataFrame` placeholder without calling DataFrame
+`repr`; DataFrame `repr` delegates to extension hooks. This is a narrow
+exception to the general whole-value fallback.
+
+Unsupported subclasses and custom protocols use a whole-value bounded `repr`
+fallback for each rendered occurrence instead of calling advertised traversal
+hooks. A proxy backed by a custom mapping uses the same whole-value bounded
+`repr` fallback rather than being traversed. `repr` is Python user code:
+Hypergraph cannot prevent or undo its side effects, and live rendering may call
+it for multiple snapshots. Raised `repr` exceptions become bounded typed
+placeholders without changing the run status or exception evidence.
 
 ### Progressive Disclosure
 

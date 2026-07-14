@@ -218,12 +218,26 @@ Structured inspection deliberately recognizes only exact inert containers and
 safe concrete adapters: exact built-in `dict`, exact built-in `list`, exact
 built-in `tuple`, ordinary dataclasses, recognized Pydantic models, exact NumPy
 `ndarray`, exact pandas `DataFrame`, and a read-only mapping proxy
-(`MappingProxyType`) backed by an exact `dict`. For unsupported subclasses and
-custom protocols—including objects that advertise mapping, sequence, model,
-array, or DataFrame hooks—Hypergraph uses one whole-value bounded `repr`
-fallback for each rendered occurrence and does not call their advertised
-traversal hooks. A proxy backed by a custom mapping uses the same whole-value
-bounded `repr` fallback instead of traversing that mapping.
+(`MappingProxyType`) backed by an exact `dict`.
+
+For the NumPy, pandas, and Pydantic adapters, trust comes from canonical class
+provenance rather than mutable public aliases. Reassigning public names such as
+`numpy.ndarray`, `pandas.DataFrame`, or `pydantic.BaseModel` therefore cannot
+make an unrelated custom class trusted.
+
+An exact pandas DataFrame is structured only when Hypergraph can prove that it
+uses standard NumPy-backed storage. An ExtensionArray-backed DataFrame,
+including one with a user-defined extension array, becomes a bounded typed
+`unsupported extension-backed DataFrame` placeholder without calling DataFrame
+`repr`. This is a narrow exception to the general fallback below: DataFrame
+`repr` delegates to extension hooks.
+
+For unsupported subclasses and custom protocols—including objects that
+advertise mapping, sequence, model, array, or DataFrame hooks—Hypergraph uses
+one whole-value bounded `repr` fallback for each rendered occurrence and does
+not call their advertised traversal hooks. A proxy backed by a custom mapping
+uses the same whole-value bounded `repr` fallback instead of traversing that
+mapping.
 
 `repr` is Python user code. Hypergraph cannot prevent or undo its side effects,
 and the same object can reach the fallback during multiple live snapshots. Any
