@@ -36,7 +36,7 @@ from hypergraph.runners._shared._inspect_transport import (
     _native_failure_markup,
     render_payload_channel,
 )
-from hypergraph.runners._shared.results import MapResult, RunResult
+from hypergraph.runners._shared.results import MapResult, RunResult, RunStatus
 
 _T = TypeVar("_T")
 _RunnerKind = Literal["sync", "async"]
@@ -670,6 +670,158 @@ def _execute_recovery_code(
         return local_values, output.getvalue()
 
     return _run_async(execute)
+
+
+class _SparseMapBoundaryRunner(SyncRunner):
+    def __init__(self, batch: MapResult) -> None:
+        super().__init__()
+        self.batch = batch
+
+    def map(self, *_args: Any, **_kwargs: Any) -> MapResult:
+        return self.batch
+
+
+def _sparse_map_result(
+    *,
+    unstarted_item_indexes: tuple[int, ...],
+    selected_error: RuntimeError,
+) -> MapResult:
+    decoy = RunResult(
+        values={},
+        status=RunStatus.FAILED,
+        run_id="run-decoy",
+        error=RuntimeError("decoy item error"),
+    )
+    selected = RunResult(
+        values={},
+        status=RunStatus.FAILED,
+        run_id="run-selected",
+        error=selected_error,
+    )
+    return MapResult(
+        results=(decoy, selected),
+        run_id="batch-sparse-recovery",
+        total_duration_ms=1.0,
+        map_over=("value",),
+        map_mode="zip",
+        graph_name="sparse-boundary-recovery",
+        unstarted_item_indexes=unstarted_item_indexes,
+    )
+
+
+def _map_item_boundary_artifact(
+    *,
+    selected_item_index: int,
+) -> tuple[MapInspection, RuntimeError]:
+    batch, _ = _run_unstable_nested_map("sync")
+    artifact = batch.inspect()._artifact
+    base_item = artifact.items[0]
+    assert base_item.run is not None
+    error = RuntimeError(f"captured item {selected_item_index} boundary")
+    run = replace(
+        base_item.run,
+        item_index=selected_item_index,
+        status="failed",
+        nodes=(),
+        failures=(),
+        error=error,
+    )
+    return (
+        replace(
+            artifact,
+            status="failed",
+            requested_count=max(3, selected_item_index + 1),
+            items=(
+                replace(
+                    base_item,
+                    item_index=selected_item_index,
+                    status="failed",
+                    requested_inputs={"value": selected_item_index},
+                    run=run,
+                ),
+            ),
+            unstarted_item_indexes=(),
+        ),
+        error,
+    )
+
+
+def _recovery_code_for_surface(
+    browser: Browser,
+    surface: _Surface,
+    artifact: MapInspection,
+    *,
+    error: RuntimeError,
+) -> str:
+    if surface == "native":
+        return _native_recovery_code(
+            artifact,
+            source="map_item",
+            error=error,
+        )
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    try:
+        return _full_recovery_code(
+            page,
+            artifact,
+            source="map_item",
+            error=error,
+        )
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("surface", ["full", "native"])
+@pytest.mark.parametrize(
+    (
+        "selected_item_index",
+        "unstarted_item_indexes",
+        "expected_settled_index",
+    ),
+    [
+        pytest.param(2, (1,), 1, id="gap-before-selected"),
+        pytest.param(1, (2,), 1, id="gap-after-selected"),
+        pytest.param(1, (1,), None, id="selected-is-unstarted"),
+        pytest.param(3, (2,), None, id="selected-out-of-range"),
+    ],
+)
+def test_sparse_map_boundary_recovery_maps_original_item_or_fails_closed(
+    browser: Browser,
+    surface: _Surface,
+    selected_item_index: int,
+    unstarted_item_indexes: tuple[int, ...],
+    expected_settled_index: int | None,
+) -> None:
+    artifact, captured_error = _map_item_boundary_artifact(
+        selected_item_index=selected_item_index,
+    )
+    selected_error = RuntimeError(f"selected item {selected_item_index} error")
+    batch = _sparse_map_result(
+        unstarted_item_indexes=unstarted_item_indexes,
+        selected_error=selected_error,
+    )
+    runner = _SparseMapBoundaryRunner(batch)
+    code = _recovery_code_for_surface(
+        browser,
+        surface,
+        artifact,
+        error=captured_error,
+    )
+
+    namespace, output = _execute_recovery_code(
+        code,
+        runner=runner,
+        graph=_boundary_graph(),
+        values={"value": [0, 1, 2]},
+    )
+
+    if expected_settled_index is None:
+        assert namespace["failed"] is None
+        assert output.strip() == str(batch)
+    else:
+        assert namespace["failed"] is batch.results[expected_settled_index]
+        assert f"RuntimeError: {selected_error}" in output
+        assert "decoy item error" not in output
 
 
 _REAL_BOUNDARY_CASES = [
