@@ -875,6 +875,15 @@ def test_fragmented_numpy_dataframe_remains_a_bounded_table() -> None:
     assert serialized.table.columns_truncated is True
 
 
+def test_dataframe_placement_scan_limit_is_cumulative() -> None:
+    frame = pd.DataFrame({f"column_{index}": [index if index % 2 == 0 else str(index)] for index in range(12_000)})
+
+    serialized = serialize_value(frame)
+
+    assert serialized.kind == "placeholder"
+    assert serialized.reason == "DataFrame storage exceeds 10000-placement inspection limit"
+
+
 def test_stored_dataframe_layout_preserves_empty_rows_duplicate_columns_and_placements() -> None:
     empty_columns = serialize_value(pd.DataFrame(index=[0, 1]))
 
