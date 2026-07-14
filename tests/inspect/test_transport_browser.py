@@ -1074,14 +1074,16 @@ def test_untrusted_map_keeps_run_boundary_error_separate_from_status_only_node(
     failure = summary.locator("details")
     failure.locator("summary").click()
     failure_text = failure.inner_text()
+    evidence_code = failure.locator("pre code").inner_text()
 
     assert "Item 0 failure" in failure_text
     assert "Exact run exception: RuntimeError: item dispatch failed" in failure_text
     assert "Qualified node:" not in failure_text
     assert "Captured inputs:" not in failure_text
     assert "wrong-run" not in failure_text
-    assert "for failed in batch.failures" in failure_text
-    assert "print(failed.error)" in failure_text
+    assert "for failed in batch.failures" in evidence_code
+    assert "print(failed.error)" in evidence_code
+    compile(evidence_code, "<native-run-boundary-evidence>", "exec")
     page.close()
 
 
@@ -1135,6 +1137,7 @@ def test_untrusted_map_keeps_batch_boundary_error_separate_from_child_facts(
     failure = summary.locator("details")
     failure.locator("summary").click()
     failure_text = failure.inner_text()
+    recovery_code = failure.locator("pre code").inner_text()
 
     assert "Batch failure" in failure_text
     assert "Exact batch exception: RuntimeError: batch scheduler unavailable" in failure_text
@@ -1142,11 +1145,13 @@ def test_untrusted_map_keeps_batch_boundary_error_separate_from_child_facts(
     assert "Qualified node:" not in failure_text
     assert "Captured inputs:" not in failure_text
     assert "wrong-batch" not in failure_text
-    assert "try:" in failure_text
-    assert "runner.map(" in failure_text
-    assert "map_over=" in failure_text
-    assert "except Exception as error:" in failure_text
-    assert "print(batch.error)" not in failure_text
+    assert "try:" in recovery_code
+    assert "runner.map(" in recovery_code
+    assert "map_over='customer_id'" in recovery_code
+    assert "map_mode='zip'" in recovery_code
+    assert "except Exception as error:" in recovery_code
+    assert "print(batch.error)" not in recovery_code
+    compile(recovery_code, "<native-batch-boundary-recovery>", "exec")
     page.close()
 
 
@@ -1276,11 +1281,13 @@ def test_untrusted_stale_channel_keeps_exact_start_error_in_native_details(
     assert failure.evaluate("element => element.open") is False
     failure.locator("summary").click()
     failure_text = failure.inner_text()
+    recovery_code = failure.locator("pre code").inner_text()
     assert "RuntimeError: Notebook display setup failed" in failure_text
-    assert "try:" in failure_text
-    assert "runner.run(" in failure_text
-    assert "except Exception as error:" in failure_text
-    assert "result.inspect()" not in failure_text
+    assert "try:" in recovery_code
+    assert "runner.run(" in recovery_code
+    assert "except Exception as error:" in recovery_code
+    assert "result.inspect()" not in recovery_code
+    compile(recovery_code, "<native-start-failure-recovery>", "exec")
     assert "docs/05-how-to/debug-workflows.md" in failure_text
     page.close()
 

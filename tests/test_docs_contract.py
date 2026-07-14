@@ -445,6 +445,9 @@ def test_inspect_mode_docs_mirror_public_contract() -> None:
         assert "only after the original iframe accepts" in normalized_delivery
         assert "native `<details>`" in notebook_delivery_docs
         assert "first failure of n" in normalized_delivery
+        assert "exception preview" in normalized_delivery
+        assert "exact run exception" in normalized_delivery
+        assert "exact batch exception" in normalized_delivery
         assert "never auto-trusts" in normalized_delivery
         assert "scripts, styles, iframes" in normalized_delivery
         assert "docs/05-how-to/debug-workflows.md" in notebook_delivery_docs

@@ -319,7 +319,9 @@ summary. It uses native `<details>` and contains:
 
 - saved/stale delivery plus exact execution status and counts
 - `First failure of N`, the original map item, and the qualified node
-- bounded captured inputs and exact exception type/text
+- bounded captured inputs and exact exception type/text, or an explicitly
+  labeled exception preview with the original character count when text was
+  truncated
 - a short `RunResult` / `MapResult` evidence snippet
 - the canonical guide path: `docs/05-how-to/debug-workflows.md`
 
@@ -328,6 +330,12 @@ it does not imply that one displayed failure is the whole batch. When active
 HTML is trusted, the portable iframe runs and hides this small summary. In a
 shared document, the complete terminal fallback still hides only after the
 original iframe accepts the exact authenticated update.
+
+Attributable node evidence uses **Exact exception**. Infrastructure failures
+stay at their real boundary as **Exact run exception** or **Exact batch
+exception**; Hypergraph does not borrow a nearby node name or inputs. If a run
+never returned, the compact example shows a public `runner.run()` / `runner.map()`
+`try`/`except` rerun instead of referring to a nonexistent result.
 
 ```text
 Before (untrusted output): Python says partial / 2 completed / 1 failed,

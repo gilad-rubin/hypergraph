@@ -56,12 +56,15 @@
   `partial / 2 completed / 1 failed`. Now terminal and stale channels include
   one small native `<details>` summary derived from the existing bounded
   payload. It exposes `First failure of N`, original item, qualified node,
-  bounded inputs, exact exception, a result-evidence snippet, and
-  `docs/05-how-to/debug-workflows.md`. Trusted output still gets the full
-  sandboxed portable inspector and hides the compact summary when active HTML
-  runs. Hypergraph never auto-trusts or signs a notebook, calls a server trust
-  endpoint, weakens the iframe sandbox, changes ACK authentication, or adds a
-  public transport setting.
+  bounded inputs, exact exception (or a size-labelled **Exception preview**
+  when bounded text was truncated), a result-evidence snippet, and
+  `docs/05-how-to/debug-workflows.md`. **Exact run exception** and **Exact batch
+  exception** remain separate from attributable node evidence, and generated
+  recovery snippets use only public runner/result APIs. Trusted output still
+  gets the full sandboxed portable inspector and hides the compact summary when
+  active HTML runs. Hypergraph never auto-trusts or signs a notebook, calls a
+  server trust endpoint, weakens the iframe sandbox, changes ACK authentication,
+  or adds a public transport setting.
 
 - **Portable saved inspect delivery** — before, notebook hosts that isolate
   each saved output could show the first `pending / 0` shell because later

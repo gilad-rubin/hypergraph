@@ -1304,11 +1304,18 @@ Trusted active output gets that full sandboxed iframe. If notebook trust policy
 strips scripts, styles, iframes, and output identifiers, the terminal/stale
 channel instead preserves a small native `<details>` summary: delivery,
 status/counts, `First failure of N`, original item, qualified node, bounded
-inputs, exact exception, a short result-evidence snippet, and
+inputs, exact exception (or an **Exception preview** with the original size
+when bounded text was truncated), a short result-evidence snippet, and
 `docs/05-how-to/debug-workflows.md`. Hypergraph never auto-trusts or signs the
 notebook, calls a server trust endpoint, or weakens its sandbox. When active
 HTML runs, it hides the compact summary; the complete shared fallback still
 hides only after the original iframe accepts the exact authenticated update.
+
+Node `FailureEvidence` uses **Exact exception**. A failure without attributable
+node evidence remains **Exact run exception** or **Exact batch exception** and
+does not inherit a child's name or inputs. Recovery snippets use public runner
+and result APIs; they never read a nonexistent `MapResult.error` or inspect a
+result that was not returned.
 
 Before, an untrusted terminal record could be blank while Python had already
 settled at `partial / 2 completed / 1 failed`. After, Maya can expand native
