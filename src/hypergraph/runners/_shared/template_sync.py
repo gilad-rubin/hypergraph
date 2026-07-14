@@ -500,7 +500,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             )
             if owns_inspection:
                 assert inspection_session is not None
-                inspection_session.bind_run(run_id)
+                inspection_session.bind_run(run_id, workflow_id=workflow_id)
             if inspection_session is not None and resume_checkpoint is not None:
                 for step in sorted(resume_checkpoint.steps, key=lambda item: (item.superstep, item.index)):
                     if step.status is StepStatus.COMPLETED:

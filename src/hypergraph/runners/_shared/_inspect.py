@@ -181,12 +181,15 @@ class InspectionSession:
         self._next_sequence = 0
         self._failure_span_ids: set[str] = set()
 
-    def bind_run(self, run_id: str) -> None:
-        """Bind the top-level run ID before node execution begins."""
+    def bind_run(self, run_id: str, *, workflow_id: str | None = None) -> None:
+        """Bind effective run identity before node execution begins."""
         with self._lock:
             if self._artifact.run_id not in {"pending", run_id}:
                 raise RuntimeError("InspectionSession is already bound to another top-level run.")
-            self._replace_artifact_locked(run_id=run_id)
+            changes: dict[str, Any] = {"run_id": run_id}
+            if workflow_id is not None:
+                changes["workflow_id"] = workflow_id
+            self._replace_artifact_locked(**changes)
 
     def start_node(
         self,
