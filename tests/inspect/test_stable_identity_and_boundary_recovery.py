@@ -696,6 +696,74 @@ def test_public_failure_requires_safe_projection_and_embedded_leaf_name(
     assert node_keys[leaf_index] != "failure-0"
 
 
+def _single_map_failure_run() -> RunInspection:
+    @node(output_name="reviewed")
+    def reject(customer_id: str) -> str:
+        raise ValueError(f"manual review: {customer_id}")
+
+    batch = SyncRunner().map(
+        Graph([reject], name="single-map-review"),
+        {"customer_id": ["maya-23"]},
+        map_over="customer_id",
+        inspect=True,
+        error_handling="continue",
+    )
+    item = batch.inspect()._artifact.items[0]
+    assert item.run is not None
+    return item.run
+
+
+def test_public_projection_rejects_foreign_index_when_leaf_equals_container() -> None:
+    base = _single_map_failure_run()
+    assert base.item_index == 0
+    leaf_index = next(index for index, current in enumerate(base.nodes) if current.failure is not None)
+    assert base.nodes[leaf_index].item_index == 0
+    run = replace(
+        base,
+        failures=(replace(base.failures[0], item_index=99),),
+    )
+
+    node_keys, public_keys = _failure_keys(run)
+
+    assert public_keys == ("failure-0",)
+    assert node_keys[leaf_index] != "failure-0"
+
+
+def test_aggregate_projection_rejects_foreign_index_when_leaf_equals_container() -> None:
+    base = _single_map_failure_run()
+    base_leaf = next(current for current in base.nodes if current.failure is not None)
+    assert base_leaf.failure is not None
+    shared_failure = replace(
+        base_leaf.failure,
+        node_name="review_group/reject",
+    )
+    leaf = replace(
+        base_leaf,
+        qualified_name="review_group/reject",
+        failure=shared_failure,
+    )
+    foreign_aggregate = replace(
+        leaf,
+        span_id=f"{leaf.span_id}-foreign-aggregate",
+        node_name="review_group",
+        qualified_name="review_group",
+        item_index=99,
+        sequence=leaf.sequence - 1,
+        failure=replace(shared_failure, item_index=99),
+    )
+    run = replace(
+        base,
+        nodes=(foreign_aggregate, leaf),
+        failures=(shared_failure,),
+    )
+
+    node_keys, public_keys = _failure_keys(run)
+
+    assert public_keys == ("failure-0",)
+    assert node_keys[1] == "failure-0"
+    assert node_keys[0] != "failure-0"
+
+
 @pytest.mark.parametrize(
     ("duplicate_position", "expected_container_matches"),
     [
