@@ -223,7 +223,8 @@ result = SyncRunner().run(
 
 Nested graphs and `map()` runs show up as a span tree rather than a flat log,
 while captured inspect values stay inside Hypergraph. See
-[Debug Workflows](docs/05-how-to/debug-workflows.md) for native inspection and
+[Debug Workflows](https://github.com/gilad-rubin/hypergraph/blob/master/docs/05-how-to/debug-workflows.md)
+for native inspection and
 [execution observability](docs/05-how-to/observe-execution.md) for OTel setup.
 
 ### Control Work After It Starts
