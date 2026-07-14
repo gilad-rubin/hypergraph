@@ -74,6 +74,7 @@ def _run_wire(artifact: RunInspection) -> dict[str, object]:
         "total_duration_ms": artifact.total_duration_ms,
         "captured": artifact.captured,
         "terminal": artifact.terminal,
+        **({"runner_kind": artifact._runner_kind} if artifact._runner_kind is not None else {}),
         "error": _serialized(error) if error is not None else None,
         "nodes": [_node_wire(node) for node in artifact.nodes],
         "failures": [_failure_wire(failure) for failure in artifact.failures],
@@ -108,6 +109,7 @@ def _map_wire(artifact: MapInspection) -> dict[str, object]:
         "total_duration_ms": artifact.total_duration_ms,
         "captured": artifact.captured,
         "terminal": artifact.terminal,
+        **({"runner_kind": artifact._runner_kind} if artifact._runner_kind is not None else {}),
         "error": _serialized(error) if error is not None else None,
         "counts": {
             "requested": artifact.requested_count,

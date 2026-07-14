@@ -331,11 +331,11 @@ summary. It uses native `<details>` and contains:
 
 - saved/stale delivery plus exact execution status and counts
 - `First failure of N`, the original map item, and the qualified node
-- bounded captured inputs and exact exception type/text, or an explicitly
-  labeled **Exception preview (bounded repr)** when only a safe representation
-  exists; an opaque repr is prefixed with its exception type once, while a repr
-  already beginning with that type is not duplicated; truncated previews
-  include the original character count
+- bounded captured inputs and exception evidence: exact only for a complete
+  safe payload, **Exception preview (bounded repr)** for a representation, or
+  **Exception details unavailable** with its reason; an opaque repr is prefixed
+  with its exception type once, while a repr already beginning with that type
+  is not duplicated; truncated previews include the original character count
 - copy-faithful input and exception whitespace using valid `<pre><code>`
   nesting, with copy-inert wrap opportunities so an unbroken 20,000-character
   value fits a 360px page
@@ -353,15 +353,51 @@ not treated as available. In a shared document, the complete terminal fallback
 still hides only after the original iframe accepts the exact authenticated
 update.
 
-Attributable node evidence uses **Exact exception**. Infrastructure failures
-stay at their real boundary as **Exact run exception** or **Exact batch
-exception**; Hypergraph does not borrow a nearby node name or inputs. If a run
-never returned, the compact example shows a public `runner.run()` / `runner.map()`
-`try`/`except` rerun instead of referring to a nonexistent result.
-Likewise, an explicit failure with no stable node-identity match keeps its own
+A complete safe exception uses **Exact exception** for attributable node
+evidence. Infrastructure failures stay at their real boundary as **Exact run
+exception** or **Exact batch exception**; Hypergraph does not borrow a nearby
+node name or inputs. Repr-backed evidence instead uses **Exception preview
+(bounded repr)**, and a truncated preview includes its original character
+count. A placeholder uses **Exception details unavailable** and explains why.
+The full inspector and the trust-safe native summary follow the same labels.
+
+Recovery code follows the captured runner kind. Sync snippets call
+`runner.run(...)` or `runner.map(...)` directly; async snippets use
+`await runner.run(...)` or `await runner.map(...)`. If the runner kind was not
+captured, the summary says recovery code is unavailable instead of guessing
+sync. If a run may not return under the default raise policy, the snippet first
+reruns with `error_handling="continue"`, so `result` or `batch` exists before it
+is read. An explicit failure with no stable node-identity match keeps its own
 name, inputs, and error instead of borrowing a same-name node's qualified path.
-When a result can carry the evidence, its example requests
-`error_handling="continue"`, so the shown `result` or `batch` actually exists.
+
+Before (misleading async recovery):
+
+```text
+Exact exception
+PaymentDeclined: <redacted>
+result = runner.run(graph, values)
+```
+
+After (truthful async recovery):
+
+```text
+Exception preview (bounded repr)
+PaymentDeclined: <redacted>
+```
+
+```python
+result = await runner.run(
+    graph,
+    values,
+    inspect=True,
+    error_handling="continue",
+)
+print(result.failure)
+```
+
+Here, `runner` is an `AsyncRunner`; `graph` and `values` are the same graph and
+inputs used for the failed execution. A sync inspection shows the same call
+without `await`.
 
 ```text
 Before (untrusted output): Python says partial / 2 completed / 1 failed,

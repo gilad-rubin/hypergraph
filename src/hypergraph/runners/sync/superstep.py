@@ -267,7 +267,14 @@ def run_superstep_sync(
                                     )
                                     or ()
                                 )
-                                node_failures = tuple(replace(failure, node_name=f"{node.name}/{failure.node_name}") for failure in inner_failures)
+                                node_failures = tuple(
+                                    replace(
+                                        failure,
+                                        node_name=f"{node.name}/{failure.node_name}",
+                                        item_index=(ctx_base.item_index if ctx_base.item_index is not None else failure.item_index),
+                                    )
+                                    for failure in inner_failures
+                                )
                             else:
                                 node_failures = (
                                     FailureEvidence(

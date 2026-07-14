@@ -282,6 +282,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         total_duration_ms=0.0,
                         captured=True,
                         terminal=False,
+                        _runner_kind="async",
                     )
                 )
             except Exception:
@@ -438,6 +439,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 graph_name=graph.name or "",
                 workflow_id=workflow_id,
                 item_index=_item_index,
+                runner_kind="async",
             )
         if top_level_inspection and inspection_transport is not None and _inspection_session is None and inspection_session is not None:
             try:
@@ -948,6 +950,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         total_duration_ms=0.0,
                         captured=True,
                         terminal=False,
+                        _runner_kind="async",
                     )
                 )
             except Exception:
@@ -1006,6 +1009,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 requested_count=len(input_variations),
                 map_over=tuple(map_over_list),
                 map_mode=map_mode,
+                runner_kind="async",
             )
             if owns_inspection
             else None

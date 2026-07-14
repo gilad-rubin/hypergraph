@@ -387,8 +387,48 @@
   }
 
   function errorText(serialized) {
-    if (!serialized) return "Error details not available";
-    return scalarText(serialized);
+    return exceptionPresentation(serialized, "Exact exception").text;
+  }
+
+  function reprWithType(typeName, reprText) {
+    if (reprText.indexOf(typeName) === 0) {
+      var remainder = reprText.slice(typeName.length);
+      if (!remainder || " \t\r\n([{<:".indexOf(remainder.charAt(0)) !== -1) return reprText;
+    }
+    return typeName + ": " + reprText;
+  }
+
+  function exceptionPresentation(serialized, exactLabel) {
+    if (!serialized) return { label: "Exception details unavailable", text: "Error — serialized exception unavailable" };
+    var typeName = serialized.type_name || "Error";
+    var kind = serialized.kind;
+    if (kind === "placeholder" || ((kind === "text" || kind === "exception") && typeof serialized.text !== "string")) {
+      return {
+        label: "Exception details unavailable",
+        text: typeName + " — " + (serialized.reason || "serialized exception text unavailable"),
+      };
+    }
+    if (kind === "text") {
+      var reprLabel = "Exception preview (bounded repr)";
+      if (serialized.truncated) reprLabel = "Exception preview (bounded repr; truncated from " + (serialized.original_size || "unknown") + " characters)";
+      return { label: reprLabel, text: reprWithType(typeName, serialized.text) };
+    }
+    if (kind === "exception") {
+      var exceptionLabel = exactLabel;
+      if (serialized.truncated) exceptionLabel = "Exception preview (truncated from " + (serialized.original_size || "unknown") + " characters)";
+      return { label: exceptionLabel, text: typeName + ": " + serialized.text };
+    }
+    return { label: "Exception preview (serialized value)", text: typeName + ": " + scalarText(serialized) };
+  }
+
+  function appendException(parent, serialized, exactLabel) {
+    var presentation = exceptionPresentation(serialized, exactLabel);
+    var block = element("div", "hg-inspect-detail-block");
+    block.appendChild(element("div", "hg-inspect-section-title", presentation.label));
+    var error = element("div", "hg-inspect-error");
+    error.appendChild(code(presentation.text));
+    block.appendChild(error);
+    parent.appendChild(block);
   }
 
   function appendIdentity(parent, node, relativeStart) {
@@ -418,37 +458,83 @@
     parent.appendChild(block);
   }
 
+  function runnerAwaitPrefix() {
+    var data = payload.kind === "map" ? payload.map : payload.run;
+    var runnerKind = data && data.runner_kind;
+    if (runnerKind === "sync") return "";
+    if (runnerKind === "async") return "await ";
+    return null;
+  }
+
+  function mapRerunArguments() {
+    var data = payload.map || {};
+    var mapOver = Array.isArray(data.map_over) ? data.map_over : [];
+    var mapOverLiteral = mapOver.length === 1
+      ? JSON.stringify(mapOver[0])
+      : "[" + mapOver.map(function (value) { return JSON.stringify(value); }).join(", ") + "]";
+    return {
+      mapOver: mapOverLiteral,
+      mapMode: JSON.stringify(data.map_mode || "zip"),
+    };
+  }
+
   function failureSnippet(itemIndex) {
+    var awaitPrefix = runnerAwaitPrefix();
+    if (awaitPrefix === null) return null;
     if (payload.kind === "map") {
-      return "failure = next(\n"
+      var args = mapRerunArguments();
+      var mapRerun = "batch = " + awaitPrefix + "runner.map(\n"
+        + "    graph,\n"
+        + "    values,\n"
+        + "    map_over=" + args.mapOver + ",\n"
+        + "    map_mode=" + args.mapMode + ",\n"
+        + "    inspect=True,\n"
+        + "    error_handling=\"continue\",\n"
+        + ")\n";
+      return mapRerun + "failure = next(\n"
         + "    item.failure for item in batch.failures\n"
         + "    if item.failure and item.failure.item_index == " + itemIndex + "\n"
         + ")\n"
         + "failure.node_name\n"
         + "failure.inputs";
     }
-    return "failure = result.failure\nfailure.node_name\nfailure.inputs";
+    var runRerun = "result = " + awaitPrefix + "runner.run(\n"
+      + "    graph,\n"
+      + "    values,\n"
+      + "    inspect=True,\n"
+      + "    error_handling=\"continue\",\n"
+      + ")\n";
+    return runRerun + "failure = result.failure\nfailure.node_name\nfailure.inputs";
   }
 
   function appendFailure(parent, failure, itemIndex) {
     if (!failure) return;
-    var block = element("div", "hg-inspect-detail-block");
-    block.appendChild(element("div", "hg-inspect-section-title", "Exact exception"));
-    var error = element("div", "hg-inspect-error");
-    error.appendChild(code(errorText(failure.error)));
-    block.appendChild(error);
-    parent.appendChild(block);
+    appendException(parent, failure.error, "Exact exception");
 
     var evidence = element("div", "hg-inspect-detail-block");
-    evidence.appendChild(element("div", "hg-inspect-section-title", "Smallest useful evidence"));
-    var pre = element("pre", "hg-inspect-code");
-    pre.appendChild(code(failureSnippet(itemIndex)));
-    evidence.appendChild(pre);
+    var snippet = failureSnippet(itemIndex);
+    if (snippet === null) {
+      evidence.appendChild(element("div", "hg-inspect-section-title", "Recovery code unavailable"));
+      evidence.appendChild(element("p", "hg-inspect-muted", "Runner kind was not captured."));
+    } else {
+      evidence.appendChild(element("div", "hg-inspect-section-title", "Smallest useful evidence"));
+      var pre = element("pre", "hg-inspect-code");
+      pre.appendChild(code(snippet));
+      evidence.appendChild(pre);
+    }
     parent.appendChild(evidence);
   }
 
-  function appendOrderedFailures(parent, run) {
+  function sameFailure(left, right) {
+    if (!left || !right) return false;
+    return ["node_name", "superstep", "graph_name", "workflow_id", "item_index"].every(function (field) {
+      return left[field] === right[field];
+    });
+  }
+
+  function appendOrderedFailures(parent, run, selectedFailure) {
     var failures = run && Array.isArray(run.failures) ? run.failures : [];
+    if (selectedFailure) failures = failures.filter(function (failure) { return !sameFailure(failure, selectedFailure); });
     if (!failures.length) return;
     var block = element("div", "hg-inspect-detail-block");
     block.appendChild(element("div", "hg-inspect-section-title", "Run failures · " + failures.length));
@@ -465,12 +551,7 @@
   function appendBatchError(parent) {
     var map = currentMap();
     if (!map || !map.error) return;
-    var block = element("div", "hg-inspect-detail-block");
-    block.appendChild(element("div", "hg-inspect-section-title", "Exact batch exception"));
-    var error = element("div", "hg-inspect-error");
-    error.appendChild(code(errorText(map.error)));
-    block.appendChild(error);
-    parent.appendChild(block);
+    appendException(parent, map.error, "Exact batch exception");
   }
 
   function renderHeader() {
@@ -517,7 +598,7 @@
     if (map && map.error) {
       alertElement.hidden = false;
       showFailureElement.hidden = true;
-      alertTextElement.textContent = "The batch failed at its execution boundary. Exact exception evidence is shown in the detail panel.";
+      alertTextElement.textContent = "The batch failed at its execution boundary. Exception evidence is shown in the detail panel.";
       return;
     }
     var failureItem = firstFailedItem();
@@ -710,9 +791,7 @@
     if (!node) {
       detailElement.appendChild(element("div", "hg-inspect-section-title", "Run detail"));
       if (run.error) {
-        var runError = element("div", "hg-inspect-error");
-        runError.appendChild(code(errorText(run.error)));
-        detailElement.appendChild(runError);
+        appendException(detailElement, run.error, "Exact run exception");
       } else {
         detailElement.appendChild(element("p", "hg-inspect-muted", "Select a node execution."));
       }
@@ -728,16 +807,15 @@
     appendIdentity(detailElement, node, relativeStart);
     detailElement.appendChild(renderCapture("Inputs", node.inputs || (node.failure && node.failure.inputs), node, "node." + executionId(node) + ".inputs"));
     detailElement.appendChild(renderCapture("Outputs", node.outputs, node, "node." + executionId(node) + ".outputs"));
-    appendFailure(detailElement, node.failure, node.item_index === null || node.item_index === undefined ? state.selectedItem : node.item_index);
+    appendFailure(
+      detailElement,
+      node.failure,
+      payload.kind === "map" ? state.selectedItem : node.item_index
+    );
     if (!node.failure && run.error) {
-      var runErrorBlock = element("div", "hg-inspect-detail-block");
-      runErrorBlock.appendChild(element("div", "hg-inspect-section-title", "Exact run exception"));
-      var runError = element("div", "hg-inspect-error");
-      runError.appendChild(code(errorText(run.error)));
-      runErrorBlock.appendChild(runError);
-      detailElement.appendChild(runErrorBlock);
+      appendException(detailElement, run.error, "Exact run exception");
     }
-    appendOrderedFailures(detailElement, run);
+    appendOrderedFailures(detailElement, run, node.failure);
   }
 
   function renderFooter() {

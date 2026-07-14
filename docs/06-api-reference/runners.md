@@ -1304,11 +1304,13 @@ Trusted active output gets that full sandboxed iframe. If notebook trust policy
 strips scripts, styles, iframes, and output identifiers, the terminal/stale
 channel instead preserves a small native `<details>` summary: delivery,
 status/counts, `First failure of N`, original item, qualified node, bounded
-inputs, exact exception (or an **Exception preview (bounded repr)** when only a
-safe representation exists), a short result-evidence snippet, and
-`docs/05-how-to/debug-workflows.md`. Preview truncation includes the original
-size. An opaque repr retains its exception type once; a repr already beginning
-with that type is not prefixed again. Input and exception code is copy-faithful
+inputs, and exception evidence labelled exact only for a complete safe payload.
+A representation uses **Exception preview (bounded repr)**; a placeholder uses
+**Exception details unavailable** with its reason. The summary also includes a
+short result-evidence snippet and `docs/05-how-to/debug-workflows.md`. Preview
+truncation includes the original size. An opaque repr retains its exception
+type once; a repr already beginning with that type is not prefixed again. Input
+and exception code is copy-faithful
 and uses valid `<pre><code>` nesting, while copy-inert wrap opportunities keep
 an unbroken 20,000-character value inside a 360px page. Recovery snippets use
 the same copy-inert wrapping without changing the copied Python code.
@@ -1319,14 +1321,22 @@ HTML runs, it hides the compact summary only when the matching iframe retains a
 non-empty local `srcdoc`; the complete shared fallback still hides only after
 the original iframe accepts the exact authenticated update.
 
-Node `FailureEvidence` uses **Exact exception**. A failure without attributable
-node evidence remains **Exact run exception** or **Exact batch exception** and
-does not inherit a child's name or inputs. Recovery snippets use public runner
-and result APIs; they never read a nonexistent `MapResult.error` or inspect a
-result that was not returned. An explicit failure without a stable node match
-keeps its own name, inputs, and error; node name alone is never a lookup key.
-Result-oriented snippets rerun with `error_handling="continue"` before reading
-`result.failure`, `result.error`, or `batch.failures`.
+A complete safe exception on node `FailureEvidence` uses **Exact exception**.
+A failure without attributable node evidence remains **Exact run exception**
+or **Exact batch exception** and does not inherit a child's name or inputs.
+Repr-backed evidence uses **Exception preview (bounded repr)**; truncated
+previews include the original character count. A serialization placeholder
+uses **Exception details unavailable** and includes the reason.
+
+Recovery snippets use public runner and result APIs. Sync snippets call
+`runner.run(...)` or `runner.map(...)` directly; async snippets use
+`await runner.run(...)` or `await runner.map(...)`. When the runner kind was
+not captured, inspection says recovery code is unavailable instead of choosing
+sync. A snippet never reads a nonexistent `MapResult.error` or a result that
+was not returned: result-oriented snippets rerun with
+`error_handling="continue"` before reading `result.failure`, `result.error`, or
+`batch.failures`. An explicit failure without a stable node match keeps its
+own name, inputs, and error; node name alone is never a lookup key.
 
 Before, an untrusted terminal record could be blank while Python had already
 settled at `partial / 2 completed / 1 failed`. After, Maya can expand native

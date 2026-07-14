@@ -268,6 +268,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                         total_duration_ms=0.0,
                         captured=True,
                         terminal=False,
+                        _runner_kind="sync",
                     )
                 )
             except Exception:
@@ -424,6 +425,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 graph_name=graph.name or "",
                 workflow_id=workflow_id,
                 item_index=_item_index,
+                runner_kind="sync",
             )
         if top_level_inspection and inspection_transport is not None and _inspection_session is None and inspection_session is not None:
             try:
@@ -891,6 +893,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                         total_duration_ms=0.0,
                         captured=True,
                         terminal=False,
+                        _runner_kind="sync",
                     )
                 )
             except Exception:
@@ -948,6 +951,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 requested_count=len(input_variations),
                 map_over=tuple(map_over_list),
                 map_mode=map_mode,
+                runner_kind="sync",
             )
             if owns_inspection
             else None

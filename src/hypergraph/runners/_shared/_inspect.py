@@ -24,6 +24,7 @@ NodeInspectionStatus = Literal[
     "stopped",
     "restored",
 ]
+RunnerKind = Literal["sync", "async"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +78,7 @@ class RunInspection:
     terminal: bool
     error: BaseException | None = field(default=None, repr=False, compare=False)
     revision: int = field(default=0, repr=False, compare=False)
+    _runner_kind: RunnerKind | None = field(default=None, repr=False, compare=False)
 
 
 MapItemInspectionStatus = Literal[
@@ -127,6 +129,7 @@ class MapInspection:
     terminal: bool
     error: BaseException | None = field(default=None, repr=False, compare=False)
     revision: int = field(default=0, repr=False, compare=False)
+    _runner_kind: RunnerKind | None = field(default=None, repr=False, compare=False)
 
     @property
     def completed_count(self) -> int:
@@ -162,6 +165,7 @@ class InspectionSession:
         graph_name: str,
         workflow_id: str | None,
         item_index: int | None,
+        runner_kind: RunnerKind | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._artifact = RunInspection(
@@ -175,6 +179,7 @@ class InspectionSession:
             total_duration_ms=0.0,
             captured=True,
             terminal=False,
+            _runner_kind=runner_kind,
         )
         self._subscribers: dict[int, InspectionSubscriber] = {}
         self._next_subscriber = 0
@@ -464,6 +469,7 @@ class MapInspectionSession:
         requested_count: int,
         map_over: tuple[str, ...],
         map_mode: str,
+        runner_kind: RunnerKind | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._artifact = MapInspection(
@@ -479,6 +485,7 @@ class MapInspectionSession:
             total_duration_ms=0.0,
             captured=True,
             terminal=False,
+            _runner_kind=runner_kind,
         )
         self._subscribers: dict[int, MapInspectionSubscriber] = {}
         self._next_subscriber = 0
@@ -527,6 +534,7 @@ class MapInspectionSession:
             graph_name=self._artifact.graph_name,
             workflow_id=workflow_id,
             item_index=item_index,
+            runner_kind=self._artifact._runner_kind,
         )
         child.subscribe(
             lambda run, urgent: self._publish_child(

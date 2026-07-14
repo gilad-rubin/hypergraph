@@ -625,3 +625,27 @@ def test_inspect_docs_pin_array_storage_compatibility_truth() -> None:
 
     for public_docs in (debug, runners, changelog):
         assert ".artifact" not in public_docs
+
+
+def test_inspect_docs_pin_exception_labels_and_recovery_runner_truth() -> None:
+    debug = _read("docs/05-how-to/debug-workflows.md")
+    runners = _read("docs/06-api-reference/runners.md")
+    changelog = _read("docs/changelog.md")
+
+    run_result = _scoped_section(runners, "## RunResult")
+    run_inspect = _scoped_section(run_result, "### inspect()")
+    fixed = _scoped_section(changelog, "### Fixed")
+
+    for recovery_docs in (debug, run_inspect, fixed):
+        normalized = " ".join(recovery_docs.split())
+        assert "complete safe exception" in normalized
+        assert "**Exception preview (bounded repr)**" in normalized
+        assert "original character count" in normalized
+        assert "**Exception details unavailable**" in normalized
+        assert "Sync snippets call `runner.run(...)` or `runner.map(...)` directly" in normalized
+        assert "async snippets use `await runner.run(...)` or `await runner.map(...)`" in normalized
+        assert "runner kind was not captured" in normalized
+        assert 'error_handling="continue"' in normalized
+
+    assert "Before (misleading async recovery)" in debug
+    assert "After (truthful async recovery)" in debug

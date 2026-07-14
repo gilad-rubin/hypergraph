@@ -56,21 +56,29 @@
   `partial / 2 completed / 1 failed`. Now terminal and stale channels include
   one small native `<details>` summary derived from the existing bounded
   payload. It exposes `First failure of N`, original item, qualified node,
-  bounded inputs, exact exception (or an **Exception preview (bounded repr)**
-  when only a safe representation exists), a result-evidence snippet, and
-  `docs/05-how-to/debug-workflows.md`. Truncated previews retain the original
-  size. An opaque repr keeps its exception type once, while a repr already
-  beginning with the type is not duplicated. Copy-faithful whitespace, valid
+  bounded inputs, exception evidence, a result-evidence snippet, and
+  `docs/05-how-to/debug-workflows.md`. A complete safe exception keeps its
+  exact node/run/batch label. Repr-backed evidence uses **Exception preview
+  (bounded repr)**, truncated previews retain the original character count,
+  and a placeholder uses **Exception details unavailable** with its reason. An
+  opaque repr keeps its exception type once, while a repr already beginning
+  with the type is not duplicated. Copy-faithful whitespace, valid
   `<pre><code>` nesting, and copy-inert wrap opportunities preserve inputs,
   exceptions, and recovery snippets without overflowing a 360px page or
   altering copied text. Status-only failures contribute once to
   `First failure of N` without duplicating stronger evidence. **Exact run
   exception** and **Exact batch exception** remain
-  separate from attributable node evidence, and generated recovery snippets
-  use only public runner/result APIs, rerunning with
-  `error_handling="continue"` before reading a result. Trusted output still
-  gets the full sandboxed portable inspector and hides the compact summary only
-  when active HTML runs and the frame retains a non-empty local `srcdoc`.
+  separate from attributable node evidence. Generated recovery snippets use
+  only public runner/result APIs. Sync snippets call `runner.run(...)` or
+  `runner.map(...)` directly; async snippets use `await runner.run(...)` or
+  `await runner.map(...)`. If the runner kind was not captured, recovery code
+  is unavailable instead of silently choosing sync. Returned-value snippets
+  rerun with `error_handling="continue"` before reading a result. Before, an
+  async or repr-backed failure could show sync-only code or an exact heading;
+  after, the call syntax and label match the captured evidence. Trusted output
+  still gets the full sandboxed portable inspector and hides the compact
+  summary only when active HTML runs and the frame retains a non-empty local
+  `srcdoc`.
   Explicit failures without a stable node match retain their own facts instead
   of borrowing a same-name node. Hypergraph never auto-trusts or signs a
   notebook, calls a server trust endpoint, weakens the iframe sandbox, changes

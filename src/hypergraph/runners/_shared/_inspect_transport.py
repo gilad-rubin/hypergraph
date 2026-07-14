@@ -460,12 +460,25 @@ def _map_rerun_literals(data: dict[str, object]) -> tuple[str, str]:
     return map_over_literal, map_mode_literal
 
 
-def _rerun_exception_code(kind: str, data: dict[str, object]) -> str:
+def _runner_await_prefix(data: dict[str, object]) -> str | None:
+    """Return syntax for the captured runner, or refuse unknown provenance."""
+    runner_kind = data.get("runner_kind")
+    if runner_kind == "sync":
+        return ""
+    if runner_kind == "async":
+        return "await "
+    return None
+
+
+def _rerun_exception_code(kind: str, data: dict[str, object]) -> str | None:
+    await_prefix = _runner_await_prefix(data)
+    if await_prefix is None:
+        return None
     if kind == "map":
         map_over_literal, map_mode_literal = _map_rerun_literals(data)
         return (
             "try:\n"
-            "    runner.map(\n"
+            f"    {await_prefix}runner.map(\n"
             "        graph,\n"
             "        values,\n"
             f"        map_over={map_over_literal},\n"
@@ -475,14 +488,20 @@ def _rerun_exception_code(kind: str, data: dict[str, object]) -> str:
             "except Exception as error:\n"
             '    print(f"{type(error).__name__}: {error}")'
         )
-    return 'try:\n    runner.run(graph, values, inspect=True)\nexcept Exception as error:\n    print(f"{type(error).__name__}: {error}")'
+    return (
+        f"try:\n    {await_prefix}runner.run(graph, values, inspect=True)\n"
+        'except Exception as error:\n    print(f"{type(error).__name__}: {error}")'
+    )
 
 
-def _continue_rerun_code(kind: str, data: dict[str, object]) -> str:
+def _continue_rerun_code(kind: str, data: dict[str, object]) -> str | None:
+    await_prefix = _runner_await_prefix(data)
+    if await_prefix is None:
+        return None
     if kind == "map":
         map_over_literal, map_mode_literal = _map_rerun_literals(data)
         return (
-            "batch = runner.map(\n"
+            f"batch = {await_prefix}runner.map(\n"
             "    graph,\n"
             "    values,\n"
             f"    map_over={map_over_literal},\n"
@@ -491,7 +510,7 @@ def _continue_rerun_code(kind: str, data: dict[str, object]) -> str:
             '    error_handling="continue",\n'
             ")\n"
         )
-    return 'result = runner.run(\n    graph,\n    values,\n    inspect=True,\n    error_handling="continue",\n)\n'
+    return f'result = {await_prefix}runner.run(\n    graph,\n    values,\n    inspect=True,\n    error_handling="continue",\n)\n'
 
 
 def _run_failure_count(
@@ -588,36 +607,48 @@ def _native_failure_markup(
         }.get(source, "Exact exception")
         facts.append(_native_exception_markup(error, exact_label=exact_label))
 
+    rerun = _continue_rerun_code(kind, data)
     if kind == "map" and item_index is not None and failure:
-        code = _continue_rerun_code(kind, data) + (
-            "failure = next(\n"
-            "    (\n"
-            "        item.failure\n"
-            "        for item in batch.failures\n"
-            "        if item.failure is not None\n"
-            f"        and item.failure.item_index == {item_index!r}\n"
-            "    ),\n"
-            "    None,\n"
-            ")\n"
-            "if failure is not None:\n"
-            "    print(failure.inputs)\n"
-            "    print(failure.error)"
+        code = (
+            rerun
+            + (
+                "failure = next(\n"
+                "    (\n"
+                "        item.failure\n"
+                "        for item in batch.failures\n"
+                "        if item.failure is not None\n"
+                f"        and item.failure.item_index == {item_index!r}\n"
+                "    ),\n"
+                "    None,\n"
+                ")\n"
+                "if failure is not None:\n"
+                "    print(failure.inputs)\n"
+                "    print(failure.error)"
+            )
+            if rerun is not None
+            else None
         )
     elif kind == "run" and failure:
-        code = _continue_rerun_code(kind, data) + (
-            "failure = result.failure\nif failure is not None:\n    print(failure.inputs)\n    print(failure.error)"
+        code = (
+            rerun + "failure = result.failure\nif failure is not None:\n    print(failure.inputs)\n    print(failure.error)"
+            if rerun is not None
+            else None
         )
     elif source in {"start", "batch"}:
         code = _rerun_exception_code(kind, data)
     elif source == "run" and kind == "map":
-        code = _continue_rerun_code(kind, data) + ("for failed in batch.failures:\n    if failed.error is not None:\n        print(failed.error)")
+        code = rerun + "for failed in batch.failures:\n    if failed.error is not None:\n        print(failed.error)" if rerun is not None else None
     elif source == "status" and kind == "map":
-        code = _continue_rerun_code(kind, data) + "for failed in batch.failures:\n    print(failed.summary())"
+        code = rerun + "for failed in batch.failures:\n    print(failed.summary())" if rerun is not None else None
     else:
-        code = _continue_rerun_code(kind, data)
-        code += "print(result.error)" if source == "run" else "print(result.summary())"
+        code = rerun
+        if code is not None:
+            code += "print(result.error)" if source == "run" else "print(result.summary())"
     code_label = "Smallest useful recovery code" if source in {"start", "batch"} else "Smallest useful result evidence"
-    facts.append(f"<p>{code_label}:</p><pre><code>{_native_wrappable_markup(code)}</code></pre>")
+    if code is not None:
+        facts.append(f"<p>{code_label}:</p><pre><code>{_native_wrappable_markup(code)}</code></pre>")
+    else:
+        facts.append("<p>Recovery code unavailable: runner kind was not captured.</p>")
     facts.append(f"<p>Debugging guide: <code>{_DEBUG_WORKFLOWS_DOC}</code></p>")
     return f"<details data-hg-inspect-native-failure><summary>{html.escape(title)}</summary>{''.join(facts)}</details>"
 

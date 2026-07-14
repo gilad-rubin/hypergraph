@@ -167,6 +167,7 @@ class SyncRunner(SyncRunnerTemplate):
                 graph_name=graph.name or "",
                 workflow_id=workflow_id,
                 item_index=None,
+                runner_kind="sync",
             )
             try:
                 inspection_transport = open_notebook_inspection_transport(
@@ -257,6 +258,7 @@ class SyncRunner(SyncRunnerTemplate):
                 total_duration_ms=0.0,
                 captured=True,
                 terminal=False,
+                _runner_kind="sync",
             )
             try:
                 inspection_transport = open_notebook_inspection_transport(

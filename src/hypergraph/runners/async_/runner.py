@@ -197,6 +197,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                 graph_name=graph.name or "",
                 workflow_id=workflow_id,
                 item_index=None,
+                runner_kind="async",
             )
             try:
                 inspection_transport = open_notebook_inspection_transport(inspection_session.snapshot())
@@ -292,6 +293,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                 total_duration_ms=0.0,
                 captured=True,
                 terminal=False,
+                _runner_kind="async",
             )
             try:
                 inspection_transport = open_notebook_inspection_transport(pending)

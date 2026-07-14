@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
-from collections.abc import Iterator
+import textwrap
+import threading
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 
 import pytest
 from playwright.sync_api import Browser, sync_playwright
 
+from hypergraph import AsyncRunner, Graph, SyncRunner, node
 from hypergraph.runners._shared._inspect import (
     MapInspection,
     MapItemInspection,
@@ -161,6 +165,7 @@ def test_run_ladder_navigates_relative_timeline_values_and_failure_evidence(
         total_duration_ms=450.0,
         captured=True,
         terminal=True,
+        _runner_kind="sync",
     )
     errors: list[Exception] = []
     page = browser.new_page(viewport={"width": 1280, "height": 800})
@@ -244,6 +249,156 @@ def test_run_boundary_error_is_visible_on_failed_node_without_failure_evidence(
     page.close()
 
 
+def test_full_renderer_node_exception_heading_follows_repr_preview_truth(
+    browser: Browser,
+) -> None:
+    class RedactedError(Exception):
+        def __repr__(self) -> str:
+            return "<redacted>"
+
+    failure = FailureEvidence(
+        node_name="review_customer",
+        error=RedactedError("secret"),
+        inputs={"customer_id": "maya-23"},
+        superstep=0,
+        duration_ms=1.0,
+        graph_name="customer_review",
+        workflow_id=None,
+        item_index=None,
+    )
+    failed_node = NodeInspection(
+        run_id="run-redacted",
+        span_id="span-redacted",
+        node_name="review_customer",
+        qualified_name="review_customer",
+        graph_name="customer_review",
+        item_index=None,
+        superstep=0,
+        sequence=0,
+        status="failed",
+        values_captured=True,
+        inputs=failure.inputs,
+        failure=failure,
+        duration_ms=1.0,
+    )
+    artifact = RunInspection(
+        run_id="run-redacted",
+        graph_name="customer_review",
+        workflow_id=None,
+        item_index=None,
+        status="failed",
+        nodes=(failed_node,),
+        failures=(failure,),
+        total_duration_ms=1.0,
+        captured=True,
+        terminal=True,
+        error=failure.error,
+    )
+
+    page = browser.new_page()
+    page.set_content(render_run_inspection(artifact))
+    detail_text = page.locator("[data-hg-detail]").inner_text()
+
+    assert "Exception preview (bounded repr)" in detail_text
+    assert "Exact exception" not in detail_text
+    assert detail_text.count("RedactedError") == 1
+    assert "RedactedError: <redacted>" in detail_text
+    page.close()
+
+
+def test_full_renderer_truncated_node_exception_discloses_original_character_count(
+    browser: Browser,
+) -> None:
+    error = ValueError("x" * 20_001)
+    failure = FailureEvidence(
+        node_name="review_customer",
+        error=error,
+        inputs={"customer_id": "maya-23"},
+        superstep=0,
+        duration_ms=1.0,
+        graph_name="customer_review",
+        workflow_id=None,
+        item_index=None,
+    )
+    failed_node = NodeInspection(
+        run_id="run-truncated",
+        span_id="span-truncated",
+        node_name="review_customer",
+        qualified_name="review_customer",
+        graph_name="customer_review",
+        item_index=None,
+        superstep=0,
+        sequence=0,
+        status="failed",
+        values_captured=True,
+        inputs=failure.inputs,
+        failure=failure,
+        duration_ms=1.0,
+    )
+    artifact = RunInspection(
+        run_id="run-truncated",
+        graph_name="customer_review",
+        workflow_id=None,
+        item_index=None,
+        status="failed",
+        nodes=(failed_node,),
+        failures=(failure,),
+        total_duration_ms=1.0,
+        captured=True,
+        terminal=True,
+        error=error,
+    )
+
+    page = browser.new_page()
+    page.set_content(render_run_inspection(artifact))
+    detail_text = page.locator("[data-hg-detail]").inner_text()
+
+    assert "Exception preview (truncated from 20001 characters)" in detail_text
+    assert "Exact exception" not in detail_text
+    assert "ValueError: " + "x" * 100 in detail_text
+    page.close()
+
+
+def test_full_renderer_run_boundary_placeholder_says_why_details_are_unavailable(
+    browser: Browser,
+) -> None:
+    failed_node = NodeInspection(
+        run_id="run-placeholder",
+        span_id="span-placeholder",
+        node_name="persist_customer",
+        qualified_name="persist_customer",
+        graph_name="customer_review",
+        item_index=None,
+        superstep=0,
+        sequence=0,
+        status="failed",
+        values_captured=True,
+        duration_ms=1.0,
+    )
+    artifact = RunInspection(
+        run_id="run-placeholder",
+        graph_name="customer_review",
+        workflow_id=None,
+        item_index=None,
+        status="failed",
+        nodes=(failed_node,),
+        failures=(),
+        total_duration_ms=1.0,
+        captured=True,
+        terminal=True,
+        error=ValueError(object()),
+    )
+
+    page = browser.new_page()
+    page.set_content(render_run_inspection(artifact))
+    detail_text = page.locator("[data-hg-detail]").inner_text()
+
+    assert "Exception details unavailable" in detail_text
+    assert "exception contains unsupported arguments" in detail_text
+    assert "Exact run exception" not in detail_text
+    page.close()
+
+
 def test_map_boundary_error_renders_exactly_without_inventing_child_evidence(
     browser: Browser,
 ) -> None:
@@ -274,6 +429,40 @@ def test_map_boundary_error_renders_exactly_without_inventing_child_evidence(
     ).is_visible()
     assert "Smallest useful evidence" not in root.inner_text()
     assert "failure = result.failure" not in root.inner_text()
+    page.close()
+
+
+def test_full_renderer_batch_boundary_repr_is_bounded_preview_not_exact(
+    browser: Browser,
+) -> None:
+    class RedactedBatchError(Exception):
+        def __repr__(self) -> str:
+            return "<redacted>"
+
+    artifact = MapInspection(
+        run_id="batch-redacted",
+        graph_name="customer_review",
+        workflow_id=None,
+        status="failed",
+        map_over=("customer_id",),
+        map_mode="zip",
+        requested_count=1,
+        items=(),
+        unstarted_item_indexes=(0,),
+        total_duration_ms=1.0,
+        captured=True,
+        terminal=True,
+        error=RedactedBatchError("secret"),
+    )
+
+    page = browser.new_page()
+    page.set_content(render_map_inspection(artifact))
+    root_text = page.locator('[data-hypergraph-inspect="map"]').inner_text()
+
+    assert "Exception preview (bounded repr)" in root_text
+    assert "Exact batch exception" not in root_text
+    assert root_text.count("RedactedBatchError") == 1
+    assert "RedactedBatchError: <redacted>" in root_text
     page.close()
 
 
@@ -408,6 +597,7 @@ def test_later_map_failure_keeps_selection_until_show_failure(browser: Browser) 
         total_duration_ms=10.0,
         captured=True,
         terminal=False,
+        _runner_kind="sync",
     )
     failure = FailureEvidence(
         node_name="research/lookup",
@@ -465,6 +655,7 @@ def test_later_map_failure_keeps_selection_until_show_failure(browser: Browser) 
         total_duration_ms=35.0,
         captured=True,
         terminal=True,
+        _runner_kind="sync",
     )
 
     page = browser.new_page(viewport={"width": 1280, "height": 800})
@@ -587,6 +778,7 @@ def test_sparse_map_failure_snippet_uses_original_failure_identity(
         total_duration_ms=35.0,
         captured=True,
         terminal=True,
+        _runner_kind="sync",
     )
 
     page = browser.new_page(viewport={"width": 1280, "height": 800})
@@ -598,6 +790,232 @@ def test_sparse_map_failure_snippet_uses_original_failure_identity(
     assert "item.failure for item in batch.failures" in detail_text
     assert "item.failure.item_index == 3" in detail_text
     assert "batch[3]" not in detail_text
+    page.close()
+
+
+def _nested_failure_batch_graph() -> Graph:
+    @node(output_name="reviewed")
+    def review_customer(customer_id: str) -> str:
+        if customer_id.startswith("reject-"):
+            raise ValueError(f"manual review: {customer_id}")
+        return f"approved:{customer_id}"
+
+    inner = Graph([review_customer], name="inner-review")
+    return Graph(
+        [inner.as_node(name="review_group").map_over("customer_id")],
+        name="outer-review",
+    )
+
+
+def _nested_failure_batch_values() -> dict[str, list[list[str]]]:
+    return {
+        "customer_id": [
+            ["approve-outer-0", "reject-outer-0"],
+            ["approve-outer-1", "reject-outer-1"],
+        ]
+    }
+
+
+def _failed_renderer_run_graph() -> Graph:
+    @node(output_name="reviewed")
+    def review_customer(customer_id: str) -> str:
+        raise ValueError(f"manual review: {customer_id}")
+
+    return Graph([review_customer], name="failed-review")
+
+
+async def _execute_async_renderer_snippet(
+    code_text: str,
+    *,
+    runner: AsyncRunner,
+    graph: Graph,
+    values: dict[str, object],
+) -> dict[str, object]:
+    namespace: dict[str, object] = {}
+    source = "async def __snippet(runner, graph, values):\n" + textwrap.indent(code_text, "    ") + "\n    return locals()\n"
+    exec(source, namespace)
+    return await namespace["__snippet"](runner, graph, values)  # type: ignore[operator]
+
+
+def _run_away_from_browser_loop(factory: Callable[[], object]) -> object:
+    values: list[object] = []
+    errors: list[BaseException] = []
+
+    def execute() -> None:
+        try:
+            values.append(asyncio.run(factory()))  # type: ignore[arg-type]
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=execute)
+    worker.start()
+    worker.join(timeout=10)
+    assert not worker.is_alive()
+    if errors:
+        raise errors[0]
+    assert len(values) == 1
+    return values[0]
+
+
+@pytest.mark.parametrize("runner_kind", ["sync", "async"])
+def test_run_full_renderer_recovery_snippet_executes_for_captured_runner(
+    browser: Browser,
+    runner_kind: str,
+) -> None:
+    graph = _failed_renderer_run_graph()
+    values = {"customer_id": "maya-23"}
+    if runner_kind == "sync":
+        runner: SyncRunner | AsyncRunner = SyncRunner()
+        result = runner.run(
+            graph,
+            values,
+            inspect=True,
+            error_handling="continue",
+        )
+    else:
+        runner = AsyncRunner()
+
+        async def run_graph():
+            return await runner.run(
+                graph,
+                values,
+                inspect=True,
+                error_handling="continue",
+            )
+
+        result = _run_away_from_browser_loop(run_graph)
+
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.set_content(render_run_inspection(result.inspect()._artifact))
+    root = page.locator('[data-hypergraph-inspect="run"]')
+    root.locator("[data-hg-timeline-row]").filter(has_text="review_customer").last.click()
+    code_text = root.locator("[data-hg-detail] pre.hg-inspect-code code").inner_text()
+
+    if runner_kind == "sync":
+        assert "result = runner.run(" in code_text
+        assert "await runner.run(" not in code_text
+        namespace = {"runner": runner, "graph": graph, "values": values}
+        exec(code_text, namespace)
+    else:
+        assert isinstance(runner, AsyncRunner)
+        assert "result = await runner.run(" in code_text
+        namespace = _run_away_from_browser_loop(
+            lambda code_text=code_text: _execute_async_renderer_snippet(
+                code_text,
+                runner=runner,
+                graph=graph,
+                values=values,
+            )
+        )
+    failure = namespace["failure"]
+    assert failure.node_name == "review_customer"
+    assert failure.inputs == values
+    page.close()
+
+
+@pytest.mark.parametrize("artifact_kind", ["run", "map"])
+def test_full_renderer_unknown_runner_origin_never_emits_unbound_recovery_code(
+    browser: Browser,
+    artifact_kind: str,
+) -> None:
+    graph = _failed_renderer_run_graph()
+    runner = SyncRunner()
+    if artifact_kind == "run":
+        settled = runner.run(
+            graph,
+            {"customer_id": "maya-23"},
+            error_handling="continue",
+        )
+        artifact = settled.inspect()._artifact
+        rendered = render_run_inspection(artifact)
+    else:
+        settled = runner.map(
+            graph,
+            {"customer_id": ["maya-23"]},
+            map_over="customer_id",
+            error_handling="continue",
+        )
+        artifact = settled.inspect()._artifact
+        rendered = render_map_inspection(artifact)
+    assert artifact._runner_kind is None
+
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.set_content(rendered)
+    root = page.locator(f'[data-hypergraph-inspect="{artifact_kind}"]')
+    if artifact_kind == "map":
+        root.get_by_role("button", name="Show failure").click()
+    root.locator("[data-hg-timeline-row]").filter(has_text="review_customer").last.click()
+    detail_text = root.locator("[data-hg-detail]").inner_text()
+
+    assert "Recovery code unavailable" in detail_text
+    assert "Runner kind was not captured." in detail_text
+    assert "Smallest useful evidence" not in detail_text
+    assert "runner.run(" not in detail_text
+    assert "runner.map(" not in detail_text
+    assert "failure = result.failure" not in detail_text
+    assert "item.failure for item in batch.failures" not in detail_text
+    page.close()
+
+
+@pytest.mark.parametrize("runner_kind", ["sync", "async"])
+def test_nested_map_full_renderer_snippets_execute_against_containing_outer_item(
+    browser: Browser,
+    runner_kind: str,
+) -> None:
+    graph = _nested_failure_batch_graph()
+    values = _nested_failure_batch_values()
+    if runner_kind == "sync":
+        runner: SyncRunner | AsyncRunner = SyncRunner()
+        batch = runner.map(
+            graph,
+            values,
+            map_over="customer_id",
+            inspect=True,
+            error_handling="continue",
+        )
+    else:
+        runner = AsyncRunner()
+
+        async def run_batch():
+            return await runner.map(
+                graph,
+                values,
+                map_over="customer_id",
+                inspect=True,
+                error_handling="continue",
+            )
+
+        batch = _run_away_from_browser_loop(run_batch)
+
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.set_content(render_map_inspection(batch.inspect()._artifact))
+    root = page.locator('[data-hypergraph-inspect="map"]')
+
+    for outer_index in (0, 1):
+        root.get_by_role("button", name=re.compile(rf"Item {outer_index} failed")).click()
+        failed_leaf = root.locator("[data-hg-timeline-row]").filter(has_text="review_group/review_customer").last
+        failed_leaf.click()
+        code_text = root.locator("[data-hg-detail] pre.hg-inspect-code code").inner_text()
+        assert f"item.failure.item_index == {outer_index}" in code_text
+        assert f"item.failure.item_index == {1 - outer_index}" not in code_text
+        if runner_kind == "sync":
+            namespace = {"runner": runner, "graph": graph, "values": values}
+            exec(code_text, namespace)
+            failure = namespace["failure"]
+        else:
+            assert isinstance(runner, AsyncRunner)
+            namespace = _run_away_from_browser_loop(
+                lambda code_text=code_text: _execute_async_renderer_snippet(
+                    code_text,
+                    runner=runner,
+                    graph=graph,
+                    values=values,
+                )
+            )
+            failure = namespace["failure"]
+        assert failure.item_index == outer_index
+        assert failure.inputs == {"customer_id": f"reject-outer-{outer_index}"}
+
     page.close()
 
 

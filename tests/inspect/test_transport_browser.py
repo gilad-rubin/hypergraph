@@ -99,6 +99,7 @@ def _run(
         total_duration_ms=float(node_count * 20),
         captured=True,
         terminal=terminal,
+        _runner_kind="sync",
     )
 
 
@@ -130,6 +131,7 @@ def _map(*, terminal: bool = False, status: str = "running") -> MapInspection:
         total_duration_ms=600.0,
         captured=True,
         terminal=terminal,
+        _runner_kind="sync",
     )
 
 
@@ -174,6 +176,7 @@ def _partial_customer_map() -> tuple[MapInspection, MapInspection]:
         total_duration_ms=0.0,
         captured=True,
         terminal=False,
+        _runner_kind="sync",
     )
     failure = FailureEvidence(
         node_name="score_customer",
@@ -204,6 +207,7 @@ def _partial_customer_map() -> tuple[MapInspection, MapInspection]:
         captured=True,
         terminal=True,
         error=failure.error,
+        _runner_kind="sync",
     )
     initial = MapInspection(
         run_id="map-customers",
@@ -222,6 +226,7 @@ def _partial_customer_map() -> tuple[MapInspection, MapInspection]:
         total_duration_ms=20.0,
         captured=True,
         terminal=False,
+        _runner_kind="sync",
     )
     terminal = replace(
         initial,
@@ -1125,6 +1130,7 @@ def test_untrusted_map_keeps_run_boundary_error_separate_from_status_only_node(
         total_duration_ms=10.0,
         captured=True,
         terminal=True,
+        _runner_kind="sync",
     )
     envelope = _envelope(
         artifact,
@@ -1188,6 +1194,7 @@ def test_untrusted_map_keeps_batch_boundary_error_separate_from_child_facts(
         captured=True,
         terminal=True,
         error=RuntimeError("batch scheduler unavailable"),
+        _runner_kind="sync",
     )
     envelope = _envelope(
         artifact,
@@ -1445,6 +1452,7 @@ def test_untrusted_recovery_code_wraps_a_long_map_field_without_changing_copy(
         kind="map",
         data={
             "items": [],
+            "runner_kind": "sync",
             "error": {
                 "kind": "exception",
                 "type_name": "RuntimeError",
