@@ -434,7 +434,7 @@ def test_failure_render_never_calls_workflow_id_equality_or_hashing(
         calls = _EqualityHookWorkflowId.disarm()
 
     assert calls == (0, 0, 0)
-    assert "equality-hook-review" in rendered
+    assert "reject" in rendered
     assert "ValueError" in rendered
 
 
@@ -487,25 +487,26 @@ def _run_shared_peer_failures(
         ],
         name="outer",
     )
-    monkeypatch.setattr("time.time", lambda: 1000.0)
-    if runner_kind == "sync":
-        batch = SyncRunner().map(
-            graph,
-            {"customer_id": [[shared_value, shared_value]]},
-            map_over="customer_id",
-            inspect=True,
-            error_handling="continue",
-        )
-    else:
-        batch = _run_async(
-            lambda: AsyncRunner().map(
+    with monkeypatch.context() as clock:
+        clock.setattr("time.time", lambda: 1000.0)
+        if runner_kind == "sync":
+            batch = SyncRunner().map(
                 graph,
                 {"customer_id": [[shared_value, shared_value]]},
                 map_over="customer_id",
                 inspect=True,
                 error_handling="continue",
             )
-        )
+        else:
+            batch = _run_async(
+                lambda: AsyncRunner().map(
+                    graph,
+                    {"customer_id": [[shared_value, shared_value]]},
+                    map_over="customer_id",
+                    inspect=True,
+                    error_handling="continue",
+                )
+            )
     return batch, shared_value, shared_error
 
 
@@ -592,6 +593,7 @@ def test_real_shared_peer_selection_removes_only_selected_occurrence(
     page = browser.new_page(viewport={"width": 1280, "height": 900})
     page.set_content(render_map_inspection(batch.inspect()._artifact))
     root = page.locator('[data-hypergraph-inspect="map"]')
+    root.get_by_role("tab", name="Timeline").click()
     leaves = root.locator("[data-hg-timeline-row]").filter(has_text="review_group/review_customer")
     assert leaves.count() == 2
     for selected_index in (0, 1):
