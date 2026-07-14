@@ -37,6 +37,10 @@ _ACTIVE_OUTPUT_TAG = re.compile(
     r"<(iframe|script|style)\b[^>]*>.*?</\1\s*>",
     flags=re.IGNORECASE | re.DOTALL,
 )
+_UNTRUSTED_OUTPUT_ATTRIBUTE = re.compile(
+    r"\s(?:style|id|class|data-[\w:-]+)\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)",
+    flags=re.IGNORECASE,
+)
 
 
 @pytest.fixture(scope="module")
@@ -263,12 +267,12 @@ def _frame(page: Page, widget_id: str):
 
 
 def _strip_active_output(markup: str) -> str:
-    """Model an untrusted host that removes active output before DOM parse."""
+    """Model an untrusted host that strips active markup and identifiers."""
     previous = ""
     stripped = markup
     while stripped != previous:
         previous, stripped = stripped, _ACTIVE_OUTPUT_TAG.sub("", stripped)
-    return stripped
+    return _UNTRUSTED_OUTPUT_ATTRIBUTE.sub("", stripped)
 
 
 def _defer_child_ready(shell: str) -> str:
@@ -764,6 +768,7 @@ def test_untrusted_terminal_map_keeps_native_failure_evidence_after_active_marku
     stripped = _strip_active_output(render_payload_channel(terminal))
 
     assert not re.search(r"<(iframe|script|style)\b", stripped, flags=re.IGNORECASE)
+    assert not _UNTRUSTED_OUTPUT_ATTRIBUTE.search(stripped)
     page = browser.new_page(viewport={"width": 1280, "height": 900})
     errors: list[Exception] = []
     requests: list[str] = []
@@ -771,19 +776,20 @@ def test_untrusted_terminal_map_keeps_native_failure_evidence_after_active_marku
     page.on("request", lambda request: requests.append(request.url))
     page.set_content(stripped, wait_until="load")
 
-    summary = page.locator('[data-hg-inspect-native-summary="widget-untrusted-map"]')
+    summary = page.locator("section").filter(has_text="Saved snapshot").filter(has_text="partial")
     assert summary.is_visible()
     assert summary.get_by_text("Saved snapshot", exact=True).is_visible()
     assert summary.get_by_text("partial", exact=True).is_visible()
-    assert summary.locator("[data-hg-inspect-native-completed]").inner_text() == "2"
-    assert summary.locator("[data-hg-inspect-native-failed]").inner_text() == "1"
+    assert summary.get_by_text("Completed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "2"
+    assert summary.get_by_text("Failed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "1"
 
-    failure = summary.locator("details[data-hg-inspect-native-failure]")
+    failure = summary.locator("details")
     assert failure.count() == 1
     assert failure.evaluate("element => element.open") is False
     failure.locator("summary").click()
     assert failure.evaluate("element => element.open") is True
     failure_text = failure.inner_text()
+    assert "First failure of 1" in failure_text
     assert "Item 1 failure" in failure_text
     assert "score_customer" in failure_text
     assert "customer_id=maya-23" in failure_text
@@ -836,8 +842,10 @@ def test_untrusted_terminal_run_escapes_hostile_failure_text(
     requests: list[str] = []
     page.on("request", lambda request: requests.append(request.url))
     page.set_content(stripped, wait_until="load")
-    summary = page.locator('[data-hg-inspect-native-summary="widget-untrusted-run"]')
-    failure = summary.locator("details[data-hg-inspect-native-failure]")
+    summary = page.locator("section").filter(has_text="Saved snapshot").filter(has_text="failed")
+    failure = summary.locator("details")
+
+    assert summary.count() == 1
     failure.locator("summary").click()
 
     assert summary.is_visible()
@@ -866,8 +874,8 @@ def test_untrusted_stale_channel_keeps_exact_start_error_in_native_details(
 
     page = browser.new_page()
     page.set_content(stripped, wait_until="load")
-    summary = page.locator('[data-hg-inspect-native-summary="widget-untrusted-stale"]')
-    failure = summary.locator("details[data-hg-inspect-native-failure]")
+    summary = page.locator("section").filter(has_text="Live inspection unavailable")
+    failure = summary.locator("details")
 
     assert summary.is_visible()
     assert summary.get_by_text("Live inspection unavailable", exact=True).is_visible()
