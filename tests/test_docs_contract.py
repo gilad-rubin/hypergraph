@@ -484,6 +484,12 @@ def test_inspect_docs_pin_observational_serialization_and_background_identity() 
     run_inspect = _scoped_section(run_result, "### inspect()")
     assert "Python user code" in run_inspect
     assert "hidden notebook output" in run_inspect
+    for serialization_docs in (normalized_debug, " ".join(run_inspect.split())):
+        assert "read-only mapping proxy" in serialization_docs
+        assert "`MappingProxyType`" in serialization_docs
+        assert "backed by an exact `dict`" in serialization_docs
+        assert "proxy backed by a custom mapping" in serialization_docs
+        assert "whole-value bounded `repr` fallback" in serialization_docs
 
     for result_type in (RunResult, MapResult):
         doc = inspect.getdoc(result_type.inspect)
@@ -520,3 +526,6 @@ def test_inspect_docs_pin_observational_serialization_and_background_identity() 
     fixed = _scoped_section(changelog, "### Fixed")
     assert "**Observational inspect serialization**" in fixed
     assert "**Background inspect workflow identity**" in fixed
+    assert "read-only mapping proxy" in fixed
+    assert "backed by an exact `dict`" in fixed
+    assert "proxy backed by a custom mapping" in fixed
