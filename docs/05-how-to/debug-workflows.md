@@ -299,6 +299,27 @@ the notebook is saved, that output remains locally interactive without a
 kernel, Hypergraph server, or network connection; it is labelled as saved, not
 live.
 
+The normal notebook path keeps exactly one immutable shell and one mutable
+payload output. Hypergraph also has a best-effort compatibility path for the
+measured `jupyter-server-nbmodel==0.1.1a4` executor, which persists ordinary
+`display_data` but drops `update_display_data`. When the **kernel environment**
+reports that exact package version, later coalesced updates are appended as
+payload-only records. They update the same iframe and never repeat the shell or
+renderer assets, but the notebook retains hidden payload-only history at the
+existing four-per-second bound for ordinary updates; terminal and error states
+can still flush immediately.
+
+- **Before on that executor:** Python reaches the terminal result while the
+  iframe can remain at `pending`, `0 completed`, `0 failed`.
+- **After when detected:** the iframe reaches `partial`, `2 completed`,
+  `1 failed`, and the saved output retains the exact failed input.
+
+Detection is exact and kernel-local. A missing or different package version
+uses the normal display-handle update path. A separate server environment
+cannot be inferred from package metadata in the kernel: if the broken package
+is installed only on the server, Hypergraph does not claim to detect that
+split-environment case.
+
 For Maya, the before/after is explicit: before the renderer is ready,
 `Waiting for live inspection` means the payload channel is not authenticated
 or live yet. After a ready-handshake timeout, the label becomes

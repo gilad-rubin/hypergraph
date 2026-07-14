@@ -427,6 +427,14 @@ def test_inspect_mode_docs_mirror_public_contract() -> None:
     assert "`Live inspection unavailable`" in normalized_debug
     assert "latest state remains locally inspectable as a saved snapshot" in normalized_debug
     assert "instead of silently freezing a view that still claims to be live" in normalized_debug
+    normalized_runners = " ".join(runners.split())
+    normalized_changelog = " ".join(_read("docs/changelog.md").split())
+    for notebook_delivery_docs in (normalized_debug, normalized_runners, normalized_changelog):
+        assert "jupyter-server-nbmodel==0.1.1a4" in notebook_delivery_docs
+        assert "best-effort" in notebook_delivery_docs
+        assert "kernel environment" in notebook_delivery_docs
+        assert "payload-only history" in notebook_delivery_docs
+        assert "separate server environment" in notebook_delivery_docs
     assert 'inspect="graph-owned"' not in debug
 
     assert "inspect=True" in control

@@ -1292,6 +1292,16 @@ mapping items, 200 sequence items, tables of 200 rows by 20 columns, and 20,000
 text characters. See [Debug Workflows](../05-how-to/debug-workflows.md) for the
 full privacy and live-to-saved contract.
 
+Notebook transport normally retains one immutable shell and one mutable
+display-ID payload output. A best-effort internal compatibility path activates
+only when the kernel environment reports
+`jupyter-server-nbmodel==0.1.1a4`: that measured executor drops
+`update_display_data`, so Hypergraph resends only the coalesced payload records
+and the host retains hidden payload-only history. Missing or unrecognized
+versions keep the normal update path. Kernel package metadata cannot infer a
+separate server environment, so this does not claim split server/kernel
+detection and adds no public transport setting.
+
 Structured rendering is limited to exact built-in `dict`, `list`, and `tuple`
 values, ordinary dataclasses, recognized Pydantic models, exact NumPy
 `ndarray` values, exact pandas `DataFrame` values, and a read-only mapping proxy

@@ -531,9 +531,10 @@ def test_append_mode_terminal_replay_preserves_iframe_state_and_exposes_failure(
         terminal_artifact,
         widget_id="widget-append-live",
         nonce="nonce-append-live",
-        sequence=2,
+        sequence=3,
         state="saved",
     )
+    late_older = replace(initial, sequence=2)
     page = browser.new_page(viewport={"width": 1280, "height": 900})
     _mount(page, initial)
     frame = _frame(page, "widget-append-live")
@@ -550,6 +551,7 @@ def test_append_mode_terminal_replay_preserves_iframe_state_and_exposes_failure(
     _append_channel(page, terminal)
     root = frame.locator('[data-hypergraph-inspect="map"]')
     root.get_by_text("Saved snapshot", exact=True).wait_for(timeout=2_000)
+    _append_channel(page, late_older)
 
     assert page.locator('[data-hg-inspect-frame="widget-append-live"]').count() == 1
     assert page.evaluate(
@@ -562,8 +564,12 @@ def test_append_mode_terminal_replay_preserves_iframe_state_and_exposes_failure(
     )
     assert root.get_by_role("tab", name="Graph").get_attribute("aria-selected") == "true"
     assert root.get_by_text("Saved snapshot", exact=True).is_visible()
-    assert "2 completed" in root.inner_text()
-    assert "1 failed" in root.inner_text()
+    summary = root.locator("[data-hg-summary]")
+    assert summary.get_by_text("Completed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "2"
+    assert summary.get_by_text("Failed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "1"
+    assert frame.evaluate("window.__hypergraphInspectBridgeState.lastSequence") == 3
+    assert page.locator('[data-hg-inspect-channel="widget-append-live"]').count() == 3
+    assert page.locator('[data-hg-inspect-channel-fallback="widget-append-live"]:visible').count() == 0
 
     root.get_by_role("button", name="Show failure").click()
     detail = root.locator("[data-hg-detail]")
@@ -601,8 +607,11 @@ def test_saved_append_replay_uses_highest_authenticated_sequence_without_kernel(
 
     assert frame.evaluate("window.__hypergraphInspectBridgeState.lastSequence") == 3
     assert root.get_by_text("Saved snapshot", exact=True).is_visible()
-    assert "2 completed" in root.inner_text()
-    assert "1 failed" in root.inner_text()
+    summary = root.locator("[data-hg-summary]")
+    assert summary.get_by_text("Completed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "2"
+    assert summary.get_by_text("Failed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "1"
+    assert page.locator('[data-hg-inspect-channel="widget-append-saved"]').count() == 3
+    assert page.locator('[data-hg-inspect-channel-fallback="widget-append-saved"]:visible').count() == 0
     root.get_by_role("button", name="Show failure").click()
     assert root.locator("[data-hg-detail]").get_by_text("maya-23", exact=True).is_visible()
     page.close()

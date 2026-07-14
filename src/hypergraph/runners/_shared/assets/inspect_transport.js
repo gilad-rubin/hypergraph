@@ -75,7 +75,11 @@
 
     function deliver(envelope, channelId) {
       if (!exactIdentity(envelope, config) || envelope.type !== UPDATE) return false;
-      if (!Number.isInteger(envelope.sequence) || envelope.sequence <= state.lastSentSequence) return false;
+      if (!Number.isInteger(envelope.sequence)) return false;
+      if (envelope.sequence <= state.lastSentSequence) {
+        hideChannelFallback(channelId);
+        return false;
+      }
       if (!state.ready || !frame.contentWindow) {
         markLiveChannelFallback(
           channelId,
@@ -84,7 +88,11 @@
           state.handshakeTimedOut ? "stale" : "waiting"
         );
         var queued = queues[key];
-        if (queued && envelope.sequence <= queued.envelope.sequence) return false;
+        if (queued && envelope.sequence <= queued.envelope.sequence) {
+          hideChannelFallback(channelId);
+          return false;
+        }
+        if (queued) hideChannelFallback(queued.channelId);
         queues[key] = { envelope: envelope, channelId: channelId };
         return false;
       }

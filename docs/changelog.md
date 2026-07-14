@@ -48,6 +48,15 @@
 
 ### Fixed
 
+- **Live inspect delivery on the measured server-side executor** — the normal
+  notebook path still uses one mutable display-ID payload. When the kernel
+  environment reports exact `jupyter-server-nbmodel==0.1.1a4`, Hypergraph now
+  uses a best-effort payload-only append path because that executor drops
+  `update_display_data`. The detected fallback preserves the same iframe and
+  terminal saved snapshot while retaining hidden coalesced payload-only history;
+  missing or unrecognized versions keep the normal update path. A separate
+  server environment cannot be inferred from kernel package metadata.
+
 - **Observational inspect serialization** — structured rendering now traverses
   only exact built-in containers, ordinary dataclasses, recognized Pydantic
   models, exact NumPy/pandas adapters, and a read-only mapping proxy

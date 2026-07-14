@@ -1,8 +1,10 @@
 """Versioned, offline notebook transport for typed inspection artifacts.
 
-The transport has two physical notebook outputs: an immutable iframe shell and
-one display-ID payload channel. Runtime attachment belongs to runner templates;
-this module deliberately knows only typed inspection sessions and artifacts.
+The normal transport has two physical notebook outputs: an immutable iframe
+shell and one display-ID payload channel. One measured server-side executor
+needs a private payload-only append fallback. Runtime attachment belongs to
+runner templates; this module deliberately knows only typed inspection
+sessions and artifacts.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import html
+import importlib.metadata
 import json
 import secrets
 import threading
@@ -187,7 +190,7 @@ def render_notebook_shell(
     frame_id = _dom_id(envelope.widget_id, "frame")
     host_id = _dom_id(envelope.widget_id, "host")
     status_id = _dom_id(envelope.widget_id, "host-status")
-    channel_id = _dom_id(envelope.widget_id, "payload-output")
+    display_id = _dom_id(envelope.widget_id, "payload")
     parent_config = _script_safe_json(
         {
             "widgetId": envelope.widget_id,
@@ -219,9 +222,9 @@ def render_notebook_shell(
         "<script data-hg-inspect-parent-bootstrap>"
         f"window.__hypergraphInspectTransport.installParent({parent_config});"
         "</script>"
-        # Keep this exact ID in the shell contract even before the channel output
-        # exists; the display-ID output itself remains the sole mutable surface.
-        f"<!-- payload-channel:{html.escape(channel_id)} -->"
+        # Record the stable logical display ID even though each rendered payload
+        # envelope has a sequence-qualified physical DOM identity.
+        f"<!-- payload-channel:{html.escape(display_id)} -->"
     )
 
 
@@ -253,9 +256,8 @@ def render_payload_channel(envelope: InspectionEnvelope) -> str:
     wire = inspection_envelope_to_wire(envelope)
     payload = cast(dict[str, object], wire["payload"])
     encoded = _script_safe_json(wire)
-    channel_dom_id = _dom_id(envelope.widget_id, "payload-output")
+    channel_dom_id = _dom_id(envelope.widget_id, f"payload-output-s{envelope.sequence}")
     key = _script_safe_json(f"{envelope.widget_id}::{envelope.nonce}")
-    channel_id_json = _script_safe_json(channel_dom_id)
     fallback_state = "waiting" if envelope.delivery.state == "live" else envelope.delivery.state
     return (
         f'<div id="{html.escape(channel_dom_id, quote=True)}" '
@@ -268,7 +270,7 @@ def render_payload_channel(envelope: InspectionEnvelope) -> str:
         '<script type="application/json" data-hg-inspect-envelope>'
         f"{encoded}</script>"
         "<script data-hg-inspect-channel-runtime>(function(){"
-        f"var channel=document.getElementById({channel_id_json});"
+        "var channel=document.currentScript.closest('[data-hg-inspect-channel]');"
         "if(!channel)return;"
         "var source=channel.querySelector('[data-hg-inspect-envelope]');"
         "if(!source)return;"
@@ -277,8 +279,15 @@ def render_payload_channel(envelope: InspectionEnvelope) -> str:
         f"var key={key};"
         "var hosts=window.__hypergraphInspectHosts;"
         "if(hosts&&hosts[key])hosts[key].deliver(envelope,channel.id);"
-        "else if(!queues[key]||envelope.sequence>queues[key].envelope.sequence)"
-        "queues[key]={envelope:envelope,channelId:channel.id};"
+        "else{var queued=queues[key];"
+        "if(!queued||envelope.sequence>queued.envelope.sequence){"
+        "if(queued&&queued.channelElement){"
+        "var oldFallback=queued.channelElement.querySelector('[data-hg-inspect-channel-fallback]');"
+        "if(oldFallback)oldFallback.hidden=true;"
+        "queued.channelElement.setAttribute('data-delivered','true');}"
+        "queues[key]={envelope:envelope,channelId:channel.id,channelElement:channel};}"
+        "else{var fallback=channel.querySelector('[data-hg-inspect-channel-fallback]');"
+        "if(fallback)fallback.hidden=true;channel.setAttribute('data-delivered','true');}}"
         "})();</script></div>"
     )
 
@@ -605,12 +614,25 @@ class NotebookDisplay(Protocol):
 
 
 class _IPythonDisplayHandle:
-    def __init__(self, handle: object) -> None:
+    def __init__(
+        self,
+        handle: object,
+        *,
+        display_id: str,
+        append_payloads: bool,
+    ) -> None:
         self._handle = handle
+        self._display_id = display_id
+        self._append_payloads = append_payloads
 
     def update(self, markup: str) -> None:
         from IPython.display import HTML
 
+        if self._append_payloads:
+            from IPython.display import display
+
+            display(HTML(markup), display_id=self._display_id)
+            return
         update = getattr(self._handle, "update", None)
         if not callable(update):
             raise RuntimeError("IPython display handle does not support update().")
@@ -631,10 +653,19 @@ class _IPythonNotebookDisplay:
     ) -> _IPythonDisplayHandle:
         from IPython.display import HTML, display
 
+        try:
+            package_version = importlib.metadata.version("jupyter-server-nbmodel")
+        except importlib.metadata.PackageNotFoundError:
+            package_version = None
+        append_payloads = package_version == "0.1.1a4"
         handle = display(HTML(markup), display_id=display_id)
         if handle is None:
             raise RuntimeError("IPython did not return a display-ID handle.")
-        return _IPythonDisplayHandle(handle)
+        return _IPythonDisplayHandle(
+            handle,
+            display_id=display_id,
+            append_payloads=append_payloads,
+        )
 
 
 class NotebookInspectionTransport:
