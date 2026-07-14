@@ -1300,6 +1300,16 @@ the authenticated update, while an isolated-output renderer can open that
 channel alone. The capable path still
 uses `DisplayHandle.update()` and replaces its channel in place.
 
+A nonterminal notebook artifact starts live only when the notebook owner can
+schedule delayed callbacks; background delivery also requires cross-thread
+marshalling. Those capabilities are checked independently. When either required
+capability is missing, Hypergraph creates a closed
+`Live inspection unavailable` initial snapshot and does not subscribe to the
+inspection session. That initial notebook record is not settled execution
+truth; settled truth remains available through `result.inspect()` or
+`batch.inspect()` after the run or batch returns. An already-terminal initial
+artifact remains a closed `Saved snapshot`.
+
 Trusted active output gets that full sandboxed iframe. If notebook trust policy
 strips scripts, styles, iframes, and output identifiers, the terminal/stale
 channel instead preserves a small native `<details>` summary: delivery,

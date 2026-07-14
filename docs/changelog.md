@@ -50,6 +50,17 @@
 
 ### Fixed
 
+- **Truthful notebook scheduler availability** — before, an
+  `add_callback`-only kernel could look cross-thread capable while lacking the
+  delayed owner-thread call needed for the 250 ms live-inspection update. Now
+  delayed calls and cross-thread marshalling are checked independently. When a
+  nonterminal view lacks a required capability, Hypergraph creates a closed
+  `Live inspection unavailable` initial snapshot and does not subscribe to the
+  inspection session. That initial notebook record is not settled execution
+  truth; settled truth remains available through `result.inspect()` or
+  `batch.inspect()` after the run or batch returns. An already-terminal initial
+  artifact remains a closed `Saved snapshot`.
+
 - **Executable inspect recovery and nested failure attribution** — before, a
   copied full-renderer snippet dereferenced `None` or raised `StopIteration`
   when a transient failure disappeared on recovery, and full-renderer

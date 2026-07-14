@@ -521,6 +521,24 @@ cannot be inferred from package metadata in the kernel: if the broken package
 is installed only on the server, Hypergraph does not claim to detect that
 split-environment case.
 
+Notebook startup also checks scheduling truth before claiming the view is live:
+
+- **Before:** an `add_callback`-only kernel could look cross-thread capable but
+  never deliver the coalescer's future update.
+- **After:** delayed owner-thread calls and cross-thread marshalling are checked
+  independently. A nonterminal view needs delayed owner-thread calls; a
+  background view also needs cross-thread marshalling.
+
+When the required capability is missing, Hypergraph creates a closed
+`Live inspection unavailable` initial snapshot and does not subscribe to the
+inspection session. That initial notebook record is not settled execution
+truth; settled truth remains available through `result.inspect()` or
+`batch.inspect()` after the run or batch returns. An already-terminal initial
+artifact remains a closed `Saved snapshot`.
+
+This scheduler-unavailable startup record is distinct from a later live
+ready-handshake timeout:
+
 For Maya, the before/after is explicit: before the renderer is ready,
 `Waiting for live inspection` means the payload channel is not authenticated
 or live yet. After a ready-handshake timeout, the label becomes
