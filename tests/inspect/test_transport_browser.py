@@ -41,6 +41,10 @@ _UNTRUSTED_OUTPUT_ATTRIBUTE = re.compile(
     r"\s(?:style|id|class|data-[\w:-]+)\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)",
     flags=re.IGNORECASE,
 )
+_PORTABLE_FRAME_TAG = re.compile(
+    r"<iframe\b(?=[^>]*\bdata-hg-inspect-portable-frame=)[^>]*></iframe>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
 
 
 @pytest.fixture(scope="module")
@@ -854,6 +858,115 @@ def test_untrusted_terminal_run_escapes_hostile_failure_text(
     assert "failure = result.failure" in failure.inner_text()
     assert page.evaluate("window.pwned") is None
     assert all(url == "about:blank" for url in requests)
+    page.close()
+
+
+def test_untrusted_terminal_run_pairs_first_failure_with_its_exact_node(
+    browser: Browser,
+) -> None:
+    failure_a = FailureEvidence(
+        node_name="node_a",
+        error=ValueError("error-a"),
+        inputs={"customer_id": "a"},
+        superstep=0,
+        duration_ms=10.0,
+        graph_name="research",
+        workflow_id="workflow-customers",
+        item_index=None,
+    )
+    failure_b = FailureEvidence(
+        node_name="node_b",
+        error=ValueError("error-b"),
+        inputs={"customer_id": "b"},
+        superstep=1,
+        duration_ms=10.0,
+        graph_name="research",
+        workflow_id="workflow-customers",
+        item_index=None,
+    )
+    node_a = replace(
+        _node(0),
+        node_name="node_a",
+        qualified_name="outer/node_a",
+        status="failed",
+        inputs={"customer_id": "a"},
+        failure=failure_a,
+    )
+    node_b = replace(
+        _node(1),
+        node_name="node_b",
+        qualified_name="outer/node_b",
+        status="failed",
+        inputs={"customer_id": "b"},
+        failure=failure_b,
+    )
+    terminal_run = replace(
+        _run(graph_name="research", status="failed", terminal=True, node_count=0),
+        nodes=(node_a, node_b),
+        failures=(failure_b, failure_a),
+        error=failure_b.error,
+    )
+    envelope = _envelope(
+        terminal_run,
+        widget_id="widget-correlated-failure",
+        nonce="nonce-correlated-failure",
+        sequence=2,
+        state="saved",
+    )
+    stripped = _strip_active_output(render_payload_channel(envelope))
+
+    page = browser.new_page()
+    page.set_content(stripped, wait_until="load")
+    summary = page.locator("section").filter(has_text="Saved snapshot").filter(has_text="failed")
+    failure = summary.locator("details")
+    failure.locator("summary").click()
+    failure_text = failure.inner_text()
+
+    assert "First failure of 2" in failure_text
+    assert "Qualified node: outer/node_b" in failure_text
+    assert "customer_id=b" in failure_text
+    assert "ValueError: error-b" in failure_text
+    assert "outer/node_a" not in failure_text
+    assert "error-a" not in failure_text
+    page.close()
+
+
+def test_active_terminal_channel_without_portable_frame_keeps_native_summary_visible(
+    browser: Browser,
+) -> None:
+    _, terminal_artifact = _partial_customer_map()
+    terminal = _envelope(
+        terminal_artifact,
+        widget_id="widget-missing-portable-frame",
+        nonce="nonce-missing-portable-frame",
+        sequence=3,
+        state="saved",
+    )
+    markup, replacements = _PORTABLE_FRAME_TAG.subn("", render_payload_channel(terminal))
+
+    assert replacements == 1
+    assert len(re.findall(r"<script\b", markup, flags=re.IGNORECASE)) == 2
+    errors: list[Exception] = []
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.on("pageerror", lambda error: errors.append(error))
+    page.set_content(markup, wait_until="load")
+    summary = page.locator("section").filter(has_text="Saved snapshot").filter(has_text="partial")
+
+    assert page.locator("iframe").count() == 0
+    assert page.locator("script").count() == 2
+    assert summary.is_visible()
+    assert summary.get_by_text("Saved snapshot", exact=True).is_visible()
+    assert summary.get_by_text("partial", exact=True).is_visible()
+    assert summary.get_by_text("Completed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "2"
+    assert summary.get_by_text("Failed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "1"
+    failure = summary.locator("details")
+    failure.locator("summary").click()
+    failure_text = failure.inner_text()
+    assert "First failure of 1" in failure_text
+    assert "score_customer" in failure_text
+    assert "customer_id=maya-23" in failure_text
+    assert "ValueError: Customer maya-23 requires manual review" in failure_text
+    assert errors == []
     page.close()
 
 
