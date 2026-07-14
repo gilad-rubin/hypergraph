@@ -68,7 +68,13 @@ class _QueuedOwnerScheduler:
     def now(self) -> float:
         return self.current
 
-    def call_at(self, deadline: float, callback: Callable[[], None]) -> _Call:
+    def call_at(
+        self,
+        deadline: float,
+        callback: Callable[[], None],
+        *,
+        on_rejected: Callable[[], None] | None = None,
+    ) -> _Call:
         call = _Call(deadline, callback)
         self.calls.append(call)
         return call
@@ -87,7 +93,13 @@ class _QueuedOwnerScheduler:
 
 
 class _RejectingOwnerScheduler(_QueuedOwnerScheduler):
-    def call_at(self, _deadline: float, _callback: Callable[[], None]) -> None:
+    def call_at(
+        self,
+        _deadline: float,
+        _callback: Callable[[], None],
+        *,
+        on_rejected: Callable[[], None] | None = None,
+    ) -> None:
         return None
 
 

@@ -95,7 +95,13 @@ class _ManualScheduler:
     def now(self) -> float:
         return self.current
 
-    def call_at(self, deadline: float, callback: Callable[[], None]) -> _Scheduled:
+    def call_at(
+        self,
+        deadline: float,
+        callback: Callable[[], None],
+        *,
+        on_rejected: Callable[[], None] | None = None,
+    ) -> _Scheduled:
         call = _Scheduled(deadline, self._order, callback)
         self._order += 1
         self.all_calls.append(call)
@@ -123,7 +129,13 @@ class _RejectingScheduler:
     def now(self) -> float:
         return self.current
 
-    def call_at(self, _deadline: float, _callback: Callable[[], None]) -> None:
+    def call_at(
+        self,
+        _deadline: float,
+        _callback: Callable[[], None],
+        *,
+        on_rejected: Callable[[], None] | None = None,
+    ) -> None:
         return None
 
 
@@ -145,6 +157,8 @@ class _RacingRejectScheduler:
         self,
         deadline: float,
         callback: Callable[[], None],
+        *,
+        on_rejected: Callable[[], None] | None = None,
     ) -> _Scheduled | None:
         self._call_count += 1
         if self._call_count == 1:

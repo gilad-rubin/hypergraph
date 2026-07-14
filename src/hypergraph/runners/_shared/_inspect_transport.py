@@ -877,6 +877,8 @@ class _InspectionScheduler(Protocol):
         self,
         deadline: float,
         callback: Callable[[], None],
+        *,
+        on_rejected: Callable[[], None] | None = None,
     ) -> _ScheduledHandle | None: ...
 
 
@@ -952,6 +954,8 @@ class OwnerThreadScheduler:
         self,
         deadline: float,
         callback: Callable[[], None],
+        *,
+        on_rejected: Callable[[], None] | None = None,
     ) -> _GuardedCall | None:
         if deadline > self.now() and not self.supports_delayed_calls:
             return None
@@ -965,22 +969,49 @@ class OwnerThreadScheduler:
                 guarded.run()
                 return
             if self._asyncio_loop is not None and self._asyncio_loop.is_running():
-                self._asyncio_loop.call_later(delay, guarded.run)
+                scheduled = self._asyncio_loop.call_later(delay, guarded.run)
+                if scheduled is None:
+                    raise RuntimeError(
+                        "Notebook owner loop rejected delayed inspection delivery.\n\n"
+                        "Expected call_later() to return a cancellation handle.\n\n"
+                        "How to fix: Use a running asyncio loop with a working call_later()."
+                    )
                 return
             call_later = getattr(self._kernel_ioloop, "call_later", None)
             if callable(call_later):
-                call_later(delay, guarded.run)
+                scheduled = call_later(delay, guarded.run)
+                if scheduled is None:
+                    raise RuntimeError(
+                        "Notebook kernel loop rejected delayed inspection delivery.\n\n"
+                        "Expected call_later() to return a cancellation handle.\n\n"
+                        "How to fix: Use a kernel I/O loop with a working call_later()."
+                    )
+                return
+            raise RuntimeError(
+                "Notebook owner loop lost delayed-call support.\n\n"
+                "The captured loop no longer provides call_later().\n\n"
+                "How to fix: Re-run inspection from an active notebook kernel."
+            )
+
+        def arm_after_marshal() -> None:
+            try:
+                arm()
+            except Exception:
+                guarded.cancel()
+                if on_rejected is not None:
+                    with contextlib.suppress(Exception):
+                        on_rejected()
 
         if threading.get_ident() == self.owner_thread_id:
             arm()
             return guarded
 
         if self._asyncio_loop is not None and self._asyncio_loop.is_running():
-            self._asyncio_loop.call_soon_threadsafe(arm)
+            self._asyncio_loop.call_soon_threadsafe(arm_after_marshal)
             return guarded
         add_callback = getattr(self._kernel_ioloop, "add_callback", None)
         if callable(add_callback):
-            add_callback(arm)
+            add_callback(arm_after_marshal)
             return guarded
         return None
 
@@ -1106,6 +1137,10 @@ class InspectionCoalescer:
             handle = self._scheduler.call_at(
                 deadline,
                 lambda: self._flush(token),
+                on_rejected=lambda: self._mark_delivery_failed(
+                    token=token,
+                    settle_stale=True,
+                ),
             )
         except Exception:
             self._mark_delivery_failed(token=token)
@@ -1168,23 +1203,47 @@ class InspectionCoalescer:
         except Exception:
             self._mark_delivery_failed()
 
-    def _mark_delivery_failed(self, *, token: object | None = None) -> None:
+    def _mark_delivery_failed(
+        self,
+        *,
+        token: object | None = None,
+        settle_stale: bool = False,
+    ) -> None:
+        settlement: InspectionEnvelope | None = None
         with self._lock:
             if token is not None and self._scheduled_token is not token:
                 return
             on_delivery_failed = None if self._delivery_failed else self._on_delivery_failed
+            pending = self._pending
             self._delivery_failed = True
             self._closed = True
             handle = self._scheduled_handle
             self._scheduled_token = None
             self._scheduled_handle = None
             self._pending = None
+            if settle_stale and pending is not None:
+                self._sequence += 1
+                settlement = InspectionEnvelope(
+                    protocol_version=INSPECTION_PROTOCOL_VERSION,
+                    widget_id=self._widget_id,
+                    nonce=self._nonce,
+                    sequence=self._sequence,
+                    delivery=InspectionDelivery(
+                        state="stale",
+                        label="Live inspection unavailable",
+                    ),
+                    artifact=pending.artifact,
+                    message=pending.message,
+                )
         if handle is not None:
             with contextlib.suppress(Exception):
                 handle.cancel()
         if on_delivery_failed is not None:
             with contextlib.suppress(Exception):
                 on_delivery_failed()
+        if settlement is not None:
+            with contextlib.suppress(Exception):
+                self._deliver(settlement)
 
 
 class _NotebookDisplayHandle(Protocol):
