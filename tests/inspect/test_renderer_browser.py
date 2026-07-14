@@ -1019,6 +1019,102 @@ def test_nested_map_full_renderer_snippets_execute_against_containing_outer_item
     page.close()
 
 
+def test_nested_map_selected_failure_appears_once_across_inner_outer_index_projection(
+    browser: Browser,
+) -> None:
+    graph = _nested_failure_batch_graph()
+    values = _nested_failure_batch_values()
+    batch = SyncRunner().map(
+        graph,
+        values,
+        map_over="customer_id",
+        inspect=True,
+        error_handling="continue",
+    )
+    artifact = batch.inspect()._artifact
+    for outer_index, item in enumerate(artifact.items):
+        assert item.run is not None
+        leaf = next(node for node in item.run.nodes if node.qualified_name == "review_group/review_customer" and node.status == "failed")
+        assert leaf.failure is not None
+        assert leaf.failure.item_index == 1
+        assert item.run.failures[0].item_index == outer_index
+
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.set_content(render_map_inspection(artifact))
+    root = page.locator('[data-hypergraph-inspect="map"]')
+    for outer_index in (0, 1):
+        root.get_by_role("button", name=re.compile(rf"Item {outer_index} failed")).click()
+        root.locator("[data-hg-timeline-row]").filter(has_text="review_group/review_customer").last.click()
+        detail_text = root.locator("[data-hg-detail]").inner_text()
+
+        assert detail_text.count(f"ValueError: manual review: reject-outer-{outer_index}") == 1
+        assert "Run failures" not in detail_text
+
+    page.close()
+
+
+def test_failure_dedupe_removes_one_correlated_record_and_keeps_distinct_peers(
+    browser: Browser,
+) -> None:
+    selected = FailureEvidence(
+        node_name="review_customer",
+        error=ValueError("manual review: maya-23"),
+        inputs={"customer_id": "maya-23"},
+        superstep=2,
+        duration_ms=12.0,
+        graph_name="customer-review",
+        workflow_id="workflow-customers",
+        item_index=None,
+    )
+    indistinguishable_peer = replace(selected)
+    distinct_peer = replace(
+        selected,
+        error=ValueError("manual review: alex-10"),
+        inputs={"customer_id": "alex-10"},
+        duration_ms=18.0,
+    )
+    failed_node = NodeInspection(
+        run_id="run-dedupe",
+        span_id="span-review",
+        node_name="review_customer",
+        qualified_name="review_customer",
+        graph_name="customer-review",
+        item_index=None,
+        superstep=2,
+        sequence=0,
+        status="failed",
+        values_captured=True,
+        inputs={"customer_id": "maya-23"},
+        failure=selected,
+        duration_ms=12.0,
+    )
+    artifact = RunInspection(
+        run_id="run-dedupe",
+        graph_name="customer-review",
+        workflow_id="workflow-customers",
+        item_index=None,
+        status="failed",
+        nodes=(failed_node,),
+        failures=(selected, indistinguishable_peer, distinct_peer),
+        total_duration_ms=30.0,
+        captured=True,
+        terminal=True,
+        error=selected.error,
+        _runner_kind="sync",
+    )
+
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.set_content(render_run_inspection(artifact))
+    root = page.locator('[data-hypergraph-inspect="run"]')
+    root.locator("[data-hg-timeline-row]").filter(has_text="review_customer").click()
+    detail_text = root.locator("[data-hg-detail]").inner_text()
+
+    assert "Run failures · 2" in detail_text
+    assert detail_text.count("ValueError: manual review: maya-23") == 2
+    assert detail_text.count("ValueError: manual review: alex-10") == 1
+    page.close()
+
+
 def test_item_pagination_keeps_original_map_identity(browser: Browser) -> None:
     items = tuple(
         MapItemInspection(

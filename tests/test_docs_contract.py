@@ -532,8 +532,13 @@ def test_inspect_docs_pin_observational_serialization_and_background_identity() 
     assert "Python user code" in run_inspect
     assert "hidden notebook output" in run_inspect
     for serialization_docs in (normalized_debug, " ".join(run_inspect.split())):
-        assert "read-only mapping proxy" in serialization_docs
-        assert "`MappingProxyType`" in serialization_docs
+        assert "private `CapturedMapping` snapshot adapter" in serialization_docs
+        assert "copy.copy" in serialization_docs
+        assert "copy.deepcopy" in serialization_docs
+        assert "`dataclasses.asdict`" in serialization_docs
+        assert "pickle" in serialization_docs
+        assert "not stored as `MappingProxyType`" in serialization_docs
+        assert "user-supplied `MappingProxyType`" in serialization_docs
         assert "backed by an exact `dict`" in serialization_docs
         assert "proxy backed by a custom mapping" in serialization_docs
         assert "whole-value bounded `repr` fallback" in serialization_docs
@@ -581,7 +586,13 @@ def test_inspect_docs_pin_observational_serialization_and_background_identity() 
     normalized_fixed = " ".join(fixed.split())
     assert "**Observational inspect serialization**" in normalized_fixed
     assert "**Background inspect workflow identity**" in normalized_fixed
-    assert "read-only mapping proxy" in normalized_fixed
+    assert "private `CapturedMapping` snapshot adapter" in normalized_fixed
+    assert "copy.copy" in normalized_fixed
+    assert "copy.deepcopy" in normalized_fixed
+    assert "`dataclasses.asdict`" in normalized_fixed
+    assert "pickle" in normalized_fixed
+    assert "not stored as `MappingProxyType`" in normalized_fixed
+    assert "user-supplied `MappingProxyType`" in normalized_fixed
     assert "backed by an exact `dict`" in normalized_fixed
     assert "proxy backed by a custom mapping" in normalized_fixed
     assert "canonical class provenance" in normalized_fixed

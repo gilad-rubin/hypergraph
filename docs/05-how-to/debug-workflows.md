@@ -214,11 +214,19 @@ When either global budget is exhausted, the affected leaf says
 serialization failure or raised `repr()` exception likewise becomes a bounded
 typed placeholder and does not replace the run status.
 
+Hypergraph stores captured node inputs, outputs, and requested map inputs in a
+private `CapturedMapping` snapshot adapter. This shallow snapshot owns its
+top-level mapping while contained values retain their identities. It supports
+`copy.copy`, `copy.deepcopy`, `dataclasses.asdict`, and pickle round trips, so
+adding `inspect=True` does not make an otherwise copyable result fail. Captured
+mappings are not stored as `MappingProxyType`.
+
+That private snapshot storage is separate from source-value rendering.
 Structured inspection deliberately recognizes only exact inert containers and
 safe concrete adapters: exact built-in `dict`, exact built-in `list`, exact
 built-in `tuple`, ordinary dataclasses, recognized Pydantic models, exact NumPy
-`ndarray`, exact pandas `DataFrame`, and a read-only mapping proxy
-(`MappingProxyType`) backed by an exact `dict`.
+`ndarray`, exact pandas `DataFrame`, and a user-supplied `MappingProxyType`
+backed by an exact `dict`.
 
 Exact built-in `bytes` and `bytearray` values use a separate bounded scalar
 path. Hypergraph reads only a prefix that can fit in the 20,000-character

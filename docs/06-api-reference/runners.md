@@ -1355,10 +1355,17 @@ Kernel package metadata cannot infer a separate server environment, so this
 does not claim split server/kernel detection and adds no public transport
 setting.
 
-Structured rendering is limited to exact built-in `dict`, `list`, and `tuple`
-values, ordinary dataclasses, recognized Pydantic models, exact NumPy
-`ndarray` values, exact pandas `DataFrame` values, and a read-only mapping proxy
-(`MappingProxyType`) backed by an exact `dict`.
+Captured node inputs, outputs, and requested map inputs use a private
+`CapturedMapping` snapshot adapter. It shallow-copies the top-level mapping and
+retains contained object identities. The adapter supports `copy.copy`,
+`copy.deepcopy`, `dataclasses.asdict`, and pickle round trips; captured mappings
+are not stored as `MappingProxyType`.
+
+Source-value rendering is a separate contract. Structured rendering is limited
+to exact built-in `dict`, `list`, and `tuple` values, ordinary dataclasses,
+recognized Pydantic models, exact NumPy `ndarray` values, exact pandas
+`DataFrame` values, and a user-supplied `MappingProxyType` backed by an exact
+`dict`.
 
 Trusted NumPy, pandas, and Pydantic adapters use canonical class provenance,
 not mutable public aliases. Replacing `numpy.ndarray`, `pandas.DataFrame`, or

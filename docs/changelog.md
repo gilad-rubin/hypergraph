@@ -99,11 +99,15 @@
   unrecognized versions keep the normal update path. A
   separate server environment cannot be inferred from kernel package metadata.
 
-- **Observational inspect serialization** — structured rendering now traverses
+- **Observational inspect serialization** — captured node inputs, outputs, and
+  requested map inputs now use a private `CapturedMapping` snapshot adapter.
+  The shallow snapshot supports `copy.copy`, `copy.deepcopy`,
+  `dataclasses.asdict`, and pickle round trips; captured mappings are not stored
+  as `MappingProxyType`. Separately, structured source-value rendering accepts
   only exact built-in containers, ordinary dataclasses, recognized Pydantic
-  models, exact NumPy/pandas adapters, and a read-only mapping proxy
-  (`MappingProxyType`) backed by an exact `dict`. Trusted NumPy, pandas, and
-  Pydantic adapters use canonical class provenance, not mutable public aliases.
+  models, exact NumPy/pandas adapters, and a user-supplied `MappingProxyType`
+  backed by an exact `dict`. Trusted NumPy, pandas, and Pydantic adapters use
+  canonical class provenance, not mutable public aliases.
   Within documented rank and size limits, exact arrays with canonical NumPy
   1.x and 2.x `ndarray` provenance stay structured. Exact pandas DataFrames
   require a recognized trusted NumPy-backed internal storage layout: standard

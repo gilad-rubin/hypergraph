@@ -525,16 +525,34 @@
     parent.appendChild(evidence);
   }
 
-  function sameFailure(left, right) {
-    if (!left || !right) return false;
-    return ["node_name", "superstep", "graph_name", "workflow_id", "item_index"].every(function (field) {
-      return left[field] === right[field];
-    });
+  function sameSerializedValue(left, right) {
+    return JSON.stringify(left) === JSON.stringify(right);
   }
 
-  function appendOrderedFailures(parent, run, selectedFailure) {
+  function sameFailure(left, right, containingItemIndex) {
+    if (!left || !right) return false;
+    var sameIdentity = ["node_name", "superstep", "graph_name", "workflow_id", "duration_ms"].every(function (field) {
+      return left[field] === right[field];
+    });
+    if (!sameIdentity || !sameSerializedValue(left.error, right.error) || !sameSerializedValue(left.inputs, right.inputs)) {
+      return false;
+    }
+    if (left.item_index === right.item_index) return true;
+    return containingItemIndex !== null
+      && containingItemIndex !== undefined
+      && left.item_index === containingItemIndex;
+  }
+
+  function appendOrderedFailures(parent, run, selectedFailure, containingItemIndex) {
     var failures = run && Array.isArray(run.failures) ? run.failures : [];
-    if (selectedFailure) failures = failures.filter(function (failure) { return !sameFailure(failure, selectedFailure); });
+    var removedSelected = false;
+    if (selectedFailure) failures = failures.filter(function (failure) {
+      if (!removedSelected && sameFailure(failure, selectedFailure, containingItemIndex)) {
+        removedSelected = true;
+        return false;
+      }
+      return true;
+    });
     if (!failures.length) return;
     var block = element("div", "hg-inspect-detail-block");
     block.appendChild(element("div", "hg-inspect-section-title", "Run failures · " + failures.length));
@@ -815,7 +833,12 @@
     if (!node.failure && run.error) {
       appendException(detailElement, run.error, "Exact run exception");
     }
-    appendOrderedFailures(detailElement, run, node.failure);
+    appendOrderedFailures(
+      detailElement,
+      run,
+      node.failure,
+      payload.kind === "map" ? state.selectedItem : node.item_index
+    );
   }
 
   function renderFooter() {
