@@ -86,6 +86,11 @@ class _QueuedOwnerScheduler:
         self.run_due()
 
 
+class _RejectingOwnerScheduler(_QueuedOwnerScheduler):
+    def call_at(self, _deadline: float, _callback: Callable[[], None]) -> None:
+        return None
+
+
 class _FakeDisplayHandle:
     def __init__(self, *, fail_update: bool = False) -> None:
         self.updates: list[str] = []
@@ -769,6 +774,30 @@ def test_failed_channel_update_closes_transport_and_unsubscribes_session() -> No
     assert transport.closed is True
     assert transport._coalescer.delivery_failed is True  # type: ignore[attr-defined]
     assert session._subscribers == {}  # type: ignore[attr-defined]
+
+
+def test_rejected_schedule_closes_transport_and_unsubscribes_session() -> None:
+    scheduler = _RejectingOwnerScheduler()
+    display = _FakeNotebookDisplay()
+    transport = NotebookInspectionTransport.create(
+        _artifact(),
+        display=display,
+        scheduler=scheduler,
+        widget_id="hg-inspect-rejected-schedule",
+        nonce="nonce-rejected-schedule",
+    )
+    session = InspectionSession(
+        graph_name="customer_enrichment",
+        workflow_id="workflow-customers",
+        item_index=None,
+    )
+
+    transport.attach(session)
+
+    assert transport.closed is True
+    assert transport._coalescer.delivery_failed is True  # type: ignore[attr-defined]
+    assert session._subscribers == {}  # type: ignore[attr-defined]
+    assert display.handle.updates == []
 
 
 def test_start_failure_becomes_bounded_stale_transport_state() -> None:

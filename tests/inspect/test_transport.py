@@ -113,6 +113,52 @@ class _ManualScheduler:
         self.run_due()
 
 
+class _RejectingScheduler:
+    def __init__(self) -> None:
+        self.current = 0.0
+        self.owner_thread_id = threading.get_ident()
+        self.supports_delayed_calls = True
+        self.supports_cross_thread = True
+
+    def now(self) -> float:
+        return self.current
+
+    def call_at(self, _deadline: float, _callback: Callable[[], None]) -> None:
+        return None
+
+
+class _RacingRejectScheduler:
+    def __init__(self) -> None:
+        self.current = 0.0
+        self.owner_thread_id = threading.get_ident()
+        self.supports_delayed_calls = True
+        self.supports_cross_thread = True
+        self.first_arm_started = threading.Event()
+        self.release_first_arm = threading.Event()
+        self.replacement: _Scheduled | None = None
+        self._call_count = 0
+
+    def now(self) -> float:
+        return self.current
+
+    def call_at(
+        self,
+        deadline: float,
+        callback: Callable[[], None],
+    ) -> _Scheduled | None:
+        self._call_count += 1
+        if self._call_count == 1:
+            self.first_arm_started.set()
+            assert self.release_first_arm.wait(timeout=5)
+            return None
+        self.replacement = _Scheduled(
+            deadline=deadline,
+            order=self._call_count,
+            callback=callback,
+        )
+        return self.replacement
+
+
 def _coalescer(
     scheduler: _ManualScheduler,
     delivered: list[InspectionEnvelope],
@@ -543,6 +589,61 @@ def test_delivery_failure_is_isolated_and_closes_the_observational_transport() -
     assert attempts == 1
     assert coalescer.delivery_failed is True
     assert coalescer.closed is True
+
+
+def test_unexpected_none_closes_and_clears_current_schedule() -> None:
+    scheduler = _RejectingScheduler()
+    delivered: list[InspectionEnvelope] = []
+    coalescer = InspectionCoalescer(
+        widget_id="hg-inspect-rejected",
+        nonce="nonce-rejected",
+        scheduler=scheduler,
+        deliver=delivered.append,
+        initial_sent_at=scheduler.now(),
+    )
+
+    coalescer.publish(_run(1), urgent=False)
+
+    assert delivered == []
+    assert coalescer.closed is True
+    assert coalescer.delivery_failed is True
+    assert coalescer._pending is None  # type: ignore[attr-defined]
+    assert coalescer._scheduled_token is None  # type: ignore[attr-defined]
+
+
+def test_stale_rejected_arm_does_not_poison_replacement_schedule() -> None:
+    scheduler = _RacingRejectScheduler()
+    delivered: list[InspectionEnvelope] = []
+    coalescer = InspectionCoalescer(
+        widget_id="hg-inspect-racing-reject",
+        nonce="nonce-racing-reject",
+        scheduler=scheduler,
+        deliver=delivered.append,
+    )
+    first = threading.Thread(
+        target=lambda: coalescer.publish(
+            replace(_run(1), revision=1),
+            urgent=False,
+        )
+    )
+    first.start()
+    assert scheduler.first_arm_started.wait(timeout=5)
+
+    latest = replace(_run(2), revision=2)
+    coalescer.publish(latest, urgent=True)
+    replacement = scheduler.replacement
+    assert replacement is not None
+
+    scheduler.release_first_arm.set()
+    first.join(timeout=5)
+
+    assert first.is_alive() is False
+    assert coalescer.closed is False
+    assert coalescer.delivery_failed is False
+
+    replacement.callback()
+
+    assert [envelope.artifact for envelope in delivered] == [latest]
 
 
 def test_terminal_close_ignores_late_publications() -> None:
