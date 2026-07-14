@@ -375,6 +375,34 @@ def test_mappingproxy_only_traverses_an_exact_dict_referent() -> None:
     assert calls == {"getitem": 0, "iter": 0, "len": 0, "repr": 1}
 
 
+def test_captured_mapping_uses_only_its_exact_trusted_storage_adapter() -> None:
+    from hypergraph.runners._shared._inspect_serialization import CapturedMapping
+
+    captured = serialize_value(CapturedMapping({"customer_id": "maya-23"}))
+
+    assert captured.kind == "mapping"
+    assert captured.type_name == "mappingproxy"
+    assert captured.entries[0].value.text == "maya-23"
+
+    calls = {"iter": 0, "repr": 0}
+
+    class AdvertisedCapturedMapping(CapturedMapping):
+        def __iter__(self) -> Iterator[str]:
+            calls["iter"] += 1
+            yield "customer_id"
+
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            return "AdvertisedCapturedMapping(<redacted>)"
+
+    advertised = serialize_value(AdvertisedCapturedMapping({"customer_id": "must-not-be-traversed"}))
+
+    assert advertised.kind == "text"
+    assert advertised.type_name == "AdvertisedCapturedMapping"
+    assert advertised.text == "AdvertisedCapturedMapping(<redacted>)"
+    assert calls == {"iter": 0, "repr": 1}
+
+
 def test_exact_sequence_limit_recursion_and_depth_limit_are_truthful() -> None:
     one_over = serialize_value(list(range(201)))
     assert one_over.kind == "sequence"

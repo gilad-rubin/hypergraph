@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import dataclasses
+import pickle
 import threading
 
 import pytest
@@ -20,6 +22,86 @@ from hypergraph import (
     node,
 )
 from hypergraph.checkpointers import MemoryCheckpointer, SqliteCheckpointer
+
+
+def _result_copy_graph() -> Graph:
+    @node(output_name="prepared_customer")
+    def prepare(customer: dict[str, str]) -> dict[str, str]:
+        return {"customer_id": customer["customer_id"]}
+
+    @node(output_name="decision")
+    def decide(prepared_customer: dict[str, str]) -> str:
+        customer_id = prepared_customer["customer_id"]
+        if customer_id == "maya-23":
+            raise ValueError("Customer maya-23 requires manual review")
+        return f"approved:{customer_id}"
+
+    return Graph([prepare, decide], name="result-copy-compatibility")
+
+
+def _sync_result_copy_cases(*, inspect: bool) -> dict[str, RunResult | MapResult]:
+    graph = _result_copy_graph()
+    runner = SyncRunner()
+    return {
+        "run": runner.run(
+            graph,
+            {"customer": {"customer_id": "maya-23"}},
+            inspect=inspect,
+            error_handling="continue",
+        ),
+        "map": runner.map(
+            graph,
+            {
+                "customer": [
+                    {"customer_id": "alex-10"},
+                    {"customer_id": "maya-23"},
+                ]
+            },
+            map_over="customer",
+            inspect=inspect,
+            error_handling="continue",
+        ),
+    }
+
+
+def _apply_result_operation(
+    result: RunResult | MapResult,
+    operation: str,
+) -> RunResult | MapResult | dict[str, object]:
+    if operation == "copy":
+        return copy.copy(result)
+    if operation == "deepcopy":
+        return copy.deepcopy(result)
+    if operation == "asdict":
+        return dataclasses.asdict(result)
+    if operation == "pickle":
+        return pickle.loads(pickle.dumps(result))
+    raise AssertionError(f"unknown test operation: {operation}")
+
+
+def _assert_copied_inspection_truth(result: RunResult | MapResult) -> None:
+    artifact = result.inspect()._artifact
+    html = result.inspect()._repr_html_()
+    assert "maya-23" in html
+    assert "Customer maya-23 requires manual review" in html
+
+    if isinstance(result, RunResult):
+        assert artifact.status == "failed"
+        assert artifact.nodes[0].outputs == {"prepared_customer": {"customer_id": "maya-23"}}
+        assert artifact.failures[0].inputs == {"prepared_customer": {"customer_id": "maya-23"}}
+        assert isinstance(artifact.failures[0].error, ValueError)
+        return
+
+    assert artifact.status == "partial"
+    assert artifact.completed_count == 1
+    assert artifact.failed_count == 1
+    failed_item = artifact.items[1]
+    assert failed_item.item_index == 1
+    assert failed_item.requested_inputs == {"customer": {"customer_id": "maya-23"}}
+    assert failed_item.run is not None
+    assert failed_item.run.failures[0].inputs == {"prepared_customer": {"customer_id": "maya-23"}}
+    assert isinstance(failed_item.run.failures[0].error, ValueError)
+    assert result.results[1]._inspection is failed_item.run
 
 
 def test_sync_inspect_renders_captured_outputs_and_changes_with_real_input() -> None:
@@ -358,6 +440,98 @@ def test_empty_inspected_map_returns_a_terminal_captured_batch_artifact() -> Non
     assert artifact.unstarted_item_indexes == ()
     assert artifact.captured is True
     assert artifact.terminal is True
+
+
+@pytest.mark.parametrize("operation", ["copy", "deepcopy", "asdict", "pickle"])
+@pytest.mark.parametrize("result_kind", ["run", "map"])
+def test_inspected_results_support_standard_copy_and_serialization(
+    result_kind: str,
+    operation: str,
+) -> None:
+    result = _sync_result_copy_cases(inspect=True)[result_kind]
+
+    transformed = _apply_result_operation(result, operation)
+
+    if operation == "asdict":
+        assert isinstance(transformed, dict)
+        assert transformed["_inspection"] is not None
+        return
+    assert isinstance(transformed, (RunResult, MapResult))
+    _assert_copied_inspection_truth(transformed)
+
+
+def test_results_without_inspection_keep_their_standard_operation_baseline() -> None:
+    for result in _sync_result_copy_cases(inspect=False).values():
+        for operation in ("copy", "deepcopy", "asdict", "pickle"):
+            transformed = _apply_result_operation(result, operation)
+            if operation == "asdict":
+                assert isinstance(transformed, dict)
+                assert transformed["_inspection"] is None
+                continue
+            assert isinstance(transformed, (RunResult, MapResult))
+            assert transformed._inspection is None
+            assert transformed.inspect()._artifact.captured is False
+
+
+@pytest.mark.asyncio
+async def test_async_inspected_results_keep_copy_and_pickle_truth_in_parity() -> None:
+    graph = _result_copy_graph()
+    runner = AsyncRunner()
+    results: tuple[RunResult | MapResult, ...] = (
+        await runner.run(
+            graph,
+            {"customer": {"customer_id": "maya-23"}},
+            inspect=True,
+            error_handling="continue",
+        ),
+        await runner.map(
+            graph,
+            {
+                "customer": [
+                    {"customer_id": "alex-10"},
+                    {"customer_id": "maya-23"},
+                ]
+            },
+            map_over="customer",
+            inspect=True,
+            error_handling="continue",
+        ),
+    )
+
+    for result in results:
+        for operation in ("copy", "deepcopy", "pickle"):
+            transformed = _apply_result_operation(result, operation)
+            assert isinstance(transformed, (RunResult, MapResult))
+            _assert_copied_inspection_truth(transformed)
+        as_dict = dataclasses.asdict(result)
+        assert as_dict["_inspection"] is not None
+
+
+def test_inspection_capture_stays_top_level_shallow_and_read_only() -> None:
+    from hypergraph.runners._shared._inspect import NodeInspection
+
+    nested_value: list[str] = ["maya-23"]
+    source = {"customer_ids": nested_value}
+    snapshot = NodeInspection(
+        run_id="run-copy-contract",
+        span_id="span-copy-contract",
+        node_name="prepare",
+        qualified_name="prepare",
+        graph_name="result-copy-compatibility",
+        item_index=None,
+        superstep=0,
+        sequence=0,
+        status="completed",
+        values_captured=True,
+        inputs=source,
+    )
+
+    source["late"] = ["not captured"]
+    assert snapshot.inputs == {"customer_ids": ["maya-23"]}
+    assert snapshot.inputs is not None
+    assert snapshot.inputs["customer_ids"] is nested_value
+    with pytest.raises(TypeError):
+        snapshot.inputs["late"] = ["mutation"]  # type: ignore[index]
 
 
 def test_inspection_data_does_not_change_result_compatibility_surfaces() -> None:

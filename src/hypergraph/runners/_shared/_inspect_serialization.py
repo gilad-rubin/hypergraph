@@ -13,7 +13,7 @@ import gc
 import json
 import math
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from itertools import islice
@@ -26,7 +26,7 @@ from types import (
     ModuleType,
     WrapperDescriptorType,
 )
-from typing import Literal, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 SerializedKind: TypeAlias = Literal[
     "null",
@@ -71,6 +71,30 @@ _SAFE_EXCEPTION_TYPES = tuple(
     for candidate in vars(builtins).values()
     if type(candidate) is type and any(base is BaseException for base in type.__getattribute__(candidate, "__mro__"))
 )
+
+
+class CapturedMapping(Mapping[str, Any]):
+    """Read-only shallow snapshot that remains copyable and pickleable."""
+
+    __slots__ = ("__values",)
+
+    def __init__(self, values: Mapping[str, Any]) -> None:
+        object.__setattr__(self, "_CapturedMapping__values", dict(values))
+
+    def __getitem__(self, key: str) -> Any:
+        return dict.__getitem__(self.__values, key)
+
+    def __iter__(self) -> Iterator[str]:
+        return dict.__iter__(self.__values)
+
+    def __len__(self) -> int:
+        return dict.__len__(self.__values)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("CapturedMapping is immutable")
+
+    def __reduce__(self) -> tuple[type[CapturedMapping], tuple[dict[str, Any]]]:
+        return (CapturedMapping, (self.__values,))
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +197,8 @@ class _PandasTableStorage:
 
 
 def _safe_type_name(value: object) -> str:
+    if type(value) is CapturedMapping:
+        return "mappingproxy"
     try:
         name = type.__getattribute__(type(value), "__name__")
         name = str.__str__(name)
@@ -543,6 +569,9 @@ def _safe_original_size(value: object) -> int | None:
         return bytearray.__len__(value)
     if value_type is dict:
         return dict.__len__(value)
+    if value_type is CapturedMapping:
+        backing_dict = _captured_mapping_dict(value)
+        return None if backing_dict is None else dict.__len__(backing_dict)
     if value_type is MappingProxyType:
         backing_dict = _mappingproxy_dict(value)
         return None if backing_dict is None else dict.__len__(backing_dict)
@@ -560,6 +589,15 @@ def _mappingproxy_dict(value: object) -> dict[object, object] | None:
     if len(referents) != 1 or type(referents[0]) is not dict:
         return None
     return referents[0]
+
+
+def _captured_mapping_dict(value: object) -> dict[object, object] | None:
+    if type(value) is not CapturedMapping:
+        return None
+    backing_dict = object.__getattribute__(value, "_CapturedMapping__values")
+    if type(backing_dict) is not dict:
+        return None
+    return backing_dict
 
 
 def _class_namespace(value_type: type) -> dict[str, object] | None:
@@ -1916,6 +1954,19 @@ def _serialize_value(
             active_ids=active_ids,
             budget=budget,
         )
+    if value_type is CapturedMapping:
+        backing_dict = _captured_mapping_dict(value)
+        if backing_dict is not None:
+            original_size = dict.__len__(backing_dict)
+            source_items = tuple(islice(dict.items(backing_dict), _MAX_MAPPING_ITEMS))
+            return _serialize_mapping_items(
+                value,
+                source_items=source_items,
+                original_size=original_size,
+                depth=depth,
+                active_ids=active_ids,
+                budget=budget,
+            )
     if value_type is MappingProxyType:
         backing_dict = _mappingproxy_dict(value)
         if backing_dict is not None:

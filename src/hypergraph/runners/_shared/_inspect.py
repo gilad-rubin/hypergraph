@@ -11,9 +11,9 @@ import contextvars
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
-from types import MappingProxyType
 from typing import Any, Literal, cast
 
+from hypergraph.runners._shared._inspect_serialization import CapturedMapping
 from hypergraph.runners._shared.results import FailureEvidence, MapResult, RunResult
 
 NodeInspectionStatus = Literal[
@@ -51,9 +51,9 @@ class NodeInspection:
     def __post_init__(self) -> None:
         """Own only the top-level mappings; contained values retain identity."""
         if self.inputs is not None:
-            object.__setattr__(self, "inputs", MappingProxyType(dict(self.inputs)))
+            object.__setattr__(self, "inputs", CapturedMapping(self.inputs))
         if self.outputs is not None:
-            object.__setattr__(self, "outputs", MappingProxyType(dict(self.outputs)))
+            object.__setattr__(self, "outputs", CapturedMapping(self.outputs))
 
     @property
     def execution_id(self) -> tuple[str, str, int, int]:
@@ -106,7 +106,7 @@ class MapItemInspection:
     def __post_init__(self) -> None:
         """Own the requested-input mapping without copying contained values."""
         if self.requested_inputs is not None:
-            object.__setattr__(self, "requested_inputs", MappingProxyType(dict(self.requested_inputs)))
+            object.__setattr__(self, "requested_inputs", CapturedMapping(self.requested_inputs))
 
 
 @dataclass(frozen=True, slots=True)
