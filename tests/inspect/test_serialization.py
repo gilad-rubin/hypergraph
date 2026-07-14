@@ -1181,8 +1181,17 @@ def test_extension_backed_dataframe_is_rejected_without_extension_hooks() -> Non
         def copy(self) -> HostileArray:
             return type(self)(self._values.copy())
 
-    frame = pd.DataFrame({"customer": HostileArray(["maya", "ari"])})
-    calls = dict.fromkeys(calls, 0)
+    frames = (
+        pd.DataFrame({"customer": HostileArray(["maya", "ari"])}),
+        pd.DataFrame(
+            [[1, 2]],
+            columns=pd.Index(HostileArray(["customer", "score"])),
+        ),
+        pd.DataFrame(
+            [[1], [2]],
+            index=pd.Index(HostileArray(["maya", "ari"])),
+        ),
+    )
     original_repr = pd.DataFrame.__repr__
 
     def forbidden_frame_repr(_: pd.DataFrame) -> str:
@@ -1190,16 +1199,25 @@ def test_extension_backed_dataframe_is_rejected_without_extension_hooks() -> Non
         raise AssertionError("extension-backed DataFrame must not use whole-value repr")
 
     pd.DataFrame.__repr__ = forbidden_frame_repr
+    serialized_frames: list[SerializedValue] = []
+    observed_calls: list[dict[str, int]] = []
     try:
-        serialized = serialize_value(frame)
+        for frame in frames:
+            calls = dict.fromkeys(calls, 0)
+            serialized_frames.append(serialize_value(frame))
+            observed_calls.append(calls.copy())
     finally:
         pd.DataFrame.__repr__ = original_repr
 
-    assert serialized.kind == "placeholder"
-    assert serialized.type_name == "DataFrame"
-    assert serialized.reason == "unsupported extension-backed DataFrame"
-    assert serialized.truncated is True
-    assert calls == dict.fromkeys(calls, 0)
+    assert [serialized.kind for serialized in serialized_frames] == [
+        "placeholder",
+        "placeholder",
+        "placeholder",
+    ]
+    assert {serialized.type_name for serialized in serialized_frames} == {"DataFrame"}
+    assert {serialized.reason for serialized in serialized_frames} == {"unsupported extension-backed DataFrame"}
+    assert all(serialized.truncated for serialized in serialized_frames)
+    assert observed_calls == [dict.fromkeys(calls, 0)] * 3
 
 
 def test_array_and_dataframe_protocols_and_subclasses_use_repr_only() -> None:
