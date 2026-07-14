@@ -451,3 +451,72 @@ def test_inspect_mode_docs_mirror_public_contract() -> None:
     assert "../05-how-to/test-without-framework.md" in hypertable
     assert '"/docs/changelog.md"' in pyproject
     assert '"/CHANGELOG.md"' not in pyproject
+
+
+def test_inspect_docs_pin_observational_serialization_and_background_identity() -> None:
+    debug = _read("docs/05-how-to/debug-workflows.md")
+    runners = _read("docs/06-api-reference/runners.md")
+    changelog = _read("docs/changelog.md")
+
+    normalized_debug = " ".join(debug.split())
+    for structured_adapter in (
+        "exact built-in `dict`",
+        "exact built-in `list`",
+        "exact built-in `tuple`",
+        "ordinary dataclasses",
+        "recognized Pydantic models",
+        "exact NumPy `ndarray`",
+        "exact pandas `DataFrame`",
+    ):
+        assert structured_adapter in normalized_debug
+    assert "unsupported subclasses and custom protocols" in normalized_debug
+    assert "whole-value bounded `repr` fallback" in normalized_debug
+    assert "`repr` is Python user code" in normalized_debug
+    assert "cannot prevent or undo its side effects" in normalized_debug
+    assert "multiple live snapshots" in normalized_debug
+    assert "raised `repr` exceptions" in normalized_debug
+    assert "bounded typed placeholders" in normalized_debug
+    assert "do not replace the run status" in normalized_debug
+    assert "does not emit a hidden notebook output" in normalized_debug
+    assert "no hidden display side effect" not in normalized_debug
+
+    run_result = _scoped_section(runners, "## RunResult")
+    run_inspect = _scoped_section(run_result, "### inspect()")
+    assert "Python user code" in run_inspect
+    assert "hidden notebook output" in run_inspect
+
+    for result_type in (RunResult, MapResult):
+        doc = inspect.getdoc(result_type.inspect)
+        assert doc is not None
+        assert "hidden notebook output" in doc
+        assert "bounded ``repr`` fallback" in doc
+        assert "Python user code" in doc
+
+    sync_section = _scoped_section(runners, "## SyncRunner")
+    async_section = _scoped_section(runners, "## AsyncRunner")
+    for runner_type, section in (
+        (SyncRunner, sync_section),
+        (AsyncRunner, async_section),
+    ):
+        start_section = _scoped_section(section, "### start_run() and start_map()")
+        normalized_start = " ".join(start_section.split())
+        assert "generated workflow ID" in normalized_start
+        assert "settled result" in normalized_start
+        assert "before restored" in normalized_start
+        assert "node evidence" in normalized_start
+        assert "published" in normalized_start
+        assert "start_map()" in normalized_start
+        assert "persistence still requires an explicit" in normalized_start
+        assert "workflow_id" in normalized_start
+
+        start_doc = inspect.getdoc(runner_type.start_run)
+        assert start_doc is not None
+        assert "generated workflow ID" in start_doc
+        assert "settled result" in start_doc
+        assert "before restored" in start_doc
+        assert "node evidence" in start_doc
+        assert "published" in start_doc
+
+    fixed = _scoped_section(changelog, "### Fixed")
+    assert "**Observational inspect serialization**" in fixed
+    assert "**Background inspect workflow identity**" in fixed
