@@ -67,7 +67,7 @@ def test_terminal_map_session_ignores_late_child_publication_and_settlement() ->
         (1, "failed"),
         (2, "failed"),
     ]
-    assert terminal.items[0].run is completed.inspect().artifact
+    assert terminal.items[0].run is completed.inspect()._artifact
 
     with pytest.raises(RuntimeError, match="terminal"):
         session.claim_item(item_index=3, requested_inputs={"value": 4}, workflow_id="terminal-map/3")
@@ -111,7 +111,7 @@ async def test_nested_infrastructure_failure_settles_every_terminal_node_sync_an
     )
 
     for result, error in ((sync_result, sync_error), (async_result, async_error)):
-        artifact = result.inspect().artifact
+        artifact = result.inspect()._artifact
         assert result.status is RunStatus.FAILED
         assert result.error is error
         assert artifact.terminal is True
@@ -197,7 +197,7 @@ async def test_run_level_error_survives_capture_degradation_and_raise_policy(
         (async_captured, async_error, True),
         (async_degraded, async_error, False),
     ):
-        artifact = result.inspect().artifact
+        artifact = result.inspect()._artifact
         assert result.error is error
         assert artifact.error is error
         assert artifact.captured is captured
@@ -244,7 +244,7 @@ async def test_nested_container_keeps_its_own_elapsed_duration_sync_and_async() 
         (sync_result, "child/sync_prepare", "child/sync_fail"),
         (async_result, "child/async_prepare", "child/async_fail"),
     ):
-        nodes = {item.qualified_name: item for item in result.inspect().artifact.nodes}
+        nodes = {item.qualified_name: item for item in result.inspect()._artifact.nodes}
         assert nodes["child"].duration_ms >= nodes[prepare_name].duration_ms
         assert nodes["child"].duration_ms > nodes[fail_name].duration_ms
 
@@ -265,8 +265,8 @@ def test_captured_mappings_are_read_only_shallow_snapshots() -> None:
         inspect=True,
     )
 
-    inspected_node = run.inspect().artifact.nodes[0]
-    requested_inputs = batch.inspect().artifact.items[0].requested_inputs
+    inspected_node = run.inspect()._artifact.nodes[0]
+    requested_inputs = batch.inspect()._artifact.items[0].requested_inputs
     assert inspected_node.inputs is not None
     assert inspected_node.outputs is not None
     assert requested_inputs is not None
@@ -308,7 +308,7 @@ async def test_degraded_nested_failure_has_one_qualified_leaf_node_sync_and_asyn
         (sync_result, "child/sync_fail_leaf"),
         (async_result, "child/async_fail_leaf"),
     ):
-        artifact = result.inspect().artifact
+        artifact = result.inspect()._artifact
         assert [item.qualified_name for item in artifact.nodes] == ["child", leaf_name]
         assert [item.sequence for item in artifact.nodes] == [0, 1]
         assert sum(item.qualified_name == leaf_name for item in artifact.nodes) == 1

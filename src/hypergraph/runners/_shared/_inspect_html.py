@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 from functools import lru_cache
 from importlib.resources import files
@@ -260,3 +261,20 @@ def render_map_inspection(artifact: MapInspection) -> str:
         delivery_label="Saved snapshot",
     )
     return render_inspection_payload(payload)
+
+
+def render_inspection_frame(child_html: str) -> str:
+    """Isolate one saved inspection renderer from its notebook host."""
+    child_document = (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '</head><body style="margin:0">'
+        f"{child_html}"
+        "</body></html>"
+    )
+    return (
+        '<iframe title="Hypergraph execution inspection" sandbox="allow-scripts" '
+        'style="display:block;box-sizing:border-box;width:100%;min-width:0;'
+        'height:720px;border:0" '
+        f'srcdoc="{html.escape(child_document, quote=True)}"></iframe>'
+    )
