@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 from itertools import islice
 from types import (
+    FunctionType,
     GetSetDescriptorType,
     MappingProxyType,
     MemberDescriptorType,
@@ -185,15 +186,21 @@ def _safe_type_name(value: object) -> str:
     return f"{bounded_name[:prefix_size]}{_TYPE_NAME_TRUNCATION_MARKER}"
 
 
-def _loaded_module_attribute(module_name: str, attribute_name: str) -> object:
+def _loaded_module_namespace(module_name: str) -> dict[str, object] | None:
     sys_namespace = object.__getattribute__(sys, "__dict__")
     modules = dict.get(sys_namespace, "modules")
     if type(modules) is not dict:
-        return _MISSING
+        return None
     module = dict.get(modules, module_name)
     if type(module) is not ModuleType:
+        return None
+    return object.__getattribute__(module, "__dict__")
+
+
+def _loaded_module_attribute(module_name: str, attribute_name: str) -> object:
+    namespace = _loaded_module_namespace(module_name)
+    if namespace is None:
         return _MISSING
-    namespace = object.__getattribute__(module, "__dict__")
     return dict.get(namespace, attribute_name, _MISSING)
 
 
@@ -228,6 +235,55 @@ def _descriptor_is_owned_by(
         return object.__getattribute__(descriptor, "__objclass__") is candidate
     except (AttributeError, TypeError):
         return False
+
+
+def _class_owns_canonical_function(
+    candidate: type,
+    *,
+    module_name: str,
+    class_name: str,
+    function_name: str,
+    closes_over_class: bool = False,
+) -> bool:
+    namespace = _class_namespace(candidate)
+    module_namespace = _loaded_module_namespace(module_name)
+    if namespace is None or module_namespace is None:
+        return False
+    function = namespace.get(function_name, _MISSING)
+    if type(function) is staticmethod:
+        function = object.__getattribute__(function, "__func__")
+    if type(function) is not FunctionType:
+        return False
+    try:
+        declared_module = object.__getattribute__(function, "__module__")
+        qualname = object.__getattribute__(function, "__qualname__")
+        globals_namespace = object.__getattribute__(function, "__globals__")
+        code = object.__getattribute__(function, "__code__")
+        closure = object.__getattribute__(function, "__closure__")
+        freevars = object.__getattribute__(code, "co_freevars")
+    except (AttributeError, TypeError):
+        return False
+    if (
+        type(declared_module) is not str
+        or declared_module != module_name
+        or type(qualname) is not str
+        or qualname != f"{class_name}.{function_name}"
+        or globals_namespace is not module_namespace
+    ):
+        return False
+    if not closes_over_class:
+        return True
+    if type(closure) is not tuple or type(freevars) is not tuple or tuple.__len__(closure) != tuple.__len__(freevars):
+        return False
+    for index, freevar in enumerate(tuple.__iter__(freevars)):
+        if type(freevar) is not str or freevar != "__class__":
+            continue
+        cell = tuple.__getitem__(closure, index)
+        try:
+            return object.__getattribute__(cell, "cell_contents") is candidate
+        except (AttributeError, ValueError):
+            return False
+    return False
 
 
 def _is_static_extension_type(
@@ -314,9 +370,25 @@ def _canonical_pandas_dataframe_type() -> type | None:
         if not _declares_type(ops_mixin, module_name="pandas.core.arraylike", class_name="OpsMixin"):
             return False
         try:
-            return type(candidate) is type and type.__getattribute__(candidate, "__bases__") == (ndframe, ops_mixin)
+            bases_match = type(candidate) is type and type.__getattribute__(candidate, "__bases__") == (ndframe, ops_mixin)
         except (AttributeError, TypeError):
             return False
+        return (
+            bases_match
+            and _class_owns_canonical_function(
+                candidate,
+                module_name="pandas.core.frame",
+                class_name="DataFrame",
+                function_name="__init__",
+            )
+            and _class_owns_canonical_function(
+                candidate,
+                module_name="pandas.core.frame",
+                class_name="DataFrame",
+                function_name="rename",
+                closes_over_class=True,
+            )
+        )
 
     return _resolved_alias_type(
         "pandas.DataFrame",
@@ -334,7 +406,25 @@ def _canonical_pandas_index_type() -> type | None:
             mro = type.__getattribute__(candidate, "__mro__")
         except (AttributeError, TypeError):
             return False
-        return type(flags) is int and flags & _PY_TPFLAGS_HEAPTYPE != 0 and mro[0] is candidate and mro[-1] is object
+        return (
+            type(flags) is int
+            and flags & _PY_TPFLAGS_HEAPTYPE != 0
+            and mro[0] is candidate
+            and mro[-1] is object
+            and _class_owns_canonical_function(
+                candidate,
+                module_name="pandas.core.indexes.base",
+                class_name="Index",
+                function_name="__new__",
+            )
+            and _class_owns_canonical_function(
+                candidate,
+                module_name="pandas.core.indexes.base",
+                class_name="Index",
+                function_name="unique",
+                closes_over_class=True,
+            )
+        )
 
     return _resolved_alias_type(
         "pandas.Index",
@@ -357,7 +447,24 @@ def _canonical_pandas_range_index_type() -> type | None:
             mro = type.__getattribute__(candidate, "__mro__")
         except (AttributeError, TypeError):
             return False
-        return type(candidate) is type and mro[0] is candidate and index_type in mro
+        return (
+            type(candidate) is type
+            and mro[0] is candidate
+            and index_type in mro
+            and _class_owns_canonical_function(
+                candidate,
+                module_name="pandas.core.indexes.range",
+                class_name="RangeIndex",
+                function_name="__new__",
+            )
+            and _class_owns_canonical_function(
+                candidate,
+                module_name="pandas.core.indexes.range",
+                class_name="RangeIndex",
+                function_name="equals",
+                closes_over_class=True,
+            )
+        )
 
     return _resolved_alias_type(
         "pandas.RangeIndex",
@@ -381,9 +488,31 @@ def _canonical_pydantic_base_model_type() -> type | None:
         ):
             return False
         try:
-            return type(candidate) is metaclass and type.__getattribute__(candidate, "__bases__") == (object,)
+            structure_matches = type(candidate) is metaclass and type.__getattribute__(candidate, "__bases__") == (object,)
         except (AttributeError, TypeError):
             return False
+        return (
+            structure_matches
+            and _class_owns_canonical_function(
+                metaclass,
+                module_name="pydantic._internal._model_construction",
+                class_name="ModelMetaclass",
+                function_name="__new__",
+            )
+            and _class_owns_canonical_function(
+                candidate,
+                module_name="pydantic.main",
+                class_name="BaseModel",
+                function_name="__init__",
+            )
+            and _class_owns_canonical_function(
+                candidate,
+                module_name="pydantic.main",
+                class_name="BaseModel",
+                function_name="__getattr__",
+                closes_over_class=True,
+            )
+        )
 
     return _resolved_alias_type(
         "pydantic.BaseModel",
