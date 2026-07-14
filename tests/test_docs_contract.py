@@ -364,6 +364,8 @@ def test_inspect_mode_docs_mirror_public_contract() -> None:
 
     assert "RunView" not in readme
     assert "RunView" not in observe
+    assert ("[Debug Workflows](https://github.com/gilad-rubin/hypergraph/blob/master/docs/05-how-to/debug-workflows.md)") in readme
+    assert "[Debug Workflows](docs/05-how-to/debug-workflows.md)" not in readme
     assert "Debug Workflows](05-how-to/debug-workflows.md)" in summary
     assert "Debug Workflows](05-how-to/debug-workflows.md)" in docs_readme
 
