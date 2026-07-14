@@ -848,12 +848,12 @@ def test_dataframe_serialization_uses_only_proven_stored_values() -> None:
 
     assert serialized.kind == "table"
     assert serialized.table is not None
-    assert [column.value for column in serialized.table.columns] == [
+    assert [column.text for column in serialized.table.columns] == [
         "customer_id",
         "score",
         "active",
     ]
-    assert [[cell.value for cell in row] for row in serialized.table.rows] == [
+    assert [[cell.text if cell.kind == "text" else cell.value for cell in row.cells] for row in serialized.table.rows] == [
         ["maya-23", 0.9, True],
         ["ari-12", 0.3, False],
     ]
@@ -869,10 +869,46 @@ def test_fragmented_numpy_dataframe_remains_a_bounded_table() -> None:
 
     assert serialized.kind == "table"
     assert serialized.table is not None
-    assert [column.value for column in serialized.table.columns] == [f"metric_{column_index}" for column_index in range(20)]
-    assert [[cell.value for cell in row] for row in serialized.table.rows] == [list(range(20))]
+    assert [column.text for column in serialized.table.columns] == [f"metric_{column_index}" for column_index in range(20)]
+    assert [[cell.value for cell in row.cells] for row in serialized.table.rows] == [list(range(20))]
     assert serialized.table.original_column_count == 21
     assert serialized.table.columns_truncated is True
+
+
+def test_stored_dataframe_layout_preserves_empty_rows_duplicate_columns_and_placements() -> None:
+    empty_columns = serialize_value(pd.DataFrame(index=[0, 1]))
+
+    assert empty_columns.kind == "table"
+    assert empty_columns.table is not None
+    assert empty_columns.table.original_row_count == 2
+    assert empty_columns.table.original_column_count == 0
+    assert empty_columns.table.columns == ()
+    assert [row.cells for row in empty_columns.table.rows] == [(), ()]
+
+    frame = pd.DataFrame(
+        {
+            "integer_a": [1, 2],
+            "customer": ["maya", "ari"],
+            "integer_b": [3, 4],
+            "score": [0.9, 0.3],
+        }
+    )
+    frame.columns = ["metric", "customer", "metric", "score"]
+
+    serialized = serialize_value(frame)
+
+    assert serialized.kind == "table"
+    assert serialized.table is not None
+    assert [column.text for column in serialized.table.columns] == [
+        "metric",
+        "customer",
+        "metric",
+        "score",
+    ]
+    assert [[cell.text if cell.kind == "text" else cell.value for cell in row.cells] for row in serialized.table.rows] == [
+        [1, "maya", 3, 0.9],
+        [2, "ari", 4, 0.3],
+    ]
 
 
 def test_supported_type_subclasses_never_enter_trusted_adapters() -> None:
