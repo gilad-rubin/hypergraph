@@ -171,10 +171,11 @@ print(result.workflow_id)  # "run-..."
 result.inspect()
 ```
 
-The sync and async runners bind inspection to that ID before restored state or
-node evidence is published. For an async handle, await `handle.result(...)`.
-`start_map()` persistence still requires an explicit `workflow_id`; omitting
-it gives the batch current-process inspection only.
+With `inspect=True`, the sync and async runners bind inspection to that ID
+before restored state or node evidence is published. For an async handle,
+await `handle.result(...)`. `start_map()` persistence still requires an
+explicit `workflow_id`; omitting it gives the batch current-process inspection
+only.
 
 ### Understand Degraded Views
 
@@ -218,8 +219,8 @@ safe concrete adapters: exact built-in `dict`, exact built-in `list`, exact
 built-in `tuple`, ordinary dataclasses, recognized Pydantic models, exact NumPy
 `ndarray`, and exact pandas `DataFrame`. For unsupported subclasses and custom
 protocols—including objects that advertise mapping, sequence, model, array,
-or DataFrame hooks—Hypergraph uses one whole-value bounded `repr` fallback per
-snapshot and does not call their advertised traversal hooks.
+or DataFrame hooks—Hypergraph uses one whole-value bounded `repr` fallback for
+each rendered occurrence and does not call their advertised traversal hooks.
 
 `repr` is Python user code. Hypergraph cannot prevent or undo its side effects,
 and the same object can reach the fallback during multiple live snapshots. Any

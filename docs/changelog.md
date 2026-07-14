@@ -51,8 +51,9 @@
 - **Observational inspect serialization** — structured rendering now traverses
   only exact built-in containers, ordinary dataclasses, recognized Pydantic
   models, and exact NumPy/pandas adapters. Unsupported subclasses and custom
-  protocols use a bounded whole-value `repr` fallback; raised `repr` errors
-  become placeholders without replacing the run status.
+  protocols use a bounded whole-value `repr` fallback. Custom `repr` remains
+  ordinary Python user code, so Hypergraph cannot prevent or undo its side
+  effects; raised errors become placeholders without replacing the run status.
 
 - **Background inspect workflow identity** — checkpointer-backed sync and async
   `start_run(..., inspect=True)` calls that omit `workflow_id` now bind their

@@ -334,9 +334,9 @@ belongs to the graph rather than the runner.
 With a checkpointer, omitting `workflow_id` from `start_run()` assigns a
 generated workflow ID. It appears on the settled result and in its inspection
 view; the control-only handle gains no identity or presentation field.
-Inspection binds that ID before restored state or node evidence is published.
-`start_map()` persistence still requires an explicit `workflow_id`; omitting
-it keeps map inspection process-local.
+With `inspect=True`, inspection binds that ID before restored state or node
+evidence is published. `start_map()` persistence still requires an explicit
+`workflow_id`; omitting it keeps map inspection process-local.
 
 ```python
 handle = runner.start_run(graph, {"order_id": "order-100"}, inspect=True)
@@ -999,9 +999,9 @@ blocking runner control absent from the `start_*()` signature directly raises
 With a checkpointer, omitting `workflow_id` from `start_run()` assigns a
 generated workflow ID. It appears on the settled result and in its inspection
 view; the control-only handle gains no identity or presentation field.
-Inspection binds that ID before restored state or node evidence is published.
-`start_map()` persistence still requires an explicit `workflow_id`; omitting
-it keeps map inspection process-local.
+With `inspect=True`, inspection binds that ID before restored state or node
+evidence is published. `start_map()` persistence still requires an explicit
+`workflow_id`; omitting it keeps map inspection process-local.
 
 ### capabilities
 
@@ -1295,11 +1295,12 @@ full privacy and live-to-saved contract.
 Structured rendering is limited to exact built-in `dict`, `list`, and `tuple`
 values, ordinary dataclasses, recognized Pydantic models, exact NumPy
 `ndarray` values, and exact pandas `DataFrame` values. Unsupported subclasses
-and custom protocols use a whole-value bounded `repr` fallback instead of
-calling advertised traversal hooks. `repr` is Python user code: Hypergraph
-cannot prevent or undo its side effects, and live rendering may call it for
-multiple snapshots. Raised `repr` exceptions become bounded typed placeholders
-without changing the run status or exception evidence.
+and custom protocols use a whole-value bounded `repr` fallback for each
+rendered occurrence instead of calling advertised traversal hooks. `repr` is
+Python user code: Hypergraph cannot prevent or undo its side effects, and live
+rendering may call it for multiple snapshots. Raised `repr` exceptions become
+bounded typed placeholders without changing the run status or exception
+evidence.
 
 ### Progressive Disclosure
 
