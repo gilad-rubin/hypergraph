@@ -1294,13 +1294,15 @@ full privacy and live-to-saved contract.
 
 Structured rendering is limited to exact built-in `dict`, `list`, and `tuple`
 values, ordinary dataclasses, recognized Pydantic models, exact NumPy
-`ndarray` values, and exact pandas `DataFrame` values. Unsupported subclasses
-and custom protocols use a whole-value bounded `repr` fallback for each
-rendered occurrence instead of calling advertised traversal hooks. `repr` is
-Python user code: Hypergraph cannot prevent or undo its side effects, and live
-rendering may call it for multiple snapshots. Raised `repr` exceptions become
-bounded typed placeholders without changing the run status or exception
-evidence.
+`ndarray` values, exact pandas `DataFrame` values, and a read-only mapping proxy
+(`MappingProxyType`) backed by an exact `dict`. Unsupported subclasses and
+custom protocols use a whole-value bounded `repr` fallback for each rendered
+occurrence instead of calling advertised traversal hooks. A proxy backed by a
+custom mapping uses the same whole-value bounded `repr` fallback rather than
+being traversed. `repr` is Python user code: Hypergraph cannot prevent or undo
+its side effects, and live rendering may call it for multiple snapshots.
+Raised `repr` exceptions become bounded typed placeholders without changing
+the run status or exception evidence.
 
 ### Progressive Disclosure
 

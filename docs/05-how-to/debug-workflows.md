@@ -217,10 +217,13 @@ typed placeholder and does not replace the run status.
 Structured inspection deliberately recognizes only exact inert containers and
 safe concrete adapters: exact built-in `dict`, exact built-in `list`, exact
 built-in `tuple`, ordinary dataclasses, recognized Pydantic models, exact NumPy
-`ndarray`, and exact pandas `DataFrame`. For unsupported subclasses and custom
-protocols—including objects that advertise mapping, sequence, model, array,
-or DataFrame hooks—Hypergraph uses one whole-value bounded `repr` fallback for
-each rendered occurrence and does not call their advertised traversal hooks.
+`ndarray`, exact pandas `DataFrame`, and a read-only mapping proxy
+(`MappingProxyType`) backed by an exact `dict`. For unsupported subclasses and
+custom protocols—including objects that advertise mapping, sequence, model,
+array, or DataFrame hooks—Hypergraph uses one whole-value bounded `repr`
+fallback for each rendered occurrence and does not call their advertised
+traversal hooks. A proxy backed by a custom mapping uses the same whole-value
+bounded `repr` fallback instead of traversing that mapping.
 
 `repr` is Python user code. Hypergraph cannot prevent or undo its side effects,
 and the same object can reach the fallback during multiple live snapshots. Any
