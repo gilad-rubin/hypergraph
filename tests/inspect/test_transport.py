@@ -24,6 +24,7 @@ from hypergraph.runners._shared._inspect_transport import (
     InspectionCoalescer,
     InspectionDelivery,
     InspectionEnvelope,
+    _native_exception_markup,
     _native_failure_markup,
     inspection_envelope_to_wire,
 )
@@ -198,6 +199,22 @@ def test_explicit_failure_without_stable_node_match_never_borrows_node_or_run_fa
     assert "attempt=1" not in markup
     assert "run boundary error" not in markup
     assert "Exact run exception" not in markup
+
+
+def test_repr_backed_exception_is_a_single_type_bounded_preview() -> None:
+    class CustomError(Exception):
+        def __repr__(self) -> str:
+            return "CustomError(<redacted>)"
+
+    error = serialized_value_to_wire(serialize_value(CustomError("secret")))
+    assert error["kind"] == "text"
+
+    markup = _native_exception_markup(error, exact_label="Exact exception")
+
+    assert "Exception preview (bounded repr)" in markup
+    assert "Exact exception" not in markup
+    assert markup.count("CustomError") == 1
+    assert "CustomError: CustomError" not in markup
 
 
 @pytest.mark.parametrize(
