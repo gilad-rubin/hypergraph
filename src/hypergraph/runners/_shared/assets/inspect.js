@@ -175,6 +175,20 @@
     return null;
   }
 
+  function primaryFailedNode(run, containingItemIndex) {
+    var failures = run && Array.isArray(run.failures) ? run.failures : [];
+    if (!failures.length) return firstFailedNode(run);
+    var failure = failures[0];
+    var nodes = run && Array.isArray(run.nodes) ? run.nodes : [];
+    var matching = nodes.filter(function (node) {
+      return node.failure && sameFailure(failure, node.failure, containingItemIndex);
+    });
+    for (var index = 0; index < matching.length; index += 1) {
+      if (matching[index].qualified_name === failure.node_name) return matching[index];
+    }
+    return matching.length ? matching[0] : null;
+  }
+
   function normalizeState(initial) {
     if (payload.kind === "map") {
       var items = mapItems();
@@ -478,12 +492,12 @@
     };
   }
 
-  function failureSnippet(itemIndex) {
+  function continueRerunSnippet() {
     var awaitPrefix = runnerAwaitPrefix();
     if (awaitPrefix === null) return null;
     if (payload.kind === "map") {
       var args = mapRerunArguments();
-      var mapRerun = "batch = " + awaitPrefix + "runner.map(\n"
+      return "batch = " + awaitPrefix + "runner.map(\n"
         + "    graph,\n"
         + "    values,\n"
         + "    map_over=" + args.mapOver + ",\n"
@@ -491,38 +505,101 @@
         + "    inspect=True,\n"
         + "    error_handling=\"continue\",\n"
         + ")\n";
-      return mapRerun + "failure = next(\n"
-        + "    item.failure for item in batch.failures\n"
-        + "    if item.failure and item.failure.item_index == " + itemIndex + "\n"
-        + ")\n"
-        + "failure.node_name\n"
-        + "failure.inputs";
     }
-    var runRerun = "result = " + awaitPrefix + "runner.run(\n"
+    return "result = " + awaitPrefix + "runner.run(\n"
       + "    graph,\n"
       + "    values,\n"
       + "    inspect=True,\n"
       + "    error_handling=\"continue\",\n"
       + ")\n";
-    return runRerun + "failure = result.failure\nfailure.node_name\nfailure.inputs";
   }
 
-  function appendFailure(parent, failure, itemIndex) {
-    if (!failure) return;
-    appendException(parent, failure.error, "Exact exception");
+  function exceptionRerunSnippet() {
+    var awaitPrefix = runnerAwaitPrefix();
+    if (awaitPrefix === null) return null;
+    if (payload.kind === "map") {
+      var args = mapRerunArguments();
+      return "try:\n"
+        + "    " + awaitPrefix + "runner.map(\n"
+        + "        graph,\n"
+        + "        values,\n"
+        + "        map_over=" + args.mapOver + ",\n"
+        + "        map_mode=" + args.mapMode + ",\n"
+        + "        inspect=True,\n"
+        + "    )\n"
+        + "except Exception as error:\n"
+        + "    print(f\"{type(error).__name__}: {error}\")";
+    }
+    return "try:\n"
+      + "    " + awaitPrefix + "runner.run(graph, values, inspect=True)\n"
+      + "except Exception as error:\n"
+      + "    print(f\"{type(error).__name__}: {error}\")";
+  }
 
+  function recoverySnippet(source, itemIndex) {
+    if (source === "start" || source === "batch") return exceptionRerunSnippet();
+    var rerun = continueRerunSnippet();
+    if (rerun === null) return null;
+    if (source === "node" && payload.kind === "map") {
+      return rerun + "failure = next(\n"
+        + "    (\n"
+        + "        item.failure\n"
+        + "        for item in batch.failures\n"
+        + "        if item.failure is not None\n"
+        + "        and item.failure.item_index == " + itemIndex + "\n"
+        + "    ),\n"
+        + "    None,\n"
+        + ")\n"
+        + "if failure is None:\n"
+        + "    print(batch)\n"
+        + "else:\n"
+        + "    print(failure.inputs)\n"
+        + "    print(failure.error)";
+    }
+    if (source === "node") {
+      return rerun + "failure = result.failure\n"
+        + "if failure is None:\n"
+        + "    print(result)\n"
+        + "else:\n"
+        + "    print(failure.inputs)\n"
+        + "    print(failure.error)";
+    }
+    if (source === "run" && payload.kind === "map") {
+      return rerun + "for failed in batch.failures:\n"
+        + "    if failed.error is not None:\n"
+        + "        print(failed.error)";
+    }
+    if (source === "status" && payload.kind === "map") {
+      return rerun + "for failed in batch.failures:\n"
+        + "    print(failed.summary())";
+    }
+    if (source === "run") return rerun + "print(result.error)";
+    return rerun + "print(result.summary())";
+  }
+
+  function appendRecovery(parent, source, itemIndex) {
     var evidence = element("div", "hg-inspect-detail-block");
-    var snippet = failureSnippet(itemIndex);
+    var snippet = recoverySnippet(source, itemIndex);
+    var codeLabel = source === "start" || source === "batch"
+      ? "Smallest useful recovery code"
+      : "Smallest useful evidence";
+
     if (snippet === null) {
       evidence.appendChild(element("div", "hg-inspect-section-title", "Recovery code unavailable"));
       evidence.appendChild(element("p", "hg-inspect-muted", "Runner kind was not captured."));
     } else {
-      evidence.appendChild(element("div", "hg-inspect-section-title", "Smallest useful evidence"));
+      evidence.appendChild(element("div", "hg-inspect-section-title", codeLabel));
       var pre = element("pre", "hg-inspect-code");
       pre.appendChild(code(snippet));
       evidence.appendChild(pre);
     }
     parent.appendChild(evidence);
+  }
+
+  function appendFailure(parent, failure, itemIndex) {
+    if (!failure) return;
+    appendException(parent, failure.error, "Exact exception");
+    appendRecovery(parent, "node", itemIndex);
   }
 
   function sameSerializedValue(left, right) {
@@ -570,6 +647,7 @@
     var map = currentMap();
     if (!map || !map.error) return;
     appendException(parent, map.error, "Exact batch exception");
+    appendRecovery(parent, "batch", null);
   }
 
   function renderHeader() {
@@ -621,7 +699,10 @@
     }
     var failureItem = firstFailedItem();
     var run = payload.kind === "run" ? payload.run : failureItem && failureItem.run;
-    var failureNode = firstFailedNode(run);
+    var failureNode = primaryFailedNode(
+      run,
+      payload.kind === "map" && failureItem ? failureItem.item_index : null
+    );
     if (!failureNode && !(run && run.error)) {
       alertElement.hidden = true;
       showFailureElement.hidden = true;
@@ -798,6 +879,11 @@
   function renderDetail() {
     detailElement.replaceChildren();
     appendBatchError(detailElement);
+    var startError = payload.message || null;
+    if (startError) {
+      appendException(detailElement, startError, "Exact start exception");
+      appendRecovery(detailElement, "start", null);
+    }
     var run = currentRun();
     var node = nodeByExecutionId(state.selectedExecution);
     if (!run) {
@@ -810,7 +896,8 @@
       detailElement.appendChild(element("div", "hg-inspect-section-title", "Run detail"));
       if (run.error) {
         appendException(detailElement, run.error, "Exact run exception");
-      } else {
+        appendRecovery(detailElement, "run", payload.kind === "map" ? state.selectedItem : run.item_index);
+      } else if (!startError) {
         detailElement.appendChild(element("p", "hg-inspect-muted", "Select a node execution."));
       }
       appendOrderedFailures(detailElement, run);
@@ -832,6 +919,7 @@
     );
     if (!node.failure && run.error) {
       appendException(detailElement, run.error, "Exact run exception");
+      appendRecovery(detailElement, "run", payload.kind === "map" ? state.selectedItem : node.item_index);
     }
     appendOrderedFailures(
       detailElement,
@@ -870,11 +958,11 @@
       var item = firstFailedItem();
       if (!item) return;
       state.selectedItem = item.item_index;
-      var failedNode = firstFailedNode(item.run);
+      var failedNode = primaryFailedNode(item.run, item.item_index);
       state.selectedExecution = failedNode ? executionId(failedNode) : null;
       if (failedNode) state.detailsOpen["node." + executionId(failedNode) + ".inputs"] = true;
     } else {
-      var node = firstFailedNode(payload.run);
+      var node = primaryFailedNode(payload.run, null);
       state.selectedExecution = node ? executionId(node) : null;
       if (node) state.detailsOpen["node." + executionId(node) + ".inputs"] = true;
     }

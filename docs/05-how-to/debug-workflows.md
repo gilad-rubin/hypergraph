@@ -375,8 +375,19 @@ Recovery code follows the captured runner kind. Sync snippets call
 captured, the summary says recovery code is unavailable instead of guessing
 sync. If a run may not return under the default raise policy, the snippet first
 reruns with `error_handling="continue"`, so `result` or `batch` exists before it
-is read. An explicit failure with no stable node-identity match keeps its own
-name, inputs, and error instead of borrowing a same-name node's qualified path.
+is read. If that recovery no longer reproduces a transient failure, it prints
+the settled successful result or batch instead of dereferencing `None`, raising
+`StopIteration`, or inventing failure evidence. Node, run-boundary,
+batch-boundary, and start-failure views follow this same provenance policy in
+both the full inspector and native summary.
+
+For a nested mapped graph, **Show failure** correlates the containing outer item
+to the explicit slash-qualified failing leaf. The selected execution, heading,
+input, exception, and recovery evidence therefore show
+`review_group/review_customer` plus the failing scalar input—not the aggregate
+`review_group` container and its list input. An explicit failure with no stable
+node-identity match keeps its own name, inputs, and error instead of borrowing a
+same-name node's qualified path.
 
 Before (misleading async recovery):
 
@@ -406,6 +417,24 @@ print(result.failure)
 Here, `runner` is an `AsyncRunner`; `graph` and `values` are the same graph and
 inputs used for the failed execution. A sync inspection shows the same call
 without `await`.
+
+Before (a transient recovery succeeds):
+
+```python
+failure = result.failure
+print(failure.inputs)  # AttributeError: failure is None
+```
+
+After (the copied snippet remains truthful):
+
+```python
+failure = result.failure
+if failure is None:
+    print(result)
+else:
+    print(failure.inputs)
+    print(failure.error)
+```
 
 ```text
 Before (untrusted output): Python says partial / 2 completed / 1 failed,

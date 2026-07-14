@@ -1335,8 +1335,18 @@ not captured, inspection says recovery code is unavailable instead of choosing
 sync. A snippet never reads a nonexistent `MapResult.error` or a result that
 was not returned: result-oriented snippets rerun with
 `error_handling="continue"` before reading `result.failure`, `result.error`, or
-`batch.failures`. An explicit failure without a stable node match keeps its
-own name, inputs, and error; node name alone is never a lookup key.
+`batch.failures`. If a continue-mode rerun succeeds because the failure was
+transient, the copied snippet prints the settled successful result or batch;
+it does not dereference `None`, raise `StopIteration`, or fabricate evidence.
+Node, run-boundary, batch-boundary, and start-failure views use that same
+provenance-aware policy in the full inspector and native summary.
+
+For nested mapped graphs, **Show failure** correlates the containing outer item
+with the explicit slash-qualified failing leaf. The selected heading, scalar
+input, exception, and recovery evidence name the leaf rather than the aggregate
+GraphNode container or its list input. An explicit failure without a stable
+node match keeps its own name, inputs, and error; node name alone is never a
+lookup key.
 
 Before, an untrusted terminal record could be blank while Python had already
 settled at `partial / 2 completed / 1 failed`. After, Maya can expand native

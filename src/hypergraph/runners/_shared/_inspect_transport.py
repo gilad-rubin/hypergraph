@@ -101,11 +101,14 @@ class InspectionEnvelope:
 
 def inspection_envelope_to_wire(envelope: InspectionEnvelope) -> dict[str, object]:
     """Cross the sole explicit Python-to-browser dictionary boundary."""
+    message = serialized_value_to_wire(envelope.message) if envelope.message is not None else None
     payload = build_inspection_payload(
         envelope.artifact,
         delivery_state=envelope.delivery.state,
         delivery_label=envelope.delivery.label,
     )
+    if message is not None:
+        payload["message"] = message
     return {
         "type": _UPDATE_MESSAGE,
         "version": envelope.protocol_version,
@@ -113,7 +116,7 @@ def inspection_envelope_to_wire(envelope: InspectionEnvelope) -> dict[str, objec
         "nonce": envelope.nonce,
         "sequence": envelope.sequence,
         "payload": payload,
-        "message": (serialized_value_to_wire(envelope.message) if envelope.message is not None else None),
+        "message": message,
     }
 
 
@@ -388,14 +391,25 @@ def _run_has_failure_evidence(run: dict[str, object]) -> bool:
 
 def _first_failure_and_node(
     run: dict[str, object],
+    *,
+    containing_item_index: object | None,
 ) -> tuple[dict[str, object], dict[str, object]]:
     failures = [_wire_dict(failure) for failure in _wire_list(run.get("failures"))]
     failure = failures[0] if failures else {}
     nodes = [_wire_dict(node) for node in _wire_list(run.get("nodes"))]
     if failure:
+        matching_nodes = [
+            node
+            for node in nodes
+            if _node_matches_failure(
+                node,
+                failure,
+                containing_item_index=containing_item_index,
+            )
+        ]
         failed_node = next(
-            (node for node in nodes if _node_matches_failure(node, failure)),
-            {},
+            (node for node in matching_nodes if node.get("qualified_name") == failure.get("node_name")),
+            matching_nodes[0] if matching_nodes else {},
         )
     else:
         failed_node = next((node for node in nodes if _wire_dict(node.get("failure"))), {})
@@ -411,13 +425,26 @@ def _first_failure_and_node(
 def _node_matches_failure(
     node: dict[str, object],
     failure: dict[str, object],
+    *,
+    containing_item_index: object | None,
 ) -> bool:
     if not failure:
         return False
     node_failure = _wire_dict(node.get("failure"))
-    failure_fields = ("node_name", "superstep", "graph_name", "workflow_id", "item_index")
+    failure_fields = (
+        "node_name",
+        "superstep",
+        "graph_name",
+        "workflow_id",
+        "duration_ms",
+        "error",
+        "inputs",
+    )
     if node_failure:
-        return all(node_failure.get(field) == failure.get(field) for field in failure_fields)
+        same_facts = all(node_failure.get(field) == failure.get(field) for field in failure_fields)
+        same_item = node_failure.get("item_index") == failure.get("item_index")
+        projected_outer_item = containing_item_index is not None and failure.get("item_index") == containing_item_index
+        return same_facts and (same_item or projected_outer_item)
     node_fields = ("node_name", "superstep", "graph_name", "item_index")
     return all(node.get(field) == failure.get(field) for field in node_fields)
 
@@ -564,7 +591,14 @@ def _native_failure_markup(
     run, item_index, source = _failed_run_and_item(kind, data)
     if message and source in {"none", "status"}:
         run, item_index, source = {}, None, "start"
-    failure, node = _first_failure_and_node(run) if source in {"node", "status"} else ({}, {})
+    failure, node = (
+        _first_failure_and_node(
+            run,
+            containing_item_index=item_index,
+        )
+        if source in {"node", "status"}
+        else ({}, {})
+    )
     node_failure = _wire_dict(node.get("failure"))
     if source == "node":
         error = _wire_dict(failure.get("error")) or _wire_dict(node_failure.get("error"))
@@ -621,7 +655,9 @@ def _native_failure_markup(
                 "    ),\n"
                 "    None,\n"
                 ")\n"
-                "if failure is not None:\n"
+                "if failure is None:\n"
+                "    print(batch)\n"
+                "else:\n"
                 "    print(failure.inputs)\n"
                 "    print(failure.error)"
             )
@@ -630,7 +666,13 @@ def _native_failure_markup(
         )
     elif kind == "run" and failure:
         code = (
-            rerun + "failure = result.failure\nif failure is not None:\n    print(failure.inputs)\n    print(failure.error)"
+            rerun
+            + "failure = result.failure\n"
+            + "if failure is None:\n"
+            + "    print(result)\n"
+            + "else:\n"
+            + "    print(failure.inputs)\n"
+            + "    print(failure.error)"
             if rerun is not None
             else None
         )

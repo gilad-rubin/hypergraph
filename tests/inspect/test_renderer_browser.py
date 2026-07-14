@@ -794,8 +794,9 @@ def test_sparse_map_failure_snippet_uses_original_failure_identity(
     root = page.locator('[data-hypergraph-inspect="map"]')
     root.get_by_role("button", name="Show failure").click()
     detail_text = root.locator("[data-hg-detail]").inner_text()
+    normalized_detail = " ".join(detail_text.split())
 
-    assert "item.failure for item in batch.failures" in detail_text
+    assert "item.failure for item in batch.failures" in normalized_detail
     assert "item.failure.item_index == 3" in detail_text
     assert "batch[3]" not in detail_text
     page.close()
@@ -1122,7 +1123,8 @@ def test_full_renderer_boundary_recovery_is_executable_without_node_evidence(
     assert code.count() == 1
     code_text = code.inner_text()
     assert "failure =" not in code_text
-    assert ".failure" not in code_text
+    assert "item.failure" not in code_text
+    assert "failed.failure" not in code_text
     assert ".inputs" not in code_text
     assert "node_name" not in code_text
     if runner_kind == "sync":

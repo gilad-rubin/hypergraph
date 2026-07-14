@@ -112,6 +112,20 @@ def _failed_graph() -> Graph:
     return Graph([review], name="recovery-review")
 
 
+def _transient_graph() -> Graph:
+    attempts = 0
+
+    @node(output_name="reviewed")
+    def review(customer_id: str) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ValueError(f"temporary review outage: {customer_id}")
+        return f"approved:{customer_id}"
+
+    return Graph([review], name="transient-recovery-review")
+
+
 def _execute_sync(code: str, *, runner: Any, graph: Graph, values: dict[str, Any]) -> dict[str, Any]:
     namespace = {"runner": runner, "graph": graph, "values": values}
     exec(code, namespace)
@@ -123,6 +137,67 @@ async def _execute_async(code: str, *, runner: Any, graph: Graph, values: dict[s
     source = "async def __snippet(runner, graph, values):\n" + textwrap.indent(code, "    ") + "\n    return locals()\n"
     exec(source, namespace)
     return await namespace["__snippet"](runner, graph, values)
+
+
+@pytest.mark.parametrize("runner_kind", ["sync", "async"])
+@pytest.mark.parametrize("artifact_kind", ["run", "map"])
+def test_native_transient_recovery_exposes_success_without_inventing_failure(
+    runner_kind: str,
+    artifact_kind: str,
+) -> None:
+    graph = _transient_graph()
+    values = {
+        "customer_id": ["maya-23"] if artifact_kind == "map" else "maya-23",
+    }
+    if runner_kind == "sync":
+        runner: SyncRunner | AsyncRunner = SyncRunner()
+        settled = (
+            runner.map(
+                graph,
+                values,
+                map_over="customer_id",
+                inspect=True,
+                error_handling="continue",
+            )
+            if artifact_kind == "map"
+            else runner.run(
+                graph,
+                values,
+                inspect=True,
+                error_handling="continue",
+            )
+        )
+    else:
+        runner = AsyncRunner()
+
+        async def execute_first_attempt():
+            if artifact_kind == "map":
+                return await runner.map(
+                    graph,
+                    values,
+                    map_over="customer_id",
+                    inspect=True,
+                    error_handling="continue",
+                )
+            return await runner.run(
+                graph,
+                values,
+                inspect=True,
+                error_handling="continue",
+            )
+
+        settled = asyncio.run(execute_first_attempt())
+
+    code = _recovery_code(_failure_markup(settled.inspect()._artifact))
+    if runner_kind == "sync":
+        namespace = _execute_sync(code, runner=runner, graph=graph, values=values)
+    else:
+        namespace = asyncio.run(_execute_async(code, runner=runner, graph=graph, values=values))
+
+    recovered = namespace["batch" if artifact_kind == "map" else "result"]
+    assert recovered.completed is True
+    assert namespace["failure"] is None
+    assert f"print({'batch' if artifact_kind == 'map' else 'result'})" in code
 
 
 def test_sync_run_and_map_recovery_code_executes_and_private_origin_survives_copy_pickle() -> None:

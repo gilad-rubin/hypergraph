@@ -657,6 +657,9 @@ def test_inspect_docs_pin_exception_labels_and_recovery_runner_truth() -> None:
         assert "async snippets use `await runner.run(...)` or `await runner.map(...)`" in normalized
         assert "runner kind was not captured" in normalized
         assert 'error_handling="continue"' in normalized
+        assert "settled successful result or batch" in normalized
+        assert "run-boundary, batch-boundary, and start-failure" in normalized
+        assert "slash-qualified failing leaf" in normalized
 
     assert "Before (misleading async recovery)" in debug
     assert "After (truthful async recovery)" in debug

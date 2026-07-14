@@ -50,6 +50,20 @@
 
 ### Fixed
 
+- **Executable inspect recovery and nested failure attribution** — before, a
+  copied full-renderer snippet dereferenced `None` or raised `StopIteration`
+  when a transient failure disappeared on recovery, and full-renderer
+  run-boundary, batch-boundary, and start-failure views omitted the recovery
+  policy already shown by the native summary. Now both surfaces use captured
+  sync/async provenance, print the settled successful result or batch when no
+  matching failure remains, and emit no runner call when provenance is unknown.
+  Before, primary **Show failure** selection on a nested mapped graph could stop
+  at the aggregate `review_group` container and show its list input. Now the
+  full inspector and native summary correlate the containing outer item to the
+  explicit slash-qualified failing leaf, such as
+  `review_group/review_customer`, with its scalar failing input while retaining
+  distinct peer failures.
+
 - **Trust-safe saved inspect evidence** — before, a notebook that treated new
   output as untrusted could strip scripts, styles, iframes, and identifiers,
   leaving a blank terminal record even though Python had settled at
