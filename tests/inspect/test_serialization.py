@@ -913,6 +913,70 @@ assert calls == {"repr": 1}
     assert completed.returncode == 0, completed.stderr
 
 
+def test_coordinated_forged_pydantic_aliases_never_define_trust() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import pydantic
+import pydantic.main
+import pydantic._internal._model_construction as model_construction
+
+calls = {"model_dump": 0, "repr": 0}
+
+def forged_repr(_value):
+    calls["repr"] += 1
+    return "CoordinatedBaseModel(<redacted>)"
+
+def model_dump(_value):
+    calls["model_dump"] += 1
+    raise AssertionError("forged model_dump must not run")
+
+forged_metaclass = type(
+    "ModelMetaclass",
+    (type,),
+    {"__module__": "pydantic._internal._model_construction"},
+)
+forged_type = forged_metaclass(
+    "BaseModel",
+    (object,),
+    {
+        "__module__": "pydantic.main",
+        "__repr__": forged_repr,
+        "model_dump": model_dump,
+    },
+)
+forged = forged_type()
+forged.__dict__["secret"] = "must remain behind repr"
+
+real_metaclass = model_construction.ModelMetaclass
+real_public = pydantic.BaseModel
+real_internal = pydantic.main.BaseModel
+model_construction.ModelMetaclass = forged_metaclass
+pydantic.BaseModel = forged_type
+pydantic.main.BaseModel = forged_type
+try:
+    from hypergraph.runners._shared._inspect_serialization import serialize_value
+    serialized = serialize_value(forged)
+finally:
+    model_construction.ModelMetaclass = real_metaclass
+    pydantic.BaseModel = real_public
+    pydantic.main.BaseModel = real_internal
+
+assert serialized.kind == "text", serialized
+assert serialized.text == "CoordinatedBaseModel(<redacted>)"
+assert calls == {"model_dump": 0, "repr": 1}
+""",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_dataframe_serialization_uses_only_proven_stored_values() -> None:
     calls = {"columns": 0, "iloc": 0, "itertuples": 0, "shape": 0}
     frame = pd.DataFrame(
