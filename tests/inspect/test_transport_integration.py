@@ -992,6 +992,10 @@ def test_sync_mapped_nested_inspection_keeps_leaf_item_truth_in_one_widget(
 
     assert result["doubled"] == [4, None, 10]
     assert len(factory.calls) == 1
+    assert any(
+        not snapshot.terminal and any(item.qualified_name == "child/double_or_fail" for item in snapshot.nodes)
+        for snapshot in factory.transports[-1].artifacts
+    )
     assert [item.item_index for item in leaves] == [0, 1, 2]
     assert [item.status for item in leaves] == ["completed", "failed", "completed"]
     assert [item.inputs for item in leaves] == [
@@ -1043,6 +1047,10 @@ async def test_async_mapped_nested_inspection_keeps_leaf_item_truth_in_one_widge
 
     assert result["doubled"] == [4, None, 10]
     assert len(factory.calls) == 1
+    assert any(
+        not snapshot.terminal and any(item.qualified_name == "child/double_or_fail" for item in snapshot.nodes)
+        for snapshot in factory.transports[-1].artifacts
+    )
     assert [item.item_index for item in leaves] == [0, 1, 2]
     assert [item.status for item in leaves] == ["completed", "failed", "completed"]
     assert [item.inputs for item in leaves] == [
@@ -1064,6 +1072,214 @@ async def test_async_mapped_nested_inspection_keeps_leaf_item_truth_in_one_widge
     container = next(item for item in artifact.nodes if item.qualified_name == "child")
     assert container.inputs == {"value": [2, -1, 5]}
     assert container.outputs == {"doubled": [4, None, 10]}
+
+
+def test_sync_mapped_nested_raise_records_the_shared_leaf_failure_once(
+    factory: _FactoryRecorder,
+) -> None:
+    class InnerItemError(Exception):
+        pass
+
+    error = InnerItemError("sync mapped leaf failed")
+
+    @node(output_name="doubled")
+    def double_or_fail(value: int) -> int:
+        if value == -1:
+            raise error
+        return value * 2
+
+    child = (
+        Graph([double_or_fail], name="sync-raising-inner")
+        .as_node(
+            name="child",
+        )
+        .map_over("value")
+    )
+    with pytest.raises(InnerItemError) as raised:
+        SyncRunner().run(
+            Graph([child], name="sync-raising-outer"),
+            {"value": [2, -1, 5]},
+            inspect=True,
+        )
+
+    artifact = factory.transports[-1].artifacts[-1]
+    leaves = [item for item in artifact.nodes if item.qualified_name == "child/double_or_fail"]
+    container = next(item for item in artifact.nodes if item.qualified_name == "child")
+
+    assert raised.value is error
+    assert len(factory.calls) == 1
+    assert [(item.item_index, item.status) for item in leaves] == [
+        (0, "completed"),
+        (1, "failed"),
+    ]
+    assert leaves[1].inputs == {"value": -1}
+    assert leaves[1].failure is not None
+    assert leaves[1].failure.error is error
+    assert container.failure is not None
+    assert container.failure.node_name == "child/double_or_fail"
+    assert [(failure.node_name, failure.item_index, failure.error) for failure in artifact.failures] == [
+        ("child/double_or_fail", 1, error),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_mapped_nested_raise_records_the_shared_leaf_failure_once(
+    factory: _FactoryRecorder,
+) -> None:
+    class InnerItemError(Exception):
+        pass
+
+    error = InnerItemError("async mapped leaf failed")
+
+    @node(output_name="doubled")
+    async def double_or_fail(value: int) -> int:
+        if value == -1:
+            raise error
+        return value * 2
+
+    child = (
+        Graph([double_or_fail], name="async-raising-inner")
+        .as_node(
+            name="child",
+        )
+        .map_over("value")
+    )
+    with pytest.raises(InnerItemError) as raised:
+        await AsyncRunner().run(
+            Graph([child], name="async-raising-outer"),
+            {"value": [2, -1, 5]},
+            inspect=True,
+        )
+
+    artifact = factory.transports[-1].artifacts[-1]
+    leaves = [item for item in artifact.nodes if item.qualified_name == "child/double_or_fail"]
+    container = next(item for item in artifact.nodes if item.qualified_name == "child")
+
+    assert raised.value is error
+    assert len(factory.calls) == 1
+    assert sorted((item.item_index, item.status) for item in leaves) == [
+        (0, "completed"),
+        (1, "failed"),
+        (2, "completed"),
+    ]
+    failed_leaf = next(item for item in leaves if item.item_index == 1)
+    assert failed_leaf.inputs == {"value": -1}
+    assert failed_leaf.failure is not None
+    assert failed_leaf.failure.error is error
+    assert container.failure is not None
+    assert container.failure.node_name == "child/double_or_fail"
+    assert [(failure.node_name, failure.item_index, failure.error) for failure in artifact.failures] == [
+        ("child/double_or_fail", 1, error),
+    ]
+
+
+def test_delegated_mapped_nested_raise_keeps_container_failure_capture(
+    factory: _FactoryRecorder,
+) -> None:
+    class DelegatedItemError(Exception):
+        pass
+
+    error = DelegatedItemError("delegated mapped leaf failed")
+
+    @node(output_name="doubled")
+    def double_or_fail(value: int) -> int:
+        if value == -1:
+            raise error
+        return value * 2
+
+    child = (
+        Graph([double_or_fail], name="delegated-raising-inner")
+        .as_node(
+            name="child",
+            runner=SyncRunner(),
+        )
+        .map_over("value")
+    )
+    with pytest.raises(DelegatedItemError) as raised:
+        SyncRunner().run(
+            Graph([child], name="delegated-raising-outer"),
+            {"value": [2, -1, 5]},
+            inspect=True,
+        )
+
+    artifact = factory.transports[-1].artifacts[-1]
+
+    assert raised.value is error
+    assert len(factory.calls) == 1
+    assert [item.qualified_name for item in artifact.nodes] == ["child"]
+    assert artifact.nodes[0].failure is not None
+    assert artifact.nodes[0].failure.node_name == "child/double_or_fail"
+    assert [(failure.node_name, failure.item_index, failure.error) for failure in artifact.failures] == [
+        ("child/double_or_fail", 1, error),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mapped_nested_inspection_context_stays_out_of_delegated_runners(
+    factory: _FactoryRecorder,
+) -> None:
+    class RecordingSyncRunner(SyncRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.map_kwargs: dict[str, object] = {}
+
+        def map(self, *args: object, **kwargs: object) -> Any:
+            self.map_kwargs = dict(kwargs)
+            return super().map(*args, **kwargs)  # type: ignore[arg-type]
+
+    class RecordingAsyncRunner(AsyncRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.map_kwargs: dict[str, object] = {}
+
+        async def map(self, *args: object, **kwargs: object) -> Any:
+            self.map_kwargs = dict(kwargs)
+            return await super().map(*args, **kwargs)  # type: ignore[arg-type]
+
+    @node(output_name="doubled")
+    def sync_double(value: int) -> int:
+        return value * 2
+
+    @node(output_name="doubled")
+    async def async_double(value: int) -> int:
+        return value * 2
+
+    sync_delegate = RecordingSyncRunner()
+    sync_child = (
+        Graph([sync_double], name="delegated-sync-inner")
+        .as_node(
+            name="child",
+            runner=sync_delegate,
+        )
+        .map_over("value")
+    )
+    sync_result = SyncRunner().run(
+        Graph([sync_child], name="delegated-sync-outer"),
+        {"value": [2, 5]},
+        inspect=True,
+    )
+
+    async_delegate = RecordingAsyncRunner()
+    async_child = (
+        Graph([async_double], name="delegated-async-inner")
+        .as_node(
+            name="child",
+            runner=async_delegate,
+        )
+        .map_over("value")
+    )
+    async_result = await AsyncRunner().run(
+        Graph([async_child], name="delegated-async-outer"),
+        {"value": [3, 7]},
+        inspect=True,
+    )
+
+    assert sync_result["doubled"] == [4, 10]
+    assert async_result["doubled"] == [6, 14]
+    assert len(factory.calls) == 2
+    for kwargs in (sync_delegate.map_kwargs, async_delegate.map_kwargs):
+        assert "_inspection_session" not in kwargs
+        assert "_inspection_path" not in kwargs
 
 
 @pytest.mark.asyncio
@@ -1242,6 +1458,8 @@ def test_private_transport_parameter_is_not_a_graph_input_or_public_handle_seam(
         lifecycle_options = runner_option_names(method, include_private=True)
         assert options < lifecycle_options
         assert "_inspection_transport" in lifecycle_options
+        assert "_inspection_session" in lifecycle_options
+        assert "_inspection_path" in lifecycle_options
         assert "_reservation" in lifecycle_options
     for method in (SyncRunner().start_run, SyncRunner().start_map, AsyncRunner().start_run, AsyncRunner().start_map):
         assert "_inspection_transport" not in python_inspect.signature(method).parameters

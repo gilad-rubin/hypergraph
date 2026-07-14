@@ -128,6 +128,12 @@ class SyncGraphNodeExecutor:
                 "_parent_run_id": ctx.workflow_id,
                 "_item_index": ctx.item_index,
             }
+            if node.runner_override is None:
+                inspection_context = current_inspection()
+                if inspection_context is not None:
+                    inspection_session, inspection_path = inspection_context
+                    map_kwargs["_inspection_session"] = inspection_session
+                    map_kwargs["_inspection_path"] = (*inspection_path, node.name)
             if getattr(node, "_complete_on_stop", False):
                 map_kwargs["_complete_on_stop"] = True
             results = runner.map(node.graph, inner_inputs, **map_kwargs)

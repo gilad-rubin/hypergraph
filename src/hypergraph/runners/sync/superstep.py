@@ -286,7 +286,7 @@ def run_superstep_sync(
                                     node_failures[0],
                                     node_name="/".join((*inspection_path, node_failures[0].node_name)),
                                 )
-                                record_failure = not (isinstance(node, GraphNode) and node.runner_override is None and node.map_config is None)
+                                record_failure = not (isinstance(node, GraphNode) and node.runner_override is None)
                                 inspection_session.fail_node(
                                     span_id=node_span_id,
                                     failure=inspection_failure,

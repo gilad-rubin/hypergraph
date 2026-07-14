@@ -914,7 +914,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         _item_index: int | None = None,
         _checkpoint_error_sink: CheckpointErrorSink | None = None,
         _reservation: _WorkflowReservation | None = None,
+        _inspection_session: InspectionSession | None = None,
         _inspection_transport: NotebookInspectionTransport | None = None,
+        _inspection_path: tuple[str, ...] = (),
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
@@ -924,7 +926,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 "How to fix: Pass inspect=True to capture map item values or "
                 "inspect=False to keep only always-on batch facts."
             )
-        top_level_inspection = inspect and _parent_span_id is None and _parent_run_id is None and _item_index is None
+        owns_inspection = inspect and _inspection_session is None
+        top_level_inspection = owns_inspection and _parent_span_id is None and _parent_run_id is None and _item_index is None
         inspection_transport = _inspection_transport
         if top_level_inspection and inspection_transport is None:
             try:
@@ -1004,7 +1007,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 map_over=tuple(map_over_list),
                 map_mode=map_mode,
             )
-            if inspect
+            if owns_inspection
             else None
         )
         if map_inspection_session is not None and top_level_inspection:
@@ -1175,7 +1178,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     workflow_id=child_workflow_id,
                 )
                 if map_inspection_session is not None
-                else None
+                else _inspection_session
             )
             item_signature = compute_map_item_signature(variation_inputs, map_over_list, map_mode) if has_checkpointer else None
 
@@ -1214,7 +1217,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     on_missing=on_missing,
                     entrypoint=entrypoint,
                     max_concurrency=max_concurrency,
-                    inspect=inspect,
+                    inspect=owns_inspection,
                     error_handling="continue",
                     event_processors=event_processors,
                     show_progress=False,
@@ -1226,6 +1229,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     _item_index=idx,
                     _checkpoint_error_sink=(item_checkpoint_errors[idx].append if _checkpoint_error_sink is not None else None),
                     _inspection_session=child_inspection_session,
+                    _inspection_path=_inspection_path,
                 )
             except Exception as e:
                 # Catch validation errors (e.g., MissingInputError) that raise
