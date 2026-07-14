@@ -788,10 +788,32 @@ def test_shared_stale_delivery_hides_portable_frame_but_keeps_exact_start_error(
 
     portable_frame = page.locator('[data-hg-inspect-portable-frame="widget-shared-stale"]')
     message = page.locator('[data-hg-inspect-channel-message="widget-shared-stale"]')
+    host_key = "widget-shared-stale::nonce-shared-stale"
+    page.wait_for_function(
+        "key => window.__hypergraphInspectHosts[key].lastAcceptedSequence === 2",
+        arg=host_key,
+    )
     assert portable_frame.count() == 1
     assert portable_frame.is_hidden()
     assert message.is_visible()
     assert "RuntimeError: Notebook display setup failed" in message.inner_text()
+
+    child_state = frame.evaluate("window.__hypergraphInspectBridgeState")
+    frame.evaluate(
+        """() => parent.postMessage({
+          type: 'hypergraph.inspect.ready',
+          version: 1,
+          widget_id: 'widget-shared-stale',
+          nonce: 'nonce-shared-stale'
+        }, '*')"""
+    )
+    page.wait_for_function(
+        "key => window.__hypergraphInspectHosts[key].readyCount === 2",
+        arg=host_key,
+    )
+
+    assert frame.evaluate("window.__hypergraphInspectBridgeState") == child_state
+    assert message.is_visible()
     page.close()
 
 

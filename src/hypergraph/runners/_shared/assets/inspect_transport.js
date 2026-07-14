@@ -5,6 +5,7 @@
   var VERSION = 1;
   var READY = "hypergraph.inspect.ready";
   var UPDATE = "hypergraph.inspect.update";
+  var ACCEPTED = "hypergraph.inspect.accepted";
   var RESIZE = "hypergraph.inspect.resize";
 
   if (global.__hypergraphInspectTransport && global.__hypergraphInspectTransport.version === VERSION) {
@@ -68,7 +69,10 @@
       ready: false,
       readyCount: 0,
       handshakeTimedOut: false,
-      lastSentSequence: 0,
+      lastPostedSequence: 0,
+      lastPostedChannelId: null,
+      lastAcceptedSequence: 0,
+      pendingChannels: Object.create(null),
       deliver: deliver,
     };
     hosts[key] = state;
@@ -85,8 +89,12 @@
     function deliver(envelope, channelId) {
       if (!exactIdentity(envelope, config) || envelope.type !== UPDATE) return false;
       if (!Number.isInteger(envelope.sequence)) return false;
-      if (envelope.sequence <= state.lastSentSequence) {
+      if (envelope.sequence < state.lastPostedSequence) {
         hideSupersededChannel(channelId);
+        return false;
+      }
+      if (envelope.sequence === state.lastPostedSequence) {
+        if (channelId !== state.lastPostedChannelId) hideSupersededChannel(channelId);
         return false;
       }
       if (!state.ready || !frame.contentWindow) {
@@ -111,12 +119,32 @@
       // stable target origin. Exact contentWindow source checks plus version,
       // widget ID, nonce, and monotonic sequence are the authentication boundary.
       frame.contentWindow.postMessage(envelope, "*");
-      state.lastSentSequence = envelope.sequence;
-      // The portable iframe is progressive fallback for isolated-output hosts.
-      // A shared ready shell owns presentation after accepting the envelope.
-      // Exact pre-start error text is a separate sibling and remains visible.
-      hideChannelFallback(channelId);
+      state.lastPostedSequence = envelope.sequence;
+      state.lastPostedChannelId = channelId;
+      state.pendingChannels[envelope.sequence] = channelId;
       return true;
+    }
+
+    function accept(sequence) {
+      if (!Number.isInteger(sequence)) return;
+      if (sequence > state.lastPostedSequence || sequence <= state.lastAcceptedSequence) return;
+      if (!Object.prototype.hasOwnProperty.call(state.pendingChannels, sequence)) return;
+
+      state.lastAcceptedSequence = sequence;
+      Object.keys(state.pendingChannels).forEach(function (pendingSequence) {
+        var numericSequence = Number(pendingSequence);
+        if (numericSequence > sequence) return;
+        var channelId = state.pendingChannels[pendingSequence];
+        if (numericSequence === sequence) {
+          // The portable iframe is progressive fallback for isolated-output hosts.
+          // A shared shell owns presentation only after its child applies the payload.
+          // Exact pre-start error text is a separate sibling and remains visible.
+          hideChannelFallback(channelId);
+        } else {
+          hideSupersededChannel(channelId);
+        }
+        delete state.pendingChannels[pendingSequence];
+      });
     }
 
     function receive(event) {
@@ -132,6 +160,11 @@
         status.setAttribute("data-state", "ready");
         var queued = queues[key];
         if (queued) deliver(queued.envelope, queued.channelId);
+        return;
+      }
+
+      if (message.type === ACCEPTED) {
+        accept(message.sequence);
         return;
       }
 
@@ -206,6 +239,13 @@
       }
       state.lastSequence = message.sequence;
       state.accepted += 1;
+      post({
+        type: ACCEPTED,
+        version: VERSION,
+        widget_id: config.widgetId,
+        nonce: config.nonce,
+        sequence: message.sequence,
+      });
     }
 
     function post(message) {

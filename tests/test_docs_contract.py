@@ -440,6 +440,7 @@ def test_inspect_mode_docs_mirror_public_contract() -> None:
         assert "isolated-output" in normalized_delivery
         assert "two physical outputs" in normalized_delivery
         assert "one terminal physical record" in normalized_delivery
+        assert "only after the original iframe accepts" in normalized_delivery
     assert 'inspect="graph-owned"' not in debug
 
     assert "inspect=True" in control

@@ -57,9 +57,10 @@
   `jupyter-server-nbmodel==0.1.1a4`, Hypergraph uses a best-effort append path
   because that executor drops `update_display_data`: ordinary updates retain
   hidden coalesced payload-only history, then settlement adds one terminal
-  physical record. Shared Jupyter hides the portable fallback after updating
-  the original iframe; an isolated-output host can open the terminal record
-  alone. Missing or unrecognized versions keep the normal update path. A
+  physical record. Shared Jupyter hides the portable fallback only after the
+  original iframe accepts and applies the authenticated update; an
+  isolated-output host can open the terminal record alone. Missing or
+  unrecognized versions keep the normal update path. A
   separate server environment cannot be inferred from kernel package metadata.
 
 - **Observational inspect serialization** — structured rendering now traverses

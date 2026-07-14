@@ -302,10 +302,11 @@ live.
 The normal notebook path keeps exactly two physical outputs: one immutable
 shell and one mutable payload channel. Ordinary updates stay payload-only. At
 terminal or stale settlement, the channel becomes a self-contained portable
-inspector. A shared notebook delivers it to the original iframe, hides the
-portable fallback, and preserves that iframe's selected tab and other local UI
-state. An isolated-output renderer can instead open that terminal channel by
-itself. The normal path still has two physical outputs because
+inspector. A shared notebook hides the portable fallback only after the
+original iframe accepts and applies the authenticated update, preserving that
+iframe's selected tab and other local UI state. An isolated-output renderer
+can instead open that terminal channel by itself. The normal path still has
+two physical outputs because
 `DisplayHandle.update()` replaces the mutable channel in place.
 
 Hypergraph also has a best-effort compatibility path for the measured
@@ -315,9 +316,9 @@ reports that exact package version, ordinary coalesced updates are appended as
 payload-only records at the existing four-per-second bound. The notebook
 therefore retains hidden payload-only history. Terminal or stale settlement
 adds one terminal physical record containing the same portable inspector. It
-is hidden after delivery in a shared Jupyter document, but remains visible and
-interactive when a host isolates each saved output record. Terminal and error
-states can still flush immediately.
+is hidden only after the original iframe accepts the update in a shared Jupyter
+document, but remains visible and interactive when a host isolates each saved
+output record. Terminal and error states can still flush immediately.
 
 - **Before on that executor:** Python reaches the terminal result while the
   iframe can remain at `pending`, `0 completed`, `0 failed`.
