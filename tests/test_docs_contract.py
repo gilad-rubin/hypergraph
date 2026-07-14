@@ -468,6 +468,12 @@ def test_inspect_mode_docs_mirror_public_contract() -> None:
         assert "not settled execution truth" in scheduler_fallback_docs
         assert "settled truth remains available through `result.inspect()` or `batch.inspect()`" in scheduler_fallback_docs
         assert "already-terminal initial artifact remains a closed `Saved snapshot`" in scheduler_fallback_docs
+        assert "late owner-thread delayed-arm rejection" in scheduler_fallback_docs
+        assert "closes and detaches the live observer" in scheduler_fallback_docs
+        assert "one best-effort stale `Live inspection unavailable` settlement" in scheduler_fallback_docs
+        assert "rejected payload is never shown as live" in scheduler_fallback_docs
+        assert "observer settlement does not change settled execution truth" in scheduler_fallback_docs
+        assert "observer remains closed" in scheduler_fallback_docs
 
     for architecture_docs in (architecture, architecture_map):
         normalized_architecture = " ".join(architecture_docs.split())

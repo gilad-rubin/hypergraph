@@ -59,7 +59,15 @@
   inspection session. That initial notebook record is not settled execution
   truth; settled truth remains available through `result.inspect()` or
   `batch.inspect()` after the run or batch returns. An already-terminal initial
-  artifact remains a closed `Saved snapshot`.
+  artifact remains a closed `Saved snapshot`. A scheduler can also reject
+  `call_later()` only after a worker's callback reaches the owner thread. That
+  late owner-thread delayed-arm rejection now closes and detaches the live
+  observer. If its display channel still works, Hypergraph writes one
+  best-effort stale `Live inspection unavailable` settlement from the latest
+  bounded artifact; the rejected payload is never shown as live. Failure of
+  that final display update is observational, and the observer remains closed.
+  This observer settlement does not change settled execution truth; collected
+  `result.inspect()` or `batch.inspect()` remains authoritative.
 
 - **Executable inspect recovery and nested failure attribution** — before, a
   copied full-renderer snippet dereferenced `None` or raised `StopIteration`

@@ -536,6 +536,22 @@ truth; settled truth remains available through `result.inspect()` or
 `batch.inspect()` after the run or batch returns. An already-terminal initial
 artifact remains a closed `Saved snapshot`.
 
+A scheduler can advertise both capabilities and still reject the delayed arm
+only after a worker's callback reaches the owner thread:
+
+- **Before:** that late `call_later()` error could escape the owner callback,
+  leaving a subscribed view that still claimed to be live.
+- **After:** a late owner-thread delayed-arm rejection closes and detaches the
+  live observer. If its display channel still works, Hypergraph writes one
+  best-effort stale `Live inspection unavailable` settlement from the latest
+  bounded artifact; the rejected payload is never shown as live. If that final
+  display update also fails, execution is unaffected and the observer remains
+  closed.
+
+This observer settlement does not change settled execution truth. After the
+run or batch returns, use `result.inspect()` or `batch.inspect()` for the
+settled record.
+
 This scheduler-unavailable startup record is distinct from a later live
 ready-handshake timeout:
 

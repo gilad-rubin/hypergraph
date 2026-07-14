@@ -1310,6 +1310,15 @@ truth; settled truth remains available through `result.inspect()` or
 `batch.inspect()` after the run or batch returns. An already-terminal initial
 artifact remains a closed `Saved snapshot`.
 
+If `call_later()` rejects only after a worker's callback reaches the owner
+thread, that late owner-thread delayed-arm rejection closes and detaches the
+live observer. If its display channel still works, Hypergraph writes one
+best-effort stale `Live inspection unavailable` settlement from the latest
+bounded artifact; the rejected payload is never shown as live. Failure of that
+final display update is observational, and the observer remains closed. This
+observer settlement does not change settled execution truth; after collection,
+`result.inspect()` or `batch.inspect()` remains authoritative.
+
 Trusted active output gets that full sandboxed iframe. If notebook trust policy
 strips scripts, styles, iframes, and output identifiers, the terminal/stale
 channel instead preserves a small native `<details>` summary: delivery,
