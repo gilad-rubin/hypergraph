@@ -462,6 +462,13 @@ def test_inspect_mode_docs_mirror_public_contract() -> None:
         assert "scripts, styles, iframes" in normalized_delivery
         assert "docs/05-how-to/debug-workflows.md" in notebook_delivery_docs
 
+    for scheduler_fallback_docs in (normalized_debug, normalized_runners, normalized_changelog):
+        assert "closed `Live inspection unavailable` initial snapshot" in scheduler_fallback_docs
+        assert "does not subscribe to the inspection session" in scheduler_fallback_docs
+        assert "not settled execution truth" in scheduler_fallback_docs
+        assert "settled truth remains available through `result.inspect()` or `batch.inspect()`" in scheduler_fallback_docs
+        assert "already-terminal initial artifact remains a closed `Saved snapshot`" in scheduler_fallback_docs
+
     for architecture_docs in (architecture, architecture_map):
         normalized_architecture = " ".join(architecture_docs.split())
         assert "inspection.py" in normalized_architecture
