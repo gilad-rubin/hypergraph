@@ -5,12 +5,19 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
+import subprocess
+import sys
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import date, datetime, time
+from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
+from pydantic import BaseModel, computed_field
 
 from hypergraph.runners._shared._inspect_serialization import (
+    SerializedTable,
     SerializedValue,
     dump_serialized_value,
     serialize_value,
@@ -86,14 +93,22 @@ def test_text_limit_invalid_unicode_and_script_escaping_are_bounded() -> None:
     assert json.loads(encoded)["text"] == "</script>&>\u2028\u2029"
 
 
-def test_exceptions_and_hostile_stringification_become_typed_placeholders() -> None:
+def test_exceptions_never_invoke_custom_stringification() -> None:
+    calls = {"repr": 0, "str": 0}
+
     class HostileRepr:
         def __repr__(self) -> str:
+            calls["repr"] += 1
             raise RuntimeError("repr must not escape")
 
     class HostileError(Exception):
         def __str__(self) -> str:
-            raise RuntimeError("str must not escape")
+            calls["str"] += 1
+            return "secret from custom str"
+
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            return "HostileError(<redacted>)"
 
     ordinary = serialize_value(ValueError("customer missing"))
     assert ordinary == SerializedValue(
@@ -103,19 +118,41 @@ def test_exceptions_and_hostile_stringification_become_typed_placeholders() -> N
         original_size=16,
     )
 
-    hostile_error = serialize_value(HostileError())
-    assert hostile_error.kind == "placeholder"
+    hostile_error = serialize_value(HostileError("customer missing"))
+    assert hostile_error.kind == "text"
     assert hostile_error.type_name == "HostileError"
-    assert hostile_error.reason == "str failed (RuntimeError)"
+    assert hostile_error.text == "HostileError(<redacted>)"
+    assert calls == {"repr": 1, "str": 0}
 
     hostile_repr = serialize_value(HostileRepr())
     assert hostile_repr.kind == "placeholder"
     assert hostile_repr.type_name == "HostileRepr"
     assert hostile_repr.reason == "repr failed (RuntimeError)"
     assert hostile_repr.text is None
+    assert calls == {"repr": 2, "str": 0}
 
 
-def test_mapping_limit_recursion_and_iteration_failures_are_truthful() -> None:
+def test_exact_builtin_exceptions_do_not_format_hostile_arguments() -> None:
+    calls = {"repr": 0, "str": 0}
+
+    class HostileArgument:
+        def __str__(self) -> str:
+            calls["str"] += 1
+            raise AssertionError("exception argument stringification must not run")
+
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            raise AssertionError("exception argument repr must not run")
+
+    serialized = serialize_value(ValueError(HostileArgument()))
+
+    assert serialized.kind == "placeholder"
+    assert serialized.type_name == "ValueError"
+    assert serialized.reason == "exception contains unsupported arguments"
+    assert calls == {"repr": 0, "str": 0}
+
+
+def test_exact_mapping_limit_and_recursion_are_truthful() -> None:
     one_over = {f"key-{index}": index for index in range(101)}
     serialized = serialize_value(one_over)
 
@@ -134,37 +171,11 @@ def test_mapping_limit_recursion_and_iteration_failures_are_truthful() -> None:
     assert recursive_value.original_size == 1
     assert recursive_value.reason == "recursive reference"
 
-    class BoundedMapping(Mapping[str, int]):
-        def __len__(self) -> int:
-            return 1_000_000
-
-        def __iter__(self) -> Iterator[str]:
-            for index in range(101):
-                if index == 100:
-                    raise AssertionError("serializer iterated beyond the mapping cap")
-                yield str(index)
-
-        def __getitem__(self, key: str) -> int:
-            return int(key)
-
-    bounded = serialize_value(BoundedMapping())
-    assert bounded.kind == "mapping"
-    assert bounded.original_size == 1_000_000
-    assert len(bounded.entries) == 100
-
-    class HostileLength(BoundedMapping):
-        def __len__(self) -> int:
-            raise RuntimeError("len failed")
-
-    failed = serialize_value(HostileLength())
-    assert failed.kind == "placeholder"
-    assert failed.reason == "len failed (RuntimeError)"
-
     wire = serialized_value_to_wire(serialized)
     assert len(wire["entries"]) == 100  # type: ignore[arg-type]
 
 
-def test_sequence_limit_recursion_and_depth_limit_are_truthful() -> None:
+def test_exact_sequence_limit_recursion_and_depth_limit_are_truthful() -> None:
     one_over = serialize_value(list(range(201)))
     assert one_over.kind == "sequence"
     assert one_over.type_name == "list"
@@ -192,30 +203,51 @@ def test_sequence_limit_recursion_and_depth_limit_are_truthful() -> None:
     assert depth_limited.original_size == 4
     assert depth_limited.reason == "depth limit 6 exceeded"
 
-    class BoundedSequence(Sequence[int]):
-        def __len__(self) -> int:
-            return 1_000_000
-
-        def __getitem__(self, index: int) -> int:
-            if index >= 200:
-                raise AssertionError("serializer iterated beyond the sequence cap")
-            return index
-
-    bounded = serialize_value(BoundedSequence())
-    assert bounded.kind == "sequence"
-    assert bounded.original_size == 1_000_000
-    assert len(bounded.items) == 200
+    exact_tuple = serialize_value(("maya-23", 9))
+    assert exact_tuple.kind == "sequence"
+    assert exact_tuple.type_name == "tuple"
+    assert [item.text or item.value for item in exact_tuple.items] == ["maya-23", 9]
 
 
-def test_dataclasses_and_model_dump_values_use_bounded_mapping_shape() -> None:
+def test_dataclasses_and_pydantic_models_use_stored_fields_without_hooks() -> None:
+    calls = {"computed": 0, "descriptor": 0, "model_dump": 0}
+
     @dataclasses.dataclass
     class Customer:
         customer_id: str
         active: bool
 
-    class Model:
-        def model_dump(self) -> dict[str, object]:
-            return {"customer_id": "maya-23", "score": 0.9}
+    @dataclasses.dataclass(slots=True)
+    class SlottedCustomer:
+        customer_id: str
+        active: bool
+
+    @dataclasses.dataclass
+    class DescriptorCustomer:
+        customer_id: str
+
+    descriptor_customer = object.__new__(DescriptorCustomer)
+    object.__getattribute__(descriptor_customer, "__dict__")["customer_id"] = "maya-23"
+
+    def read_customer_id(_: DescriptorCustomer) -> str:
+        calls["descriptor"] += 1
+        raise AssertionError("stored dataclass field must bypass its descriptor")
+
+    DescriptorCustomer.customer_id = property(read_customer_id)  # type: ignore[assignment]
+
+    class CustomerModel(BaseModel):
+        customer_id: str
+        score: float
+
+        @computed_field
+        @property
+        def computed_secret(self) -> str:
+            calls["computed"] += 1
+            raise AssertionError("computed fields are not stored inspection facts")
+
+        def model_dump(self, *args: object, **kwargs: object) -> dict[str, object]:
+            calls["model_dump"] += 1
+            raise AssertionError("inspection must not call model_dump")
 
     customer = serialize_value(Customer(customer_id="maya-23", active=True))
     assert customer.kind == "mapping"
@@ -224,32 +256,20 @@ def test_dataclasses_and_model_dump_values_use_bounded_mapping_shape() -> None:
     assert [entry.key.text for entry in customer.entries] == ["customer_id", "active"]
     assert customer.entries[0].value.text == "maya-23"
 
-    model = serialize_value(Model())
+    slotted = serialize_value(SlottedCustomer(customer_id="maya-23", active=True))
+    assert slotted.kind == "mapping"
+    assert [entry.key.text for entry in slotted.entries] == ["customer_id", "active"]
+
+    descriptor = serialize_value(descriptor_customer)
+    assert descriptor.kind == "mapping"
+    assert descriptor.entries[0].value.text == "maya-23"
+
+    model = serialize_value(CustomerModel(customer_id="maya-23", score=0.9))
     assert model.kind == "mapping"
-    assert model.type_name == "Model"
+    assert model.type_name == "CustomerModel"
     assert model.original_size == 2
     assert model.entries[1].value.value == 0.9
-
-    class HostileModel:
-        def model_dump(self) -> dict[str, object]:
-            raise RuntimeError("dump failed")
-
-    failed_model = serialize_value(HostileModel())
-    assert failed_model.kind == "placeholder"
-    assert failed_model.reason == "model_dump failed (RuntimeError)"
-
-    @dataclasses.dataclass
-    class HostileField:
-        secret: str = "never read"
-
-        def __getattribute__(self, name: str) -> object:
-            if name == "secret":
-                raise RuntimeError("getattr failed")
-            return super().__getattribute__(name)
-
-    failed_field = serialize_value(HostileField())
-    assert failed_field.kind == "placeholder"
-    assert failed_field.reason == "getattr failed (RuntimeError)"
+    assert calls == {"computed": 0, "descriptor": 0, "model_dump": 0}
 
 
 def test_row_table_limits_are_bounded_and_keep_proven_dimensions() -> None:
@@ -342,100 +362,307 @@ def test_row_table_union_over_column_cap_is_exact_when_safely_bounded() -> None:
     assert all(cell.reason == "missing table cell" for cell in serialized.table.rows[1].cells)
 
 
-def test_row_table_wide_mapping_count_is_lower_bound_without_over_iteration() -> None:
-    class WideRow(Mapping[str, int]):
-        def __init__(self, prefix: str) -> None:
-            self.prefix = prefix
+def test_custom_mapping_sequence_and_model_protocols_use_one_repr_fallback() -> None:
+    calls = {
+        "mapping_getitem": 0,
+        "mapping_iter": 0,
+        "mapping_len": 0,
+        "mapping_repr": 0,
+        "model_dump": 0,
+        "model_repr": 0,
+        "sequence_getitem": 0,
+        "sequence_iter": 0,
+        "sequence_len": 0,
+        "sequence_repr": 0,
+    }
 
+    class CustomMapping(Mapping[str, int]):
         def __len__(self) -> int:
-            return 1_000_000
+            calls["mapping_len"] += 1
+            return 1
 
         def __iter__(self) -> Iterator[str]:
-            for index in range(21):
-                if index == 20:
-                    raise AssertionError("serializer iterated a 21st wide-row key")
-                yield f"{self.prefix}-{index}"
+            calls["mapping_iter"] += 1
+            yield "answer"
 
         def __getitem__(self, key: str) -> int:
-            return int(key.rsplit("-", 1)[1])
-
-    serialized = serialize_value([WideRow("first"), WideRow("second")])
-
-    assert serialized.kind == "table"
-    assert serialized.truncated is True
-    assert serialized.table is not None
-    assert len(serialized.table.columns) == 20
-    assert serialized.table.original_column_count == 1_000_000
-    assert serialized.table.original_column_count_exact is False
-    assert serialized.table.columns_truncated is True
-
-
-def test_row_table_schema_does_not_compare_invalid_unhashable_keys() -> None:
-    equality_calls = 0
-
-    class HostileKey:
-        __hash__ = None  # type: ignore[assignment]
-
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-        def __eq__(self, other: object) -> bool:
-            nonlocal equality_calls
-            equality_calls += 1
-            raise AssertionError("row-schema discovery compared hostile keys")
+            calls["mapping_getitem"] += 1
+            return 42
 
         def __repr__(self) -> str:
-            return self.name
+            calls["mapping_repr"] += 1
+            return "CustomMapping(<redacted>)"
 
-    class IdentityRow(Mapping[object, int]):
-        def __init__(self, keys: list[object]) -> None:
-            self.keys = keys
-
+    class CustomSequence(Sequence[int]):
         def __len__(self) -> int:
-            return len(self.keys)
+            calls["sequence_len"] += 1
+            return 1
 
-        def __iter__(self) -> Iterator[object]:
-            yield from self.keys
+        def __iter__(self) -> Iterator[int]:
+            calls["sequence_iter"] += 1
+            yield 42
 
-        def __getitem__(self, key: object) -> int:
-            for index, candidate in enumerate(self.keys):
-                if candidate is key:
-                    return index
-            raise KeyError(key)
+        def __getitem__(self, index: int) -> int:
+            calls["sequence_getitem"] += 1
+            return 42
 
-    keys = [HostileKey(f"key-{index}") for index in range(20)]
-    serialized = serialize_value([IdentityRow(keys), IdentityRow(keys)])
+        def __repr__(self) -> str:
+            calls["sequence_repr"] += 1
+            return "CustomSequence(<redacted>)"
 
-    assert serialized.kind == "table"
-    assert serialized.table is not None
-    assert len(serialized.table.columns) == 20
-    assert serialized.table.original_column_count == 20
-    assert serialized.table.original_column_count_exact is False
-    assert serialized.table.columns_truncated is True
-    assert equality_calls == 0
+    class CustomModel:
+        def model_dump(self) -> dict[str, object]:
+            calls["model_dump"] += 1
+            return {"secret": "must not be traversed"}
+
+        def __repr__(self) -> str:
+            calls["model_repr"] += 1
+            return "CustomModel(<redacted>)"
+
+    mapping = serialize_value(CustomMapping())
+    sequence = serialize_value(CustomSequence())
+    model = serialize_value(CustomModel())
+
+    assert (mapping.kind, mapping.text) == ("text", "CustomMapping(<redacted>)")
+    assert (sequence.kind, sequence.text) == ("text", "CustomSequence(<redacted>)")
+    assert (model.kind, model.text) == ("text", "CustomModel(<redacted>)")
+    assert calls == {
+        "mapping_getitem": 0,
+        "mapping_iter": 0,
+        "mapping_len": 0,
+        "mapping_repr": 1,
+        "model_dump": 0,
+        "model_repr": 1,
+        "sequence_getitem": 0,
+        "sequence_iter": 0,
+        "sequence_len": 0,
+        "sequence_repr": 1,
+    }
 
 
-def test_custom_row_mapping_item_failure_stays_in_its_cell() -> None:
-    class PartiallyHostileRow(Mapping[str, int]):
+def test_supported_type_subclasses_never_enter_trusted_adapters() -> None:
+    calls: dict[str, int] = {}
+
+    def called(name: str) -> None:
+        calls[name] = calls.get(name, 0) + 1
+
+    class CustomDict(dict[str, int]):
         def __len__(self) -> int:
-            return 2
+            called("dict_len")
+            return super().__len__()
 
         def __iter__(self) -> Iterator[str]:
-            yield "available"
-            yield "hostile"
+            called("dict_iter")
+            return super().__iter__()
 
         def __getitem__(self, key: str) -> int:
-            if key == "available":
-                return 7
-            raise RuntimeError("item access failed")
+            called("dict_getitem")
+            return super().__getitem__(key)
 
-    serialized = serialize_value([PartiallyHostileRow()])
+        def __repr__(self) -> str:
+            called("dict_repr")
+            return "CustomDict(<redacted>)"
 
-    assert serialized.kind == "table"
-    assert serialized.table is not None
-    assert [column.text for column in serialized.table.columns] == ["available", "hostile"]
-    assert serialized.table.rows[0].cells[0].value == 7
-    assert serialized.table.rows[0].cells[1].reason == "item access failed (RuntimeError)"
+    class CustomList(list[int]):
+        def __len__(self) -> int:
+            called("list_len")
+            return super().__len__()
+
+        def __iter__(self) -> Iterator[int]:
+            called("list_iter")
+            return super().__iter__()
+
+        def __getitem__(self, key: int | slice):  # type: ignore[no-untyped-def]
+            called("list_getitem")
+            return super().__getitem__(key)
+
+        def __repr__(self) -> str:
+            called("list_repr")
+            return "CustomList(<redacted>)"
+
+    class CustomTuple(tuple[int, ...]):
+        def __len__(self) -> int:
+            called("tuple_len")
+            return super().__len__()
+
+        def __iter__(self) -> Iterator[int]:
+            called("tuple_iter")
+            return super().__iter__()
+
+        def __getitem__(self, key: int | slice):  # type: ignore[no-untyped-def]
+            called("tuple_getitem")
+            return super().__getitem__(key)
+
+        def __repr__(self) -> str:
+            called("tuple_repr")
+            return "CustomTuple(<redacted>)"
+
+    class CustomInt(int):
+        def __repr__(self) -> str:
+            called("int_repr")
+            return "CustomInt(<redacted>)"
+
+    class CustomFloat(float):
+        def __repr__(self) -> str:
+            called("float_repr")
+            return "CustomFloat(<redacted>)"
+
+    class CustomStr(str):
+        def __len__(self) -> int:
+            called("str_len")
+            raise AssertionError("str subclass length must not be observed")
+
+        def __getitem__(self, key: int | slice) -> str:
+            called("str_getitem")
+            raise AssertionError("str subclass items must not be observed")
+
+        def encode(self, *args: object, **kwargs: object) -> bytes:
+            called("str_encode")
+            raise AssertionError("str subclass encoding must not be observed")
+
+        def __repr__(self) -> str:
+            called("str_repr")
+            return "CustomStr(<redacted>)"
+
+    class CustomBytes(bytes):
+        def __repr__(self) -> str:
+            called("bytes_repr")
+            return "CustomBytes(<redacted>)"
+
+    class CustomDate(date):
+        def isoformat(self) -> str:
+            called("date_isoformat")
+            raise AssertionError("date subclass isoformat must not run")
+
+        def __repr__(self) -> str:
+            called("date_repr")
+            return "CustomDate(<redacted>)"
+
+    class CustomTime(time):
+        def isoformat(self, *args: object, **kwargs: object) -> str:
+            called("time_isoformat")
+            raise AssertionError("time subclass isoformat must not run")
+
+        def __repr__(self) -> str:
+            called("time_repr")
+            return "CustomTime(<redacted>)"
+
+    class CustomDatetime(datetime):
+        def isoformat(self, *args: object, **kwargs: object) -> str:
+            called("datetime_isoformat")
+            raise AssertionError("datetime subclass isoformat must not run")
+
+        def __repr__(self) -> str:
+            called("datetime_repr")
+            return "CustomDatetime(<redacted>)"
+
+    values = [
+        CustomDict(answer=42),
+        CustomList([42]),
+        CustomTuple((42,)),
+        CustomInt(42),
+        CustomFloat(4.2),
+        CustomStr("secret"),
+        CustomBytes(b"secret"),
+        CustomDate(2026, 7, 14),
+        CustomTime(12, 30),
+        CustomDatetime(2026, 7, 14, 12, 30),
+    ]
+
+    serialized = [serialize_value(value) for value in values]
+
+    assert [value.kind for value in serialized] == ["text"] * len(values)
+    assert [value.text for value in serialized] == [
+        "CustomDict(<redacted>)",
+        "CustomList(<redacted>)",
+        "CustomTuple(<redacted>)",
+        "CustomInt(<redacted>)",
+        "CustomFloat(<redacted>)",
+        "CustomStr(<redacted>)",
+        "CustomBytes(<redacted>)",
+        "CustomDate(<redacted>)",
+        "CustomTime(<redacted>)",
+        "CustomDatetime(<redacted>)",
+    ]
+    assert calls == {
+        "bytes_repr": 1,
+        "date_repr": 1,
+        "datetime_repr": 1,
+        "dict_repr": 1,
+        "float_repr": 1,
+        "int_repr": 1,
+        "list_repr": 1,
+        "str_repr": 1,
+        "time_repr": 1,
+        "tuple_repr": 1,
+    }
+
+
+def test_type_names_and_repr_text_bypass_user_hooks() -> None:
+    calls = {"metaclass_dataclass": 0, "metaclass_name": 0, "repr": 0, "text": 0}
+
+    class HostileMeta(type):
+        def __getattribute__(cls, name: str) -> object:
+            if name == "__dataclass_fields__":
+                calls["metaclass_dataclass"] += 1
+                raise AssertionError("dataclass detection must bypass custom metaclasses")
+            if name == "__name__":
+                calls["metaclass_name"] += 1
+                raise AssertionError("type-name capture must bypass custom metaclasses")
+            return super().__getattribute__(name)
+
+    class HostileText(str):
+        def __len__(self) -> int:
+            calls["text"] += 1
+            raise AssertionError("repr text length must use the base str implementation")
+
+        def __getitem__(self, key: int | slice) -> str:
+            calls["text"] += 1
+            raise AssertionError("repr text slicing must use the base str implementation")
+
+        def encode(self, *args: object, **kwargs: object) -> bytes:
+            calls["text"] += 1
+            raise AssertionError("repr text encoding must use the base str implementation")
+
+    class HostileValue(metaclass=HostileMeta):
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            return HostileText("HostileValue(<redacted>)")
+
+    serialized = serialize_value(HostileValue())
+
+    assert serialized.kind == "text"
+    assert serialized.type_name == "HostileValue"
+    assert serialized.text == "HostileValue(<redacted>)"
+    assert calls == {"metaclass_dataclass": 0, "metaclass_name": 0, "repr": 1, "text": 0}
+
+
+def test_exact_dict_items_do_not_rehash_hostile_keys() -> None:
+    calls = {"eq": 0, "hash": 0, "repr": 0}
+
+    class HostileKey:
+        def __hash__(self) -> int:
+            calls["hash"] += 1
+            return 42
+
+        def __eq__(self, other: object) -> bool:
+            calls["eq"] += 1
+            raise AssertionError("stored dict items must not compare keys")
+
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            return "HostileKey(<redacted>)"
+
+    key = HostileKey()
+    source = {key: "maya-23"}
+    calls = {"eq": 0, "hash": 0, "repr": 0}
+
+    serialized = serialize_value(source)
+
+    assert serialized.kind == "mapping"
+    assert serialized.entries[0].key.text == "HostileKey(<redacted>)"
+    assert serialized.entries[0].value.text == "maya-23"
+    assert calls == {"eq": 0, "hash": 0, "repr": 1}
 
 
 def test_row_table_schema_never_hashes_or_compares_hostile_hashable_keys() -> None:
@@ -512,125 +739,168 @@ def test_semantically_equal_unsafe_keys_do_not_overstate_column_lower_bound() ->
     assert equality_calls == 0
 
 
-def test_dataframe_and_array_ducks_are_sliced_before_materialization() -> None:
-    class FrameSlice:
-        def __init__(self, frame: FakeFrame) -> None:
-            self._frame = frame
+def test_exact_numpy_arrays_and_pandas_dataframes_stay_bounded_and_structured() -> None:
+    vector = serialize_value(np.arange(201))
+    assert vector.kind == "sequence"
+    assert vector.type_name == "ndarray"
+    assert vector.original_size == 201
+    assert vector.truncated is True
+    assert len(vector.items) == 200
+    assert vector.items[-1].value == 199
 
-        def __getitem__(self, key: tuple[slice, slice]) -> FakeFrame:
-            self._frame.requested_slice = key
-            row_slice, column_slice = key
-            return FakeFrame(
-                [row[column_slice] for row in self._frame.rows[row_slice]],
-                self._frame.columns[column_slice],
-            )
+    matrix = serialize_value(np.arange(201 * 21).reshape(201, 21))
+    assert matrix.kind == "table"
+    assert matrix.table is not None
+    assert matrix.table.original_row_count == 201
+    assert matrix.table.original_column_count == 21
+    assert len(matrix.table.rows) == 200
+    assert len(matrix.table.columns) == 20
 
-    class FakeFrame:
-        def __init__(self, rows: list[list[int]], columns: list[str]) -> None:
-            self.rows = rows
-            self.columns = columns
-            self.shape = (len(rows), len(columns))
-            self.requested_slice: tuple[slice, slice] | None = None
-
-        @property
-        def iloc(self) -> FrameSlice:
-            return FrameSlice(self)
-
-        def itertuples(self, *, index: bool, name: object) -> Iterator[tuple[int, ...]]:
-            assert index is False
-            assert name is None
-            yield from (tuple(row) for row in self.rows)
-
-    frame = FakeFrame(
-        [[row * 100 + column for column in range(21)] for row in range(201)],
-        [f"field-{column}" for column in range(21)],
+    frame = serialize_value(
+        pd.DataFrame(
+            np.arange(201 * 21).reshape(201, 21),
+            columns=[f"field-{column}" for column in range(21)],
+        )
     )
-    serialized_frame = serialize_value(frame)
-    assert frame.requested_slice == (slice(None, 200), slice(None, 20))
-    assert serialized_frame.kind == "table"
-    assert serialized_frame.type_name == "FakeFrame"
-    assert serialized_frame.table is not None
-    assert serialized_frame.table.original_row_count == 201
-    assert serialized_frame.table.original_column_count == 21
-    assert len(serialized_frame.table.rows) == 200
-    assert len(serialized_frame.table.columns) == 20
+    assert frame.kind == "table"
+    assert frame.type_name == "DataFrame"
+    assert frame.table is not None
+    assert frame.table.original_row_count == 201
+    assert frame.table.original_column_count == 21
+    assert len(frame.table.rows) == 200
+    assert len(frame.table.columns) == 20
 
-    class FakeArray:
-        def __init__(self, values: list[int]) -> None:
-            self.values = values
-            self.shape = (len(values),)
-            self.requested_slice: slice | None = None
 
-        def __getitem__(self, key: slice) -> FakeArray:
-            self.requested_slice = key
-            return FakeArray(self.values[key])
+def test_array_and_dataframe_protocols_and_subclasses_use_repr_only() -> None:
+    calls: dict[str, int] = {}
 
-        def tolist(self) -> list[int]:
-            return list(self.values)
+    def called(name: str) -> None:
+        calls[name] = calls.get(name, 0) + 1
 
-    array = FakeArray(list(range(201)))
-    serialized_array = serialize_value(array)
-    assert array.requested_slice == slice(None, 200)
-    assert serialized_array.kind == "sequence"
-    assert serialized_array.type_name == "FakeArray"
-    assert serialized_array.original_size == 201
-    assert len(serialized_array.items) == 200
-
-    class HostileShape:
+    class ArrayProtocol:
         @property
         def shape(self) -> tuple[int]:
-            raise RuntimeError("shape failed")
+            called("protocol_shape")
+            return (1,)
 
-    failed = serialize_value(HostileShape())
-    assert failed.kind == "placeholder"
-    assert failed.reason == "getattr failed (RuntimeError)"
+        def __getitem__(self, key: object) -> object:
+            called("protocol_getitem")
+            return self
+
+        def tolist(self) -> list[int]:
+            called("protocol_tolist")
+            return [42]
+
+        def __repr__(self) -> str:
+            called("protocol_repr")
+            return "ArrayProtocol(<redacted>)"
+
+    class ArraySubclass(np.ndarray):
+        def __new__(cls) -> ArraySubclass:
+            return np.asarray([42]).view(cls)
+
+        @property
+        def shape(self) -> tuple[int, ...]:  # type: ignore[override]
+            called("array_shape")
+            raise AssertionError("ndarray subclass shape must not be read")
+
+        def __getitem__(self, key: object) -> object:
+            called("array_getitem")
+            raise AssertionError("ndarray subclass items must not be read")
+
+        def tolist(self) -> list[object]:
+            called("array_tolist")
+            raise AssertionError("ndarray subclass tolist must not run")
+
+        def __repr__(self) -> str:
+            called("array_repr")
+            return "ArraySubclass(<redacted>)"
+
+    class FrameSubclass(pd.DataFrame):
+        @property
+        def shape(self) -> tuple[int, int]:  # type: ignore[override]
+            called("frame_shape")
+            raise AssertionError("DataFrame subclass shape must not be read")
+
+        @property
+        def columns(self) -> pd.Index:  # type: ignore[override]
+            called("frame_columns")
+            raise AssertionError("DataFrame subclass columns must not be read")
+
+        @property
+        def iloc(self) -> object:  # type: ignore[override]
+            called("frame_iloc")
+            raise AssertionError("DataFrame subclass iloc must not be read")
+
+        def __repr__(self) -> str:
+            called("frame_repr")
+            return "FrameSubclass(<redacted>)"
+
+    array_subclass = ArraySubclass()
+    frame_subclass = FrameSubclass({"answer": [42]})
+    calls = {}
+
+    protocol = serialize_value(ArrayProtocol())
+    array = serialize_value(array_subclass)
+    frame = serialize_value(frame_subclass)
+
+    assert (protocol.kind, protocol.text) == ("text", "ArrayProtocol(<redacted>)")
+    assert (array.kind, array.text) == ("text", "ArraySubclass(<redacted>)")
+    assert (frame.kind, frame.text) == ("text", "FrameSubclass(<redacted>)")
+    assert calls == {"array_repr": 1, "frame_repr": 1, "protocol_repr": 1}
 
 
-def test_hostile_container_observation_is_local_and_never_mutates_inputs() -> None:
-    class HostileDatetime(datetime):
-        def isoformat(self, *args: object, **kwargs: object) -> str:
-            raise RuntimeError("isoformat failed")
-
-    class HostileIterationMapping(Mapping[str, int]):
-        def __len__(self) -> int:
-            return 1
-
-        def __iter__(self) -> Iterator[str]:
-            raise RuntimeError("iteration failed")
-
-        def __getitem__(self, key: str) -> int:
-            return 1
-
-    class HostileItemMapping(Mapping[str, int]):
-        def __len__(self) -> int:
-            return 1
-
-        def __iter__(self) -> Iterator[str]:
-            yield "answer"
-
-        def __getitem__(self, key: str) -> int:
-            raise RuntimeError("item failed")
-
-    class HostileIterationSequence(Sequence[int]):
-        def __len__(self) -> int:
-            return 1
-
-        def __getitem__(self, index: int) -> int:
-            return 1
-
-        def __iter__(self) -> Iterator[int]:
-            raise RuntimeError("iteration failed")
-
-    assert serialize_value(HostileIterationMapping()).reason == "iteration failed (RuntimeError)"
-    assert serialize_value(HostileItemMapping()).reason == "item access failed (RuntimeError)"
-    assert serialize_value(HostileIterationSequence()).reason == "iteration failed (RuntimeError)"
-    hostile_datetime = serialize_value(HostileDatetime(2026, 7, 13))
-    assert hostile_datetime.reason == "serialization failed (RuntimeError)"
-
+def test_exact_container_observation_never_mutates_inputs() -> None:
     captured = {"customer": {"id": "maya-23"}}
     snapshot = serialize_value(captured)
     assert captured == {"customer": {"id": "maya-23"}}
     assert snapshot.entries[0].value.entries[0].value.text == "maya-23"
+
+
+def test_depth_placeholder_does_not_call_arbitrary_len_or_repr() -> None:
+    calls = {"len": 0, "repr": 0}
+
+    class HostileLength:
+        def __len__(self) -> int:
+            calls["len"] += 1
+            raise AssertionError("early placeholders must not observe custom length")
+
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            return "HostileLength(<redacted>)"
+
+    nested: object = HostileLength()
+    for _ in range(7):
+        nested = [nested]
+    depth_limited = serialize_value(nested)
+    for _ in range(7):
+        depth_limited = depth_limited.items[0]
+    assert depth_limited.kind == "placeholder"
+    assert depth_limited.reason == "depth limit 6 exceeded"
+    assert depth_limited.original_size is None
+    assert calls == {"len": 0, "repr": 0}
+
+
+def test_budget_placeholder_does_not_call_arbitrary_len_or_repr() -> None:
+    calls = {"len": 0, "repr": 0}
+
+    class HostileLength:
+        def __len__(self) -> int:
+            calls["len"] += 1
+            raise AssertionError("early placeholders must not observe custom length")
+
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            return "HostileLength(<redacted>)"
+
+    rows = [{f"column-{column}": row * 100 + column for column in range(20)} for row in range(200)]
+    rows[-1]["column-19"] = [*range(79), HostileLength()]
+
+    budget_limited = serialize_value(rows)
+
+    assert budget_limited.kind == "table"
+    assert budget_limited.truncated is True
+    assert calls == {"len": 0, "repr": 0}
 
 
 def test_numbers_that_cannot_cross_strict_json_become_placeholders() -> None:
@@ -680,17 +950,20 @@ def test_global_budget_charges_many_large_json_numbers() -> None:
 
 
 def test_type_names_cannot_bypass_the_global_payload_bound() -> None:
-    huge_name_mapping = type("X" * 4_096, (dict,), {})
-    leaf: object = huge_name_mapping({"value": "maya-23"})
-    for _ in range(5):
-        leaf = huge_name_mapping({f"k{index}": leaf for index in range(5)})
+    huge_name_type = type(
+        "X" * 4_096,
+        (),
+        {"__repr__": lambda self: "HugeName(<redacted>)"},
+    )
 
-    serialized = serialize_value(leaf)
+    serialized = serialize_value(huge_name_type())
     encoded = dump_serialized_value(serialized)
 
+    assert serialized.kind == "text"
+    assert serialized.text == "HugeName(<redacted>)"
     assert len(serialized.type_name) <= 48
     assert serialized.type_name.endswith("... (truncated)")
-    assert len(encoded.encode("utf-8")) < 500_000
+    assert len(encoded.encode("utf-8")) < 1_000
 
 
 def test_datetime_subclass_type_name_uses_the_same_hard_bound() -> None:
@@ -704,65 +977,47 @@ def test_datetime_subclass_type_name_uses_the_same_hard_bound() -> None:
     assert len(dump_serialized_value(serialized).encode("utf-8")) < 1_000
 
 
-def test_array_shape_dimensions_cannot_inject_unbounded_json_numbers() -> None:
-    class HugeShapeArray:
-        shape = (10**20_000,)
-
-        def __getitem__(self, key: object) -> object:
-            raise AssertionError("invalid huge shape must fail before slicing")
-
-        def tolist(self) -> list[object]:
-            raise AssertionError("invalid huge shape must fail before materialization")
-
-    serialized = serialize_value(HugeShapeArray())
-    encoded = dump_serialized_value(serialized)
-
-    assert serialized.kind == "placeholder"
-    assert serialized.reason == "array dimension exceeds platform container size"
-    assert len(encoded.encode("utf-8")) < 1_000
-
-
 def test_js_unsafe_size_metadata_crosses_the_wire_as_exact_decimal_strings() -> None:
     unsafe_count = 2**53 + 1
     safe_boundary = 2**53 - 1
 
-    class BoundedMatrix:
-        def tolist(self) -> list[list[int]]:
-            return [[1]]
-
-    class HugeMatrix:
-        shape = (unsafe_count, unsafe_count)
-
-        def __getitem__(self, key: object) -> BoundedMatrix:
-            return BoundedMatrix()
-
-        def tolist(self) -> list[list[int]]:
-            raise AssertionError("serializer must materialize only the bounded slice")
-
-    class BoundedVector:
-        def tolist(self) -> list[int]:
-            return [1]
-
-    class HugeVector:
-        shape = (unsafe_count,)
-
-        def __getitem__(self, key: object) -> BoundedVector:
-            return BoundedVector()
-
-        def tolist(self) -> list[int]:
-            raise AssertionError("serializer must materialize only the bounded slice")
-
-    matrix_wire = serialized_value_to_wire(serialize_value(HugeMatrix()))
-    vector_wire = serialized_value_to_wire(serialize_value(HugeVector()))
+    matrix_wire = serialized_value_to_wire(
+        SerializedValue(
+            kind="table",
+            type_name="DataFrame",
+            table=SerializedTable(
+                columns=(),
+                rows=(),
+                original_row_count=unsafe_count,
+                original_column_count=unsafe_count,
+                original_column_count_exact=True,
+                rows_truncated=True,
+                columns_truncated=True,
+            ),
+            original_size=unsafe_count,
+            truncated=True,
+        )
+    )
 
     assert matrix_wire["original_size"] == str(unsafe_count)
     table = matrix_wire["table"]
     assert isinstance(table, dict)
     assert table["original_row_count"] == str(unsafe_count)
     assert table["original_column_count"] == str(unsafe_count)
-    assert vector_wire["original_size"] == str(unsafe_count)
     assert serialized_value_to_wire(SerializedValue(kind="sequence", type_name="list", original_size=safe_boundary))["original_size"] == safe_boundary
     assert serialized_value_to_wire(SerializedValue(kind="sequence", type_name="list", original_size=safe_boundary + 1))["original_size"] == str(
         safe_boundary + 1
     )
     assert serialized_value_to_wire(serialize_value(list(range(201))))["original_size"] == 201
+
+
+def test_serializer_module_imports_without_optional_data_packages() -> None:
+    module_path = Path(__file__).parents[2] / "src/hypergraph/runners/_shared/_inspect_serialization.py"
+    completed = subprocess.run(
+        [sys.executable, "-S", "-c", "import runpy, sys; runpy.run_path(sys.argv[1])", str(module_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
