@@ -705,6 +705,176 @@ def test_mutable_public_library_aliases_never_define_trusted_adapters() -> None:
     }
 
 
+def test_forged_defining_module_aliases_never_define_trusted_adapters() -> None:
+    calls = {
+        "columns": 0,
+        "getitem": 0,
+        "iloc": 0,
+        "model_dump": 0,
+        "repr": 0,
+        "shape": 0,
+        "tolist": 0,
+    }
+
+    class ForgedArray:
+        __module__ = "numpy"
+
+        @property
+        def shape(self) -> tuple[int, ...]:
+            calls["shape"] += 1
+            return (1,)
+
+        def __getitem__(self, key: object) -> object:
+            calls["getitem"] += 1
+            return 7
+
+        def tolist(self) -> list[int]:
+            calls["tolist"] += 1
+            return [7]
+
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            return "ForgedArray(<redacted>)"
+
+    class ForgedFrame:
+        __module__ = "pandas.core.frame"
+
+        @property
+        def shape(self) -> tuple[int, int]:
+            calls["shape"] += 1
+            raise AssertionError("forged DataFrame must not enter the adapter")
+
+        @property
+        def columns(self) -> tuple[str, ...]:
+            calls["columns"] += 1
+            raise AssertionError("forged DataFrame must not enter the adapter")
+
+        @property
+        def iloc(self) -> object:
+            calls["iloc"] += 1
+            raise AssertionError("forged DataFrame must not enter the adapter")
+
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            return "ForgedFrame(<redacted>)"
+
+    class ForgedModel:
+        __module__ = "pydantic.main"
+
+        def model_dump(self) -> dict[str, object]:
+            calls["model_dump"] += 1
+            raise AssertionError("forged BaseModel must not enter the adapter")
+
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            return "ForgedModel(<redacted>)"
+
+    ForgedArray.__name__ = "ndarray"
+    ForgedArray.__qualname__ = "ndarray"
+    ForgedFrame.__name__ = "DataFrame"
+    ForgedFrame.__qualname__ = "DataFrame"
+    ForgedModel.__name__ = "BaseModel"
+    ForgedModel.__qualname__ = "BaseModel"
+
+    serialized: list[SerializedValue] = []
+    for module_name, alias, forged_type in (
+        ("numpy._core._multiarray_umath", "ndarray", ForgedArray),
+        ("pandas.core.frame", "DataFrame", ForgedFrame),
+        ("pydantic.main", "BaseModel", ForgedModel),
+    ):
+        module = dict.__getitem__(sys.modules, module_name)
+        namespace = object.__getattribute__(module, "__dict__")
+        original = dict.__getitem__(namespace, alias)
+        setattr(module, alias, forged_type)
+        try:
+            serialized.append(serialize_value(forged_type()))
+        finally:
+            setattr(module, alias, original)
+
+    assert [(value.kind, value.text) for value in serialized] == [
+        ("text", "ForgedArray(<redacted>)"),
+        ("text", "ForgedFrame(<redacted>)"),
+        ("text", "ForgedModel(<redacted>)"),
+    ]
+    assert calls == {
+        "columns": 0,
+        "getitem": 0,
+        "iloc": 0,
+        "model_dump": 0,
+        "repr": 3,
+        "shape": 0,
+        "tolist": 0,
+    }
+
+
+def test_dataframe_serialization_uses_only_proven_stored_values() -> None:
+    calls = {"columns": 0, "iloc": 0, "itertuples": 0, "shape": 0}
+    frame = pd.DataFrame(
+        {
+            "customer_id": ["maya-23", "ari-12"],
+            "score": [0.9, 0.3],
+            "active": [True, False],
+        }
+    )
+
+    def bomb_property(name: str) -> property:
+        def get(_self: object) -> object:
+            calls[name] += 1
+            raise AssertionError(f"DataFrame.{name} must not be invoked")
+
+        return property(get)
+
+    def bomb_itertuples(_self: object, *args: object, **kwargs: object) -> object:
+        calls["itertuples"] += 1
+        raise AssertionError("DataFrame.itertuples must not be invoked")
+
+    originals = {
+        "columns": pd.DataFrame.columns,
+        "iloc": pd.DataFrame.iloc,
+        "itertuples": pd.DataFrame.itertuples,
+        "shape": pd.DataFrame.shape,
+    }
+    pd.DataFrame.columns = bomb_property("columns")
+    pd.DataFrame.iloc = bomb_property("iloc")
+    pd.DataFrame.itertuples = bomb_itertuples
+    pd.DataFrame.shape = bomb_property("shape")
+    try:
+        serialized = serialize_value(frame)
+    finally:
+        pd.DataFrame.columns = originals["columns"]
+        pd.DataFrame.iloc = originals["iloc"]
+        pd.DataFrame.itertuples = originals["itertuples"]
+        pd.DataFrame.shape = originals["shape"]
+
+    assert serialized.kind == "table"
+    assert serialized.table is not None
+    assert [column.value for column in serialized.table.columns] == [
+        "customer_id",
+        "score",
+        "active",
+    ]
+    assert [[cell.value for cell in row] for row in serialized.table.rows] == [
+        ["maya-23", 0.9, True],
+        ["ari-12", 0.3, False],
+    ]
+    assert calls == {"columns": 0, "iloc": 0, "itertuples": 0, "shape": 0}
+
+
+def test_fragmented_numpy_dataframe_remains_a_bounded_table() -> None:
+    frame = pd.DataFrame(index=[0])
+    for column_index in range(21):
+        frame[f"metric_{column_index}"] = column_index
+
+    serialized = serialize_value(frame)
+
+    assert serialized.kind == "table"
+    assert serialized.table is not None
+    assert [column.value for column in serialized.table.columns] == [f"metric_{column_index}" for column_index in range(20)]
+    assert [[cell.value for cell in row] for row in serialized.table.rows] == [list(range(20))]
+    assert serialized.table.original_column_count == 21
+    assert serialized.table.columns_truncated is True
+
+
 def test_supported_type_subclasses_never_enter_trusted_adapters() -> None:
     calls: dict[str, int] = {}
 
