@@ -807,6 +807,112 @@ def test_forged_defining_module_aliases_never_define_trusted_adapters() -> None:
     }
 
 
+def test_forged_dataframe_with_real_bases_never_defines_trust() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import pandas as pd
+from pandas.core.arraylike import OpsMixin
+from pandas.core.generic import NDFrame
+
+calls = {"repr": 0, "shape": 0}
+
+def forged_repr(_value):
+    calls["repr"] += 1
+    return "ForgedDataFrame(<redacted>)"
+
+def forged_shape(_value):
+    calls["shape"] += 1
+    raise AssertionError("forged public protocol must not run")
+
+forged_type = type(
+    "DataFrame",
+    (NDFrame, OpsMixin),
+    {
+        "__module__": "pandas.core.frame",
+        "__repr__": forged_repr,
+        "shape": property(forged_shape),
+    },
+)
+forged = object.__new__(forged_type)
+forged.__dict__["_mgr"] = object()
+
+frame_module = __import__("pandas.core.frame", fromlist=["DataFrame"])
+real_public = pd.DataFrame
+real_internal = frame_module.DataFrame
+pd.DataFrame = forged_type
+frame_module.DataFrame = forged_type
+try:
+    from hypergraph.runners._shared._inspect_serialization import serialize_value
+    serialized = serialize_value(forged)
+finally:
+    pd.DataFrame = real_public
+    frame_module.DataFrame = real_internal
+
+assert serialized.kind == "text", serialized
+assert serialized.text == "ForgedDataFrame(<redacted>)"
+assert calls == {"repr": 1, "shape": 0}
+""",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_forged_pydantic_model_with_real_metaclass_never_defines_trust() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import pydantic
+import pydantic.main
+from pydantic._internal._model_construction import ModelMetaclass
+
+calls = {"repr": 0}
+
+def forged_repr(_value):
+    calls["repr"] += 1
+    return "ForgedBaseModel(<redacted>)"
+
+forged_type = type.__new__(
+    ModelMetaclass,
+    "BaseModel",
+    (object,),
+    {"__module__": "pydantic.main", "__repr__": forged_repr},
+)
+forged = object.__new__(forged_type)
+forged.__dict__["secret"] = "stored"
+
+real_public = pydantic.BaseModel
+real_internal = pydantic.main.BaseModel
+pydantic.BaseModel = forged_type
+pydantic.main.BaseModel = forged_type
+try:
+    from hypergraph.runners._shared._inspect_serialization import serialize_value
+    serialized = serialize_value(forged)
+finally:
+    pydantic.BaseModel = real_public
+    pydantic.main.BaseModel = real_internal
+
+assert serialized.kind == "text", serialized
+assert serialized.text == "ForgedBaseModel(<redacted>)"
+assert calls == {"repr": 1}
+""",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_dataframe_serialization_uses_only_proven_stored_values() -> None:
     calls = {"columns": 0, "iloc": 0, "itertuples": 0, "shape": 0}
     frame = pd.DataFrame(
