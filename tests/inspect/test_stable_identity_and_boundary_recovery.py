@@ -264,6 +264,73 @@ def test_unstable_repr_dedupe_removes_only_selected_occurrence(
     page.close()
 
 
+def test_failure_wire_uses_only_opaque_ordinal_identity() -> None:
+    batch, _ = _run_unstable_nested_map("sync")
+    artifact = batch.inspect()._artifact
+    selected_artifact = replace(artifact, items=(artifact.items[0],))
+
+    payload = build_inspection_payload(
+        selected_artifact,
+        delivery_state="saved",
+        delivery_label="Saved snapshot",
+    )
+    map_wire = payload["map"]
+    assert isinstance(map_wire, dict)
+    run = map_wire["items"][0]["run"]  # type: ignore[index]
+    public_failure = run["failures"][0]
+    failed_nodes = [node for node in run["nodes"] if node["failure"] is not None]
+
+    assert public_failure["failure_key"] == "failure-0"
+    assert {node["failure"]["failure_key"] for node in failed_nodes} == {"failure-0"}
+    assert re.fullmatch(r"failure-\d+", public_failure["failure_key"])
+
+
+def test_missing_exact_leaf_never_borrows_aggregate_container(
+    browser: Browser,
+) -> None:
+    batch, _ = _run_unstable_nested_map("sync")
+    artifact = batch.inspect()._artifact
+    item = artifact.items[0]
+    assert item.run is not None
+    exact_leaf = item.run.failures[0].node_name
+    malformed_run = replace(
+        item.run,
+        nodes=tuple(current for current in item.run.nodes if current.qualified_name != exact_leaf),
+    )
+    selected_artifact = replace(
+        artifact,
+        items=(replace(item, run=malformed_run),),
+    )
+
+    payload = build_inspection_payload(
+        selected_artifact,
+        delivery_state="saved",
+        delivery_label="Saved snapshot",
+    )
+    map_wire = payload["map"]
+    assert isinstance(map_wire, dict)
+    run_wire = map_wire["items"][0]["run"]  # type: ignore[index]
+    _, failed_node = _first_failure_and_node(
+        run_wire,
+        containing_item_index=0,
+    )
+    assert failed_node == {}
+
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.set_content(render_map_inspection(selected_artifact))
+    root = page.locator('[data-hypergraph-inspect="map"]')
+    alert = root.locator("[data-hg-alert-text]").inner_text()
+    assert "run boundary" in alert
+    assert "review_group." not in alert
+
+    root.get_by_role("button", name="Show failure").click()
+
+    assert root.locator('[data-hg-timeline-row][aria-current="true"]').count() == 0
+    assert root.locator(".hg-inspect-detail-heading").count() == 0
+    assert "Run failures · 1" in root.locator("[data-hg-detail]").inner_text()
+    page.close()
+
+
 class _RecordingTransport:
     def __init__(self, initial_artifact: RunInspection | MapInspection) -> None:
         self.initial_artifact = initial_artifact
