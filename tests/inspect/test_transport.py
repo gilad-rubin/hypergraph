@@ -602,8 +602,9 @@ def test_unexpected_none_closes_and_clears_current_schedule() -> None:
         initial_sent_at=scheduler.now(),
     )
 
-    coalescer.publish(_run(1), urgent=False)
+    accepted = coalescer.publish(_run(1), urgent=False)
 
+    assert accepted is False
     assert delivered == []
     assert coalescer.closed is True
     assert coalescer.delivery_failed is True
