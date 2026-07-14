@@ -938,6 +938,58 @@ async def test_async_background_run_and_map_preopen_on_calling_loop(
         }
 
 
+def test_sync_background_generated_workflow_identity_precedes_node_publication(
+    factory: _FactoryRecorder,
+    tmp_path: Path,
+) -> None:
+    checkpointer = SqliteCheckpointer(str(tmp_path / "sync-generated-identity.db"))
+    try:
+        result = (
+            SyncRunner(checkpointer=checkpointer)
+            .start_run(
+                _graph("sync-generated-identity"),
+                {"value": 2},
+                inspect=True,
+            )
+            .result()
+        )
+        transport = factory.transports[-1]
+        first_node_snapshot = next(artifact for artifact in transport.artifacts if artifact.nodes)
+
+        assert transport.artifacts[0].workflow_id is None
+        assert result.workflow_id is not None
+        assert result.inspect().artifact.workflow_id == result.workflow_id
+        assert first_node_snapshot.workflow_id == result.workflow_id
+    finally:
+        asyncio.run(checkpointer.close())
+
+
+@pytest.mark.asyncio
+async def test_async_background_generated_workflow_identity_precedes_node_publication(
+    factory: _FactoryRecorder,
+) -> None:
+    checkpointer = MemoryCheckpointer()
+    try:
+        result = (
+            await AsyncRunner(checkpointer=checkpointer)
+            .start_run(
+                _graph("async-generated-identity"),
+                {"value": 2},
+                inspect=True,
+            )
+            .result()
+        )
+        transport = factory.transports[-1]
+        first_node_snapshot = next(artifact for artifact in transport.artifacts if artifact.nodes)
+
+        assert transport.artifacts[0].workflow_id is None
+        assert result.workflow_id is not None
+        assert result.inspect().artifact.workflow_id == result.workflow_id
+        assert first_node_snapshot.workflow_id == result.workflow_id
+    finally:
+        await checkpointer.close()
+
+
 @pytest.mark.asyncio
 async def test_map_children_and_nested_graphs_never_open_duplicate_widgets(
     factory: _FactoryRecorder,
