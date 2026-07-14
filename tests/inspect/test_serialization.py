@@ -866,6 +866,79 @@ assert calls == {"repr": 1, "shape": 0}
     assert completed.returncode == 0, completed.stderr
 
 
+def test_coordinated_forged_pandas_classes_never_define_trust() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import numpy as np
+import pandas as pd
+import pandas.core.arraylike as arraylike
+import pandas.core.frame as frame_module
+import pandas.core.generic as generic
+import pandas.core.indexes.base as index_module
+import pandas.core.indexes.range as range_module
+
+calls = {"frame_repr": 0, "index_repr": 0, "range_repr": 0}
+
+def redacted(name):
+    def represent(_value):
+        calls[f"{name}_repr"] += 1
+        return f"{name.title()}(<redacted>)"
+    return represent
+
+real_frame = pd.DataFrame
+source = real_frame({"secret": ["maya-secret"]})
+forged_frame = type(
+    "DataFrame",
+    (generic.NDFrame, arraylike.OpsMixin),
+    {"__module__": "pandas.core.frame", "__repr__": redacted("frame")},
+)
+forged_index = type(
+    "Index",
+    (object,),
+    {"__module__": "pandas.core.indexes.base", "__repr__": redacted("index")},
+)
+forged_range = type(
+    "RangeIndex",
+    (forged_index,),
+    {"__module__": "pandas.core.indexes.range", "__repr__": redacted("range")},
+)
+
+column_axis = object.__new__(forged_index)
+column_axis.__dict__["_data"] = np.asarray(["secret"])
+row_axis = object.__new__(forged_range)
+row_axis.__dict__["_range"] = range(1)
+source._mgr.axes[0] = column_axis
+source._mgr.axes[1] = row_axis
+forged = object.__new__(forged_frame)
+forged.__dict__["_mgr"] = source.__dict__["_mgr"]
+
+frame_module.DataFrame = forged_frame
+pd.DataFrame = forged_frame
+index_module.Index = forged_index
+pd.Index = forged_index
+range_module.RangeIndex = forged_range
+pd.RangeIndex = forged_range
+
+from hypergraph.runners._shared._inspect_serialization import serialize_value
+
+serialized = serialize_value(forged)
+assert serialized.kind == "text", serialized
+assert serialized.text == "Frame(<redacted>)"
+assert "maya-secret" not in serialized.text
+assert calls == {"frame_repr": 1, "index_repr": 0, "range_repr": 0}
+""",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_forged_pydantic_model_with_real_metaclass_never_defines_trust() -> None:
     completed = subprocess.run(
         [
