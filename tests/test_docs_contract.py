@@ -542,3 +542,39 @@ def test_inspect_docs_pin_observational_serialization_and_background_identity() 
     assert "standard NumPy-backed storage" in normalized_fixed
     assert "unsupported extension-backed DataFrame" in normalized_fixed
     assert "without calling DataFrame `repr`" in normalized_fixed
+
+
+def test_inspect_docs_pin_array_storage_compatibility_truth() -> None:
+    debug = _read("docs/05-how-to/debug-workflows.md")
+    runners = _read("docs/06-api-reference/runners.md")
+    changelog = _read("docs/changelog.md")
+    pyproject = _read("pyproject.toml")
+
+    run_result = _scoped_section(runners, "## RunResult")
+    run_inspect = _scoped_section(run_result, "### inspect()")
+    fixed = _scoped_section(changelog, "### Fixed")
+
+    for serialization_docs in (
+        " ".join(debug.split()),
+        " ".join(run_inspect.split()),
+        " ".join(fixed.split()),
+    ):
+        assert "canonical NumPy 1.x and 2.x `ndarray` provenance" in serialization_docs
+        assert "recognized trusted NumPy-backed internal storage layout" in serialization_docs
+        assert "allowed pandas version with an unrecognized internal storage layout" in serialization_docs
+        assert "unsupported DataFrame storage" in serialization_docs
+        assert "without calling DataFrame `repr`" in serialization_docs
+        assert "data blocks, row axis, or column axis" in serialization_docs
+        assert "unsupported extension-backed DataFrame" in serialization_docs
+        assert "without invoking extension hooks" in serialization_docs
+        assert "implementation safety boundary, not an all-version guarantee" in serialization_docs
+
+    normalized_debug = " ".join(debug.split())
+    assert "optional `examples` dependency range" in normalized_debug
+    assert "`numpy>=1.21.0`" in normalized_debug
+    assert "`pandas>=1.3.0`" in normalized_debug
+    assert '"numpy>=1.21.0"' in pyproject
+    assert '"pandas>=1.3.0"' in pyproject
+
+    for public_docs in (debug, runners, changelog):
+        assert ".artifact" not in public_docs
