@@ -435,6 +435,11 @@ def test_inspect_mode_docs_mirror_public_contract() -> None:
         assert "kernel environment" in notebook_delivery_docs
         assert "payload-only history" in notebook_delivery_docs
         assert "separate server environment" in notebook_delivery_docs
+        normalized_delivery = notebook_delivery_docs.lower()
+        assert "terminal channel" in normalized_delivery
+        assert "isolated-output" in normalized_delivery
+        assert "two physical outputs" in normalized_delivery
+        assert "one terminal physical record" in normalized_delivery
     assert 'inspect="graph-owned"' not in debug
 
     assert "inspect=True" in control

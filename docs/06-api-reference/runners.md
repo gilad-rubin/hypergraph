@@ -1292,15 +1292,23 @@ mapping items, 200 sequence items, tables of 200 rows by 20 columns, and 20,000
 text characters. See [Debug Workflows](../05-how-to/debug-workflows.md) for the
 full privacy and live-to-saved contract.
 
-Notebook transport normally retains one immutable shell and one mutable
-display-ID payload output. A best-effort internal compatibility path activates
-only when the kernel environment reports
-`jupyter-server-nbmodel==0.1.1a4`: that measured executor drops
-`update_display_data`, so Hypergraph resends only the coalesced payload records
-and the host retains hidden payload-only history. Missing or unrecognized
-versions keep the normal update path. Kernel package metadata cannot infer a
-separate server environment, so this does not claim split server/kernel
-detection and adds no public transport setting.
+Notebook transport normally retains exactly two physical outputs: one
+immutable shell and one mutable display-ID channel. Ordinary updates are
+payload-only. The terminal channel is a self-contained portable inspector: a
+shared document hides it after updating the original iframe, while an
+isolated-output renderer can open that channel alone. The capable path still
+uses `DisplayHandle.update()` and replaces its channel in place.
+
+A best-effort internal compatibility path activates only when the kernel
+environment reports `jupyter-server-nbmodel==0.1.1a4`: that measured executor
+drops `update_display_data`, so Hypergraph appends ordinary coalesced payload
+records and the host retains hidden payload-only history. Terminal or stale
+settlement adds one terminal physical record with the portable inspector;
+shared Jupyter hides it after delivery, while isolated notebook renderers keep
+it interactive. Missing or unrecognized versions keep the normal update path.
+Kernel package metadata cannot infer a separate server environment, so this
+does not claim split server/kernel detection and adds no public transport
+setting.
 
 Structured rendering is limited to exact built-in `dict`, `list`, and `tuple`
 values, ordinary dataclasses, recognized Pydantic models, exact NumPy

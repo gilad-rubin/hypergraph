@@ -1,10 +1,11 @@
 """Versioned, offline notebook transport for typed inspection artifacts.
 
 The normal transport has two physical notebook outputs: an immutable iframe
-shell and one display-ID payload channel. One measured server-side executor
-needs a private payload-only append fallback. Runtime attachment belongs to
-runner templates; this module deliberately knows only typed inspection
-sessions and artifacts.
+shell and one display-ID payload channel. Terminal channel markup can also
+stand alone in notebook hosts that isolate saved outputs. One measured
+server-side executor needs a private append fallback. Runtime attachment
+belongs to runner templates; this module deliberately knows only typed
+inspection sessions and artifacts.
 """
 
 from __future__ import annotations
@@ -251,22 +252,73 @@ def _fallback_markup(envelope: InspectionEnvelope, payload: dict[str, object]) -
     )
 
 
+def _portable_fallback_markup(
+    envelope: InspectionEnvelope,
+    payload: dict[str, object],
+) -> str:
+    renderer = render_inspection_payload(payload)
+    child_document = (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<meta http-equiv="Content-Security-Policy" '
+        f'content="{_CHILD_CSP}">'
+        "<style>html,body{margin:0;min-width:0;background:transparent}"
+        "body{overflow-x:hidden}</style></head><body>"
+        f"{renderer}"
+        "</body></html>"
+    )
+    frame_name = _dom_id(
+        envelope.widget_id,
+        f"portable-s{envelope.sequence}-frame",
+    )
+    exact_error = (
+        f'<div data-hg-inspect-channel-message="{html.escape(envelope.widget_id, quote=True)}" '
+        'data-hg-inspect-portable-error role="status" '
+        'style="box-sizing:border-box;margin:0 0 8px;padding:8px 10px;'
+        'border:1px solid #d0d5dd;border-radius:8px;font:13px system-ui,sans-serif">'
+        f"{_fallback_markup(envelope, payload)}</div>"
+        if envelope.message is not None
+        else ""
+    )
+    return (
+        f"{exact_error}"
+        f'<div data-hg-inspect-channel-fallback="{html.escape(envelope.widget_id, quote=True)}" '
+        f'data-hg-inspect-portable-sequence="{envelope.sequence}" '
+        f'data-delivery-state="{html.escape(envelope.delivery.state, quote=True)}">'
+        f'<iframe name="{html.escape(frame_name, quote=True)}" '
+        f'data-hg-inspect-portable-frame="{html.escape(envelope.widget_id, quote=True)}" '
+        'title="Hypergraph saved execution inspection" sandbox="allow-scripts" '
+        'style="display:block;box-sizing:border-box;width:100%;min-width:0;'
+        'height:720px;border:0" '
+        f'srcdoc="{html.escape(child_document, quote=True)}"></iframe>'
+        "</div>"
+    )
+
+
 def render_payload_channel(envelope: InspectionEnvelope) -> str:
-    """Render one payload-only display-ID value with an inert safe fallback."""
+    """Render one display-ID value, portable only at terminal/stale settlement."""
     wire = inspection_envelope_to_wire(envelope)
     payload = cast(dict[str, object], wire["payload"])
     encoded = _script_safe_json(wire)
     channel_dom_id = _dom_id(envelope.widget_id, f"payload-output-s{envelope.sequence}")
     key = _script_safe_json(f"{envelope.widget_id}::{envelope.nonce}")
     fallback_state = "waiting" if envelope.delivery.state == "live" else envelope.delivery.state
+    portable = envelope.artifact.terminal or envelope.delivery.state == "stale"
+    fallback = (
+        _portable_fallback_markup(envelope, payload)
+        if portable
+        else (
+            f'<div data-hg-inspect-channel-fallback="{html.escape(envelope.widget_id, quote=True)}" '
+            f'data-delivery-state="{fallback_state}" '
+            'role="status" style="box-sizing:border-box;margin:8px 0;padding:8px 10px;'
+            'border:1px solid #d0d5dd;border-radius:8px;font:13px system-ui,sans-serif">'
+            f"{_fallback_markup(envelope, payload)}</div>"
+        )
+    )
     return (
         f'<div id="{html.escape(channel_dom_id, quote=True)}" '
         f'data-hg-inspect-channel="{html.escape(envelope.widget_id, quote=True)}">'
-        f'<div data-hg-inspect-channel-fallback="{html.escape(envelope.widget_id, quote=True)}" '
-        f'data-delivery-state="{fallback_state}" '
-        'role="status" style="box-sizing:border-box;margin:8px 0;padding:8px 10px;'
-        'border:1px solid #d0d5dd;border-radius:8px;font:13px system-ui,sans-serif">'
-        f"{_fallback_markup(envelope, payload)}</div>"
+        f"{fallback}"
         '<script type="application/json" data-hg-inspect-envelope>'
         f"{encoded}</script>"
         "<script data-hg-inspect-channel-runtime>(function(){"
@@ -284,10 +336,14 @@ def render_payload_channel(envelope: InspectionEnvelope) -> str:
         "if(queued&&queued.channelElement){"
         "var oldFallback=queued.channelElement.querySelector('[data-hg-inspect-channel-fallback]');"
         "if(oldFallback)oldFallback.hidden=true;"
+        "var oldMessage=queued.channelElement.querySelector('[data-hg-inspect-channel-message]');"
+        "if(oldMessage)oldMessage.hidden=true;"
         "queued.channelElement.setAttribute('data-delivered','true');}"
         "queues[key]={envelope:envelope,channelId:channel.id,channelElement:channel};}"
         "else{var fallback=channel.querySelector('[data-hg-inspect-channel-fallback]');"
-        "if(fallback)fallback.hidden=true;channel.setAttribute('data-delivered','true');}}"
+        "if(fallback)fallback.hidden=true;"
+        "var message=channel.querySelector('[data-hg-inspect-channel-message]');"
+        "if(message)message.hidden=true;channel.setAttribute('data-delivered','true');}}"
         "})();</script></div>"
     )
 

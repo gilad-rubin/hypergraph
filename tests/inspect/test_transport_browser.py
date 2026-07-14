@@ -666,11 +666,43 @@ def test_isolated_stale_channel_is_portable_and_keeps_exact_start_error(
     portable_frame.wait_for_selector('[data-hypergraph-inspect="run"]')
     root = portable_frame.locator('[data-hypergraph-inspect="run"]')
     assert root.get_by_text("Live inspection unavailable", exact=True).is_visible()
-    fallback = page.locator('[data-hg-inspect-channel-fallback="widget-isolated-stale"]')
-    assert fallback.is_visible()
-    assert "RuntimeError: Notebook display setup failed" in fallback.inner_text()
+    assert page.locator('[data-hg-inspect-channel-fallback="widget-isolated-stale"]').is_visible()
+    message = page.locator('[data-hg-inspect-channel-message="widget-isolated-stale"]')
+    assert message.is_visible()
+    assert "RuntimeError: Notebook display setup failed" in message.inner_text()
     assert errors == []
     assert all(url in {"about:blank", "about:srcdoc"} for url in requests)
+    page.close()
+
+
+def test_shared_stale_delivery_hides_portable_frame_but_keeps_exact_start_error(
+    browser: Browser,
+) -> None:
+    initial = _envelope(
+        _run(node_count=0),
+        widget_id="widget-shared-stale",
+        nonce="nonce-shared-stale",
+        sequence=1,
+    )
+    stale = replace(
+        initial,
+        sequence=2,
+        delivery=InspectionDelivery(state="stale", label="Live inspection unavailable"),
+        message=serialize_value(RuntimeError("Notebook display setup failed")),
+    )
+    page = browser.new_page()
+    _mount(page, initial)
+    frame = _frame(page, "widget-shared-stale")
+
+    _append_channel(page, stale)
+    frame.get_by_text("Live inspection unavailable", exact=True).wait_for()
+
+    portable_frame = page.locator('[data-hg-inspect-portable-frame="widget-shared-stale"]')
+    message = page.locator('[data-hg-inspect-channel-message="widget-shared-stale"]')
+    assert portable_frame.count() == 1
+    assert portable_frame.is_hidden()
+    assert message.is_visible()
+    assert "RuntimeError: Notebook display setup failed" in message.inner_text()
     page.close()
 
 
@@ -894,10 +926,12 @@ def test_start_failure_keeps_the_exact_bounded_error_visible(browser: Browser) -
     )
     frame = _frame(page, "widget-start-error")
     fallback = page.locator('[data-hg-inspect-channel-fallback="widget-start-error"]')
+    message = page.locator('[data-hg-inspect-channel-message="widget-start-error"]')
 
     assert frame.get_by_text("Live inspection unavailable", exact=True).is_visible()
-    assert fallback.is_visible()
-    assert "ValueError: missing required input: customer_id" in fallback.inner_text()
+    assert fallback.is_hidden()
+    assert message.is_visible()
+    assert "ValueError: missing required input: customer_id" in message.inner_text()
     page.close()
 
 
@@ -1004,8 +1038,13 @@ def test_missing_ready_handshake_exposes_stale_saved_fallback(browser: Browser) 
     page.wait_for_function("document.querySelector('[data-hg-inspect-host-status=\"widget-stale\"]').dataset.state === 'stale'")
     assert "interactive inspector did not connect" in status.inner_text().lower()
     fallback = page.locator('[data-hg-inspect-channel-fallback="widget-stale"]')
-    assert "Saved snapshot" in fallback.inner_text()
-    assert "completed" in fallback.inner_text()
+    assert fallback.is_visible()
+    portable_frame = page.frame(name="widget-stale-portable-s1-frame")
+    assert portable_frame is not None
+    portable_frame.wait_for_selector('[data-hypergraph-inspect="run"]')
+    portable_root = portable_frame.locator('[data-hypergraph-inspect="run"]')
+    assert portable_root.get_by_text("Saved snapshot", exact=True).is_visible()
+    assert portable_root.locator("[data-hg-summary]").get_by_text("completed", exact=True).is_visible()
     page.close()
 
 

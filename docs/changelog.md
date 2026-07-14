@@ -48,14 +48,19 @@
 
 ### Fixed
 
-- **Live inspect delivery on the measured server-side executor** — the normal
-  notebook path still uses one mutable display-ID payload. When the kernel
-  environment reports exact `jupyter-server-nbmodel==0.1.1a4`, Hypergraph now
-  uses a best-effort payload-only append path because that executor drops
-  `update_display_data`. The detected fallback preserves the same iframe and
-  terminal saved snapshot while retaining hidden coalesced payload-only history;
-  missing or unrecognized versions keep the normal update path. A separate
-  server environment cannot be inferred from kernel package metadata.
+- **Portable saved inspect delivery** — before, notebook hosts that isolate
+  each saved output could show the first `pending / 0` shell because later
+  payload scripts could not reach sibling output documents. Now the terminal
+  channel is a self-contained portable inspector. The normal capable path
+  still has exactly two physical outputs because `DisplayHandle.update()`
+  replaces that channel in place. When the kernel environment reports exact
+  `jupyter-server-nbmodel==0.1.1a4`, Hypergraph uses a best-effort append path
+  because that executor drops `update_display_data`: ordinary updates retain
+  hidden coalesced payload-only history, then settlement adds one terminal
+  physical record. Shared Jupyter hides the portable fallback after updating
+  the original iframe; an isolated-output host can open the terminal record
+  alone. Missing or unrecognized versions keep the normal update path. A
+  separate server environment cannot be inferred from kernel package metadata.
 
 - **Observational inspect serialization** — structured rendering now traverses
   only exact built-in containers, ordinary dataclasses, recognized Pydantic

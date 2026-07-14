@@ -299,20 +299,37 @@ the notebook is saved, that output remains locally interactive without a
 kernel, Hypergraph server, or network connection; it is labelled as saved, not
 live.
 
-The normal notebook path keeps exactly one immutable shell and one mutable
-payload output. Hypergraph also has a best-effort compatibility path for the
-measured `jupyter-server-nbmodel==0.1.1a4` executor, which persists ordinary
+The normal notebook path keeps exactly two physical outputs: one immutable
+shell and one mutable payload channel. Ordinary updates stay payload-only. At
+terminal or stale settlement, the channel becomes a self-contained portable
+inspector. A shared notebook delivers it to the original iframe, hides the
+portable fallback, and preserves that iframe's selected tab and other local UI
+state. An isolated-output renderer can instead open that terminal channel by
+itself. The normal path still has two physical outputs because
+`DisplayHandle.update()` replaces the mutable channel in place.
+
+Hypergraph also has a best-effort compatibility path for the measured
+`jupyter-server-nbmodel==0.1.1a4` executor, which persists ordinary
 `display_data` but drops `update_display_data`. When the **kernel environment**
-reports that exact package version, later coalesced updates are appended as
-payload-only records. They update the same iframe and never repeat the shell or
-renderer assets, but the notebook retains hidden payload-only history at the
-existing four-per-second bound for ordinary updates; terminal and error states
-can still flush immediately.
+reports that exact package version, ordinary coalesced updates are appended as
+payload-only records at the existing four-per-second bound. The notebook
+therefore retains hidden payload-only history. Terminal or stale settlement
+adds one terminal physical record containing the same portable inspector. It
+is hidden after delivery in a shared Jupyter document, but remains visible and
+interactive when a host isolates each saved output record. Terminal and error
+states can still flush immediately.
 
 - **Before on that executor:** Python reaches the terminal result while the
   iframe can remain at `pending`, `0 completed`, `0 failed`.
 - **After when detected:** the iframe reaches `partial`, `2 completed`,
   `1 failed`, and the saved output retains the exact failed input.
+
+- **Before in an isolated saved-output host:** the first shell can remain at
+  `pending`, `0 completed`, `0 failed` because later payload scripts cannot
+  reach sibling output documents.
+- **After:** the terminal channel alone opens the saved inspector at `partial`,
+  `2 completed`, `1 failed`; **Show failure** reveals `maya-23` and
+  `Customer maya-23 requires manual review` without a kernel or sibling DOM.
 
 Detection is exact and kernel-local. A missing or different package version
 uses the normal display-handle update path. A separate server environment

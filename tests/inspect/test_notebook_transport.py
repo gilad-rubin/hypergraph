@@ -13,12 +13,17 @@ from typing import Any
 
 import pytest
 
+from hypergraph.runners._shared import _inspect_transport as inspect_transport
 from hypergraph.runners._shared._inspect import InspectionSession, RunInspection
 from hypergraph.runners._shared._inspect_transport import (
+    INSPECTION_PROTOCOL_VERSION,
+    InspectionDelivery,
+    InspectionEnvelope,
     NotebookInspectionTransport,
     OwnerThreadScheduler,
     _IPythonNotebookDisplay,
     open_notebook_inspection_transport,
+    render_payload_channel,
 )
 
 
@@ -117,6 +122,34 @@ def _wire(markup: str) -> dict[str, object]:
     return value
 
 
+def test_terminal_channel_builds_one_wire_for_bridge_and_portable_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    envelope = InspectionEnvelope(
+        protocol_version=INSPECTION_PROTOCOL_VERSION,
+        widget_id="hg-inspect-one-wire",
+        nonce="nonce-one-wire",
+        sequence=2,
+        delivery=InspectionDelivery(state="saved", label="Saved snapshot"),
+        artifact=_artifact(terminal=True, status="completed"),
+    )
+    real_to_wire = inspect_transport.inspection_envelope_to_wire
+    calls = 0
+
+    def counted_to_wire(value: InspectionEnvelope) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return real_to_wire(value)
+
+    monkeypatch.setattr(inspect_transport, "inspection_envelope_to_wire", counted_to_wire)
+
+    markup = render_payload_channel(envelope)
+
+    assert calls == 1
+    assert 'data-hg-inspect-portable-frame="hg-inspect-one-wire"' in markup
+    assert _wire(markup)["sequence"] == 2
+
+
 @pytest.mark.parametrize("reported_version", [None, "0.1.1a5"], ids=["missing", "unrecognized"])
 def test_ipython_channel_uses_display_handle_updates_unless_exact_broken_version(
     monkeypatch: pytest.MonkeyPatch,
@@ -203,6 +236,70 @@ def test_ipython_channel_resends_updates_only_for_exact_broken_server_version(
     assert updates == []
 
 
+@pytest.mark.parametrize(
+    ("reported_version", "expected_display_calls", "expected_handle_updates"),
+    [(None, 2, 2), ("0.1.1a4", 4, 0)],
+    ids=["capable-update", "exact-append"],
+)
+def test_ipython_transport_keeps_physical_output_shape_and_only_terminal_is_portable(
+    monkeypatch: pytest.MonkeyPatch,
+    reported_version: str | None,
+    expected_display_calls: int,
+    expected_handle_updates: int,
+) -> None:
+    from IPython.display import HTML
+
+    calls: list[tuple[object, str | None]] = []
+    updates: list[object] = []
+
+    class DisplayHandle:
+        def update(self, value: object) -> None:
+            updates.append(value)
+
+    def package_version(distribution_name: str) -> str:
+        assert distribution_name == "jupyter-server-nbmodel"
+        if reported_version is None:
+            raise importlib.metadata.PackageNotFoundError(distribution_name)
+        return reported_version
+
+    def display(value: object, *, display_id: str | None = None) -> DisplayHandle:
+        calls.append((value, display_id))
+        return DisplayHandle()
+
+    monkeypatch.setattr(importlib.metadata, "version", package_version)
+    monkeypatch.setattr("IPython.display.display", display)
+    scheduler = _QueuedOwnerScheduler()
+    transport = NotebookInspectionTransport.create(
+        _artifact(),
+        display=_IPythonNotebookDisplay(),
+        scheduler=scheduler,
+        widget_id="hg-inspect-ipython-shape",
+        nonce="nonce-ipython-shape",
+    )
+    transport.publish(_artifact(status="running"), urgent=False)
+    scheduler.advance(0.25)
+    transport.publish(_artifact(status="completed", terminal=True), urgent=True)
+    scheduler.run_due()
+
+    assert len(calls) == expected_display_calls
+    assert len(updates) == expected_handle_updates
+    if reported_version is None:
+        assert [display_id for _, display_id in calls] == [None, "hg-inspect-ipython-shape-payload"]
+        channel_values = [calls[1][0], *updates]
+    else:
+        assert [display_id for _, display_id in calls] == [
+            None,
+            "hg-inspect-ipython-shape-payload",
+            "hg-inspect-ipython-shape-payload",
+            "hg-inspect-ipython-shape-payload",
+        ]
+        channel_values = [value for value, _ in calls[1:]]
+    channel_markups = [value.data for value in channel_values if isinstance(value, HTML)]
+    assert len(channel_markups) == 3
+    assert all("data-hg-inspect-portable-frame" not in markup for markup in channel_markups[:2])
+    assert 'data-hg-inspect-portable-frame="hg-inspect-ipython-shape"' in channel_markups[2]
+
+
 def test_payload_channels_have_sequence_qualified_dom_ids_and_local_script_lookup() -> None:
     scheduler = _QueuedOwnerScheduler()
     display = _FakeNotebookDisplay()
@@ -254,6 +351,35 @@ def test_transport_emits_one_immutable_shell_and_one_stable_payload_display_id()
         "label": "Saved snapshot",
     }
     assert 'data-hg-inspect-portable-frame="hg-inspect-notebook"' in display.handle.updates[0]
+
+
+@pytest.mark.parametrize("delivery_state", ["saved", "stale"])
+def test_initial_settled_channel_is_portable_without_a_third_output(
+    delivery_state: str,
+) -> None:
+    scheduler = _QueuedOwnerScheduler()
+    display = _FakeNotebookDisplay()
+    artifact = _artifact(terminal=delivery_state == "saved", status="completed" if delivery_state == "saved" else "running")
+    delivery = (
+        InspectionDelivery(state="saved", label="Saved snapshot")
+        if delivery_state == "saved"
+        else InspectionDelivery(state="stale", label="Live inspection unavailable")
+    )
+
+    NotebookInspectionTransport.create(
+        artifact,
+        display=display,
+        scheduler=scheduler,
+        widget_id=f"hg-inspect-initial-{delivery_state}",
+        nonce=f"nonce-initial-{delivery_state}",
+        initial_delivery=delivery,
+        close_after_initial=True,
+    )
+
+    assert len(display.shells) == 1
+    assert len(display.channels) == 1
+    assert display.handle.updates == []
+    assert f'data-hg-inspect-portable-frame="hg-inspect-initial-{delivery_state}"' in display.channels[0][1]
 
 
 def test_shell_is_sandboxed_and_only_terminal_channel_is_portable() -> None:
@@ -508,6 +634,8 @@ def test_start_failure_becomes_bounded_stale_transport_state() -> None:
     assert wire["payload"]["run"]["run_id"] == "run-notebook"
     assert wire["message"]["type_name"] == "ValueError"
     assert "missing required input" in wire["message"]["text"]
+    assert 'data-hg-inspect-portable-frame="hg-inspect-notebook"' in display.handle.updates[-1]
+    assert 'data-hg-inspect-channel-message="hg-inspect-notebook"' in display.handle.updates[-1]
 
 
 def test_plain_and_non_notebook_modes_suppress_automatic_display(

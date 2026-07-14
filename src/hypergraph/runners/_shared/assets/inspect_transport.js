@@ -36,6 +36,15 @@
     channel.setAttribute("data-delivered", "true");
   }
 
+  function hideSupersededChannel(channelId) {
+    if (!channelId) return;
+    var channel = global.document.getElementById(channelId);
+    if (!channel) return;
+    hideChannelFallback(channelId);
+    var message = channel.querySelector("[data-hg-inspect-channel-message]");
+    if (message) message.hidden = true;
+  }
+
   function markLiveChannelFallback(channelId, envelope, labelText, stateText) {
     var delivery = envelope && envelope.payload && envelope.payload.delivery;
     if (!channelId || !delivery || delivery.state !== "live") return;
@@ -77,7 +86,7 @@
       if (!exactIdentity(envelope, config) || envelope.type !== UPDATE) return false;
       if (!Number.isInteger(envelope.sequence)) return false;
       if (envelope.sequence <= state.lastSentSequence) {
-        hideChannelFallback(channelId);
+        hideSupersededChannel(channelId);
         return false;
       }
       if (!state.ready || !frame.contentWindow) {
@@ -89,10 +98,10 @@
         );
         var queued = queues[key];
         if (queued && envelope.sequence <= queued.envelope.sequence) {
-          hideChannelFallback(channelId);
+          hideSupersededChannel(channelId);
           return false;
         }
-        if (queued) hideChannelFallback(queued.channelId);
+        if (queued) hideSupersededChannel(queued.channelId);
         queues[key] = { envelope: envelope, channelId: channelId };
         return false;
       }
@@ -103,12 +112,10 @@
       // widget ID, nonce, and monotonic sequence are the authentication boundary.
       frame.contentWindow.postMessage(envelope, "*");
       state.lastSentSequence = envelope.sequence;
-      // A pre-start failure has no RunInspection failure evidence by design.
-      // Keep its bounded exact error fallback visible beside the generic stale
-      // renderer banner instead of hiding the only truthful error surface.
-      if (envelope.message === null || envelope.message === undefined) {
-        hideChannelFallback(channelId);
-      }
+      // The portable iframe is progressive fallback for isolated-output hosts.
+      // A shared ready shell owns presentation after accepting the envelope.
+      // Exact pre-start error text is a separate sibling and remains visible.
+      hideChannelFallback(channelId);
       return true;
     }
 
