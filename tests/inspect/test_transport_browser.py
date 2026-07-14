@@ -1076,7 +1076,7 @@ def test_untrusted_map_keeps_run_boundary_error_separate_from_status_only_node(
     failure_text = failure.inner_text()
 
     assert "Item 0 failure" in failure_text
-    assert "Exact exception: RuntimeError: item dispatch failed" in failure_text
+    assert "Exact run exception: RuntimeError: item dispatch failed" in failure_text
     assert "Qualified node:" not in failure_text
     assert "Captured inputs:" not in failure_text
     assert "wrong-run" not in failure_text
@@ -1137,7 +1137,7 @@ def test_untrusted_map_keeps_batch_boundary_error_separate_from_child_facts(
     failure_text = failure.inner_text()
 
     assert "Batch failure" in failure_text
-    assert "Exact exception: RuntimeError: batch scheduler unavailable" in failure_text
+    assert "Exact batch exception: RuntimeError: batch scheduler unavailable" in failure_text
     assert "Original item:" not in failure_text
     assert "Qualified node:" not in failure_text
     assert "Captured inputs:" not in failure_text
