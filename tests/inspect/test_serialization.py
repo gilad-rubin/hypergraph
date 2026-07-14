@@ -837,7 +837,9 @@ forged_type = type(
     },
 )
 forged = object.__new__(forged_type)
-forged.__dict__["_mgr"] = object()
+forged.__dict__["_mgr"] = vars(
+    pd.DataFrame({"secret": ["maya-secret"]})
+)["_mgr"]
 
 frame_module = __import__("pandas.core.frame", fromlist=["DataFrame"])
 real_public = pd.DataFrame
