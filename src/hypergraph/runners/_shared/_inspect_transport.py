@@ -868,6 +868,7 @@ class _ScheduledHandle(Protocol):
 
 class _InspectionScheduler(Protocol):
     owner_thread_id: int
+    supports_delayed_calls: bool
     supports_cross_thread: bool
 
     def now(self) -> float: ...
@@ -937,6 +938,13 @@ class OwnerThreadScheduler:
             return True
         return callable(getattr(self._kernel_ioloop, "add_callback", None))
 
+    @property
+    def supports_delayed_calls(self) -> bool:
+        loop = self._asyncio_loop
+        if loop is not None and loop.is_running():
+            return True
+        return callable(getattr(self._kernel_ioloop, "call_later", None))
+
     def now(self) -> float:
         return self._clock()
 
@@ -945,6 +953,8 @@ class OwnerThreadScheduler:
         deadline: float,
         callback: Callable[[], None],
     ) -> _GuardedCall | None:
+        if deadline > self.now() and not self.supports_delayed_calls:
+            return None
         guarded = _GuardedCall(callback)
 
         def arm() -> None:
@@ -962,8 +972,6 @@ class OwnerThreadScheduler:
                 call_later(delay, guarded.run)
 
         if threading.get_ident() == self.owner_thread_id:
-            if deadline > self.now() and not self.supports_cross_thread:
-                return None
             arm()
             return guarded
 
@@ -1403,7 +1411,9 @@ def open_notebook_inspection_transport(
             return None
         resolved_scheduler = scheduler or OwnerThreadScheduler.capture()
         resolved_display = display or _IPythonNotebookDisplay()
-        if require_cross_thread and not resolved_scheduler.supports_cross_thread:
+        if not initial_artifact.terminal and (
+            not resolved_scheduler.supports_delayed_calls or (require_cross_thread and not resolved_scheduler.supports_cross_thread)
+        ):
             return NotebookInspectionTransport.create(
                 initial_artifact,
                 display=resolved_display,
