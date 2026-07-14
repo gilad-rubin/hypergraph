@@ -56,15 +56,22 @@
   `partial / 2 completed / 1 failed`. Now terminal and stale channels include
   one small native `<details>` summary derived from the existing bounded
   payload. It exposes `First failure of N`, original item, qualified node,
-  bounded inputs, exact exception (or a size-labelled **Exception preview**
-  when bounded text was truncated), a result-evidence snippet, and
-  `docs/05-how-to/debug-workflows.md`. **Exact run exception** and **Exact batch
-  exception** remain separate from attributable node evidence, and generated
-  recovery snippets use only public runner/result APIs. Trusted output still
-  gets the full sandboxed portable inspector and hides the compact summary when
-  active HTML runs. Hypergraph never auto-trusts or signs a notebook, calls a
-  server trust endpoint, weakens the iframe sandbox, changes ACK authentication,
-  or adds a public transport setting.
+  bounded inputs, exact exception (or an **Exception preview (bounded repr)**
+  when only a safe representation exists), a result-evidence snippet, and
+  `docs/05-how-to/debug-workflows.md`. Truncated previews retain the original
+  size. Copy-faithful whitespace and copy-inert wrap opportunities preserve
+  inputs and exceptions without overflowing a 360px page. Status-only failures
+  contribute once to `First failure of N` without duplicating stronger
+  evidence. **Exact run exception** and **Exact batch exception** remain
+  separate from attributable node evidence, and generated recovery snippets
+  use only public runner/result APIs, rerunning with
+  `error_handling="continue"` before reading a result. Trusted output still
+  gets the full sandboxed portable inspector and hides the compact summary only
+  when active HTML runs and the frame retains a non-empty local `srcdoc`.
+  Explicit failures without a stable node match retain their own facts instead
+  of borrowing a same-name node. Hypergraph never auto-trusts or signs a
+  notebook, calls a server trust endpoint, weakens the iframe sandbox, changes
+  ACK authentication, or adds a public transport setting.
 
 - **Portable saved inspect delivery** — before, notebook hosts that isolate
   each saved output could show the first `pending / 0` shell because later

@@ -320,22 +320,33 @@ summary. It uses native `<details>` and contains:
 - saved/stale delivery plus exact execution status and counts
 - `First failure of N`, the original map item, and the qualified node
 - bounded captured inputs and exact exception type/text, or an explicitly
-  labeled exception preview with the original character count when text was
-  truncated
-- a short `RunResult` / `MapResult` evidence snippet
+  labeled **Exception preview (bounded repr)** when only a safe representation
+  exists; truncated previews include the original character count
+- copy-faithful input and exception whitespace, with copy-inert wrap
+  opportunities so an unbroken 20,000-character value fits a 360px page
+- a short `RunResult` / `MapResult` evidence snippet that reruns with
+  `error_handling="continue"` before reading a result
 - the canonical guide path: `docs/05-how-to/debug-workflows.md`
 
 The compact summary shows the first failure and says how many failures exist;
-it does not imply that one displayed failure is the whole batch. When active
-HTML is trusted, the portable iframe runs and hides this small summary. In a
-shared document, the complete terminal fallback still hides only after the
-original iframe accepts the exact authenticated update.
+it does not imply that one displayed failure is the whole batch. Its count uses
+top-level failure evidence when available and otherwise counts embedded node,
+run-boundary, or status-only failures once, without counting the same failure at
+two levels. When active HTML is trusted, the portable iframe hides this small
+summary only if it retains a non-empty local `srcdoc`; an empty iframe tag is
+not treated as available. In a shared document, the complete terminal fallback
+still hides only after the original iframe accepts the exact authenticated
+update.
 
 Attributable node evidence uses **Exact exception**. Infrastructure failures
 stay at their real boundary as **Exact run exception** or **Exact batch
 exception**; Hypergraph does not borrow a nearby node name or inputs. If a run
 never returned, the compact example shows a public `runner.run()` / `runner.map()`
 `try`/`except` rerun instead of referring to a nonexistent result.
+Likewise, an explicit failure with no stable node-identity match keeps its own
+name, inputs, and error instead of borrowing a same-name node's qualified path.
+When a result can carry the evidence, its example requests
+`error_handling="continue"`, so the shown `result` or `batch` actually exists.
 
 ```text
 Before (untrusted output): Python says partial / 2 completed / 1 failed,

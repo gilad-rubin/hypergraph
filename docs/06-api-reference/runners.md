@@ -1304,18 +1304,26 @@ Trusted active output gets that full sandboxed iframe. If notebook trust policy
 strips scripts, styles, iframes, and output identifiers, the terminal/stale
 channel instead preserves a small native `<details>` summary: delivery,
 status/counts, `First failure of N`, original item, qualified node, bounded
-inputs, exact exception (or an **Exception preview** with the original size
-when bounded text was truncated), a short result-evidence snippet, and
-`docs/05-how-to/debug-workflows.md`. Hypergraph never auto-trusts or signs the
+inputs, exact exception (or an **Exception preview (bounded repr)** when only a
+safe representation exists), a short result-evidence snippet, and
+`docs/05-how-to/debug-workflows.md`. Preview truncation includes the original
+size. Input and exception code is copy-faithful, while copy-inert wrap
+opportunities keep an unbroken 20,000-character value inside a 360px page.
+`First failure of N` counts status-only failures once without duplicating
+top-level and embedded evidence. Hypergraph never auto-trusts or signs the
 notebook, calls a server trust endpoint, or weakens its sandbox. When active
-HTML runs, it hides the compact summary; the complete shared fallback still
-hides only after the original iframe accepts the exact authenticated update.
+HTML runs, it hides the compact summary only when the matching iframe retains a
+non-empty local `srcdoc`; the complete shared fallback still hides only after
+the original iframe accepts the exact authenticated update.
 
 Node `FailureEvidence` uses **Exact exception**. A failure without attributable
 node evidence remains **Exact run exception** or **Exact batch exception** and
 does not inherit a child's name or inputs. Recovery snippets use public runner
 and result APIs; they never read a nonexistent `MapResult.error` or inspect a
-result that was not returned.
+result that was not returned. An explicit failure without a stable node match
+keeps its own name, inputs, and error; node name alone is never a lookup key.
+Result-oriented snippets rerun with `error_handling="continue"` before reading
+`result.failure`, `result.error`, or `batch.failures`.
 
 Before, an untrusted terminal record could be blank while Python had already
 settled at `partial / 2 completed / 1 failed`. After, Maya can expand native

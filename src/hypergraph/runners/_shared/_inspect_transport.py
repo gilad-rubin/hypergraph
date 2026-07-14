@@ -45,6 +45,7 @@ INSPECTION_PROTOCOL_VERSION = 1
 _UPDATE_MESSAGE = "hypergraph.inspect.update"
 _COALESCE_SECONDS = 0.250
 _DEBUG_WORKFLOWS_DOC = "docs/05-how-to/debug-workflows.md"
+_NATIVE_WRAP_CHUNK_SIZE = 32
 _DeliveryState = Literal["live", "stale", "saved"]
 _DeliveryLabel = Literal[
     "Live",
@@ -302,19 +303,32 @@ def _native_value_text(value: object) -> str:
     return str(node.get("text") or node.get("value") or node.get("type_name") or "value unavailable")
 
 
+def _native_wrappable_markup(text: str) -> str:
+    """Escape inert text and add copy-inert line-break opportunities."""
+    return "<wbr>".join(html.escape(text[offset : offset + _NATIVE_WRAP_CHUNK_SIZE]) for offset in range(0, len(text), _NATIVE_WRAP_CHUNK_SIZE))
+
+
+def _native_code_markup(text: str) -> str:
+    """Preserve exact visible/copy text without allowing narrow-page overflow."""
+    escaped = _native_wrappable_markup(text)
+    if text == " ".join(text.split()):
+        return f"<code>{escaped}</code>"
+    return f"<code><pre>{escaped}</pre></code>"
+
+
 def _native_inputs_markup(inputs: object) -> str:
     serialized = _wire_dict(inputs)
     if serialized.get("kind") != "mapping":
-        return f"<p><code>{html.escape(_native_value_text(serialized))}</code></p>"
+        return f"<div>{_native_code_markup(_native_value_text(serialized))}</div>"
     entries = _wire_list(serialized.get("entries"))
     if not entries:
-        return "<p><code>{}</code></p>"
+        return f"<div>{_native_code_markup('{}')}</div>"
     rows = []
     for raw_entry in entries:
         entry = _wire_dict(raw_entry)
-        key = html.escape(_native_value_text(entry.get("key")))
-        value = html.escape(_native_value_text(entry.get("value")))
-        rows.append(f"<li><code>{key}={value}</code></li>")
+        key = _native_value_text(entry.get("key"))
+        value = _native_value_text(entry.get("value"))
+        rows.append(f"<li>{_native_code_markup(f'{key}={value}')}</li>")
     if serialized.get("truncated") is True:
         original_size = html.escape(str(serialized.get("original_size", "unknown")))
         rows.append(f"<li>Inputs truncated from {original_size} entries.</li>")
@@ -369,17 +383,18 @@ def _first_failure_and_node(
     failures = [_wire_dict(failure) for failure in _wire_list(run.get("failures"))]
     failure = failures[0] if failures else {}
     nodes = [_wire_dict(node) for node in _wire_list(run.get("nodes"))]
-    failed_node = next((node for node in nodes if _node_matches_failure(node, failure)), {})
-    if not failed_node and failure:
+    if failure:
         failed_node = next(
-            (node for node in nodes if node.get("node_name") == failure.get("node_name")),
+            (node for node in nodes if _node_matches_failure(node, failure)),
             {},
         )
-    if not failed_node:
+    else:
         failed_node = next((node for node in nodes if _wire_dict(node.get("failure"))), {})
-    if not failed_node:
-        failed_node = next((node for node in nodes if node.get("status") == "failed"), {})
-    if not failure:
+        if not failed_node:
+            failed_node = next(
+                (node for node in nodes if node.get("status") == "failed"),
+                {},
+            )
         failure = _wire_dict(failed_node.get("failure"))
     return failure, failed_node
 
@@ -392,8 +407,8 @@ def _node_matches_failure(
         return False
     node_failure = _wire_dict(node.get("failure"))
     failure_fields = ("node_name", "superstep", "graph_name", "workflow_id", "item_index")
-    if node_failure and all(node_failure.get(field) == failure.get(field) for field in failure_fields):
-        return True
+    if node_failure:
+        return all(node_failure.get(field) == failure.get(field) for field in failure_fields)
     node_fields = ("node_name", "superstep", "graph_name", "item_index")
     return all(node.get(field) == failure.get(field) for field in node_fields)
 
@@ -403,23 +418,41 @@ def _native_exception_markup(
     *,
     exact_label: str,
 ) -> str:
-    error_type = html.escape(str(error.get("type_name") or "Error"))
+    error_type = str(error.get("type_name") or "Error")
     kind = error.get("kind")
     if kind == "placeholder" or (kind in {"text", "exception"} and "text" not in error):
-        detail = html.escape(str(error.get("reason") or "serialized exception text unavailable"))
-        return f"<p>Exception details unavailable: <code>{error_type} — {detail}</code></p>"
-    error_text = html.escape(str(error.get("text")) if kind in {"text", "exception"} else _native_value_text(error))
-    if error.get("truncated") is True:
-        original_size = html.escape(str(error.get("original_size", "unknown")))
-        return f"<p>Exception preview (truncated from {original_size} characters): <code>{error_type}: {error_text}</code></p>"
-    return f"<p>{html.escape(exact_label)}: <code>{error_type}: {error_text}</code></p>"
+        detail = str(error.get("reason") or "serialized exception text unavailable")
+        return f"<div>Exception details unavailable: {_native_code_markup(f'{error_type} — {detail}')}</div>"
+
+    if kind == "text":
+        label = "Exception preview (bounded repr)"
+        if error.get("truncated") is True:
+            original_size = error.get("original_size", "unknown")
+            label = f"Exception preview (bounded repr; truncated from {original_size} characters)"
+        return f"<div>{html.escape(label)}: {_native_code_markup(str(error.get('text')))}</div>"
+
+    if kind == "exception":
+        error_text = str(error.get("text"))
+        if error.get("truncated") is True:
+            original_size = error.get("original_size", "unknown")
+            label = f"Exception preview (truncated from {original_size} characters)"
+        else:
+            label = exact_label
+        return f"<div>{html.escape(label)}: {_native_code_markup(f'{error_type}: {error_text}')}</div>"
+
+    return f"<div>Exception preview (serialized value): {_native_code_markup(f'{error_type}: {_native_value_text(error)}')}</div>"
+
+
+def _map_rerun_literals(data: dict[str, object]) -> tuple[str, str]:
+    map_over = [value for value in _wire_list(data.get("map_over")) if type(value) is str]
+    map_over_literal = repr(map_over[0] if len(map_over) == 1 else map_over)
+    map_mode_literal = repr(data.get("map_mode") or "zip")
+    return map_over_literal, map_mode_literal
 
 
 def _rerun_exception_code(kind: str, data: dict[str, object]) -> str:
     if kind == "map":
-        map_over = [value for value in _wire_list(data.get("map_over")) if type(value) is str]
-        map_over_literal = repr(map_over[0] if len(map_over) == 1 else map_over)
-        map_mode_literal = repr(data.get("map_mode") or "zip")
+        map_over_literal, map_mode_literal = _map_rerun_literals(data)
         return (
             "try:\n"
             "    runner.map(\n"
@@ -435,21 +468,59 @@ def _rerun_exception_code(kind: str, data: dict[str, object]) -> str:
     return 'try:\n    runner.run(graph, values, inspect=True)\nexcept Exception as error:\n    print(f"{type(error).__name__}: {error}")'
 
 
+def _continue_rerun_code(kind: str, data: dict[str, object]) -> str:
+    if kind == "map":
+        map_over_literal, map_mode_literal = _map_rerun_literals(data)
+        return (
+            "batch = runner.map(\n"
+            "    graph,\n"
+            "    values,\n"
+            f"    map_over={map_over_literal},\n"
+            f"    map_mode={map_mode_literal},\n"
+            "    inspect=True,\n"
+            '    error_handling="continue",\n'
+            ")\n"
+        )
+    return 'result = runner.run(\n    graph,\n    values,\n    inspect=True,\n    error_handling="continue",\n)\n'
+
+
+def _run_failure_count(
+    run: dict[str, object],
+    *,
+    status_failed: bool = False,
+) -> int:
+    failures = _wire_list(run.get("failures"))
+    if failures:
+        return len(failures)
+    embedded_failures = sum(bool(_wire_dict(_wire_dict(node).get("failure"))) for node in _wire_list(run.get("nodes")))
+    if embedded_failures:
+        return embedded_failures
+    if run.get("error") is not None:
+        return 1
+    nodes = [_wire_dict(node) for node in _wire_list(run.get("nodes"))]
+    if status_failed or run.get("status") == "failed" or any(node.get("status") == "failed" for node in nodes):
+        return 1
+    return 0
+
+
 def _failure_count(
     kind: str,
     data: dict[str, object],
     message: dict[str, object],
 ) -> int:
     if kind == "run":
-        failures = _wire_list(data.get("failures"))
-        return len(failures) or int(data.get("error") is not None or bool(message))
+        return _run_failure_count(data) + int(bool(message))
     total = 0
     for raw_item in _wire_list(data.get("items")):
-        run = _wire_dict(_wire_dict(raw_item).get("run"))
-        if not run:
-            continue
-        failures = _wire_list(run.get("failures"))
-        total += len(failures) or int(run.get("error") is not None)
+        item = _wire_dict(raw_item)
+        run = _wire_dict(item.get("run"))
+        if run:
+            total += _run_failure_count(
+                run,
+                status_failed=item.get("status") == "failed",
+            )
+        elif item.get("status") == "failed":
+            total += 1
     total += int(data.get("error") is not None)
     total += int(bool(message))
     return total
@@ -468,8 +539,6 @@ def _native_failure_markup(
     node_failure = _wire_dict(node.get("failure"))
     if source == "node":
         error = _wire_dict(failure.get("error")) or _wire_dict(node_failure.get("error"))
-        if not error:
-            error = _wire_dict(run.get("error"))
     elif source == "run":
         error = _wire_dict(run.get("error"))
     elif source == "batch":
@@ -510,26 +579,33 @@ def _native_failure_markup(
         facts.append(_native_exception_markup(error, exact_label=exact_label))
 
     if kind == "map" and item_index is not None and failure:
-        code = (
-            "failed = next(\n"
-            "    item for item in batch.failures\n"
-            "    if item.failure is not None\n"
-            f"    and item.failure.item_index == {item_index}\n"
+        code = _continue_rerun_code(kind, data) + (
+            "failure = next(\n"
+            "    (\n"
+            "        item.failure\n"
+            "        for item in batch.failures\n"
+            "        if item.failure is not None\n"
+            f"        and item.failure.item_index == {item_index!r}\n"
+            "    ),\n"
+            "    None,\n"
             ")\n"
-            "failure = failed.failure\n"
-            "print(failure.inputs)\n"
-            "print(failure.error)"
+            "if failure is not None:\n"
+            "    print(failure.inputs)\n"
+            "    print(failure.error)"
         )
     elif kind == "run" and failure:
-        code = "failure = result.failure\nprint(failure.inputs)\nprint(failure.error)"
+        code = _continue_rerun_code(kind, data) + (
+            "failure = result.failure\nif failure is not None:\n    print(failure.inputs)\n    print(failure.error)"
+        )
     elif source in {"start", "batch"}:
         code = _rerun_exception_code(kind, data)
     elif source == "run" and kind == "map":
-        code = "for failed in batch.failures:\n    if failed.error is not None:\n        print(failed.error)"
+        code = _continue_rerun_code(kind, data) + ("for failed in batch.failures:\n    if failed.error is not None:\n        print(failed.error)")
     elif source == "status" and kind == "map":
-        code = "for failed in batch.failures:\n    print(failed.summary())"
+        code = _continue_rerun_code(kind, data) + "for failed in batch.failures:\n    print(failed.summary())"
     else:
-        code = "print(result.error)" if source == "run" else "print(result.summary())"
+        code = _continue_rerun_code(kind, data)
+        code += "print(result.error)" if source == "run" else "print(result.summary())"
     code_label = "Smallest useful recovery code" if source in {"start", "batch"} else "Smallest useful result evidence"
     facts.append(f"<p>{code_label}:</p><pre><code>{html.escape(code)}</code></pre>")
     facts.append(f"<p>Debugging guide: <code>{_DEBUG_WORKFLOWS_DOC}</code></p>")
@@ -658,7 +734,8 @@ def render_payload_channel(envelope: InspectionEnvelope) -> str:
         "if(!channel)return;"
         "var nativeSummary=channel.querySelector('section[aria-label=\"Saved execution summary\"]');"
         "var portableFrame=channel.querySelector('iframe[title=\"Hypergraph saved execution inspection\"]');"
-        "if(nativeSummary&&portableFrame)nativeSummary.hidden=true;"
+        "var portableSource=portableFrame&&portableFrame.getAttribute('srcdoc');"
+        "if(nativeSummary&&portableSource&&portableSource.trim())nativeSummary.hidden=true;"
         "var source=channel.querySelector('[data-hg-inspect-envelope]');"
         "if(!source)return;"
         "var envelope=JSON.parse(source.textContent||'{}');"

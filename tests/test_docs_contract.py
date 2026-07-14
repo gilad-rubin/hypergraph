@@ -446,8 +446,14 @@ def test_inspect_mode_docs_mirror_public_contract() -> None:
         assert "native `<details>`" in notebook_delivery_docs
         assert "first failure of n" in normalized_delivery
         assert "exception preview" in normalized_delivery
+        assert "bounded repr" in normalized_delivery
         assert "exact run exception" in normalized_delivery
         assert "exact batch exception" in normalized_delivery
+        assert "copy-faithful" in normalized_delivery
+        assert "wrap opportunities" in normalized_delivery
+        assert "status-only" in normalized_delivery
+        assert 'error_handling="continue"' in notebook_delivery_docs
+        assert "non-empty local `srcdoc`" in normalized_delivery
         assert "never auto-trusts" in normalized_delivery
         assert "scripts, styles, iframes" in normalized_delivery
         assert "docs/05-how-to/debug-workflows.md" in notebook_delivery_docs
