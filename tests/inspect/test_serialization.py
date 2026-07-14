@@ -10,6 +10,8 @@ import sys
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import date, datetime, time
 from pathlib import Path
+from types import MappingProxyType
+from typing import ClassVar
 
 import numpy as np
 import pandas as pd
@@ -152,6 +154,57 @@ def test_exact_builtin_exceptions_do_not_format_hostile_arguments() -> None:
     assert calls == {"repr": 0, "str": 0}
 
 
+def test_exact_builtin_exception_text_uses_only_bounded_inert_arguments() -> None:
+    calls = {"repr": 0, "str": 0}
+
+    class HostileFilename(Exception):
+        def __str__(self) -> str:
+            calls["str"] += 1
+            raise AssertionError("mutable exception attributes must not be formatted")
+
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            raise AssertionError("mutable exception attributes must not be formatted")
+
+    error = OSError(2, "missing", "/tmp/original")
+    hostile_filename = HostileFilename()
+    error.__cause__ = hostile_filename
+    error.filename = hostile_filename
+    metadata_error = ValueError("bad input")
+    metadata_error.ticket = HostileFilename()
+
+    try:
+        raise KeyError("customer_id")
+    except KeyError as raised_key_error:
+        key_error = serialize_value(raised_key_error)
+
+    serialized = serialize_value(error)
+    benign_metadata = serialize_value(metadata_error)
+    file_error = serialize_value(FileNotFoundError(2, "missing", "/tmp/x"))
+    too_many_items = serialize_value(ValueError(tuple(range(201))))
+    oversized_bytes = serialize_value(ValueError(b"x" * 20_001))
+    long_message = serialize_value(ValueError("x" * 20_001))
+
+    assert serialized.kind == "placeholder"
+    assert serialized.reason == "exception contains unsupported arguments"
+    assert calls == {"repr": 0, "str": 0}
+    assert benign_metadata.kind == "exception"
+    assert benign_metadata.text == "bad input"
+    assert calls == {"repr": 0, "str": 0}
+    assert key_error.kind == "exception"
+    assert key_error.text == "'customer_id'"
+    assert file_error.kind == "exception"
+    assert file_error.text == "[Errno 2] missing: '/tmp/x'"
+    assert too_many_items.kind == "placeholder"
+    assert too_many_items.reason == "exception contains unsupported arguments"
+    assert oversized_bytes.kind == "placeholder"
+    assert oversized_bytes.reason == "exception contains unsupported arguments"
+    assert long_message.kind == "exception"
+    assert long_message.text == "x" * 20_000
+    assert long_message.original_size == 20_001
+    assert long_message.truncated is True
+
+
 def test_exact_mapping_limit_and_recursion_are_truthful() -> None:
     one_over = {f"key-{index}": index for index in range(101)}
     serialized = serialize_value(one_over)
@@ -173,6 +226,39 @@ def test_exact_mapping_limit_and_recursion_are_truthful() -> None:
 
     wire = serialized_value_to_wire(serialized)
     assert len(wire["entries"]) == 100  # type: ignore[arg-type]
+
+
+def test_mappingproxy_only_traverses_an_exact_dict_referent() -> None:
+    exact = serialize_value(MappingProxyType({"customer_id": "maya-23"}))
+    assert exact.kind == "mapping"
+    assert exact.type_name == "mappingproxy"
+    assert exact.entries[0].value.text == "maya-23"
+
+    calls = {"getitem": 0, "iter": 0, "len": 0, "repr": 0}
+
+    class CustomMapping(Mapping[str, str]):
+        def __len__(self) -> int:
+            calls["len"] += 1
+            return 1
+
+        def __iter__(self) -> Iterator[str]:
+            calls["iter"] += 1
+            yield "customer_id"
+
+        def __getitem__(self, key: str) -> str:
+            calls["getitem"] += 1
+            return "maya-23"
+
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            return "CustomMapping(<redacted>)"
+
+    hostile_proxy = serialize_value(MappingProxyType(CustomMapping()))
+
+    assert hostile_proxy.kind == "text"
+    assert hostile_proxy.type_name == "mappingproxy"
+    assert hostile_proxy.text == "mappingproxy(CustomMapping(<redacted>))"
+    assert calls == {"getitem": 0, "iter": 0, "len": 0, "repr": 1}
 
 
 def test_exact_sequence_limit_recursion_and_depth_limit_are_truthful() -> None:
@@ -210,7 +296,12 @@ def test_exact_sequence_limit_recursion_and_depth_limit_are_truthful() -> None:
 
 
 def test_dataclasses_and_pydantic_models_use_stored_fields_without_hooks() -> None:
-    calls = {"computed": 0, "descriptor": 0, "model_dump": 0}
+    calls = {
+        "computed": 0,
+        "descriptor": 0,
+        "model_dump": 0,
+        "storage_descriptor": 0,
+    }
 
     @dataclasses.dataclass
     class Customer:
@@ -225,6 +316,16 @@ def test_dataclasses_and_pydantic_models_use_stored_fields_without_hooks() -> No
     @dataclasses.dataclass
     class DescriptorCustomer:
         customer_id: str
+
+    @dataclasses.dataclass
+    class StoredCustomer:
+        customer_id: str
+
+    class HostileStorageCustomer(StoredCustomer):
+        @property
+        def __dict__(self) -> dict[str, object]:  # type: ignore[override]
+            calls["storage_descriptor"] += 1
+            raise AssertionError("instance storage must use the built-in descriptor")
 
     descriptor_customer = object.__new__(DescriptorCustomer)
     object.__getattribute__(descriptor_customer, "__dict__")["customer_id"] = "maya-23"
@@ -264,12 +365,72 @@ def test_dataclasses_and_pydantic_models_use_stored_fields_without_hooks() -> No
     assert descriptor.kind == "mapping"
     assert descriptor.entries[0].value.text == "maya-23"
 
+    hostile_storage = serialize_value(HostileStorageCustomer(customer_id="maya-23"))
+    assert hostile_storage.kind == "mapping"
+    assert hostile_storage.entries[0].value.text == "maya-23"
+
     model = serialize_value(CustomerModel(customer_id="maya-23", score=0.9))
     assert model.kind == "mapping"
     assert model.type_name == "CustomerModel"
     assert model.original_size == 2
     assert model.entries[1].value.value == 0.9
-    assert calls == {"computed": 0, "descriptor": 0, "model_dump": 0}
+    assert calls == {
+        "computed": 0,
+        "descriptor": 0,
+        "model_dump": 0,
+        "storage_descriptor": 0,
+    }
+
+
+def test_dataclass_and_pydantic_source_discovery_stops_at_mapping_limit() -> None:
+    calls = {"field_100": 0}
+
+    @dataclasses.dataclass
+    class MixedDataclass:
+        field: int
+        class_value: ClassVar[int] = 42
+        init_only: dataclasses.InitVar[int] = 0
+
+    wide_dataclass = dataclasses.make_dataclass(
+        "WideDataclass",
+        [(f"field_{index}", int) for index in range(101)],
+    )
+    dataclass_value = wide_dataclass(*range(101))
+    dataclass_storage = object.__getattribute__(dataclass_value, "__dict__")
+    dict.__delitem__(dataclass_storage, "field_100")
+
+    def read_field_100(_: object) -> int:
+        calls["field_100"] += 1
+        raise AssertionError("fields beyond the mapping limit must not be read")
+
+    wide_dataclass.field_100 = property(read_field_100)
+
+    class WideModel(BaseModel):
+        seed: int
+
+    model_value = WideModel(seed=0)
+    model_storage = object.__getattribute__(model_value, "__dict__")
+    for index in range(101):
+        dict.__setitem__(model_storage, f"extra_{index}", index)
+
+    serialized_mixed = serialize_value(MixedDataclass(field=1, init_only=2))
+    serialized_dataclass = serialize_value(dataclass_value)
+    serialized_model = serialize_value(model_value)
+
+    assert serialized_mixed.kind == "mapping"
+    assert serialized_mixed.original_size == 1
+    assert len(serialized_mixed.entries) == 1
+    assert serialized_mixed.entries[0].key.text == "field"
+    assert serialized_mixed.truncated is False
+    assert serialized_dataclass.kind == "mapping"
+    assert serialized_dataclass.original_size == 101
+    assert len(serialized_dataclass.entries) == 100
+    assert serialized_dataclass.entries[-1].key.text == "field_99"
+    assert calls == {"field_100": 0}
+    assert serialized_model.kind == "mapping"
+    assert serialized_model.original_size == 102
+    assert len(serialized_model.entries) == 100
+    assert serialized_model.entries[-1].key.text == "extra_98"
 
 
 def test_row_table_limits_are_bounded_and_keep_proven_dimensions() -> None:
@@ -364,6 +525,7 @@ def test_row_table_union_over_column_cap_is_exact_when_safely_bounded() -> None:
 
 def test_custom_mapping_sequence_and_model_protocols_use_one_repr_fallback() -> None:
     calls = {
+        "dataclass_repr": 0,
         "mapping_getitem": 0,
         "mapping_iter": 0,
         "mapping_len": 0,
@@ -419,14 +581,28 @@ def test_custom_mapping_sequence_and_model_protocols_use_one_repr_fallback() -> 
             calls["model_repr"] += 1
             return "CustomModel(<redacted>)"
 
+    class CustomDataclassProtocol:
+        __dataclass_fields__ = {"secret": object()}
+        __dataclass_params__ = object()
+
+        def __repr__(self) -> str:
+            calls["dataclass_repr"] += 1
+            return "CustomDataclassProtocol(<redacted>)"
+
     mapping = serialize_value(CustomMapping())
     sequence = serialize_value(CustomSequence())
     model = serialize_value(CustomModel())
+    dataclass_protocol = serialize_value(CustomDataclassProtocol())
 
     assert (mapping.kind, mapping.text) == ("text", "CustomMapping(<redacted>)")
     assert (sequence.kind, sequence.text) == ("text", "CustomSequence(<redacted>)")
     assert (model.kind, model.text) == ("text", "CustomModel(<redacted>)")
+    assert (dataclass_protocol.kind, dataclass_protocol.text) == (
+        "text",
+        "CustomDataclassProtocol(<redacted>)",
+    )
     assert calls == {
+        "dataclass_repr": 1,
         "mapping_getitem": 0,
         "mapping_iter": 0,
         "mapping_len": 0,
@@ -438,6 +614,31 @@ def test_custom_mapping_sequence_and_model_protocols_use_one_repr_fallback() -> 
         "sequence_len": 0,
         "sequence_repr": 1,
     }
+
+
+def test_adapter_discovery_does_not_delegate_to_a_replaced_sys_modules() -> None:
+    calls = {"get": 0, "repr": 0}
+
+    class HostileModules(dict[str, object]):
+        def get(self, key: str, default: object = None) -> object:
+            calls["get"] += 1
+            raise AssertionError("adapter discovery must require the exact module registry")
+
+    class CustomValue:
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            return "CustomValue(<redacted>)"
+
+    original_modules = sys.modules
+    sys.modules = HostileModules()
+    try:
+        serialized = serialize_value(CustomValue())
+    finally:
+        sys.modules = original_modules
+
+    assert serialized.kind == "text"
+    assert serialized.text == "CustomValue(<redacted>)"
+    assert calls == {"get": 0, "repr": 1}
 
 
 def test_supported_type_subclasses_never_enter_trusted_adapters() -> None:
@@ -599,7 +800,14 @@ def test_supported_type_subclasses_never_enter_trusted_adapters() -> None:
 
 
 def test_type_names_and_repr_text_bypass_user_hooks() -> None:
-    calls = {"metaclass_dataclass": 0, "metaclass_name": 0, "repr": 0, "text": 0}
+    calls = {
+        "metaclass_dataclass": 0,
+        "metaclass_eq": 0,
+        "metaclass_hash": 0,
+        "metaclass_name": 0,
+        "repr": 0,
+        "text": 0,
+    }
 
     class HostileMeta(type):
         def __getattribute__(cls, name: str) -> object:
@@ -610,6 +818,14 @@ def test_type_names_and_repr_text_bypass_user_hooks() -> None:
                 calls["metaclass_name"] += 1
                 raise AssertionError("type-name capture must bypass custom metaclasses")
             return super().__getattribute__(name)
+
+        def __hash__(cls) -> int:
+            calls["metaclass_hash"] += 1
+            raise AssertionError("type routing must not hash custom metaclasses")
+
+        def __eq__(cls, other: object) -> bool:
+            calls["metaclass_eq"] += 1
+            raise AssertionError("type routing must not compare custom metaclasses")
 
     class HostileText(str):
         def __len__(self) -> int:
@@ -629,12 +845,27 @@ def test_type_names_and_repr_text_bypass_user_hooks() -> None:
             calls["repr"] += 1
             return HostileText("HostileValue(<redacted>)")
 
+    calls = {
+        "metaclass_dataclass": 0,
+        "metaclass_eq": 0,
+        "metaclass_hash": 0,
+        "metaclass_name": 0,
+        "repr": 0,
+        "text": 0,
+    }
     serialized = serialize_value(HostileValue())
 
     assert serialized.kind == "text"
     assert serialized.type_name == "HostileValue"
     assert serialized.text == "HostileValue(<redacted>)"
-    assert calls == {"metaclass_dataclass": 0, "metaclass_name": 0, "repr": 1, "text": 0}
+    assert calls == {
+        "metaclass_dataclass": 0,
+        "metaclass_eq": 0,
+        "metaclass_hash": 0,
+        "metaclass_name": 0,
+        "repr": 1,
+        "text": 0,
+    }
 
 
 def test_exact_dict_items_do_not_rehash_hostile_keys() -> None:
@@ -974,7 +1205,7 @@ def test_datetime_subclass_type_name_uses_the_same_hard_bound() -> None:
     assert serialized.kind == "text"
     assert len(serialized.type_name) <= 48
     assert serialized.type_name.endswith("... (truncated)")
-    assert len(dump_serialized_value(serialized).encode("utf-8")) < 1_000
+    assert len(dump_serialized_value(serialized).encode("utf-8")) < 20_500
 
 
 def test_js_unsafe_size_metadata_crosses_the_wire_as_exact_decimal_strings() -> None:

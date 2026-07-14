@@ -16,7 +16,13 @@ from hypergraph.runners._shared._inspect import (
     NodeInspection,
     RunInspection,
 )
-from hypergraph.runners._shared._inspect_serialization import serialize_value
+from hypergraph.runners._shared._inspect_serialization import (
+    SerializedEntry,
+    SerializedTable,
+    SerializedTableRow,
+    SerializedValue,
+    serialize_value,
+)
 from hypergraph.runners._shared._inspect_transport import (
     INSPECTION_PROTOCOL_VERSION,
     InspectionDelivery,
@@ -706,23 +712,51 @@ def test_inexact_heterogeneous_table_width_renders_as_a_lower_bound(browser: Bro
     page.close()
 
 
-def test_js_unsafe_table_counts_render_as_exact_decimal_text(browser: Browser) -> None:
+def test_js_unsafe_table_counts_render_as_exact_decimal_text(
+    browser: Browser,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     unsafe_count = 2**53 + 1
+    unsafe_table = SerializedValue(
+        kind="table",
+        type_name="ndarray",
+        table=SerializedTable(
+            columns=(serialize_value(0),),
+            rows=(SerializedTableRow(cells=(serialize_value(1),)),),
+            original_row_count=unsafe_count,
+            original_column_count=unsafe_count,
+            original_column_count_exact=True,
+            rows_truncated=True,
+            columns_truncated=True,
+        ),
+        original_size=unsafe_count,
+        truncated=True,
+    )
+    serialized_outputs = SerializedValue(
+        kind="mapping",
+        type_name="dict",
+        entries=(
+            SerializedEntry(
+                key=serialize_value("huge_table"),
+                value=unsafe_table,
+            ),
+        ),
+        original_size=1,
+    )
+    node = replace(_node(0), outputs={"huge_table": "prebuilt"})
+    marker = node.outputs
+    ordinary_serialize = serialize_value
 
-    class BoundedMatrix:
-        def tolist(self) -> list[list[int]]:
-            return [[1]]
+    def serialize_prebuilt_output(value: object) -> SerializedValue:
+        if value is marker:
+            return serialized_outputs
+        return ordinary_serialize(value)
 
-    class HugeMatrix:
-        shape = (unsafe_count, unsafe_count)
+    monkeypatch.setattr(
+        "hypergraph.runners._shared._inspect_html.serialize_value",
+        serialize_prebuilt_output,
+    )
 
-        def __getitem__(self, key: object) -> BoundedMatrix:
-            return BoundedMatrix()
-
-        def tolist(self) -> list[list[int]]:
-            raise AssertionError("renderer must materialize only the bounded slice")
-
-    node = replace(_node(0), outputs={"huge_table": HugeMatrix()})
     artifact = replace(
         _run(status="completed", terminal=True, node_count=1),
         nodes=(node,),

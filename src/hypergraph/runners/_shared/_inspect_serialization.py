@@ -7,13 +7,16 @@ inspection renderers.
 
 from __future__ import annotations
 
+import builtins
+import dataclasses
+import gc
 import json
 import math
 import sys
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, fields, is_dataclass, replace
+from dataclasses import dataclass
 from datetime import date, datetime, time
 from itertools import islice
+from types import GetSetDescriptorType, MappingProxyType, MemberDescriptorType, ModuleType
 from typing import Literal, TypeAlias
 
 SerializedKind: TypeAlias = Literal[
@@ -42,9 +45,18 @@ _MAX_CONTAINER_SIZE = sys.maxsize
 _MAX_JS_SAFE_INTEGER = 2**53 - 1
 _MAX_SERIALIZED_NODES = _MAX_TABLE_ROWS * _MAX_TABLE_COLUMNS + _MAX_MAPPING_ITEMS
 _MAX_SERIALIZED_TEXT_CHARACTERS = _MAX_TEXT_CHARACTERS
+_MAX_EXCEPTION_FORMAT_OVERHEAD = 256
 _SERIALIZATION_BUDGET_EXHAUSTED = "serialization budget exhausted"
 _TYPE_NAME_TRUNCATION_MARKER = "... (truncated)"
-_SAFE_ROW_KEY_TYPES = frozenset({str, bytes, int, float, bool, type(None)})
+_SAFE_ROW_KEY_TYPES = (str, bytes, int, float, bool, type(None))
+_MISSING = object()
+_DATACLASS_FIELD_MARKER = vars(dataclasses).get("_FIELD")
+_DATACLASS_PARAMS_TYPE = vars(dataclasses).get("_DataclassParams")
+_SAFE_EXCEPTION_TYPES = tuple(
+    candidate
+    for candidate in vars(builtins).values()
+    if type(candidate) is type and any(base is BaseException for base in type.__getattribute__(candidate, "__mro__"))
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,16 +150,348 @@ class _RowTableSchema:
 
 def _safe_type_name(value: object) -> str:
     try:
-        name = type(value).__name__
-        original_size = len(name)
-        bounded_name = name[:_MAX_TYPE_NAME_CHARACTERS]
-        bounded_name.encode("utf-8", errors="strict")
+        name = type.__getattribute__(type(value), "__name__")
+        name = str.__str__(name)
+        original_size = str.__len__(name)
+        bounded_name = str.__getitem__(name, slice(None, _MAX_TYPE_NAME_CHARACTERS))
+        str.encode(bounded_name, "utf-8", errors="strict")
     except BaseException:
         return "unknown"
     if original_size <= _MAX_TYPE_NAME_CHARACTERS:
         return bounded_name
     prefix_size = _MAX_TYPE_NAME_CHARACTERS - len(_TYPE_NAME_TRUNCATION_MARKER)
     return f"{bounded_name[:prefix_size]}{_TYPE_NAME_TRUNCATION_MARKER}"
+
+
+def _loaded_class(module_name: str, class_name: str) -> type | None:
+    sys_namespace = object.__getattribute__(sys, "__dict__")
+    modules = dict.get(sys_namespace, "modules")
+    if type(modules) is not dict:
+        return None
+    module = dict.get(modules, module_name)
+    if type(module) is not ModuleType:
+        return None
+    namespace = object.__getattribute__(module, "__dict__")
+    candidate = dict.get(namespace, class_name)
+    try:
+        type.__getattribute__(candidate, "__mro__")
+    except (AttributeError, TypeError):
+        return None
+    return candidate  # type: ignore[return-value]
+
+
+def _is_exact_loaded_type(value: object, module_name: str, class_name: str) -> bool:
+    loaded_class = _loaded_class(module_name, class_name)
+    return loaded_class is not None and type(value) is loaded_class
+
+
+def _is_loaded_pydantic_model(value: object) -> bool:
+    base_model = _loaded_class("pydantic.main", "BaseModel")
+    if base_model is None:
+        return False
+    try:
+        value_mro = type.__getattribute__(type(value), "__mro__")
+    except (AttributeError, TypeError):
+        return False
+    return any(base is base_model for base in value_mro)
+
+
+def _safe_original_size(value: object) -> int | None:
+    value_type = type(value)
+    if value_type is str:
+        return str.__len__(value)
+    if value_type is bytes:
+        return bytes.__len__(value)
+    if value_type is bytearray:
+        return bytearray.__len__(value)
+    if value_type is dict:
+        return dict.__len__(value)
+    if value_type is MappingProxyType:
+        backing_dict = _mappingproxy_dict(value)
+        return None if backing_dict is None else dict.__len__(backing_dict)
+    if value_type is list:
+        return list.__len__(value)
+    if value_type is tuple:
+        return tuple.__len__(value)
+    return None
+
+
+def _mappingproxy_dict(value: object) -> dict[object, object] | None:
+    if type(value) is not MappingProxyType:
+        return None
+    referents = gc.get_referents(value)
+    if len(referents) != 1 or type(referents[0]) is not dict:
+        return None
+    return referents[0]
+
+
+def _class_namespace(value_type: type) -> dict[str, object] | None:
+    try:
+        namespace = type.__getattribute__(value_type, "__dict__")
+    except (AttributeError, TypeError):
+        return None
+    return namespace  # type: ignore[return-value]
+
+
+def _safe_mro(value_type: type) -> tuple[type, ...]:
+    try:
+        return type.__getattribute__(value_type, "__mro__")
+    except (AttributeError, TypeError):
+        return ()
+
+
+def _bounded_dataclass_field_names(
+    value: object,
+) -> tuple[tuple[str, ...], int] | None:
+    for owner in _safe_mro(type(value)):
+        namespace = _class_namespace(owner)
+        if namespace is None:
+            continue
+        dataclass_fields = namespace.get("__dataclass_fields__", _MISSING)
+        if dataclass_fields is _MISSING:
+            continue
+        if type(dataclass_fields) is not dict:
+            return None
+        params = namespace.get("__dataclass_params__", _MISSING)
+        if _DATACLASS_PARAMS_TYPE is None or type(params) is not _DATACLASS_PARAMS_TYPE:
+            return None
+        original_size = 0
+        names: list[str] = []
+        for name, field in dict.items(dataclass_fields):
+            if type(name) is not str or type(field) is not dataclasses.Field:
+                return None
+            field_type = object.__getattribute__(field, "_field_type")
+            if field_type is _DATACLASS_FIELD_MARKER:
+                original_size += 1
+                if len(names) < _MAX_MAPPING_ITEMS:
+                    names.append(name)
+        return tuple(names), original_size
+    return None
+
+
+def _stored_instance_dict(value: object) -> dict[object, object] | None:
+    for owner in _safe_mro(type(value)):
+        namespace = _class_namespace(owner)
+        if namespace is None:
+            continue
+        descriptor = namespace.get("__dict__", _MISSING)
+        if type(descriptor) is not GetSetDescriptorType:
+            continue
+        try:
+            storage = GetSetDescriptorType.__get__(descriptor, value, type(value))
+        except (AttributeError, TypeError):
+            return None
+        if type(storage) is dict:
+            return storage
+        return None
+    return None
+
+
+def _read_stored_field(value: object, name: str) -> tuple[bool, object]:
+    storage = _stored_instance_dict(value)
+    if storage is not None and dict.__contains__(storage, name):
+        return True, dict.__getitem__(storage, name)
+
+    for owner in _safe_mro(type(value)):
+        namespace = _class_namespace(owner)
+        if namespace is None:
+            continue
+        descriptor = namespace.get(name, _MISSING)
+        if type(descriptor) is MemberDescriptorType:
+            try:
+                return True, MemberDescriptorType.__get__(descriptor, value, type(value))
+            except (AttributeError, TypeError):
+                return False, None
+    return False, None
+
+
+def _stored_dataclass_items(
+    value: object,
+) -> tuple[tuple[tuple[str, object], ...], int] | None:
+    field_source = _bounded_dataclass_field_names(value)
+    if field_source is None:
+        return None
+    field_names, original_size = field_source
+    stored_items: list[tuple[str, object]] = []
+    for field_name in field_names:
+        found, field_value = _read_stored_field(value, field_name)
+        if not found:
+            return None
+        stored_items.append((field_name, field_value))
+    return tuple(stored_items), original_size
+
+
+def _stored_pydantic_items(
+    value: object,
+) -> tuple[tuple[tuple[object, object], ...], int] | None:
+    if not _is_loaded_pydantic_model(value):
+        return None
+    storage = _stored_instance_dict(value)
+    if storage is None:
+        return None
+    original_size = dict.__len__(storage)
+    source_items = tuple(
+        islice(
+            dict.items(storage),
+            _MAX_MAPPING_ITEMS,
+        )
+    )
+    return source_items, original_size
+
+
+def _bounded_string_repr_size(value: str, characters_remaining: int) -> int | None:
+    value_size = str.__len__(value)
+    if value_size + 2 > characters_remaining:
+        return None
+    repr_size = 2
+    for index in range(value_size):
+        character = str.__getitem__(value, index)
+        if character == "\\" or character == "'" or character == '"':
+            repr_size += 2
+        elif str.isprintable(character):
+            repr_size += 1
+        else:
+            repr_size += 10
+        if repr_size > characters_remaining:
+            return None
+    return repr_size
+
+
+def _bounded_exception_repr_size(
+    value: object,
+    *,
+    depth: int,
+    items_remaining: int,
+    characters_remaining: int,
+) -> tuple[int, int] | None:
+    if items_remaining <= 0 or characters_remaining <= 0:
+        return None
+    value_type = type(value)
+    if value_type is str:
+        repr_size = _bounded_string_repr_size(value, characters_remaining)
+        if repr_size is None:
+            return None
+    elif value_type is bytes:
+        repr_size = bytes.__len__(value) * 4 + 3
+    elif value_type is int:
+        bit_count = int.bit_length(value)
+        repr_size = 1 if bit_count == 0 else bit_count * 30_103 // 100_000 + 2
+        if value < 0:
+            repr_size += 1
+    elif value_type is float:
+        repr_size = 32
+    elif value_type is bool:
+        repr_size = 5
+    elif value is None:
+        repr_size = 4
+    elif value_type is tuple:
+        if depth >= _MAX_DEPTH:
+            return None
+        item_count = tuple.__len__(value)
+        if item_count > min(_MAX_SEQUENCE_ITEMS, items_remaining - 1):
+            return None
+        separator_size = 2 * max(item_count - 1, 0)
+        trailing_comma_size = 1 if item_count == 1 else 0
+        repr_size = 2 + separator_size + trailing_comma_size
+        if repr_size > characters_remaining:
+            return None
+        consumed_items = 1
+        for item in tuple.__iter__(value):
+            item_result = _bounded_exception_repr_size(
+                item,
+                depth=depth + 1,
+                items_remaining=items_remaining - consumed_items,
+                characters_remaining=characters_remaining - repr_size,
+            )
+            if item_result is None:
+                return None
+            item_size, item_count = item_result
+            repr_size += item_size
+            consumed_items += item_count
+        return repr_size, consumed_items
+    else:
+        return None
+    if repr_size > characters_remaining:
+        return None
+    return repr_size, 1
+
+
+def _exception_state_is_bounded(
+    value: object,
+    arguments: tuple[object, ...],
+    *,
+    preflight_arguments: bool = True,
+) -> bool:
+    characters_remaining = _MAX_TEXT_CHARACTERS - _MAX_EXCEPTION_FORMAT_OVERHEAD
+    items_remaining = _MAX_SEQUENCE_ITEMS + 1
+    if preflight_arguments:
+        arguments_result = _bounded_exception_repr_size(
+            arguments,
+            depth=0,
+            items_remaining=items_remaining,
+            characters_remaining=characters_remaining,
+        )
+        if arguments_result is None:
+            return False
+        argument_size, argument_items = arguments_result
+        characters_remaining -= argument_size
+        items_remaining -= argument_items
+
+    try:
+        cause = BaseException.__cause__.__get__(value, type(value))
+        context = BaseException.__context__.__get__(value, type(value))
+        traceback = BaseException.__traceback__.__get__(value, type(value))
+    except (AttributeError, TypeError):
+        return False
+    remaining_control_referents = [referent for referent in (arguments, cause, context, traceback) if referent is not None]
+
+    referents = gc.get_referents(value)
+    if type(referents) is not list or list.__len__(referents) > _MAX_SEQUENCE_ITEMS:
+        return False
+    for referent in list.__iter__(referents):
+        control_index = next(
+            (index for index, control_referent in enumerate(remaining_control_referents) if referent is control_referent),
+            None,
+        )
+        if control_index is not None:
+            del remaining_control_referents[control_index]
+            continue
+        referent_type = type(referent)
+        if referent_type is dict:
+            continue
+        referent_result = _bounded_exception_repr_size(
+            referent,
+            depth=0,
+            items_remaining=items_remaining,
+            characters_remaining=characters_remaining,
+        )
+        if referent_result is None:
+            return False
+        referent_size, referent_items = referent_result
+        characters_remaining -= referent_size
+        items_remaining -= referent_items
+    return True
+
+
+def _bounded_exception_text(
+    value: object,
+    arguments: tuple[object, ...],
+) -> str | None:
+    value_formatter = type.__getattribute__(type(value), "__str__")
+    if value_formatter is BaseException.__str__ and tuple.__len__(arguments) == 1 and type(tuple.__getitem__(arguments, 0)) is str:
+        if not _exception_state_is_bounded(
+            value,
+            arguments,
+            preflight_arguments=False,
+        ):
+            return None
+        return str.__str__(tuple.__getitem__(arguments, 0))
+    if not _exception_state_is_bounded(value, arguments):
+        return None
+    try:
+        return str(value)
+    except BaseException:
+        return None
 
 
 def _failed_value(
@@ -199,11 +543,15 @@ def _serialize_text(
     type_name: str,
     budget: _SerializationBudget,
 ) -> SerializedValue:
-    original_size = len(text)
-    captured_size = min(original_size, _MAX_TEXT_CHARACTERS)
-    captured_text = text[:captured_size]
     try:
-        captured_text.encode("utf-8", errors="strict")
+        text = str.__str__(text)
+    except BaseException as error:
+        return _failed_value(text, operation="text normalization", error=error)
+    original_size = str.__len__(text)
+    captured_size = min(original_size, _MAX_TEXT_CHARACTERS)
+    captured_text = str.__getitem__(text, slice(None, captured_size))
+    try:
+        str.encode(captured_text, "utf-8", errors="strict")
     except UnicodeEncodeError:
         return SerializedValue(
             kind="placeholder",
@@ -244,8 +592,69 @@ def _serialize_number(
     return SerializedValue(kind="number", type_name=type_name, value=value)
 
 
+def _serialize_mapping_items(
+    value: object,
+    *,
+    source_items: tuple[tuple[object, object], ...],
+    original_size: int,
+    depth: int,
+    active_ids: set[int],
+    budget: _SerializationBudget,
+) -> SerializedValue:
+    limit_hits_before = budget.limit_hits
+    object_id = id(value)
+    if object_id in active_ids:
+        return _placeholder(
+            value,
+            reason="recursive reference",
+            original_size=original_size,
+        )
+    active_ids.add(object_id)
+    try:
+        entries: list[SerializedEntry] = []
+        for key, item in source_items:
+            serialized_key = _serialize_value(
+                key,
+                depth=depth + 1,
+                active_ids=active_ids,
+                budget=budget,
+            )
+            if budget.work_exhausted:
+                entries.append(
+                    SerializedEntry(
+                        key=serialized_key,
+                        value=_budget_placeholder(item),
+                    )
+                )
+                break
+            serialized_item = _serialize_value(
+                item,
+                depth=depth + 1,
+                active_ids=active_ids,
+                budget=budget,
+            )
+            entries.append(
+                SerializedEntry(
+                    key=serialized_key,
+                    value=serialized_item,
+                )
+            )
+            if budget.work_exhausted:
+                break
+        return SerializedValue(
+            kind="mapping",
+            type_name=_safe_type_name(value),
+            entries=tuple(entries),
+            original_size=original_size,
+            truncated=(original_size > len(entries) or budget.limit_hits > limit_hits_before),
+        )
+    finally:
+        active_ids.discard(object_id)
+
+
 def _is_safe_row_key(key: object) -> bool:
-    return type(key) in _SAFE_ROW_KEY_TYPES
+    key_type = type(key)
+    return any(key_type is safe_type for safe_type in _SAFE_ROW_KEY_TYPES)
 
 
 def _row_keys_match(left: object, right: object) -> bool:
@@ -270,53 +679,13 @@ def _row_table_schema(
     exact = original_row_count == len(source_rows)
 
     for source_row in source_rows:
-        assert isinstance(source_row, Mapping)
-        try:
-            row_count = len(source_row)
-        except BaseException as error:
-            return None, _failed_value(
-                value,
-                operation="len",
-                error=error,
-                original_size=original_row_count,
-            )
+        assert type(source_row) is dict
+        row_count = dict.__len__(source_row)
         largest_row_count = max(largest_row_count, row_count)
         if row_count > _MAX_TABLE_COLUMNS:
             exact = False
         captured_count = min(row_count, _MAX_TABLE_COLUMNS)
-        try:
-            if isinstance(source_row, dict):
-                row_items = tuple(_RowTableItem(key=key, value=item) for key, item in islice(dict.items(source_row), captured_count))
-            else:
-                row_keys = tuple(islice(iter(source_row), captured_count))
-        except BaseException as error:
-            return None, _failed_value(
-                value,
-                operation="iteration",
-                error=error,
-                original_size=original_row_count,
-            )
-        if not isinstance(source_row, dict):
-            mutable_row_items: list[_RowTableItem] = []
-            for key in row_keys:
-                try:
-                    item = source_row[key]
-                except KeyError:
-                    mutable_row_items.append(_RowTableItem(key=key, missing=True))
-                except BaseException as error:
-                    mutable_row_items.append(
-                        _RowTableItem(
-                            key=key,
-                            failure=_failed_value(
-                                source_row,
-                                operation="item access",
-                                error=error,
-                            ),
-                        )
-                    )
-                else:
-                    mutable_row_items.append(_RowTableItem(key=key, value=item))
-            row_items = tuple(mutable_row_items)
+        row_items = tuple(_RowTableItem(key=key, value=item) for key, item in islice(dict.items(source_row), captured_count))
         captured_rows.append(row_items)
         if len(row_items) != captured_count:
             exact = False
@@ -476,13 +845,14 @@ def _serialize_matrix_table(
             break
     rows: list[SerializedTableRow] = []
     for source_row in source_rows:
-        try:
-            cells = tuple(islice(iter(source_row), len(columns)))  # type: ignore[arg-type]
-        except BaseException as error:
-            return _failed_value(
+        if type(source_row) is list:
+            cells = tuple(islice(list.__iter__(source_row), len(columns)))
+        elif type(source_row) is tuple:
+            cells = tuple(islice(tuple.__iter__(source_row), len(columns)))
+        else:
+            return _placeholder(
                 value,
-                operation="iteration",
-                error=error,
+                reason="trusted table adapter returned an unsupported row",
                 original_size=original_row_count,
             )
         serialized_cells: list[SerializedValue] = []
@@ -533,23 +903,17 @@ def _serialize_matrix_table(
     )
 
 
-def _shape_of(value: object) -> tuple[tuple[int, ...] | None, SerializedValue | None]:
-    try:
-        shape = value.shape  # type: ignore[attr-defined]
-    except AttributeError:
-        return None, None
-    except BaseException as error:
-        return None, _failed_value(value, operation="getattr", error=error)
-    if not isinstance(shape, Sequence) or isinstance(shape, (str, bytes, bytearray)):
-        return None, None
-    try:
-        rank = len(shape)
-        dimensions = tuple(islice(iter(shape), 3))
-    except BaseException as error:
-        return None, _failed_value(value, operation="shape", error=error)
+def _validated_shape(
+    value: object,
+    shape: object,
+) -> tuple[tuple[int, ...] | None, SerializedValue | None]:
+    if type(shape) is not tuple:
+        return None, _placeholder(value, reason="trusted adapter returned an invalid shape")
+    rank = tuple.__len__(shape)
+    dimensions = tuple(islice(tuple.__iter__(shape), 3))
     if rank not in {1, 2} or len(dimensions) != rank:
         return None, _placeholder(value, reason=f"array rank {rank} exceeds supported rank 2")
-    if any(not isinstance(dimension, int) or isinstance(dimension, bool) or dimension < 0 for dimension in dimensions):
+    if any(type(dimension) is not int or dimension < 0 for dimension in dimensions):
         return None, _placeholder(value, reason="invalid array shape")
     if any(dimension > _MAX_CONTAINER_SIZE for dimension in dimensions):
         return None, _placeholder(
@@ -559,35 +923,29 @@ def _shape_of(value: object) -> tuple[tuple[int, ...] | None, SerializedValue | 
     return dimensions, None
 
 
-def _serialize_dataframe_duck(
+def _serialize_pandas_dataframe(
     value: object,
     *,
-    shape: tuple[int, int],
-    columns_source: object,
     depth: int,
     active_ids: set[int],
     budget: _SerializationBudget,
 ) -> SerializedValue:
     try:
-        columns = tuple(islice(iter(columns_source), _MAX_TABLE_COLUMNS))  # type: ignore[arg-type]
-    except BaseException as error:
-        return _failed_value(value, operation="iteration", error=error)
-    try:
+        shape, shape_failure = _validated_shape(value, value.shape)  # type: ignore[attr-defined]
+        if shape_failure is not None:
+            return shape_failure
+        assert shape is not None and len(shape) == 2
+        columns = tuple(islice(iter(value.columns), _MAX_TABLE_COLUMNS))  # type: ignore[attr-defined]
         iloc = value.iloc  # type: ignore[attr-defined]
-    except BaseException as error:
-        return _failed_value(value, operation="getattr", error=error)
-    try:
         bounded_frame = iloc[:_MAX_TABLE_ROWS, :_MAX_TABLE_COLUMNS]
-    except BaseException as error:
-        return _failed_value(value, operation="slice", error=error)
-    try:
-        row_iterator = bounded_frame.itertuples(  # type: ignore[attr-defined]
-            index=False,
-            name=None,
+        rows = tuple(
+            islice(
+                bounded_frame.itertuples(index=False, name=None),
+                _MAX_TABLE_ROWS,
+            )
         )
-        rows = tuple(islice(row_iterator, _MAX_TABLE_ROWS))
     except BaseException as error:
-        return _failed_value(value, operation="iteration", error=error)
+        return _failed_value(value, operation="pandas adapter", error=error)
     return _serialize_matrix_table(
         value,
         source_columns=columns,
@@ -600,14 +958,20 @@ def _serialize_dataframe_duck(
     )
 
 
-def _serialize_array_duck(
+def _serialize_numpy_array(
     value: object,
     *,
-    shape: tuple[int, ...],
     depth: int,
     active_ids: set[int],
     budget: _SerializationBudget,
 ) -> SerializedValue:
+    try:
+        shape, shape_failure = _validated_shape(value, value.shape)  # type: ignore[attr-defined]
+    except BaseException as error:
+        return _failed_value(value, operation="NumPy adapter", error=error)
+    if shape_failure is not None:
+        return shape_failure
+    assert shape is not None
     selection: object = slice(None, _MAX_SEQUENCE_ITEMS)
     if len(shape) == 2:
         selection = (
@@ -616,19 +980,12 @@ def _serialize_array_duck(
         )
     try:
         bounded_array = value[selection]  # type: ignore[index]
+        materialized = bounded_array.tolist()  # type: ignore[attr-defined]
     except BaseException as error:
-        return _failed_value(value, operation="slice", error=error)
-    try:
-        tolist = bounded_array.tolist  # type: ignore[attr-defined]
-        materialized = tolist()
-    except BaseException as error:
-        return _failed_value(value, operation="tolist", error=error)
-    if not isinstance(materialized, Sequence) or isinstance(materialized, (str, bytes, bytearray)):
+        return _failed_value(value, operation="NumPy adapter", error=error)
+    if type(materialized) is not list:
         return _placeholder(value, reason="tolist returned a non-sequence value")
-    try:
-        source_items = tuple(islice(iter(materialized), _MAX_SEQUENCE_ITEMS))
-    except BaseException as error:
-        return _failed_value(value, operation="iteration", error=error)
+    source_items = tuple(islice(list.__iter__(materialized), _MAX_SEQUENCE_ITEMS))
     if len(shape) == 1:
         limit_hits_before = budget.limit_hits
         items: list[SerializedValue] = []
@@ -670,47 +1027,67 @@ def _serialize_value(
     budget: _SerializationBudget,
 ) -> SerializedValue:
     if not budget.claim_node():
-        try:
-            original_size = len(value)  # type: ignore[arg-type]
-        except BaseException:
-            original_size = None
-        return _budget_placeholder(value, original_size=original_size)
+        return _budget_placeholder(
+            value,
+            original_size=_safe_original_size(value),
+        )
     if depth > _MAX_DEPTH:
-        try:
-            original_size = len(value)  # type: ignore[arg-type]
-        except BaseException:
-            original_size = None
         return _placeholder(
             value,
             reason=f"depth limit {_MAX_DEPTH} exceeded",
-            original_size=original_size,
+            original_size=_safe_original_size(value),
         )
-    if isinstance(value, bool):
+
+    value_type = type(value)
+    if value_type is bool:
         return SerializedValue(kind="boolean", type_name="bool", value=value)
-    if isinstance(value, int):
+    if value_type is int:
         if int.bit_length(value) > _MAX_JSON_INTEGER_BITS:
             return _placeholder(
                 value,
                 reason=f"number exceeds {_MAX_TEXT_CHARACTERS}-character limit",
             )
         return _serialize_number(value, type_name="int", budget=budget)
-    if isinstance(value, float):
+    if value_type is float:
         if math.isfinite(value):
             return _serialize_number(value, type_name="float", budget=budget)
         text = "nan" if math.isnan(value) else "inf" if value > 0 else "-inf"
         return _serialize_text(text, type_name="float", budget=budget)
     if value is None:
         return SerializedValue(kind="null", type_name="NoneType")
-    if isinstance(value, (datetime, date, time)):
-        text = value.isoformat()
-        return _serialize_text(text, type_name=_safe_type_name(value), budget=budget)
-    if isinstance(value, str):
+    if value_type is datetime:
+        return _serialize_text(
+            datetime.isoformat(value),
+            type_name="datetime",
+            budget=budget,
+        )
+    if value_type is date:
+        return _serialize_text(
+            date.isoformat(value),
+            type_name="date",
+            budget=budget,
+        )
+    if value_type is time:
+        return _serialize_text(
+            time.isoformat(value),
+            type_name="time",
+            budget=budget,
+        )
+    if value_type is str:
         return _serialize_text(value, type_name="str", budget=budget)
-    if isinstance(value, BaseException):
-        try:
-            text = str(value)
-        except BaseException as error:
-            return _failed_value(value, operation="str", error=error)
+    if any(value_type is exception_type for exception_type in _SAFE_EXCEPTION_TYPES):
+        args = BaseException.args.__get__(value, value_type)
+        if type(args) is not tuple:
+            return _placeholder(
+                value,
+                reason="exception contains unsupported arguments",
+            )
+        text = _bounded_exception_text(value, args)
+        if text is None:
+            return _placeholder(
+                value,
+                reason="exception contains unsupported arguments",
+            )
         serialized = _serialize_text(
             text,
             type_name=_safe_type_name(value),
@@ -725,107 +1102,88 @@ def _serialize_value(
             original_size=serialized.original_size,
             truncated=serialized.truncated,
         )
-    if is_dataclass(value) and not isinstance(value, type):
-        limit_hits_before = budget.limit_hits
-        try:
-            value_fields = fields(value)
-        except BaseException as error:
-            return _failed_value(value, operation="fields", error=error)
-        original_size = len(value_fields)
-        object_id = id(value)
-        if object_id in active_ids:
-            return _placeholder(
+    dataclass_items = _stored_dataclass_items(value)
+    if dataclass_items is not None:
+        source_items, original_size = dataclass_items
+        return _serialize_mapping_items(
+            value,
+            source_items=source_items,
+            original_size=original_size,
+            depth=depth,
+            active_ids=active_ids,
+            budget=budget,
+        )
+    pydantic_items = _stored_pydantic_items(value)
+    if pydantic_items is not None:
+        source_items, original_size = pydantic_items
+        return _serialize_mapping_items(
+            value,
+            source_items=source_items,
+            original_size=original_size,
+            depth=depth,
+            active_ids=active_ids,
+            budget=budget,
+        )
+    if value_type is dict:
+        original_size = dict.__len__(value)
+        source_items = tuple(islice(dict.items(value), _MAX_MAPPING_ITEMS))
+        return _serialize_mapping_items(
+            value,
+            source_items=source_items,
+            original_size=original_size,
+            depth=depth,
+            active_ids=active_ids,
+            budget=budget,
+        )
+    if value_type is MappingProxyType:
+        backing_dict = _mappingproxy_dict(value)
+        if backing_dict is not None:
+            original_size = dict.__len__(backing_dict)
+            source_items = tuple(islice(dict.items(backing_dict), _MAX_MAPPING_ITEMS))
+            return _serialize_mapping_items(
                 value,
-                reason="recursive reference",
+                source_items=source_items,
                 original_size=original_size,
+                depth=depth,
+                active_ids=active_ids,
+                budget=budget,
             )
-        active_ids.add(object_id)
-        try:
-            entries: list[SerializedEntry] = []
-            for value_field in value_fields[:_MAX_MAPPING_ITEMS]:
-                try:
-                    item = getattr(value, value_field.name)
-                except BaseException as error:
-                    return _failed_value(
-                        value,
-                        operation="getattr",
-                        error=error,
-                        original_size=original_size,
-                    )
-                serialized_key = _serialize_value(
-                    value_field.name,
-                    depth=depth + 1,
-                    active_ids=active_ids,
-                    budget=budget,
-                )
-                if budget.work_exhausted:
-                    entries.append(
-                        SerializedEntry(
-                            key=serialized_key,
-                            value=_budget_placeholder(item),
-                        )
-                    )
-                    break
-                serialized_item = _serialize_value(
-                    item,
-                    depth=depth + 1,
-                    active_ids=active_ids,
-                    budget=budget,
-                )
-                entries.append(
-                    SerializedEntry(
-                        key=serialized_key,
-                        value=serialized_item,
-                    )
-                )
-                if budget.work_exhausted:
-                    break
-            return SerializedValue(
-                kind="mapping",
-                type_name=_safe_type_name(value),
-                entries=tuple(entries),
-                original_size=original_size,
-                truncated=(original_size > len(entries) or budget.limit_hits > limit_hits_before),
-            )
-        finally:
-            active_ids.discard(object_id)
-
-    try:
-        model_dump = value.model_dump  # type: ignore[attr-defined]
-    except AttributeError:
-        model_dump = None
-    except BaseException as error:
-        return _failed_value(value, operation="getattr", error=error)
-    if callable(model_dump):
+    if _is_exact_loaded_type(value, "pandas", "DataFrame"):
         object_id = id(value)
         if object_id in active_ids:
             return _placeholder(value, reason="recursive reference")
         active_ids.add(object_id)
         try:
-            try:
-                model_data = model_dump()
-            except BaseException as error:
-                return _failed_value(value, operation="model_dump", error=error)
-            if not isinstance(model_data, Mapping):
-                return _placeholder(
-                    value,
-                    reason="model_dump returned a non-mapping value",
-                )
-            serialized_model = _serialize_value(
-                model_data,
+            return _serialize_pandas_dataframe(
+                value,
                 depth=depth,
                 active_ids=active_ids,
                 budget=budget,
             )
-            return replace(serialized_model, type_name=_safe_type_name(value))
         finally:
             active_ids.discard(object_id)
-    if isinstance(value, Mapping):
-        limit_hits_before = budget.limit_hits
+    if _is_exact_loaded_type(value, "numpy", "ndarray"):
+        object_id = id(value)
+        if object_id in active_ids:
+            return _placeholder(value, reason="recursive reference")
+        active_ids.add(object_id)
         try:
-            original_size = len(value)
-        except BaseException as error:
-            return _failed_value(value, operation="len", error=error)
+            return _serialize_numpy_array(
+                value,
+                depth=depth,
+                active_ids=active_ids,
+                budget=budget,
+            )
+        finally:
+            active_ids.discard(object_id)
+    if value_type is list or value_type is tuple:
+        limit_hits_before = budget.limit_hits
+        if value_type is list:
+            original_size = list.__len__(value)
+            source_items = tuple(islice(list.__iter__(value), _MAX_SEQUENCE_ITEMS))
+        else:
+            original_size = tuple.__len__(value)
+            source_items = tuple(islice(tuple.__iter__(value), _MAX_SEQUENCE_ITEMS))
         object_id = id(value)
         if object_id in active_ids:
             return _placeholder(
@@ -835,137 +1193,7 @@ def _serialize_value(
             )
         active_ids.add(object_id)
         try:
-            try:
-                keys = tuple(islice(iter(value), _MAX_MAPPING_ITEMS))
-            except BaseException as error:
-                return _failed_value(
-                    value,
-                    operation="iteration",
-                    error=error,
-                    original_size=original_size,
-                )
-            entries: list[SerializedEntry] = []
-            for key in keys:
-                try:
-                    item = value[key]
-                except BaseException as error:
-                    return _failed_value(
-                        value,
-                        operation="item access",
-                        error=error,
-                        original_size=original_size,
-                    )
-                serialized_key = _serialize_value(
-                    key,
-                    depth=depth + 1,
-                    active_ids=active_ids,
-                    budget=budget,
-                )
-                if budget.work_exhausted:
-                    entries.append(
-                        SerializedEntry(
-                            key=serialized_key,
-                            value=_budget_placeholder(item),
-                        )
-                    )
-                    break
-                serialized_item = _serialize_value(
-                    item,
-                    depth=depth + 1,
-                    active_ids=active_ids,
-                    budget=budget,
-                )
-                entries.append(
-                    SerializedEntry(
-                        key=serialized_key,
-                        value=serialized_item,
-                    )
-                )
-                if budget.work_exhausted:
-                    break
-            return SerializedValue(
-                kind="mapping",
-                type_name=_safe_type_name(value),
-                entries=tuple(entries),
-                original_size=original_size,
-                truncated=(original_size > len(entries) or budget.limit_hits > limit_hits_before),
-            )
-        finally:
-            active_ids.discard(object_id)
-
-    shape, shape_failure = _shape_of(value)
-    if shape_failure is not None:
-        return shape_failure
-    if shape is not None:
-        try:
-            columns_source = value.columns  # type: ignore[attr-defined]
-        except AttributeError:
-            columns_source = None
-        except BaseException as error:
-            return _failed_value(value, operation="getattr", error=error)
-        try:
-            tolist = value.tolist  # type: ignore[attr-defined]
-        except AttributeError:
-            tolist = None
-        except BaseException as error:
-            return _failed_value(value, operation="getattr", error=error)
-
-        is_dataframe = len(shape) == 2 and columns_source is not None
-        is_array = callable(tolist)
-        if is_dataframe or is_array:
-            object_id = id(value)
-            if object_id in active_ids:
-                return _placeholder(
-                    value,
-                    reason="recursive reference",
-                    original_size=shape[0],
-                )
-            active_ids.add(object_id)
-            try:
-                if is_dataframe:
-                    return _serialize_dataframe_duck(
-                        value,
-                        shape=(shape[0], shape[1]),
-                        columns_source=columns_source,
-                        depth=depth,
-                        active_ids=active_ids,
-                        budget=budget,
-                    )
-                return _serialize_array_duck(
-                    value,
-                    shape=shape,
-                    depth=depth,
-                    active_ids=active_ids,
-                    budget=budget,
-                )
-            finally:
-                active_ids.discard(object_id)
-
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        limit_hits_before = budget.limit_hits
-        try:
-            original_size = len(value)
-        except BaseException as error:
-            return _failed_value(value, operation="len", error=error)
-        object_id = id(value)
-        if object_id in active_ids:
-            return _placeholder(
-                value,
-                reason="recursive reference",
-                original_size=original_size,
-            )
-        active_ids.add(object_id)
-        try:
-            try:
-                source_items = tuple(islice(iter(value), _MAX_SEQUENCE_ITEMS))
-            except BaseException as error:
-                return _failed_value(
-                    value,
-                    operation="iteration",
-                    error=error,
-                    original_size=original_size,
-                )
-            if source_items and all(isinstance(item, Mapping) for item in source_items):
+            if source_items and all(type(item) is dict for item in source_items):
                 return _serialize_row_table(
                     value,
                     source_rows=source_items,
@@ -995,6 +1223,7 @@ def _serialize_value(
             )
         finally:
             active_ids.discard(object_id)
+
     try:
         text = repr(value)
     except BaseException as error:
