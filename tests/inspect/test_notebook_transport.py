@@ -53,9 +53,15 @@ class _Call:
 
 
 class _QueuedOwnerScheduler:
-    def __init__(self, *, supports_cross_thread: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        supports_delayed_calls: bool = True,
+        supports_cross_thread: bool = True,
+    ) -> None:
         self.current = 0.0
         self.owner_thread_id = threading.get_ident()
+        self.supports_delayed_calls = supports_delayed_calls
         self.supports_cross_thread = supports_cross_thread
         self.calls: list[_Call] = []
 
@@ -577,18 +583,24 @@ def test_attach_rejects_snapshot_that_races_behind_newer_callback() -> None:
     assert latest["payload"]["run"]["nodes"][0]["qualified_name"] == "newer"
 
 
-def test_closed_stale_fallback_does_not_subscribe_or_receive_session_updates() -> None:
-    scheduler = _QueuedOwnerScheduler(supports_cross_thread=False)
+def test_nonterminal_factory_needs_delayed_calls_before_subscribing() -> None:
+    scheduler = _QueuedOwnerScheduler(
+        supports_delayed_calls=False,
+        supports_cross_thread=True,
+    )
     display = _FakeNotebookDisplay()
     transport = open_notebook_inspection_transport(
         _artifact(),
         notebook=True,
         display=display,
         scheduler=scheduler,
-        require_cross_thread=True,
     )
     assert transport is not None
     assert transport.closed is True
+    assert _wire(display.channels[0][1])["payload"]["delivery"] == {
+        "state": "stale",
+        "label": "Live inspection unavailable",
+    }
     session = InspectionSession(
         graph_name="customer_enrichment",
         workflow_id="workflow-customers",
@@ -599,6 +611,95 @@ def test_closed_stale_fallback_does_not_subscribe_or_receive_session_updates() -
 
     assert session._subscribers == {}  # type: ignore[attr-defined]
     assert display.handle.updates == []
+
+
+def test_terminal_factory_preserves_saved_truth_without_scheduler_capabilities() -> None:
+    scheduler = _QueuedOwnerScheduler(
+        supports_delayed_calls=False,
+        supports_cross_thread=False,
+    )
+    display = _FakeNotebookDisplay()
+
+    transport = open_notebook_inspection_transport(
+        _artifact(terminal=True, status="completed"),
+        notebook=True,
+        display=display,
+        scheduler=scheduler,
+        require_cross_thread=True,
+    )
+
+    assert transport is not None
+    assert transport.closed is True
+    assert _wire(display.channels[0][1])["payload"]["delivery"] == {
+        "state": "saved",
+        "label": "Saved snapshot",
+    }
+    assert display.handle.updates == []
+
+
+def test_delayed_scheduler_falsifier_opens_live_and_delivers_on_owner_thread() -> None:
+    unavailable_scheduler = _QueuedOwnerScheduler(
+        supports_delayed_calls=False,
+        supports_cross_thread=True,
+    )
+    unavailable_display = _FakeNotebookDisplay()
+    unavailable = open_notebook_inspection_transport(
+        _artifact(),
+        notebook=True,
+        display=unavailable_display,
+        scheduler=unavailable_scheduler,
+    )
+    assert unavailable is not None
+    unavailable_session = InspectionSession(
+        graph_name="customer_enrichment",
+        workflow_id="workflow-unavailable",
+        item_index=None,
+    )
+    unavailable.attach(unavailable_session)
+
+    assert unavailable.closed is True
+    assert unavailable_session._subscribers == {}  # type: ignore[attr-defined]
+
+    scheduler = _QueuedOwnerScheduler(
+        supports_delayed_calls=True,
+        supports_cross_thread=True,
+    )
+    display = _FakeNotebookDisplay()
+    transport = open_notebook_inspection_transport(
+        _artifact(),
+        notebook=True,
+        display=display,
+        scheduler=scheduler,
+    )
+    assert transport is not None
+    session = InspectionSession(
+        graph_name="customer_enrichment",
+        workflow_id="workflow-live",
+        item_index=None,
+    )
+    transport.attach(session)
+    session.bind_run("run-live")
+    session.start_node(
+        run_id="run-live",
+        span_id="span-review",
+        node_name="review_customer",
+        qualified_name="review_customer",
+        graph_name="customer_enrichment",
+        item_index=None,
+        superstep=0,
+        inputs={"customer_id": "maya-23"},
+        started_at_ms=1.0,
+    )
+
+    assert transport.closed is False
+    assert session._subscribers != {}  # type: ignore[attr-defined]
+    assert display.handle.updates == []
+
+    scheduler.advance(0.25)
+
+    assert display.handle.update_threads == [scheduler.owner_thread_id]
+    latest = _wire(display.handle.updates[-1])
+    assert latest["payload"]["run"]["nodes"][0]["qualified_name"] == "review_customer"
 
 
 def test_failed_channel_update_closes_transport_and_unsubscribes_session() -> None:
@@ -706,6 +807,69 @@ class _KernelLoop:
         return call
 
 
+class _AddCallbackOnlyKernelLoop:
+    def __init__(self) -> None:
+        self.callbacks: list[Callable[[], None]] = []
+
+    def add_callback(self, callback: Callable[[], None]) -> None:
+        self.callbacks.append(callback)
+
+
+class _CallLaterOnlyKernelLoop:
+    def __init__(self) -> None:
+        self.callbacks: list[Callable[[], None]] = []
+
+    def call_later(self, _delay: float, callback: Callable[[], None]) -> _Call:
+        call = _Call(0.0, callback)
+        self.callbacks.append(callback)
+        return call
+
+
+def test_owner_scheduler_models_delayed_calls_separately_from_cross_thread() -> None:
+    no_kernel = OwnerThreadScheduler(
+        asyncio_loop=None,
+        kernel_ioloop=None,
+        clock=lambda: 0.0,
+    )
+    no_kernel_callbacks: list[int] = []
+
+    assert no_kernel.supports_delayed_calls is False
+    assert no_kernel.supports_cross_thread is False
+    assert no_kernel.call_at(1.0, lambda: no_kernel_callbacks.append(threading.get_ident())) is None
+    assert no_kernel_callbacks == []
+
+    add_callback_only = _AddCallbackOnlyKernelLoop()
+    cross_thread_only = OwnerThreadScheduler(
+        asyncio_loop=None,
+        kernel_ioloop=add_callback_only,
+        clock=lambda: 0.0,
+    )
+
+    assert cross_thread_only.supports_delayed_calls is False
+    assert cross_thread_only.supports_cross_thread is True
+    assert cross_thread_only.call_at(1.0, lambda: None) is None
+    assert add_callback_only.callbacks == []
+
+    call_later_only = _CallLaterOnlyKernelLoop()
+    delayed_only = OwnerThreadScheduler(
+        asyncio_loop=None,
+        kernel_ioloop=call_later_only,
+        clock=lambda: 0.0,
+    )
+    owner_thread = threading.get_ident()
+    callback_threads: list[int] = []
+
+    assert delayed_only.supports_delayed_calls is True
+    assert delayed_only.supports_cross_thread is False
+    assert delayed_only.call_at(1.0, lambda: callback_threads.append(threading.get_ident())) is not None
+    assert callback_threads == []
+    assert len(call_later_only.callbacks) == 1
+
+    call_later_only.callbacks.pop()()
+
+    assert callback_threads == [owner_thread]
+
+
 def test_owner_scheduler_marshals_worker_work_through_kernel_ioloop() -> None:
     kernel_loop = _KernelLoop()
     scheduler = OwnerThreadScheduler(
@@ -732,6 +896,7 @@ def test_owner_scheduler_marshals_worker_work_through_kernel_ioloop() -> None:
     kernel_loop.callbacks.pop()()
 
     assert callback_threads == [owner_thread]
+    assert scheduler.supports_delayed_calls is True
     assert scheduler.supports_cross_thread is True
 
 
@@ -753,4 +918,5 @@ async def test_owner_scheduler_captures_running_asyncio_loop_for_worker_delivery
 
     assert worker.is_alive() is False
     assert callback_threads == [owner_thread]
+    assert scheduler.supports_delayed_calls is True
     assert scheduler.supports_cross_thread is True
