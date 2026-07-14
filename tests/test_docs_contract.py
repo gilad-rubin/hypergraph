@@ -423,6 +423,10 @@ def test_inspect_mode_docs_mirror_public_contract() -> None:
     normalized_debug = " ".join(debug.split())
     assert "without a kernel" in normalized_debug
     assert "executed slash-qualified paths" in normalized_debug
+    assert "`Waiting for live inspection` means the payload channel is not authenticated or live yet" in normalized_debug
+    assert "`Live inspection unavailable`" in normalized_debug
+    assert "latest state remains locally inspectable as a saved snapshot" in normalized_debug
+    assert "instead of silently freezing a view that still claims to be live" in normalized_debug
     assert 'inspect="graph-owned"' not in debug
 
     assert "inspect=True" in control

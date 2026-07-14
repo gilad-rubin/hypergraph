@@ -231,6 +231,13 @@ the notebook is saved, that output remains locally interactive without a
 kernel, Hypergraph server, or network connection; it is labelled as saved, not
 live.
 
+For Maya, the before/after is explicit: before the renderer is ready,
+`Waiting for live inspection` means the payload channel is not authenticated
+or live yet. After a ready-handshake timeout, the label becomes
+`Live inspection unavailable`; the latest state remains locally inspectable as
+a saved snapshot instead of silently freezing a view that still claims to be
+live.
+
 The Inspect **Graph** tab shows executed slash-qualified paths such as
 `worker/parser/parse_order`. It answers "what executed?" and preserves nested
 execution identity. Use `graph.visualize()` when you need the full configured
