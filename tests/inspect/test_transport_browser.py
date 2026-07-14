@@ -33,6 +33,11 @@ from hypergraph.runners._shared._inspect_transport import (
 )
 from hypergraph.runners._shared.results import FailureEvidence
 
+_ACTIVE_OUTPUT_TAG = re.compile(
+    r"<(iframe|script|style)\b[^>]*>.*?</\1\s*>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
 
 @pytest.fixture(scope="module")
 def browser() -> Iterator[Browser]:
@@ -255,6 +260,15 @@ def _frame(page: Page, widget_id: str):
     assert frame is not None
     frame.wait_for_selector("[data-hypergraph-inspect]")
     return frame
+
+
+def _strip_active_output(markup: str) -> str:
+    """Model an untrusted host that removes active output before DOM parse."""
+    previous = ""
+    stripped = markup
+    while stripped != previous:
+        previous, stripped = stripped, _ACTIVE_OUTPUT_TAG.sub("", stripped)
+    return stripped
 
 
 def _defer_child_ready(shell: str) -> str:
@@ -574,8 +588,11 @@ def test_append_mode_terminal_replay_preserves_iframe_state_and_exposes_failure(
     assert page.locator('[data-hg-inspect-channel="widget-append-live"]').count() == 3
     assert page.locator('[data-hg-inspect-channel-fallback="widget-append-live"]:visible').count() == 0
     portable_frame = page.locator('[data-hg-inspect-portable-frame="widget-append-live"]')
+    native_summary = page.locator('[data-hg-inspect-native-summary="widget-append-live"]')
     assert portable_frame.count() == 1
     assert portable_frame.is_hidden()
+    assert native_summary.count() == 1
+    assert native_summary.is_hidden()
 
     root.get_by_role("button", name="Show failure").click()
     detail = root.locator("[data-hg-detail]")
@@ -718,6 +735,9 @@ def test_isolated_saved_outputs_leave_pending_shell_and_terminal_channel_portabl
     terminal_summary = terminal_root.locator("[data-hg-summary]")
 
     assert terminal_page.locator('[data-hg-inspect-portable-sequence="3"]').is_visible()
+    native_summary = terminal_page.locator('[data-hg-inspect-native-summary="widget-isolated"]')
+    assert native_summary.count() == 1
+    assert native_summary.is_hidden()
     assert terminal_root.get_by_text("Saved snapshot", exact=True).is_visible()
     assert terminal_summary.get_by_text("Completed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "2"
     assert terminal_summary.get_by_text("Failed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "1"
@@ -728,6 +748,134 @@ def test_isolated_saved_outputs_leave_pending_shell_and_terminal_channel_portabl
     assert errors == []
     assert all(url in {"about:blank", "about:srcdoc"} for url in requests)
     terminal_page.close()
+
+
+def test_untrusted_terminal_map_keeps_native_failure_evidence_after_active_markup_is_stripped(
+    browser: Browser,
+) -> None:
+    _, terminal_artifact = _partial_customer_map()
+    terminal = _envelope(
+        terminal_artifact,
+        widget_id="widget-untrusted-map",
+        nonce="nonce-untrusted-map",
+        sequence=3,
+        state="saved",
+    )
+    stripped = _strip_active_output(render_payload_channel(terminal))
+
+    assert not re.search(r"<(iframe|script|style)\b", stripped, flags=re.IGNORECASE)
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    errors: list[Exception] = []
+    requests: list[str] = []
+    page.on("pageerror", lambda error: errors.append(error))
+    page.on("request", lambda request: requests.append(request.url))
+    page.set_content(stripped, wait_until="load")
+
+    summary = page.locator('[data-hg-inspect-native-summary="widget-untrusted-map"]')
+    assert summary.is_visible()
+    assert summary.get_by_text("Saved snapshot", exact=True).is_visible()
+    assert summary.get_by_text("partial", exact=True).is_visible()
+    assert summary.locator("[data-hg-inspect-native-completed]").inner_text() == "2"
+    assert summary.locator("[data-hg-inspect-native-failed]").inner_text() == "1"
+
+    failure = summary.locator("details[data-hg-inspect-native-failure]")
+    assert failure.count() == 1
+    assert failure.evaluate("element => element.open") is False
+    failure.locator("summary").click()
+    assert failure.evaluate("element => element.open") is True
+    failure_text = failure.inner_text()
+    assert "Item 1 failure" in failure_text
+    assert "score_customer" in failure_text
+    assert "customer_id=maya-23" in failure_text
+    assert "ValueError: Customer maya-23 requires manual review" in failure_text
+    assert "item.failure.item_index == 1" in failure_text
+    assert "docs/05-how-to/debug-workflows.md" in failure_text
+    assert page.locator("iframe, script, style").count() == 0
+    assert errors == []
+    assert all(url == "about:blank" for url in requests)
+    page.close()
+
+
+def test_untrusted_terminal_run_escapes_hostile_failure_text(
+    browser: Browser,
+) -> None:
+    _, terminal_map = _partial_customer_map()
+    failed_item = next(item for item in terminal_map.items if item.item_index == 1)
+    assert failed_item.run is not None
+    hostile = '<img src="https://malicious.invalid/leak" onerror="window.pwned=true">'
+    original_failure = failed_item.run.failures[0]
+    hostile_failure = replace(
+        original_failure,
+        node_name=hostile,
+        inputs={"customer_id": hostile},
+        error=ValueError(hostile),
+    )
+    hostile_node = replace(
+        failed_item.run.nodes[0],
+        qualified_name=hostile,
+        inputs={"customer_id": hostile},
+        failure=hostile_failure,
+    )
+    terminal_run = replace(
+        failed_item.run,
+        graph_name=hostile,
+        nodes=(hostile_node,),
+        failures=(hostile_failure,),
+        error=hostile_failure.error,
+    )
+    envelope = _envelope(
+        terminal_run,
+        widget_id="widget-untrusted-run",
+        nonce="nonce-untrusted-run",
+        sequence=2,
+        state="saved",
+    )
+    stripped = _strip_active_output(render_payload_channel(envelope))
+
+    page = browser.new_page()
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    page.set_content(stripped, wait_until="load")
+    summary = page.locator('[data-hg-inspect-native-summary="widget-untrusted-run"]')
+    failure = summary.locator("details[data-hg-inspect-native-failure]")
+    failure.locator("summary").click()
+
+    assert summary.is_visible()
+    assert page.locator("img").count() == 0
+    assert hostile in failure.inner_text()
+    assert "failure = result.failure" in failure.inner_text()
+    assert page.evaluate("window.pwned") is None
+    assert all(url == "about:blank" for url in requests)
+    page.close()
+
+
+def test_untrusted_stale_channel_keeps_exact_start_error_in_native_details(
+    browser: Browser,
+) -> None:
+    stale = replace(
+        _envelope(
+            _run(node_count=0),
+            widget_id="widget-untrusted-stale",
+            nonce="nonce-untrusted-stale",
+            sequence=2,
+            state="stale",
+        ),
+        message=serialize_value(RuntimeError("Notebook display setup failed")),
+    )
+    stripped = _strip_active_output(render_payload_channel(stale))
+
+    page = browser.new_page()
+    page.set_content(stripped, wait_until="load")
+    summary = page.locator('[data-hg-inspect-native-summary="widget-untrusted-stale"]')
+    failure = summary.locator("details[data-hg-inspect-native-failure]")
+
+    assert summary.is_visible()
+    assert summary.get_by_text("Live inspection unavailable", exact=True).is_visible()
+    assert failure.evaluate("element => element.open") is False
+    failure.locator("summary").click()
+    assert "RuntimeError: Notebook display setup failed" in failure.inner_text()
+    assert "docs/05-how-to/debug-workflows.md" in failure.inner_text()
+    page.close()
 
 
 def test_isolated_stale_channel_is_portable_and_keeps_exact_start_error(

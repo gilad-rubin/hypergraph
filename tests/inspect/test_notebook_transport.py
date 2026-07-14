@@ -297,7 +297,9 @@ def test_ipython_transport_keeps_physical_output_shape_and_only_terminal_is_port
     channel_markups = [value.data for value in channel_values if isinstance(value, HTML)]
     assert len(channel_markups) == 3
     assert all("data-hg-inspect-portable-frame" not in markup for markup in channel_markups[:2])
+    assert all("data-hg-inspect-native-summary" not in markup for markup in channel_markups[:2])
     assert 'data-hg-inspect-portable-frame="hg-inspect-ipython-shape"' in channel_markups[2]
+    assert 'data-hg-inspect-native-summary="hg-inspect-ipython-shape"' in channel_markups[2]
 
 
 def test_payload_channels_have_sequence_qualified_dom_ids_and_local_script_lookup() -> None:
@@ -412,10 +414,12 @@ def test_shell_is_sandboxed_and_only_terminal_channel_is_portable() -> None:
         assert "srcdoc=" not in channel
         assert "data-hg-inspect-style" not in channel
         assert "data-hg-inspect-runtime" not in channel
+        assert "data-hg-inspect-native-summary" not in channel
         assert "GraphIR" not in channel
         assert "hypergraph.inspect.update" in channel
 
     assert 'data-hg-inspect-portable-frame="hg-inspect-notebook"' in terminal_update
+    assert 'data-hg-inspect-native-summary="hg-inspect-notebook"' in terminal_update
     assert 'sandbox="allow-scripts"' in terminal_update
     assert "srcdoc=" in terminal_update
     assert "default-src &#x27;none&#x27;" in terminal_update
