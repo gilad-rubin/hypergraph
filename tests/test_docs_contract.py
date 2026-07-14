@@ -356,6 +356,8 @@ def test_inspect_mode_docs_mirror_public_contract() -> None:
     observe = _read("docs/05-how-to/observe-execution.md")
     control = _read("docs/05-how-to/control-background-execution.md")
     runners = _read("docs/06-api-reference/runners.md")
+    architecture = _read("dev/ARCHITECTURE.md")
+    architecture_map = _read("dev/ARCHITECTURE-MAP.md")
     checkpointers = _read("docs/06-api-reference/checkpointers.md")
     hypertable = _read("docs/08-hypertable/getting-started.md")
     pyproject = _read("pyproject.toml")
@@ -441,6 +443,26 @@ def test_inspect_mode_docs_mirror_public_contract() -> None:
         assert "two physical outputs" in normalized_delivery
         assert "one terminal physical record" in normalized_delivery
         assert "only after the original iframe accepts" in normalized_delivery
+        assert "native `<details>`" in notebook_delivery_docs
+        assert "first failure of n" in normalized_delivery
+        assert "never auto-trusts" in normalized_delivery
+        assert "scripts, styles, iframes" in normalized_delivery
+        assert "docs/05-how-to/debug-workflows.md" in notebook_delivery_docs
+
+    for architecture_docs in (architecture, architecture_map):
+        normalized_architecture = " ".join(architecture_docs.split())
+        assert "inspection.py" in normalized_architecture
+        assert "_inspect.py" in normalized_architecture
+        assert "_inspect_html.py" in normalized_architecture
+        assert "_inspect_serialization.py" in normalized_architecture
+        assert "_inspect_transport.py" in normalized_architecture
+        assert "inspect.css" in normalized_architecture
+        assert "inspect.js" in normalized_architecture
+        assert "inspect_transport.js" in normalized_architecture
+        assert "InspectionDisplay" in normalized_architecture
+        assert "current-process" in normalized_architecture
+        assert "no checkpointer" in normalized_architecture
+        assert "durable" in normalized_architecture
     assert 'inspect="graph-owned"' not in debug
 
     assert "inspect=True" in control

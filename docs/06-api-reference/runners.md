@@ -1300,6 +1300,21 @@ the authenticated update, while an isolated-output renderer can open that
 channel alone. The capable path still
 uses `DisplayHandle.update()` and replaces its channel in place.
 
+Trusted active output gets that full sandboxed iframe. If notebook trust policy
+strips scripts, styles, iframes, and output identifiers, the terminal/stale
+channel instead preserves a small native `<details>` summary: delivery,
+status/counts, `First failure of N`, original item, qualified node, bounded
+inputs, exact exception, a short result-evidence snippet, and
+`docs/05-how-to/debug-workflows.md`. Hypergraph never auto-trusts or signs the
+notebook, calls a server trust endpoint, or weakens its sandbox. When active
+HTML runs, it hides the compact summary; the complete shared fallback still
+hides only after the original iframe accepts the exact authenticated update.
+
+Before, an untrusted terminal record could be blank while Python had already
+settled at `partial / 2 completed / 1 failed`. After, Maya can expand native
+**Item 1 failure** and read `score_customer`, `customer_id=maya-23`, and the
+exact `ValueError`; ordinary trusted output still opens the full inspector.
+
 A best-effort internal compatibility path activates only when the kernel
 environment reports `jupyter-server-nbmodel==0.1.1a4`: that measured executor
 drops `update_display_data`, so Hypergraph appends ordinary coalesced payload

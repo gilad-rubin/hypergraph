@@ -420,6 +420,15 @@ def test_shell_is_sandboxed_and_only_terminal_channel_is_portable() -> None:
 
     assert 'data-hg-inspect-portable-frame="hg-inspect-notebook"' in terminal_update
     assert 'data-hg-inspect-native-summary="hg-inspect-notebook"' in terminal_update
+    native_summary = re.search(
+        r'(<section data-hg-inspect-native-summary="hg-inspect-notebook".*?</section>)',
+        terminal_update,
+        flags=re.DOTALL,
+    )
+    assert native_summary is not None
+    assert not re.search(r"<(iframe|script|style)\b", native_summary.group(1), flags=re.IGNORECASE)
+    assert "http://" not in native_summary.group(1)
+    assert "https://" not in native_summary.group(1)
     assert 'sandbox="allow-scripts"' in terminal_update
     assert "srcdoc=" in terminal_update
     assert "default-src &#x27;none&#x27;" in terminal_update

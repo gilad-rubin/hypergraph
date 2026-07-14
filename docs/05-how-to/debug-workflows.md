@@ -295,9 +295,11 @@ HYPERGRAPH_DISPLAY=plain uv run python my_workflow.py
 
 In a supported notebook, `inspect=True` opens one live view and updates its
 payload as work advances. The terminal output becomes a saved snapshot. After
-the notebook is saved, that output remains locally interactive without a
-kernel, Hypergraph server, or network connection; it is labelled as saved, not
-live.
+the notebook is saved, trusted active output remains locally interactive
+without a kernel, Hypergraph server, or network connection; it is labelled as
+saved, not live. An untrusted notebook may remove active HTML. In that state,
+the terminal record keeps a smaller native summary rather than claiming the
+full inspector can run.
 
 The normal notebook path keeps exactly two physical outputs: one immutable
 shell and one mutable payload channel. Ordinary updates stay payload-only. At
@@ -308,6 +310,36 @@ iframe's selected tab and other local UI state. An isolated-output renderer
 can instead open that terminal channel by itself. The normal path still has
 two physical outputs because
 `DisplayHandle.update()` replaces the mutable channel in place.
+
+Notebook trust is host policy, not Hypergraph widget state. Hypergraph never
+auto-trusts or signs a notebook, calls a server trust endpoint, or weakens the
+iframe sandbox. If a host strips scripts, styles, iframes, and output
+identifiers, a terminal or stale channel still leaves one plain semantic
+summary. It uses native `<details>` and contains:
+
+- saved/stale delivery plus exact execution status and counts
+- `First failure of N`, the original map item, and the qualified node
+- bounded captured inputs and exact exception type/text
+- a short `RunResult` / `MapResult` evidence snippet
+- the canonical guide path: `docs/05-how-to/debug-workflows.md`
+
+The compact summary shows the first failure and says how many failures exist;
+it does not imply that one displayed failure is the whole batch. When active
+HTML is trusted, the portable iframe runs and hides this small summary. In a
+shared document, the complete terminal fallback still hides only after the
+original iframe accepts the exact authenticated update.
+
+```text
+Before (untrusted output): Python says partial / 2 completed / 1 failed,
+                           but Jupyter can leave a blank terminal record.
+
+After (still untrusted):   Saved snapshot / partial / 2 / 1 remains visible.
+                           Expand Item 1 failure to read score_customer,
+                           customer_id=maya-23, and the exact ValueError.
+
+After normal host trust:   The same saved record opens the full offline
+                           inspector; no kernel or server is required.
+```
 
 Hypergraph also has a best-effort compatibility path for the measured
 `jupyter-server-nbmodel==0.1.1a4` executor, which persists ordinary
@@ -331,6 +363,11 @@ output record. Terminal and error states can still flush immediately.
 - **After:** the terminal channel alone opens the saved inspector at `partial`,
   `2 completed`, `1 failed`; **Show failure** reveals `maya-23` and
   `Customer maya-23 requires manual review` without a kernel or sibling DOM.
+
+If that terminal record is untrusted, the full **Show failure** interface is
+not available because scripts and iframes are host-blocked. Expand its native
+**Item 1 failure** disclosure instead; it preserves the same original item,
+qualified node, bounded input, exact error, code evidence, and docs reference.
 
 Detection is exact and kernel-local. A missing or different package version
 uses the normal display-handle update path. A separate server environment

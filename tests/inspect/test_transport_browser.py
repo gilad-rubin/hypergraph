@@ -786,10 +786,10 @@ def test_untrusted_terminal_map_keeps_native_failure_evidence_after_active_marku
     failure = summary.locator("details")
     assert failure.count() == 1
     assert failure.evaluate("element => element.open") is False
+    assert "First failure of 1" in failure.locator("summary").inner_text()
     failure.locator("summary").click()
     assert failure.evaluate("element => element.open") is True
     failure_text = failure.inner_text()
-    assert "First failure of 1" in failure_text
     assert "Item 1 failure" in failure_text
     assert "score_customer" in failure_text
     assert "customer_id=maya-23" in failure_text

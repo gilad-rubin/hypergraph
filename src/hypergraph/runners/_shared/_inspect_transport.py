@@ -44,6 +44,7 @@ from hypergraph.runners._shared._inspect_serialization import (
 INSPECTION_PROTOCOL_VERSION = 1
 _UPDATE_MESSAGE = "hypergraph.inspect.update"
 _COALESCE_SECONDS = 0.250
+_DEBUG_WORKFLOWS_DOC = "docs/05-how-to/debug-workflows.md"
 _DeliveryState = Literal["live", "stale", "saved"]
 _DeliveryLabel = Literal[
     "Live",
@@ -252,9 +253,250 @@ def _fallback_markup(envelope: InspectionEnvelope, payload: dict[str, object]) -
     )
 
 
+def _wire_dict(value: object) -> dict[str, object]:
+    return cast(dict[str, object], value) if type(value) is dict else {}
+
+
+def _wire_list(value: object) -> list[object]:
+    return cast(list[object], value) if type(value) is list else []
+
+
+def _native_value_text(value: object) -> str:
+    """Format one already-bounded serialized wire value as inert text."""
+    node = _wire_dict(value)
+    kind = node.get("kind")
+    if kind == "null":
+        return "None"
+    if kind == "boolean":
+        return "True" if node.get("value") is True else "False"
+    if kind == "number":
+        return str(node.get("value"))
+    if kind in {"text", "exception"}:
+        return str(node.get("text") or "")
+    if kind == "placeholder":
+        detail = node.get("text") or node.get("reason") or "value unavailable"
+        return f"{node.get('type_name') or 'value'}: {detail}"
+    if kind == "mapping":
+        parts: list[str] = []
+        for raw_entry in _wire_list(node.get("entries")):
+            entry = _wire_dict(raw_entry)
+            parts.append(f"{_native_value_text(entry.get('key'))}={_native_value_text(entry.get('value'))}")
+        if node.get("truncated") is True:
+            parts.append(f"… truncated from {node.get('original_size', 'unknown')} entries")
+        return "{" + ", ".join(parts) + "}"
+    if kind == "sequence":
+        parts = [_native_value_text(item) for item in _wire_list(node.get("items"))]
+        if node.get("truncated") is True:
+            parts.append(f"… truncated from {node.get('original_size', 'unknown')} items")
+        return "[" + ", ".join(parts) + "]"
+    if kind == "table":
+        table = _wire_dict(node.get("table"))
+        rows = table.get("original_row_count", 0)
+        columns = table.get("original_column_count", 0)
+        return f"{rows} × {columns} table"
+    return str(node.get("text") or node.get("value") or node.get("type_name") or "value unavailable")
+
+
+def _native_inputs_markup(inputs: object) -> str:
+    serialized = _wire_dict(inputs)
+    if serialized.get("kind") != "mapping":
+        return f"<p><code>{html.escape(_native_value_text(serialized))}</code></p>"
+    entries = _wire_list(serialized.get("entries"))
+    if not entries:
+        return "<p><code>{}</code></p>"
+    rows = []
+    for raw_entry in entries:
+        entry = _wire_dict(raw_entry)
+        key = html.escape(_native_value_text(entry.get("key")))
+        value = html.escape(_native_value_text(entry.get("value")))
+        rows.append(f"<li><code>{key}={value}</code></li>")
+    if serialized.get("truncated") is True:
+        original_size = html.escape(str(serialized.get("original_size", "unknown")))
+        rows.append(f"<li>Inputs truncated from {original_size} entries.</li>")
+    return "<ul>" + "".join(rows) + "</ul>"
+
+
+def _failed_run_and_item(
+    kind: str,
+    data: dict[str, object],
+) -> tuple[dict[str, object], object | None]:
+    if kind == "run":
+        return data, data.get("item_index")
+    for raw_item in _wire_list(data.get("items")):
+        item = _wire_dict(raw_item)
+        run = _wire_dict(item.get("run"))
+        if not run:
+            continue
+        nodes = [_wire_dict(node) for node in _wire_list(run.get("nodes"))]
+        if (
+            item.get("status") == "failed"
+            or _wire_list(run.get("failures"))
+            or run.get("error") is not None
+            or any(node.get("status") == "failed" for node in nodes)
+        ):
+            return run, item.get("item_index")
+    return {}, None
+
+
+def _first_failure_and_node(
+    run: dict[str, object],
+) -> tuple[dict[str, object], dict[str, object]]:
+    failures = [_wire_dict(failure) for failure in _wire_list(run.get("failures"))]
+    failure = failures[0] if failures else {}
+    nodes = [_wire_dict(node) for node in _wire_list(run.get("nodes"))]
+    failed_node = next((node for node in nodes if _wire_dict(node.get("failure"))), {})
+    if not failed_node and failure:
+        failed_node = next(
+            (node for node in nodes if node.get("node_name") == failure.get("node_name")),
+            {},
+        )
+    if not failed_node:
+        failed_node = next((node for node in nodes if node.get("status") == "failed"), {})
+    if not failure:
+        failure = _wire_dict(failed_node.get("failure"))
+    return failure, failed_node
+
+
+def _failure_count(
+    kind: str,
+    data: dict[str, object],
+    message: dict[str, object],
+) -> int:
+    if kind == "run":
+        failures = _wire_list(data.get("failures"))
+        return len(failures) or int(data.get("error") is not None or bool(message))
+    total = 0
+    for raw_item in _wire_list(data.get("items")):
+        run = _wire_dict(_wire_dict(raw_item).get("run"))
+        if not run:
+            continue
+        failures = _wire_list(run.get("failures"))
+        total += len(failures) or int(run.get("error") is not None)
+    total += int(data.get("error") is not None)
+    total += int(bool(message))
+    return total
+
+
+def _native_failure_markup(
+    *,
+    kind: str,
+    data: dict[str, object],
+    message: dict[str, object],
+) -> str:
+    run, item_index = _failed_run_and_item(kind, data)
+    failure, node = _first_failure_and_node(run)
+    node_failure = _wire_dict(node.get("failure"))
+    error = _wire_dict(failure.get("error"))
+    if not error:
+        error = _wire_dict(node_failure.get("error"))
+    if not error:
+        error = _wire_dict(run.get("error"))
+    if not error:
+        error = _wire_dict(data.get("error"))
+    if not error:
+        error = message
+    inputs = failure.get("inputs") or node_failure.get("inputs") or node.get("inputs")
+    qualified_name = node.get("qualified_name") or failure.get("node_name")
+    if not (error or inputs is not None or qualified_name is not None):
+        return ""
+
+    is_start_error = bool(message) and not (failure or qualified_name is not None or run.get("error") is not None or data.get("error") is not None)
+    if item_index is not None:
+        title = f"Item {item_index} failure"
+    elif is_start_error:
+        title = "Start failure"
+    elif kind == "map" and not run:
+        title = "Batch failure"
+    else:
+        title = "Run failure"
+
+    total_failures = max(1, _failure_count(kind, data, message))
+    title = f"{title} — First failure of {total_failures}"
+    facts: list[str] = []
+    if item_index is not None:
+        facts.append(f"<p>Original item: <code>{html.escape(str(item_index))}</code></p>")
+    if qualified_name is not None:
+        facts.append(f"<p>Qualified node: <code>{html.escape(str(qualified_name))}</code></p>")
+    if inputs is not None:
+        facts.append("<p>Captured inputs:</p>")
+        facts.append(_native_inputs_markup(inputs))
+    if error:
+        error_type = html.escape(str(error.get("type_name") or "Error"))
+        error_text = html.escape(_native_value_text(error))
+        facts.append(f"<p>Exact exception: <code>{error_type}: {error_text}</code></p>")
+
+    if kind == "map" and item_index is not None and failure:
+        code = (
+            "failed = next(\n"
+            "    item for item in batch.failures\n"
+            "    if item.failure is not None\n"
+            f"    and item.failure.item_index == {item_index}\n"
+            ")\n"
+            "failure = failed.failure\n"
+            "print(failure.inputs)\n"
+            "print(failure.error)"
+        )
+    elif kind == "run" and failure:
+        code = "failure = result.failure\nprint(failure.inputs)\nprint(failure.error)"
+    elif is_start_error:
+        code = "result = runner.run(graph, values, inspect=True)\nresult.inspect()"
+    elif kind == "map":
+        code = "print(batch.error)"
+    else:
+        code = "print(result.error)"
+    facts.append(f"<p>Smallest useful result evidence:</p><pre><code>{html.escape(code)}</code></pre>")
+    facts.append(f"<p>Debugging guide: <code>{_DEBUG_WORKFLOWS_DOC}</code></p>")
+    return f"<details data-hg-inspect-native-failure><summary>{html.escape(title)}</summary>{''.join(facts)}</details>"
+
+
+def _native_summary_markup(
+    envelope: InspectionEnvelope,
+    payload: dict[str, object],
+    message: dict[str, object],
+) -> str:
+    kind = cast(str, payload["kind"])
+    data = _wire_dict(payload[kind])
+    delivery = _wire_dict(payload.get("delivery"))
+    delivery_label = html.escape(str(delivery.get("label") or envelope.delivery.label))
+    graph_name = html.escape(str(data.get("graph_name") or "Hypergraph execution"))
+    status = html.escape(str(data.get("status") or "unknown"))
+    if kind == "map":
+        counts = _wire_dict(data.get("counts"))
+        completed = html.escape(str(counts.get("completed", 0)))
+        failed = html.escape(str(counts.get("failed", 0)))
+        unstarted = html.escape(str(counts.get("unstarted", 0)))
+        counts_markup = (
+            f"<dt>Completed</dt><dd data-hg-inspect-native-completed>{completed}</dd>"
+            f"<dt>Failed</dt><dd data-hg-inspect-native-failed>{failed}</dd>"
+            f"<dt>Unstarted</dt><dd>{unstarted}</dd>"
+        )
+    else:
+        nodes = [_wire_dict(node) for node in _wire_list(data.get("nodes"))]
+        completed = sum(node.get("status") == "completed" for node in nodes)
+        failed = sum(node.get("status") == "failed" for node in nodes)
+        counts_markup = (
+            f"<dt>Completed nodes</dt><dd data-hg-inspect-native-completed>{completed}</dd>"
+            f"<dt>Failed nodes</dt><dd data-hg-inspect-native-failed>{failed}</dd>"
+        )
+    failure_markup = _native_failure_markup(
+        kind=kind,
+        data=data,
+        message=message,
+    )
+    return (
+        f'<section data-hg-inspect-native-summary="{html.escape(envelope.widget_id, quote=True)}" '
+        'aria-label="Saved execution summary">'
+        f"<p><strong>{delivery_label}</strong> — {graph_name}</p>"
+        f"<dl><dt>Status</dt><dd><code>{status}</code></dd>{counts_markup}</dl>"
+        f"{failure_markup}"
+        "</section>"
+    )
+
+
 def _portable_fallback_markup(
     envelope: InspectionEnvelope,
     payload: dict[str, object],
+    message: dict[str, object],
 ) -> str:
     renderer = render_inspection_payload(payload)
     child_document = (
@@ -280,11 +522,13 @@ def _portable_fallback_markup(
         if envelope.message is not None
         else ""
     )
+    native_summary = _native_summary_markup(envelope, payload, message)
     return (
         f"{exact_error}"
         f'<div data-hg-inspect-channel-fallback="{html.escape(envelope.widget_id, quote=True)}" '
         f'data-hg-inspect-portable-sequence="{envelope.sequence}" '
         f'data-delivery-state="{html.escape(envelope.delivery.state, quote=True)}">'
+        f"{native_summary}"
         f'<iframe name="{html.escape(frame_name, quote=True)}" '
         f'data-hg-inspect-portable-frame="{html.escape(envelope.widget_id, quote=True)}" '
         'title="Hypergraph saved execution inspection" sandbox="allow-scripts" '
@@ -299,13 +543,14 @@ def render_payload_channel(envelope: InspectionEnvelope) -> str:
     """Render one display-ID value, portable only at terminal/stale settlement."""
     wire = inspection_envelope_to_wire(envelope)
     payload = cast(dict[str, object], wire["payload"])
+    message = _wire_dict(wire.get("message"))
     encoded = _script_safe_json(wire)
     channel_dom_id = _dom_id(envelope.widget_id, f"payload-output-s{envelope.sequence}")
     key = _script_safe_json(f"{envelope.widget_id}::{envelope.nonce}")
     fallback_state = "waiting" if envelope.delivery.state == "live" else envelope.delivery.state
     portable = envelope.artifact.terminal or envelope.delivery.state == "stale"
     fallback = (
-        _portable_fallback_markup(envelope, payload)
+        _portable_fallback_markup(envelope, payload, message)
         if portable
         else (
             f'<div data-hg-inspect-channel-fallback="{html.escape(envelope.widget_id, quote=True)}" '
@@ -324,6 +569,8 @@ def render_payload_channel(envelope: InspectionEnvelope) -> str:
         "<script data-hg-inspect-channel-runtime>(function(){"
         "var channel=document.currentScript.closest('[data-hg-inspect-channel]');"
         "if(!channel)return;"
+        "var nativeSummary=channel.querySelector('section[aria-label=\"Saved execution summary\"]');"
+        "if(nativeSummary)nativeSummary.hidden=true;"
         "var source=channel.querySelector('[data-hg-inspect-envelope]');"
         "if(!source)return;"
         "var envelope=JSON.parse(source.textContent||'{}');"

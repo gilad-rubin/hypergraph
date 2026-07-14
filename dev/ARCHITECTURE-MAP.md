@@ -40,11 +40,11 @@ semantic core
 execution kernel
   runners + scheduling + supersteps + staleness + gate activation
 
-durability and inspection
+durability and history inspection
   checkpointers + lineage + snapshots + query adapters + HTML presenters
 
-observability and UX surfaces
-  events + run logs + widgets + viz
+observability and current-process UX surfaces
+  events + run logs + result-owned inspect views + widgets + viz
 
 optional integrations
   runner implementations that project the core model into another runtime
@@ -294,7 +294,7 @@ Nested execution is where the execution kernel touches almost every other subsys
 
 That makes `graph_node.py` executors one of the highest-risk change zones in the repo.
 
-## Zone 3: Durability And Inspection
+## Zone 3: Durability And History Inspection
 
 This zone grew substantially and deserves to be treated as a first-class subsystem.
 
@@ -347,7 +347,7 @@ Architecturally, the important point is:
 
 1. **runtime durability**
    - runners call checkpointer methods during execution
-2. **inspection**
+2. **durable history inspection**
    - notebooks and scripts query persisted runs without participating in execution
 
 That split is why `inspection.py` exists. It keeps inspection consumers from reaching directly into backend-specific helper methods.
@@ -413,6 +413,35 @@ Important exported types:
 - `NodeStats`
 
 These are not optional debugging extras anymore. They are part of the user-facing execution contract.
+
+### Current-Process Execution Inspection
+
+Key files:
+
+- `src/hypergraph/runners/inspection.py` — public `InspectionDisplay`
+- `src/hypergraph/runners/_shared/_inspect.py` — typed result-owned artifact and capture sessions
+- `src/hypergraph/runners/_shared/_inspect_html.py` — shared payload and offline renderer shell
+- `src/hypergraph/runners/_shared/_inspect_serialization.py` — bounded observational value serialization
+- `src/hypergraph/runners/_shared/_inspect_transport.py` — live/saved notebook transport and trust-safe terminal fallback
+- `src/hypergraph/runners/_shared/assets/inspect.css`
+- `src/hypergraph/runners/_shared/assets/inspect.js`
+- `src/hypergraph/runners/_shared/assets/inspect_transport.js`
+
+This surface is current-process and result-owned. Passing `inspect=True`
+captures successful-node values for the current run/map; settled
+`RunResult.inspect()` / `MapResult.inspect()` return `InspectionDisplay`. It
+does not require a checkpointer and does not make execution history durable.
+
+Before, “inspection” in this map meant only querying persisted checkpointer
+records. After, the two contracts are explicit:
+
+```text
+current execution -> inspect=True -> result.inspect() -> InspectionDisplay
+durable history   -> Checkpointer -> persisted runs/steps -> history queries
+```
+
+Use a checkpointer only when resume, fork, retry, restart, or cross-process
+history is part of the requirement.
 
 ### Visualization
 
@@ -486,6 +515,7 @@ High-level public families in `src/hypergraph/__init__.py`:
 - events and processors
 - caches
 - checkpointer types
+- `InspectionDisplay`
 
 Notably, the public surface now includes:
 
@@ -527,7 +557,16 @@ src/hypergraph/
 │
 ├── runners/                          execution kernel
 │   ├── base.py
+│   ├── inspection.py                 public InspectionDisplay
 │   ├── _shared/
+│   │   ├── _inspect.py
+│   │   ├── _inspect_html.py
+│   │   ├── _inspect_serialization.py
+│   │   ├── _inspect_transport.py
+│   │   ├── assets/
+│   │   │   ├── inspect.css
+│   │   │   ├── inspect.js
+│   │   │   └── inspect_transport.js
 │   │   ├── scheduling.py
 │   │   ├── readiness.py
 │   │   ├── value_resolution.py
@@ -657,7 +696,8 @@ Use these terms when discussing changes:
 - **scheduler**: readiness, staleness, activation, SCC progression
 - **hierarchy bridge**: `GraphNode` and nested execution behavior
 - **durability layer**: checkpointers, snapshots, lineage, persistence semantics
-- **inspection surface**: notebook and script querying of persisted runs
+- **current-process inspection**: `inspect=True`, result-owned capture, and public `InspectionDisplay`; no checkpointer required
+- **durable history inspection**: notebook and script querying of persisted checkpointer runs
 - **observability layer**: events and run logs
 - **viz projection**: flat graph + render pipeline + HTML/widget output
 - **integration runner**: alternate runtime like Daft that projects the core model elsewhere
