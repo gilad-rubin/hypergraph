@@ -55,14 +55,23 @@
   when a transient failure disappeared on recovery, and full-renderer
   run-boundary, batch-boundary, and start-failure views omitted the recovery
   policy already shown by the native summary. Now both surfaces use captured
-  sync/async provenance, print the settled successful result or batch when no
-  matching failure remains, and emit no runner call when provenance is unknown.
+  sync/async provenance. Each retry assignment is inside `try`/`except` and
+  uses `error_handling="continue"`: a persistent infrastructure exception
+  prints its real type and message without reading an unbound result, while a
+  transient boundary prints the settled successful result or batch. A returned
+  failed result prints its real run/item error; map evidence uses
+  `batch.failures` or the original item position and never a nonexistent
+  `MapResult.error`. Unknown provenance still emits no runner call.
   Before, primary **Show failure** selection on a nested mapped graph could stop
-  at the aggregate `review_group` container and show its list input. Now the
+  at the aggregate container (`review_group`) and show its list input. Now the
   full inspector and native summary correlate the containing outer item to the
   explicit slash-qualified failing leaf, such as
   `review_group/review_customer`, with its scalar failing input while retaining
-  distinct peer failures.
+  distinct peer failures. Correlation is established from raw Python evidence
+  before error/input presentation serialization and carried by an opaque
+  internal occurrence identity: changing `repr()` output is never identity,
+  no object address, input value, or secret enters the key, and a missing exact
+  leaf fails closed at the run boundary instead of borrowing the container.
 
 - **Trust-safe saved inspect evidence** — before, a notebook that treated new
   output as untrusted could strip scripts, styles, iframes, and identifiers,

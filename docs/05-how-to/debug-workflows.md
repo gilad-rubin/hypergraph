@@ -373,13 +373,15 @@ Recovery code follows the captured runner kind. Sync snippets call
 `runner.run(...)` or `runner.map(...)` directly; async snippets use
 `await runner.run(...)` or `await runner.map(...)`. If the runner kind was not
 captured, the summary says recovery code is unavailable instead of guessing
-sync. If a run may not return under the default raise policy, the snippet first
-reruns with `error_handling="continue"`, so `result` or `batch` exists before it
-is read. If that recovery no longer reproduces a transient failure, it prints
-the settled successful result or batch instead of dereferencing `None`, raising
-`StopIteration`, or inventing failure evidence. Node, run-boundary,
-batch-boundary, and start-failure views follow this same provenance policy in
-both the full inspector and native summary.
+sync. Each retry assignment is inside `try`/`except` and uses
+`error_handling="continue"`. A persistent infrastructure exception therefore
+prints its real type and message without reading an unbound result. In the
+`else` branch, a transient recovery prints the settled successful result or
+batch; a returned failed result prints its real run or item error. Map snippets
+read `batch.failures` or the original item position and never read a nonexistent
+`MapResult.error`. Node, run-boundary, batch-boundary, and start-failure views
+follow this same provenance policy in both the full inspector and native
+summary.
 
 For a nested mapped graph, **Show failure** correlates the containing outer item
 to the explicit slash-qualified failing leaf. The selected execution, heading,
@@ -387,7 +389,12 @@ input, exception, and recovery evidence therefore show
 `review_group/review_customer` plus the failing scalar input—not the aggregate
 `review_group` container and its list input. An explicit failure with no stable
 node-identity match keeps its own name, inputs, and error instead of borrowing a
-same-name node's qualified path.
+same-name node's qualified path. Correlation is established from raw Python
+evidence before error or input presentation is serialized, then carried by an
+opaque internal occurrence identity. Changing `repr()` output is never
+identity, and the internal identity contains no object address, input value, or
+secret. If the exact slash-qualified leaf is absent, **Show failure** stays at
+the run boundary instead of selecting the aggregate container.
 
 Before (misleading async recovery):
 
@@ -434,6 +441,32 @@ if failure is None:
 else:
     print(failure.inputs)
     print(failure.error)
+```
+
+Before (a boundary retry can raise or print `None`):
+
+```python
+result = runner.run(graph, values, inspect=True, error_handling="continue")
+print(result.error)
+```
+
+After (the assignment and evidence read are both guarded):
+
+```python
+try:
+    result = runner.run(
+        graph,
+        values,
+        inspect=True,
+        error_handling="continue",
+    )
+except Exception as error:
+    print(f"{type(error).__name__}: {error}")
+else:
+    if result.error is None:
+        print(result)
+    else:
+        print(f"{type(result.error).__name__}: {result.error}")
 ```
 
 ```text

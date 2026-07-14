@@ -1332,21 +1332,26 @@ Recovery snippets use public runner and result APIs. Sync snippets call
 `runner.run(...)` or `runner.map(...)` directly; async snippets use
 `await runner.run(...)` or `await runner.map(...)`. When the runner kind was
 not captured, inspection says recovery code is unavailable instead of choosing
-sync. A snippet never reads a nonexistent `MapResult.error` or a result that
-was not returned: result-oriented snippets rerun with
-`error_handling="continue"` before reading `result.failure`, `result.error`, or
-`batch.failures`. If a continue-mode rerun succeeds because the failure was
-transient, the copied snippet prints the settled successful result or batch;
-it does not dereference `None`, raise `StopIteration`, or fabricate evidence.
-Node, run-boundary, batch-boundary, and start-failure views use that same
-provenance-aware policy in the full inspector and native summary.
+sync. Each retry assignment is inside `try`/`except` and uses
+`error_handling="continue"`. A persistent infrastructure exception prints its
+real type and message without reading an unbound result. The `else` branch
+prints the settled successful result or batch when the boundary clears, or the
+real returned run/item error when it does not. A map snippet reads
+`batch.failures` or the original item position; it never reads a nonexistent
+`MapResult.error`. Node, run-boundary, batch-boundary, and start-failure views
+use that same provenance-aware policy in the full inspector and native summary.
 
 For nested mapped graphs, **Show failure** correlates the containing outer item
 with the explicit slash-qualified failing leaf. The selected heading, scalar
 input, exception, and recovery evidence name the leaf rather than the aggregate
-GraphNode container or its list input. An explicit failure without a stable
+container (`GraphNode`) or its list input. An explicit failure without a stable
 node match keeps its own name, inputs, and error; node name alone is never a
-lookup key.
+lookup key. Hypergraph establishes correlation from raw Python evidence before
+serializing error or input presentation and carries only an opaque internal
+occurrence identity into the renderer. Changing `repr()` output is never
+identity, and no object address, input value, or secret is placed in that key.
+If the exact slash-qualified failing leaf is absent, selection stays at the run
+boundary rather than borrowing the aggregate container.
 
 Before, an untrusted terminal record could be blank while Python had already
 settled at `partial / 2 completed / 1 failed`. After, Maya can expand native

@@ -22,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from importlib.resources import files
+from textwrap import indent
 from typing import Literal, Protocol, cast
 
 from hypergraph._repr import plain_reprs
@@ -394,59 +395,44 @@ def _first_failure_and_node(
     *,
     containing_item_index: object | None,
 ) -> tuple[dict[str, object], dict[str, object]]:
+    # Outer/inner projection is resolved into failure_key before serialization.
+    _ = containing_item_index
     failures = [_wire_dict(failure) for failure in _wire_list(run.get("failures"))]
     failure = failures[0] if failures else {}
     nodes = [_wire_dict(node) for node in _wire_list(run.get("nodes"))]
     if failure:
-        matching_nodes = [
-            node
-            for node in nodes
-            if _node_matches_failure(
-                node,
-                failure,
-                containing_item_index=containing_item_index,
-            )
-        ]
+        matching_nodes = [node for node in nodes if _node_matches_failure(node, failure)]
         failed_node = next(
             (node for node in matching_nodes if node.get("qualified_name") == failure.get("node_name")),
-            matching_nodes[0] if matching_nodes else {},
+            {},
         )
     else:
-        failed_node = next((node for node in nodes if _wire_dict(node.get("failure"))), {})
-        if not failed_node:
+        nodes_with_failure = [node for node in nodes if _wire_dict(node.get("failure"))]
+        failed_node = next(
+            (node for node in nodes_with_failure if node.get("qualified_name") == _wire_dict(node.get("failure")).get("node_name")),
+            {},
+        )
+        if failed_node:
+            failure = _wire_dict(failed_node.get("failure"))
+        elif nodes_with_failure:
+            failure = _wire_dict(nodes_with_failure[0].get("failure"))
+        else:
             failed_node = next(
                 (node for node in nodes if node.get("status") == "failed"),
                 {},
             )
-        failure = _wire_dict(failed_node.get("failure"))
     return failure, failed_node
 
 
 def _node_matches_failure(
     node: dict[str, object],
     failure: dict[str, object],
-    *,
-    containing_item_index: object | None,
 ) -> bool:
     if not failure:
         return False
     node_failure = _wire_dict(node.get("failure"))
-    failure_fields = (
-        "node_name",
-        "superstep",
-        "graph_name",
-        "workflow_id",
-        "duration_ms",
-        "error",
-        "inputs",
-    )
-    if node_failure:
-        same_facts = all(node_failure.get(field) == failure.get(field) for field in failure_fields)
-        same_item = node_failure.get("item_index") == failure.get("item_index")
-        projected_outer_item = containing_item_index is not None and failure.get("item_index") == containing_item_index
-        return same_facts and (same_item or projected_outer_item)
-    node_fields = ("node_name", "superstep", "graph_name", "item_index")
-    return all(node.get(field) == failure.get(field) for field in node_fields)
+    failure_key = failure.get("failure_key")
+    return type(failure_key) is str and bool(failure_key) and node_failure.get("failure_key") == failure_key
 
 
 def _native_exception_markup(
@@ -497,47 +483,47 @@ def _runner_await_prefix(data: dict[str, object]) -> str | None:
     return None
 
 
-def _rerun_exception_code(kind: str, data: dict[str, object]) -> str | None:
+def _rerun_call(
+    kind: str,
+    data: dict[str, object],
+    *,
+    indentation: str,
+) -> str | None:
     await_prefix = _runner_await_prefix(data)
     if await_prefix is None:
         return None
     if kind == "map":
         map_over_literal, map_mode_literal = _map_rerun_literals(data)
         return (
-            "try:\n"
-            f"    {await_prefix}runner.map(\n"
-            "        graph,\n"
-            "        values,\n"
-            f"        map_over={map_over_literal},\n"
-            f"        map_mode={map_mode_literal},\n"
-            "        inspect=True,\n"
-            "    )\n"
-            "except Exception as error:\n"
-            '    print(f"{type(error).__name__}: {error}")'
+            f"{indentation}batch = {await_prefix}runner.map(\n"
+            f"{indentation}    graph,\n"
+            f"{indentation}    values,\n"
+            f"{indentation}    map_over={map_over_literal},\n"
+            f"{indentation}    map_mode={map_mode_literal},\n"
+            f"{indentation}    inspect=True,\n"
+            f'{indentation}    error_handling="continue",\n'
+            f"{indentation})"
         )
     return (
-        f"try:\n    {await_prefix}runner.run(graph, values, inspect=True)\n"
-        'except Exception as error:\n    print(f"{type(error).__name__}: {error}")'
+        f"{indentation}result = {await_prefix}runner.run(\n"
+        f"{indentation}    graph,\n"
+        f"{indentation}    values,\n"
+        f"{indentation}    inspect=True,\n"
+        f'{indentation}    error_handling="continue",\n'
+        f"{indentation})"
     )
 
 
-def _continue_rerun_code(kind: str, data: dict[str, object]) -> str | None:
-    await_prefix = _runner_await_prefix(data)
-    if await_prefix is None:
+def _guarded_rerun_code(
+    kind: str,
+    data: dict[str, object],
+    *,
+    settled_code: str,
+) -> str | None:
+    rerun_call = _rerun_call(kind, data, indentation="    ")
+    if rerun_call is None:
         return None
-    if kind == "map":
-        map_over_literal, map_mode_literal = _map_rerun_literals(data)
-        return (
-            f"batch = {await_prefix}runner.map(\n"
-            "    graph,\n"
-            "    values,\n"
-            f"    map_over={map_over_literal},\n"
-            f"    map_mode={map_mode_literal},\n"
-            "    inspect=True,\n"
-            '    error_handling="continue",\n'
-            ")\n"
-        )
-    return f'result = {await_prefix}runner.run(\n    graph,\n    values,\n    inspect=True,\n    error_handling="continue",\n)\n'
+    return f'try:\n{rerun_call}\nexcept Exception as error:\n    print(f"{{type(error).__name__}}: {{error}}")\nelse:\n{indent(settled_code, "    ")}'
 
 
 def _run_failure_count(
@@ -641,51 +627,77 @@ def _native_failure_markup(
         }.get(source, "Exact exception")
         facts.append(_native_exception_markup(error, exact_label=exact_label))
 
-    rerun = _continue_rerun_code(kind, data)
     if kind == "map" and item_index is not None and failure:
-        code = (
-            rerun
-            + (
-                "failure = next(\n"
-                "    (\n"
-                "        item.failure\n"
-                "        for item in batch.failures\n"
-                "        if item.failure is not None\n"
-                f"        and item.failure.item_index == {item_index!r}\n"
-                "    ),\n"
-                "    None,\n"
-                ")\n"
-                "if failure is None:\n"
-                "    print(batch)\n"
-                "else:\n"
-                "    print(failure.inputs)\n"
-                "    print(failure.error)"
-            )
-            if rerun is not None
-            else None
+        settled_code = (
+            "failure = next(\n"
+            "    (\n"
+            "        item.failure\n"
+            "        for item in batch.failures\n"
+            "        if item.failure is not None\n"
+            f"        and item.failure.item_index == {item_index!r}\n"
+            "    ),\n"
+            "    None,\n"
+            ")\n"
+            "if failure is None:\n"
+            "    print(batch)\n"
+            "else:\n"
+            "    print(failure.inputs)\n"
+            "    print(failure.error)"
+        )
+        code = _guarded_rerun_code(
+            kind,
+            data,
+            settled_code=settled_code,
         )
     elif kind == "run" and failure:
-        code = (
-            rerun
-            + "failure = result.failure\n"
-            + "if failure is None:\n"
-            + "    print(result)\n"
-            + "else:\n"
-            + "    print(failure.inputs)\n"
-            + "    print(failure.error)"
-            if rerun is not None
-            else None
+        code = _guarded_rerun_code(
+            kind,
+            data,
+            settled_code=(
+                "failure = result.failure\nif failure is None:\n    print(result)\nelse:\n    print(failure.inputs)\n    print(failure.error)"
+            ),
         )
-    elif source in {"start", "batch"}:
-        code = _rerun_exception_code(kind, data)
     elif source == "run" and kind == "map":
-        code = rerun + "for failed in batch.failures:\n    if failed.error is not None:\n        print(failed.error)" if rerun is not None else None
-    elif source == "status" and kind == "map":
-        code = rerun + "for failed in batch.failures:\n    print(failed.summary())" if rerun is not None else None
+        code = _guarded_rerun_code(
+            kind,
+            data,
+            settled_code=(
+                'items = getattr(batch, "results", ())\n'
+                "failed = (\n"
+                f"    items[{item_index!r}]\n"
+                '    if not getattr(batch, "unstarted_item_indexes", ())\n'
+                f"    and 0 <= {item_index!r} < len(items)\n"
+                "    else None\n"
+                ")\n"
+                "if failed is None or failed.error is None:\n"
+                "    print(batch)\n"
+                "else:\n"
+                '    print(f"{type(failed.error).__name__}: {failed.error}")'
+            ),
+        )
+    elif kind == "map":
+        code = _guarded_rerun_code(
+            kind,
+            data,
+            settled_code=(
+                "errors = [\n"
+                "    failed.error\n"
+                "    for failed in batch.failures\n"
+                "    if failed.error is not None\n"
+                "]\n"
+                "if not errors:\n"
+                "    print(batch)\n"
+                "else:\n"
+                "    for error in errors:\n"
+                '        print(f"{type(error).__name__}: {error}")'
+            ),
+        )
     else:
-        code = rerun
-        if code is not None:
-            code += "print(result.error)" if source == "run" else "print(result.summary())"
+        code = _guarded_rerun_code(
+            kind,
+            data,
+            settled_code=('if result.error is None:\n    print(result)\nelse:\n    print(f"{type(result.error).__name__}: {result.error}")'),
+        )
     code_label = "Smallest useful recovery code" if source in {"start", "batch"} else "Smallest useful result evidence"
     if code is not None:
         facts.append(f"<p>{code_label}:</p><pre><code>{_native_wrappable_markup(code)}</code></pre>")

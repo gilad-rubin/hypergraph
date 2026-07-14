@@ -586,7 +586,7 @@ Normalization: volatile run/span IDs and timings only; statuses, original indexe
     grid-template-columns: 1fr;
   }
 }
-</style><section class="hg-inspect hg-inspect-map" data-hypergraph-inspect="map" data-inspect-schema="hypergraph.inspect/v1"><header class="hg-inspect-header"><div><div class="hg-inspect-eyebrow">Hypergraph inspect</div><h2 class="hg-inspect-title" data-hg-title>Loading inspection…</h2><code class="hg-inspect-run-id" data-hg-run-id></code></div><div class="hg-inspect-header-meta"><span class="hg-inspect-delivery" data-hg-delivery><span class="hg-inspect-dot" aria-hidden="true"></span><span data-hg-delivery-label>Saved snapshot</span></span><span class="hg-inspect-badge" data-hg-sequence></span></div></header><div class="hg-inspect-summary" data-hg-summary aria-label="Execution summary"></div><div class="hg-inspect-alert" data-hg-alert role="status" aria-live="polite" hidden><span data-hg-alert-text></span><button type="button" class="hg-inspect-button" data-action="show-failure" data-hg-show-failure>Show failure</button></div><div class="hg-inspect-body" data-hg-body data-kind="map"><aside class="hg-inspect-items" data-hg-items aria-label="Map items"><div class="hg-inspect-section-title">Items</div><label class="hg-inspect-field-label">Status<select class="hg-inspect-select" data-hg-filter><option value="all">All</option><option value="failed">Failed</option><option value="running">Running</option><option value="completed">Completed</option><option value="restored">Restored</option><option value="unstarted">Unstarted</option></select></label><div class="hg-inspect-item-list" data-hg-item-list></div><div class="hg-inspect-pager"><button type="button" class="hg-inspect-button" data-action="prev-page" data-hg-prev-page>Prev</button><span data-hg-page-label></span><button type="button" class="hg-inspect-button" data-action="next-page" data-hg-next-page>Next</button></div></aside><main class="hg-inspect-main" data-hg-main><nav class="hg-inspect-tabs" role="tablist" aria-label="Inspect view"><button type="button" class="hg-inspect-tab" role="tab" data-action="view" data-hg-view="items">Items</button><button type="button" class="hg-inspect-tab" role="tab" data-action="view" data-hg-view="timeline">Timeline</button><button type="button" class="hg-inspect-tab" role="tab" data-action="view" data-hg-view="graph">Graph</button></nav><section class="hg-inspect-panel" role="tabpanel" data-hg-panel="items"></section><section class="hg-inspect-panel" role="tabpanel" data-hg-panel="timeline"></section><section class="hg-inspect-panel" role="tabpanel" data-hg-panel="graph"></section></main><aside class="hg-inspect-detail" data-hg-detail aria-label="Selected execution details"></aside></div><footer class="hg-inspect-footer"><span data-hg-state-proof>View state is local to this snapshot.</span><span data-hg-delivery-note>Saved output is locally interactive without a kernel or network.</span></footer><noscript>JavaScript is required for local drill-down; the semantic payload remains embedded in this saved output.</noscript><script type="application/json" data-hg-inspect-payload>{"schema":"hypergraph.inspect/v1","kind":"map","default_view":"items","delivery":{"state":"saved","label":"Saved snapshot"},"map":{"run_id":"reference-batch","graph_name":"customer-review","workflow_id":null,"status":"partial","map_over":["customer_id","lifetime_value"],"map_mode":"zip","requested_count":3,"total_duration_ms":0.0,"captured":true,"terminal":true,"runner_kind":"sync","error":null,"counts":{"requested":3,"claimed":3,"completed":2,"failed":1,"running":0,"paused":0,"stopped":0,"restored":0,"unstarted":0,"pending":0},"items":[{"item_index":0,"status":"completed","requested_inputs":{"kind":"mapping","type_name":"mappingproxy","original_size":2,"entries":[{"key":{"kind":"text","type_name":"str","text":"customer_id","original_size":11},"value":{"kind":"text","type_name":"str","text":"alex-10","original_size":7}},{"key":{"kind":"text","type_name":"str","text":"lifetime_value","original_size":14},"value":{"kind":"number","type_name":"int","value":2400}}]},"run":{"run_id":"reference-item-0","graph_name":"customer-review","workflow_id":null,"item_index":0,"status":"completed","total_duration_ms":0.0,"captured":true,"terminal":true,"runner_kind":"sync","error":null,"nodes":[{"run_id":"reference-item-0","span_id":"reference-item-0-span-0","node_name":"score_customer","qualified_name":"score_customer","graph_name":"customer-review","item_index":0,"superstep":0,"sequence":0,"status":"completed","values_captured":true,"inputs":{"kind":"mapping","type_name":"mappingproxy","original_size":2,"entries":[{"key":{"kind":"text","type_name":"str","text":"customer_id","original_size":11},"value":{"kind":"text","type_name":"str","text":"alex-10","original_size":7}},{"key":{"kind":"text","type_name":"str","text":"lifetime_value","original_size":14},"value":{"kind":"number","type_name":"int","value":2400}}]},"outputs":{"kind":"mapping","type_name":"mappingproxy","original_size":1,"entries":[{"key":{"kind":"text","type_name":"str","text":"risk_score","original_size":10},"value":{"kind":"number","type_name":"int","value":10}}]},"failure":null,"started_at_ms":0.0,"ended_at_ms":0.0,"duration_ms":0.0,"cached":false},{"run_id":"reference-item-0","span_id":"reference-item-0-span-1","node_name":"choose_review_action","qualified_name":"choose_review_action","graph_name":"customer-review","item_index":0,"superstep":1,"sequence":1,"status":"completed","values_captured":true,"inputs":{"kind":"mapping","type_name":"mappingproxy","original_size":1,"entries":[{"key":{"kind":"text","type_name":"str","text":"risk_score","original_size":10},"value":{"kind":"number","type_name":"int","value":10}}]},"outputs":{"kind":"mapping","type_name":"mappingproxy","original_size":1,"entries":[{"key":{"kind":"text","type_name":"str","text":"review_action","original_size":13},"value":{"kind":"text","type_name":"str","text":"approve","original_size":7}}]},"failure":null,"started_at_ms":0.0,"ended_at_ms":0.0,"duration_ms":0.0,"cached":false}],"failures":[]},"restored":false},{"item_index":1,"status":"failed","requested_inputs":{"kind":"mapping","type_name":"mappingproxy","original_size":2,"entries":[{"key":{"kind":"text","type_name":"str","text":"customer_id","original_size":11},"value":{"kind":"text","type_name":"str","text":"maya-23","original_size":7}},{"key":{"kind":"text","type_name":"str","text":"lifetime_value","original_size":14},"value":{"kind":"number","type_name":"int","value":1200}}]},"run":{"run_id":"reference-item-1","graph_name":"customer-review","workflow_id":null,"item_index":1,"status":"failed","total_duration_ms":0.0,"captured":true,"terminal":true,"runner_kind":"sync","error":{"kind":"exception","type_name":"ValueError","text":"Customer maya-23 requires manual review","original_size":39},"nodes":[{"run_id":"reference-item-1","span_id":"reference-item-1-span-0","node_name":"score_customer","qualified_name":"score_customer","graph_name":"customer-review","item_index":1,"superstep":0,"sequence":0,"status":"failed","values_captured":true,"inputs":{"kind":"mapping","type_name":"mappingproxy","original_size":2,"entries":[{"key":{"kind":"text","type_name":"str","text":"customer_id","original_size":11},"value":{"kind":"text","type_name":"str","text":"maya-23","original_size":7}},{"key":{"kind":"text","type_name":"str","text":"lifetime_value","original_size":14},"value":{"kind":"number","type_name":"int","value":1200}}]},"outputs":null,"failure":{"node_name":"score_customer","error":{"kind":"exception","type_name":"ValueError","text":"Customer maya-23 requires manual review","original_size":39},"inputs":{"kind":"mapping","type_name":"dict","original_size":2,"entries":[{"key":{"kind":"text","type_name":"str","text":"customer_id","original_size":11},"value":{"kind":"text","type_name":"str","text":"maya-23","original_size":7}},{"key":{"kind":"text","type_name":"str","text":"lifetime_value","original_size":14},"value":{"kind":"number","type_name":"int","value":1200}}]},"superstep":0,"duration_ms":0.0,"graph_name":"customer-review","workflow_id":null,"item_index":1},"started_at_ms":0.0,"ended_at_ms":0.0,"duration_ms":0.0,"cached":false}],"failures":[{"node_name":"score_customer","error":{"kind":"exception","type_name":"ValueError","text":"Customer maya-23 requires manual review","original_size":39},"inputs":{"kind":"mapping","type_name":"dict","original_size":2,"entries":[{"key":{"kind":"text","type_name":"str","text":"customer_id","original_size":11},"value":{"kind":"text","type_name":"str","text":"maya-23","original_size":7}},{"key":{"kind":"text","type_name":"str","text":"lifetime_value","original_size":14},"value":{"kind":"number","type_name":"int","value":1200}}]},"superstep":0,"duration_ms":0.0,"graph_name":"customer-review","workflow_id":null,"item_index":1}]},"restored":false},{"item_index":2,"status":"completed","requested_inputs":{"kind":"mapping","type_name":"mappingproxy","original_size":2,"entries":[{"key":{"kind":"text","type_name":"str","text":"customer_id","original_size":11},"value":{"kind":"text","type_name":"str","text":"sam-04","original_size":6}},{"key":{"kind":"text","type_name":"str","text":"lifetime_value","original_size":14},"value":{"kind":"number","type_name":"int","value":3100}}]},"run":{"run_id":"reference-item-2","graph_name":"customer-review","workflow_id":null,"item_index":2,"status":"completed","total_duration_ms":0.0,"captured":true,"terminal":true,"runner_kind":"sync","error":null,"nodes":[{"run_id":"reference-item-2","span_id":"reference-item-2-span-0","node_name":"score_customer","qualified_name":"score_customer","graph_name":"customer-review","item_index":2,"superstep":0,"sequence":0,"status":"completed","values_captured":true,"inputs":{"kind":"mapping","type_name":"mappingproxy","original_size":2,"entries":[{"key":{"kind":"text","type_name":"str","text":"customer_id","original_size":11},"value":{"kind":"text","type_name":"str","text":"sam-04","original_size":6}},{"key":{"kind":"text","type_name":"str","text":"lifetime_value","original_size":14},"value":{"kind":"number","type_name":"int","value":3100}}]},"outputs":{"kind":"mapping","type_name":"mappingproxy","original_size":1,"entries":[{"key":{"kind":"text","type_name":"str","text":"risk_score","original_size":10},"value":{"kind":"number","type_name":"int","value":10}}]},"failure":null,"started_at_ms":0.0,"ended_at_ms":0.0,"duration_ms":0.0,"cached":false},{"run_id":"reference-item-2","span_id":"reference-item-2-span-1","node_name":"choose_review_action","qualified_name":"choose_review_action","graph_name":"customer-review","item_index":2,"superstep":1,"sequence":1,"status":"completed","values_captured":true,"inputs":{"kind":"mapping","type_name":"mappingproxy","original_size":1,"entries":[{"key":{"kind":"text","type_name":"str","text":"risk_score","original_size":10},"value":{"kind":"number","type_name":"int","value":10}}]},"outputs":{"kind":"mapping","type_name":"mappingproxy","original_size":1,"entries":[{"key":{"kind":"text","type_name":"str","text":"review_action","original_size":13},"value":{"kind":"text","type_name":"str","text":"approve","original_size":7}}]},"failure":null,"started_at_ms":0.0,"ended_at_ms":0.0,"duration_ms":0.0,"cached":false}],"failures":[]},"restored":false}],"unstarted_item_indexes":[]}}</script><script data-hg-inspect-runtime>/* Hypergraph inspect: semantic offline renderer. */
+</style><section class="hg-inspect hg-inspect-map" data-hypergraph-inspect="map" data-inspect-schema="hypergraph.inspect/v1"><header class="hg-inspect-header"><div><div class="hg-inspect-eyebrow">Hypergraph inspect</div><h2 class="hg-inspect-title" data-hg-title>Loading inspection…</h2><code class="hg-inspect-run-id" data-hg-run-id></code></div><div class="hg-inspect-header-meta"><span class="hg-inspect-delivery" data-hg-delivery><span class="hg-inspect-dot" aria-hidden="true"></span><span data-hg-delivery-label>Saved snapshot</span></span><span class="hg-inspect-badge" data-hg-sequence></span></div></header><div class="hg-inspect-summary" data-hg-summary aria-label="Execution summary"></div><div class="hg-inspect-alert" data-hg-alert role="status" aria-live="polite" hidden><span data-hg-alert-text></span><button type="button" class="hg-inspect-button" data-action="show-failure" data-hg-show-failure>Show failure</button></div><div class="hg-inspect-body" data-hg-body data-kind="map"><aside class="hg-inspect-items" data-hg-items aria-label="Map items"><div class="hg-inspect-section-title">Items</div><label class="hg-inspect-field-label">Status<select class="hg-inspect-select" data-hg-filter><option value="all">All</option><option value="failed">Failed</option><option value="running">Running</option><option value="completed">Completed</option><option value="restored">Restored</option><option value="unstarted">Unstarted</option></select></label><div class="hg-inspect-item-list" data-hg-item-list></div><div class="hg-inspect-pager"><button type="button" class="hg-inspect-button" data-action="prev-page" data-hg-prev-page>Prev</button><span data-hg-page-label></span><button type="button" class="hg-inspect-button" data-action="next-page" data-hg-next-page>Next</button></div></aside><main class="hg-inspect-main" data-hg-main><nav class="hg-inspect-tabs" role="tablist" aria-label="Inspect view"><button type="button" class="hg-inspect-tab" role="tab" data-action="view" data-hg-view="items">Items</button><button type="button" class="hg-inspect-tab" role="tab" data-action="view" data-hg-view="timeline">Timeline</button><button type="button" class="hg-inspect-tab" role="tab" data-action="view" data-hg-view="graph">Graph</button></nav><section class="hg-inspect-panel" role="tabpanel" data-hg-panel="items"></section><section class="hg-inspect-panel" role="tabpanel" data-hg-panel="timeline"></section><section class="hg-inspect-panel" role="tabpanel" data-hg-panel="graph"></section></main><aside class="hg-inspect-detail" data-hg-detail aria-label="Selected execution details"></aside></div><footer class="hg-inspect-footer"><span data-hg-state-proof>View state is local to this snapshot.</span><span data-hg-delivery-note>Saved output is locally interactive without a kernel or network.</span></footer><noscript>JavaScript is required for local drill-down; the semantic payload remains embedded in this saved output.</noscript><script type="application/json" data-hg-inspect-payload>{"schema":"hypergraph.inspect/v1","kind":"map","default_view":"items","delivery":{"state":"saved","label":"Saved snapshot"},"map":{"run_id":"reference-batch","graph_name":"customer-review","workflow_id":null,"status":"partial","map_over":["customer_id","lifetime_value"],"map_mode":"zip","requested_count":3,"total_duration_ms":0.0,"captured":true,"terminal":true,"runner_kind":"sync","error":null,"counts":{"requested":3,"claimed":3,"completed":2,"failed":1,"running":0,"paused":0,"stopped":0,"restored":0,"unstarted":0,"pending":0},"items":[{"item_index":0,"status":"completed","requested_inputs":{"kind":"mapping","type_name":"mappingproxy","original_size":2,"entries":[{"key":{"kind":"text","type_name":"str","text":"customer_id","original_size":11},"value":{"kind":"text","type_name":"str","text":"alex-10","original_size":7}},{"key":{"kind":"text","type_name":"str","text":"lifetime_value","original_size":14},"value":{"kind":"number","type_name":"int","value":2400}}]},"run":{"run_id":"reference-item-0","graph_name":"customer-review","workflow_id":null,"item_index":0,"status":"completed","total_duration_ms":0.0,"captured":true,"terminal":true,"runner_kind":"sync","error":null,"nodes":[{"run_id":"reference-item-0","span_id":"reference-item-0-span-0","node_name":"score_customer","qualified_name":"score_customer","graph_name":"customer-review","item_index":0,"superstep":0,"sequence":0,"status":"completed","values_captured":true,"inputs":{"kind":"mapping","type_name":"mappingproxy","original_size":2,"entries":[{"key":{"kind":"text","type_name":"str","text":"customer_id","original_size":11},"value":{"kind":"text","type_name":"str","text":"alex-10","original_size":7}},{"key":{"kind":"text","type_name":"str","text":"lifetime_value","original_size":14},"value":{"kind":"number","type_name":"int","value":2400}}]},"outputs":{"kind":"mapping","type_name":"mappingproxy","original_size":1,"entries":[{"key":{"kind":"text","type_name":"str","text":"risk_score","original_size":10},"value":{"kind":"number","type_name":"int","value":10}}]},"failure":null,"started_at_ms":0.0,"ended_at_ms":0.0,"duration_ms":0.0,"cached":false},{"run_id":"reference-item-0","span_id":"reference-item-0-span-1","node_name":"choose_review_action","qualified_name":"choose_review_action","graph_name":"customer-review","item_index":0,"superstep":1,"sequence":1,"status":"completed","values_captured":true,"inputs":{"kind":"mapping","type_name":"mappingproxy","original_size":1,"entries":[{"key":{"kind":"text","type_name":"str","text":"risk_score","original_size":10},"value":{"kind":"number","type_name":"int","value":10}}]},"outputs":{"kind":"mapping","type_name":"mappingproxy","original_size":1,"entries":[{"key":{"kind":"text","type_name":"str","text":"review_action","original_size":13},"value":{"kind":"text","type_name":"str","text":"approve","original_size":7}}]},"failure":null,"started_at_ms":0.0,"ended_at_ms":0.0,"duration_ms":0.0,"cached":false}],"failures":[]},"restored":false},{"item_index":1,"status":"failed","requested_inputs":{"kind":"mapping","type_name":"mappingproxy","original_size":2,"entries":[{"key":{"kind":"text","type_name":"str","text":"customer_id","original_size":11},"value":{"kind":"text","type_name":"str","text":"maya-23","original_size":7}},{"key":{"kind":"text","type_name":"str","text":"lifetime_value","original_size":14},"value":{"kind":"number","type_name":"int","value":1200}}]},"run":{"run_id":"reference-item-1","graph_name":"customer-review","workflow_id":null,"item_index":1,"status":"failed","total_duration_ms":0.0,"captured":true,"terminal":true,"runner_kind":"sync","error":{"kind":"exception","type_name":"ValueError","text":"Customer maya-23 requires manual review","original_size":39},"nodes":[{"run_id":"reference-item-1","span_id":"reference-item-1-span-0","node_name":"score_customer","qualified_name":"score_customer","graph_name":"customer-review","item_index":1,"superstep":0,"sequence":0,"status":"failed","values_captured":true,"inputs":{"kind":"mapping","type_name":"mappingproxy","original_size":2,"entries":[{"key":{"kind":"text","type_name":"str","text":"customer_id","original_size":11},"value":{"kind":"text","type_name":"str","text":"maya-23","original_size":7}},{"key":{"kind":"text","type_name":"str","text":"lifetime_value","original_size":14},"value":{"kind":"number","type_name":"int","value":1200}}]},"outputs":null,"failure":{"failure_key":"failure-0","node_name":"score_customer","error":{"kind":"exception","type_name":"ValueError","text":"Customer maya-23 requires manual review","original_size":39},"inputs":{"kind":"mapping","type_name":"dict","original_size":2,"entries":[{"key":{"kind":"text","type_name":"str","text":"customer_id","original_size":11},"value":{"kind":"text","type_name":"str","text":"maya-23","original_size":7}},{"key":{"kind":"text","type_name":"str","text":"lifetime_value","original_size":14},"value":{"kind":"number","type_name":"int","value":1200}}]},"superstep":0,"duration_ms":0.0,"graph_name":"customer-review","workflow_id":null,"item_index":1},"started_at_ms":0.0,"ended_at_ms":0.0,"duration_ms":0.0,"cached":false}],"failures":[{"failure_key":"failure-0","node_name":"score_customer","error":{"kind":"exception","type_name":"ValueError","text":"Customer maya-23 requires manual review","original_size":39},"inputs":{"kind":"mapping","type_name":"dict","original_size":2,"entries":[{"key":{"kind":"text","type_name":"str","text":"customer_id","original_size":11},"value":{"kind":"text","type_name":"str","text":"maya-23","original_size":7}},{"key":{"kind":"text","type_name":"str","text":"lifetime_value","original_size":14},"value":{"kind":"number","type_name":"int","value":1200}}]},"superstep":0,"duration_ms":0.0,"graph_name":"customer-review","workflow_id":null,"item_index":1}]},"restored":false},{"item_index":2,"status":"completed","requested_inputs":{"kind":"mapping","type_name":"mappingproxy","original_size":2,"entries":[{"key":{"kind":"text","type_name":"str","text":"customer_id","original_size":11},"value":{"kind":"text","type_name":"str","text":"sam-04","original_size":6}},{"key":{"kind":"text","type_name":"str","text":"lifetime_value","original_size":14},"value":{"kind":"number","type_name":"int","value":3100}}]},"run":{"run_id":"reference-item-2","graph_name":"customer-review","workflow_id":null,"item_index":2,"status":"completed","total_duration_ms":0.0,"captured":true,"terminal":true,"runner_kind":"sync","error":null,"nodes":[{"run_id":"reference-item-2","span_id":"reference-item-2-span-0","node_name":"score_customer","qualified_name":"score_customer","graph_name":"customer-review","item_index":2,"superstep":0,"sequence":0,"status":"completed","values_captured":true,"inputs":{"kind":"mapping","type_name":"mappingproxy","original_size":2,"entries":[{"key":{"kind":"text","type_name":"str","text":"customer_id","original_size":11},"value":{"kind":"text","type_name":"str","text":"sam-04","original_size":6}},{"key":{"kind":"text","type_name":"str","text":"lifetime_value","original_size":14},"value":{"kind":"number","type_name":"int","value":3100}}]},"outputs":{"kind":"mapping","type_name":"mappingproxy","original_size":1,"entries":[{"key":{"kind":"text","type_name":"str","text":"risk_score","original_size":10},"value":{"kind":"number","type_name":"int","value":10}}]},"failure":null,"started_at_ms":0.0,"ended_at_ms":0.0,"duration_ms":0.0,"cached":false},{"run_id":"reference-item-2","span_id":"reference-item-2-span-1","node_name":"choose_review_action","qualified_name":"choose_review_action","graph_name":"customer-review","item_index":2,"superstep":1,"sequence":1,"status":"completed","values_captured":true,"inputs":{"kind":"mapping","type_name":"mappingproxy","original_size":1,"entries":[{"key":{"kind":"text","type_name":"str","text":"risk_score","original_size":10},"value":{"kind":"number","type_name":"int","value":10}}]},"outputs":{"kind":"mapping","type_name":"mappingproxy","original_size":1,"entries":[{"key":{"kind":"text","type_name":"str","text":"review_action","original_size":13},"value":{"kind":"text","type_name":"str","text":"approve","original_size":7}}]},"failure":null,"started_at_ms":0.0,"ended_at_ms":0.0,"duration_ms":0.0,"cached":false}],"failures":[]},"restored":false}],"unstarted_item_indexes":[]}}</script><script data-hg-inspect-runtime>/* Hypergraph inspect: semantic offline renderer. */
 (function () {
   "use strict";
 
@@ -637,6 +637,7 @@ Normalization: volatile run/span IDs and timings only; statuses, original indexe
     activeView: payload.default_view || (payload.kind === "map" ? "items" : "timeline"),
     selectedItem: null,
     selectedExecution: null,
+    failureSelectionUnmatched: false,
     filter: "all",
     page: 1,
     pageSize: 20,
@@ -763,18 +764,25 @@ Normalization: volatile run/span IDs and timings only; statuses, original indexe
     return null;
   }
 
-  function primaryFailedNode(run, containingItemIndex) {
+  function primaryFailedNode(run) {
     var failures = run && Array.isArray(run.failures) ? run.failures : [];
-    if (!failures.length) return firstFailedNode(run);
-    var failure = failures[0];
     var nodes = run && Array.isArray(run.nodes) ? run.nodes : [];
+    if (!failures.length) {
+      var nodesWithFailure = nodes.filter(function (node) { return Boolean(node.failure); });
+      for (var embeddedIndex = 0; embeddedIndex < nodesWithFailure.length; embeddedIndex += 1) {
+        var embedded = nodesWithFailure[embeddedIndex];
+        if (embedded.qualified_name === embedded.failure.node_name) return embedded;
+      }
+      return nodesWithFailure.length ? null : firstFailedNode(run);
+    }
+    var failure = failures[0];
     var matching = nodes.filter(function (node) {
-      return node.failure && sameFailure(failure, node.failure, containingItemIndex);
+      return node.failure && sameFailure(failure, node.failure);
     });
     for (var index = 0; index < matching.length; index += 1) {
       if (matching[index].qualified_name === failure.node_name) return matching[index];
     }
-    return matching.length ? matching[0] : null;
+    return null;
   }
 
   function normalizeState(initial) {
@@ -788,7 +796,11 @@ Normalization: volatile run/span IDs and timings only; statuses, original indexe
     }
     var nodes = nodesForCurrentRun();
     var executionExists = nodes.some(function (node) { return executionId(node) === state.selectedExecution; });
-    if (!executionExists) state.selectedExecution = nodes.length ? executionId(nodes[0]) : null;
+    if (!executionExists) {
+      state.selectedExecution = state.failureSelectionUnmatched || !nodes.length
+        ? null
+        : executionId(nodes[0]);
+    }
   }
 
   function captureScroll() {
@@ -1080,56 +1092,46 @@ Normalization: volatile run/span IDs and timings only; statuses, original indexe
     };
   }
 
-  function continueRerunSnippet() {
+  function rerunCallSnippet(indentation) {
     var awaitPrefix = runnerAwaitPrefix();
     if (awaitPrefix === null) return null;
     if (payload.kind === "map") {
       var args = mapRerunArguments();
-      return "batch = " + awaitPrefix + "runner.map(\n"
-        + "    graph,\n"
-        + "    values,\n"
-        + "    map_over=" + args.mapOver + ",\n"
-        + "    map_mode=" + args.mapMode + ",\n"
-        + "    inspect=True,\n"
-        + "    error_handling=\"continue\",\n"
-        + ")\n";
+      return indentation + "batch = " + awaitPrefix + "runner.map(\n"
+        + indentation + "    graph,\n"
+        + indentation + "    values,\n"
+        + indentation + "    map_over=" + args.mapOver + ",\n"
+        + indentation + "    map_mode=" + args.mapMode + ",\n"
+        + indentation + "    inspect=True,\n"
+        + indentation + "    error_handling=\"continue\",\n"
+        + indentation + ")";
     }
-    return "result = " + awaitPrefix + "runner.run(\n"
-      + "    graph,\n"
-      + "    values,\n"
-      + "    inspect=True,\n"
-      + "    error_handling=\"continue\",\n"
-      + ")\n";
+    return indentation + "result = " + awaitPrefix + "runner.run(\n"
+      + indentation + "    graph,\n"
+      + indentation + "    values,\n"
+      + indentation + "    inspect=True,\n"
+      + indentation + "    error_handling=\"continue\",\n"
+      + indentation + ")";
   }
 
-  function exceptionRerunSnippet() {
-    var awaitPrefix = runnerAwaitPrefix();
-    if (awaitPrefix === null) return null;
-    if (payload.kind === "map") {
-      var args = mapRerunArguments();
-      return "try:\n"
-        + "    " + awaitPrefix + "runner.map(\n"
-        + "        graph,\n"
-        + "        values,\n"
-        + "        map_over=" + args.mapOver + ",\n"
-        + "        map_mode=" + args.mapMode + ",\n"
-        + "        inspect=True,\n"
-        + "    )\n"
-        + "except Exception as error:\n"
-        + "    print(f\"{type(error).__name__}: {error}\")";
-    }
+  function indentSnippet(snippet) {
+    return snippet.split("\n").map(function (line) { return "    " + line; }).join("\n");
+  }
+
+  function guardedRerunSnippet(settledSnippet) {
+    var rerunCall = rerunCallSnippet("    ");
+    if (rerunCall === null) return null;
     return "try:\n"
-      + "    " + awaitPrefix + "runner.run(graph, values, inspect=True)\n"
+      + rerunCall + "\n"
       + "except Exception as error:\n"
-      + "    print(f\"{type(error).__name__}: {error}\")";
+      + "    print(f\"{type(error).__name__}: {error}\")\n"
+      + "else:\n"
+      + indentSnippet(settledSnippet);
   }
 
   function recoverySnippet(source, itemIndex) {
-    if (source === "start" || source === "batch") return exceptionRerunSnippet();
-    var rerun = continueRerunSnippet();
-    if (rerun === null) return null;
     if (source === "node" && payload.kind === "map") {
-      return rerun + "failure = next(\n"
+      return guardedRerunSnippet("failure = next(\n"
         + "    (\n"
         + "        item.failure\n"
         + "        for item in batch.failures\n"
@@ -1142,27 +1144,45 @@ Normalization: volatile run/span IDs and timings only; statuses, original indexe
         + "    print(batch)\n"
         + "else:\n"
         + "    print(failure.inputs)\n"
-        + "    print(failure.error)";
+        + "    print(failure.error)");
     }
     if (source === "node") {
-      return rerun + "failure = result.failure\n"
+      return guardedRerunSnippet("failure = result.failure\n"
         + "if failure is None:\n"
         + "    print(result)\n"
         + "else:\n"
         + "    print(failure.inputs)\n"
-        + "    print(failure.error)";
+        + "    print(failure.error)");
     }
     if (source === "run" && payload.kind === "map") {
-      return rerun + "for failed in batch.failures:\n"
-        + "    if failed.error is not None:\n"
-        + "        print(failed.error)";
+      return guardedRerunSnippet("items = getattr(batch, \"results\", ())\n"
+        + "failed = (\n"
+        + "    items[" + itemIndex + "]\n"
+        + "    if not getattr(batch, \"unstarted_item_indexes\", ())\n"
+        + "    and 0 <= " + itemIndex + " < len(items)\n"
+        + "    else None\n"
+        + ")\n"
+        + "if failed is None or failed.error is None:\n"
+        + "    print(batch)\n"
+        + "else:\n"
+        + "    print(f\"{type(failed.error).__name__}: {failed.error}\")");
     }
-    if (source === "status" && payload.kind === "map") {
-      return rerun + "for failed in batch.failures:\n"
-        + "    print(failed.summary())";
+    if (payload.kind === "map") {
+      return guardedRerunSnippet("errors = [\n"
+        + "    failed.error\n"
+        + "    for failed in batch.failures\n"
+        + "    if failed.error is not None\n"
+        + "]\n"
+        + "if not errors:\n"
+        + "    print(batch)\n"
+        + "else:\n"
+        + "    for error in errors:\n"
+        + "        print(f\"{type(error).__name__}: {error}\")");
     }
-    if (source === "run") return rerun + "print(result.error)";
-    return rerun + "print(result.summary())";
+    return guardedRerunSnippet("if result.error is None:\n"
+      + "    print(result)\n"
+      + "else:\n"
+      + "    print(f\"{type(result.error).__name__}: {result.error}\")");
   }
 
   function appendRecovery(parent, source, itemIndex) {
@@ -1190,29 +1210,21 @@ Normalization: volatile run/span IDs and timings only; statuses, original indexe
     appendRecovery(parent, "node", itemIndex);
   }
 
-  function sameSerializedValue(left, right) {
-    return JSON.stringify(left) === JSON.stringify(right);
+  function sameFailure(left, right) {
+    return Boolean(
+      left
+      && right
+      && typeof left.failure_key === "string"
+      && left.failure_key
+      && left.failure_key === right.failure_key
+    );
   }
 
-  function sameFailure(left, right, containingItemIndex) {
-    if (!left || !right) return false;
-    var sameIdentity = ["node_name", "superstep", "graph_name", "workflow_id", "duration_ms"].every(function (field) {
-      return left[field] === right[field];
-    });
-    if (!sameIdentity || !sameSerializedValue(left.error, right.error) || !sameSerializedValue(left.inputs, right.inputs)) {
-      return false;
-    }
-    if (left.item_index === right.item_index) return true;
-    return containingItemIndex !== null
-      && containingItemIndex !== undefined
-      && left.item_index === containingItemIndex;
-  }
-
-  function appendOrderedFailures(parent, run, selectedFailure, containingItemIndex) {
+  function appendOrderedFailures(parent, run, selectedFailure) {
     var failures = run && Array.isArray(run.failures) ? run.failures : [];
     var removedSelected = false;
     if (selectedFailure) failures = failures.filter(function (failure) {
-      if (!removedSelected && sameFailure(failure, selectedFailure, containingItemIndex)) {
+      if (!removedSelected && sameFailure(failure, selectedFailure)) {
         removedSelected = true;
         return false;
       }
@@ -1287,11 +1299,9 @@ Normalization: volatile run/span IDs and timings only; statuses, original indexe
     }
     var failureItem = firstFailedItem();
     var run = payload.kind === "run" ? payload.run : failureItem && failureItem.run;
-    var failureNode = primaryFailedNode(
-      run,
-      payload.kind === "map" && failureItem ? failureItem.item_index : null
-    );
-    if (!failureNode && !(run && run.error)) {
+    var failureNode = primaryFailedNode(run);
+    var hasPublicFailure = run && Array.isArray(run.failures) && run.failures.length;
+    if (!failureNode && !(run && run.error) && !hasPublicFailure) {
       alertElement.hidden = true;
       showFailureElement.hidden = true;
       return;
@@ -1512,8 +1522,7 @@ Normalization: volatile run/span IDs and timings only; statuses, original indexe
     appendOrderedFailures(
       detailElement,
       run,
-      node.failure,
-      payload.kind === "map" ? state.selectedItem : node.item_index
+      node.failure
     );
   }
 
@@ -1546,12 +1555,14 @@ Normalization: volatile run/span IDs and timings only; statuses, original indexe
       var item = firstFailedItem();
       if (!item) return;
       state.selectedItem = item.item_index;
-      var failedNode = primaryFailedNode(item.run, item.item_index);
+      var failedNode = primaryFailedNode(item.run);
       state.selectedExecution = failedNode ? executionId(failedNode) : null;
+      state.failureSelectionUnmatched = !failedNode;
       if (failedNode) state.detailsOpen["node." + executionId(failedNode) + ".inputs"] = true;
     } else {
-      var node = primaryFailedNode(payload.run, null);
+      var node = primaryFailedNode(payload.run);
       state.selectedExecution = node ? executionId(node) : null;
+      state.failureSelectionUnmatched = !node;
       if (node) state.detailsOpen["node." + executionId(node) + ".inputs"] = true;
     }
     state.activeView = "timeline";
@@ -1566,11 +1577,13 @@ Normalization: volatile run/span IDs and timings only; statuses, original indexe
     if (action === "select-item") {
       state.selectedItem = Number(target.getAttribute("data-item-index"));
       state.selectedExecution = null;
+      state.failureSelectionUnmatched = false;
       normalizeState(false);
       state.activeView = "timeline";
     }
     if (action === "select-node" || action === "select-graph-node") {
       state.selectedExecution = target.getAttribute("data-execution-id");
+      state.failureSelectionUnmatched = false;
     }
     if (action === "open-timeline") state.activeView = "timeline";
     if (action === "show-failure") selectFailedExecution();
@@ -1604,6 +1617,7 @@ Normalization: volatile run/span IDs and timings only; statuses, original indexe
     captureScroll();
     payload = nextPayload;
     payloadElement.textContent = scriptSafeStringify(nextPayload);
+    state.failureSelectionUnmatched = false;
     normalizeState(false);
     render();
   }

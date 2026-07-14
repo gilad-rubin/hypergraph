@@ -49,6 +49,7 @@
     activeView: payload.default_view || (payload.kind === "map" ? "items" : "timeline"),
     selectedItem: null,
     selectedExecution: null,
+    failureSelectionUnmatched: false,
     filter: "all",
     page: 1,
     pageSize: 20,
@@ -175,18 +176,25 @@
     return null;
   }
 
-  function primaryFailedNode(run, containingItemIndex) {
+  function primaryFailedNode(run) {
     var failures = run && Array.isArray(run.failures) ? run.failures : [];
-    if (!failures.length) return firstFailedNode(run);
-    var failure = failures[0];
     var nodes = run && Array.isArray(run.nodes) ? run.nodes : [];
+    if (!failures.length) {
+      var nodesWithFailure = nodes.filter(function (node) { return Boolean(node.failure); });
+      for (var embeddedIndex = 0; embeddedIndex < nodesWithFailure.length; embeddedIndex += 1) {
+        var embedded = nodesWithFailure[embeddedIndex];
+        if (embedded.qualified_name === embedded.failure.node_name) return embedded;
+      }
+      return nodesWithFailure.length ? null : firstFailedNode(run);
+    }
+    var failure = failures[0];
     var matching = nodes.filter(function (node) {
-      return node.failure && sameFailure(failure, node.failure, containingItemIndex);
+      return node.failure && sameFailure(failure, node.failure);
     });
     for (var index = 0; index < matching.length; index += 1) {
       if (matching[index].qualified_name === failure.node_name) return matching[index];
     }
-    return matching.length ? matching[0] : null;
+    return null;
   }
 
   function normalizeState(initial) {
@@ -200,7 +208,11 @@
     }
     var nodes = nodesForCurrentRun();
     var executionExists = nodes.some(function (node) { return executionId(node) === state.selectedExecution; });
-    if (!executionExists) state.selectedExecution = nodes.length ? executionId(nodes[0]) : null;
+    if (!executionExists) {
+      state.selectedExecution = state.failureSelectionUnmatched || !nodes.length
+        ? null
+        : executionId(nodes[0]);
+    }
   }
 
   function captureScroll() {
@@ -492,56 +504,46 @@
     };
   }
 
-  function continueRerunSnippet() {
+  function rerunCallSnippet(indentation) {
     var awaitPrefix = runnerAwaitPrefix();
     if (awaitPrefix === null) return null;
     if (payload.kind === "map") {
       var args = mapRerunArguments();
-      return "batch = " + awaitPrefix + "runner.map(\n"
-        + "    graph,\n"
-        + "    values,\n"
-        + "    map_over=" + args.mapOver + ",\n"
-        + "    map_mode=" + args.mapMode + ",\n"
-        + "    inspect=True,\n"
-        + "    error_handling=\"continue\",\n"
-        + ")\n";
+      return indentation + "batch = " + awaitPrefix + "runner.map(\n"
+        + indentation + "    graph,\n"
+        + indentation + "    values,\n"
+        + indentation + "    map_over=" + args.mapOver + ",\n"
+        + indentation + "    map_mode=" + args.mapMode + ",\n"
+        + indentation + "    inspect=True,\n"
+        + indentation + "    error_handling=\"continue\",\n"
+        + indentation + ")";
     }
-    return "result = " + awaitPrefix + "runner.run(\n"
-      + "    graph,\n"
-      + "    values,\n"
-      + "    inspect=True,\n"
-      + "    error_handling=\"continue\",\n"
-      + ")\n";
+    return indentation + "result = " + awaitPrefix + "runner.run(\n"
+      + indentation + "    graph,\n"
+      + indentation + "    values,\n"
+      + indentation + "    inspect=True,\n"
+      + indentation + "    error_handling=\"continue\",\n"
+      + indentation + ")";
   }
 
-  function exceptionRerunSnippet() {
-    var awaitPrefix = runnerAwaitPrefix();
-    if (awaitPrefix === null) return null;
-    if (payload.kind === "map") {
-      var args = mapRerunArguments();
-      return "try:\n"
-        + "    " + awaitPrefix + "runner.map(\n"
-        + "        graph,\n"
-        + "        values,\n"
-        + "        map_over=" + args.mapOver + ",\n"
-        + "        map_mode=" + args.mapMode + ",\n"
-        + "        inspect=True,\n"
-        + "    )\n"
-        + "except Exception as error:\n"
-        + "    print(f\"{type(error).__name__}: {error}\")";
-    }
+  function indentSnippet(snippet) {
+    return snippet.split("\n").map(function (line) { return "    " + line; }).join("\n");
+  }
+
+  function guardedRerunSnippet(settledSnippet) {
+    var rerunCall = rerunCallSnippet("    ");
+    if (rerunCall === null) return null;
     return "try:\n"
-      + "    " + awaitPrefix + "runner.run(graph, values, inspect=True)\n"
+      + rerunCall + "\n"
       + "except Exception as error:\n"
-      + "    print(f\"{type(error).__name__}: {error}\")";
+      + "    print(f\"{type(error).__name__}: {error}\")\n"
+      + "else:\n"
+      + indentSnippet(settledSnippet);
   }
 
   function recoverySnippet(source, itemIndex) {
-    if (source === "start" || source === "batch") return exceptionRerunSnippet();
-    var rerun = continueRerunSnippet();
-    if (rerun === null) return null;
     if (source === "node" && payload.kind === "map") {
-      return rerun + "failure = next(\n"
+      return guardedRerunSnippet("failure = next(\n"
         + "    (\n"
         + "        item.failure\n"
         + "        for item in batch.failures\n"
@@ -554,27 +556,45 @@
         + "    print(batch)\n"
         + "else:\n"
         + "    print(failure.inputs)\n"
-        + "    print(failure.error)";
+        + "    print(failure.error)");
     }
     if (source === "node") {
-      return rerun + "failure = result.failure\n"
+      return guardedRerunSnippet("failure = result.failure\n"
         + "if failure is None:\n"
         + "    print(result)\n"
         + "else:\n"
         + "    print(failure.inputs)\n"
-        + "    print(failure.error)";
+        + "    print(failure.error)");
     }
     if (source === "run" && payload.kind === "map") {
-      return rerun + "for failed in batch.failures:\n"
-        + "    if failed.error is not None:\n"
-        + "        print(failed.error)";
+      return guardedRerunSnippet("items = getattr(batch, \"results\", ())\n"
+        + "failed = (\n"
+        + "    items[" + itemIndex + "]\n"
+        + "    if not getattr(batch, \"unstarted_item_indexes\", ())\n"
+        + "    and 0 <= " + itemIndex + " < len(items)\n"
+        + "    else None\n"
+        + ")\n"
+        + "if failed is None or failed.error is None:\n"
+        + "    print(batch)\n"
+        + "else:\n"
+        + "    print(f\"{type(failed.error).__name__}: {failed.error}\")");
     }
-    if (source === "status" && payload.kind === "map") {
-      return rerun + "for failed in batch.failures:\n"
-        + "    print(failed.summary())";
+    if (payload.kind === "map") {
+      return guardedRerunSnippet("errors = [\n"
+        + "    failed.error\n"
+        + "    for failed in batch.failures\n"
+        + "    if failed.error is not None\n"
+        + "]\n"
+        + "if not errors:\n"
+        + "    print(batch)\n"
+        + "else:\n"
+        + "    for error in errors:\n"
+        + "        print(f\"{type(error).__name__}: {error}\")");
     }
-    if (source === "run") return rerun + "print(result.error)";
-    return rerun + "print(result.summary())";
+    return guardedRerunSnippet("if result.error is None:\n"
+      + "    print(result)\n"
+      + "else:\n"
+      + "    print(f\"{type(result.error).__name__}: {result.error}\")");
   }
 
   function appendRecovery(parent, source, itemIndex) {
@@ -602,29 +622,21 @@
     appendRecovery(parent, "node", itemIndex);
   }
 
-  function sameSerializedValue(left, right) {
-    return JSON.stringify(left) === JSON.stringify(right);
+  function sameFailure(left, right) {
+    return Boolean(
+      left
+      && right
+      && typeof left.failure_key === "string"
+      && left.failure_key
+      && left.failure_key === right.failure_key
+    );
   }
 
-  function sameFailure(left, right, containingItemIndex) {
-    if (!left || !right) return false;
-    var sameIdentity = ["node_name", "superstep", "graph_name", "workflow_id", "duration_ms"].every(function (field) {
-      return left[field] === right[field];
-    });
-    if (!sameIdentity || !sameSerializedValue(left.error, right.error) || !sameSerializedValue(left.inputs, right.inputs)) {
-      return false;
-    }
-    if (left.item_index === right.item_index) return true;
-    return containingItemIndex !== null
-      && containingItemIndex !== undefined
-      && left.item_index === containingItemIndex;
-  }
-
-  function appendOrderedFailures(parent, run, selectedFailure, containingItemIndex) {
+  function appendOrderedFailures(parent, run, selectedFailure) {
     var failures = run && Array.isArray(run.failures) ? run.failures : [];
     var removedSelected = false;
     if (selectedFailure) failures = failures.filter(function (failure) {
-      if (!removedSelected && sameFailure(failure, selectedFailure, containingItemIndex)) {
+      if (!removedSelected && sameFailure(failure, selectedFailure)) {
         removedSelected = true;
         return false;
       }
@@ -699,11 +711,9 @@
     }
     var failureItem = firstFailedItem();
     var run = payload.kind === "run" ? payload.run : failureItem && failureItem.run;
-    var failureNode = primaryFailedNode(
-      run,
-      payload.kind === "map" && failureItem ? failureItem.item_index : null
-    );
-    if (!failureNode && !(run && run.error)) {
+    var failureNode = primaryFailedNode(run);
+    var hasPublicFailure = run && Array.isArray(run.failures) && run.failures.length;
+    if (!failureNode && !(run && run.error) && !hasPublicFailure) {
       alertElement.hidden = true;
       showFailureElement.hidden = true;
       return;
@@ -924,8 +934,7 @@
     appendOrderedFailures(
       detailElement,
       run,
-      node.failure,
-      payload.kind === "map" ? state.selectedItem : node.item_index
+      node.failure
     );
   }
 
@@ -958,12 +967,14 @@
       var item = firstFailedItem();
       if (!item) return;
       state.selectedItem = item.item_index;
-      var failedNode = primaryFailedNode(item.run, item.item_index);
+      var failedNode = primaryFailedNode(item.run);
       state.selectedExecution = failedNode ? executionId(failedNode) : null;
+      state.failureSelectionUnmatched = !failedNode;
       if (failedNode) state.detailsOpen["node." + executionId(failedNode) + ".inputs"] = true;
     } else {
-      var node = primaryFailedNode(payload.run, null);
+      var node = primaryFailedNode(payload.run);
       state.selectedExecution = node ? executionId(node) : null;
+      state.failureSelectionUnmatched = !node;
       if (node) state.detailsOpen["node." + executionId(node) + ".inputs"] = true;
     }
     state.activeView = "timeline";
@@ -978,11 +989,13 @@
     if (action === "select-item") {
       state.selectedItem = Number(target.getAttribute("data-item-index"));
       state.selectedExecution = null;
+      state.failureSelectionUnmatched = false;
       normalizeState(false);
       state.activeView = "timeline";
     }
     if (action === "select-node" || action === "select-graph-node") {
       state.selectedExecution = target.getAttribute("data-execution-id");
+      state.failureSelectionUnmatched = false;
     }
     if (action === "open-timeline") state.activeView = "timeline";
     if (action === "show-failure") selectFailedExecution();
@@ -1016,6 +1029,7 @@
     captureScroll();
     payload = nextPayload;
     payloadElement.textContent = scriptSafeStringify(nextPayload);
+    state.failureSelectionUnmatched = false;
     normalizeState(false);
     render();
   }

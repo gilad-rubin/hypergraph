@@ -24,10 +24,15 @@ def _serialized(value: object) -> dict[str, object]:
     return serialized_value_to_wire(serialize_value(value))
 
 
-def _failure_wire(failure: FailureEvidence | None) -> dict[str, object] | None:
+def _failure_wire(
+    failure: FailureEvidence | None,
+    *,
+    failure_key: str | None,
+) -> dict[str, object] | None:
     if failure is None:
         return None
     return {
+        **({"failure_key": failure_key} if failure_key is not None else {}),
         "node_name": failure.node_name,
         "error": _serialized(failure.error),
         "inputs": _serialized(failure.inputs),
@@ -39,7 +44,11 @@ def _failure_wire(failure: FailureEvidence | None) -> dict[str, object] | None:
     }
 
 
-def _node_wire(node: NodeInspection) -> dict[str, object]:
+def _node_wire(
+    node: NodeInspection,
+    *,
+    failure_key: str | None,
+) -> dict[str, object]:
     inputs = node.inputs
     outputs = node.outputs
     return {
@@ -55,7 +64,7 @@ def _node_wire(node: NodeInspection) -> dict[str, object]:
         "values_captured": node.values_captured,
         "inputs": _serialized(inputs) if inputs is not None else None,
         "outputs": _serialized(outputs) if outputs is not None else None,
-        "failure": _failure_wire(node.failure),
+        "failure": _failure_wire(node.failure, failure_key=failure_key),
         "started_at_ms": node.started_at_ms,
         "ended_at_ms": node.ended_at_ms,
         "duration_ms": node.duration_ms,
@@ -63,8 +72,99 @@ def _node_wire(node: NodeInspection) -> dict[str, object]:
     }
 
 
+def _failures_share_raw_identity(
+    left: FailureEvidence,
+    right: FailureEvidence,
+    *,
+    containing_item_index: int | None,
+) -> bool:
+    metadata_fields = (
+        "node_name",
+        "superstep",
+        "duration_ms",
+        "graph_name",
+        "workflow_id",
+    )
+    if any(getattr(left, field) != getattr(right, field) for field in metadata_fields):
+        return False
+    if left.error is not right.error or left.inputs.keys() != right.inputs.keys():
+        return False
+    if any(left.inputs[key] is not right.inputs[key] for key in left.inputs):
+        return False
+    if left.item_index == right.item_index:
+        return True
+    return containing_item_index is not None and containing_item_index in {
+        left.item_index,
+        right.item_index,
+    }
+
+
+def _failure_keys(
+    artifact: RunInspection,
+) -> tuple[tuple[str | None, ...], tuple[str, ...]]:
+    """Correlate raw evidence once, then expose only opaque wire ordinals."""
+    node_groups: list[tuple[FailureEvidence, list[int]]] = []
+    for node_index, node in enumerate(artifact.nodes):
+        if node.failure is None:
+            continue
+        matching_group = next(
+            (
+                node_indexes
+                for representative, node_indexes in node_groups
+                if _failures_share_raw_identity(
+                    representative,
+                    node.failure,
+                    containing_item_index=artifact.item_index,
+                )
+            ),
+            None,
+        )
+        if matching_group is None:
+            node_groups.append((node.failure, [node_index]))
+        else:
+            matching_group.append(node_index)
+
+    public_keys = tuple(f"failure-{index}" for index, _ in enumerate(artifact.failures))
+    node_keys: list[str | None] = [None] * len(artifact.nodes)
+    unclaimed_groups = set(range(len(node_groups)))
+    for failure_index, failure in enumerate(artifact.failures):
+        candidates = [
+            group_index
+            for group_index in sorted(unclaimed_groups)
+            if any(
+                (node_failure := artifact.nodes[node_index].failure) is not None
+                and _failures_share_raw_identity(
+                    node_failure,
+                    failure,
+                    containing_item_index=artifact.item_index,
+                )
+                for node_index in node_groups[group_index][1]
+            )
+        ]
+        exact_candidates = [
+            group_index
+            for group_index in candidates
+            if any(artifact.nodes[node_index].qualified_name == failure.node_name for node_index in node_groups[group_index][1])
+        ]
+        if not candidates:
+            continue
+        selected_group = (exact_candidates or candidates)[0]
+        for node_index in node_groups[selected_group][1]:
+            node_keys[node_index] = public_keys[failure_index]
+        unclaimed_groups.remove(selected_group)
+
+    next_key = len(public_keys)
+    for group_index in sorted(unclaimed_groups):
+        failure_key = f"failure-{next_key}"
+        next_key += 1
+        for node_index in node_groups[group_index][1]:
+            node_keys[node_index] = failure_key
+    return tuple(node_keys), public_keys
+
+
 def _run_wire(artifact: RunInspection) -> dict[str, object]:
     error = getattr(artifact, "error", None)
+    node_failure_keys, public_failure_keys = _failure_keys(artifact)
     return {
         "run_id": artifact.run_id,
         "graph_name": artifact.graph_name,
@@ -76,8 +176,8 @@ def _run_wire(artifact: RunInspection) -> dict[str, object]:
         "terminal": artifact.terminal,
         **({"runner_kind": artifact._runner_kind} if artifact._runner_kind is not None else {}),
         "error": _serialized(error) if error is not None else None,
-        "nodes": [_node_wire(node) for node in artifact.nodes],
-        "failures": [_failure_wire(failure) for failure in artifact.failures],
+        "nodes": [_node_wire(node, failure_key=node_failure_keys[index]) for index, node in enumerate(artifact.nodes)],
+        "failures": [_failure_wire(failure, failure_key=public_failure_keys[index]) for index, failure in enumerate(artifact.failures)],
     }
 
 

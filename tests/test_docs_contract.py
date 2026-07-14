@@ -660,6 +660,15 @@ def test_inspect_docs_pin_exception_labels_and_recovery_runner_truth() -> None:
         assert "settled successful result or batch" in normalized
         assert "run-boundary, batch-boundary, and start-failure" in normalized
         assert "slash-qualified failing leaf" in normalized
+        assert "Each retry assignment is inside `try`/`except`" in normalized
+        assert "persistent infrastructure exception" in normalized
+        assert "real type and message" in normalized
+        assert "from raw Python evidence" in normalized
+        assert "changing `repr()` output is never identity" in normalized.lower()
+        assert "object address, input value, or secret" in normalized
+        assert "run boundary" in normalized and "aggregate container" in normalized
 
     assert "Before (misleading async recovery)" in debug
     assert "After (truthful async recovery)" in debug
+    assert "Before (a boundary retry can raise or print `None`)" in debug
+    assert "After (the assignment and evidence read are both guarded)" in debug

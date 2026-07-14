@@ -888,7 +888,7 @@ def test_untrusted_terminal_run_pairs_first_failure_with_its_exact_node(
     browser: Browser,
 ) -> None:
     failure_a = FailureEvidence(
-        node_name="node_a",
+        node_name="outer/node_a",
         error=ValueError("error-a"),
         inputs={"customer_id": "a"},
         superstep=0,
@@ -898,7 +898,7 @@ def test_untrusted_terminal_run_pairs_first_failure_with_its_exact_node(
         item_index=None,
     )
     failure_b = FailureEvidence(
-        node_name="node_b",
+        node_name="outer/node_b",
         error=ValueError("error-b"),
         inputs={"customer_id": "b"},
         superstep=1,
@@ -1154,8 +1154,9 @@ def test_untrusted_map_keeps_run_boundary_error_separate_from_status_only_node(
     assert "Qualified node:" not in failure_text
     assert "Captured inputs:" not in failure_text
     assert "wrong-run" not in failure_text
-    assert "for failed in batch.failures" in evidence_code
-    assert "print(failed.error)" in evidence_code
+    assert 'items = getattr(batch, "results", ())' in evidence_code
+    assert "items[0]" in evidence_code
+    assert 'print(f"{type(failed.error).__name__}: {failed.error}")' in evidence_code
     compile(evidence_code, "<native-run-boundary-evidence>", "exec")
     page.close()
 
