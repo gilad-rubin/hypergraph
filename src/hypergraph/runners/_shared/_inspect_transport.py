@@ -1015,6 +1015,7 @@ class InspectionCoalescer:
         nonce: str,
         scheduler: _InspectionScheduler,
         deliver: Callable[[InspectionEnvelope], None],
+        on_delivery_failed: Callable[[], None] | None = None,
         initial_sequence: int = 0,
         initial_sent_at: float | None = None,
         initially_closed: bool = False,
@@ -1024,6 +1025,7 @@ class InspectionCoalescer:
         self._nonce = nonce
         self._scheduler = scheduler
         self._deliver = deliver
+        self._on_delivery_failed = on_delivery_failed
         self._lock = threading.RLock()
         self._pending: _PendingDelivery | None = None
         self._scheduled_token: object | None = None
@@ -1100,19 +1102,23 @@ class InspectionCoalescer:
             return False
 
     def _arm(self, token: object, deadline: float) -> None:
-        handle = self._scheduler.call_at(
-            deadline,
-            lambda: self._flush(token),
-        )
+        try:
+            handle = self._scheduler.call_at(
+                deadline,
+                lambda: self._flush(token),
+            )
+        except Exception:
+            self._mark_delivery_failed(token=token)
+            return
+        if handle is None:
+            self._mark_delivery_failed(token=token)
+            return
         with self._lock:
             if self._scheduled_token is token:
-                if handle is None:
-                    self._scheduled_token = None
-                    self._scheduled_handle = None
-                else:
-                    self._scheduled_handle = handle
-            elif handle is not None:
-                handle.cancel()
+                self._scheduled_handle = handle
+                return
+        with contextlib.suppress(Exception):
+            handle.cancel()
 
     def _flush(self, token: object) -> None:
         pending: _PendingDelivery | None = None
@@ -1161,8 +1167,11 @@ class InspectionCoalescer:
         except Exception:
             self._mark_delivery_failed()
 
-    def _mark_delivery_failed(self) -> None:
+    def _mark_delivery_failed(self, *, token: object | None = None) -> None:
         with self._lock:
+            if token is not None and self._scheduled_token is not token:
+                return
+            on_delivery_failed = None if self._delivery_failed else self._on_delivery_failed
             self._delivery_failed = True
             self._closed = True
             handle = self._scheduled_handle
@@ -1172,6 +1181,9 @@ class InspectionCoalescer:
         if handle is not None:
             with contextlib.suppress(Exception):
                 handle.cancel()
+        if on_delivery_failed is not None:
+            with contextlib.suppress(Exception):
+                on_delivery_failed()
 
 
 class _NotebookDisplayHandle(Protocol):
@@ -1272,6 +1284,7 @@ class NotebookInspectionTransport:
             nonce=nonce,
             scheduler=scheduler,
             deliver=self._deliver,
+            on_delivery_failed=self._detach,
             initial_sequence=1,
             initial_sent_at=scheduler.now(),
             initially_closed=initially_closed,
