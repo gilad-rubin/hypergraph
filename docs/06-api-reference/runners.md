@@ -1301,12 +1301,20 @@ Trusted NumPy, pandas, and Pydantic adapters use canonical class provenance,
 not mutable public aliases. Replacing `numpy.ndarray`, `pandas.DataFrame`, or
 `pydantic.BaseModel` with a custom class does not make that class trusted.
 
-An exact pandas DataFrame is structured only when its storage is proven to use
-standard NumPy-backed storage. An ExtensionArray-backed DataFrame, including
-one backed by a user-defined extension array, becomes a bounded typed
-`unsupported extension-backed DataFrame` placeholder without calling DataFrame
-`repr`; DataFrame `repr` delegates to extension hooks. This is a narrow
-exception to the general whole-value fallback.
+Within the documented rank and size limits, exact arrays with canonical NumPy
+1.x and 2.x `ndarray` provenance remain structured. An exact pandas
+`DataFrame` is structured only when it has a recognized trusted NumPy-backed
+internal storage layout: standard NumPy-backed storage Hypergraph knows how to
+inspect. An allowed pandas version with an unrecognized internal storage layout
+becomes a bounded `unsupported DataFrame storage` placeholder without calling
+DataFrame `repr`. An ExtensionArray-backed DataFrame—one whose data blocks, row
+axis, or column axis use extension storage—gets the narrower
+`unsupported extension-backed DataFrame` result without invoking extension
+hooks. This is an
+implementation safety boundary, not an all-version guarantee; package version
+compatibility alone does not make an unknown internal storage layout safe to
+traverse. DataFrame `repr` delegates to extension hooks, so both storage
+placeholders bypass it.
 
 Unsupported subclasses and custom protocols use a whole-value bounded `repr`
 fallback for each rendered occurrence instead of calling advertised traversal

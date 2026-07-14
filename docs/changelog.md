@@ -53,15 +53,22 @@
   models, exact NumPy/pandas adapters, and a read-only mapping proxy
   (`MappingProxyType`) backed by an exact `dict`. Trusted NumPy, pandas, and
   Pydantic adapters use canonical class provenance, not mutable public aliases.
-  Exact pandas DataFrames are structured only with proven standard NumPy-backed
-  storage. An ExtensionArray-backed DataFrame becomes a bounded typed
-  `unsupported extension-backed DataFrame` placeholder. Hypergraph does this
-  without calling DataFrame `repr`, because that `repr` delegates to extension
-  hooks. Unsupported subclasses and custom protocols use a bounded whole-value
-  `repr` fallback. A proxy backed by a custom mapping uses the same fallback.
-  Custom `repr` remains ordinary Python user code, so Hypergraph cannot prevent
-  or undo its side effects; raised errors become placeholders without replacing
-  the run status.
+  Within documented rank and size limits, exact arrays with canonical NumPy
+  1.x and 2.x `ndarray` provenance stay structured. Exact pandas DataFrames
+  require a recognized trusted NumPy-backed internal storage layout: standard
+  NumPy-backed storage Hypergraph knows how to inspect. An allowed pandas
+  version with an unrecognized internal storage layout now becomes a bounded
+  `unsupported DataFrame storage` placeholder without calling DataFrame `repr`.
+  An ExtensionArray-backed DataFrame—one whose data blocks, row axis, or column
+  axis use extension storage—gets the narrower
+  `unsupported extension-backed DataFrame` result without invoking extension
+  hooks. This is an implementation
+  safety boundary, not an all-version guarantee. DataFrame `repr` delegates to
+  extension hooks, so both placeholders bypass it. Unsupported subclasses and
+  custom protocols use a bounded whole-value `repr` fallback. A proxy backed by
+  a custom mapping uses the same fallback. Custom `repr` remains ordinary
+  Python user code, so Hypergraph cannot prevent or undo its side effects;
+  raised errors become placeholders without replacing the run status.
 
 - **Background inspect workflow identity** — checkpointer-backed sync and async
   `start_run(..., inspect=True)` calls that omit `workflow_id` now bind their
