@@ -568,6 +568,9 @@ def test_append_mode_terminal_replay_preserves_iframe_state_and_exposes_failure(
     assert summary.get_by_text("Completed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "2"
     assert summary.get_by_text("Failed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "1"
     assert frame.evaluate("window.__hypergraphInspectBridgeState.lastSequence") == 3
+    host_key = "widget-append-live::nonce-append-live"
+    assert page.evaluate("key => window.__hypergraphInspectHosts[key].lastPostedSequence", host_key) == 3
+    assert page.evaluate("key => window.__hypergraphInspectHosts[key].lastAcceptedSequence", host_key) == 3
     assert page.locator('[data-hg-inspect-channel="widget-append-live"]').count() == 3
     assert page.locator('[data-hg-inspect-channel-fallback="widget-append-live"]:visible').count() == 0
     portable_frame = page.locator('[data-hg-inspect-portable-frame="widget-append-live"]')
@@ -578,6 +581,92 @@ def test_append_mode_terminal_replay_preserves_iframe_state_and_exposes_failure(
     detail = root.locator("[data-hg-detail]")
     assert detail.get_by_text("maya-23", exact=True).is_visible()
     assert "Customer maya-23 requires manual review" in detail.inner_text()
+    page.close()
+
+
+def test_terminal_portable_waits_for_authenticated_child_acceptance(
+    browser: Browser,
+) -> None:
+    initial_artifact, terminal_artifact = _partial_customer_map()
+    initial = _envelope(
+        initial_artifact,
+        widget_id="widget-ack",
+        nonce="nonce-ack",
+        sequence=1,
+    )
+    terminal = _envelope(
+        terminal_artifact,
+        widget_id="widget-ack",
+        nonce="nonce-ack",
+        sequence=3,
+        state="saved",
+    )
+    other = _envelope(
+        _run(graph_name="other-widget"),
+        widget_id="widget-ack-other",
+        nonce="nonce-ack-other",
+        sequence=1,
+    )
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.set_content(
+        render_notebook_shell(initial) + render_payload_channel(initial) + render_notebook_shell(other) + render_payload_channel(other),
+        wait_until="load",
+    )
+    frame = _frame(page, "widget-ack")
+    other_frame = _frame(page, "widget-ack-other")
+    frame.wait_for_function("window.__hypergraphInspectBridgeState.lastSequence === 1")
+    frame.evaluate(
+        """() => {
+          const root = document.querySelector('[data-hypergraph-inspect]');
+          root.__hypergraphInspect.updatePayload = () => {
+            throw new Error('forced terminal renderer rejection');
+          };
+        }"""
+    )
+
+    _append_channel(page, terminal)
+    frame.wait_for_function("window.__hypergraphInspectBridgeState.rejected === 1")
+
+    host_key = "widget-ack::nonce-ack"
+    portable = page.locator('[data-hg-inspect-portable-sequence="3"]')
+    assert frame.evaluate("window.__hypergraphInspectBridgeState.lastSequence") == 1
+    assert portable.is_visible()
+    assert page.evaluate("key => window.__hypergraphInspectHosts[key].lastPostedSequence", host_key) == 3
+    assert page.evaluate("key => window.__hypergraphInspectHosts[key].lastAcceptedSequence", host_key) == 1
+
+    portable_frame = page.frame(name="widget-ack-portable-s3-frame")
+    assert portable_frame is not None
+    portable_frame.wait_for_selector('[data-hypergraph-inspect="map"]')
+    portable_root = portable_frame.locator('[data-hypergraph-inspect="map"]')
+    portable_summary = portable_root.locator("[data-hg-summary]")
+    assert portable_root.get_by_text("Saved snapshot", exact=True).is_visible()
+    assert portable_summary.get_by_text("Completed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "2"
+    assert portable_summary.get_by_text("Failed", exact=True).evaluate("element => element.nextElementSibling.textContent") == "1"
+    portable_root.get_by_role("button", name="Show failure").click()
+    portable_detail = portable_root.locator("[data-hg-detail]")
+    assert portable_detail.get_by_text("maya-23", exact=True).is_visible()
+    assert "Customer maya-23 requires manual review" in portable_detail.inner_text()
+
+    exact_ack = {
+        "type": "hypergraph.inspect.accepted",
+        "version": 1,
+        "widget_id": "widget-ack",
+        "nonce": "nonce-ack",
+        "sequence": 3,
+    }
+    other_frame.evaluate("message => parent.postMessage(message, '*')", exact_ack)
+    forged_acks = [
+        {**exact_ack, "version": 2},
+        {**exact_ack, "widget_id": "widget-forged"},
+        {**exact_ack, "nonce": "nonce-forged"},
+        {**exact_ack, "sequence": 1},
+        {**exact_ack, "sequence": 2},
+    ]
+    for message in forged_acks:
+        frame.evaluate("value => parent.postMessage(value, '*')", message)
+
+    assert page.evaluate("key => window.__hypergraphInspectHosts[key].lastAcceptedSequence", host_key) == 1
+    assert portable.is_visible()
     page.close()
 
 
