@@ -217,6 +217,27 @@ def test_repr_backed_exception_is_a_single_type_bounded_preview() -> None:
     assert "CustomError: CustomError" not in markup
 
 
+def test_opaque_repr_backed_exception_retains_its_type_once() -> None:
+    class OpaqueError(Exception):
+        def __repr__(self) -> str:
+            return "<redacted>"
+
+    error = serialized_value_to_wire(serialize_value(OpaqueError("secret")))
+    assert error == {
+        "kind": "text",
+        "type_name": "OpaqueError",
+        "text": "<redacted>",
+        "original_size": 10,
+    }
+
+    markup = _native_exception_markup(error, exact_label="Exact exception")
+
+    assert "Exception preview (bounded repr)" in markup
+    assert "Exact exception" not in markup
+    assert markup.count("OpaqueError") == 1
+    assert "OpaqueError: &lt;redacted&gt;" in markup
+
+
 def test_status_only_map_failures_contribute_one_truthful_record_each() -> None:
     items = []
     for item_index in range(2):

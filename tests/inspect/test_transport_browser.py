@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 
 import pytest
-from playwright.sync_api import Browser, Page, sync_playwright
+from playwright.sync_api import Browser, Locator, Page, sync_playwright
 
 from hypergraph.runners._shared._inspect import (
     MapInspection,
@@ -282,6 +282,11 @@ def _strip_active_output(markup: str) -> str:
     while stripped != previous:
         previous, stripped = stripped, _ACTIVE_OUTPUT_TAG.sub("", stripped)
     return _UNTRUSTED_OUTPUT_ATTRIBUTE.sub("", stripped)
+
+
+def _native_recovery_code(failure: Locator) -> Locator:
+    label = failure.locator("p").filter(has_text=re.compile(r"^Smallest useful (?:result evidence|recovery code):$"))
+    return label.locator("xpath=following-sibling::pre[1]/code")
 
 
 def _defer_child_ready(shell: str) -> str:
@@ -799,7 +804,7 @@ def test_untrusted_terminal_map_keeps_native_failure_evidence_after_active_marku
     failure.locator("summary").click()
     assert failure.evaluate("element => element.open") is True
     failure_text = failure.inner_text()
-    evidence_code = failure.locator("pre code").inner_text()
+    evidence_code = _native_recovery_code(failure).inner_text()
     assert "Item 1 failure" in failure_text
     assert "score_customer" in failure_text
     assert "customer_id=maya-23" in failure_text
@@ -864,7 +869,7 @@ def test_untrusted_terminal_run_escapes_hostile_failure_text(
     assert summary.is_visible()
     assert page.locator("img").count() == 0
     assert hostile in failure.inner_text()
-    evidence_code = failure.locator("pre code").inner_text()
+    evidence_code = _native_recovery_code(failure).inner_text()
     assert "result = runner.run(" in evidence_code
     assert 'error_handling="continue"' in evidence_code
     assert "failure = result.failure" in evidence_code
@@ -1136,7 +1141,7 @@ def test_untrusted_map_keeps_run_boundary_error_separate_from_status_only_node(
     failure = summary.locator("details")
     failure.locator("summary").click()
     failure_text = failure.inner_text()
-    evidence_code = failure.locator("pre code").inner_text()
+    evidence_code = _native_recovery_code(failure).inner_text()
 
     assert "Item 0 failure" in failure_text
     assert "Exact run exception: RuntimeError: item dispatch failed" in failure_text
@@ -1199,7 +1204,7 @@ def test_untrusted_map_keeps_batch_boundary_error_separate_from_child_facts(
     failure = summary.locator("details")
     failure.locator("summary").click()
     failure_text = failure.inner_text()
-    recovery_code = failure.locator("pre code").inner_text()
+    recovery_code = _native_recovery_code(failure).inner_text()
 
     assert "Batch failure" in failure_text
     assert "Exact batch exception: RuntimeError: batch scheduler unavailable" in failure_text
@@ -1363,6 +1368,9 @@ def test_untrusted_terminal_preserves_visible_and_copy_whitespace_exactly(
     visible_code = failure.locator("code").all_inner_texts()
     copy_code = failure.locator("code").all_text_contents()
 
+    assert failure.locator("code > pre").count() == 0
+    assert f"message={exact_text}" in failure.locator("pre > code").all_inner_texts()
+    assert f"ValueError: {exact_text}" in failure.locator("pre > code").all_inner_texts()
     assert f"message={exact_text}" in visible_code
     assert f"ValueError: {exact_text}" in visible_code
     assert f"message={exact_text}" in copy_code
@@ -1429,6 +1437,40 @@ def test_untrusted_terminal_adds_copy_inert_wrap_opportunities_at_360px(
     page.close()
 
 
+def test_untrusted_recovery_code_wraps_a_long_map_field_without_changing_copy(
+    browser: Browser,
+) -> None:
+    long_field = "customer_" + "x" * 20_000
+    markup = _native_failure_markup(
+        kind="map",
+        data={
+            "items": [],
+            "error": {
+                "kind": "exception",
+                "type_name": "RuntimeError",
+                "text": "batch setup failed",
+            },
+            "map_over": [long_field],
+            "map_mode": "zip",
+        },
+        message={},
+    )
+
+    page = browser.new_page(viewport={"width": 360, "height": 700})
+    page.set_content(markup, wait_until="load")
+    failure = page.locator("details")
+    failure.locator("summary").click()
+    recovery_code = _native_recovery_code(failure)
+    copied_code = recovery_code.text_content()
+
+    assert copied_code is not None
+    assert f"map_over={long_field!r}" in copied_code
+    compile(copied_code, "<native-long-map-recovery>", "exec")
+    assert recovery_code.locator("wbr").count() > 0
+    assert page.evaluate("document.documentElement.scrollWidth") <= 360
+    page.close()
+
+
 def test_untrusted_stale_channel_keeps_exact_start_error_in_native_details(
     browser: Browser,
 ) -> None:
@@ -1454,7 +1496,7 @@ def test_untrusted_stale_channel_keeps_exact_start_error_in_native_details(
     assert failure.evaluate("element => element.open") is False
     failure.locator("summary").click()
     failure_text = failure.inner_text()
-    recovery_code = failure.locator("pre code").inner_text()
+    recovery_code = _native_recovery_code(failure).inner_text()
     assert "RuntimeError: Notebook display setup failed" in failure_text
     assert "try:" in recovery_code
     assert "runner.run(" in recovery_code
