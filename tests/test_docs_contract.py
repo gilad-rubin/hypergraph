@@ -490,6 +490,13 @@ def test_inspect_docs_pin_observational_serialization_and_background_identity() 
         assert "backed by an exact `dict`" in serialization_docs
         assert "proxy backed by a custom mapping" in serialization_docs
         assert "whole-value bounded `repr` fallback" in serialization_docs
+        assert "canonical class provenance" in serialization_docs
+        assert "mutable public aliases" in serialization_docs
+        assert "standard NumPy-backed storage" in serialization_docs
+        assert "ExtensionArray-backed DataFrame" in serialization_docs
+        assert "unsupported extension-backed DataFrame" in serialization_docs
+        assert "without calling DataFrame `repr`" in serialization_docs
+        assert "delegates to extension hooks" in serialization_docs
 
     for result_type in (RunResult, MapResult):
         doc = inspect.getdoc(result_type.inspect)
@@ -524,8 +531,14 @@ def test_inspect_docs_pin_observational_serialization_and_background_identity() 
         assert "published" in start_doc
 
     fixed = _scoped_section(changelog, "### Fixed")
-    assert "**Observational inspect serialization**" in fixed
-    assert "**Background inspect workflow identity**" in fixed
-    assert "read-only mapping proxy" in fixed
-    assert "backed by an exact `dict`" in fixed
-    assert "proxy backed by a custom mapping" in fixed
+    normalized_fixed = " ".join(fixed.split())
+    assert "**Observational inspect serialization**" in normalized_fixed
+    assert "**Background inspect workflow identity**" in normalized_fixed
+    assert "read-only mapping proxy" in normalized_fixed
+    assert "backed by an exact `dict`" in normalized_fixed
+    assert "proxy backed by a custom mapping" in normalized_fixed
+    assert "canonical class provenance" in normalized_fixed
+    assert "mutable public aliases" in normalized_fixed
+    assert "standard NumPy-backed storage" in normalized_fixed
+    assert "unsupported extension-backed DataFrame" in normalized_fixed
+    assert "without calling DataFrame `repr`" in normalized_fixed
