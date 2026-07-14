@@ -1022,9 +1022,7 @@ def test_owner_scheduler_marshals_worker_work_through_kernel_ioloop() -> None:
     assert callback_threads == []
     assert len(kernel_loop.callbacks) == 1
 
-    queued_owner_callback = kernel_loop.callbacks.pop()
-    queued_owner_callback()
-    queued_owner_callback()
+    kernel_loop.callbacks.pop()()
 
     assert callback_threads == [owner_thread]
     assert scheduler.supports_delayed_calls is True
@@ -1076,7 +1074,9 @@ def test_late_owner_arm_rejection_fails_closed_on_owner_thread(
     assert len(kernel_loop.callbacks) == 1
     assert display.handle.update_attempt_threads == []
 
-    kernel_loop.callbacks.pop()()
+    rejected_owner_callback = kernel_loop.callbacks.pop()
+    rejected_owner_callback()
+    rejected_owner_callback()
 
     owner_thread = scheduler.owner_thread_id
     assert kernel_loop.call_later_threads == [owner_thread]
@@ -1104,11 +1104,12 @@ def test_late_owner_arm_rejection_fails_closed_on_owner_thread(
 
 
 def test_worker_marshalled_none_returning_delayed_arm_remains_live() -> None:
+    current = [0.0]
     kernel_loop = _NoneReturningKernelLoop()
     scheduler = OwnerThreadScheduler(
         asyncio_loop=None,
         kernel_ioloop=kernel_loop,
-        clock=lambda: 0.0,
+        clock=lambda: current[0],
     )
     display = _FakeNotebookDisplay()
     transport = NotebookInspectionTransport.create(
@@ -1150,6 +1151,7 @@ def test_worker_marshalled_none_returning_delayed_arm_remains_live() -> None:
     assert display.handle.update_attempt_threads == []
     assert len(kernel_loop.delayed_callbacks) == 1
 
+    current[0] = 0.25
     kernel_loop.delayed_callbacks.pop()()
 
     assert transport.closed is False
