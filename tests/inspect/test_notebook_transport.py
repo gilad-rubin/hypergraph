@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import json
 import re
 import threading
@@ -16,6 +17,7 @@ from hypergraph.runners._shared._inspect import InspectionSession, RunInspection
 from hypergraph.runners._shared._inspect_transport import (
     NotebookInspectionTransport,
     OwnerThreadScheduler,
+    _IPythonNotebookDisplay,
     open_notebook_inspection_transport,
 )
 
@@ -113,6 +115,114 @@ def _wire(markup: str) -> dict[str, object]:
     value = json.loads(match.group(1))
     assert isinstance(value, dict)
     return value
+
+
+@pytest.mark.parametrize("reported_version", [None, "0.1.1a5"], ids=["missing", "unrecognized"])
+def test_ipython_channel_uses_display_handle_updates_unless_exact_broken_version(
+    monkeypatch: pytest.MonkeyPatch,
+    reported_version: str | None,
+) -> None:
+    from IPython.display import HTML
+
+    calls: list[tuple[object, str]] = []
+    updates: list[object] = []
+
+    class DisplayHandle:
+        def update(self, value: object) -> None:
+            updates.append(value)
+
+    def package_version(distribution_name: str) -> str:
+        assert distribution_name == "jupyter-server-nbmodel"
+        if reported_version is None:
+            raise importlib.metadata.PackageNotFoundError(distribution_name)
+        return reported_version
+
+    def display(value: object, *, display_id: str) -> DisplayHandle:
+        calls.append((value, display_id))
+        return DisplayHandle()
+
+    monkeypatch.setattr(importlib.metadata, "version", package_version)
+    monkeypatch.setattr("IPython.display.display", display)
+    notebook_display = _IPythonNotebookDisplay()
+
+    handle = notebook_display.display_channel(
+        "<div>initial payload</div>",
+        display_id="hg-inspect-logical-payload",
+    )
+    handle.update("<div>later payload</div>")
+
+    assert [display_id for _, display_id in calls] == ["hg-inspect-logical-payload"]
+    assert all(isinstance(value, HTML) for value, _ in calls)
+    assert [value.data for value, _ in calls if isinstance(value, HTML)] == [
+        "<div>initial payload</div>",
+    ]
+    assert [value.data for value in updates if isinstance(value, HTML)] == [
+        "<div>later payload</div>",
+    ]
+
+
+def test_ipython_channel_resends_updates_only_for_exact_broken_server_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from IPython.display import HTML
+
+    calls: list[tuple[object, str]] = []
+    updates: list[object] = []
+
+    class DisplayHandle:
+        def update(self, value: object) -> None:
+            updates.append(value)
+
+    def package_version(distribution_name: str) -> str:
+        assert distribution_name == "jupyter-server-nbmodel"
+        return "0.1.1a4"
+
+    def display(value: object, *, display_id: str) -> DisplayHandle:
+        calls.append((value, display_id))
+        return DisplayHandle()
+
+    monkeypatch.setattr(importlib.metadata, "version", package_version)
+    monkeypatch.setattr("IPython.display.display", display)
+    notebook_display = _IPythonNotebookDisplay()
+
+    handle = notebook_display.display_channel(
+        "<div>initial payload</div>",
+        display_id="hg-inspect-logical-payload",
+    )
+    handle.update("<div>later payload</div>")
+
+    assert [display_id for _, display_id in calls] == [
+        "hg-inspect-logical-payload",
+        "hg-inspect-logical-payload",
+    ]
+    assert all(isinstance(value, HTML) for value, _ in calls)
+    assert [value.data for value, _ in calls if isinstance(value, HTML)] == [
+        "<div>initial payload</div>",
+        "<div>later payload</div>",
+    ]
+    assert updates == []
+
+
+def test_payload_channels_have_sequence_qualified_dom_ids_and_local_script_lookup() -> None:
+    scheduler = _QueuedOwnerScheduler()
+    display = _FakeNotebookDisplay()
+    transport = NotebookInspectionTransport.create(
+        _artifact(),
+        display=display,
+        scheduler=scheduler,
+        widget_id="hg-inspect-sequenced",
+        nonce="nonce-sequenced",
+    )
+
+    transport.publish(_artifact(status="completed", terminal=True), urgent=True)
+    scheduler.run_due()
+    channels = [display.channels[0][1], display.handle.updates[0]]
+
+    assert 'id="hg-inspect-sequenced-payload-output-s1"' in channels[0]
+    assert 'id="hg-inspect-sequenced-payload-output-s2"' in channels[1]
+    assert "document.currentScript.closest('[data-hg-inspect-channel]')" in channels[0]
+    assert "document.currentScript.closest('[data-hg-inspect-channel]')" in channels[1]
+    assert all("document.getElementById" not in channel for channel in channels)
 
 
 def test_transport_emits_one_immutable_shell_and_one_stable_payload_display_id() -> None:

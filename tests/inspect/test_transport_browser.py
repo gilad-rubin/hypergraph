@@ -31,6 +31,7 @@ from hypergraph.runners._shared._inspect_transport import (
     render_notebook_shell,
     render_payload_channel,
 )
+from hypergraph.runners._shared.results import FailureEvidence
 
 
 @pytest.fixture(scope="module")
@@ -114,6 +115,111 @@ def _map(*, terminal: bool = False, status: str = "running") -> MapInspection:
     )
 
 
+def _partial_customer_map() -> tuple[MapInspection, MapInspection]:
+    completed_items = {
+        index: MapItemInspection(
+            item_index=index,
+            status="completed",
+            requested_inputs={"customer_id": customer_id},
+            run=_run(
+                graph_name="customer_review",
+                status="completed",
+                terminal=True,
+                item_index=index,
+                node_count=1,
+            ),
+        )
+        for index, customer_id in ((0, "alex-10"), (2, "sam-04"))
+    }
+    running_node = NodeInspection(
+        run_id="run-1",
+        span_id="span-1-score",
+        node_name="score_customer",
+        qualified_name="score_customer",
+        graph_name="customer_review",
+        item_index=1,
+        superstep=0,
+        sequence=0,
+        status="running",
+        values_captured=True,
+        inputs={"customer_id": "maya-23"},
+        started_at_ms=20.0,
+    )
+    running_run = RunInspection(
+        run_id="run-1",
+        graph_name="customer_review",
+        workflow_id="workflow-customers",
+        item_index=1,
+        status="running",
+        nodes=(running_node,),
+        failures=(),
+        total_duration_ms=0.0,
+        captured=True,
+        terminal=False,
+    )
+    failure = FailureEvidence(
+        node_name="score_customer",
+        error=ValueError("Customer maya-23 requires manual review"),
+        inputs={"customer_id": "maya-23"},
+        superstep=0,
+        duration_ms=25.0,
+        graph_name="customer_review",
+        workflow_id="workflow-customers",
+        item_index=1,
+    )
+    failed_node = replace(
+        running_node,
+        status="failed",
+        failure=failure,
+        ended_at_ms=45.0,
+        duration_ms=25.0,
+    )
+    failed_run = RunInspection(
+        run_id="run-1",
+        graph_name="customer_review",
+        workflow_id="workflow-customers",
+        item_index=1,
+        status="failed",
+        nodes=(failed_node,),
+        failures=(failure,),
+        total_duration_ms=25.0,
+        captured=True,
+        terminal=True,
+        error=failure.error,
+    )
+    initial = MapInspection(
+        run_id="map-customers",
+        graph_name="customer_review",
+        workflow_id="workflow-customers",
+        status="running",
+        map_over=("customer_id",),
+        map_mode="zip",
+        requested_count=3,
+        items=(
+            completed_items[0],
+            MapItemInspection(1, "running", {"customer_id": "maya-23"}, running_run),
+            completed_items[2],
+        ),
+        unstarted_item_indexes=(),
+        total_duration_ms=20.0,
+        captured=True,
+        terminal=False,
+    )
+    terminal = replace(
+        initial,
+        status="partial",
+        items=(
+            completed_items[0],
+            MapItemInspection(1, "failed", {"customer_id": "maya-23"}, failed_run),
+            completed_items[2],
+        ),
+        total_duration_ms=45.0,
+        terminal=True,
+        revision=1,
+    )
+    return initial, terminal
+
+
 def _envelope(
     artifact: RunInspection | MapInspection,
     *,
@@ -184,25 +290,46 @@ def _append_notebook_shell(page: Page, shell: str) -> None:
 
 def _replace_channel(page: Page, envelope: InspectionEnvelope) -> None:
     markup = render_payload_channel(envelope)
-    runtime_match = re.search(
-        r"<script data-hg-inspect-channel-runtime>(.*?)</script>",
-        markup,
-        flags=re.DOTALL,
-    )
-    assert runtime_match is not None
-    runtime = runtime_match.group(1)
     page.evaluate(
         """markup => {
           const template = document.createElement('template');
           template.innerHTML = markup;
           const incoming = template.content.firstElementChild;
-          const old = document.getElementById(incoming.id);
-          if (old) old.remove();
+          const inertRuntime = incoming.querySelector('[data-hg-inspect-channel-runtime]');
+          const runtime = inertRuntime.textContent;
+          inertRuntime.remove();
+          const logicalChannel = incoming.getAttribute('data-hg-inspect-channel');
+          for (const old of document.querySelectorAll('[data-hg-inspect-channel]')) {
+            if (old.getAttribute('data-hg-inspect-channel') === logicalChannel) old.remove();
+          }
           document.body.appendChild(incoming);
+          const executable = document.createElement('script');
+          executable.setAttribute('data-hg-inspect-channel-runtime', '');
+          executable.textContent = runtime;
+          incoming.appendChild(executable);
         }""",
         markup,
     )
-    page.add_script_tag(content=runtime)
+
+
+def _append_channel(page: Page, envelope: InspectionEnvelope) -> None:
+    markup = render_payload_channel(envelope)
+    page.evaluate(
+        """markup => {
+          const template = document.createElement('template');
+          template.innerHTML = markup;
+          const incoming = template.content.firstElementChild;
+          const inertRuntime = incoming.querySelector('[data-hg-inspect-channel-runtime]');
+          const runtime = inertRuntime.textContent;
+          inertRuntime.remove();
+          document.body.appendChild(incoming);
+          const executable = document.createElement('script');
+          executable.setAttribute('data-hg-inspect-channel-runtime', '');
+          executable.textContent = runtime;
+          incoming.appendChild(executable);
+        }""",
+        markup,
+    )
 
 
 def test_bridge_rejects_wrong_identity_source_and_non_monotonic_sequence(
@@ -349,6 +476,7 @@ def test_payload_updates_preserve_iframe_identity_and_local_renderer_state(
             && frame.getAttribute('srcdoc') === window.__srcdocBefore;
         }"""
     )
+    assert page.locator('[data-hg-inspect-channel="widget-state"]').count() == 1
     for key in ("activeView", "selectedItem", "selectedExecution", "filter", "page"):
         assert after[key] == before[key]
     assert after["detailsOpen"] == before["detailsOpen"]
@@ -386,6 +514,97 @@ def test_saved_terminal_two_output_replay_is_interactive_without_a_kernel(
     assert frame.locator('[data-hg-panel="graph"]').is_visible()
     frame.get_by_role("tab", name="Timeline").click()
     assert frame.locator("[data-hg-timeline-row]").count() == 2
+    page.close()
+
+
+def test_append_mode_terminal_replay_preserves_iframe_state_and_exposes_failure(
+    browser: Browser,
+) -> None:
+    initial_artifact, terminal_artifact = _partial_customer_map()
+    initial = _envelope(
+        initial_artifact,
+        widget_id="widget-append-live",
+        nonce="nonce-append-live",
+        sequence=1,
+    )
+    terminal = _envelope(
+        terminal_artifact,
+        widget_id="widget-append-live",
+        nonce="nonce-append-live",
+        sequence=2,
+        state="saved",
+    )
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    _mount(page, initial)
+    frame = _frame(page, "widget-append-live")
+    frame.get_by_role("tab", name="Graph").click()
+    page.evaluate(
+        """() => {
+          const frame = document.querySelector('[data-hg-inspect-frame="widget-append-live"]');
+          window.__appendFrameBefore = frame;
+          window.__appendWindowBefore = frame.contentWindow;
+          window.__appendSrcdocBefore = frame.getAttribute('srcdoc');
+        }"""
+    )
+
+    _append_channel(page, terminal)
+    root = frame.locator('[data-hypergraph-inspect="map"]')
+    root.get_by_text("Saved snapshot", exact=True).wait_for(timeout=2_000)
+
+    assert page.locator('[data-hg-inspect-frame="widget-append-live"]').count() == 1
+    assert page.evaluate(
+        """() => {
+          const frame = document.querySelector('[data-hg-inspect-frame="widget-append-live"]');
+          return frame === window.__appendFrameBefore
+            && frame.contentWindow === window.__appendWindowBefore
+            && frame.getAttribute('srcdoc') === window.__appendSrcdocBefore;
+        }"""
+    )
+    assert root.get_by_role("tab", name="Graph").get_attribute("aria-selected") == "true"
+    assert root.get_by_text("Saved snapshot", exact=True).is_visible()
+    assert "2 completed" in root.inner_text()
+    assert "1 failed" in root.inner_text()
+
+    root.get_by_role("button", name="Show failure").click()
+    detail = root.locator("[data-hg-detail]")
+    assert detail.get_by_text("maya-23", exact=True).is_visible()
+    assert "Customer maya-23 requires manual review" in detail.inner_text()
+    page.close()
+
+
+def test_saved_append_replay_uses_highest_authenticated_sequence_without_kernel(
+    browser: Browser,
+) -> None:
+    initial_artifact, terminal_artifact = _partial_customer_map()
+    initial = _envelope(
+        initial_artifact,
+        widget_id="widget-append-saved",
+        nonce="nonce-append-saved",
+        sequence=1,
+    )
+    terminal = _envelope(
+        terminal_artifact,
+        widget_id="widget-append-saved",
+        nonce="nonce-append-saved",
+        sequence=3,
+        state="saved",
+    )
+    late_older = replace(initial, sequence=2)
+    saved_outputs = (
+        render_notebook_shell(initial) + render_payload_channel(initial) + render_payload_channel(terminal) + render_payload_channel(late_older)
+    )
+
+    page = browser.new_page()
+    page.set_content(saved_outputs, wait_until="load")
+    frame = _frame(page, "widget-append-saved")
+    root = frame.locator('[data-hypergraph-inspect="map"]')
+
+    assert frame.evaluate("window.__hypergraphInspectBridgeState.lastSequence") == 3
+    assert root.get_by_text("Saved snapshot", exact=True).is_visible()
+    assert "2 completed" in root.inner_text()
+    assert "1 failed" in root.inner_text()
+    root.get_by_role("button", name="Show failure").click()
+    assert root.locator("[data-hg-detail]").get_by_text("maya-23", exact=True).is_visible()
     page.close()
 
 
