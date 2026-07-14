@@ -427,3 +427,54 @@ def test_nested_map_native_snippets_execute_against_each_containing_outer_item(
         failure = namespace["failure"]
         assert failure.item_index == outer_index
         assert failure.inputs == {"customer_id": f"reject-outer-{outer_index}"}
+
+
+@pytest.mark.parametrize("runner_kind", ["sync", "async"])
+@pytest.mark.parametrize("outer_index", [0, 1])
+def test_native_primary_failure_names_exact_nested_leaf_and_scalar_input(
+    runner_kind: str,
+    outer_index: int,
+) -> None:
+    graph = _nested_failure_graph()
+    values = _nested_values()
+    if runner_kind == "sync":
+        batch = SyncRunner().map(
+            graph,
+            values,
+            map_over="customer_id",
+            inspect=True,
+            error_handling="continue",
+        )
+    else:
+
+        async def execute_batch():
+            return await AsyncRunner().map(
+                graph,
+                values,
+                map_over="customer_id",
+                inspect=True,
+                error_handling="continue",
+            )
+
+        batch = asyncio.run(execute_batch())
+
+    payload = build_inspection_payload(
+        batch.inspect()._artifact,
+        delivery_state="saved",
+        delivery_label="Saved snapshot",
+    )
+    data = payload["map"]
+    assert isinstance(data, dict)
+    items = data["items"]
+    assert isinstance(items, list)
+    markup = _native_failure_markup(
+        kind="map",
+        data={**data, "items": [items[outer_index]]},
+        message={},
+    )
+    plain_markup = html.unescape(markup.replace("<wbr>", ""))
+
+    assert "Qualified node: <code>review_group/review_customer</code>" in plain_markup
+    assert f"customer_id=reject-outer-{outer_index}" in plain_markup
+    assert f"approve-outer-{outer_index}" not in plain_markup
+    assert f"ValueError: manual review: reject-outer-{outer_index}" in plain_markup

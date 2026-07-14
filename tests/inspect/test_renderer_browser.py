@@ -8,6 +8,7 @@ import textwrap
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 from playwright.sync_api import Browser, sync_playwright
@@ -23,6 +24,13 @@ from hypergraph.runners._shared._inspect_html import (
     build_inspection_payload,
     render_map_inspection,
     render_run_inspection,
+)
+from hypergraph.runners._shared._inspect_serialization import serialize_value
+from hypergraph.runners._shared._inspect_transport import (
+    INSPECTION_PROTOCOL_VERSION,
+    InspectionDelivery,
+    InspectionEnvelope,
+    render_payload_channel,
 )
 from hypergraph.runners._shared.results import FailureEvidence
 from hypergraph.runners.inspection import InspectionDisplay
@@ -855,6 +863,384 @@ def _run_away_from_browser_loop(factory: Callable[[], object]) -> object:
         raise errors[0]
     assert len(values) == 1
     return values[0]
+
+
+def _transient_renderer_graph() -> Graph:
+    attempts = 0
+
+    @node(output_name="reviewed")
+    def review_customer(customer_id: str) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ValueError(f"temporary review outage: {customer_id}")
+        return f"approved:{customer_id}"
+
+    return Graph([review_customer], name="transient-review")
+
+
+@pytest.mark.parametrize("runner_kind", ["sync", "async"])
+@pytest.mark.parametrize("artifact_kind", ["run", "map"])
+def test_full_renderer_transient_recovery_exposes_success_without_inventing_failure(
+    browser: Browser,
+    runner_kind: str,
+    artifact_kind: str,
+) -> None:
+    graph = _transient_renderer_graph()
+    values: dict[str, object] = {
+        "customer_id": ["maya-23"] if artifact_kind == "map" else "maya-23",
+    }
+    if runner_kind == "sync":
+        runner: SyncRunner | AsyncRunner = SyncRunner()
+        settled = (
+            runner.map(
+                graph,
+                values,
+                map_over="customer_id",
+                inspect=True,
+                error_handling="continue",
+            )
+            if artifact_kind == "map"
+            else runner.run(
+                graph,
+                values,
+                inspect=True,
+                error_handling="continue",
+            )
+        )
+    else:
+        runner = AsyncRunner()
+
+        async def execute_first_attempt():
+            if artifact_kind == "map":
+                return await runner.map(
+                    graph,
+                    values,
+                    map_over="customer_id",
+                    inspect=True,
+                    error_handling="continue",
+                )
+            return await runner.run(
+                graph,
+                values,
+                inspect=True,
+                error_handling="continue",
+            )
+
+        settled = _run_away_from_browser_loop(execute_first_attempt)
+
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    rendered = render_map_inspection(settled.inspect()._artifact) if artifact_kind == "map" else render_run_inspection(settled.inspect()._artifact)
+    page.set_content(rendered)
+    root = page.locator(f'[data-hypergraph-inspect="{artifact_kind}"]')
+    if artifact_kind == "map":
+        root.get_by_role("button", name="Show failure").click()
+    root.locator("[data-hg-timeline-row]").filter(has_text="review_customer").last.click()
+    code_text = root.locator("[data-hg-detail] pre.hg-inspect-code code").inner_text()
+
+    if runner_kind == "sync":
+        namespace: dict[str, object] = {
+            "runner": runner,
+            "graph": graph,
+            "values": values,
+        }
+        exec(code_text, namespace)
+    else:
+        assert isinstance(runner, AsyncRunner)
+        namespace = _run_away_from_browser_loop(
+            lambda code_text=code_text: _execute_async_renderer_snippet(
+                code_text,
+                runner=runner,
+                graph=graph,
+                values=values,
+            )
+        )
+
+    recovered = namespace["batch" if artifact_kind == "map" else "result"]
+    assert recovered.completed is True
+    assert namespace["failure"] is None
+    assert f"print({'batch' if artifact_kind == 'map' else 'result'})" in code_text
+    page.close()
+
+
+def _boundary_renderer_artifact(
+    source: str,
+    artifact_kind: str,
+    runner_kind: str | None,
+) -> RunInspection | MapInspection:
+    if artifact_kind == "run":
+        return RunInspection(
+            run_id="pending" if source == "start" else "run-boundary",
+            graph_name="boundary-review",
+            workflow_id=None,
+            item_index=None,
+            status="running" if source == "start" else "failed",
+            nodes=(),
+            failures=(),
+            total_duration_ms=1.0,
+            captured=True,
+            terminal=source != "start",
+            error=RuntimeError("run boundary unavailable") if source == "run" else None,
+            _runner_kind=runner_kind,
+        )
+
+    boundary_run = (
+        RunInspection(
+            run_id="run-boundary",
+            graph_name="boundary-review",
+            workflow_id=None,
+            item_index=0,
+            status="failed",
+            nodes=(),
+            failures=(),
+            total_duration_ms=1.0,
+            captured=True,
+            terminal=True,
+            error=RuntimeError("run boundary unavailable"),
+            _runner_kind=runner_kind,
+        )
+        if source == "run"
+        else None
+    )
+    return MapInspection(
+        run_id="pending" if source == "start" else f"{source}-boundary",
+        graph_name="boundary-review",
+        workflow_id=None,
+        status="running" if source == "start" else "failed",
+        map_over=("customer_id",),
+        map_mode="zip",
+        requested_count=1,
+        items=(MapItemInspection(0, "failed", {"customer_id": "maya-23"}, boundary_run),) if boundary_run else (),
+        unstarted_item_indexes=(0,) if boundary_run is None else (),
+        total_duration_ms=1.0,
+        captured=True,
+        terminal=source != "start",
+        error=RuntimeError("batch boundary unavailable") if source == "batch" else None,
+        _runner_kind=runner_kind,
+    )
+
+
+def _boundary_renderer_root(
+    browser: Browser,
+    *,
+    artifact: RunInspection | MapInspection,
+    source: str,
+):
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    if source == "start":
+        envelope = InspectionEnvelope(
+            protocol_version=INSPECTION_PROTOCOL_VERSION,
+            widget_id="widget-full-renderer-start",
+            nonce="nonce-full-renderer-start",
+            sequence=2,
+            delivery=InspectionDelivery(
+                state="stale",
+                label="Live inspection unavailable",
+            ),
+            artifact=artifact,
+            message=serialize_value(RuntimeError("start boundary unavailable")),
+        )
+        page.set_content(render_payload_channel(envelope), wait_until="load")
+        frame = page.frame(name="widget-full-renderer-start-portable-s2-frame")
+        assert frame is not None
+        return page, frame.locator(f'[data-hypergraph-inspect="{"map" if isinstance(artifact, MapInspection) else "run"}"]')
+
+    rendered = render_map_inspection(artifact) if isinstance(artifact, MapInspection) else render_run_inspection(artifact)
+    page.set_content(rendered)
+    return page, page.locator(f'[data-hypergraph-inspect="{"map" if isinstance(artifact, MapInspection) else "run"}"]')
+
+
+class _BoundaryRunner:
+    def __init__(self, source: str) -> None:
+        self.source = source
+        self.calls = 0
+
+    def run(self, *_args: object, **_kwargs: object) -> object:
+        self.calls += 1
+        if self.source == "start":
+            raise RuntimeError("start boundary unavailable")
+        return SimpleNamespace(
+            error=RuntimeError("run boundary unavailable"),
+            failure=None,
+        )
+
+    def map(self, *_args: object, **_kwargs: object) -> object:
+        self.calls += 1
+        if self.source in {"start", "batch"}:
+            raise RuntimeError(f"{self.source} boundary unavailable")
+        return SimpleNamespace(
+            failures=[
+                SimpleNamespace(
+                    error=RuntimeError("run boundary unavailable"),
+                    failure=None,
+                )
+            ]
+        )
+
+
+class _AsyncBoundaryRunner:
+    def __init__(self, source: str) -> None:
+        self.delegate = _BoundaryRunner(source)
+
+    @property
+    def calls(self) -> int:
+        return self.delegate.calls
+
+    async def run(self, *args: object, **kwargs: object) -> object:
+        return self.delegate.run(*args, **kwargs)
+
+    async def map(self, *args: object, **kwargs: object) -> object:
+        return self.delegate.map(*args, **kwargs)
+
+
+@pytest.mark.parametrize("runner_kind", ["sync", "async"])
+@pytest.mark.parametrize(
+    ("source", "artifact_kind"),
+    [
+        ("run", "run"),
+        ("run", "map"),
+        ("batch", "map"),
+        ("start", "run"),
+        ("start", "map"),
+    ],
+)
+def test_full_renderer_boundary_recovery_is_executable_without_node_evidence(
+    browser: Browser,
+    runner_kind: str,
+    source: str,
+    artifact_kind: str,
+) -> None:
+    artifact = _boundary_renderer_artifact(source, artifact_kind, runner_kind)
+    page, root = _boundary_renderer_root(
+        browser,
+        artifact=artifact,
+        source=source,
+    )
+    detail = root.locator("[data-hg-detail]")
+    code = detail.locator("pre.hg-inspect-code code")
+
+    assert code.count() == 1
+    code_text = code.inner_text()
+    assert "failure =" not in code_text
+    assert ".failure" not in code_text
+    assert ".inputs" not in code_text
+    assert "node_name" not in code_text
+    if runner_kind == "sync":
+        runner: _BoundaryRunner | _AsyncBoundaryRunner = _BoundaryRunner(source)
+        exec(
+            code_text,
+            {
+                "runner": runner,
+                "graph": _failed_renderer_run_graph(),
+                "values": {"customer_id": ["maya-23"] if artifact_kind == "map" else "maya-23"},
+            },
+        )
+        assert "await runner." not in code_text
+    else:
+        runner = _AsyncBoundaryRunner(source)
+        assert "await runner." in code_text
+        _run_away_from_browser_loop(
+            lambda: _execute_async_renderer_snippet(
+                code_text,
+                runner=runner,  # type: ignore[arg-type]
+                graph=_failed_renderer_run_graph(),
+                values={"customer_id": ["maya-23"] if artifact_kind == "map" else "maya-23"},
+            )
+        )
+    assert runner.calls == 1
+    assert (
+        "run boundary unavailable" in detail.inner_text()
+        or "batch boundary unavailable" in detail.inner_text()
+        or "start boundary unavailable" in detail.inner_text()
+    )
+    page.close()
+
+
+@pytest.mark.parametrize(
+    ("source", "artifact_kind"),
+    [
+        ("run", "run"),
+        ("run", "map"),
+        ("batch", "map"),
+        ("start", "run"),
+        ("start", "map"),
+    ],
+)
+def test_full_renderer_unknown_boundary_origin_emits_no_runner_call(
+    browser: Browser,
+    source: str,
+    artifact_kind: str,
+) -> None:
+    artifact = _boundary_renderer_artifact(source, artifact_kind, None)
+    page, root = _boundary_renderer_root(
+        browser,
+        artifact=artifact,
+        source=source,
+    )
+    detail_text = root.locator("[data-hg-detail]").inner_text()
+
+    assert "Recovery code unavailable" in detail_text
+    assert "Runner kind was not captured." in detail_text
+    assert "runner.run(" not in detail_text
+    assert "runner.map(" not in detail_text
+    assert "await runner." not in detail_text
+    assert "failure =" not in detail_text
+    page.close()
+
+
+@pytest.mark.parametrize("runner_kind", ["sync", "async"])
+@pytest.mark.parametrize("outer_index", [0, 1])
+def test_primary_show_failure_selects_exact_nested_leaf_and_scalar_input(
+    browser: Browser,
+    runner_kind: str,
+    outer_index: int,
+) -> None:
+    graph = _nested_failure_batch_graph()
+    values = _nested_failure_batch_values()
+    if runner_kind == "sync":
+        runner: SyncRunner | AsyncRunner = SyncRunner()
+        batch = runner.map(
+            graph,
+            values,
+            map_over="customer_id",
+            inspect=True,
+            error_handling="continue",
+        )
+    else:
+        runner = AsyncRunner()
+
+        async def execute_batch():
+            return await runner.map(
+                graph,
+                values,
+                map_over="customer_id",
+                inspect=True,
+                error_handling="continue",
+            )
+
+        batch = _run_away_from_browser_loop(execute_batch)
+
+    artifact = batch.inspect()._artifact
+    selected_artifact = replace(
+        artifact,
+        items=(artifact.items[outer_index],),
+    )
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.set_content(render_map_inspection(selected_artifact))
+    root = page.locator('[data-hypergraph-inspect="map"]')
+
+    root.get_by_role("button", name="Show failure").click()
+
+    detail = root.locator("[data-hg-detail]")
+    assert detail.locator(".hg-inspect-detail-heading code").inner_text() == "review_group/review_customer"
+    assert root.locator('[data-hg-timeline-row][aria-current="true"] code').first.inner_text() == "review_group/review_customer"
+    detail.get_by_text("Inputs · 1 value", exact=True).click()
+    detail_text = detail.inner_text()
+    assert f"reject-outer-{outer_index}" in detail_text
+    assert f"approve-outer-{outer_index}" not in detail_text
+    assert f"ValueError: manual review: reject-outer-{outer_index}" in detail_text
+    assert f"item.failure.item_index == {outer_index}" in detail_text
+    page.close()
 
 
 @pytest.mark.parametrize("runner_kind", ["sync", "async"])
