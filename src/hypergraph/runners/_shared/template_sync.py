@@ -5,14 +5,23 @@ from __future__ import annotations
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
+from hypergraph.checkpointers.types import StepStatus
 from hypergraph.exceptions import (
     ExecutionError,
     MissingInputError,
     WorkflowAlreadyRunningError,
     _failure_evidence_context,
     _NodeExecutionError,
+)
+from hypergraph.runners._shared._inspect import (
+    InspectionSession,
+    MapInspection,
+    MapInspectionSession,
+    RunInspection,
+    inspection_scope,
 )
 from hypergraph.runners._shared.event_metadata import (
     DEFAULT_RUN_CONTEXT,
@@ -90,6 +99,7 @@ if TYPE_CHECKING:
     from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
     from hypergraph.nodes.base import HyperNode
+    from hypergraph.runners._shared._inspect_transport import NotebookInspectionTransport
     from hypergraph.runners._shared.validation import _InputValidationContext
 
 
@@ -212,6 +222,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
+        inspect: bool = False,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
         show_progress: bool | None = None,
@@ -227,86 +238,133 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         _complete_on_stop: bool = False,
         _item_index: int | None = None,
         _reservation: _WorkflowReservation | None = None,
+        _inspection_session: InspectionSession | None = None,
+        _inspection_transport: NotebookInspectionTransport | None = None,
+        _inspection_path: tuple[str, ...] = (),
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
-        run_option_names = runner_option_names(self.run)
-        map_option_names = runner_option_names(self.map)
-        validation_ctx = _validation_ctx
-        if validation_ctx is None:
-            validate_on_missing(on_missing)
-            validate_error_handling(error_handling)
-            validate_workflow_id(workflow_id, _parent_run_id)
-            effective_selected = resolve_runtime_selected(select, graph)
-            validation_ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=effective_selected)
-        normalized_values = normalize_inputs(
-            values,
-            input_values,
-            reserved_option_names=run_option_names | map_option_names,
-            other_option_names=map_option_names - run_option_names,
-            other_call_name="runner.map()",
-            call_name="runner.run()",
-            graph=graph,
-            validation_ctx=validation_ctx,
-        )
-        # Only fire override warning at the user-initiated outer run; nested
-        # GraphNode delegations propagate the same value and would re-warn.
-        if _parent_span_id is None and _parent_run_id is None:
-            warn_on_bind_overrides(graph, normalized_values)
+        if not isinstance(inspect, bool):
+            raise TypeError(
+                f"inspect must be a bool, got {type(inspect).__name__}.\n\n"
+                "How to fix: Pass inspect=True to capture node values or "
+                "inspect=False to keep only always-on run facts."
+            )
+        top_level_inspection = inspect and _parent_span_id is None and _parent_run_id is None and _item_index is None
+        inspection_transport = _inspection_transport
+        if top_level_inspection and inspection_transport is None:
+            try:
+                from hypergraph.runners._shared._inspect_transport import open_notebook_inspection_transport
 
-        # Structural validation (doesn't depend on values)
-        if _validation_ctx is None:
-            validate_runner_compatibility(graph, self.capabilities)
-            validate_node_types(graph, self.supported_node_types)
-            validate_delegated_runners(graph, self.capabilities)
+                inspection_transport = open_notebook_inspection_transport(
+                    RunInspection(
+                        run_id="pending",
+                        graph_name=graph.name or "",
+                        workflow_id=workflow_id,
+                        item_index=None,
+                        status="running",
+                        nodes=(),
+                        failures=(),
+                        total_duration_ms=0.0,
+                        captured=True,
+                        terminal=False,
+                        _runner_kind="sync",
+                    )
+                )
+            except Exception:
+                inspection_transport = None
+        try:
+            run_option_names = runner_option_names(self.run)
+            map_option_names = runner_option_names(self.map)
+            validation_ctx = _validation_ctx
+            if validation_ctx is None:
+                validate_on_missing(on_missing)
+                validate_error_handling(error_handling)
+                validate_workflow_id(workflow_id, _parent_run_id)
+                effective_selected = resolve_runtime_selected(select, graph)
+                validation_ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=effective_selected)
+            normalized_values = normalize_inputs(
+                values,
+                input_values,
+                reserved_option_names=run_option_names | map_option_names,
+                other_option_names=map_option_names - run_option_names,
+                other_call_name="runner.map()",
+                call_name="runner.run()",
+                graph=graph,
+                validation_ctx=validation_ctx,
+            )
+            # Only fire override warning at the user-initiated outer run; nested
+            # GraphNode delegations propagate the same value and would re-warn.
+            if _parent_span_id is None and _parent_run_id is None:
+                warn_on_bind_overrides(graph, normalized_values)
 
-        if self._checkpointer is not None and _validation_ctx is None and workflow_id is None and fork_from is None:
-            workflow_id = generate_workflow_id()
-        sync_checkpointer_key = workflow_id
-        if sync_checkpointer_key is None:
-            sync_checkpointer_key = fork_from if fork_from is not None else retry_from
-        sync_cp = self._get_sync_checkpointer(sync_checkpointer_key)
-        if _validation_ctx is None and (fork_from is not None or retry_from is not None) and sync_cp is None:
-            raise ValueError("fork_from/retry_from require a checkpointer and workflow persistence to be enabled.")
+            # Structural validation (doesn't depend on values)
+            if _validation_ctx is None:
+                validate_runner_compatibility(graph, self.capabilities)
+                validate_node_types(graph, self.supported_node_types)
+                validate_delegated_runners(graph, self.capabilities)
+        except BaseException as error:
+            if inspection_transport is not None:
+                inspection_transport.fail_to_start(error)
+            raise
+
+        try:
+            if self._checkpointer is not None and _validation_ctx is None and workflow_id is None and fork_from is None:
+                workflow_id = generate_workflow_id()
+            sync_checkpointer_key = workflow_id
+            if sync_checkpointer_key is None:
+                sync_checkpointer_key = fork_from if fork_from is not None else retry_from
+            sync_cp = self._get_sync_checkpointer(sync_checkpointer_key)
+            if _validation_ctx is None and (fork_from is not None or retry_from is not None) and sync_cp is None:
+                raise ValueError("fork_from/retry_from require a checkpointer and workflow persistence to be enabled.")
+        except BaseException as error:
+            if inspection_transport is not None:
+                inspection_transport.fail_to_start(error)
+            raise
         resume_checkpoint = None
         resume_action = ResumeAction.START_NEW
         skip_missing_input_validation = False
-        if sync_cp is not None and _validation_ctx is None:
-            validate_lineage_request(
-                checkpoint=checkpoint,
-                fork_from=fork_from,
-                retry_from=retry_from,
-            )
-            candidate_checkpoint = checkpoint
-            if fork_from is not None:
-                workflow_id, resume_checkpoint = sync_cp.fork_workflow(fork_from, workflow_id=workflow_id)
-                candidate_checkpoint = resume_checkpoint
-            elif retry_from is not None:
-                workflow_id, resume_checkpoint = sync_cp.retry_workflow(retry_from, workflow_id=workflow_id)
-                candidate_checkpoint = resume_checkpoint
+        try:
+            if sync_cp is not None and _validation_ctx is None:
+                validate_lineage_request(
+                    checkpoint=checkpoint,
+                    fork_from=fork_from,
+                    retry_from=retry_from,
+                )
+                candidate_checkpoint = checkpoint
+                if fork_from is not None:
+                    workflow_id, resume_checkpoint = sync_cp.fork_workflow(fork_from, workflow_id=workflow_id)
+                    candidate_checkpoint = resume_checkpoint
+                elif retry_from is not None:
+                    workflow_id, resume_checkpoint = sync_cp.retry_workflow(retry_from, workflow_id=workflow_id)
+                    candidate_checkpoint = resume_checkpoint
 
-            existing_run = sync_cp.get_run(workflow_id)
-            resume_action = resolve_existing_run(
-                existing_run=existing_run,
-                checkpoint=candidate_checkpoint,
-                override_workflow=override_workflow,
-                workflow_id=workflow_id,
-                graph_hash=graph.structural_hash,
-                graph=graph,
-                resume_values=normalized_values,
-            )
-            if resume_action is ResumeAction.USE_CHECKPOINT:
-                resume_checkpoint = candidate_checkpoint
-            elif resume_action is ResumeAction.FORK_EXISTING:
-                # Ergonomic shortcut: same workflow_id + override => auto-fork.
-                workflow_id, resume_checkpoint = sync_cp.fork_workflow(workflow_id)
-            elif resume_action is ResumeAction.RESUME_EXISTING:
-                resume_checkpoint = sync_cp.checkpoint(workflow_id)
-            if resume_checkpoint is not None:
-                # Runs that start from checkpoint state (resume, fork, retry)
-                # should not re-require original graph inputs that were already
-                # consumed by upstream completed steps.
-                skip_missing_input_validation = True
+                existing_run = sync_cp.get_run(workflow_id)
+                resume_action = resolve_existing_run(
+                    existing_run=existing_run,
+                    checkpoint=candidate_checkpoint,
+                    override_workflow=override_workflow,
+                    workflow_id=workflow_id,
+                    graph_hash=graph.structural_hash,
+                    graph=graph,
+                    resume_values=normalized_values,
+                )
+                if resume_action is ResumeAction.USE_CHECKPOINT:
+                    resume_checkpoint = candidate_checkpoint
+                elif resume_action is ResumeAction.FORK_EXISTING:
+                    # Ergonomic shortcut: same workflow_id + override => auto-fork.
+                    workflow_id, resume_checkpoint = sync_cp.fork_workflow(workflow_id)
+                elif resume_action is ResumeAction.RESUME_EXISTING:
+                    resume_checkpoint = sync_cp.checkpoint(workflow_id)
+                if resume_checkpoint is not None:
+                    # Runs that start from checkpoint state (resume, fork, retry)
+                    # should not re-require original graph inputs that were already
+                    # consumed by upstream completed steps.
+                    skip_missing_input_validation = True
+        except BaseException as error:
+            if inspection_transport is not None:
+                inspection_transport.fail_to_start(error)
+            raise
 
         run_context = RunContext(workflow_id=workflow_id, item_index=_item_index)
         run_lineage = plan_lineage(
@@ -318,52 +376,117 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         validation_values = build_resume_validation_values(graph, normalized_values, resume_checkpoint)
 
         # Value validation (after merge so checkpoint-provided params are visible)
-        if _validation_ctx is None:
-            validate_item_inputs(
-                validation_ctx,
-                validation_values,
-                skip_missing_required=skip_missing_input_validation,
-            )
-        else:
-            validate_item_inputs(validation_ctx, validation_values)
+        try:
+            if _validation_ctx is None:
+                validate_item_inputs(
+                    validation_ctx,
+                    validation_values,
+                    skip_missing_required=skip_missing_input_validation,
+                )
+            else:
+                validate_item_inputs(validation_ctx, validation_values)
+        except BaseException as error:
+            if inspection_transport is not None:
+                inspection_transport.fail_to_start(error)
+            raise
 
-        if resume_checkpoint is not None and skip_missing_input_validation:
-            resume_state = initialize_state(graph, normalized_values, checkpoint=resume_checkpoint)
-            scope = compute_execution_scope(graph)
-            missing_seed_inputs = sorted(
-                find_missing_resume_seed_inputs(
-                    graph,
-                    resume_state,
-                    active_nodes=scope.active_nodes,
-                    startup_predecessors=scope.startup_predecessors,
+        try:
+            if resume_checkpoint is not None and skip_missing_input_validation:
+                resume_state = initialize_state(graph, normalized_values, checkpoint=resume_checkpoint)
+                scope = compute_execution_scope(graph)
+                missing_seed_inputs = sorted(
+                    find_missing_resume_seed_inputs(
+                        graph,
+                        resume_state,
+                        active_nodes=scope.active_nodes,
+                        startup_predecessors=scope.startup_predecessors,
+                    )
                 )
-            )
-            if missing_seed_inputs:
-                raise MissingInputError(
-                    missing=missing_seed_inputs,
-                    provided=sorted(normalized_values),
-                    message=(
-                        "Checkpoint resume is missing required seed inputs: "
-                        + ", ".join(repr(name) for name in missing_seed_inputs)
-                        + ". The restored checkpoint state leaves at least one active branch unrunnable."
-                    ),
-                )
+                if missing_seed_inputs:
+                    raise MissingInputError(
+                        missing=missing_seed_inputs,
+                        provided=sorted(normalized_values),
+                        message=(
+                            "Checkpoint resume is missing required seed inputs: "
+                            + ", ".join(repr(name) for name in missing_seed_inputs)
+                            + ". The restored checkpoint state leaves at least one active branch unrunnable."
+                        ),
+                    )
+        except BaseException as error:
+            if inspection_transport is not None:
+                inspection_transport.fail_to_start(error)
+            raise
 
         max_iter = max_iterations or self.default_max_iterations
-        effective_show_progress = show_progress if show_progress is not None else getattr(self, "_show_progress", False)
-        if effective_show_progress:
-            from hypergraph.runners._shared.scheduling import ensure_progress_processor
+        inspection_session = _inspection_session
+        owns_inspection = inspect
+        if owns_inspection and inspection_session is None:
+            inspection_session = InspectionSession(
+                graph_name=graph.name or "",
+                workflow_id=workflow_id,
+                item_index=_item_index,
+                runner_kind="sync",
+            )
+        if top_level_inspection and inspection_transport is not None and _inspection_session is None and inspection_session is not None:
+            try:
+                inspection_transport.attach(inspection_session)
+            except Exception:
+                inspection_transport = None
+        try:
+            effective_show_progress = show_progress if show_progress is not None else getattr(self, "_show_progress", False)
+            if effective_show_progress:
+                from hypergraph.runners._shared.scheduling import ensure_progress_processor
 
-            event_processors = ensure_progress_processor(event_processors)
-        if graph.default_event_processors:
-            # Graph-carried processors merge in front of call-site ones — never
-            # replace, never dedup. Reassigning event_processors also forwards
-            # them into nested GraphNode sub-runs, exactly like call-site
-            # processors.
-            event_processors = [*graph.default_event_processors, *(event_processors or [])]
-        reservation = _reservation or self._active_workflows.reserve(workflow_id)
+                event_processors = ensure_progress_processor(event_processors)
+            if graph.default_event_processors:
+                # Graph-carried processors merge in front of call-site ones — never
+                # replace, never dedup. Reassigning event_processors also forwards
+                # them into nested GraphNode sub-runs, exactly like call-site
+                # processors.
+                event_processors = [*graph.default_event_processors, *(event_processors or [])]
+        except BaseException as error:
+            if owns_inspection and inspection_session is not None:
+                inspection_session.finish(
+                    status=RunStatus.FAILED.value,
+                    total_duration_ms=0.0,
+                    error=error,
+                )
+            elif inspection_transport is not None:
+                inspection_transport.fail_to_start(error)
+            raise
+        try:
+            reservation = _reservation or self._active_workflows.reserve(workflow_id)
+        except BaseException as error:
+            if owns_inspection and inspection_session is not None:
+                inspection_session.finish(
+                    status=RunStatus.FAILED.value,
+                    total_duration_ms=0.0,
+                    error=error,
+                )
+            elif inspection_transport is not None:
+                inspection_transport.fail_to_start(error)
+            raise
+        inspection_started_at = time.time()
         dispatcher = None
         signal_token = None
+        run_row_created = False
+        step_buffer: list[Any] = []
+
+        def settle_created_run_failed() -> None:
+            if not run_row_created:
+                return
+            from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
+
+            _, step_offset = checkpoint_offsets(resume_checkpoint)
+            _flush_and_fail(
+                sync_cp,
+                workflow_id,
+                step_buffer,
+                collector,
+                start_time,
+                step_offset=step_offset,
+            )
+
         try:
             reservation.bind(workflow_id)
             signal_token = set_stop_signal(reservation.signal)
@@ -377,6 +500,24 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 context=run_context,
                 lineage=run_lineage,
             )
+            if owns_inspection:
+                assert inspection_session is not None
+                inspection_session.bind_run(run_id, workflow_id=workflow_id)
+            if inspection_session is not None and resume_checkpoint is not None:
+                for step in sorted(resume_checkpoint.steps, key=lambda item: (item.superstep, item.index)):
+                    if step.status is StepStatus.COMPLETED:
+                        qualified_name = "/".join((*_inspection_path, step.node_name))
+                        inspection_session.restore_node(
+                            run_id=step.run_id,
+                            span_id=f"restored:{step.run_id}:{step.superstep}:{step.index}:{qualified_name}",
+                            node_name=step.node_name,
+                            qualified_name=qualified_name,
+                            graph_name=graph.name or "",
+                            item_index=_item_index,
+                            superstep=step.superstep,
+                            duration_ms=step.duration_ms,
+                            cached=step.cached,
+                        )
             start_time = time.time()
 
             # Checkpointer lifecycle — upsert run record
@@ -397,33 +538,56 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     retry_index=run_lineage.retry_index,
                     config=run_config,
                 )
-
-            step_buffer: list[Any] = []
-        except BaseException:
+                run_row_created = True
+        except BaseException as error:
             try:
-                if dispatcher is not None and _parent_span_id is None and dispatcher.active:
-                    self._shutdown_dispatcher_sync(dispatcher)
-            finally:
-                if signal_token is not None:
-                    reset_stop_signal(signal_token)
-                reservation.release()
+                try:
+                    try:
+                        settle_created_run_failed()
+                    finally:
+                        if dispatcher is not None and _parent_span_id is None and dispatcher.active:
+                            self._shutdown_dispatcher_sync(dispatcher)
+                finally:
+                    try:
+                        if signal_token is not None:
+                            reset_stop_signal(signal_token)
+                    finally:
+                        reservation.release()
+            except BaseException as final_error:
+                if owns_inspection and inspection_session is not None and not inspection_session.snapshot().terminal:
+                    inspection_session.finish(
+                        status=RunStatus.FAILED.value,
+                        total_duration_ms=(time.time() - inspection_started_at) * 1000,
+                        error=final_error,
+                    )
+                elif inspection_transport is not None:
+                    inspection_transport.fail_to_start(final_error)
+                raise
+            if owns_inspection and inspection_session is not None and not inspection_session.snapshot().terminal:
+                inspection_session.finish(
+                    status=RunStatus.FAILED.value,
+                    total_duration_ms=(time.time() - inspection_started_at) * 1000,
+                    error=error,
+                )
             raise
 
+        terminal_error: BaseException | None = None
         try:
-            state = self._execute_graph_impl(
-                graph,
-                normalized_values,
-                max_iter,
-                dispatcher=dispatcher,
-                run_id=run_id,
-                run_span_id=run_span_id,
-                event_processors=event_processors,
-                workflow_id=workflow_id,
-                checkpoint=resume_checkpoint,
-                step_buffer=step_buffer,
-                _complete_on_stop=_complete_on_stop,
-                item_index=_item_index,
-            )
+            with inspection_scope(inspection_session, _inspection_path):
+                state = self._execute_graph_impl(
+                    graph,
+                    normalized_values,
+                    max_iter,
+                    dispatcher=dispatcher,
+                    run_id=run_id,
+                    run_span_id=run_span_id,
+                    event_processors=event_processors,
+                    workflow_id=workflow_id,
+                    checkpoint=resume_checkpoint,
+                    step_buffer=step_buffer,
+                    _complete_on_stop=_complete_on_stop,
+                    item_index=_item_index,
+                )
             output_values = filter_outputs(state, graph, select, on_missing)
             total_duration_ms = (time.time() - start_time) * 1000
             was_stopped = state.stopped
@@ -446,13 +610,6 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     )
                 )
 
-            result = build_terminal_run_result(
-                values=output_values,
-                status=status,
-                run_id=run_id,
-                workflow_id=workflow_id,
-                log=collector.build(graph.name, run_id, total_duration_ms),
-            )
             self._emit_run_end_sync(
                 dispatcher,
                 run_id,
@@ -478,61 +635,109 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     step_offset=_step_offset,
                     status=WorkflowStatus.STOPPED if status == RunStatus.STOPPED else WorkflowStatus.COMPLETED,
                 )
-            return result
+            try:
+                if _parent_span_id is None:
+                    self._shutdown_dispatcher_sync(dispatcher)
+                    dispatcher = None
+                if signal_token is not None:
+                    reset_stop_signal(signal_token)
+                    signal_token = None
+                reservation.release()
+            except BaseException as final_error:
+                terminal_error = final_error
+                raise
+            inspection = (
+                inspection_session.finish(
+                    status=status.value,
+                    total_duration_ms=total_duration_ms,
+                )
+                if owns_inspection and inspection_session is not None
+                else None
+            )
+            return build_terminal_run_result(
+                values=output_values,
+                status=status,
+                run_id=run_id,
+                workflow_id=workflow_id,
+                log=collector.build(graph.name, run_id, total_duration_ms),
+                inspection=inspection,
+            )
         except PauseExecution as pause:
             partial_state = pause.partial_state
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             total_duration_ms = (time.time() - start_time) * 1000
-            if dispatcher.active:
-                from hypergraph.events.types import InterruptEvent
+            try:
+                if dispatcher.active:
+                    from hypergraph.events.types import InterruptEvent
 
-                dispatcher.emit(
-                    InterruptEvent(
-                        run_id=run_id,
-                        span_id=pause.span_id or run_span_id,
-                        parent_span_id=run_span_id,
-                        workflow_id=workflow_id,
-                        item_index=_item_index,
-                        node_name=pause.pause_info.node_name,
-                        graph_name=graph.name,
-                        value=pause.pause_info.value,
-                        response_param=pause.pause_info.output_param,
+                    dispatcher.emit(
+                        InterruptEvent(
+                            run_id=run_id,
+                            span_id=pause.span_id or run_span_id,
+                            parent_span_id=run_span_id,
+                            workflow_id=workflow_id,
+                            item_index=_item_index,
+                            node_name=pause.pause_info.node_name,
+                            graph_name=graph.name,
+                            value=pause.pause_info.value,
+                            response_param=pause.pause_info.output_param,
+                        )
                     )
-                )
-                self._emit_run_end_sync(
-                    dispatcher,
-                    run_id,
-                    run_span_id,
-                    graph,
-                    start_time,
-                    _parent_span_id,
-                    context=run_context,
-                    status=RunStatus.PAUSED.value,
-                )
-            if sync_cp is not None:
-                from hypergraph.checkpointers.types import WorkflowStatus
-                from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
+                    self._emit_run_end_sync(
+                        dispatcher,
+                        run_id,
+                        run_span_id,
+                        graph,
+                        start_time,
+                        _parent_span_id,
+                        context=run_context,
+                        status=RunStatus.PAUSED.value,
+                    )
+                if sync_cp is not None:
+                    from hypergraph.checkpointers.types import WorkflowStatus
+                    from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
 
-                for record in step_buffer:
-                    sync_cp.save_step_sync(record)
-                _, step_offset = checkpoint_offsets(resume_checkpoint)
-                step_count = step_offset + collector.step_count
-                error_count = collector.failed_step_count
-                sync_cp.update_run_status_sync(
-                    workflow_id,
-                    WorkflowStatus.PAUSED,
-                    duration_ms=total_duration_ms,
-                    node_count=step_count,
-                    error_count=error_count,
+                    for record in step_buffer:
+                        sync_cp.save_step_sync(record)
+                    _, step_offset = checkpoint_offsets(resume_checkpoint)
+                    step_count = step_offset + collector.step_count
+                    error_count = collector.failed_step_count
+                    sync_cp.update_run_status_sync(
+                        workflow_id,
+                        WorkflowStatus.PAUSED,
+                        duration_ms=total_duration_ms,
+                        node_count=step_count,
+                        error_count=error_count,
+                    )
+                if dispatcher is not None and _parent_span_id is None:
+                    self._shutdown_dispatcher_sync(dispatcher)
+                    dispatcher = None
+                if signal_token is not None:
+                    reset_stop_signal(signal_token)
+                    signal_token = None
+                reservation.release()
+            except BaseException as final_error:
+                terminal_error = final_error
+                raise
+            inspection = (
+                inspection_session.finish(
+                    status=RunStatus.PAUSED.value,
+                    total_duration_ms=total_duration_ms,
                 )
+                if owns_inspection and inspection_session is not None
+                else None
+            )
             return build_paused_run_result(
                 values=partial_values,
                 run_id=run_id,
                 workflow_id=workflow_id,
                 pause=pause.pause_info,
                 log=collector.build(graph.name, run_id, total_duration_ms),
+                inspection=inspection,
             )
         except Exception as e:
+            if e is terminal_error:
+                raise
             error = e
             partial_state = None
             node_failures = ()
@@ -542,33 +747,55 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 if isinstance(e, _NodeExecutionError):
                     node_failures = e.node_failures
 
-            self._emit_run_end_sync(
-                dispatcher,
-                run_id,
-                run_span_id,
-                graph,
-                start_time,
-                _parent_span_id,
-                context=run_context,
-                error=error,
+            try:
+                if dispatcher is not None:
+                    self._emit_run_end_sync(
+                        dispatcher,
+                        run_id,
+                        run_span_id,
+                        graph,
+                        start_time,
+                        _parent_span_id,
+                        context=run_context,
+                        error=error,
+                    )
+
+                # Flush buffered steps and mark run failed.
+                # A bare WorkflowAlreadyRunningError is a pre-flight rejection of a
+                # DUPLICATE start: this call never owned the run row, and the
+                # original run is still executing — never touch its persisted
+                # status. (Wrapped in ExecutionError it came from a node, so the
+                # run genuinely failed and the write below is correct.)
+                if sync_cp is not None and not isinstance(e, WorkflowAlreadyRunningError):
+                    from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets as _cp_offsets
+
+                    _, _step_off = _cp_offsets(resume_checkpoint)
+                    _flush_and_fail(sync_cp, workflow_id, step_buffer, collector, start_time, step_offset=_step_off)
+                if dispatcher is not None and _parent_span_id is None:
+                    self._shutdown_dispatcher_sync(dispatcher)
+                    dispatcher = None
+                if signal_token is not None:
+                    reset_stop_signal(signal_token)
+                    signal_token = None
+                reservation.release()
+            except BaseException as final_error:
+                terminal_error = final_error
+                raise
+
+            total_duration_ms = (time.time() - start_time) * 1000
+            inspection = (
+                inspection_session.finish(
+                    status=RunStatus.FAILED.value,
+                    total_duration_ms=total_duration_ms,
+                    failures=tuple(node_failures),
+                    error=error,
+                )
+                if owns_inspection and inspection_session is not None
+                else None
             )
-
-            # Flush buffered steps and mark run failed.
-            # A bare WorkflowAlreadyRunningError is a pre-flight rejection of a
-            # DUPLICATE start: this call never owned the run row, and the
-            # original run is still executing — never touch its persisted
-            # status. (Wrapped in ExecutionError it came from a node, so the
-            # run genuinely failed and the write below is correct.)
-            if sync_cp is not None and not isinstance(e, WorkflowAlreadyRunningError):
-                from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets as _cp_offsets
-
-                _, _step_off = _cp_offsets(resume_checkpoint)
-                _flush_and_fail(sync_cp, workflow_id, step_buffer, collector, start_time, step_offset=_step_off)
-
             if error_handling == "raise":
                 raise error from None
 
-            total_duration_ms = (time.time() - start_time) * 1000
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             return build_failed_run_result(
                 values=partial_values,
@@ -577,14 +804,40 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 error=error,
                 node_failures=node_failures,
                 log=collector.build(graph.name, run_id, total_duration_ms),
+                inspection=inspection,
             )
+        except BaseException as error:
+            terminal_error = error
+            raise
         finally:
             try:
-                if _parent_span_id is None and dispatcher.active:
-                    self._shutdown_dispatcher_sync(dispatcher)
-            finally:
-                reset_stop_signal(signal_token)
-                reservation.release()
+                try:
+                    try:
+                        if terminal_error is not None:
+                            settle_created_run_failed()
+                    finally:
+                        if dispatcher is not None and _parent_span_id is None:
+                            self._shutdown_dispatcher_sync(dispatcher)
+                finally:
+                    try:
+                        if signal_token is not None:
+                            reset_stop_signal(signal_token)
+                    finally:
+                        reservation.release()
+            except BaseException as final_error:
+                if owns_inspection and inspection_session is not None and not inspection_session.snapshot().terminal:
+                    inspection_session.finish(
+                        status=RunStatus.FAILED.value,
+                        total_duration_ms=(time.time() - inspection_started_at) * 1000,
+                        error=final_error,
+                    )
+                raise
+            if terminal_error is not None and owns_inspection and inspection_session is not None and not inspection_session.snapshot().terminal:
+                inspection_session.finish(
+                    status=RunStatus.FAILED.value,
+                    total_duration_ms=(time.time() - inspection_started_at) * 1000,
+                    error=terminal_error,
+                )
 
     def map(
         self,
@@ -597,6 +850,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         select: str | list[str] = SELECT_UNSET,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
+        inspect: bool = False,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
         show_progress: bool | None = None,
@@ -605,47 +859,112 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         _parent_run_id: str | None = None,
         _item_index: int | None = None,
         _reservation: _WorkflowReservation | None = None,
+        _inspection_session: InspectionSession | None = None,
+        _inspection_transport: NotebookInspectionTransport | None = None,
+        _inspection_path: tuple[str, ...] = (),
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
-        run_option_names = runner_option_names(self.run)
-        map_option_names = runner_option_names(self.map)
-        validate_error_handling(error_handling)
-        validate_workflow_id(workflow_id, _parent_run_id)
-        validate_on_missing(on_missing)
-        effective_selected = resolve_runtime_selected(select, graph)
-        ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=effective_selected)
-        normalized_values = normalize_inputs(
-            values,
-            input_values,
-            reserved_option_names=run_option_names | map_option_names,
-            other_option_names=run_option_names - map_option_names,
-            other_call_name="runner.run()",
-            call_name="runner.map()",
-            graph=graph,
-            validation_ctx=ctx,
+        if not isinstance(inspect, bool):
+            raise TypeError(
+                f"inspect must be a bool, got {type(inspect).__name__}.\n\n"
+                "How to fix: Pass inspect=True to capture map item values or "
+                "inspect=False to keep only always-on batch facts."
+            )
+        owns_inspection = inspect and _inspection_session is None
+        top_level_inspection = owns_inspection and _parent_span_id is None and _parent_run_id is None and _item_index is None
+        inspection_transport = _inspection_transport
+        if top_level_inspection and inspection_transport is None:
+            try:
+                from hypergraph.runners._shared._inspect_transport import open_notebook_inspection_transport
+
+                pending_map_over = (map_over,) if isinstance(map_over, str) else tuple(map_over) if isinstance(map_over, list) else ()
+                inspection_transport = open_notebook_inspection_transport(
+                    MapInspection(
+                        run_id="pending",
+                        graph_name=graph.name or "",
+                        workflow_id=workflow_id,
+                        status="running",
+                        map_over=pending_map_over,
+                        map_mode=map_mode,
+                        requested_count=0,
+                        items=(),
+                        unstarted_item_indexes=(),
+                        total_duration_ms=0.0,
+                        captured=True,
+                        terminal=False,
+                        _runner_kind="sync",
+                    )
+                )
+            except Exception:
+                inspection_transport = None
+        try:
+            run_option_names = runner_option_names(self.run)
+            map_option_names = runner_option_names(self.map)
+            validate_error_handling(error_handling)
+            validate_workflow_id(workflow_id, _parent_run_id)
+            validate_on_missing(on_missing)
+            effective_selected = resolve_runtime_selected(select, graph)
+            ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=effective_selected)
+            normalized_values = normalize_inputs(
+                values,
+                input_values,
+                reserved_option_names=run_option_names | map_option_names,
+                other_option_names=run_option_names - map_option_names,
+                other_call_name="runner.run()",
+                call_name="runner.map()",
+                graph=graph,
+                validation_ctx=ctx,
+            )
+            # Same parity as run(): only fire override warning at the user-initiated
+            # outer call; nested delegations would re-warn for the propagated value.
+            if _parent_span_id is None and _parent_run_id is None:
+                warn_on_bind_overrides(graph, normalized_values)
+
+            # Resolve show_progress and merge processors
+            effective_show_progress = show_progress if show_progress is not None else getattr(self, "_show_progress", False)
+            if effective_show_progress:
+                from hypergraph.runners._shared.scheduling import ensure_progress_processor
+
+                event_processors = ensure_progress_processor(event_processors)
+
+            # One-time graph-structural validation
+            validate_runner_compatibility(graph, self.capabilities)
+            validate_node_types(graph, self.supported_node_types)
+            validate_delegated_runners(graph, self.capabilities)
+        except BaseException as error:
+            if inspection_transport is not None:
+                inspection_transport.fail_to_start(error)
+            raise
+
+        try:
+            map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
+            input_variations = list(generate_map_inputs(normalized_values, map_over_list, map_mode, clone))
+        except BaseException as error:
+            if inspection_transport is not None:
+                inspection_transport.fail_to_start(error)
+            raise
+        map_inspection_session = (
+            MapInspectionSession(
+                graph_name=graph.name or "",
+                workflow_id=workflow_id,
+                requested_count=len(input_variations),
+                map_over=tuple(map_over_list),
+                map_mode=map_mode,
+                runner_kind="sync",
+            )
+            if owns_inspection
+            else None
         )
-        # Same parity as run(): only fire override warning at the user-initiated
-        # outer call; nested delegations would re-warn for the propagated value.
-        if _parent_span_id is None and _parent_run_id is None:
-            warn_on_bind_overrides(graph, normalized_values)
-
-        # Resolve show_progress and merge processors
-        effective_show_progress = show_progress if show_progress is not None else getattr(self, "_show_progress", False)
-        if effective_show_progress:
-            from hypergraph.runners._shared.scheduling import ensure_progress_processor
-
-            event_processors = ensure_progress_processor(event_processors)
-
-        # One-time graph-structural validation
-        validate_runner_compatibility(graph, self.capabilities)
-        validate_node_types(graph, self.supported_node_types)
-        validate_delegated_runners(graph, self.capabilities)
-
-        map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
-        input_variations = list(generate_map_inputs(normalized_values, map_over_list, map_mode, clone))
+        if map_inspection_session is not None and top_level_inspection:
+            try:
+                if inspection_transport is not None:
+                    inspection_transport.attach(map_inspection_session)
+            except Exception:
+                inspection_transport = None
+        map_inspection_started_at = time.time()
         if not input_variations:
-            return MapResult(
+            map_result = MapResult(
                 results=(),
                 run_id=None,
                 total_duration_ms=0,
@@ -653,10 +972,51 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 map_mode=map_mode,
                 graph_name=graph.name or "",
             )
+            if map_inspection_session is not None:
+                map_inspection_session.bind_run(None)
+                map_result = replace(
+                    map_result,
+                    _inspection=map_inspection_session.finish(
+                        status=map_result.status.value,
+                        total_duration_ms=0.0,
+                    ),
+                )
+            return map_result
 
-        reservation = _reservation or self._active_workflows.reserve(workflow_id)
+        try:
+            reservation = _reservation or self._active_workflows.reserve(workflow_id)
+        except BaseException as error:
+            if map_inspection_session is not None:
+                map_inspection_session.finish(
+                    status=RunStatus.FAILED.value,
+                    total_duration_ms=(time.time() - map_inspection_started_at) * 1000,
+                    unstarted_item_indexes=tuple(range(len(input_variations))),
+                    error=error,
+                )
+            elif inspection_transport is not None:
+                inspection_transport.fail_to_start(error)
+            raise
         dispatcher = None
         signal_token = None
+        sync_cp = None
+        parent_run_row_created = False
+        claimed_indexes: set[int] = set()
+        results: list[RunResult] = []
+
+        def settle_created_parent_run_failed() -> None:
+            if not parent_run_row_created:
+                return
+            from hypergraph.checkpointers.types import WorkflowStatus
+
+            error_count = sum(1 for result in results if result.status == RunStatus.FAILED)
+            sync_cp.update_run_status_sync(
+                workflow_id,
+                WorkflowStatus.FAILED,
+                duration_ms=(time.time() - start_time) * 1000,
+                node_count=len(results),
+                error_count=error_count,
+            )
+
         try:
             reservation.bind(workflow_id)
             signal_token = set_stop_signal(reservation.signal)
@@ -674,6 +1034,8 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 map_size=len(input_variations),
                 lineage=RunLineage(parent_workflow_id=_parent_run_id),
             )
+            if map_inspection_session is not None:
+                map_inspection_session.bind_run(map_run_id)
             start_time = time.time()
 
             # Create parent batch run if checkpointing
@@ -688,49 +1050,90 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                         "graph_code_hash": graph.code_hash,
                     },
                 )
+                parent_run_row_created = True
 
             # Resume: find completed child runs to skip by stable input signature.
             completed_runs = _get_completed_child_runs_sync(sync_cp, workflow_id)
             completed_by_signature, completed_by_index = index_completed_child_runs(completed_runs, workflow_id)
             map_stop_signal = get_stop_signal()
-            claimed_indexes: set[int] = set()
-        except BaseException:
+        except BaseException as error:
             try:
-                if dispatcher is not None and _parent_span_id is None and dispatcher.active:
-                    self._shutdown_dispatcher_sync(dispatcher)
-            finally:
-                if signal_token is not None:
-                    reset_stop_signal(signal_token)
-                reservation.release()
+                try:
+                    try:
+                        settle_created_parent_run_failed()
+                    finally:
+                        if dispatcher is not None and _parent_span_id is None and dispatcher.active:
+                            self._shutdown_dispatcher_sync(dispatcher)
+                finally:
+                    try:
+                        if signal_token is not None:
+                            reset_stop_signal(signal_token)
+                    finally:
+                        reservation.release()
+            except BaseException as final_error:
+                if map_inspection_session is not None and not map_inspection_session.snapshot().terminal:
+                    map_inspection_session.finish(
+                        status=RunStatus.FAILED.value,
+                        total_duration_ms=(time.time() - map_inspection_started_at) * 1000,
+                        unstarted_item_indexes=tuple(range(len(input_variations))),
+                        error=final_error,
+                    )
+                elif inspection_transport is not None:
+                    inspection_transport.fail_to_start(final_error)
+                raise
+            if map_inspection_session is not None and not map_inspection_session.snapshot().terminal:
+                map_inspection_session.finish(
+                    status=RunStatus.FAILED.value,
+                    total_duration_ms=(time.time() - map_inspection_started_at) * 1000,
+                    unstarted_item_indexes=tuple(range(len(input_variations))),
+                    error=error,
+                )
             raise
 
+        terminal_error: BaseException | None = None
         try:
-            results = []
             for idx, variation_inputs in enumerate(input_variations):
                 if map_stop_signal is not None and map_stop_signal.is_set:
                     break
                 claimed_indexes.add(idx)
                 child_workflow_id = f"{workflow_id}/{idx}" if workflow_id else None
-                item_signature = compute_map_item_signature(variation_inputs, map_over_list, map_mode)
+                child_inspection_session = (
+                    map_inspection_session.claim_item(
+                        item_index=idx,
+                        requested_inputs=variation_inputs,
+                        workflow_id=child_workflow_id,
+                    )
+                    if map_inspection_session is not None
+                    else _inspection_session
+                )
+                item_signature = compute_map_item_signature(variation_inputs, map_over_list, map_mode) if sync_cp is not None else None
 
                 # Skip completed items — restore result from checkpoint
-                restore_run_id = claim_completed_child_run_id(
-                    idx=idx,
-                    signature=item_signature,
-                    by_signature=completed_by_signature,
-                    by_index=completed_by_index,
+                restore_run_id = (
+                    claim_completed_child_run_id(
+                        idx=idx,
+                        signature=item_signature,
+                        by_signature=completed_by_signature,
+                        by_index=completed_by_index,
+                    )
+                    if item_signature is not None
+                    else None
                 )
                 if restore_run_id is not None and sync_cp is not None:
                     state = sync_cp.state(restore_run_id)
                     restored_state = GraphState(values=dict(state))
                     restored_values = filter_outputs(restored_state, graph, select, on_missing)
-                    results.append(
-                        build_restored_run_result(
-                            values=restored_values,
-                            graph_name=graph.name or "",
-                            run_id=restore_run_id,
-                        )
+                    result = build_restored_run_result(
+                        values=restored_values,
+                        graph_name=graph.name or "",
+                        run_id=restore_run_id,
                     )
+                    results.append(result)
+                    if map_inspection_session is not None:
+                        map_inspection_session.settle_item(
+                            item_index=idx,
+                            result=result,
+                        )
                     continue
 
                 try:
@@ -740,6 +1143,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                         select=select,
                         on_missing=on_missing,
                         entrypoint=entrypoint,
+                        inspect=owns_inspection,
                         error_handling="continue",
                         event_processors=event_processors,
                         show_progress=False,
@@ -747,8 +1151,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                         _parent_span_id=map_span_id,
                         _parent_run_id=workflow_id,
                         _validation_ctx=ctx,
-                        _run_config={MAP_SIGNATURE_CONFIG_KEY: item_signature},
+                        _run_config=({MAP_SIGNATURE_CONFIG_KEY: item_signature} if item_signature is not None else None),
                         _item_index=idx,
+                        _inspection_session=child_inspection_session,
+                        _inspection_path=_inspection_path,
                     )
                 except Exception as e:
                     # Catch validation errors (e.g., MissingInputError) that raise
@@ -756,6 +1162,11 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     # and both map_iter variants.
                     result = build_pre_run_failed_result(e)
                 results.append(result)
+                if map_inspection_session is not None:
+                    map_inspection_session.settle_item(
+                        item_index=idx,
+                        result=result,
+                    )
                 if error_handling == "raise" and result.status == RunStatus.FAILED:
                     error = result.error
                     assert error is not None, "FAILED status requires an error"
@@ -763,6 +1174,11 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                         raise error from None
 
             total_duration_ms = (time.time() - start_time) * 1000
+            unstarted_item_indexes = (
+                tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes)
+                if map_stop_signal is not None and map_stop_signal.is_set
+                else ()
+            )
             map_result = MapResult(
                 results=tuple(results),
                 run_id=map_run_id,
@@ -770,11 +1186,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 map_over=tuple(map_over_list),
                 map_mode=map_mode,
                 graph_name=graph.name or "",
-                unstarted_item_indexes=(
-                    tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes)
-                    if map_stop_signal is not None and map_stop_signal.is_set
-                    else ()
-                ),
+                unstarted_item_indexes=unstarted_item_indexes,
             )
             batch_summary = BatchSummary.from_map_result(map_result)
 
@@ -819,38 +1231,94 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     error_count=error_count,
                 )
 
+            if _parent_span_id is None:
+                self._shutdown_dispatcher_sync(dispatcher)
+                dispatcher = None
+            if signal_token is not None:
+                reset_stop_signal(signal_token)
+                signal_token = None
+            reservation.release()
+
+            if map_inspection_session is not None:
+                map_result = replace(
+                    map_result,
+                    _inspection=map_inspection_session.finish(
+                        status=map_result.status.value,
+                        total_duration_ms=total_duration_ms,
+                        unstarted_item_indexes=unstarted_item_indexes,
+                    ),
+                )
+
             return map_result
         except Exception as e:
-            self._emit_run_end_sync(
-                dispatcher,
-                map_run_id,
-                map_span_id,
-                graph,
-                start_time,
-                _parent_span_id,
-                error=e,
-            )
-            # Mark parent batch run as failed
-            if sync_cp is not None:
-                from hypergraph.checkpointers.types import WorkflowStatus as _WS
-
-                total_ms = (time.time() - start_time) * 1000
-                error_count = sum(1 for r in results if r.status == RunStatus.FAILED)
-                sync_cp.update_run_status_sync(
-                    workflow_id,
-                    _WS.FAILED,
-                    duration_ms=total_ms,
-                    node_count=len(results),
-                    error_count=error_count,
+            total_ms = (time.time() - start_time) * 1000
+            try:
+                if dispatcher is not None:
+                    self._emit_run_end_sync(
+                        dispatcher,
+                        map_run_id,
+                        map_span_id,
+                        graph,
+                        start_time,
+                        _parent_span_id,
+                        error=e,
+                    )
+                # Mark parent batch run as failed
+                settle_created_parent_run_failed()
+                if dispatcher is not None and _parent_span_id is None:
+                    self._shutdown_dispatcher_sync(dispatcher)
+                    dispatcher = None
+                if signal_token is not None:
+                    reset_stop_signal(signal_token)
+                    signal_token = None
+                reservation.release()
+            except BaseException as final_error:
+                terminal_error = final_error
+                raise
+            if map_inspection_session is not None:
+                unstarted_item_indexes = tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes)
+                batch_error = None if any(result.error is e for result in results) else e
+                map_inspection_session.finish(
+                    status=RunStatus.FAILED.value,
+                    total_duration_ms=total_ms,
+                    unstarted_item_indexes=unstarted_item_indexes,
+                    error=batch_error,
                 )
+            raise
+        except BaseException as error:
+            terminal_error = error
             raise
         finally:
             try:
-                if _parent_span_id is None and dispatcher.active:
-                    self._shutdown_dispatcher_sync(dispatcher)
-            finally:
-                reset_stop_signal(signal_token)
-                reservation.release()
+                try:
+                    try:
+                        if terminal_error is not None:
+                            settle_created_parent_run_failed()
+                    finally:
+                        if dispatcher is not None and _parent_span_id is None:
+                            self._shutdown_dispatcher_sync(dispatcher)
+                finally:
+                    try:
+                        if signal_token is not None:
+                            reset_stop_signal(signal_token)
+                    finally:
+                        reservation.release()
+            except BaseException as final_error:
+                if map_inspection_session is not None and not map_inspection_session.snapshot().terminal:
+                    map_inspection_session.finish(
+                        status=RunStatus.FAILED.value,
+                        total_duration_ms=(time.time() - map_inspection_started_at) * 1000,
+                        unstarted_item_indexes=tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes),
+                        error=final_error,
+                    )
+                raise
+            if terminal_error is not None and map_inspection_session is not None and not map_inspection_session.snapshot().terminal:
+                map_inspection_session.finish(
+                    status=RunStatus.FAILED.value,
+                    total_duration_ms=(time.time() - map_inspection_started_at) * 1000,
+                    unstarted_item_indexes=tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes),
+                    error=terminal_error,
+                )
 
     def map_iter(
         self,

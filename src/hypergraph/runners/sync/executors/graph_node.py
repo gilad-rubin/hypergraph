@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from hypergraph.runners._shared._inspect import current_inspection
 from hypergraph.runners._shared.outputs import collect_as_lists
 from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id
 
@@ -127,6 +128,12 @@ class SyncGraphNodeExecutor:
                 "_parent_run_id": ctx.workflow_id,
                 "_item_index": ctx.item_index,
             }
+            if node.runner_override is None:
+                inspection_context = current_inspection()
+                if inspection_context is not None:
+                    inspection_session, inspection_path = inspection_context
+                    map_kwargs["_inspection_session"] = inspection_session
+                    map_kwargs["_inspection_path"] = (*inspection_path, node.name)
             if getattr(node, "_complete_on_stop", False):
                 map_kwargs["_complete_on_stop"] = True
             results = runner.map(node.graph, inner_inputs, **map_kwargs)
@@ -144,6 +151,12 @@ class SyncGraphNodeExecutor:
             "_parent_run_id": ctx.workflow_id,
             "_item_index": ctx.item_index,
         }
+        if node.runner_override is None:
+            inspection_context = current_inspection()
+            if inspection_context is not None:
+                inspection_session, inspection_path = inspection_context
+                run_kwargs["_inspection_session"] = inspection_session
+                run_kwargs["_inspection_path"] = (*inspection_path, node.name)
         if runner.capabilities.supports_checkpointing:
             run_kwargs["fork_from"] = child_fork_from
             run_kwargs["retry_from"] = child_retry_from

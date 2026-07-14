@@ -346,3 +346,353 @@ def test_checkpointer_semantics_docs_mirror_high_drift_surfaces() -> None:
     assert "generic `run-...`" in runners
     assert "job-1-fork-a1b2c3" in checkpointers
     assert "nested source" in checkpointers
+
+
+def test_inspect_mode_docs_mirror_public_contract() -> None:
+    readme = _read("README.md")
+    docs_readme = _read("docs/README.md")
+    summary = _read("docs/SUMMARY.md")
+    debug = _read("docs/05-how-to/debug-workflows.md")
+    observe = _read("docs/05-how-to/observe-execution.md")
+    control = _read("docs/05-how-to/control-background-execution.md")
+    runners = _read("docs/06-api-reference/runners.md")
+    architecture = _read("dev/ARCHITECTURE.md")
+    architecture_map = _read("dev/ARCHITECTURE-MAP.md")
+    checkpointers = _read("docs/06-api-reference/checkpointers.md")
+    hypertable = _read("docs/08-hypertable/getting-started.md")
+    pyproject = _read("pyproject.toml")
+
+    assert "RunView" not in readme
+    assert "RunView" not in observe
+    assert ("[Debug Workflows](https://github.com/gilad-rubin/hypergraph/blob/master/docs/05-how-to/debug-workflows.md)") in readme
+    assert "[Debug Workflows](docs/05-how-to/debug-workflows.md)" not in readme
+    assert "Debug Workflows](05-how-to/debug-workflows.md)" in summary
+    assert "Debug Workflows](05-how-to/debug-workflows.md)" in docs_readme
+
+    sync_section = _scoped_section(runners, "## SyncRunner")
+    async_section = _scoped_section(runners, "## AsyncRunner")
+    sync_start_section = _scoped_section(sync_section, "### start_run() and start_map()")
+    async_start_section = _scoped_section(async_section, "### start_run() and start_map()")
+    runner_sections = {
+        (SyncRunner, "run"): _scoped_section(sync_section, "### run()"),
+        (SyncRunner, "map"): _scoped_section(sync_section, "### map()"),
+        (SyncRunner, "start_run"): sync_start_section,
+        (SyncRunner, "start_map"): sync_start_section,
+        (AsyncRunner, "run"): _scoped_section(async_section, "### run()"),
+        (AsyncRunner, "map"): _scoped_section(async_section, "### map()"),
+        (AsyncRunner, "start_run"): async_start_section,
+        (AsyncRunner, "start_map"): async_start_section,
+    }
+    for (runner_type, method_name), section in runner_sections.items():
+        documented = _documented_function_defs(section)[method_name]
+        runtime_method = getattr(runner_type, method_name)
+        public_runtime_parameters = tuple(name for name in inspect.signature(runtime_method).parameters if name == "self" or not name.startswith("_"))
+        assert _parameter_names(documented) == public_runtime_parameters
+        inspect_parameter = next(argument for argument in documented.args.kwonlyargs if argument.arg == "inspect")
+        inspect_default = documented.args.kw_defaults[documented.args.kwonlyargs.index(inspect_parameter)]
+        assert isinstance(inspect_default, ast.Constant)
+        assert inspect_default.value is False
+
+    required_debug_truth = (
+        "RunResult",
+        "MapResult",
+        "inspect=True",
+        "result.inspect()",
+        "batch.inspect()",
+        "HYPERGRAPH_DISPLAY=plain",
+        "depth 6",
+        "100 mapping",
+        "200 sequence",
+        "200 rows",
+        "20 columns",
+        "20,000 characters",
+        "per top-level value",
+        "lower bound",
+        "safely comparable",
+        "JavaScript's safe integer range",
+        "serialization budget exhausted",
+        'values={"inspect": "graph-owned"}',
+        "batch.failures",
+        "failure.item_index",
+        "graph.visualize()",
+        "not captured; rerun with inspect=True",
+    )
+    for truth in required_debug_truth:
+        assert truth in debug
+
+    assert "does not require a checkpointer" in debug
+    assert "restored nodes" in debug
+    assert "same object identities" in debug
+    assert "sensitive" in debug.lower()
+    normalized_debug = " ".join(debug.split())
+    assert "without a kernel" in normalized_debug
+    assert "executed slash-qualified paths" in normalized_debug
+    assert "`Waiting for live inspection` means the payload channel is not authenticated or live yet" in normalized_debug
+    assert "`Live inspection unavailable`" in normalized_debug
+    assert "latest state remains locally inspectable as a saved snapshot" in normalized_debug
+    assert "instead of silently freezing a view that still claims to be live" in normalized_debug
+    normalized_runners = " ".join(runners.split())
+    normalized_changelog = " ".join(_read("docs/changelog.md").split())
+    for notebook_delivery_docs in (normalized_debug, normalized_runners, normalized_changelog):
+        assert "jupyter-server-nbmodel==0.1.1a4" in notebook_delivery_docs
+        assert "best-effort" in notebook_delivery_docs
+        assert "kernel environment" in notebook_delivery_docs
+        assert "payload-only history" in notebook_delivery_docs
+        assert "separate server environment" in notebook_delivery_docs
+        normalized_delivery = notebook_delivery_docs.lower()
+        assert "terminal channel" in normalized_delivery
+        assert "isolated-output" in normalized_delivery
+        assert "two physical outputs" in normalized_delivery
+        assert "one terminal physical record" in normalized_delivery
+        assert "only after the original iframe accepts" in normalized_delivery
+        assert "native `<details>`" in notebook_delivery_docs
+        assert "first failure of n" in normalized_delivery
+        assert "exception preview" in normalized_delivery
+        assert "bounded repr" in normalized_delivery
+        assert "opaque repr" in normalized_delivery
+        assert "exact run exception" in normalized_delivery
+        assert "exact batch exception" in normalized_delivery
+        assert "copy-faithful" in normalized_delivery
+        assert "valid `<pre><code>`" in normalized_delivery
+        assert "wrap opportunities" in normalized_delivery
+        assert "status-only" in normalized_delivery
+        assert 'error_handling="continue"' in notebook_delivery_docs
+        assert "non-empty local `srcdoc`" in normalized_delivery
+        assert "never auto-trusts" in normalized_delivery
+        assert "scripts, styles, iframes" in normalized_delivery
+        assert "docs/05-how-to/debug-workflows.md" in notebook_delivery_docs
+
+    for scheduler_fallback_docs in (normalized_debug, normalized_runners, normalized_changelog):
+        assert "closed `Live inspection unavailable` initial snapshot" in scheduler_fallback_docs
+        assert "does not subscribe to the inspection session" in scheduler_fallback_docs
+        assert "not settled execution truth" in scheduler_fallback_docs
+        assert "settled truth remains available through `result.inspect()` or `batch.inspect()`" in scheduler_fallback_docs
+        assert "already-terminal initial artifact remains a closed `Saved snapshot`" in scheduler_fallback_docs
+        assert "late owner-thread delayed-arm rejection" in scheduler_fallback_docs
+        assert "closes and detaches the live observer" in scheduler_fallback_docs
+        assert "one best-effort stale `Live inspection unavailable` settlement" in scheduler_fallback_docs
+        assert "rejected payload is never shown as live" in scheduler_fallback_docs
+        assert "observer settlement does not change settled execution truth" in scheduler_fallback_docs
+        assert "observer remains closed" in scheduler_fallback_docs
+
+    for architecture_docs in (architecture, architecture_map):
+        normalized_architecture = " ".join(architecture_docs.split())
+        assert "inspection.py" in normalized_architecture
+        assert "_inspect.py" in normalized_architecture
+        assert "_inspect_html.py" in normalized_architecture
+        assert "_inspect_serialization.py" in normalized_architecture
+        assert "_inspect_transport.py" in normalized_architecture
+        assert "inspect.css" in normalized_architecture
+        assert "inspect.js" in normalized_architecture
+        assert "inspect_transport.js" in normalized_architecture
+        assert "InspectionDisplay" in normalized_architecture
+        assert "current-process" in normalized_architecture
+        assert "no checkpointer" in normalized_architecture
+        assert "durable" in normalized_architecture
+    assert 'inspect="graph-owned"' not in debug
+
+    assert "inspect=True" in control
+    assert "result.inspect()" in control
+    assert "batch.inspect()" in control
+    assert "do not `await runner.start_run(...)`" in control
+    assert "does not expose" in control and "inspection" in control
+
+    assert "current-process inspect view" in checkpointers
+    assert "does not require a checkpointer" in checkpointers
+    assert "restored nodes" in checkpointers
+    assert "do not reconstruct successful inputs or outputs" in checkpointers
+
+    for text in (readme, debug, observe, control, runners):
+        assert "._repr_html_(" not in text
+        assert ".artifact" not in text
+        assert ".to_html(" not in text
+        assert ".save(" not in text
+
+    assert "../05-how-to/batch-processing.md" in hypertable
+    assert "../05-how-to/visualize-graphs.md" in hypertable
+    assert "../05-how-to/test-without-framework.md" in hypertable
+    assert '"/docs/changelog.md"' in pyproject
+    assert '"/CHANGELOG.md"' not in pyproject
+
+
+def test_inspect_docs_pin_observational_serialization_and_background_identity() -> None:
+    debug = _read("docs/05-how-to/debug-workflows.md")
+    runners = _read("docs/06-api-reference/runners.md")
+    changelog = _read("docs/changelog.md")
+
+    normalized_debug = " ".join(debug.split())
+    for structured_adapter in (
+        "exact built-in `dict`",
+        "exact built-in `list`",
+        "exact built-in `tuple`",
+        "ordinary dataclasses",
+        "recognized Pydantic models",
+        "exact NumPy `ndarray`",
+        "exact pandas `DataFrame`",
+    ):
+        assert structured_adapter in normalized_debug
+    assert "unsupported subclasses and custom protocols" in normalized_debug
+    assert "whole-value bounded `repr` fallback" in normalized_debug
+    assert "`repr` is Python user code" in normalized_debug
+    assert "cannot prevent or undo its side effects" in normalized_debug
+    assert "multiple live snapshots" in normalized_debug
+    assert "raised `repr` exceptions" in normalized_debug
+    assert "bounded typed placeholders" in normalized_debug
+    assert "do not replace the run status" in normalized_debug
+    assert "does not emit a hidden notebook output" in normalized_debug
+    assert "no hidden display side effect" not in normalized_debug
+
+    run_result = _scoped_section(runners, "## RunResult")
+    run_inspect = _scoped_section(run_result, "### inspect()")
+    assert "Python user code" in run_inspect
+    assert "hidden notebook output" in run_inspect
+    for serialization_docs in (normalized_debug, " ".join(run_inspect.split())):
+        assert "private `CapturedMapping` snapshot adapter" in serialization_docs
+        assert "copy.copy" in serialization_docs
+        assert "copy.deepcopy" in serialization_docs
+        assert "`dataclasses.asdict`" in serialization_docs
+        assert "pickle" in serialization_docs
+        assert "not stored as `MappingProxyType`" in serialization_docs
+        assert "user-supplied `MappingProxyType`" in serialization_docs
+        assert "backed by an exact `dict`" in serialization_docs
+        assert "proxy backed by a custom mapping" in serialization_docs
+        assert "whole-value bounded `repr` fallback" in serialization_docs
+        assert "canonical class provenance" in serialization_docs
+        assert "mutable public aliases" in serialization_docs
+        assert "standard NumPy-backed storage" in serialization_docs
+        assert "ExtensionArray-backed DataFrame" in serialization_docs
+        assert "unsupported extension-backed DataFrame" in serialization_docs
+        assert "without calling DataFrame `repr`" in serialization_docs
+        assert "delegates to extension hooks" in serialization_docs
+
+    for result_type in (RunResult, MapResult):
+        doc = inspect.getdoc(result_type.inspect)
+        assert doc is not None
+        assert "hidden notebook output" in doc
+        assert "bounded ``repr`` fallback" in doc
+        assert "Python user code" in doc
+
+    sync_section = _scoped_section(runners, "## SyncRunner")
+    async_section = _scoped_section(runners, "## AsyncRunner")
+    for runner_type, section in (
+        (SyncRunner, sync_section),
+        (AsyncRunner, async_section),
+    ):
+        start_section = _scoped_section(section, "### start_run() and start_map()")
+        normalized_start = " ".join(start_section.split())
+        assert "generated workflow ID" in normalized_start
+        assert "settled result" in normalized_start
+        assert "before restored" in normalized_start
+        assert "node evidence" in normalized_start
+        assert "published" in normalized_start
+        assert "start_map()" in normalized_start
+        assert "persistence still requires an explicit" in normalized_start
+        assert "workflow_id" in normalized_start
+
+        start_doc = inspect.getdoc(runner_type.start_run)
+        assert start_doc is not None
+        assert "generated workflow ID" in start_doc
+        assert "settled result" in start_doc
+        assert "before restored" in start_doc
+        assert "node evidence" in start_doc
+        assert "published" in start_doc
+
+    fixed = _scoped_section(changelog, "### Fixed")
+    normalized_fixed = " ".join(fixed.split())
+    assert "**Observational inspect serialization**" in normalized_fixed
+    assert "**Background inspect workflow identity**" in normalized_fixed
+    assert "private `CapturedMapping` snapshot adapter" in normalized_fixed
+    assert "copy.copy" in normalized_fixed
+    assert "copy.deepcopy" in normalized_fixed
+    assert "`dataclasses.asdict`" in normalized_fixed
+    assert "pickle" in normalized_fixed
+    assert "not stored as `MappingProxyType`" in normalized_fixed
+    assert "user-supplied `MappingProxyType`" in normalized_fixed
+    assert "backed by an exact `dict`" in normalized_fixed
+    assert "proxy backed by a custom mapping" in normalized_fixed
+    assert "canonical class provenance" in normalized_fixed
+    assert "mutable public aliases" in normalized_fixed
+    assert "standard NumPy-backed storage" in normalized_fixed
+    assert "unsupported extension-backed DataFrame" in normalized_fixed
+    assert "without calling DataFrame `repr`" in normalized_fixed
+
+
+def test_inspect_docs_pin_array_storage_compatibility_truth() -> None:
+    debug = _read("docs/05-how-to/debug-workflows.md")
+    runners = _read("docs/06-api-reference/runners.md")
+    changelog = _read("docs/changelog.md")
+    pyproject = _read("pyproject.toml")
+
+    run_result = _scoped_section(runners, "## RunResult")
+    run_inspect = _scoped_section(run_result, "### inspect()")
+    fixed = _scoped_section(changelog, "### Fixed")
+
+    for serialization_docs in (
+        " ".join(debug.split()),
+        " ".join(run_inspect.split()),
+        " ".join(fixed.split()),
+    ):
+        assert "canonical NumPy 1.x and 2.x `ndarray` provenance" in serialization_docs
+        assert "recognized trusted NumPy-backed internal storage layout" in serialization_docs
+        assert "allowed pandas version with an unrecognized internal storage layout" in serialization_docs
+        assert "unsupported DataFrame storage" in serialization_docs
+        assert "without calling DataFrame `repr`" in serialization_docs
+        assert "data blocks, row axis, or column axis" in serialization_docs
+        assert "unsupported extension-backed DataFrame" in serialization_docs
+        assert "without invoking extension hooks" in serialization_docs
+        assert "implementation safety boundary, not an all-version guarantee" in serialization_docs
+
+    normalized_debug = " ".join(debug.split())
+    assert "optional `examples` dependency range" in normalized_debug
+    assert "`numpy>=1.21.0`" in normalized_debug
+    assert "`pandas>=1.3.0`" in normalized_debug
+    assert '"numpy>=1.21.0"' in pyproject
+    assert '"pandas>=1.3.0"' in pyproject
+
+    for public_docs in (debug, runners, changelog):
+        assert ".artifact" not in public_docs
+
+
+def test_inspect_docs_pin_exception_labels_and_recovery_runner_truth() -> None:
+    debug = _read("docs/05-how-to/debug-workflows.md")
+    runners = _read("docs/06-api-reference/runners.md")
+    changelog = _read("docs/changelog.md")
+
+    run_result = _scoped_section(runners, "## RunResult")
+    run_inspect = _scoped_section(run_result, "### inspect()")
+    fixed = _scoped_section(changelog, "### Fixed")
+
+    for recovery_docs in (debug, run_inspect, fixed):
+        normalized = " ".join(recovery_docs.split())
+        assert "complete safe exception" in normalized
+        assert "**Exception preview (bounded repr)**" in normalized
+        assert "original character count" in normalized
+        assert "**Exception details unavailable**" in normalized
+        assert "Sync snippets call `runner.run(...)` or `runner.map(...)` directly" in normalized
+        assert "async snippets use `await runner.run(...)` or `await runner.map(...)`" in normalized
+        assert "runner kind was not captured" in normalized
+        assert 'error_handling="continue"' in normalized
+        assert "settled successful result or batch" in normalized
+        assert "run-boundary, batch-boundary, and start-failure" in normalized
+        assert "slash-qualified failing leaf" in normalized
+        assert "Each retry assignment is inside `try`/`except`" in normalized
+        assert "persistent infrastructure exception" in normalized
+        assert "real type and message" in normalized
+        assert "from raw Python evidence" in normalized
+        assert "changing `repr()` output is never identity" in normalized.lower()
+        assert "object address, input value, or secret" in normalized
+        assert "never invokes caller-defined equality or hashing" in normalized
+        assert "workflow IDs or captured values" in normalized
+        assert "captured values are correlated only by object identity" in normalized
+        assert "same scalar and exception objects" in normalized
+        assert "equal durations" in normalized
+        assert "run boundary" in normalized and "aggregate container" in normalized
+        assert "translates the original item index" in normalized
+        assert "`unstarted_item_indexes`" in normalized
+        assert "indexing `batch.results`" in normalized
+        assert "fails closed" in normalized
+
+    assert "Before (misleading async recovery)" in debug
+    assert "After (truthful async recovery)" in debug
+    assert "Before (a boundary retry can raise or print `None`)" in debug
+    assert "After (the assignment and evidence read are both guarded)" in debug

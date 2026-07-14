@@ -15,6 +15,7 @@ from hypergraph.exceptions import (
 )
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.graph_node import GraphNode
+from hypergraph.runners._shared._inspect import current_inspection
 from hypergraph.runners._shared.caching import (
     check_cache,
     restore_routing_decision,
@@ -104,6 +105,11 @@ def run_superstep_sync(
         if cache is not None:
             cache_key, cached_outputs = check_cache(node, inputs, cache)
 
+        inspection_context = current_inspection()
+        inspection_session = inspection_context[0] if inspection_context is not None else None
+        inspection_path = inspection_context[1] if inspection_context is not None else ()
+        qualified_name = "/".join((*inspection_path, node.name))
+
         if cached_outputs is not None:
             outputs = cached_outputs
             restore_routing_decision(node, outputs, new_state)
@@ -117,6 +123,19 @@ def run_superstep_sync(
                 item_index=ctx_base.item_index,
                 superstep=superstep_idx,
             )
+            inspection_time_ms = time.perf_counter() * 1000
+            if inspection_session is not None:
+                inspection_session.start_node(
+                    run_id=run_id,
+                    span_id=node_span_id,
+                    node_name=node.name,
+                    qualified_name=qualified_name,
+                    graph_name=graph.name or "",
+                    item_index=ctx_base.item_index,
+                    superstep=superstep_idx if superstep_idx is not None else 0,
+                    inputs=inputs,
+                    started_at_ms=inspection_time_ms,
+                )
             if active:
                 dispatcher.emit(start_evt)
                 dispatcher.emit(
@@ -170,6 +189,19 @@ def run_superstep_sync(
                 item_index=ctx_base.item_index,
                 superstep=superstep_idx,
             )
+            inspection_started_at_ms = time.perf_counter() * 1000
+            if inspection_session is not None:
+                inspection_session.start_node(
+                    run_id=run_id,
+                    span_id=node_span_id,
+                    node_name=node.name,
+                    qualified_name=qualified_name,
+                    graph_name=graph.name or "",
+                    item_index=ctx_base.item_index,
+                    superstep=superstep_idx if superstep_idx is not None else 0,
+                    inputs=inputs,
+                    started_at_ms=inspection_started_at_ms,
+                )
             if active:
                 dispatcher.emit(start_evt)
 
@@ -203,6 +235,12 @@ def run_superstep_sync(
                             outputs = executor(node, new_state, inputs, ctx)
                     except BaseException as executor_error:
                         if isinstance(executor_error, PauseExecution):
+                            if inspection_session is not None:
+                                inspection_session.pause_node(
+                                    span_id=node_span_id,
+                                    ended_at_ms=time.perf_counter() * 1000,
+                                    duration_ms=(time.time() - node_start) * 1000,
+                                )
                             raise
                         if isinstance(executor_error, Exception):
                             duration_ms = (time.time() - node_start) * 1000
@@ -229,7 +267,14 @@ def run_superstep_sync(
                                     )
                                     or ()
                                 )
-                                node_failures = tuple(replace(failure, node_name=f"{node.name}/{failure.node_name}") for failure in inner_failures)
+                                node_failures = tuple(
+                                    replace(
+                                        failure,
+                                        node_name=f"{node.name}/{failure.node_name}",
+                                        item_index=(ctx_base.item_index if ctx_base.item_index is not None else failure.item_index),
+                                    )
+                                    for failure in inner_failures
+                                )
                             else:
                                 node_failures = (
                                     FailureEvidence(
@@ -242,6 +287,26 @@ def run_superstep_sync(
                                         workflow_id=ctx_base.workflow_id,
                                         item_index=ctx_base.item_index,
                                     ),
+                                )
+                            if inspection_session is not None and node_failures:
+                                inspection_failure = replace(
+                                    node_failures[0],
+                                    node_name="/".join((*inspection_path, node_failures[0].node_name)),
+                                )
+                                record_failure = not (isinstance(node, GraphNode) and node.runner_override is None)
+                                inspection_session.fail_node(
+                                    span_id=node_span_id,
+                                    failure=inspection_failure,
+                                    ended_at_ms=time.perf_counter() * 1000,
+                                    duration_ms=duration_ms,
+                                    record_failure=record_failure,
+                                )
+                            elif inspection_session is not None:
+                                inspection_session.abort_node(
+                                    span_id=node_span_id,
+                                    error=executor_error,
+                                    ended_at_ms=time.perf_counter() * 1000,
+                                    duration_ms=duration_ms,
                                 )
                             executor_failure = _NodeExecutionError(
                                 executor_error,
@@ -293,6 +358,13 @@ def run_superstep_sync(
 
             except BaseException as e:
                 duration_ms = (time.time() - node_start) * 1000
+                if inspection_session is not None and isinstance(e, Exception) and not isinstance(e, _NodeExecutionError):
+                    inspection_session.abort_node(
+                        span_id=node_span_id,
+                        error=e,
+                        ended_at_ms=time.perf_counter() * 1000,
+                        duration_ms=duration_ms,
+                    )
                 if active and not node_error_event_attempted and not isinstance(e, _NodeExecutionError):
                     dispatcher.emit(
                         build_node_error_event(
@@ -334,15 +406,36 @@ def run_superstep_sync(
 
         # Record wait_for versions
         wait_for_versions = {name: state.get_version(name) for name in node.wait_for}
-        apply_node_result(
-            graph,
-            new_state,
-            node,
-            outputs,
-            input_versions,
-            wait_for_versions,
-            duration_ms=0.0 if cached_outputs is not None else duration_ms,
-            cached=cached_outputs is not None,
-        )
+        cached = cached_outputs is not None
+        applied_duration_ms = 0.0 if cached else duration_ms
+        try:
+            apply_node_result(
+                graph,
+                new_state,
+                node,
+                outputs,
+                input_versions,
+                wait_for_versions,
+                duration_ms=applied_duration_ms,
+                cached=cached,
+            )
+        except Exception as error:
+            if inspection_session is not None:
+                inspection_session.abort_node(
+                    span_id=node_span_id,
+                    error=error,
+                    ended_at_ms=time.perf_counter() * 1000,
+                    duration_ms=applied_duration_ms,
+                )
+            raise
+
+        if inspection_session is not None:
+            inspection_session.finish_node(
+                span_id=node_span_id,
+                outputs=outputs,
+                ended_at_ms=time.perf_counter() * 1000,
+                duration_ms=applied_duration_ms,
+                cached=cached,
+            )
 
     return new_state

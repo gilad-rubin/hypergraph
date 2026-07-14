@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Native execution inspect mode** — before, users correlated result status,
+  logs, map indexes, values, and failures by hand. Now `SyncRunner` and
+  `AsyncRunner` accept `inspect=True` on `run()`, `map()`, `start_run()`, and
+  `start_map()`; settled `RunResult.inspect()` / `MapResult.inspect()` return
+  one explicit locally interactive display. Current inspection needs no
+  checkpointer, handles remain control-only, degraded results disclose values
+  that were not captured, and trusted saved notebook output remains interactive
+  without a kernel while carrying the documented bounded sensitive values.
+  Untrusted saved output retains native expandable terminal evidence instead
+  of claiming that active HTML can run through host security policy.
+
 - **Background run and map handles** — `SyncRunner.start_run()` /
   `start_map()` and `AsyncRunner.start_run()` / `start_map()` return
   process-local `SyncHandle` / `AsyncHandle` controls with only `done`,
@@ -38,6 +49,135 @@
 - **Reserved column name validation** — identity and source columns named `_status`, `_error`, `_row_fingerprint`, `_write_gen`, `_parent_id`, or `_provenance_*` are rejected at graph analysis time with a clear error message.
 
 ### Fixed
+
+- **Truthful notebook scheduler availability** — before, an
+  `add_callback`-only kernel could look cross-thread capable while lacking the
+  delayed owner-thread call needed for the 250 ms live-inspection update. Now
+  delayed calls and cross-thread marshalling are checked independently. When a
+  nonterminal view lacks a required capability, Hypergraph creates a closed
+  `Live inspection unavailable` initial snapshot and does not subscribe to the
+  inspection session. That initial notebook record is not settled execution
+  truth; settled truth remains available through `result.inspect()` or
+  `batch.inspect()` after the run or batch returns. An already-terminal initial
+  artifact remains a closed `Saved snapshot`. A scheduler can also reject
+  `call_later()` only after a worker's callback reaches the owner thread. That
+  late owner-thread delayed-arm rejection now closes and detaches the live
+  observer. If its display channel still works, Hypergraph writes one
+  best-effort stale `Live inspection unavailable` settlement from the latest
+  bounded artifact; the rejected payload is never shown as live. Failure of
+  that final display update is observational, and the observer remains closed.
+  This observer settlement does not change settled execution truth; collected
+  `result.inspect()` or `batch.inspect()` remains authoritative.
+
+- **Executable inspect recovery and nested failure attribution** — before, a
+  copied full-renderer snippet dereferenced `None` or raised `StopIteration`
+  when a transient failure disappeared on recovery, and full-renderer
+  run-boundary, batch-boundary, and start-failure views omitted the recovery
+  policy already shown by the native summary. Now both surfaces use captured
+  sync/async provenance. Each retry assignment is inside `try`/`except` and
+  uses `error_handling="continue"`: a persistent infrastructure exception
+  prints its real type and message without reading an unbound result, while a
+  transient boundary prints the settled successful result or batch. A returned
+  failed result prints its real run/item error; map evidence uses
+  `batch.failures` or the original item position and never a nonexistent
+  `MapResult.error`. For sparse run-boundary results, the snippet translates the
+  original item index around `unstarted_item_indexes` before indexing
+  `batch.results`; it fails closed when that item never started or is outside
+  the requested scope. Unknown provenance still emits no runner call.
+  Before, primary **Show failure** selection on a nested mapped graph could stop
+  at the aggregate container (`review_group`) and show its list input. Now the
+  full inspector and native summary correlate the containing outer item to the
+  explicit slash-qualified failing leaf, such as
+  `review_group/review_customer`, with its scalar failing input while retaining
+  distinct peer failures. Correlation is established from raw Python evidence
+  before error/input presentation serialization and carried by an opaque
+  internal occurrence identity: changing `repr()` output is never identity,
+  no object address, input value, or secret enters the key, and correlation
+  never invokes caller-defined equality or hashing for workflow IDs or captured
+  values; captured values are correlated only by object identity. Distinct
+  executions retain separate identities even when they reuse the same scalar
+  and exception objects and record equal durations. A missing exact leaf fails
+  closed at the run boundary instead of borrowing the container.
+
+- **Trust-safe saved inspect evidence** — before, a notebook that treated new
+  output as untrusted could strip scripts, styles, iframes, and identifiers,
+  leaving a blank terminal record even though Python had settled at
+  `partial / 2 completed / 1 failed`. Now terminal and stale channels include
+  one small native `<details>` summary derived from the existing bounded
+  payload. It exposes `First failure of N`, original item, qualified node,
+  bounded inputs, exception evidence, a result-evidence snippet, and
+  `docs/05-how-to/debug-workflows.md`. A complete safe exception keeps its
+  exact node/run/batch label. Repr-backed evidence uses **Exception preview
+  (bounded repr)**, truncated previews retain the original character count,
+  and a placeholder uses **Exception details unavailable** with its reason. An
+  opaque repr keeps its exception type once, while a repr already beginning
+  with the type is not duplicated. Copy-faithful whitespace, valid
+  `<pre><code>` nesting, and copy-inert wrap opportunities preserve inputs,
+  exceptions, and recovery snippets without overflowing a 360px page or
+  altering copied text. Status-only failures contribute once to
+  `First failure of N` without duplicating stronger evidence. **Exact run
+  exception** and **Exact batch exception** remain
+  separate from attributable node evidence. Generated recovery snippets use
+  only public runner/result APIs. Sync snippets call `runner.run(...)` or
+  `runner.map(...)` directly; async snippets use `await runner.run(...)` or
+  `await runner.map(...)`. If the runner kind was not captured, recovery code
+  is unavailable instead of silently choosing sync. Returned-value snippets
+  rerun with `error_handling="continue"` before reading a result. Before, an
+  async or repr-backed failure could show sync-only code or an exact heading;
+  after, the call syntax and label match the captured evidence. Trusted output
+  still gets the full sandboxed portable inspector and hides the compact
+  summary only when active HTML runs and the frame retains a non-empty local
+  `srcdoc`.
+  Explicit failures without a stable node match retain their own facts instead
+  of borrowing a same-name node. Hypergraph never auto-trusts or signs a
+  notebook, calls a server trust endpoint, weakens the iframe sandbox, changes
+  ACK authentication, or adds a public transport setting.
+
+- **Portable saved inspect delivery** — before, notebook hosts that isolate
+  each saved output could show the first `pending / 0` shell because later
+  payload scripts could not reach sibling output documents. Now the terminal
+  channel is a self-contained portable inspector. The normal capable path
+  still has exactly two physical outputs because `DisplayHandle.update()`
+  replaces that channel in place. When the kernel environment reports exact
+  `jupyter-server-nbmodel==0.1.1a4`, Hypergraph uses a best-effort append path
+  because that executor drops `update_display_data`: ordinary updates retain
+  hidden coalesced payload-only history, then settlement adds one terminal
+  physical record. Shared Jupyter hides the portable fallback only after the
+  original iframe accepts and applies the authenticated update; an
+  isolated-output host can open the terminal record alone. Missing or
+  unrecognized versions keep the normal update path. A
+  separate server environment cannot be inferred from kernel package metadata.
+
+- **Observational inspect serialization** — captured node inputs, outputs, and
+  requested map inputs now use a private `CapturedMapping` snapshot adapter.
+  The shallow snapshot supports `copy.copy`, `copy.deepcopy`,
+  `dataclasses.asdict`, and pickle round trips; captured mappings are not stored
+  as `MappingProxyType`. Separately, structured source-value rendering accepts
+  only exact built-in containers, ordinary dataclasses, recognized Pydantic
+  models, exact NumPy/pandas adapters, and a user-supplied `MappingProxyType`
+  backed by an exact `dict`. Trusted NumPy, pandas, and Pydantic adapters use
+  canonical class provenance, not mutable public aliases.
+  Within documented rank and size limits, exact arrays with canonical NumPy
+  1.x and 2.x `ndarray` provenance stay structured. Exact pandas DataFrames
+  require a recognized trusted NumPy-backed internal storage layout: standard
+  NumPy-backed storage Hypergraph knows how to inspect. An allowed pandas
+  version with an unrecognized internal storage layout now becomes a bounded
+  `unsupported DataFrame storage` placeholder without calling DataFrame `repr`.
+  An ExtensionArray-backed DataFrame—one whose data blocks, row axis, or column
+  axis use extension storage—gets the narrower
+  `unsupported extension-backed DataFrame` result without invoking extension
+  hooks. This is an implementation
+  safety boundary, not an all-version guarantee. DataFrame `repr` delegates to
+  extension hooks, so both placeholders bypass it. Unsupported subclasses and
+  custom protocols use a bounded whole-value `repr` fallback. A proxy backed by
+  a custom mapping uses the same fallback. Custom `repr` remains ordinary
+  Python user code, so Hypergraph cannot prevent or undo its side effects;
+  raised errors become placeholders without replacing the run status.
+
+- **Background inspect workflow identity** — checkpointer-backed sync and async
+  `start_run(..., inspect=True)` calls that omit `workflow_id` now bind their
+  generated ID before restored or node evidence is published. The settled
+  result and inspection view agree while handles remain control-only.
 
 - **Checkpointer run-filter parity** — async Memory/SQLite and SQLite sync reads now compose `graph_name`, inclusive UTC-normalized `since`, status, and parent filters before limit. Omitting `parent_run_id` returns all runs; explicit `None` returns top-level runs only. `count_runs()` uses the same three-state parent contract.
 

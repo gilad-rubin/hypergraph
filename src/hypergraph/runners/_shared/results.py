@@ -6,9 +6,13 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph._utils import plural
+from hypergraph.runners.inspection import InspectionDisplay
+
+if TYPE_CHECKING:
+    from hypergraph.runners._shared._inspect import MapInspection, RunInspection
 
 ErrorHandling = Literal["raise", "continue"]
 
@@ -120,6 +124,7 @@ class RunResult:
     checkpoint_errors: tuple[str, ...] = ()
     restored: bool = False
     node_failures: tuple[FailureEvidence, ...] = ()
+    _inspection: RunInspection | None = field(default=None, repr=False, compare=False)
 
     @property
     def stopped(self) -> bool:
@@ -145,6 +150,24 @@ class RunResult:
     def failure(self) -> FailureEvidence | None:
         """First attributable node failure, if one exists."""
         return self.node_failures[0] if self.node_failures else None
+
+    def inspect(self) -> InspectionDisplay[Any]:
+        """Return an explicit rich inspection view for this settled result.
+
+        The method returns one display value and emits no hidden notebook output.
+        Runs created with ``inspect=True`` include shallow successful-node
+        input/output snapshots. Ordinary and restored results remain
+        inspectable but say truthfully which values were not captured.
+        Unsupported values use a bounded ``repr`` fallback. ``repr`` is Python user code
+        and may have side effects; raised exceptions become typed
+        placeholders without changing the run status.
+        """
+        from hypergraph.runners._shared._inspect import degraded_run_inspection
+
+        artifact = self._inspection
+        if artifact is None:
+            artifact = degraded_run_inspection(self)
+        return InspectionDisplay(artifact)
 
     def summary(self) -> str:
         """One-line overview: 'completed | 3 nodes | 12ms' or 'failed: ValueError'."""
@@ -235,6 +258,7 @@ def build_terminal_run_result(
     workflow_id: str | None,
     log: RunLog,
     checkpoint_errors: Sequence[str] = (),
+    inspection: RunInspection | None = None,
 ) -> RunResult:
     """Build a completed or stopped result with durability evidence."""
     errors = tuple(checkpoint_errors)
@@ -246,6 +270,7 @@ def build_terminal_run_result(
         log=log,
         checkpoint_ok=not errors,
         checkpoint_errors=errors,
+        _inspection=inspection,
     )
 
 
@@ -257,6 +282,7 @@ def build_paused_run_result(
     pause: PauseInfo,
     log: RunLog,
     checkpoint_errors: Sequence[str] = (),
+    inspection: RunInspection | None = None,
 ) -> RunResult:
     """Build a paused result with durability evidence."""
     errors = tuple(checkpoint_errors)
@@ -269,6 +295,7 @@ def build_paused_run_result(
         log=log,
         checkpoint_ok=not errors,
         checkpoint_errors=errors,
+        _inspection=inspection,
     )
 
 
@@ -281,6 +308,7 @@ def build_failed_run_result(
     log: RunLog,
     node_failures: Sequence[FailureEvidence] = (),
     checkpoint_errors: Sequence[str] = (),
+    inspection: RunInspection | None = None,
 ) -> RunResult:
     """Build a failed result with durability evidence."""
     errors = tuple(checkpoint_errors)
@@ -294,6 +322,7 @@ def build_failed_run_result(
         log=log,
         checkpoint_ok=not errors,
         checkpoint_errors=errors,
+        _inspection=inspection,
     )
 
 
@@ -342,6 +371,11 @@ class MapResult:
     map_mode: str  # "zip" | "product"
     graph_name: str
     unstarted_item_indexes: tuple[int, ...] = ()
+    _inspection: MapInspection | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         """Normalize and validate indexes for inputs curtailed before start."""
@@ -489,6 +523,21 @@ class MapResult:
         """Collect values across items with a default.
         results.get("doubled", 0) → [2, 4, 0, 6, 8]"""
         return [r.get(key, default) for r in self.results]
+
+    def inspect(self) -> InspectionDisplay[Any]:
+        """Return an explicit rich inspection view for this settled batch.
+
+        The method returns one display value and emits no hidden notebook output.
+        Unsupported values use a bounded ``repr`` fallback. ``repr`` is Python user code
+        and may have side effects; raised exceptions become typed
+        placeholders without changing the batch status.
+        """
+        from hypergraph.runners._shared._inspect import degraded_map_inspection
+
+        artifact = self._inspection
+        if artifact is None:
+            artifact = degraded_map_inspection(self)
+        return InspectionDisplay(artifact)
 
     # --- Progressive disclosure ---
 

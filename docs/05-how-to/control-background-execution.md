@@ -120,6 +120,57 @@ settled `RunResult` or `MapResult`. The handle is not a second result model and
 does not expose cancellation, callbacks, retry, inspection, or persistence
 methods.
 
+## Inspect Background Work After It Settles
+
+Inspection is configured when work starts, but the handle remains control-only.
+Before, an application retrieves the result and correlates its log and failures:
+
+```python
+# Before: the handle controls work; debugging uses separate result surfaces.
+handle = runner.start_map(
+    customer_review,
+    {
+        "customer_id": ["alex-10", "maya-23", "sam-04"],
+        "lifetime_value": [2400, 1200, 3100],
+    },
+    map_over=["customer_id", "lifetime_value"],
+)
+batch = handle.result(raise_on_failure=False)
+print(batch.log, batch.failures)
+```
+
+After, pass `inspect=True` through `start_map()`, retrieve the same settled
+`MapResult`, and inspect that result:
+
+```python
+# After: capture while live, then open the settled batch view explicitly.
+handle = runner.start_map(
+    customer_review,
+    {
+        "customer_id": ["alex-10", "maya-23", "sam-04"],
+        "lifetime_value": [2400, 1200, 3100],
+    },
+    map_over=["customer_id", "lifetime_value"],
+    inspect=True,
+)
+batch = handle.result(raise_on_failure=False)
+batch.inspect()
+```
+
+Async start methods are still ordinary methods: do not `await runner.start_run(...)`.
+Await only retrieval:
+
+```python
+handle = AsyncRunner().start_run(graph, values, inspect=True)
+result = await handle.result(raise_on_failure=False)
+result.inspect()
+```
+
+In a notebook, the live view settles into a saved snapshot. After saving, the
+snapshot remains locally interactive without a kernel or Hypergraph server.
+It contains captured values, so treat the notebook as sensitive. See
+[Debug Workflows](debug-workflows.md) for limits and degraded behavior.
+
 ## Inspect Failures Without Losing the Result
 
 Background execution captures node-body failures so retrieval can choose

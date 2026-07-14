@@ -22,6 +22,7 @@ from hypergraph.runners._shared.state import (
 from hypergraph.runners.async_ import AsyncRunner
 from hypergraph.runners.base import BaseRunner
 from hypergraph.runners.daft import DaftRunner
+from hypergraph.runners.inspection import InspectionDisplay
 from hypergraph.runners.sync import SyncRunner
 
 __all__ = [
@@ -40,6 +41,7 @@ __all__ = [
     "RunnerCapabilities",
     "GraphState",
     "NodeExecution",
+    "InspectionDisplay",
     # Handles
     "SyncHandle",
     "AsyncHandle",

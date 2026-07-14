@@ -17,6 +17,7 @@ from hypergraph.exceptions import (
 )
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.graph_node import GraphNode
+from hypergraph.runners._shared._inspect import current_inspection
 from hypergraph.runners._shared.caching import (
     check_cache,
     restore_routing_decision,
@@ -109,7 +110,7 @@ async def run_superstep_async(
 
     async def execute_one(
         node: HyperNode,
-    ) -> tuple[HyperNode, dict[str, Any], dict[str, int], dict[str, int], float, bool]:
+    ) -> tuple[HyperNode, dict[str, Any], dict[str, int], dict[str, int], float, bool, str]:
         """Execute a single node with event emission."""
         inputs = collect_inputs_for_node(node, graph, state, provided_values)
         # Record input versions under the same parent-facing key the staleness
@@ -121,6 +122,11 @@ async def run_superstep_async(
         cache_key, cached_outputs = ("", None)
         if cache is not None:
             cache_key, cached_outputs = check_cache(node, inputs, cache)
+
+        inspection_context = current_inspection()
+        inspection_session = inspection_context[0] if inspection_context is not None else None
+        inspection_path = inspection_context[1] if inspection_context is not None else ()
+        qualified_name = "/".join((*inspection_path, node.name))
 
         if cached_outputs is not None:
             outputs = cached_outputs
@@ -135,6 +141,19 @@ async def run_superstep_async(
                 item_index=ctx_base.item_index,
                 superstep=superstep_idx,
             )
+            inspection_time_ms = time.perf_counter() * 1000
+            if inspection_session is not None:
+                inspection_session.start_node(
+                    run_id=run_id,
+                    span_id=node_span_id,
+                    node_name=node.name,
+                    qualified_name=qualified_name,
+                    graph_name=graph.name or "",
+                    item_index=ctx_base.item_index,
+                    superstep=superstep_idx if superstep_idx is not None else 0,
+                    inputs=inputs,
+                    started_at_ms=inspection_time_ms,
+                )
             if active:
                 await dispatcher.emit_async(start_evt)
                 await dispatcher.emit_async(
@@ -177,7 +196,7 @@ async def run_superstep_async(
                         superstep=superstep_idx,
                     )
                 )
-            return node, outputs, input_versions, wait_for_versions, 0.0, True
+            return node, outputs, input_versions, wait_for_versions, 0.0, True, node_span_id
 
         # Emit NodeStartEvent
         node_span_id, start_evt = build_node_start_event(
@@ -189,6 +208,19 @@ async def run_superstep_async(
             item_index=ctx_base.item_index,
             superstep=superstep_idx,
         )
+        inspection_started_at_ms = time.perf_counter() * 1000
+        if inspection_session is not None:
+            inspection_session.start_node(
+                run_id=run_id,
+                span_id=node_span_id,
+                node_name=node.name,
+                qualified_name=qualified_name,
+                graph_name=graph.name or "",
+                item_index=ctx_base.item_index,
+                superstep=superstep_idx if superstep_idx is not None else 0,
+                inputs=inputs,
+                started_at_ms=inspection_started_at_ms,
+            )
         if active:
             await dispatcher.emit_async(start_evt)
 
@@ -223,6 +255,12 @@ async def run_superstep_async(
                         outputs = await executor(node, new_state, inputs, ctx)
                 except BaseException as executor_error:
                     if isinstance(executor_error, PauseExecution):
+                        if inspection_session is not None:
+                            inspection_session.pause_node(
+                                span_id=node_span_id,
+                                ended_at_ms=time.perf_counter() * 1000,
+                                duration_ms=(time.time() - node_start) * 1000,
+                            )
                         raise
                     if isinstance(executor_error, Exception):
                         duration_ms = (time.time() - node_start) * 1000
@@ -249,7 +287,14 @@ async def run_superstep_async(
                                 )
                                 or ()
                             )
-                            node_failures = tuple(replace(failure, node_name=f"{node.name}/{failure.node_name}") for failure in inner_failures)
+                            node_failures = tuple(
+                                replace(
+                                    failure,
+                                    node_name=f"{node.name}/{failure.node_name}",
+                                    item_index=(ctx_base.item_index if ctx_base.item_index is not None else failure.item_index),
+                                )
+                                for failure in inner_failures
+                            )
                         else:
                             node_failures = (
                                 FailureEvidence(
@@ -262,6 +307,26 @@ async def run_superstep_async(
                                     workflow_id=ctx_base.workflow_id,
                                     item_index=ctx_base.item_index,
                                 ),
+                            )
+                        if inspection_session is not None and node_failures:
+                            inspection_failure = replace(
+                                node_failures[0],
+                                node_name="/".join((*inspection_path, node_failures[0].node_name)),
+                            )
+                            record_failure = not (isinstance(node, GraphNode) and node.runner_override is None)
+                            inspection_session.fail_node(
+                                span_id=node_span_id,
+                                failure=inspection_failure,
+                                ended_at_ms=time.perf_counter() * 1000,
+                                duration_ms=duration_ms,
+                                record_failure=record_failure,
+                            )
+                        elif inspection_session is not None:
+                            inspection_session.abort_node(
+                                span_id=node_span_id,
+                                error=executor_error,
+                                ended_at_ms=time.perf_counter() * 1000,
+                                duration_ms=duration_ms,
                             )
                         executor_failure = _NodeExecutionError(
                             executor_error,
@@ -311,11 +376,18 @@ async def run_superstep_async(
                     )
                 )
 
-            return node, outputs, input_versions, wait_for_versions, duration_ms, False
+            return node, outputs, input_versions, wait_for_versions, duration_ms, False, node_span_id
         except PauseExecution as exc:
             exc.span_id = node_span_id
             raise
         except Exception as exc:
+            if inspection_session is not None and not isinstance(exc, _NodeExecutionError):
+                inspection_session.abort_node(
+                    span_id=node_span_id,
+                    error=exc,
+                    ended_at_ms=time.perf_counter() * 1000,
+                    duration_ms=(time.time() - node_start) * 1000,
+                )
             if active and not node_error_event_attempted and not isinstance(exc, _NodeExecutionError):
                 await dispatcher.emit_async(
                     build_node_error_event(
@@ -341,7 +413,9 @@ async def run_superstep_async(
     control_flow_error: BaseException | None = None
     node_errors: dict[str, BaseException] = {}
     node_failures: list[FailureEvidence] = []
-    for node, result in zip(ready_nodes, results, strict=True):
+    settled_inspection = current_inspection()
+    inspection_session = settled_inspection[0] if settled_inspection is not None else None
+    for result_index, (node, result) in enumerate(zip(ready_nodes, results, strict=True)):
         if isinstance(result, BaseException):
             if first_error is None:
                 first_error = (result.__cause__ or result) if isinstance(result, _NodeExecutionError) else result
@@ -353,17 +427,40 @@ async def run_superstep_async(
             else:
                 node_errors[node.name] = result
             continue
-        node, outputs, input_versions, wait_for_versions, duration_ms, cached = result
-        apply_node_result(
-            graph,
-            new_state,
-            node,
-            outputs,
-            input_versions,
-            wait_for_versions,
-            duration_ms=duration_ms,
-            cached=cached,
-        )
+        node, outputs, input_versions, wait_for_versions, duration_ms, cached, node_span_id = result
+        try:
+            apply_node_result(
+                graph,
+                new_state,
+                node,
+                outputs,
+                input_versions,
+                wait_for_versions,
+                duration_ms=duration_ms,
+                cached=cached,
+            )
+        except Exception as error:
+            if inspection_session is not None:
+                for pending in results[result_index:]:
+                    if isinstance(pending, BaseException):
+                        continue
+                    _, _, _, _, pending_duration_ms, _, pending_span_id = pending
+                    inspection_session.abort_node(
+                        span_id=pending_span_id,
+                        error=error,
+                        ended_at_ms=time.perf_counter() * 1000,
+                        duration_ms=pending_duration_ms,
+                    )
+            raise
+
+        if inspection_session is not None:
+            inspection_session.finish_node(
+                span_id=node_span_id,
+                outputs=outputs,
+                ended_at_ms=time.perf_counter() * 1000,
+                duration_ms=duration_ms,
+                cached=cached,
+            )
 
     if control_flow_error is not None:
         # Pause/cancellation/system-exit control flow must not be hidden by an

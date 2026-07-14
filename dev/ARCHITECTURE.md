@@ -66,6 +66,7 @@ Execution engines. Template Method pattern with pluggable executors per node typ
 | File | Purpose |
 |------|---------|
 | `base.py` | `BaseRunner` interface (shared by sync and async) |
+| `inspection.py` | Public `InspectionDisplay` returned by settled result inspection |
 | `_shared/` | Common utilities shared across runners |
 | `sync/runner.py` | `SyncRunner` |
 | `sync/superstep.py` | Superstep loop (sync) |
@@ -94,6 +95,11 @@ Practical mental model:
 - `event_helpers.py` — Emit lifecycle events
 - `gate_execution.py` — Route/ifelse decision execution
 - `input_normalization.py` — Normalize user inputs for execution
+- `_inspect.py` — Typed, result-owned current-process run/map inspection artifact and capture sessions
+- `_inspect_html.py` — Convert the typed artifact to the shared bounded payload and offline renderer shell
+- `_inspect_serialization.py` — Observational, bounded value serialization for inspection
+- `_inspect_transport.py` — Live/saved notebook delivery, coalescing, authentication, and trust-safe terminal fallback
+- `assets/inspect.css`, `assets/inspect.js`, `assets/inspect_transport.js` — Packaged offline renderer and notebook bridge assets
 - `lineage.py` — Own workflow resume, fork, and retry decisions
 - `map_inputs.py` — Map input cloning and zip/product expansion
 - `map_resume.py` — Own map-item signature, index, and claim decisions
@@ -112,9 +118,16 @@ Practical mental model:
 
 **Rule**: Sync and async runners have parallel implementations. Adding a feature to one means adding it to both.
 
+Current-process execution inspection belongs to runner results, not the
+checkpointer. `inspect=True` enables successful-value capture for the current
+execution; `RunResult.inspect()` / `MapResult.inspect()` return the public
+`InspectionDisplay`. This needs no checkpointer and does not create durable
+history. A checkpointer is a separate explicit dependency for resume, fork,
+retry, restart, and cross-process historical queries.
+
 ### checkpointers/
 
-Durability, lineage, and inspection for persisted runs.
+Durability, lineage, and historical inspection for persisted runs.
 
 | File | Purpose |
 |------|---------|
@@ -128,7 +141,9 @@ Durability, lineage, and inspection for persisted runs.
 | `serializers.py` | Payload serializers |
 | `_migrate.py` | SQLite schema migrations |
 
-**Rule**: Checkpointing is not just persistence. It participates in resume, fork, retry, lineage, and notebook UX.
+**Rule**: Checkpointing is not just persistence. It participates in resume,
+fork, retry, lineage, and durable-history notebook UX. It is not required for
+the current-process `inspect=True` / `InspectionDisplay` surface.
 
 ### events/
 
@@ -167,7 +182,10 @@ Graph visualization. Generates interactive HTML with ReactFlow.
 
 ## Public API
 
-Root-level exports from `src/hypergraph/__init__.py` are public API. Package modules with their own `__init__.py` exports, such as `hypergraph.checkpointers`, are also supported package surfaces.
+Root-level exports from `src/hypergraph/__init__.py`, including
+`InspectionDisplay`, are public API. Package modules with their own
+`__init__.py` exports, such as `hypergraph.checkpointers`, are also supported
+package surfaces.
 
 Internal modules remain internal even if they sit under a public package. In particular, `_shared/` is runtime architecture, not public API.
 

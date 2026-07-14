@@ -1,11 +1,12 @@
 # Debug Workflows
 
-Three surfaces answer different questions about live control, settled evidence,
+Four surfaces answer different questions about live control, current evidence,
 and durable history.
 
 | Tool | When to Use | Setup | Scope |
 |------|-------------|-------|-------|
 | **Background handle** | "Can I stop this live execution?" | Call `start_run()` / `start_map()` | Process-local, live work |
+| **Inspect mode** | "Which item and node produced this value or failure?" | Pass `inspect=True`; call `.inspect()` after settlement | Process-local live notebook view and explicit settled display |
 | **RunLog** | "What happened in this run?" | Zero — always on | In-process, current run |
 | **Checkpointer** | "What happened yesterday?" | Pass to runner | Cross-process, persisted |
 
@@ -26,9 +27,565 @@ For an async runner, await `handle.result(...)`. See
 [Control Work After It Starts](control-background-execution.md) for the live
 control contract.
 
+## Inspect One Current Execution
+
+Suppose Maya is reviewing three customer checks and one fails. Before inspect
+mode, she can find the failure, but the application has to correlate batch
+status, original item indexes, logs, node timing, and values itself:
+
+```python
+# Before: assemble the debugging story from separate result surfaces.
+batch = runner.map(
+    customer_review,
+    {
+        "customer_id": ["alex-10", "maya-23", "sam-04"],
+        "lifetime_value": [2400, 1200, 3100],
+    },
+    map_over=["customer_id", "lifetime_value"],
+    error_handling="continue",
+)
+
+print(batch.summary())
+for result in batch.failures:
+    failure = result.failure
+    if failure is not None:
+        print(failure.item_index, failure.inputs, failure.error)
+    else:
+        print(result.error)
+```
+
+After, opt into successful-value capture and leave `batch.inspect()` as the
+final notebook expression:
+
+```python
+# After: one explicit view joins the batch, items, timeline, values, and failure.
+batch = runner.map(
+    customer_review,
+    {
+        "customer_id": ["alex-10", "maya-23", "sam-04"],
+        "lifetime_value": [2400, 1200, 3100],
+    },
+    map_over=["customer_id", "lifetime_value"],
+    inspect=True,
+    error_handling="continue",
+)
+
+batch.inspect()
+```
+
+`runner.run(...)` returns a `RunResult`; `runner.map(...)` returns a
+`MapResult`. Both expose `.inspect()`:
+
+```python
+from hypergraph import AsyncRunner, SyncRunner
+
+result = SyncRunner().run(graph, values, inspect=True)
+result.inspect()
+
+result = await AsyncRunner().run(graph, values, inspect=True)
+result.inspect()
+```
+
+Calling `.inspect()` is explicit: it returns one display value and does not
+emit a hidden notebook output. In a notebook, the returned value renders when
+it is the final expression. In a script, assign or return it like any other
+value. Rendering captured objects can still execute their bounded `repr`
+fallback, as described under sensitivity below.
+
+### Find a Mapped Failure by Original Index
+
+Original map item indexes are evidence, not compact sequence positions. Search
+the real failed children and compare `failure.item_index`:
+
+```python
+failed = next(
+    result
+    for result in batch.failures
+    if result.failure is not None and result.failure.item_index == 1
+)
+failure = failed.failure
+assert failure is not None
+
+print(failure.inputs)
+# {"customer_id": "maya-23", "lifetime_value": 1200}
+
+batch.inspect()
+```
+
+Do not assume `batch[1]` means original item 1 after a stopped sparse map;
+sequence positions contain only real claimed outcomes.
+
+### Keep a Graph Input Named `inspect`
+
+`inspect=` is a runner option and accepts only a boolean. Put a graph input
+with the same name inside `values`:
+
+```python
+result = runner.run(
+    graph,
+    values={"inspect": "graph-owned"},
+    inspect=True,
+)
+
+result.inspect()
+```
+
+### Use Inspection Without a Checkpointer
+
+`inspect=True` does not require a checkpointer for the current execution. The
+captured view belongs to the current Python process and result. Add a
+`SqliteCheckpointer` only when you also need resume, fork, retry, restart, or
+historical queries:
+
+```python
+# Current-process inspection: no database setup.
+result = SyncRunner().run(graph, values, inspect=True)
+result.inspect()
+```
+
+```python
+# Persistence is explicit because this workflow must resume after restart.
+from hypergraph.checkpointers import SqliteCheckpointer
+
+runner = SyncRunner(checkpointer=SqliteCheckpointer("./runs.db"))
+result = runner.run(graph, values, workflow_id="customer-review-42", inspect=True)
+result.inspect()
+```
+
+On a resumed run, restored nodes show their real status and metadata, but they
+do not reconstruct successful inputs or outputs that were never captured in
+the current process. Freshly executed nodes can still show newly captured
+values.
+
+### Identify a Generated Background Run
+
+When a checkpointer-backed `start_run()` omits `workflow_id`, Hypergraph
+generates one. The generated workflow ID appears on the settled result and in
+its inspection view; the handle stays control-only:
+
+```python
+handle = runner.start_run(graph, values, inspect=True)
+result = handle.result(raise_on_failure=False)
+
+print(result.workflow_id)  # "run-..."
+result.inspect()
+```
+
+With `inspect=True`, the sync and async runners bind inspection to that ID
+before restored state or node evidence is published. For an async handle,
+await `handle.result(...)`. `start_map()` persistence still requires an
+explicit `workflow_id`; omitting it gives the batch current-process inspection
+only.
+
+### Understand Degraded Views
+
+`.inspect()` also works when the execution did not use `inspect=True`. It
+builds an honest degraded view from always-on status, log, and failure facts.
+Successful values say `not captured; rerun with inspect=True`; Hypergraph does
+not guess from final outputs, defaults, or checkpoint rows.
+
+Failed nodes can still show their always-on `FailureEvidence`, including the
+resolved failure inputs. This is why a degraded failure can be more detailed
+than a degraded success.
+
+### Treat Captured Values and Saved Notebooks as Sensitive
+
+Capture owns new top-level input/output mappings, but values inside those
+mappings retain the same object identities as the running application. The
+result therefore keeps references to those objects until the result is
+collected. A large model, open client, token, or customer record can stay alive
+longer than expected.
+
+Notebook output contains the serialized captured values. Treat the notebook
+as sensitive data before sharing or committing it. Serialization is bounded
+per top-level value:
+
+- depth 6
+- 100 mapping items
+- 200 sequence items
+- 200 rows and 20 columns for tables
+- 20,000 characters of captured text
+
+The per-container limits sit inside a global per-top-level value work budget.
+The 20,000-character ceiling is also aggregate across captured strings and
+JSON number text in that value, rather than restarting for every nested leaf.
+When either global budget is exhausted, the affected leaf says
+`serialization budget exhausted` and its ancestors are marked truncated. A
+serialization failure or raised `repr()` exception likewise becomes a bounded
+typed placeholder and does not replace the run status.
+
+Hypergraph stores captured node inputs, outputs, and requested map inputs in a
+private `CapturedMapping` snapshot adapter. This shallow snapshot owns its
+top-level mapping while contained values retain their identities. It supports
+`copy.copy`, `copy.deepcopy`, `dataclasses.asdict`, and pickle round trips, so
+adding `inspect=True` does not make an otherwise copyable result fail. Captured
+mappings are not stored as `MappingProxyType`.
+
+That private snapshot storage is separate from source-value rendering.
+Structured inspection deliberately recognizes only exact inert containers and
+safe concrete adapters: exact built-in `dict`, exact built-in `list`, exact
+built-in `tuple`, ordinary dataclasses, recognized Pydantic models, exact NumPy
+`ndarray`, exact pandas `DataFrame`, and a user-supplied `MappingProxyType`
+backed by an exact `dict`.
+
+Exact built-in `bytes` and `bytearray` values use a separate bounded scalar
+path. Hypergraph reads only a prefix that can fit in the 20,000-character
+preview, reports the exact original byte count, and marks the preview truncated
+when bytes remain. It never creates the whole binary `repr` before applying the
+limit, so temporary inspection memory stays bounded as the source grows.
+
+- **Before:** inspecting a 5.12 MB payload first created a multi-megabyte Python
+  `repr`, and the displayed original size counted repr characters rather than
+  source bytes.
+- **After:** the preview remains at most 20,000 characters, reports
+  `5,120,000 bytes`, and is explicitly truncated without a whole-value `repr`.
+
+For the NumPy, pandas, and Pydantic adapters, trust comes from canonical class
+provenance rather than mutable public aliases. Reassigning public names such as
+`numpy.ndarray`, `pandas.DataFrame`, or `pydantic.BaseModel` therefore cannot
+make an unrelated custom class trusted.
+
+Within the documented rank and size limits, exact NumPy arrays with canonical
+NumPy 1.x and 2.x `ndarray` provenance stay structured. The package's optional
+`examples` dependency range currently permits `numpy>=1.21.0` and
+`pandas>=1.3.0`. Those ranges describe installation compatibility; they do not
+promise that Hypergraph will traverse every pandas internal layout.
+
+An exact pandas `DataFrame` is structured only when it has a recognized
+trusted NumPy-backed internal storage layout—the standard NumPy-backed storage
+Hypergraph knows how to inspect. An allowed pandas version with an
+unrecognized internal storage layout becomes a bounded
+`unsupported DataFrame storage` placeholder without calling DataFrame `repr`.
+An ExtensionArray-backed DataFrame—one whose data blocks, row axis, or column
+axis use extension storage—gets the narrower
+`unsupported extension-backed DataFrame` result, also without invoking
+extension hooks. This is an
+implementation safety boundary, not an all-version guarantee. DataFrame
+`repr` delegates to extension hooks, so both storage placeholders bypass it.
+
+- **Before:** an unfamiliar internal pandas layout could be described as
+  extension-backed even when Hypergraph had not proved that.
+- **After:** unrecognized storage says `unsupported DataFrame storage`; only
+  proven ExtensionArray-backed data or axes receive the narrower placeholder.
+
+For unsupported subclasses and custom protocols—including `bytes` and
+`bytearray` subclasses, plus objects that advertise mapping, sequence, model,
+array, or DataFrame hooks—Hypergraph uses one whole-value bounded `repr`
+fallback for each rendered occurrence and does not call their advertised
+traversal hooks. A proxy backed by a custom mapping uses the same whole-value
+bounded `repr` fallback instead of traversing that mapping.
+
+`repr` is Python user code. Hypergraph cannot prevent or undo its side effects,
+and the same object can reach the fallback during multiple live snapshots. Any
+raised `repr` exceptions become bounded typed placeholders and do not replace
+the run status or exception evidence.
+
+Sparse row tables use the bounded union of keys across captured rows instead
+of treating the first row as the whole schema:
+
+```python
+rows = [{}, {"customer_id": "maya-23", "risk": 0.9}]
+```
+
+- **Before:** an empty first row could make the inspection look like a
+  two-row, zero-column table and hide Maya's values.
+- **After:** the view has `customer_id` and `risk` columns; the first row has
+  explicit `missing table cell` placeholders and the second row shows the
+  captured values.
+
+The displayed table still stops at 20 columns. Its source column count is
+exact when every source row was captured and each row could be fully scanned
+within the 20-key-per-row safety cap, and its keys are safely comparable
+without executing user code. Otherwise the count is a proven lower bound: for
+example, `2 × ≥21 table`. The view marks those columns truncated instead of
+presenting `21` as an exact count that Hypergraph did not prove.
+
+Truncated values report their original size or proven lower bound when it can
+be determined. Counts above JavaScript's safe integer range cross the notebook
+boundary as exact decimal text instead of being rounded by the browser.
+
+Set `HYPERGRAPH_DISPLAY=plain` to suppress automatic notebook display while
+keeping capture and explicit `.inspect()` available:
+
+```bash
+HYPERGRAPH_DISPLAY=plain uv run python my_workflow.py
+```
+
+### Read Live, Saved, and Graph Views Correctly
+
+In a supported notebook, `inspect=True` opens one live view and updates its
+payload as work advances. The terminal output becomes a saved snapshot. After
+the notebook is saved, trusted active output remains locally interactive
+without a kernel, Hypergraph server, or network connection; it is labelled as
+saved, not live. An untrusted notebook may remove active HTML. In that state,
+the terminal record keeps a smaller native summary rather than claiming the
+full inspector can run.
+
+The normal notebook path keeps exactly two physical outputs: one immutable
+shell and one mutable payload channel. Ordinary updates stay payload-only. At
+terminal or stale settlement, the channel becomes a self-contained portable
+inspector. A shared notebook hides the portable fallback only after the
+original iframe accepts and applies the authenticated update, preserving that
+iframe's selected tab and other local UI state. An isolated-output renderer
+can instead open that terminal channel by itself. The normal path still has
+two physical outputs because
+`DisplayHandle.update()` replaces the mutable channel in place.
+
+Notebook trust is host policy, not Hypergraph widget state. Hypergraph never
+auto-trusts or signs a notebook, calls a server trust endpoint, or weakens the
+iframe sandbox. If a host strips scripts, styles, iframes, and output
+identifiers, a terminal or stale channel still leaves one plain semantic
+summary. It uses native `<details>` and contains:
+
+- saved/stale delivery plus exact execution status and counts
+- `First failure of N`, the original map item, and the qualified node
+- bounded captured inputs and exception evidence: exact only for a complete
+  safe payload, **Exception preview (bounded repr)** for a representation, or
+  **Exception details unavailable** with its reason; an opaque repr is prefixed
+  with its exception type once, while a repr already beginning with that type
+  is not duplicated; truncated previews include the original character count
+- copy-faithful input and exception whitespace using valid `<pre><code>`
+  nesting, with copy-inert wrap opportunities so an unbroken 20,000-character
+  value fits a 360px page
+- a short `RunResult` / `MapResult` evidence snippet that reruns with
+  `error_handling="continue"` before reading a result
+- the canonical guide path: `docs/05-how-to/debug-workflows.md`
+
+The compact summary shows the first failure and says how many failures exist;
+it does not imply that one displayed failure is the whole batch. Its count uses
+top-level failure evidence when available and otherwise counts embedded node,
+run-boundary, or status-only failures once, without counting the same failure at
+two levels. When active HTML is trusted, the portable iframe hides this small
+summary only if it retains a non-empty local `srcdoc`; an empty iframe tag is
+not treated as available. In a shared document, the complete terminal fallback
+still hides only after the original iframe accepts the exact authenticated
+update.
+
+A complete safe exception uses **Exact exception** for attributable node
+evidence. Infrastructure failures stay at their real boundary as **Exact run
+exception** or **Exact batch exception**; Hypergraph does not borrow a nearby
+node name or inputs. Repr-backed evidence instead uses **Exception preview
+(bounded repr)**, and a truncated preview includes its original character
+count. A placeholder uses **Exception details unavailable** and explains why.
+The full inspector and the trust-safe native summary follow the same labels.
+
+Recovery code follows the captured runner kind. Sync snippets call
+`runner.run(...)` or `runner.map(...)` directly; async snippets use
+`await runner.run(...)` or `await runner.map(...)`. If the runner kind was not
+captured, the summary says recovery code is unavailable instead of guessing
+sync. Each retry assignment is inside `try`/`except` and uses
+`error_handling="continue"`. A persistent infrastructure exception therefore
+prints its real type and message without reading an unbound result. In the
+`else` branch, a transient recovery prints the settled successful result or
+batch; a returned failed result prints its real run or item error. Map snippets
+read `batch.failures` or the original item position and never read a nonexistent
+`MapResult.error`. For sparse run-boundary results, the snippet translates the
+original item index around `unstarted_item_indexes` before indexing
+`batch.results`; it fails closed when that item never started or is outside the
+requested scope. Node, run-boundary, batch-boundary, and start-failure views
+follow this same provenance policy in both the full inspector and native summary.
+
+For a nested mapped graph, **Show failure** correlates the containing outer item
+to the explicit slash-qualified failing leaf. The selected execution, heading,
+input, exception, and recovery evidence therefore show
+`review_group/review_customer` plus the failing scalar input—not the aggregate
+`review_group` container and its list input. An explicit failure with no stable
+node-identity match keeps its own name, inputs, and error instead of borrowing a
+same-name node's qualified path. Correlation is established from raw Python
+evidence before error or input presentation is serialized, then carried by an
+opaque internal occurrence identity. Changing `repr()` output is never
+identity, and the internal identity contains no object address, input value, or
+secret. Correlation never invokes caller-defined equality or hashing for
+workflow IDs or captured values; captured values are correlated only by object
+identity. Two real executions remain separate even when they reuse the same
+scalar and exception objects and record equal durations. If the exact
+slash-qualified leaf is absent, **Show failure** stays at the run boundary
+instead of selecting the aggregate container.
+
+Before (misleading async recovery):
+
+```text
+Exact exception
+PaymentDeclined: <redacted>
+result = runner.run(graph, values)
+```
+
+After (truthful async recovery):
+
+```text
+Exception preview (bounded repr)
+PaymentDeclined: <redacted>
+```
+
+```python
+result = await runner.run(
+    graph,
+    values,
+    inspect=True,
+    error_handling="continue",
+)
+print(result.failure)
+```
+
+Here, `runner` is an `AsyncRunner`; `graph` and `values` are the same graph and
+inputs used for the failed execution. A sync inspection shows the same call
+without `await`.
+
+Before (a transient recovery succeeds):
+
+```python
+failure = result.failure
+print(failure.inputs)  # AttributeError: failure is None
+```
+
+After (the copied snippet remains truthful):
+
+```python
+failure = result.failure
+if failure is None:
+    print(result)
+else:
+    print(failure.inputs)
+    print(failure.error)
+```
+
+Before (a boundary retry can raise or print `None`):
+
+```python
+result = runner.run(graph, values, inspect=True, error_handling="continue")
+print(result.error)
+```
+
+After (the assignment and evidence read are both guarded):
+
+```python
+try:
+    result = runner.run(
+        graph,
+        values,
+        inspect=True,
+        error_handling="continue",
+    )
+except Exception as error:
+    print(f"{type(error).__name__}: {error}")
+else:
+    if result.error is None:
+        print(result)
+    else:
+        print(f"{type(result.error).__name__}: {result.error}")
+```
+
+```text
+Before (untrusted output): Python says partial / 2 completed / 1 failed,
+                           but Jupyter can leave a blank terminal record.
+
+After (still untrusted):   Saved snapshot / partial / 2 / 1 remains visible.
+                           Expand Item 1 failure to read score_customer,
+                           customer_id=maya-23, and the exact ValueError.
+
+After normal host trust:   The same saved record opens the full offline
+                           inspector; no kernel or server is required.
+```
+
+Hypergraph also has a best-effort compatibility path for the measured
+`jupyter-server-nbmodel==0.1.1a4` executor, which persists ordinary
+`display_data` but drops `update_display_data`. When the **kernel environment**
+reports that exact package version, ordinary coalesced updates are appended as
+payload-only records at the existing four-per-second bound. The notebook
+therefore retains hidden payload-only history. Terminal or stale settlement
+adds one terminal physical record containing the same portable inspector. It
+is hidden only after the original iframe accepts the update in a shared Jupyter
+document, but remains visible and interactive when a host isolates each saved
+output record. Terminal and error states can still flush immediately.
+
+- **Before on that executor:** Python reaches the terminal result while the
+  iframe can remain at `pending`, `0 completed`, `0 failed`.
+- **After when detected:** the iframe reaches `partial`, `2 completed`,
+  `1 failed`, and the saved output retains the exact failed input.
+
+- **Before in an isolated saved-output host:** the first shell can remain at
+  `pending`, `0 completed`, `0 failed` because later payload scripts cannot
+  reach sibling output documents.
+- **After:** the terminal channel alone opens the saved inspector at `partial`,
+  `2 completed`, `1 failed`; **Show failure** reveals `maya-23` and
+  `Customer maya-23 requires manual review` without a kernel or sibling DOM.
+
+If that terminal record is untrusted, the full **Show failure** interface is
+not available because scripts and iframes are host-blocked. Expand its native
+**Item 1 failure** disclosure instead; it preserves the same original item,
+qualified node, bounded input, exact error, code evidence, and docs reference.
+
+Detection is exact and kernel-local. A missing or different package version
+uses the normal display-handle update path. A separate server environment
+cannot be inferred from package metadata in the kernel: if the broken package
+is installed only on the server, Hypergraph does not claim to detect that
+split-environment case.
+
+Notebook startup also checks scheduling truth before claiming the view is live:
+
+- **Before:** an `add_callback`-only kernel could look cross-thread capable but
+  never deliver the coalescer's future update.
+- **After:** delayed owner-thread calls and cross-thread marshalling are checked
+  independently. A nonterminal view needs delayed owner-thread calls; a
+  background view also needs cross-thread marshalling.
+
+When the required capability is missing, Hypergraph creates a closed
+`Live inspection unavailable` initial snapshot and does not subscribe to the
+inspection session. That initial notebook record is not settled execution
+truth; settled truth remains available through `result.inspect()` or
+`batch.inspect()` after the run or batch returns. An already-terminal initial
+artifact remains a closed `Saved snapshot`.
+
+A scheduler can advertise both capabilities and still reject the delayed arm
+only after a worker's callback reaches the owner thread:
+
+- **Before:** that late `call_later()` error could escape the owner callback,
+  leaving a subscribed view that still claimed to be live.
+- **After:** a late owner-thread delayed-arm rejection closes and detaches the
+  live observer. If its display channel still works, Hypergraph writes one
+  best-effort stale `Live inspection unavailable` settlement from the latest
+  bounded artifact; the rejected payload is never shown as live. If that final
+  display update also fails, execution is unaffected and the observer remains
+  closed.
+
+This observer settlement does not change settled execution truth. After the
+run or batch returns, use `result.inspect()` or `batch.inspect()` for the
+settled record.
+
+This scheduler-unavailable startup record is distinct from a later live
+ready-handshake timeout:
+
+For Maya, the before/after is explicit: before the renderer is ready,
+`Waiting for live inspection` means the payload channel is not authenticated
+or live yet. After a ready-handshake timeout, the label becomes
+`Live inspection unavailable`; the latest state remains locally inspectable as
+a saved snapshot instead of silently freezing a view that still claims to be
+live.
+
+The Inspect **Graph** tab shows executed slash-qualified paths such as
+`worker/parser/parse_order`. It answers "what executed?" and preserves nested
+execution identity. Use `graph.visualize()` when you need the full configured
+topology, including paths that did not execute.
+
+The checked-in reference proves this exact state:
+
+| Original item | Result | Evidence |
+|---|---|---|
+| 0 | completed | `review_action="approve"` |
+| 1 | failed | `score_customer` received `customer_id="maya-23"` and raised `ValueError` |
+| 2 | completed | `review_action="approve"` |
+
+For the complete runnable scenario, see
+[`examples/inspect_mode.py`](../../examples/inspect_mode.py). GitBook and
+GitHub show the [generated HTML reference](../../examples/inspect-mode-reference.html)
+as source; download that file and open it locally for the interactive failure
+drill-down.
+
 ## RunLog — Always-On Run Trace
 
-Every `runner.run()` and `runner.map()` call returns a `RunResult` with a `.log` attribute — an always-on run trace that requires zero configuration.
+Every `runner.run()` call returns a `RunResult` with a `.log` attribute.
+`runner.map()` returns a `MapResult` with a batch log and per-item
+`RunResult.log` values. These always-on traces require zero configuration.
 
 ### Quick Start
 
@@ -385,6 +942,8 @@ cp.runs()
 
 | Question | Tool |
 |----------|------|
+| "Which current item and node produced this value?" | Inspect view (`inspect=True`, then `.inspect()`) |
+| "Can I inspect this result if capture was off?" | Degraded inspect view (`result.inspect()`) |
 | "What happened in the run I just finished?" | RunLog (`result.log`) |
 | "Which node was slowest?" | RunLog (`sorted(result.log.steps, key=...)`) or Checkpointer (`cp.stats(...)`) |
 | "What happened in yesterday's run?" | Checkpointer (`cp.runs()`, `cp.steps(...)`) |

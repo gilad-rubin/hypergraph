@@ -1,0 +1,1385 @@
+"""RED contracts for stable inspect identity and real boundary recovery."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import copy
+import html
+import io
+import pickle
+import re
+import textwrap
+import threading
+from collections.abc import Callable, Coroutine, Iterator
+from dataclasses import replace
+from typing import Any, Literal, TypeVar
+
+import pytest
+from playwright.sync_api import Browser, Page, sync_playwright
+
+from hypergraph import AsyncRunner, Graph, SyncRunner, node
+from hypergraph.runners._shared import _inspect_transport
+from hypergraph.runners._shared._inspect import MapInspection, RunInspection
+from hypergraph.runners._shared._inspect_html import (
+    _failure_keys,
+    build_inspection_payload,
+    render_map_inspection,
+    render_run_inspection,
+)
+from hypergraph.runners._shared._inspect_serialization import (
+    serialize_value,
+    serialized_value_to_wire,
+)
+from hypergraph.runners._shared._inspect_transport import (
+    INSPECTION_PROTOCOL_VERSION,
+    InspectionDelivery,
+    InspectionEnvelope,
+    _first_failure_and_node,
+    _native_failure_markup,
+    render_payload_channel,
+)
+from hypergraph.runners._shared.results import MapResult, RunResult, RunStatus
+
+_T = TypeVar("_T")
+_RunnerKind = Literal["sync", "async"]
+_Surface = Literal["full", "native"]
+_BoundarySource = Literal["start", "run", "map_item", "batch"]
+
+
+@pytest.fixture(scope="module")
+def browser() -> Iterator[Browser]:
+    with sync_playwright() as runtime:
+        instance = runtime.chromium.launch(headless=True)
+        yield instance
+        instance.close()
+
+
+class _ChangingReprCustomer:
+    def __init__(self, label: str) -> None:
+        self.label = label
+        self.repr_calls = 0
+
+    def __repr__(self) -> str:
+        self.repr_calls += 1
+        return f"Customer({self.label}, presentation={self.repr_calls})"
+
+
+def _unstable_nested_graph() -> Graph:
+    @node(output_name="reviewed")
+    def review_customer(customer_id: _ChangingReprCustomer) -> str:
+        if customer_id.label.startswith("reject-"):
+            raise ValueError(f"manual review: {customer_id.label}")
+        return f"approved:{customer_id.label}"
+
+    inner = Graph([review_customer], name="inner-review")
+    return Graph(
+        [inner.as_node(name="review_group").map_over("customer_id")],
+        name="outer-review",
+    )
+
+
+def _unstable_nested_values() -> dict[str, list[list[_ChangingReprCustomer]]]:
+    return {
+        "customer_id": [
+            [
+                _ChangingReprCustomer("approve-outer-0"),
+                _ChangingReprCustomer("reject-outer-0"),
+            ],
+            [
+                _ChangingReprCustomer("approve-outer-1"),
+                _ChangingReprCustomer("reject-outer-1"),
+            ],
+        ]
+    }
+
+
+def _run_async(factory: Callable[[], Coroutine[Any, Any, _T]]) -> _T:
+    values: list[_T] = []
+    errors: list[BaseException] = []
+
+    def execute() -> None:
+        try:
+            values.append(asyncio.run(factory()))
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=execute)
+    worker.start()
+    worker.join(timeout=10)
+    assert not worker.is_alive()
+    if errors:
+        raise errors[0]
+    assert len(values) == 1
+    return values[0]
+
+
+def _run_unstable_nested_map(
+    runner_kind: _RunnerKind,
+) -> tuple[MapResult, dict[str, list[list[_ChangingReprCustomer]]]]:
+    graph = _unstable_nested_graph()
+    values = _unstable_nested_values()
+    if runner_kind == "sync":
+        batch = SyncRunner().map(
+            graph,
+            values,
+            map_over="customer_id",
+            inspect=True,
+            error_handling="continue",
+        )
+    else:
+        batch = _run_async(
+            lambda: AsyncRunner().map(
+                graph,
+                values,
+                map_over="customer_id",
+                inspect=True,
+                error_handling="continue",
+            )
+        )
+    return batch, values
+
+
+def _repr_counts(
+    values: dict[str, list[list[_ChangingReprCustomer]]],
+) -> tuple[tuple[int, ...], ...]:
+    return tuple(tuple(customer.repr_calls for customer in group) for group in values["customer_id"])
+
+
+@pytest.mark.parametrize("runner_kind", ["sync", "async"])
+@pytest.mark.parametrize("outer_index", [0, 1])
+@pytest.mark.parametrize("surface", ["full", "native"])
+def test_unstable_repr_keeps_primary_nested_failure_on_exact_leaf(
+    browser: Browser,
+    runner_kind: _RunnerKind,
+    outer_index: int,
+    surface: _Surface,
+) -> None:
+    batch, values = _run_unstable_nested_map(runner_kind)
+    artifact = batch.inspect()._artifact
+    selected_artifact = replace(artifact, items=(artifact.items[outer_index],))
+    expected_label = f"reject-outer-{outer_index}"
+
+    if surface == "native":
+        payload = build_inspection_payload(
+            selected_artifact,
+            delivery_state="saved",
+            delivery_label="Saved snapshot",
+        )
+        data = payload["map"]
+        assert isinstance(data, dict)
+        item = data["items"][0]  # type: ignore[index]
+        run = item["run"]  # type: ignore[index]
+        before_consumer = _repr_counts(values)
+
+        failure, failed_node = _first_failure_and_node(
+            run,
+            containing_item_index=outer_index,
+        )
+        markup = html.unescape(
+            _native_failure_markup(
+                kind="map",
+                data=data,
+                message={},
+            ).replace("<wbr>", "")
+        )
+
+        assert failure["node_name"] == "review_group/review_customer"
+        assert failed_node["qualified_name"] == "review_group/review_customer"
+        assert failed_node["item_index"] == 1
+        assert expected_label in str(failed_node["inputs"])
+        assert "Qualified node: <code>review_group/review_customer</code>" in markup
+        assert expected_label in markup
+        assert f"ValueError: manual review: {expected_label}" in markup
+        assert _repr_counts(values) == before_consumer
+        return
+
+    rendered = render_map_inspection(selected_artifact)
+    before_consumer = _repr_counts(values)
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.set_content(rendered)
+    root = page.locator('[data-hypergraph-inspect="map"]')
+    root.get_by_role("button", name="Show failure").click()
+    detail = root.locator("[data-hg-detail]")
+
+    assert root.locator('[data-hg-timeline-row][aria-current="true"] code').first.inner_text() == "review_group/review_customer"
+    assert detail.locator(".hg-inspect-detail-heading code").inner_text() == "review_group/review_customer"
+    assert detail.locator("dt").filter(has_text="Item").locator("xpath=following-sibling::dd").inner_text() == "1"
+    detail_text = detail.inner_text()
+    assert expected_label in detail_text
+    assert f"approve-outer-{outer_index}" not in detail_text
+    assert f"ValueError: manual review: {expected_label}" in detail_text
+    assert _repr_counts(values) == before_consumer
+    page.close()
+
+
+def test_unstable_repr_dedupe_removes_only_selected_occurrence(
+    browser: Browser,
+) -> None:
+    batch, values = _run_unstable_nested_map("sync")
+    artifact = batch.inspect()._artifact
+    item = artifact.items[0]
+    assert item.run is not None
+    primary_leaf = next(
+        current for current in item.run.nodes if current.qualified_name == "review_group/review_customer" and current.status == "failed"
+    )
+    assert primary_leaf.failure is not None
+
+    peer_value = _ChangingReprCustomer("reject-peer")
+    peer_error = ValueError("manual review: reject-peer")
+    peer_node_failure = replace(
+        primary_leaf.failure,
+        error=peer_error,
+        inputs={"customer_id": peer_value},
+    )
+    peer_public_failure = replace(
+        item.run.failures[0],
+        error=peer_error,
+        inputs={"customer_id": peer_value},
+    )
+    peer_leaf = replace(
+        primary_leaf,
+        span_id=f"{primary_leaf.span_id}-peer",
+        sequence=primary_leaf.sequence + 100,
+        inputs={"customer_id": peer_value},
+        failure=peer_node_failure,
+    )
+    run_with_peer = replace(
+        item.run,
+        nodes=(*item.run.nodes, peer_leaf),
+        failures=(*item.run.failures, peer_public_failure),
+    )
+    selected_artifact = replace(
+        artifact,
+        items=(replace(item, run=run_with_peer),),
+    )
+
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.set_content(render_map_inspection(selected_artifact))
+    root = page.locator('[data-hypergraph-inspect="map"]')
+    root.get_by_role("button", name="Show failure").click()
+    detail_text = root.locator("[data-hg-detail]").inner_text()
+
+    assert root.locator('[data-hg-timeline-row][aria-current="true"] code').first.inner_text() == "review_group/review_customer"
+    assert "Run failures · 1" in detail_text
+    assert detail_text.count("ValueError: manual review: reject-outer-0") == 1
+    assert detail_text.count("ValueError: manual review: reject-peer") == 1
+    page.close()
+
+
+def test_failure_wire_uses_only_opaque_ordinal_identity() -> None:
+    batch, _ = _run_unstable_nested_map("sync")
+    artifact = batch.inspect()._artifact
+    selected_artifact = replace(artifact, items=(artifact.items[0],))
+
+    payload = build_inspection_payload(
+        selected_artifact,
+        delivery_state="saved",
+        delivery_label="Saved snapshot",
+    )
+    map_wire = payload["map"]
+    assert isinstance(map_wire, dict)
+    run = map_wire["items"][0]["run"]  # type: ignore[index]
+    public_failure = run["failures"][0]
+    failed_nodes = [node for node in run["nodes"] if node["failure"] is not None]
+
+    assert public_failure["failure_key"] == "failure-0"
+    assert {node["failure"]["failure_key"] for node in failed_nodes} == {"failure-0"}
+    assert re.fullmatch(r"failure-\d+", public_failure["failure_key"])
+
+
+def test_missing_exact_leaf_never_borrows_aggregate_container(
+    browser: Browser,
+) -> None:
+    batch, _ = _run_unstable_nested_map("sync")
+    artifact = batch.inspect()._artifact
+    item = artifact.items[0]
+    assert item.run is not None
+    exact_leaf = item.run.failures[0].node_name
+    malformed_run = replace(
+        item.run,
+        nodes=tuple(current for current in item.run.nodes if current.qualified_name != exact_leaf),
+    )
+    selected_artifact = replace(
+        artifact,
+        items=(replace(item, run=malformed_run),),
+    )
+
+    payload = build_inspection_payload(
+        selected_artifact,
+        delivery_state="saved",
+        delivery_label="Saved snapshot",
+    )
+    map_wire = payload["map"]
+    assert isinstance(map_wire, dict)
+    run_wire = map_wire["items"][0]["run"]  # type: ignore[index]
+    _, failed_node = _first_failure_and_node(
+        run_wire,
+        containing_item_index=0,
+    )
+    assert failed_node == {}
+
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.set_content(render_map_inspection(selected_artifact))
+    root = page.locator('[data-hypergraph-inspect="map"]')
+    alert = root.locator("[data-hg-alert-text]").inner_text()
+    assert "run boundary" in alert
+    assert "review_group." not in alert
+
+    root.get_by_role("button", name="Show failure").click()
+
+    assert root.locator('[data-hg-timeline-row][aria-current="true"]').count() == 0
+    assert root.locator(".hg-inspect-detail-heading").count() == 0
+    assert "Run failures · 1" in root.locator("[data-hg-detail]").inner_text()
+    page.close()
+
+
+class _EqualityHookWorkflowId(str):
+    armed = False
+    eq_calls = 0
+    ne_calls = 0
+    hash_calls = 0
+
+    @classmethod
+    def arm(cls) -> None:
+        cls.eq_calls = 0
+        cls.ne_calls = 0
+        cls.hash_calls = 0
+        cls.armed = True
+
+    @classmethod
+    def disarm(cls) -> tuple[int, int, int]:
+        calls = (cls.eq_calls, cls.ne_calls, cls.hash_calls)
+        cls.armed = False
+        return calls
+
+    def __eq__(self, other: object) -> bool:
+        if type(self).armed:
+            type(self).eq_calls += 1
+            raise RuntimeError("caller workflow_id equality ran during rendering")
+        return bool(super().__eq__(other))
+
+    def __ne__(self, other: object) -> bool:
+        if type(self).armed:
+            type(self).ne_calls += 1
+            raise RuntimeError("caller workflow_id inequality ran during rendering")
+        return bool(super().__ne__(other))
+
+    def __hash__(self) -> int:
+        if type(self).armed:
+            type(self).hash_calls += 1
+            raise RuntimeError("caller workflow_id hashing ran during rendering")
+        return super().__hash__()
+
+
+def _equality_hook_failure_graph() -> Graph:
+    @node(output_name="answer")
+    def reject(query: str) -> str:
+        raise ValueError(f"no answer for {query}")
+
+    return Graph([reject], name="equality-hook-review")
+
+
+def _run_equality_hook_failure(runner_kind: _RunnerKind) -> RunResult:
+    workflow_id = _EqualityHookWorkflowId("review-123")
+    graph = _equality_hook_failure_graph()
+    if runner_kind == "sync":
+        return SyncRunner().run(
+            graph,
+            {"query": "Maya"},
+            workflow_id=workflow_id,
+            inspect=True,
+            error_handling="continue",
+        )
+    return _run_async(
+        lambda: AsyncRunner().run(
+            graph,
+            {"query": "Maya"},
+            workflow_id=workflow_id,
+            inspect=True,
+            error_handling="continue",
+        )
+    )
+
+
+def _render_failure_surface(
+    result: RunResult,
+    surface: _Surface,
+) -> str:
+    if surface == "full":
+        return result.inspect()._repr_html_()
+    payload = build_inspection_payload(
+        result.inspect()._artifact,
+        delivery_state="saved",
+        delivery_label="Saved snapshot",
+    )
+    data = payload["run"]
+    assert isinstance(data, dict)
+    return _native_failure_markup(kind="run", data=data, message={})
+
+
+@pytest.mark.parametrize("runner_kind", ["sync", "async"])
+@pytest.mark.parametrize("surface", ["full", "native"])
+def test_failure_render_never_calls_workflow_id_equality_or_hashing(
+    runner_kind: _RunnerKind,
+    surface: _Surface,
+) -> None:
+    result = _run_equality_hook_failure(runner_kind)
+    assert result.failed is True
+
+    _EqualityHookWorkflowId.arm()
+    try:
+        rendered = _render_failure_surface(result, surface)
+    finally:
+        calls = _EqualityHookWorkflowId.disarm()
+
+    assert calls == (0, 0, 0)
+    assert "reject" in rendered
+    assert "ValueError" in rendered
+
+
+@pytest.mark.parametrize(
+    "round_trip",
+    [
+        pytest.param(copy.deepcopy, id="deepcopy"),
+        pytest.param(lambda value: pickle.loads(pickle.dumps(value)), id="pickle"),
+    ],
+)
+@pytest.mark.parametrize("surface", ["full", "native"])
+def test_round_tripped_failure_render_keeps_equality_hooks_observational(
+    round_trip: Callable[[RunResult], RunResult],
+    surface: _Surface,
+) -> None:
+    result = round_trip(_run_equality_hook_failure("sync"))
+
+    _EqualityHookWorkflowId.arm()
+    try:
+        rendered = _render_failure_surface(result, surface)
+    finally:
+        calls = _EqualityHookWorkflowId.disarm()
+
+    assert calls == (0, 0, 0)
+    assert "ValueError" in rendered
+
+
+class _SharedFailureCustomer:
+    pass
+
+
+def _run_shared_peer_failures(
+    runner_kind: _RunnerKind,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[MapResult, _SharedFailureCustomer, ValueError]:
+    shared_value = _SharedFailureCustomer()
+    shared_error = ValueError("shared failure")
+
+    @node(output_name="reviewed")
+    def review_customer(customer_id: _SharedFailureCustomer) -> str:
+        raise shared_error
+
+    inner = Graph([review_customer], name="inner")
+    graph = Graph(
+        [
+            inner.as_node(name="review_group").map_over(
+                "customer_id",
+                error_handling="continue",
+            )
+        ],
+        name="outer",
+    )
+    with monkeypatch.context() as clock:
+        clock.setattr("time.time", lambda: 1000.0)
+        if runner_kind == "sync":
+            batch = SyncRunner().map(
+                graph,
+                {"customer_id": [[shared_value, shared_value]]},
+                map_over="customer_id",
+                inspect=True,
+                error_handling="continue",
+            )
+        else:
+            batch = _run_async(
+                lambda: AsyncRunner().map(
+                    graph,
+                    {"customer_id": [[shared_value, shared_value]]},
+                    map_over="customer_id",
+                    inspect=True,
+                    error_handling="continue",
+                )
+            )
+    return batch, shared_value, shared_error
+
+
+def _shared_peer_run_wire(batch: MapResult) -> dict[str, Any]:
+    payload = build_inspection_payload(
+        batch.inspect()._artifact,
+        delivery_state="saved",
+        delivery_label="Saved snapshot",
+    )
+    data = payload["map"]
+    assert isinstance(data, dict)
+    items = data["items"]
+    assert isinstance(items, list)
+    run = items[0]["run"]
+    assert isinstance(run, dict)
+    return run
+
+
+@pytest.mark.parametrize("runner_kind", ["sync", "async"])
+def test_real_shared_peer_failures_keep_distinct_occurrence_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    runner_kind: _RunnerKind,
+) -> None:
+    batch, shared_value, shared_error = _run_shared_peer_failures(
+        runner_kind,
+        monkeypatch,
+    )
+    item = batch.inspect()._artifact.items[0]
+    assert item.run is not None
+    failed_nodes = [node for node in item.run.nodes if node.failure is not None]
+
+    assert [node.item_index for node in failed_nodes] == [0, 1]
+    assert len({node.execution_id for node in failed_nodes}) == 2
+    assert [node.failure.error is shared_error for node in failed_nodes] == [True, True]  # type: ignore[union-attr]
+    assert [node.failure.inputs["customer_id"] is shared_value for node in failed_nodes] == [True, True]  # type: ignore[union-attr]
+    assert [node.failure.duration_ms for node in failed_nodes] == [0.0, 0.0]  # type: ignore[union-attr]
+
+    node_keys, public_keys = _failure_keys(item.run)
+    failed_node_keys = [key for node, key in zip(item.run.nodes, node_keys, strict=True) if node.failure is not None]
+    assert failed_node_keys == ["failure-0", "failure-1"]
+    assert list(public_keys) == ["failure-0", "failure-1"]
+
+
+@pytest.mark.parametrize("runner_kind", ["sync", "async"])
+@pytest.mark.parametrize("surface", ["full", "native"])
+def test_real_shared_peer_selection_removes_only_selected_occurrence(
+    browser: Browser,
+    monkeypatch: pytest.MonkeyPatch,
+    runner_kind: _RunnerKind,
+    surface: _Surface,
+) -> None:
+    batch, _, _ = _run_shared_peer_failures(runner_kind, monkeypatch)
+    run = _shared_peer_run_wire(batch)
+    failures = run["failures"]
+    nodes = [node for node in run["nodes"] if node["failure"] is not None]
+    assert isinstance(failures, list)
+    assert [node["failure"]["failure_key"] for node in nodes] == [
+        "failure-0",
+        "failure-1",
+    ]
+
+    for selected_index in (0, 1):
+        selected_failure = nodes[selected_index]["failure"]
+        remaining = [failure for failure in failures if failure["failure_key"] != selected_failure["failure_key"]]
+        assert [failure["failure_key"] for failure in remaining] == [f"failure-{1 - selected_index}"]
+
+        selected_run = {**run, "failures": [failures[selected_index], failures[1 - selected_index]]}
+        native_failure, native_node = _first_failure_and_node(
+            selected_run,
+            containing_item_index=0,
+        )
+        assert native_failure["failure_key"] == f"failure-{selected_index}"
+        assert native_node["item_index"] == selected_index
+
+    if surface == "native":
+        markup = _native_failure_markup(
+            kind="run",
+            data=run,
+            message={},
+        )
+        assert "Qualified node: <code>review_group/review_customer</code>" in markup
+        return
+
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.set_content(render_map_inspection(batch.inspect()._artifact))
+    root = page.locator('[data-hypergraph-inspect="map"]')
+    root.get_by_role("tab", name="Timeline").click()
+    leaves = root.locator("[data-hg-timeline-row]").filter(has_text="review_group/review_customer")
+    assert leaves.count() == 2
+    for selected_index in (0, 1):
+        leaves.nth(selected_index).click()
+        detail = root.locator("[data-hg-detail]")
+        assert detail.locator("dt").filter(has_text="Item").locator("xpath=following-sibling::dd").inner_text() == str(selected_index)
+        assert "Run failures · 1" in detail.inner_text()
+    page.close()
+
+
+@pytest.mark.parametrize(
+    "round_trip",
+    [
+        pytest.param(copy.deepcopy, id="deepcopy"),
+        pytest.param(lambda value: pickle.loads(pickle.dumps(value)), id="pickle"),
+    ],
+)
+def test_round_tripped_b20_projection_keeps_outer_public_and_inner_leaf_indexes(
+    round_trip: Callable[[MapResult], MapResult],
+) -> None:
+    batch, _ = _run_unstable_nested_map("sync")
+    restored = round_trip(batch)
+
+    for outer_index, item in enumerate(restored.inspect()._artifact.items):
+        assert item.run is not None
+        leaf = next(node for node in item.run.nodes if node.qualified_name == "review_group/review_customer" and node.status == "failed")
+        assert leaf.item_index == 1
+        assert item.run.failures[0].item_index == outer_index
+        node_keys, public_keys = _failure_keys(item.run)
+        leaf_key = next(key for node, key in zip(item.run.nodes, node_keys, strict=True) if node is leaf)
+        assert leaf_key == public_keys[0]
+
+
+@pytest.mark.parametrize(
+    ("artifact_item_index", "target_inner_index"),
+    [
+        pytest.param(0, 1, id="outer-zero-collides-with-inner-zero"),
+        pytest.param(1, 0, id="outer-one-collides-with-inner-one-reversed"),
+    ],
+)
+def test_copied_projected_peer_never_borrows_coincidental_inner_index(
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_item_index: int,
+    target_inner_index: int,
+) -> None:
+    batch, _, _ = _run_shared_peer_failures("sync", monkeypatch)
+    item = batch.inspect()._artifact.items[0]
+    assert item.run is not None
+    target_public = replace(
+        item.run.failures[target_inner_index],
+        item_index=artifact_item_index,
+    )
+    run = replace(
+        item.run,
+        item_index=artifact_item_index,
+        nodes=(tuple(reversed(item.run.nodes)) if artifact_item_index == 1 else item.run.nodes),
+        failures=(target_public,),
+    )
+
+    node_keys, public_keys = _failure_keys(run)
+    failed_node_keys = [key for node, key in zip(run.nodes, node_keys, strict=True) if node.failure is not None]
+
+    assert public_keys == ("failure-0",)
+    assert "failure-0" not in failed_node_keys
+    assert len(set(failed_node_keys)) == 2
+
+
+@pytest.mark.parametrize("malformation", ["projection", "embedded-node-name"])
+def test_public_failure_requires_safe_projection_and_embedded_leaf_name(
+    malformation: str,
+) -> None:
+    batch, _ = _run_unstable_nested_map("sync")
+    item = batch.inspect()._artifact.items[0]
+    assert item.run is not None
+    leaf_index = next(
+        index
+        for index, current in enumerate(item.run.nodes)
+        if current.qualified_name == "review_group/review_customer" and current.status == "failed"
+    )
+    leaf = item.run.nodes[leaf_index]
+    assert leaf.failure is not None
+    nodes = list(item.run.nodes)
+    public_failure = item.run.failures[0]
+    if malformation == "projection":
+        public_failure = replace(public_failure, item_index=99)
+    else:
+        nodes[leaf_index] = replace(
+            leaf,
+            failure=replace(leaf.failure, node_name="decoy/review_customer"),
+        )
+    run = replace(
+        item.run,
+        nodes=tuple(nodes),
+        failures=(public_failure,),
+    )
+
+    node_keys, public_keys = _failure_keys(run)
+
+    assert public_keys == ("failure-0",)
+    assert node_keys[leaf_index] != "failure-0"
+
+
+def _single_map_failure_run() -> RunInspection:
+    @node(output_name="reviewed")
+    def reject(customer_id: str) -> str:
+        raise ValueError(f"manual review: {customer_id}")
+
+    batch = SyncRunner().map(
+        Graph([reject], name="single-map-review"),
+        {"customer_id": ["maya-23"]},
+        map_over="customer_id",
+        inspect=True,
+        error_handling="continue",
+    )
+    item = batch.inspect()._artifact.items[0]
+    assert item.run is not None
+    return item.run
+
+
+def test_public_projection_rejects_foreign_index_when_leaf_equals_container() -> None:
+    base = _single_map_failure_run()
+    assert base.item_index == 0
+    leaf_index = next(index for index, current in enumerate(base.nodes) if current.failure is not None)
+    assert base.nodes[leaf_index].item_index == 0
+    run = replace(
+        base,
+        failures=(replace(base.failures[0], item_index=99),),
+    )
+
+    node_keys, public_keys = _failure_keys(run)
+
+    assert public_keys == ("failure-0",)
+    assert node_keys[leaf_index] != "failure-0"
+
+
+def test_aggregate_projection_rejects_foreign_index_when_leaf_equals_container() -> None:
+    base = _single_map_failure_run()
+    base_leaf = next(current for current in base.nodes if current.failure is not None)
+    assert base_leaf.failure is not None
+    shared_failure = replace(
+        base_leaf.failure,
+        node_name="review_group/reject",
+    )
+    leaf = replace(
+        base_leaf,
+        qualified_name="review_group/reject",
+        failure=shared_failure,
+    )
+    foreign_aggregate = replace(
+        leaf,
+        span_id=f"{leaf.span_id}-foreign-aggregate",
+        node_name="review_group",
+        qualified_name="review_group",
+        item_index=99,
+        sequence=leaf.sequence - 1,
+        failure=replace(shared_failure, item_index=99),
+    )
+    run = replace(
+        base,
+        nodes=(foreign_aggregate, leaf),
+        failures=(shared_failure,),
+    )
+
+    node_keys, public_keys = _failure_keys(run)
+
+    assert public_keys == ("failure-0",)
+    assert node_keys[1] == "failure-0"
+    assert node_keys[0] != "failure-0"
+
+
+@pytest.mark.parametrize(
+    ("duplicate_position", "expected_container_matches"),
+    [
+        pytest.param("before-leaf", 0, id="ambiguous-aggregate-occurrences"),
+        pytest.param("after-leaf", 1, id="later-cycle-occurrence"),
+    ],
+)
+def test_aggregate_alias_requires_unique_preceding_occurrence(
+    duplicate_position: str,
+    expected_container_matches: int,
+) -> None:
+    batch, _ = _run_unstable_nested_map("sync")
+    item = batch.inspect()._artifact.items[0]
+    assert item.run is not None
+    container = next(current for current in item.run.nodes if current.qualified_name == "review_group" and current.failure is not None)
+    leaf = next(current for current in item.run.nodes if current.qualified_name == "review_group/review_customer" and current.status == "failed")
+    duplicate_sequence = leaf.sequence - 1 if duplicate_position == "before-leaf" else leaf.sequence + 1
+    duplicate = replace(
+        container,
+        span_id=f"{container.span_id}-{duplicate_position}",
+        sequence=duplicate_sequence,
+    )
+    run = replace(item.run, nodes=(*item.run.nodes, duplicate))
+
+    node_keys, public_keys = _failure_keys(run)
+    container_keys = [key for node, key in zip(run.nodes, node_keys, strict=True) if node.qualified_name == "review_group"]
+    leaf_key = next(key for node, key in zip(run.nodes, node_keys, strict=True) if node is leaf)
+
+    assert public_keys == ("failure-0",)
+    assert leaf_key == "failure-0"
+    assert container_keys.count("failure-0") == expected_container_matches
+    assert len(set(container_keys)) == len(container_keys)
+
+
+def test_aggregate_alias_requires_matching_embedded_failure_node_name() -> None:
+    batch, _ = _run_unstable_nested_map("sync")
+    item = batch.inspect()._artifact.items[0]
+    assert item.run is not None
+    container_index = next(
+        index for index, current in enumerate(item.run.nodes) if current.qualified_name == "review_group" and current.failure is not None
+    )
+    container = item.run.nodes[container_index]
+    assert container.failure is not None
+    nodes = list(item.run.nodes)
+    nodes[container_index] = replace(
+        container,
+        failure=replace(container.failure, node_name="decoy/review_customer"),
+    )
+    run = replace(item.run, nodes=tuple(nodes))
+
+    node_keys, public_keys = _failure_keys(run)
+
+    assert public_keys == ("failure-0",)
+    assert node_keys[container_index] != "failure-0"
+
+
+class _RecordingTransport:
+    def __init__(self, initial_artifact: RunInspection | MapInspection) -> None:
+        self.initial_artifact = initial_artifact
+        self.artifacts: list[RunInspection | MapInspection] = []
+        self.failures: list[BaseException] = []
+
+    def attach(self, session: Any) -> None:
+        def publish(
+            artifact: RunInspection | MapInspection,
+            _urgent: bool,
+        ) -> None:
+            self.artifacts.append(artifact)
+
+        snapshot, _unsubscribe = session.subscribe_with_snapshot(publish)
+        self.artifacts.append(snapshot)
+
+    def fail_to_start(self, error: BaseException) -> None:
+        self.failures.append(error)
+
+
+class _TransportRecorder:
+    def __init__(self) -> None:
+        self.transports: list[_RecordingTransport] = []
+
+    def __call__(
+        self,
+        initial_artifact: RunInspection | MapInspection,
+        **_kwargs: object,
+    ) -> _RecordingTransport:
+        transport = _RecordingTransport(initial_artifact)
+        self.transports.append(transport)
+        return transport
+
+
+class _FailurePlan:
+    def __init__(
+        self,
+        source: _BoundarySource,
+        *,
+        persistent: bool,
+    ) -> None:
+        mode = "persistent" if persistent else "transient"
+        self.error = RuntimeError(f"{mode} {source} boundary")
+        self._persistent = persistent
+        self._remaining = 1
+
+    def should_fail(self) -> bool:
+        if self._persistent:
+            return True
+        if self._remaining == 0:
+            return False
+        self._remaining -= 1
+        return True
+
+
+class _SyncShutdownFailureRunner(SyncRunner):
+    def __init__(self, plan: _FailurePlan) -> None:
+        super().__init__()
+        self._plan = plan
+
+    def _shutdown_dispatcher_sync(self, dispatcher: Any) -> None:
+        if self._plan.should_fail():
+            raise self._plan.error
+        return super()._shutdown_dispatcher_sync(dispatcher)
+
+
+class _AsyncShutdownFailureRunner(AsyncRunner):
+    def __init__(self, plan: _FailurePlan) -> None:
+        super().__init__()
+        self._plan = plan
+
+    async def _shutdown_dispatcher_async(self, dispatcher: Any) -> None:
+        if self._plan.should_fail():
+            raise self._plan.error
+        return await super()._shutdown_dispatcher_async(dispatcher)
+
+
+class _SyncStartFailureRunner(SyncRunner):
+    def __init__(self, plan: _FailurePlan) -> None:
+        super().__init__()
+        self._plan = plan
+
+    @property
+    def capabilities(self):
+        if self._plan.should_fail():
+            raise self._plan.error
+        return super().capabilities
+
+
+class _AsyncStartFailureRunner(AsyncRunner):
+    def __init__(self, plan: _FailurePlan) -> None:
+        super().__init__()
+        self._plan = plan
+
+    @property
+    def capabilities(self):
+        if self._plan.should_fail():
+            raise self._plan.error
+        return super().capabilities
+
+
+def _boundary_graph() -> Graph:
+    @node(output_name="doubled")
+    def double(value: int) -> int:
+        return value * 2
+
+    return Graph([double], name="boundary-recovery")
+
+
+def _install_map_item_release_failure(
+    runner: SyncRunner | AsyncRunner,
+    plan: _FailurePlan,
+) -> None:
+    reserve = runner._active_workflows.reserve
+    reservation_count = 0
+
+    def reserve_with_failure(workflow_id: str | None):
+        nonlocal reservation_count
+        reservation_count += 1
+        reservation = reserve(workflow_id)
+        # One-item map calls reserve for the batch, then for its real child run.
+        if reservation_count % 2 == 1:
+            return reservation
+        if not plan.should_fail():
+            return reservation
+        release = reservation.release
+        armed = True
+
+        def fail_first_release() -> None:
+            nonlocal armed
+            if armed:
+                armed = False
+                raise plan.error
+            release()
+
+        reservation.release = fail_first_release  # type: ignore[method-assign]
+        return reservation
+
+    runner._active_workflows.reserve = reserve_with_failure  # type: ignore[method-assign]
+
+
+def _call_boundary_runner(
+    runner: SyncRunner | AsyncRunner,
+    source: _BoundarySource,
+    graph: Graph,
+    values: dict[str, object],
+) -> RunResult | MapResult:
+    if isinstance(runner, SyncRunner):
+        if source in {"map_item", "batch"}:
+            return runner.map(
+                graph,
+                values,
+                map_over="value",
+                inspect=True,
+                error_handling="continue",
+            )
+        return runner.run(
+            graph,
+            values,
+            inspect=True,
+            error_handling="continue",
+        )
+
+    async def execute() -> RunResult | MapResult:
+        if source in {"map_item", "batch"}:
+            return await runner.map(
+                graph,
+                values,
+                map_over="value",
+                inspect=True,
+                error_handling="continue",
+            )
+        return await runner.run(
+            graph,
+            values,
+            inspect=True,
+            error_handling="continue",
+        )
+
+    return _run_async(execute)
+
+
+def _capture_real_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    runner_kind: _RunnerKind,
+    source: _BoundarySource,
+    *,
+    persistent: bool,
+) -> tuple[
+    SyncRunner | AsyncRunner,
+    Graph,
+    dict[str, object],
+    RunInspection | MapInspection,
+    RuntimeError,
+]:
+    recorder = _TransportRecorder()
+    monkeypatch.setattr(
+        _inspect_transport,
+        "open_notebook_inspection_transport",
+        recorder,
+    )
+    plan = _FailurePlan(source, persistent=persistent)
+    if source == "start":
+        runner: SyncRunner | AsyncRunner = _SyncStartFailureRunner(plan) if runner_kind == "sync" else _AsyncStartFailureRunner(plan)
+    elif source in {"run", "batch"}:
+        runner = _SyncShutdownFailureRunner(plan) if runner_kind == "sync" else _AsyncShutdownFailureRunner(plan)
+    else:
+        runner = SyncRunner() if runner_kind == "sync" else AsyncRunner()
+        _install_map_item_release_failure(runner, plan)
+
+    graph = _boundary_graph()
+    values: dict[str, object] = {
+        "value": [2] if source in {"map_item", "batch"} else 2,
+    }
+    if source == "map_item":
+        batch = _call_boundary_runner(runner, source, graph, values)
+        assert isinstance(batch, MapResult)
+        assert batch.failed is True
+        assert batch.failures[0].error is plan.error
+        assert batch.failures[0].failure is None
+        artifact = batch.inspect()._artifact
+        assert artifact.error is None
+        assert artifact.items[0].run is not None
+        assert artifact.items[0].run.error is plan.error
+        assert artifact.items[0].run.failures == ()
+        return runner, graph, values, artifact, plan.error
+
+    with pytest.raises(RuntimeError) as raised:
+        _call_boundary_runner(runner, source, graph, values)
+    assert raised.value is plan.error
+    transport = recorder.transports[-1]
+    if source == "start":
+        assert transport.failures[-1] is plan.error
+        artifact = transport.initial_artifact
+        assert artifact.terminal is False
+        assert artifact.error is None
+    else:
+        artifact = transport.artifacts[-1]
+        assert artifact.error is plan.error
+        if isinstance(artifact, RunInspection):
+            assert artifact.failures == ()
+    return runner, graph, values, artifact, plan.error
+
+
+def _native_recovery_code(
+    artifact: RunInspection | MapInspection,
+    *,
+    source: _BoundarySource,
+    error: RuntimeError,
+) -> str:
+    payload = build_inspection_payload(
+        artifact,
+        delivery_state="saved",
+        delivery_label="Saved snapshot",
+    )
+    kind = payload["kind"]
+    assert kind in {"run", "map"}
+    data = payload[kind]
+    assert isinstance(data, dict)
+    message = serialized_value_to_wire(serialize_value(error)) if source == "start" else {}
+    markup = _native_failure_markup(
+        kind=kind,
+        data=data,
+        message=message,
+    )
+    match = re.search(
+        r"Smallest useful (?:result evidence|recovery code):</p>"
+        r"<pre><code>(.*?)</code></pre>",
+        markup,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    return html.unescape(match.group(1).replace("<wbr>", ""))
+
+
+def _full_recovery_code(
+    page: Page,
+    artifact: RunInspection | MapInspection,
+    *,
+    source: _BoundarySource,
+    error: RuntimeError,
+) -> str:
+    if source == "start":
+        widget_id = "widget-real-start-boundary"
+        envelope = InspectionEnvelope(
+            protocol_version=INSPECTION_PROTOCOL_VERSION,
+            widget_id=widget_id,
+            nonce="nonce-real-start-boundary",
+            sequence=2,
+            delivery=InspectionDelivery(
+                state="stale",
+                label="Live inspection unavailable",
+            ),
+            artifact=artifact,
+            message=serialize_value(error),
+        )
+        page.set_content(render_payload_channel(envelope), wait_until="load")
+        frame = page.frame(name=f"{widget_id}-portable-s2-frame")
+        assert frame is not None
+        root = frame.locator(f'[data-hypergraph-inspect="{"map" if isinstance(artifact, MapInspection) else "run"}"]')
+    else:
+        page.set_content(render_map_inspection(artifact) if isinstance(artifact, MapInspection) else render_run_inspection(artifact))
+        root = page.locator(f'[data-hypergraph-inspect="{"map" if isinstance(artifact, MapInspection) else "run"}"]')
+        if source == "map_item":
+            root.get_by_role("button", name="Show failure").click()
+
+    code = root.locator("[data-hg-detail] pre.hg-inspect-code code")
+    assert code.count() == 1
+    return code.inner_text()
+
+
+def _execute_recovery_code(
+    code: str,
+    *,
+    runner: SyncRunner | AsyncRunner,
+    graph: Graph,
+    values: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    if isinstance(runner, SyncRunner):
+        namespace: dict[str, object] = {
+            "runner": runner,
+            "graph": graph,
+            "values": values,
+        }
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exec(code, namespace)
+        return namespace, output.getvalue()
+
+    async def execute() -> tuple[dict[str, object], str]:
+        namespace: dict[str, object] = {}
+        source = "async def __snippet(runner, graph, values):\n" + textwrap.indent(code, "    ") + "\n    return locals()\n"
+        exec(source, namespace)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            local_values = await namespace["__snippet"](runner, graph, values)  # type: ignore[operator]
+        return local_values, output.getvalue()
+
+    return _run_async(execute)
+
+
+class _SparseMapBoundaryRunner(SyncRunner):
+    def __init__(self, batch: MapResult) -> None:
+        super().__init__()
+        self.batch = batch
+
+    def map(self, *_args: Any, **_kwargs: Any) -> MapResult:
+        return self.batch
+
+
+def _sparse_map_result(
+    *,
+    unstarted_item_indexes: tuple[int, ...],
+    selected_error: RuntimeError,
+) -> MapResult:
+    decoy = RunResult(
+        values={},
+        status=RunStatus.FAILED,
+        run_id="run-decoy",
+        error=RuntimeError("decoy item error"),
+    )
+    selected = RunResult(
+        values={},
+        status=RunStatus.FAILED,
+        run_id="run-selected",
+        error=selected_error,
+    )
+    return MapResult(
+        results=(decoy, selected),
+        run_id="batch-sparse-recovery",
+        total_duration_ms=1.0,
+        map_over=("value",),
+        map_mode="zip",
+        graph_name="sparse-boundary-recovery",
+        unstarted_item_indexes=unstarted_item_indexes,
+    )
+
+
+def _map_item_boundary_artifact(
+    *,
+    selected_item_index: int,
+) -> tuple[MapInspection, RuntimeError]:
+    batch, _ = _run_unstable_nested_map("sync")
+    artifact = batch.inspect()._artifact
+    base_item = artifact.items[0]
+    assert base_item.run is not None
+    error = RuntimeError(f"captured item {selected_item_index} boundary")
+    run = replace(
+        base_item.run,
+        item_index=selected_item_index,
+        status="failed",
+        nodes=(),
+        failures=(),
+        error=error,
+    )
+    return (
+        replace(
+            artifact,
+            status="failed",
+            requested_count=max(3, selected_item_index + 1),
+            items=(
+                replace(
+                    base_item,
+                    item_index=selected_item_index,
+                    status="failed",
+                    requested_inputs={"value": selected_item_index},
+                    run=run,
+                ),
+            ),
+            unstarted_item_indexes=(),
+        ),
+        error,
+    )
+
+
+def _recovery_code_for_surface(
+    browser: Browser,
+    surface: _Surface,
+    artifact: MapInspection,
+    *,
+    error: RuntimeError,
+) -> str:
+    if surface == "native":
+        return _native_recovery_code(
+            artifact,
+            source="map_item",
+            error=error,
+        )
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    try:
+        return _full_recovery_code(
+            page,
+            artifact,
+            source="map_item",
+            error=error,
+        )
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("surface", ["full", "native"])
+@pytest.mark.parametrize(
+    (
+        "selected_item_index",
+        "unstarted_item_indexes",
+        "expected_settled_index",
+    ),
+    [
+        pytest.param(2, (1,), 1, id="gap-before-selected"),
+        pytest.param(1, (2,), 1, id="gap-after-selected"),
+        pytest.param(1, (1,), None, id="selected-is-unstarted"),
+        pytest.param(3, (2,), None, id="selected-out-of-range"),
+    ],
+)
+def test_sparse_map_boundary_recovery_maps_original_item_or_fails_closed(
+    browser: Browser,
+    surface: _Surface,
+    selected_item_index: int,
+    unstarted_item_indexes: tuple[int, ...],
+    expected_settled_index: int | None,
+) -> None:
+    artifact, captured_error = _map_item_boundary_artifact(
+        selected_item_index=selected_item_index,
+    )
+    selected_error = RuntimeError(f"selected item {selected_item_index} error")
+    batch = _sparse_map_result(
+        unstarted_item_indexes=unstarted_item_indexes,
+        selected_error=selected_error,
+    )
+    runner = _SparseMapBoundaryRunner(batch)
+    code = _recovery_code_for_surface(
+        browser,
+        surface,
+        artifact,
+        error=captured_error,
+    )
+
+    namespace, output = _execute_recovery_code(
+        code,
+        runner=runner,
+        graph=_boundary_graph(),
+        values={"value": [0, 1, 2]},
+    )
+
+    if expected_settled_index is None:
+        assert namespace["failed"] is None
+        assert output.strip() == str(batch)
+    else:
+        assert namespace["failed"] is batch.results[expected_settled_index]
+        assert f"RuntimeError: {selected_error}" in output
+        assert "decoy item error" not in output
+
+
+_REAL_BOUNDARY_CASES = [
+    pytest.param(source, runner_kind, surface, persistent, id=f"{source}-{runner_kind}-{surface}-{'persistent' if persistent else 'transient'}")
+    for source in ("run", "map_item")
+    for runner_kind in ("sync", "async")
+    for surface in ("full", "native")
+    for persistent in (False, True)
+] + [
+    pytest.param("start", "sync", "full", False, id="start-sync-full-transient"),
+    pytest.param("start", "async", "native", True, id="start-async-native-persistent"),
+    pytest.param("batch", "async", "full", False, id="batch-async-full-transient"),
+    pytest.param("batch", "sync", "native", True, id="batch-sync-native-persistent"),
+]
+
+
+@pytest.mark.parametrize(
+    ("source", "runner_kind", "surface", "persistent"),
+    _REAL_BOUNDARY_CASES,
+)
+def test_real_boundary_recovery_prints_success_or_caught_error(
+    browser: Browser,
+    monkeypatch: pytest.MonkeyPatch,
+    runner_kind: _RunnerKind,
+    surface: _Surface,
+    persistent: bool,
+    source: _BoundarySource,
+) -> None:
+    runner, graph, values, artifact, error = _capture_real_boundary(
+        monkeypatch,
+        runner_kind,
+        source,
+        persistent=persistent,
+    )
+    if surface == "native":
+        code = _native_recovery_code(
+            artifact,
+            source=source,
+            error=error,
+        )
+    else:
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        code = _full_recovery_code(
+            page,
+            artifact,
+            source=source,
+            error=error,
+        )
+        page.close()
+
+    assert ".inputs" not in code
+    assert "node_name" not in code
+    if runner_kind == "async":
+        assert "await runner." in code
+    else:
+        assert "await runner." not in code
+
+    namespace, output = _execute_recovery_code(
+        code,
+        runner=runner,
+        graph=graph,
+        values=values,
+    )
+    if persistent:
+        assert f"RuntimeError: {error}" in output
+        return
+
+    result_name = "batch" if source in {"map_item", "batch"} else "result"
+    recovered = namespace[result_name]
+    assert isinstance(recovered, (RunResult, MapResult))
+    assert recovered.completed is True
+    assert str(recovered) in output
