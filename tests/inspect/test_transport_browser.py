@@ -27,6 +27,7 @@ from hypergraph.runners._shared._inspect_transport import (
     INSPECTION_PROTOCOL_VERSION,
     InspectionDelivery,
     InspectionEnvelope,
+    _native_failure_markup,
     inspection_envelope_to_wire,
     render_notebook_shell,
     render_payload_channel,
@@ -798,11 +799,15 @@ def test_untrusted_terminal_map_keeps_native_failure_evidence_after_active_marku
     failure.locator("summary").click()
     assert failure.evaluate("element => element.open") is True
     failure_text = failure.inner_text()
+    evidence_code = failure.locator("pre code").inner_text()
     assert "Item 1 failure" in failure_text
     assert "score_customer" in failure_text
     assert "customer_id=maya-23" in failure_text
     assert "ValueError: Customer maya-23 requires manual review" in failure_text
     assert "item.failure.item_index == 1" in failure_text
+    assert "batch = runner.map(" in evidence_code
+    assert 'error_handling="continue"' in evidence_code
+    compile(evidence_code, "<native-map-failure-evidence>", "exec")
     assert "docs/05-how-to/debug-workflows.md" in failure_text
     assert page.locator("iframe, script, style").count() == 0
     assert errors == []
@@ -859,7 +864,11 @@ def test_untrusted_terminal_run_escapes_hostile_failure_text(
     assert summary.is_visible()
     assert page.locator("img").count() == 0
     assert hostile in failure.inner_text()
-    assert "failure = result.failure" in failure.inner_text()
+    evidence_code = failure.locator("pre code").inner_text()
+    assert "result = runner.run(" in evidence_code
+    assert 'error_handling="continue"' in evidence_code
+    assert "failure = result.failure" in evidence_code
+    compile(evidence_code, "<native-run-failure-evidence>", "exec")
     assert page.evaluate("window.pwned") is None
     assert all(url == "about:blank" for url in requests)
     page.close()
@@ -1306,6 +1315,117 @@ def test_untrusted_terminal_does_not_duplicate_unavailable_exception_type(
     assert "ValueError: ValueError:" not in failure_text
     assert failure_text.count("exception contains unsupported arguments") == 1
     assert "Exact exception" not in failure_text
+    page.close()
+
+
+def test_untrusted_terminal_preserves_visible_and_copy_whitespace_exactly(
+    browser: Browser,
+) -> None:
+    exact_text = "first  second\nthird"
+    error = ValueError(exact_text)
+    evidence = FailureEvidence(
+        node_name="preserve_whitespace",
+        error=error,
+        inputs={"message": exact_text},
+        superstep=0,
+        duration_ms=1.0,
+        graph_name="workflow",
+        workflow_id="workflow-whitespace",
+        item_index=None,
+    )
+    failed_node = replace(
+        _node(0),
+        node_name="preserve_whitespace",
+        qualified_name="workflow/preserve_whitespace",
+        status="failed",
+        inputs={"message": exact_text},
+        failure=evidence,
+    )
+    artifact = replace(
+        _run(graph_name="workflow", status="failed", terminal=True, node_count=0),
+        nodes=(failed_node,),
+        failures=(evidence,),
+        error=error,
+    )
+    envelope = _envelope(
+        artifact,
+        widget_id="widget-whitespace",
+        nonce="nonce-whitespace",
+        sequence=2,
+        state="saved",
+    )
+    stripped = _strip_active_output(render_payload_channel(envelope))
+
+    page = browser.new_page(viewport={"width": 600, "height": 700})
+    page.set_content(stripped, wait_until="load")
+    failure = page.locator("details")
+    failure.locator("summary").click()
+    visible_code = failure.locator("code").all_inner_texts()
+    copy_code = failure.locator("code").all_text_contents()
+
+    assert f"message={exact_text}" in visible_code
+    assert f"ValueError: {exact_text}" in visible_code
+    assert f"message={exact_text}" in copy_code
+    assert f"ValueError: {exact_text}" in copy_code
+    page.close()
+
+
+def test_untrusted_terminal_adds_copy_inert_wrap_opportunities_at_360px(
+    browser: Browser,
+) -> None:
+    long_input = "i" * 20_000
+    long_error = "e" * 20_000
+    inputs = {
+        "kind": "mapping",
+        "type_name": "dict",
+        "entries": [
+            {
+                "key": {"kind": "text", "type_name": "str", "text": "token"},
+                "value": {
+                    "kind": "text",
+                    "type_name": "str",
+                    "text": long_input,
+                    "original_size": 20_000,
+                },
+            }
+        ],
+    }
+    error = {
+        "kind": "exception",
+        "type_name": "ValueError",
+        "text": long_error,
+        "original_size": 20_000,
+    }
+    failure_wire = {
+        "node_name": "bounded_width",
+        "error": error,
+        "inputs": inputs,
+        "superstep": 0,
+        "graph_name": "workflow",
+        "workflow_id": "workflow-width",
+        "item_index": None,
+    }
+    markup = _native_failure_markup(
+        kind="run",
+        data={
+            "status": "failed",
+            "item_index": None,
+            "failures": [failure_wire],
+            "nodes": [],
+            "error": error,
+        },
+        message={},
+    )
+
+    page = browser.new_page(viewport={"width": 360, "height": 700})
+    page.set_content(markup, wait_until="load")
+    failure = page.locator("details")
+    failure.locator("summary").click()
+
+    assert page.evaluate("document.documentElement.scrollWidth") <= 360
+    assert failure.locator("wbr").count() > 0
+    assert f"token={long_input}" in failure.locator("code").all_text_contents()
+    assert f"ValueError: {long_error}" in failure.locator("code").all_text_contents()
     page.close()
 
 

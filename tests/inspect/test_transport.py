@@ -217,6 +217,37 @@ def test_repr_backed_exception_is_a_single_type_bounded_preview() -> None:
     assert "CustomError: CustomError" not in markup
 
 
+def test_status_only_map_failures_contribute_one_truthful_record_each() -> None:
+    items = []
+    for item_index in range(2):
+        items.append(
+            {
+                "item_index": item_index,
+                "status": "failed",
+                "run": {
+                    "status": "failed",
+                    "failures": [],
+                    "error": None,
+                    "nodes": [
+                        {
+                            "node_name": f"status_only_{item_index}",
+                            "qualified_name": f"workflow/status_only_{item_index}",
+                            "status": "failed",
+                            "inputs": serialized_value_to_wire(serialize_value({"item": item_index})),
+                            "failure": None,
+                        }
+                    ],
+                },
+            }
+        )
+    data = {"items": items, "error": None}
+
+    markup = _native_failure_markup(kind="map", data=data, message={})
+
+    assert "Item 0 failure — First failure of 2" in markup
+    assert "workflow/status_only_0" in markup
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
