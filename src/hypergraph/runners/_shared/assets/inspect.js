@@ -567,11 +567,18 @@
         + "    print(failure.error)");
     }
     if (source === "run" && payload.kind === "map") {
-      return guardedRerunSnippet("items = getattr(batch, \"results\", ())\n"
+      return guardedRerunSnippet("unstarted = getattr(batch, \"unstarted_item_indexes\", ())\n"
+        + "items = getattr(batch, \"results\", ())\n"
+        + "requested_count = len(items) + len(unstarted)\n"
+        + "settled_index = " + itemIndex + " - sum(\n"
+        + "    index < " + itemIndex + "\n"
+        + "    for index in unstarted\n"
+        + ")\n"
         + "failed = (\n"
-        + "    items[" + itemIndex + "]\n"
-        + "    if not getattr(batch, \"unstarted_item_indexes\", ())\n"
-        + "    and 0 <= " + itemIndex + " < len(items)\n"
+        + "    items[settled_index]\n"
+        + "    if " + itemIndex + " not in unstarted\n"
+        + "    and 0 <= " + itemIndex + " < requested_count\n"
+        + "    and 0 <= settled_index < len(items)\n"
         + "    else None\n"
         + ")\n"
         + "if failed is None or failed.error is None:\n"

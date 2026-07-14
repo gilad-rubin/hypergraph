@@ -1154,8 +1154,13 @@ def test_untrusted_map_keeps_run_boundary_error_separate_from_status_only_node(
     assert "Qualified node:" not in failure_text
     assert "Captured inputs:" not in failure_text
     assert "wrong-run" not in failure_text
+    assert 'unstarted = getattr(batch, "unstarted_item_indexes", ())' in evidence_code
     assert 'items = getattr(batch, "results", ())' in evidence_code
-    assert "items[0]" in evidence_code
+    assert "requested_count = len(items) + len(unstarted)" in evidence_code
+    assert "settled_index = 0 - sum(" in evidence_code
+    assert "items[settled_index]" in evidence_code
+    assert "if 0 not in unstarted" in evidence_code
+    assert "items[0]" not in evidence_code
     assert 'print(f"{type(failed.error).__name__}: {failed.error}")' in evidence_code
     compile(evidence_code, "<native-run-boundary-evidence>", "exec")
     page.close()

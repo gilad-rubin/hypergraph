@@ -662,11 +662,18 @@ def _native_failure_markup(
             kind,
             data,
             settled_code=(
+                'unstarted = getattr(batch, "unstarted_item_indexes", ())\n'
                 'items = getattr(batch, "results", ())\n'
+                "requested_count = len(items) + len(unstarted)\n"
+                f"settled_index = {item_index!r} - sum(\n"
+                f"    index < {item_index!r}\n"
+                "    for index in unstarted\n"
+                ")\n"
                 "failed = (\n"
-                f"    items[{item_index!r}]\n"
-                '    if not getattr(batch, "unstarted_item_indexes", ())\n'
-                f"    and 0 <= {item_index!r} < len(items)\n"
+                "    items[settled_index]\n"
+                f"    if {item_index!r} not in unstarted\n"
+                f"    and 0 <= {item_index!r} < requested_count\n"
+                "    and 0 <= settled_index < len(items)\n"
                 "    else None\n"
                 ")\n"
                 "if failed is None or failed.error is None:\n"

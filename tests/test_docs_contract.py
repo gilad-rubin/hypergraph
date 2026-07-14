@@ -667,6 +667,10 @@ def test_inspect_docs_pin_exception_labels_and_recovery_runner_truth() -> None:
         assert "changing `repr()` output is never identity" in normalized.lower()
         assert "object address, input value, or secret" in normalized
         assert "run boundary" in normalized and "aggregate container" in normalized
+        assert "translates the original item index" in normalized
+        assert "`unstarted_item_indexes`" in normalized
+        assert "indexing `batch.results`" in normalized
+        assert "fails closed" in normalized
 
     assert "Before (misleading async recovery)" in debug
     assert "After (truthful async recovery)" in debug

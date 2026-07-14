@@ -61,7 +61,10 @@
   transient boundary prints the settled successful result or batch. A returned
   failed result prints its real run/item error; map evidence uses
   `batch.failures` or the original item position and never a nonexistent
-  `MapResult.error`. Unknown provenance still emits no runner call.
+  `MapResult.error`. For sparse run-boundary results, the snippet translates the
+  original item index around `unstarted_item_indexes` before indexing
+  `batch.results`; it fails closed when that item never started or is outside
+  the requested scope. Unknown provenance still emits no runner call.
   Before, primary **Show failure** selection on a nested mapped graph could stop
   at the aggregate container (`review_group`) and show its list input. Now the
   full inspector and native summary correlate the containing outer item to the

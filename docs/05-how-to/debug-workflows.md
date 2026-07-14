@@ -379,9 +379,11 @@ prints its real type and message without reading an unbound result. In the
 `else` branch, a transient recovery prints the settled successful result or
 batch; a returned failed result prints its real run or item error. Map snippets
 read `batch.failures` or the original item position and never read a nonexistent
-`MapResult.error`. Node, run-boundary, batch-boundary, and start-failure views
-follow this same provenance policy in both the full inspector and native
-summary.
+`MapResult.error`. For sparse run-boundary results, the snippet translates the
+original item index around `unstarted_item_indexes` before indexing
+`batch.results`; it fails closed when that item never started or is outside the
+requested scope. Node, run-boundary, batch-boundary, and start-failure views
+follow this same provenance policy in both the full inspector and native summary.
 
 For a nested mapped graph, **Show failure** correlates the containing outer item
 to the explicit slash-qualified failing leaf. The selected execution, heading,

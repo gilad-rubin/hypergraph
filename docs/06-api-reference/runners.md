@@ -1338,8 +1338,11 @@ real type and message without reading an unbound result. The `else` branch
 prints the settled successful result or batch when the boundary clears, or the
 real returned run/item error when it does not. A map snippet reads
 `batch.failures` or the original item position; it never reads a nonexistent
-`MapResult.error`. Node, run-boundary, batch-boundary, and start-failure views
-use that same provenance-aware policy in the full inspector and native summary.
+`MapResult.error`. For sparse run-boundary results, the snippet translates the
+original item index around `unstarted_item_indexes` before indexing
+`batch.results`; it fails closed when that item never started or is outside the
+requested scope. Node, run-boundary, batch-boundary, and start-failure views use
+that same provenance-aware policy in the full inspector and native summary.
 
 For nested mapped graphs, **Show failure** correlates the containing outer item
 with the explicit slash-qualified failing leaf. The selected heading, scalar
