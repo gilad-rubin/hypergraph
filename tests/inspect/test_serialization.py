@@ -15,7 +15,9 @@ from typing import ClassVar
 
 import numpy as np
 import pandas as pd
+import pydantic
 import pytest
+from pandas.api.extensions import ExtensionArray, ExtensionDtype, take
 from pydantic import BaseModel, computed_field
 
 from hypergraph.runners._shared._inspect_serialization import (
@@ -641,6 +643,68 @@ def test_adapter_discovery_does_not_delegate_to_a_replaced_sys_modules() -> None
     assert calls == {"get": 0, "repr": 1}
 
 
+def test_mutable_public_library_aliases_never_define_trusted_adapters() -> None:
+    calls = {
+        "getitem": 0,
+        "model_dump": 0,
+        "repr": 0,
+        "shape": 0,
+        "tolist": 0,
+    }
+
+    class Redirected:
+        @property
+        def shape(self) -> tuple[int, int]:
+            calls["shape"] += 1
+            raise AssertionError("a mutable public alias is not canonical provenance")
+
+        def __getitem__(self, key: object) -> object:
+            calls["getitem"] += 1
+            raise AssertionError("a mutable public alias must not enter an array adapter")
+
+        def tolist(self) -> list[object]:
+            calls["tolist"] += 1
+            raise AssertionError("a mutable public alias must not enter an array adapter")
+
+        def model_dump(self) -> dict[str, object]:
+            calls["model_dump"] += 1
+            raise AssertionError("a mutable public alias must not define a model adapter")
+
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            return "Redirected(<redacted>)"
+
+    serialized: list[SerializedValue] = []
+    pandas_frame_module = dict.__getitem__(sys.modules, "pandas.core.frame")
+    for module, alias in (
+        (pd, "DataFrame"),
+        (np, "ndarray"),
+        (pydantic, "BaseModel"),
+        (pandas_frame_module, "DataFrame"),
+    ):
+        namespace = object.__getattribute__(module, "__dict__")
+        original = dict.__getitem__(namespace, alias)
+        setattr(module, alias, Redirected)
+        try:
+            serialized.append(serialize_value(Redirected()))
+        finally:
+            setattr(module, alias, original)
+
+    assert [(value.kind, value.text) for value in serialized] == [
+        ("text", "Redirected(<redacted>)"),
+        ("text", "Redirected(<redacted>)"),
+        ("text", "Redirected(<redacted>)"),
+        ("text", "Redirected(<redacted>)"),
+    ]
+    assert calls == {
+        "getitem": 0,
+        "model_dump": 0,
+        "repr": 4,
+        "shape": 0,
+        "tolist": 0,
+    }
+
+
 def test_supported_type_subclasses_never_enter_trusted_adapters() -> None:
     calls: dict[str, int] = {}
 
@@ -1000,6 +1064,142 @@ def test_exact_numpy_arrays_and_pandas_dataframes_stay_bounded_and_structured() 
     assert frame.table.original_column_count == 21
     assert len(frame.table.rows) == 200
     assert len(frame.table.columns) == 20
+
+    object_frame = serialize_value(
+        pd.DataFrame(
+            {
+                "customer_id": ["maya-23", "ari-12"],
+                "score": [0.9, 0.3],
+            }
+        )
+    )
+    assert object_frame.kind == "table"
+    assert object_frame.table is not None
+    assert [column.text for column in object_frame.table.columns] == [
+        "customer_id",
+        "score",
+    ]
+    assert object_frame.table.rows[0].cells[0].text == "maya-23"
+    assert object_frame.table.rows[0].cells[1].value == 0.9
+
+
+def test_extension_backed_dataframe_is_rejected_without_extension_hooks() -> None:
+    calls = {
+        "array": 0,
+        "dtype": 0,
+        "extension_repr": 0,
+        "frame_repr": 0,
+        "getitem": 0,
+        "iter": 0,
+        "len": 0,
+        "take": 0,
+        "tolist": 0,
+    }
+
+    class HostileDtype(ExtensionDtype):
+        name = "hypergraph-hostile"
+        type = object
+        kind = "O"
+        na_value = None
+
+        @classmethod
+        def construct_array_type(cls) -> type[HostileArray]:
+            return HostileArray
+
+    class HostileArray(ExtensionArray):
+        def __init__(self, values: Sequence[object]) -> None:
+            self._values = list(values)
+
+        @classmethod
+        def _from_sequence(
+            cls,
+            scalars: Sequence[object],
+            *,
+            dtype: ExtensionDtype | None = None,
+            copy: bool = False,
+        ) -> HostileArray:
+            return cls(list(scalars) if copy else scalars)
+
+        @property
+        def dtype(self) -> ExtensionDtype:
+            calls["dtype"] += 1
+            return HostileDtype()
+
+        @property
+        def nbytes(self) -> int:
+            return len(self._values) * 8
+
+        def __len__(self) -> int:
+            calls["len"] += 1
+            return len(self._values)
+
+        def __getitem__(self, item: int | slice) -> object:
+            calls["getitem"] += 1
+            if isinstance(item, slice):
+                return type(self)(self._values[item])
+            return self._values[item]
+
+        def __iter__(self) -> Iterator[object]:
+            calls["iter"] += 1
+            return iter(self._values)
+
+        def __array__(
+            self,
+            dtype: object = None,
+            copy: bool | None = None,
+        ) -> np.ndarray:
+            calls["array"] += 1
+            return np.asarray(self._values, dtype=dtype)
+
+        def __repr__(self) -> str:
+            calls["extension_repr"] += 1
+            raise AssertionError("DataFrame repr must not delegate to the extension")
+
+        def tolist(self) -> list[object]:
+            calls["tolist"] += 1
+            return list(self._values)
+
+        def isna(self) -> np.ndarray:
+            return np.asarray([value is None for value in self._values])
+
+        def take(
+            self,
+            indices: Sequence[int],
+            *,
+            allow_fill: bool = False,
+            fill_value: object = None,
+        ) -> HostileArray:
+            calls["take"] += 1
+            values = take(
+                np.asarray(self._values, dtype=object),
+                indices,
+                allow_fill=allow_fill,
+                fill_value=fill_value,
+            )
+            return type(self)(values.tolist())
+
+        def copy(self) -> HostileArray:
+            return type(self)(self._values.copy())
+
+    frame = pd.DataFrame({"customer": HostileArray(["maya", "ari"])})
+    calls = dict.fromkeys(calls, 0)
+    original_repr = pd.DataFrame.__repr__
+
+    def forbidden_frame_repr(_: pd.DataFrame) -> str:
+        calls["frame_repr"] += 1
+        raise AssertionError("extension-backed DataFrame must not use whole-value repr")
+
+    pd.DataFrame.__repr__ = forbidden_frame_repr
+    try:
+        serialized = serialize_value(frame)
+    finally:
+        pd.DataFrame.__repr__ = original_repr
+
+    assert serialized.kind == "placeholder"
+    assert serialized.type_name == "DataFrame"
+    assert serialized.reason == "unsupported extension-backed DataFrame"
+    assert serialized.truncated is True
+    assert calls == dict.fromkeys(calls, 0)
 
 
 def test_array_and_dataframe_protocols_and_subclasses_use_repr_only() -> None:
