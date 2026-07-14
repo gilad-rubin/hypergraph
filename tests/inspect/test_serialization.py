@@ -876,7 +876,15 @@ def test_fragmented_numpy_dataframe_remains_a_bounded_table() -> None:
 
 
 def test_dataframe_placement_scan_limit_is_cumulative() -> None:
-    frame = pd.DataFrame({f"column_{index}": [index if index % 2 == 0 else str(index)] for index in range(12_000)})
+    def value_for(index: int) -> int | float | str:
+        residue = index % 7
+        if residue in {0, 1}:
+            return index
+        if residue in {2, 4}:
+            return float(index)
+        return str(index)
+
+    frame = pd.DataFrame({f"column_{index}": [value_for(index)] for index in range(12_000)})
 
     serialized = serialize_value(frame)
 
