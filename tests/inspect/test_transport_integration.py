@@ -171,11 +171,9 @@ def _fail_top_level_release_once(
 
 def _assert_failed_terminal_artifact(
     artifact: RunInspection,
-    error: BaseException,
 ) -> None:
     assert artifact.terminal is True
     assert artifact.status == "failed"
-    assert artifact.error is error
     assert artifact.failures == ()
     assert artifact.nodes
     assert all(item.status == "failed" for item in artifact.nodes)
@@ -203,6 +201,38 @@ def _assert_persisted_failed(row: Any) -> None:
     assert row is not None
     assert row.status is WorkflowStatus.FAILED
     assert row.completed_at is not None
+
+
+def _exception_causal_graph(error: BaseException) -> tuple[BaseException, ...]:
+    causal_graph: list[BaseException] = []
+    pending = [error]
+    seen_ids: set[int] = set()
+    while pending:
+        current = pending.pop()
+        current_id = id(current)
+        if current_id in seen_ids:
+            continue
+        seen_ids.add(current_id)
+        causal_graph.append(current)
+        for linked_error in (current.__cause__, current.__context__):
+            if linked_error is not None:
+                pending.append(linked_error)
+    return tuple(causal_graph)
+
+
+def _assert_cancelled_artifact_error(
+    artifact_error: BaseException,
+    propagated_error: BaseException,
+    *,
+    marker: str,
+) -> None:
+    assert type(artifact_error) is asyncio.CancelledError
+    assert type(propagated_error) is asyncio.CancelledError
+    assert any(type(error) is asyncio.CancelledError and error.args == (marker,) for error in _exception_causal_graph(artifact_error))
+    if sys.version_info >= (3, 11):
+        assert artifact_error is propagated_error
+    else:
+        assert any(error is artifact_error for error in _exception_causal_graph(propagated_error))
 
 
 @pytest.mark.asyncio
@@ -248,8 +278,16 @@ async def test_sync_and_async_run_baseexception_settles_inspection_before_escape
     assert sync_raised.value is sync_error
     assert isinstance(sync_artifact, RunInspection)
     assert isinstance(async_artifact, RunInspection)
-    _assert_failed_terminal_artifact(sync_artifact, sync_error)
-    _assert_failed_terminal_artifact(async_artifact, async_raised.value)
+    async_error = async_artifact.error
+    assert async_error is not None
+    _assert_failed_terminal_artifact(sync_artifact)
+    _assert_failed_terminal_artifact(async_artifact)
+    assert sync_artifact.error is sync_error
+    _assert_cancelled_artifact_error(
+        async_error,
+        async_raised.value,
+        marker="ASYNC-FATAL-NODE",
+    )
 
 
 @pytest.mark.asyncio
@@ -306,17 +344,21 @@ async def test_sync_and_async_map_baseexception_settles_batch_and_blocks_late_ch
     assert sync_raised.value is sync_error
     assert isinstance(sync_artifact, MapInspection)
     assert isinstance(async_artifact, MapInspection)
-    for artifact, error in (
-        (sync_artifact, sync_error),
-        (async_artifact, async_raised.value),
-    ):
+    async_error = async_artifact.error
+    assert async_error is not None
+    for artifact in (sync_artifact, async_artifact):
         assert artifact.terminal is True
         assert artifact.status == "failed"
-        assert artifact.error is error
         assert artifact.items
         assert all(item.status != "running" for item in artifact.items)
         assert all(item.run is None or item.run.terminal for item in artifact.items)
         assert all(node.status != "running" for item in artifact.items if item.run is not None for node in item.run.nodes)
+    assert sync_artifact.error is sync_error
+    _assert_cancelled_artifact_error(
+        async_error,
+        async_raised.value,
+        marker="ASYNC-FATAL-MAP",
+    )
     assert async_artifact.revision == terminal_revision
 
 
@@ -415,7 +457,13 @@ async def test_checkpointed_async_cancelled_run_settles_created_row(
 
     _assert_persisted_failed(row)
     assert [(step.node_name, step.status) for step in steps] == [("prepare", StepStatus.COMPLETED)]
-    assert artifact.error is raised.value
+    artifact_error = artifact.error
+    assert artifact_error is not None
+    _assert_cancelled_artifact_error(
+        artifact_error,
+        raised.value,
+        marker="ASYNC-CHECKPOINTED-RUN",
+    )
 
 
 @pytest.mark.asyncio
@@ -462,7 +510,13 @@ async def test_checkpointed_async_map_cancellation_settles_parent_and_claimed_ch
     _assert_persisted_failed(child_row)
     assert [(step.node_name, step.status) for step in child_steps] == [("prepare", StepStatus.COMPLETED)]
     assert unclaimed_row is None
-    assert artifact.error is raised.value
+    artifact_error = artifact.error
+    assert artifact_error is not None
+    _assert_cancelled_artifact_error(
+        artifact_error,
+        raised.value,
+        marker="ASYNC-CHECKPOINTED-MAP",
+    )
     assert artifact.unstarted_item_indexes == (1,)
     assert all(item.status != "running" for item in artifact.items)
 
@@ -510,7 +564,13 @@ async def test_async_unbounded_cancellation_before_first_claim_marks_every_item_
     await checkpointer.close()
 
     assert child_rows == []
-    assert artifact.error is raised.value
+    artifact_error = artifact.error
+    assert artifact_error is not None
+    _assert_cancelled_artifact_error(
+        artifact_error,
+        raised.value,
+        marker="ASYNC-PRECLAIM-MAP",
+    )
     assert artifact.items == ()
     assert artifact.unstarted_item_indexes == (0, 1, 2)
     _assert_persisted_failed(parent_row)
