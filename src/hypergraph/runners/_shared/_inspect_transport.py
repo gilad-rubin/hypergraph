@@ -1095,13 +1095,13 @@ class InspectionCoalescer:
             if handle_to_cancel is not None:
                 handle_to_cancel.cancel()
             if token is not None:
-                self._arm(token, deadline)
+                return self._arm(token, deadline)
             return True
         except Exception:
             self._mark_delivery_failed()
             return False
 
-    def _arm(self, token: object, deadline: float) -> None:
+    def _arm(self, token: object, deadline: float) -> bool:
         try:
             handle = self._scheduler.call_at(
                 deadline,
@@ -1109,16 +1109,17 @@ class InspectionCoalescer:
             )
         except Exception:
             self._mark_delivery_failed(token=token)
-            return
+            return not self.delivery_failed
         if handle is None:
             self._mark_delivery_failed(token=token)
-            return
+            return not self.delivery_failed
         with self._lock:
             if self._scheduled_token is token:
                 self._scheduled_handle = handle
-                return
+                return True
         with contextlib.suppress(Exception):
             handle.cancel()
+        return not self.delivery_failed
 
     def _flush(self, token: object) -> None:
         pending: _PendingDelivery | None = None
