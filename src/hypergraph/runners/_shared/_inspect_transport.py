@@ -961,57 +961,43 @@ class OwnerThreadScheduler:
             return None
         guarded = _GuardedCall(callback)
 
-        def arm() -> None:
+        def arm(*, report_rejection: bool) -> None:
             if guarded.cancelled:
                 return
             delay = max(0.0, deadline - self.now())
             if delay <= 0:
                 guarded.run()
                 return
-            if self._asyncio_loop is not None and self._asyncio_loop.is_running():
-                scheduled = self._asyncio_loop.call_later(delay, guarded.run)
-                if scheduled is None:
-                    raise RuntimeError(
-                        "Notebook owner loop rejected delayed inspection delivery.\n\n"
-                        "Expected call_later() to return a cancellation handle.\n\n"
-                        "How to fix: Use a running asyncio loop with a working call_later()."
-                    )
-                return
-            call_later = getattr(self._kernel_ioloop, "call_later", None)
-            if callable(call_later):
-                scheduled = call_later(delay, guarded.run)
-                if scheduled is None:
-                    raise RuntimeError(
-                        "Notebook kernel loop rejected delayed inspection delivery.\n\n"
-                        "Expected call_later() to return a cancellation handle.\n\n"
-                        "How to fix: Use a kernel I/O loop with a working call_later()."
-                    )
-                return
-            raise RuntimeError(
-                "Notebook owner loop lost delayed-call support.\n\n"
-                "The captured loop no longer provides call_later().\n\n"
-                "How to fix: Re-run inspection from an active notebook kernel."
-            )
-
-        def arm_after_marshal() -> None:
             try:
-                arm()
+                if self._asyncio_loop is not None and self._asyncio_loop.is_running():
+                    self._asyncio_loop.call_later(delay, guarded.run)
+                    return
+                call_later = getattr(self._kernel_ioloop, "call_later", None)
+                if callable(call_later):
+                    call_later(delay, guarded.run)
+                    return
+                raise RuntimeError(
+                    "Notebook owner loop lost delayed-call support.\n\n"
+                    "The captured loop no longer provides call_later().\n\n"
+                    "How to fix: Re-run inspection from an active notebook kernel."
+                )
             except Exception:
                 guarded.cancel()
-                if on_rejected is not None:
-                    with contextlib.suppress(Exception):
-                        on_rejected()
+                if not report_rejection or on_rejected is None:
+                    raise
+                with contextlib.suppress(Exception):
+                    on_rejected()
 
         if threading.get_ident() == self.owner_thread_id:
-            arm()
+            arm(report_rejection=False)
             return guarded
 
         if self._asyncio_loop is not None and self._asyncio_loop.is_running():
-            self._asyncio_loop.call_soon_threadsafe(arm_after_marshal)
+            self._asyncio_loop.call_soon_threadsafe(lambda: arm(report_rejection=True))
             return guarded
         add_callback = getattr(self._kernel_ioloop, "add_callback", None)
         if callable(add_callback):
-            add_callback(arm_after_marshal)
+            add_callback(lambda: arm(report_rejection=True))
             return guarded
         return None
 
