@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import html
 import io
+import pickle
 import re
 import textwrap
 import threading
@@ -20,6 +22,7 @@ from hypergraph import AsyncRunner, Graph, SyncRunner, node
 from hypergraph.runners._shared import _inspect_transport
 from hypergraph.runners._shared._inspect import MapInspection, RunInspection
 from hypergraph.runners._shared._inspect_html import (
+    _failure_keys,
     build_inspection_payload,
     render_map_inspection,
     render_run_inspection,
@@ -329,6 +332,297 @@ def test_missing_exact_leaf_never_borrows_aggregate_container(
     assert root.locator(".hg-inspect-detail-heading").count() == 0
     assert "Run failures · 1" in root.locator("[data-hg-detail]").inner_text()
     page.close()
+
+
+class _EqualityHookWorkflowId(str):
+    armed = False
+    eq_calls = 0
+    ne_calls = 0
+    hash_calls = 0
+
+    @classmethod
+    def arm(cls) -> None:
+        cls.eq_calls = 0
+        cls.ne_calls = 0
+        cls.hash_calls = 0
+        cls.armed = True
+
+    @classmethod
+    def disarm(cls) -> tuple[int, int, int]:
+        calls = (cls.eq_calls, cls.ne_calls, cls.hash_calls)
+        cls.armed = False
+        return calls
+
+    def __eq__(self, other: object) -> bool:
+        if type(self).armed:
+            type(self).eq_calls += 1
+            raise RuntimeError("caller workflow_id equality ran during rendering")
+        return bool(super().__eq__(other))
+
+    def __ne__(self, other: object) -> bool:
+        if type(self).armed:
+            type(self).ne_calls += 1
+            raise RuntimeError("caller workflow_id inequality ran during rendering")
+        return bool(super().__ne__(other))
+
+    def __hash__(self) -> int:
+        if type(self).armed:
+            type(self).hash_calls += 1
+            raise RuntimeError("caller workflow_id hashing ran during rendering")
+        return super().__hash__()
+
+
+def _equality_hook_failure_graph() -> Graph:
+    @node(output_name="answer")
+    def reject(query: str) -> str:
+        raise ValueError(f"no answer for {query}")
+
+    return Graph([reject], name="equality-hook-review")
+
+
+def _run_equality_hook_failure(runner_kind: _RunnerKind) -> RunResult:
+    workflow_id = _EqualityHookWorkflowId("review-123")
+    graph = _equality_hook_failure_graph()
+    if runner_kind == "sync":
+        return SyncRunner().run(
+            graph,
+            {"query": "Maya"},
+            workflow_id=workflow_id,
+            inspect=True,
+            error_handling="continue",
+        )
+    return _run_async(
+        lambda: AsyncRunner().run(
+            graph,
+            {"query": "Maya"},
+            workflow_id=workflow_id,
+            inspect=True,
+            error_handling="continue",
+        )
+    )
+
+
+def _render_failure_surface(
+    result: RunResult,
+    surface: _Surface,
+) -> str:
+    if surface == "full":
+        return result.inspect()._repr_html_()
+    payload = build_inspection_payload(
+        result.inspect()._artifact,
+        delivery_state="saved",
+        delivery_label="Saved snapshot",
+    )
+    data = payload["run"]
+    assert isinstance(data, dict)
+    return _native_failure_markup(kind="run", data=data, message={})
+
+
+@pytest.mark.parametrize("runner_kind", ["sync", "async"])
+@pytest.mark.parametrize("surface", ["full", "native"])
+def test_failure_render_never_calls_workflow_id_equality_or_hashing(
+    runner_kind: _RunnerKind,
+    surface: _Surface,
+) -> None:
+    result = _run_equality_hook_failure(runner_kind)
+    assert result.failed is True
+
+    _EqualityHookWorkflowId.arm()
+    try:
+        rendered = _render_failure_surface(result, surface)
+    finally:
+        calls = _EqualityHookWorkflowId.disarm()
+
+    assert calls == (0, 0, 0)
+    assert "equality-hook-review" in rendered
+    assert "ValueError" in rendered
+
+
+@pytest.mark.parametrize(
+    "round_trip",
+    [
+        pytest.param(copy.deepcopy, id="deepcopy"),
+        pytest.param(lambda value: pickle.loads(pickle.dumps(value)), id="pickle"),
+    ],
+)
+@pytest.mark.parametrize("surface", ["full", "native"])
+def test_round_tripped_failure_render_keeps_equality_hooks_observational(
+    round_trip: Callable[[RunResult], RunResult],
+    surface: _Surface,
+) -> None:
+    result = round_trip(_run_equality_hook_failure("sync"))
+
+    _EqualityHookWorkflowId.arm()
+    try:
+        rendered = _render_failure_surface(result, surface)
+    finally:
+        calls = _EqualityHookWorkflowId.disarm()
+
+    assert calls == (0, 0, 0)
+    assert "ValueError" in rendered
+
+
+class _SharedFailureCustomer:
+    pass
+
+
+def _run_shared_peer_failures(
+    runner_kind: _RunnerKind,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[MapResult, _SharedFailureCustomer, ValueError]:
+    shared_value = _SharedFailureCustomer()
+    shared_error = ValueError("shared failure")
+
+    @node(output_name="reviewed")
+    def review_customer(customer_id: _SharedFailureCustomer) -> str:
+        raise shared_error
+
+    inner = Graph([review_customer], name="inner")
+    graph = Graph(
+        [
+            inner.as_node(name="review_group").map_over(
+                "customer_id",
+                error_handling="continue",
+            )
+        ],
+        name="outer",
+    )
+    monkeypatch.setattr("time.time", lambda: 1000.0)
+    if runner_kind == "sync":
+        batch = SyncRunner().map(
+            graph,
+            {"customer_id": [[shared_value, shared_value]]},
+            map_over="customer_id",
+            inspect=True,
+            error_handling="continue",
+        )
+    else:
+        batch = _run_async(
+            lambda: AsyncRunner().map(
+                graph,
+                {"customer_id": [[shared_value, shared_value]]},
+                map_over="customer_id",
+                inspect=True,
+                error_handling="continue",
+            )
+        )
+    return batch, shared_value, shared_error
+
+
+def _shared_peer_run_wire(batch: MapResult) -> dict[str, Any]:
+    payload = build_inspection_payload(
+        batch.inspect()._artifact,
+        delivery_state="saved",
+        delivery_label="Saved snapshot",
+    )
+    data = payload["map"]
+    assert isinstance(data, dict)
+    items = data["items"]
+    assert isinstance(items, list)
+    run = items[0]["run"]
+    assert isinstance(run, dict)
+    return run
+
+
+@pytest.mark.parametrize("runner_kind", ["sync", "async"])
+def test_real_shared_peer_failures_keep_distinct_occurrence_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    runner_kind: _RunnerKind,
+) -> None:
+    batch, shared_value, shared_error = _run_shared_peer_failures(
+        runner_kind,
+        monkeypatch,
+    )
+    item = batch.inspect()._artifact.items[0]
+    assert item.run is not None
+    failed_nodes = [node for node in item.run.nodes if node.failure is not None]
+
+    assert [node.item_index for node in failed_nodes] == [0, 1]
+    assert len({node.execution_id for node in failed_nodes}) == 2
+    assert [node.failure.error is shared_error for node in failed_nodes] == [True, True]  # type: ignore[union-attr]
+    assert [node.failure.inputs["customer_id"] is shared_value for node in failed_nodes] == [True, True]  # type: ignore[union-attr]
+    assert [node.failure.duration_ms for node in failed_nodes] == [0.0, 0.0]  # type: ignore[union-attr]
+
+    node_keys, public_keys = _failure_keys(item.run)
+    failed_node_keys = [key for node, key in zip(item.run.nodes, node_keys, strict=True) if node.failure is not None]
+    assert failed_node_keys == ["failure-0", "failure-1"]
+    assert list(public_keys) == ["failure-0", "failure-1"]
+
+
+@pytest.mark.parametrize("runner_kind", ["sync", "async"])
+@pytest.mark.parametrize("surface", ["full", "native"])
+def test_real_shared_peer_selection_removes_only_selected_occurrence(
+    browser: Browser,
+    monkeypatch: pytest.MonkeyPatch,
+    runner_kind: _RunnerKind,
+    surface: _Surface,
+) -> None:
+    batch, _, _ = _run_shared_peer_failures(runner_kind, monkeypatch)
+    run = _shared_peer_run_wire(batch)
+    failures = run["failures"]
+    nodes = [node for node in run["nodes"] if node["failure"] is not None]
+    assert isinstance(failures, list)
+    assert [node["failure"]["failure_key"] for node in nodes] == [
+        "failure-0",
+        "failure-1",
+    ]
+
+    for selected_index in (0, 1):
+        selected_failure = nodes[selected_index]["failure"]
+        remaining = [failure for failure in failures if failure["failure_key"] != selected_failure["failure_key"]]
+        assert [failure["failure_key"] for failure in remaining] == [f"failure-{1 - selected_index}"]
+
+        selected_run = {**run, "failures": [failures[selected_index], failures[1 - selected_index]]}
+        native_failure, native_node = _first_failure_and_node(
+            selected_run,
+            containing_item_index=0,
+        )
+        assert native_failure["failure_key"] == f"failure-{selected_index}"
+        assert native_node["item_index"] == selected_index
+
+    if surface == "native":
+        markup = _native_failure_markup(
+            kind="run",
+            data=run,
+            message={},
+        )
+        assert "Qualified node: <code>review_group/review_customer</code>" in markup
+        return
+
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.set_content(render_map_inspection(batch.inspect()._artifact))
+    root = page.locator('[data-hypergraph-inspect="map"]')
+    leaves = root.locator("[data-hg-timeline-row]").filter(has_text="review_group/review_customer")
+    assert leaves.count() == 2
+    for selected_index in (0, 1):
+        leaves.nth(selected_index).click()
+        detail = root.locator("[data-hg-detail]")
+        assert detail.locator("dt").filter(has_text="Item").locator("xpath=following-sibling::dd").inner_text() == str(selected_index)
+        assert "Run failures · 1" in detail.inner_text()
+    page.close()
+
+
+@pytest.mark.parametrize(
+    "round_trip",
+    [
+        pytest.param(copy.deepcopy, id="deepcopy"),
+        pytest.param(lambda value: pickle.loads(pickle.dumps(value)), id="pickle"),
+    ],
+)
+def test_round_tripped_b20_projection_keeps_outer_public_and_inner_leaf_indexes(
+    round_trip: Callable[[MapResult], MapResult],
+) -> None:
+    batch, _ = _run_unstable_nested_map("sync")
+    restored = round_trip(batch)
+
+    for outer_index, item in enumerate(restored.inspect()._artifact.items):
+        assert item.run is not None
+        leaf = next(node for node in item.run.nodes if node.qualified_name == "review_group/review_customer" and node.status == "failed")
+        assert leaf.item_index == 1
+        assert item.run.failures[0].item_index == outer_index
+        node_keys, public_keys = _failure_keys(item.run)
+        leaf_key = next(key for node, key in zip(item.run.nodes, node_keys, strict=True) if node is leaf)
+        assert leaf_key == public_keys[0]
 
 
 class _RecordingTransport:
