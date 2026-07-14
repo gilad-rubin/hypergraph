@@ -909,6 +909,19 @@ class _LateRejectingKernelLoop:
         raise RuntimeError("backend rejected delayed arm")
 
 
+class _NoneReturningKernelLoop:
+    def __init__(self) -> None:
+        self.owner_callbacks: list[Callable[[], None]] = []
+        self.delayed_callbacks: list[Callable[[], None]] = []
+
+    def add_callback(self, callback: Callable[[], None]) -> None:
+        self.owner_callbacks.append(callback)
+
+    def call_later(self, delay: float, callback: Callable[[], None]) -> None:
+        assert delay > 0.0
+        self.delayed_callbacks.append(callback)
+
+
 class _RacingLateRejectingKernelLoop(_LateRejectingKernelLoop):
     def __init__(self) -> None:
         super().__init__()
@@ -1009,7 +1022,9 @@ def test_owner_scheduler_marshals_worker_work_through_kernel_ioloop() -> None:
     assert callback_threads == []
     assert len(kernel_loop.callbacks) == 1
 
-    kernel_loop.callbacks.pop()()
+    queued_owner_callback = kernel_loop.callbacks.pop()
+    queued_owner_callback()
+    queued_owner_callback()
 
     assert callback_threads == [owner_thread]
     assert scheduler.supports_delayed_calls is True
@@ -1079,12 +1094,121 @@ def test_late_owner_arm_rejection_fails_closed_on_owner_thread(
         assert len(display.handle.updates) == 1
         assert display.handle.update_threads == [owner_thread]
         settled = _wire(display.handle.updates[0])
+        assert settled["sequence"] == 2
         assert settled["payload"]["delivery"] == {
             "state": "stale",
             "label": "Live inspection unavailable",
         }
         assert settled["payload"]["run"]["run_id"] == "run-late-arm"
         assert settled["payload"]["run"]["nodes"][0]["qualified_name"] == "review_customer"
+
+
+def test_worker_marshalled_none_returning_delayed_arm_remains_live() -> None:
+    kernel_loop = _NoneReturningKernelLoop()
+    scheduler = OwnerThreadScheduler(
+        asyncio_loop=None,
+        kernel_ioloop=kernel_loop,
+        clock=lambda: 0.0,
+    )
+    display = _FakeNotebookDisplay()
+    transport = NotebookInspectionTransport.create(
+        _artifact(),
+        display=display,
+        scheduler=scheduler,
+        widget_id="hg-inspect-none-returning-arm",
+        nonce="nonce-none-returning-arm",
+    )
+    session = InspectionSession(
+        graph_name="customer_enrichment",
+        workflow_id="workflow-none-returning-arm",
+        item_index=None,
+    )
+    session.bind_run("run-none-returning-arm")
+    session.start_node(
+        run_id="run-none-returning-arm",
+        span_id="span-review",
+        node_name="review_customer",
+        qualified_name="review_customer",
+        graph_name="customer_enrichment",
+        item_index=None,
+        superstep=0,
+        inputs={"customer_id": "maya-23"},
+        started_at_ms=1.0,
+    )
+
+    worker = threading.Thread(target=lambda: transport.attach(session))
+    worker.start()
+    worker.join(timeout=2)
+
+    assert worker.is_alive() is False
+    assert len(kernel_loop.owner_callbacks) == 1
+    kernel_loop.owner_callbacks.pop()()
+
+    assert transport.closed is False
+    assert transport._coalescer.delivery_failed is False  # type: ignore[attr-defined]
+    assert session._subscribers != {}  # type: ignore[attr-defined]
+    assert display.handle.update_attempt_threads == []
+    assert len(kernel_loop.delayed_callbacks) == 1
+
+    kernel_loop.delayed_callbacks.pop()()
+
+    assert transport.closed is False
+    assert session._subscribers != {}  # type: ignore[attr-defined]
+    assert display.handle.update_threads == [scheduler.owner_thread_id]
+    delivered = _wire(display.handle.updates[0])
+    assert delivered["payload"]["delivery"] == {
+        "state": "live",
+        "label": "Live",
+    }
+    assert delivered["payload"]["run"]["run_id"] == "run-none-returning-arm"
+
+
+def test_due_callback_failure_is_not_relabelled_as_late_arm_rejection() -> None:
+    current = [0.0]
+    kernel_loop = _KernelLoop()
+    scheduler = OwnerThreadScheduler(
+        asyncio_loop=None,
+        kernel_ioloop=kernel_loop,
+        clock=lambda: current[0],
+    )
+    rejected: list[str] = []
+
+    def fail_delivery() -> None:
+        raise RuntimeError("delivery callback failed")
+
+    worker = threading.Thread(
+        target=lambda: scheduler.call_at(
+            1.0,
+            fail_delivery,
+            on_rejected=lambda: rejected.append("late arm rejected"),
+        )
+    )
+    worker.start()
+    worker.join(timeout=2)
+    current[0] = 1.0
+
+    assert worker.is_alive() is False
+    assert len(kernel_loop.callbacks) == 1
+    with pytest.raises(RuntimeError, match="delivery callback failed"):
+        kernel_loop.callbacks.pop()()
+    assert rejected == []
+
+
+def test_worker_marshalled_arm_failure_without_rejection_hook_remains_visible() -> None:
+    kernel_loop = _LateRejectingKernelLoop()
+    scheduler = OwnerThreadScheduler(
+        asyncio_loop=None,
+        kernel_ioloop=kernel_loop,
+        clock=lambda: 0.0,
+    )
+    worker = threading.Thread(target=lambda: scheduler.call_at(1.0, lambda: None))
+    worker.start()
+    worker.join(timeout=2)
+
+    assert worker.is_alive() is False
+    assert len(kernel_loop.callbacks) == 1
+    with pytest.raises(RuntimeError, match="backend rejected delayed arm"):
+        kernel_loop.callbacks.pop()()
 
 
 def test_stale_late_owner_arm_rejection_does_not_poison_urgent_replacement() -> None:
