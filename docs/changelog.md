@@ -73,8 +73,12 @@
   distinct peer failures. Correlation is established from raw Python evidence
   before error/input presentation serialization and carried by an opaque
   internal occurrence identity: changing `repr()` output is never identity,
-  no object address, input value, or secret enters the key, and a missing exact
-  leaf fails closed at the run boundary instead of borrowing the container.
+  no object address, input value, or secret enters the key, and correlation
+  never invokes caller-defined equality or hashing for workflow IDs or captured
+  values; captured values are correlated only by object identity. Distinct
+  executions retain separate identities even when they reuse the same scalar
+  and exception objects and record equal durations. A missing exact leaf fails
+  closed at the run boundary instead of borrowing the container.
 
 - **Trust-safe saved inspect evidence** — before, a notebook that treated new
   output as untrusted could strip scripts, styles, iframes, and identifiers,

@@ -395,8 +395,12 @@ same-name node's qualified path. Correlation is established from raw Python
 evidence before error or input presentation is serialized, then carried by an
 opaque internal occurrence identity. Changing `repr()` output is never
 identity, and the internal identity contains no object address, input value, or
-secret. If the exact slash-qualified leaf is absent, **Show failure** stays at
-the run boundary instead of selecting the aggregate container.
+secret. Correlation never invokes caller-defined equality or hashing for
+workflow IDs or captured values; captured values are correlated only by object
+identity. Two real executions remain separate even when they reuse the same
+scalar and exception objects and record equal durations. If the exact
+slash-qualified leaf is absent, **Show failure** stays at the run boundary
+instead of selecting the aggregate container.
 
 Before (misleading async recovery):
 

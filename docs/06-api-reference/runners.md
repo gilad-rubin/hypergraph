@@ -1353,8 +1353,12 @@ lookup key. Hypergraph establishes correlation from raw Python evidence before
 serializing error or input presentation and carries only an opaque internal
 occurrence identity into the renderer. Changing `repr()` output is never
 identity, and no object address, input value, or secret is placed in that key.
-If the exact slash-qualified failing leaf is absent, selection stays at the run
-boundary rather than borrowing the aggregate container.
+Correlation never invokes caller-defined equality or hashing for workflow IDs
+or captured values; captured values are correlated only by object identity.
+Distinct executions retain distinct identities even when they reuse the same
+scalar and exception objects and record equal durations. If the exact
+slash-qualified failing leaf is absent, selection stays at the run boundary
+rather than borrowing the aggregate container.
 
 Before, an untrusted terminal record could be blank while Python had already
 settled at `partial / 2 completed / 1 failed`. After, Maya can expand native

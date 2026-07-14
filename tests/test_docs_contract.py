@@ -668,6 +668,11 @@ def test_inspect_docs_pin_exception_labels_and_recovery_runner_truth() -> None:
         assert "from raw Python evidence" in normalized
         assert "changing `repr()` output is never identity" in normalized.lower()
         assert "object address, input value, or secret" in normalized
+        assert "never invokes caller-defined equality or hashing" in normalized
+        assert "workflow IDs or captured values" in normalized
+        assert "captured values are correlated only by object identity" in normalized
+        assert "same scalar and exception objects" in normalized
+        assert "equal durations" in normalized
         assert "run boundary" in normalized and "aggregate container" in normalized
         assert "translates the original item index" in normalized
         assert "`unstarted_item_indexes`" in normalized
