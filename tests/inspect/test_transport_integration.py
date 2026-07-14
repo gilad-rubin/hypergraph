@@ -14,8 +14,8 @@ from typing import Any
 import pytest
 
 from hypergraph import AsyncRunner, Graph, SqliteCheckpointer, SyncRunner, interrupt, node
-from hypergraph.checkpointers import MemoryCheckpointer
-from hypergraph.checkpointers.types import StepRecord
+from hypergraph.checkpointers import CheckpointPolicy, MemoryCheckpointer
+from hypergraph.checkpointers.types import StepRecord, StepStatus, WorkflowStatus
 from hypergraph.runners._shared import _inspect_transport
 from hypergraph.runners._shared._inspect import MapInspection, RunInspection
 from hypergraph.runners._shared.input_normalization import runner_option_names
@@ -199,6 +199,12 @@ def _assert_failed_terminal_map_artifact(
     assert all(node.status != "running" for item in artifact.items if item.run is not None for node in item.run.nodes)
 
 
+def _assert_persisted_failed(row: Any) -> None:
+    assert row is not None
+    assert row.status is WorkflowStatus.FAILED
+    assert row.completed_at is not None
+
+
 @pytest.mark.asyncio
 async def test_sync_and_async_run_baseexception_settles_inspection_before_escape(
     factory: _FactoryRecorder,
@@ -314,6 +320,286 @@ async def test_sync_and_async_map_baseexception_settles_batch_and_blocks_late_ch
     assert async_artifact.revision == terminal_revision
 
 
+def test_checkpointed_sync_fatal_run_and_map_settle_every_created_row(
+    factory: _FactoryRecorder,
+    tmp_path: Path,
+) -> None:
+    checkpointer = SqliteCheckpointer(str(tmp_path / "sync-fatal-rows.db"))
+    checkpointer._sync_db()
+    runner = SyncRunner(checkpointer=checkpointer)
+    run_error = KeyboardInterrupt("SYNC-CHECKPOINTED-RUN")
+
+    @node(output_name="prepared")
+    def prepare_run(value: int) -> int:
+        return value * 2
+
+    @node(output_name="answer")
+    def interrupt_run(prepared: int) -> int:
+        raise run_error
+
+    try:
+        with pytest.raises(KeyboardInterrupt) as run_raised:
+            runner.run(
+                Graph([prepare_run, interrupt_run], name="sync-checkpointed-fatal-run"),
+                {"value": 1},
+                workflow_id="sync-fatal-run",
+                inspect=True,
+            )
+        run_artifact = factory.transports[-1].artifacts[-1]
+
+        map_error = KeyboardInterrupt("SYNC-CHECKPOINTED-MAP")
+
+        @node(output_name="answer")
+        def interrupt_map(value: int) -> int:
+            raise map_error
+
+        with pytest.raises(KeyboardInterrupt) as map_raised:
+            runner.map(
+                Graph([interrupt_map], name="sync-checkpointed-fatal-map"),
+                {"value": [1, 2]},
+                map_over="value",
+                workflow_id="sync-fatal-map",
+                inspect=True,
+            )
+        map_artifact = factory.transports[-1].artifacts[-1]
+
+        assert run_raised.value is run_error
+        assert map_raised.value is map_error
+        _assert_persisted_failed(checkpointer.get_run("sync-fatal-run"))
+        assert [(step.node_name, step.status) for step in checkpointer.steps("sync-fatal-run")] == [("prepare_run", StepStatus.COMPLETED)]
+        _assert_persisted_failed(checkpointer.get_run("sync-fatal-map"))
+        _assert_persisted_failed(checkpointer.get_run("sync-fatal-map/0"))
+        assert checkpointer.get_run("sync-fatal-map/1") is None
+        assert run_artifact.error is run_error
+        assert map_artifact.error is map_error
+    finally:
+        if checkpointer._sync_conn is not None:
+            checkpointer._sync_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_checkpointed_async_cancelled_run_settles_created_row(
+    factory: _FactoryRecorder,
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    @node(output_name="prepared")
+    def prepare(value: int) -> int:
+        return value * 2
+
+    @node(output_name="answer")
+    async def wait(prepared: int) -> int:
+        started.set()
+        await release.wait()
+        return prepared
+
+    checkpointer = MemoryCheckpointer()
+    checkpointer.policy = CheckpointPolicy(durability="exit", retention="latest")
+    task = asyncio.create_task(
+        AsyncRunner(checkpointer=checkpointer).run(
+            Graph([prepare, wait], name="async-checkpointed-cancelled-run"),
+            {"value": 1},
+            workflow_id="async-fatal-run",
+            inspect=True,
+        )
+    )
+    await started.wait()
+    task.cancel("ASYNC-CHECKPOINTED-RUN")
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await task
+    artifact = factory.transports[-1].artifacts[-1]
+    row = await checkpointer.get_run_async("async-fatal-run")
+    steps = await checkpointer.get_steps("async-fatal-run")
+    await checkpointer.close()
+
+    _assert_persisted_failed(row)
+    assert [(step.node_name, step.status) for step in steps] == [("prepare", StepStatus.COMPLETED)]
+    assert artifact.error is raised.value
+
+
+@pytest.mark.asyncio
+async def test_checkpointed_async_map_cancellation_settles_parent_and_claimed_child(
+    factory: _FactoryRecorder,
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    @node(output_name="prepared")
+    def prepare(value: int) -> int:
+        return value * 2
+
+    @node(output_name="answer")
+    async def wait(prepared: int) -> int:
+        started.set()
+        await release.wait()
+        return prepared
+
+    checkpointer = MemoryCheckpointer()
+    checkpointer.policy = CheckpointPolicy(durability="exit", retention="latest")
+    task = asyncio.create_task(
+        AsyncRunner(checkpointer=checkpointer).map(
+            Graph([prepare, wait], name="async-checkpointed-cancelled-map"),
+            {"value": [1, 2]},
+            map_over="value",
+            max_concurrency=1,
+            workflow_id="async-fatal-map",
+            inspect=True,
+        )
+    )
+    await started.wait()
+    task.cancel("ASYNC-CHECKPOINTED-MAP")
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await task
+    artifact = factory.transports[-1].artifacts[-1]
+    parent_row = await checkpointer.get_run_async("async-fatal-map")
+    child_row = await checkpointer.get_run_async("async-fatal-map/0")
+    unclaimed_row = await checkpointer.get_run_async("async-fatal-map/1")
+    child_steps = await checkpointer.get_steps("async-fatal-map/0")
+    await checkpointer.close()
+
+    _assert_persisted_failed(parent_row)
+    _assert_persisted_failed(child_row)
+    assert [(step.node_name, step.status) for step in child_steps] == [("prepare", StepStatus.COMPLETED)]
+    assert unclaimed_row is None
+    assert artifact.error is raised.value
+    assert artifact.unstarted_item_indexes == (1,)
+    assert all(item.status != "running" for item in artifact.items)
+
+
+@pytest.mark.asyncio
+async def test_async_unbounded_cancellation_before_first_claim_marks_every_item_unstarted(
+    factory: _FactoryRecorder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_gather = asyncio.gather
+    gather_entered = asyncio.Event()
+    block_first_gather = True
+
+    async def block_before_children(*awaitables: Any, **kwargs: Any) -> Any:
+        nonlocal block_first_gather
+        if block_first_gather and kwargs.get("return_exceptions") is True:
+            block_first_gather = False
+            gather_entered.set()
+            try:
+                await asyncio.Future()
+            finally:
+                for awaitable in awaitables:
+                    if python_inspect.iscoroutine(awaitable):
+                        awaitable.close()
+        return await original_gather(*awaitables, **kwargs)
+
+    monkeypatch.setattr(asyncio, "gather", block_before_children)
+    checkpointer = MemoryCheckpointer()
+    task = asyncio.create_task(
+        AsyncRunner(checkpointer=checkpointer).map(
+            _graph("async-preclaim-cancel-map"),
+            {"value": [1, 2, 3]},
+            map_over="value",
+            workflow_id="async-preclaim-map",
+            inspect=True,
+        )
+    )
+    await gather_entered.wait()
+    task.cancel("ASYNC-PRECLAIM-MAP")
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await task
+    artifact = factory.transports[-1].artifacts[-1]
+    parent_row = await checkpointer.get_run_async("async-preclaim-map")
+    child_rows = await checkpointer.list_runs(parent_run_id="async-preclaim-map")
+    await checkpointer.close()
+
+    assert child_rows == []
+    assert artifact.error is raised.value
+    assert artifact.items == ()
+    assert artifact.unstarted_item_indexes == (0, 1, 2)
+    _assert_persisted_failed(parent_row)
+
+
+@pytest.mark.asyncio
+async def test_persistence_cleanup_failure_becomes_exact_sync_and_async_terminal_truth(
+    factory: _FactoryRecorder,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sync_marker = RuntimeError("SYNC-FAILED-STATUS-WRITE")
+    sync_checkpointer = SqliteCheckpointer(str(tmp_path / "sync-failed-status.db"))
+    sync_checkpointer._sync_db()
+    sync_update_status = sync_checkpointer.update_run_status_sync
+
+    def fail_sync_failed_status(run_id: str, status: WorkflowStatus, **kwargs: Any) -> None:
+        if status is WorkflowStatus.FAILED:
+            raise sync_marker
+        sync_update_status(run_id, status, **kwargs)
+
+    monkeypatch.setattr(sync_checkpointer, "update_run_status_sync", fail_sync_failed_status)
+    sync_fatal = KeyboardInterrupt("SYNC-ORIGINAL-FATAL")
+
+    @node(output_name="answer")
+    def sync_interrupt(value: int) -> int:
+        raise sync_fatal
+
+    try:
+        try:
+            SyncRunner(checkpointer=sync_checkpointer).run(
+                Graph([sync_interrupt], name="sync-failed-status"),
+                {"value": 1},
+                workflow_id="sync-failed-status",
+                inspect=True,
+            )
+        except BaseException as error:
+            sync_raised = error
+        else:
+            pytest.fail("sync fatal run unexpectedly returned")
+        sync_artifact = factory.transports[-1].artifacts[-1]
+    finally:
+        if sync_checkpointer._sync_conn is not None:
+            sync_checkpointer._sync_conn.close()
+
+    async_marker = RuntimeError("ASYNC-FAILED-STATUS-WRITE")
+    async_checkpointer = MemoryCheckpointer()
+    async_update_status = async_checkpointer.update_run_status
+
+    async def fail_async_failed_status(run_id: str, status: WorkflowStatus, **kwargs: Any) -> None:
+        if status is WorkflowStatus.FAILED:
+            raise async_marker
+        await async_update_status(run_id, status, **kwargs)
+
+    monkeypatch.setattr(async_checkpointer, "update_run_status", fail_async_failed_status)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    @node(output_name="answer")
+    async def async_wait(value: int) -> int:
+        started.set()
+        await release.wait()
+        return value
+
+    async_task = asyncio.create_task(
+        AsyncRunner(checkpointer=async_checkpointer).run(
+            Graph([async_wait], name="async-failed-status"),
+            {"value": 1},
+            workflow_id="async-failed-status",
+            inspect=True,
+        )
+    )
+    await started.wait()
+    async_task.cancel("ASYNC-ORIGINAL-FATAL")
+    try:
+        await async_task
+    except BaseException as error:
+        async_raised = error
+    else:
+        pytest.fail("async cancelled run unexpectedly returned")
+    async_artifact = factory.transports[-1].artifacts[-1]
+    await async_checkpointer.close()
+
+    assert sync_raised is sync_marker
+    assert async_raised is async_marker
+    assert sync_artifact.error is sync_marker
+    assert async_artifact.error is async_marker
+
+
 @pytest.mark.asyncio
 async def test_sync_and_async_map_hostile_repr_settles_claimed_items_and_keeps_original_error(
     factory: _FactoryRecorder,
@@ -400,6 +686,7 @@ async def test_final_release_failure_replaces_success_before_terminal_publicatio
             {"value": 1},
             workflow_id="sync-release-run",
             inspect=True,
+            error_handling="continue",
         )
     assert sync_run_raised.value is sync_run_error
     sync_run_artifacts = factory.transports[-1].artifacts
@@ -419,6 +706,7 @@ async def test_final_release_failure_replaces_success_before_terminal_publicatio
             map_over="value",
             workflow_id="sync-release-map",
             inspect=True,
+            error_handling="continue",
         )
     assert sync_map_raised.value is sync_map_error
     sync_map_artifacts = factory.transports[-1].artifacts
@@ -437,6 +725,7 @@ async def test_final_release_failure_replaces_success_before_terminal_publicatio
             {"value": 1},
             workflow_id="async-release-run",
             inspect=True,
+            error_handling="continue",
         )
     assert async_run_raised.value is async_run_error
     async_run_artifacts = factory.transports[-1].artifacts
@@ -457,6 +746,7 @@ async def test_final_release_failure_replaces_success_before_terminal_publicatio
             max_concurrency=1,
             workflow_id="async-release-map",
             inspect=True,
+            error_handling="continue",
         )
     assert async_map_raised.value is async_map_error
     async_map_artifacts = factory.transports[-1].artifacts

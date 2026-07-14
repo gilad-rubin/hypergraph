@@ -481,6 +481,28 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         inspection_started_at = time.time()
         dispatcher = None
         signal_token = None
+        run_row_created = False
+        step_buffer: list[Any] = []
+        checkpoint_save_errors: list[str] = []
+        checkpoint_error_forwarding_started = False
+
+        async def settle_created_run_failed() -> None:
+            if not run_row_created:
+                return
+            from hypergraph.checkpointers.types import WorkflowStatus
+            from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
+
+            for record in step_buffer:
+                await checkpointer.save_step(record)
+            _, step_offset = checkpoint_offsets(resume_checkpoint)
+            await checkpointer.update_run_status(
+                workflow_id,
+                WorkflowStatus.FAILED,
+                duration_ms=(time.time() - start_time) * 1000,
+                node_count=step_offset + collector.step_count,
+                error_count=collector.failed_step_count,
+            )
+
         try:
             reservation.bind(workflow_id)
             signal_token = set_stop_signal(reservation.signal)
@@ -532,22 +554,21 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     retry_index=run_lineage.retry_index,
                     config=run_config,
                 )
-
-            # Step buffer for "exit" durability — records are flushed after run completes
-            step_buffer: list[Any] = []
-            # Sink for background step-save failures ("async" durability) —
-            # surfaced as result.checkpoint_ok / result.checkpoint_errors.
-            checkpoint_save_errors: list[str] = []
-            checkpoint_error_forwarding_started = False
+                run_row_created = True
         except BaseException as error:
             try:
                 try:
-                    if dispatcher is not None and _parent_span_id is None and dispatcher.active:
-                        await self._shutdown_dispatcher_async(dispatcher)
+                    try:
+                        await settle_created_run_failed()
+                    finally:
+                        if dispatcher is not None and _parent_span_id is None and dispatcher.active:
+                            await self._shutdown_dispatcher_async(dispatcher)
                 finally:
-                    if signal_token is not None:
-                        reset_stop_signal(signal_token)
-                    reservation.release()
+                    try:
+                        if signal_token is not None:
+                            reset_stop_signal(signal_token)
+                    finally:
+                        reservation.release()
             except BaseException as final_error:
                 if owns_inspection and inspection_session is not None and not inspection_session.snapshot().terminal:
                     inspection_session.finish(
@@ -635,17 +656,21 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     node_count=step_count,
                     error_count=error_count,
                 )
-            if _parent_span_id is None:
-                await self._shutdown_dispatcher_async(dispatcher)
-                dispatcher = None
-            if _checkpoint_error_sink is not None and not checkpoint_error_forwarding_started:
-                checkpoint_error_forwarding_started = True
-                for checkpoint_error in checkpoint_save_errors:
-                    _checkpoint_error_sink(checkpoint_error)
-            if signal_token is not None:
-                reset_stop_signal(signal_token)
-                signal_token = None
-            reservation.release()
+            try:
+                if _parent_span_id is None:
+                    await self._shutdown_dispatcher_async(dispatcher)
+                    dispatcher = None
+                if _checkpoint_error_sink is not None and not checkpoint_error_forwarding_started:
+                    checkpoint_error_forwarding_started = True
+                    for checkpoint_error in checkpoint_save_errors:
+                        _checkpoint_error_sink(checkpoint_error)
+                if signal_token is not None:
+                    reset_stop_signal(signal_token)
+                    signal_token = None
+                reservation.release()
+            except BaseException as final_error:
+                terminal_error = final_error
+                raise
             inspection = (
                 inspection_session.finish(
                     status=status.value,
@@ -742,6 +767,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 inspection=inspection,
             )
         except Exception as e:
+            if e is terminal_error:
+                raise
             error = e
             partial_state = None
             node_failures = ()
@@ -834,16 +861,22 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         finally:
             try:
                 try:
-                    if _checkpoint_error_sink is not None and not checkpoint_error_forwarding_started:
-                        checkpoint_error_forwarding_started = True
-                        for checkpoint_error in checkpoint_save_errors:
-                            _checkpoint_error_sink(checkpoint_error)
-                    if dispatcher is not None and _parent_span_id is None:
-                        await self._shutdown_dispatcher_async(dispatcher)
+                    try:
+                        if terminal_error is not None:
+                            await settle_created_run_failed()
+                    finally:
+                        if _checkpoint_error_sink is not None and not checkpoint_error_forwarding_started:
+                            checkpoint_error_forwarding_started = True
+                            for checkpoint_error in checkpoint_save_errors:
+                                _checkpoint_error_sink(checkpoint_error)
+                        if dispatcher is not None and _parent_span_id is None:
+                            await self._shutdown_dispatcher_async(dispatcher)
                 finally:
-                    if signal_token is not None:
-                        reset_stop_signal(signal_token)
-                    reservation.release()
+                    try:
+                        if signal_token is not None:
+                            reset_stop_signal(signal_token)
+                    finally:
+                        reservation.release()
             except BaseException as final_error:
                 if owns_inspection and inspection_session is not None and not inspection_session.snapshot().terminal:
                     inspection_session.finish(
@@ -1034,6 +1067,26 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         dispatcher = None
         signal_token = None
         token = None
+        checkpointer = self._checkpointer
+        has_checkpointer = checkpointer is not None and workflow_id is not None
+        parent_run_row_created = False
+        claimed_indexes: set[int] = set()
+        results: list[RunResult] = []
+
+        async def settle_created_parent_run_failed() -> None:
+            if not parent_run_row_created:
+                return
+            from hypergraph.checkpointers.types import WorkflowStatus
+
+            error_count = sum(1 for result in results if result.status == RunStatus.FAILED)
+            await checkpointer.update_run_status(
+                workflow_id,
+                WorkflowStatus.FAILED,
+                duration_ms=(time.time() - start_time) * 1000,
+                node_count=len(results),
+                error_count=error_count,
+            )
+
         try:
             reservation.bind(workflow_id)
             signal_token = set_stop_signal(reservation.signal)
@@ -1056,8 +1109,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             start_time = time.time()
 
             # Create parent batch run if checkpointing
-            checkpointer = self._checkpointer
-            has_checkpointer = checkpointer is not None and workflow_id is not None
             if has_checkpointer:
                 await checkpointer.create_run(
                     workflow_id,
@@ -1068,6 +1119,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         "graph_code_hash": graph.code_hash,
                     },
                 )
+                parent_run_row_created = True
 
             # Resume: find completed child runs to skip by stable input signature.
             completed_runs = await _get_completed_child_runs(checkpointer, workflow_id)
@@ -1076,18 +1128,22 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             existing_limiter = self._get_concurrency_limiter()
             token = self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
             map_stop_signal = get_stop_signal()
-            claimed_indexes: set[int] = set()
         except BaseException as error:
             try:
                 try:
-                    if token is not None:
-                        self._reset_concurrency_limiter(token)
-                    if dispatcher is not None and _parent_span_id is None and dispatcher.active:
-                        await self._shutdown_dispatcher_async(dispatcher)
+                    try:
+                        await settle_created_parent_run_failed()
+                    finally:
+                        if token is not None:
+                            self._reset_concurrency_limiter(token)
+                        if dispatcher is not None and _parent_span_id is None and dispatcher.active:
+                            await self._shutdown_dispatcher_async(dispatcher)
                 finally:
-                    if signal_token is not None:
-                        reset_stop_signal(signal_token)
-                    reservation.release()
+                    try:
+                        if signal_token is not None:
+                            reset_stop_signal(signal_token)
+                    finally:
+                        reservation.release()
             except BaseException as final_error:
                 if map_inspection_session is not None and not map_inspection_session.snapshot().terminal:
                     map_inspection_session.finish(
@@ -1110,6 +1166,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         async def _run_map_item(idx: int, variation_inputs: dict[str, Any]) -> RunResult:
             """Execute one map variation, or restore from checkpoint if completed."""
+            claimed_indexes.add(idx)
             child_workflow_id = f"{workflow_id}/{idx}" if workflow_id else None
             child_inspection_session = (
                 map_inspection_session.claim_item(
@@ -1181,12 +1238,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 )
             return result
 
-        results: list[RunResult] = []
         terminal_error: BaseException | None = None
         try:
             if max_concurrency is None:
                 if map_stop_signal is None or not map_stop_signal.is_set:
-                    claimed_indexes.update(range(len(input_variations)))
                     tasks = [_run_map_item(idx, v) for idx, v in enumerate(input_variations)]
                     gathered = await asyncio.gather(*tasks, return_exceptions=True)
                     for item in gathered:
@@ -1219,7 +1274,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                             idx, v = queue.get_nowait()
                         except asyncio.QueueEmpty:
                             return
-                        claimed_indexes.add(idx)
                         result = await _run_map_item(idx, v)
                         results_list.append(result)
                         order.append(idx)
@@ -1341,17 +1395,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         error=e,
                     )
                 # Mark parent batch run as failed
-                if has_checkpointer:
-                    from hypergraph.checkpointers.types import WorkflowStatus as _WS
-
-                    error_count = sum(1 for r in results if r.status == RunStatus.FAILED)
-                    await checkpointer.update_run_status(
-                        workflow_id,
-                        _WS.FAILED,
-                        duration_ms=total_ms,
-                        node_count=len(results),
-                        error_count=error_count,
-                    )
+                await settle_created_parent_run_failed()
                 if dispatcher is not None and _parent_span_id is None:
                     await self._shutdown_dispatcher_async(dispatcher)
                     dispatcher = None
@@ -1386,19 +1430,25 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         finally:
             try:
                 try:
-                    if _checkpoint_error_sink is not None and not checkpoint_error_forwarding_started:
-                        checkpoint_error_forwarding_started = True
-                        for checkpoint_errors in item_checkpoint_errors:
-                            for checkpoint_error in checkpoint_errors:
-                                _checkpoint_error_sink(checkpoint_error)
-                    if token is not None:
-                        self._reset_concurrency_limiter(token)
-                    if dispatcher is not None and _parent_span_id is None:
-                        await self._shutdown_dispatcher_async(dispatcher)
+                    try:
+                        if terminal_error is not None:
+                            await settle_created_parent_run_failed()
+                    finally:
+                        if _checkpoint_error_sink is not None and not checkpoint_error_forwarding_started:
+                            checkpoint_error_forwarding_started = True
+                            for checkpoint_errors in item_checkpoint_errors:
+                                for checkpoint_error in checkpoint_errors:
+                                    _checkpoint_error_sink(checkpoint_error)
+                        if token is not None:
+                            self._reset_concurrency_limiter(token)
+                        if dispatcher is not None and _parent_span_id is None:
+                            await self._shutdown_dispatcher_async(dispatcher)
                 finally:
-                    if signal_token is not None:
-                        reset_stop_signal(signal_token)
-                    reservation.release()
+                    try:
+                        if signal_token is not None:
+                            reset_stop_signal(signal_token)
+                    finally:
+                        reservation.release()
             except BaseException as final_error:
                 if map_inspection_session is not None and not map_inspection_session.snapshot().terminal:
                     map_inspection_session.finish(
