@@ -1289,6 +1289,37 @@ def test_exact_numpy_arrays_and_pandas_dataframes_stay_bounded_and_structured() 
     assert object_frame.table.rows[0].cells[1].value == 0.9
 
 
+def test_numpy_legacy_internal_module_path_stays_structured() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import sys
+from types import ModuleType
+
+import numpy as np
+
+sys.modules.pop("numpy._core._multiarray_umath", None)
+legacy = ModuleType("numpy.core._multiarray_umath")
+legacy.ndarray = np.ndarray
+sys.modules["numpy.core._multiarray_umath"] = legacy
+
+from hypergraph.runners._shared._inspect_serialization import serialize_value
+
+serialized = serialize_value(np.asarray([1, 2, 3]))
+assert serialized.kind == "sequence", serialized
+assert [item.value for item in serialized.items] == [1, 2, 3]
+""",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_extension_backed_dataframe_is_rejected_without_extension_hooks() -> None:
     calls = {
         "array": 0,
