@@ -970,6 +970,287 @@ def test_active_terminal_channel_without_portable_frame_keeps_native_summary_vis
     page.close()
 
 
+def test_untrusted_map_prefers_real_failure_evidence_over_earlier_status_only_item(
+    browser: Browser,
+) -> None:
+    _, terminal_artifact = _partial_customer_map()
+    status_only_node = replace(
+        _node(0, item_index=0),
+        node_name="inflight",
+        qualified_name="inflight",
+        status="failed",
+        inputs={"id": "wrong-0"},
+    )
+    status_only_run = replace(
+        _run(
+            graph_name="customer_review",
+            status="failed",
+            terminal=True,
+            item_index=0,
+            node_count=0,
+        ),
+        nodes=(status_only_node,),
+    )
+    artifact = replace(
+        terminal_artifact,
+        items=(
+            MapItemInspection(0, "failed", {"id": "wrong-0"}, status_only_run),
+            *terminal_artifact.items[1:],
+        ),
+    )
+    envelope = _envelope(
+        artifact,
+        widget_id="widget-priority-failure",
+        nonce="nonce-priority-failure",
+        sequence=3,
+        state="saved",
+    )
+    stripped = _strip_active_output(render_payload_channel(envelope))
+
+    page = browser.new_page()
+    page.set_content(stripped, wait_until="load")
+    summary = page.locator("section").filter(has_text="Saved snapshot").filter(has_text="partial")
+    failure = summary.locator("details")
+    failure.locator("summary").click()
+    failure_text = failure.inner_text()
+
+    assert "Original item: 1" in failure_text
+    assert "Qualified node: score_customer" in failure_text
+    assert "customer_id=maya-23" in failure_text
+    assert "ValueError: Customer maya-23 requires manual review" in failure_text
+    assert "wrong-0" not in failure_text
+    assert "inflight" not in failure_text
+    page.close()
+
+
+def test_untrusted_map_keeps_run_boundary_error_separate_from_status_only_node(
+    browser: Browser,
+) -> None:
+    status_only_node = replace(
+        _node(0, item_index=0),
+        node_name="inflight",
+        qualified_name="outer/inflight",
+        status="failed",
+        inputs={"id": "wrong-run"},
+    )
+    boundary_error = RuntimeError("item dispatch failed")
+    boundary_run = replace(
+        _run(
+            graph_name="customer_review",
+            status="failed",
+            terminal=True,
+            item_index=0,
+            node_count=0,
+        ),
+        nodes=(status_only_node,),
+        error=boundary_error,
+    )
+    artifact = MapInspection(
+        run_id="map-run-boundary",
+        graph_name="customer_review",
+        workflow_id="workflow-customers",
+        status="failed",
+        map_over=("customer_id",),
+        map_mode="zip",
+        requested_count=1,
+        items=(MapItemInspection(0, "failed", {"id": "wrong-run"}, boundary_run),),
+        unstarted_item_indexes=(),
+        total_duration_ms=10.0,
+        captured=True,
+        terminal=True,
+    )
+    envelope = _envelope(
+        artifact,
+        widget_id="widget-run-boundary",
+        nonce="nonce-run-boundary",
+        sequence=2,
+        state="saved",
+    )
+    stripped = _strip_active_output(render_payload_channel(envelope))
+
+    page = browser.new_page()
+    page.set_content(stripped, wait_until="load")
+    summary = page.locator("section").filter(has_text="Saved snapshot").filter(has_text="failed")
+    failure = summary.locator("details")
+    failure.locator("summary").click()
+    failure_text = failure.inner_text()
+
+    assert "Item 0 failure" in failure_text
+    assert "Exact exception: RuntimeError: item dispatch failed" in failure_text
+    assert "Qualified node:" not in failure_text
+    assert "Captured inputs:" not in failure_text
+    assert "wrong-run" not in failure_text
+    assert "for failed in batch.failures" in failure_text
+    assert "print(failed.error)" in failure_text
+    page.close()
+
+
+def test_untrusted_map_keeps_batch_boundary_error_separate_from_child_facts(
+    browser: Browser,
+) -> None:
+    status_only_node = replace(
+        _node(0, item_index=0),
+        node_name="inflight",
+        qualified_name="outer/inflight",
+        status="failed",
+        inputs={"id": "wrong-batch"},
+    )
+    status_only_run = replace(
+        _run(
+            graph_name="customer_review",
+            status="failed",
+            terminal=True,
+            item_index=0,
+            node_count=0,
+        ),
+        nodes=(status_only_node,),
+    )
+    artifact = MapInspection(
+        run_id="map-batch-boundary",
+        graph_name="customer_review",
+        workflow_id="workflow-customers",
+        status="failed",
+        map_over=("customer_id",),
+        map_mode="zip",
+        requested_count=1,
+        items=(MapItemInspection(0, "failed", {"id": "wrong-batch"}, status_only_run),),
+        unstarted_item_indexes=(),
+        total_duration_ms=10.0,
+        captured=True,
+        terminal=True,
+        error=RuntimeError("batch scheduler unavailable"),
+    )
+    envelope = _envelope(
+        artifact,
+        widget_id="widget-batch-boundary",
+        nonce="nonce-batch-boundary",
+        sequence=2,
+        state="saved",
+    )
+    stripped = _strip_active_output(render_payload_channel(envelope))
+
+    page = browser.new_page()
+    page.set_content(stripped, wait_until="load")
+    summary = page.locator("section").filter(has_text="Saved snapshot").filter(has_text="failed")
+    failure = summary.locator("details")
+    failure.locator("summary").click()
+    failure_text = failure.inner_text()
+
+    assert "Batch failure" in failure_text
+    assert "Exact exception: RuntimeError: batch scheduler unavailable" in failure_text
+    assert "Original item:" not in failure_text
+    assert "Qualified node:" not in failure_text
+    assert "Captured inputs:" not in failure_text
+    assert "wrong-batch" not in failure_text
+    assert "try:" in failure_text
+    assert "runner.map(" in failure_text
+    assert "map_over=" in failure_text
+    assert "except Exception as error:" in failure_text
+    assert "print(batch.error)" not in failure_text
+    page.close()
+
+
+def test_untrusted_terminal_discloses_truncated_exception_preview(
+    browser: Browser,
+) -> None:
+    error = ValueError("x" * 20_001)
+    evidence = FailureEvidence(
+        node_name="score_customer",
+        error=error,
+        inputs={"customer_id": "maya-23"},
+        superstep=0,
+        duration_ms=25.0,
+        graph_name="customer_review",
+        workflow_id="workflow-customers",
+        item_index=None,
+    )
+    failed_node = replace(
+        _node(0),
+        node_name="score_customer",
+        qualified_name="score_customer",
+        status="failed",
+        failure=evidence,
+    )
+    artifact = replace(
+        _run(graph_name="customer_review", status="failed", terminal=True, node_count=0),
+        nodes=(failed_node,),
+        failures=(evidence,),
+        error=error,
+    )
+    envelope = _envelope(
+        artifact,
+        widget_id="widget-truncated-error",
+        nonce="nonce-truncated-error",
+        sequence=2,
+        state="saved",
+    )
+    stripped = _strip_active_output(render_payload_channel(envelope))
+
+    page = browser.new_page()
+    page.set_content(stripped, wait_until="load")
+    summary = page.locator("section").filter(has_text="Saved snapshot").filter(has_text="failed")
+    failure = summary.locator("details")
+    failure.locator("summary").click()
+    failure_text = failure.inner_text()
+
+    assert "Exception preview" in failure_text
+    assert "truncated from 20001 characters" in failure_text
+    assert "ValueError: " + "x" * 100 in failure_text
+    assert "Exact exception" not in failure_text
+    page.close()
+
+
+def test_untrusted_terminal_does_not_duplicate_unavailable_exception_type(
+    browser: Browser,
+) -> None:
+    error = ValueError(object())
+    evidence = FailureEvidence(
+        node_name="score_customer",
+        error=error,
+        inputs={"customer_id": "maya-23"},
+        superstep=0,
+        duration_ms=25.0,
+        graph_name="customer_review",
+        workflow_id="workflow-customers",
+        item_index=None,
+    )
+    failed_node = replace(
+        _node(0),
+        node_name="score_customer",
+        qualified_name="score_customer",
+        status="failed",
+        failure=evidence,
+    )
+    artifact = replace(
+        _run(graph_name="customer_review", status="failed", terminal=True, node_count=0),
+        nodes=(failed_node,),
+        failures=(evidence,),
+        error=error,
+    )
+    envelope = _envelope(
+        artifact,
+        widget_id="widget-unavailable-error",
+        nonce="nonce-unavailable-error",
+        sequence=2,
+        state="saved",
+    )
+    stripped = _strip_active_output(render_payload_channel(envelope))
+
+    page = browser.new_page()
+    page.set_content(stripped, wait_until="load")
+    summary = page.locator("section").filter(has_text="Saved snapshot").filter(has_text="failed")
+    failure = summary.locator("details")
+    failure.locator("summary").click()
+    failure_text = failure.inner_text()
+
+    assert "Exception details unavailable" in failure_text
+    assert "ValueError — exception contains unsupported arguments" in failure_text
+    assert "ValueError: ValueError:" not in failure_text
+    assert failure_text.count("exception contains unsupported arguments") == 1
+    assert "Exact exception" not in failure_text
+    page.close()
+
+
 def test_untrusted_stale_channel_keeps_exact_start_error_in_native_details(
     browser: Browser,
 ) -> None:
@@ -994,8 +1275,13 @@ def test_untrusted_stale_channel_keeps_exact_start_error_in_native_details(
     assert summary.get_by_text("Live inspection unavailable", exact=True).is_visible()
     assert failure.evaluate("element => element.open") is False
     failure.locator("summary").click()
-    assert "RuntimeError: Notebook display setup failed" in failure.inner_text()
-    assert "docs/05-how-to/debug-workflows.md" in failure.inner_text()
+    failure_text = failure.inner_text()
+    assert "RuntimeError: Notebook display setup failed" in failure_text
+    assert "try:" in failure_text
+    assert "runner.run(" in failure_text
+    assert "except Exception as error:" in failure_text
+    assert "result.inspect()" not in failure_text
+    assert "docs/05-how-to/debug-workflows.md" in failure_text
     page.close()
 
 
