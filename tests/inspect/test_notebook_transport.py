@@ -637,6 +637,51 @@ def test_terminal_factory_preserves_saved_truth_without_scheduler_capabilities()
     assert display.handle.updates == []
 
 
+def test_cross_thread_requirement_is_independent_of_delayed_calls() -> None:
+    scheduler = _QueuedOwnerScheduler(
+        supports_delayed_calls=True,
+        supports_cross_thread=False,
+    )
+    unavailable_display = _FakeNotebookDisplay()
+
+    unavailable = open_notebook_inspection_transport(
+        _artifact(),
+        notebook=True,
+        display=unavailable_display,
+        scheduler=scheduler,
+        require_cross_thread=True,
+    )
+    assert unavailable is not None
+    unavailable_session = InspectionSession(
+        graph_name="customer_enrichment",
+        workflow_id="workflow-unavailable",
+        item_index=None,
+    )
+    unavailable.attach(unavailable_session)
+
+    assert unavailable.closed is True
+    assert unavailable_session._subscribers == {}  # type: ignore[attr-defined]
+
+    live_display = _FakeNotebookDisplay()
+    live = open_notebook_inspection_transport(
+        _artifact(),
+        notebook=True,
+        display=live_display,
+        scheduler=scheduler,
+        require_cross_thread=False,
+    )
+    assert live is not None
+    live_session = InspectionSession(
+        graph_name="customer_enrichment",
+        workflow_id="workflow-live",
+        item_index=None,
+    )
+    live.attach(live_session)
+
+    assert live.closed is False
+    assert live_session._subscribers != {}  # type: ignore[attr-defined]
+
+
 def test_delayed_scheduler_falsifier_opens_live_and_delivers_on_owner_thread() -> None:
     unavailable_scheduler = _QueuedOwnerScheduler(
         supports_delayed_calls=False,
