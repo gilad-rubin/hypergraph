@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import builtins
 import dataclasses
 import json
 import math
 import subprocess
 import sys
+import tracemalloc
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import date, datetime, time
 from pathlib import Path
@@ -95,6 +97,116 @@ def test_text_limit_invalid_unicode_and_script_escaping_are_bounded() -> None:
     assert "\u2028" not in encoded
     assert "\u2029" not in encoded
     assert json.loads(encoded)["text"] == "</script>&>\u2028\u2029"
+
+
+@pytest.mark.parametrize(
+    ("binary_type", "empty_preview", "small_preview"),
+    [
+        (bytes, "b''", "b'maya-23'"),
+        (bytearray, "bytearray(b'')", "bytearray(b'maya-23')"),
+    ],
+)
+def test_exact_binary_values_use_a_source_bounded_preview(
+    binary_type: type[bytes] | type[bytearray],
+    empty_preview: str,
+    small_preview: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_repr = builtins.repr
+    whole_value_repr_calls = 0
+
+    def repr_spy(value: object) -> str:
+        nonlocal whole_value_repr_calls
+        if type(value) is binary_type:
+            whole_value_repr_calls += 1
+        return original_repr(value)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(builtins, "repr", repr_spy)
+        empty = serialize_value(binary_type())
+        small = serialize_value(binary_type(b"maya-23"))
+        one_over = serialize_value(binary_type(b"x" * 20_001))
+
+    assert empty == SerializedValue(
+        kind="text",
+        type_name=binary_type.__name__,
+        text=empty_preview,
+        original_size=0,
+    )
+    assert small == SerializedValue(
+        kind="text",
+        type_name=binary_type.__name__,
+        text=small_preview,
+        original_size=7,
+    )
+    assert one_over.kind == "text"
+    assert one_over.type_name == binary_type.__name__
+    assert one_over.original_size == 20_001
+    assert one_over.truncated is True
+    assert one_over.text is not None
+    assert len(one_over.text) <= 20_000
+    assert whole_value_repr_calls == 0
+
+
+@pytest.mark.parametrize("binary_type", [bytes, bytearray])
+def test_exact_multimegabyte_binary_preview_stays_below_one_megabyte_peak(
+    binary_type: type[bytes] | type[bytearray],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = binary_type(bytes(range(256)) * 20_000)
+    original_repr = builtins.repr
+    whole_value_repr_calls = 0
+
+    def repr_spy(candidate: object) -> str:
+        nonlocal whole_value_repr_calls
+        if candidate is value:
+            whole_value_repr_calls += 1
+        return original_repr(candidate)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(builtins, "repr", repr_spy)
+        tracemalloc.start()
+        try:
+            serialized = serialize_value(value)
+            _, peak_bytes = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+    assert serialized.kind == "text"
+    assert serialized.type_name == binary_type.__name__
+    assert serialized.original_size == 5_120_000
+    assert serialized.truncated is True
+    assert serialized.text is not None
+    assert len(serialized.text) <= 20_000
+    assert whole_value_repr_calls == 0
+    assert peak_bytes < 1_000_000
+
+
+def test_binary_subclasses_stay_on_the_single_repr_fallback() -> None:
+    calls = {"bytearray_repr": 0, "bytes_repr": 0}
+
+    class HostileBytes(bytes):
+        def __repr__(self) -> str:
+            calls["bytes_repr"] += 1
+            return "HostileBytes(<redacted>)"
+
+    class HostileBytearray(bytearray):
+        def __repr__(self) -> str:
+            calls["bytearray_repr"] += 1
+            return "HostileBytearray(<redacted>)"
+
+    serialized_bytes = serialize_value(HostileBytes(b"secret"))
+    serialized_bytearray = serialize_value(HostileBytearray(b"secret"))
+
+    assert (serialized_bytes.kind, serialized_bytes.text) == (
+        "text",
+        "HostileBytes(<redacted>)",
+    )
+    assert (serialized_bytearray.kind, serialized_bytearray.text) == (
+        "text",
+        "HostileBytearray(<redacted>)",
+    )
+    assert calls == {"bytearray_repr": 1, "bytes_repr": 1}
 
 
 def test_exceptions_never_invoke_custom_stringification() -> None:

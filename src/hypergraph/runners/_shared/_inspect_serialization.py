@@ -59,6 +59,7 @@ _MAX_PANDAS_BLOCKS = 1_000
 _MAX_PANDAS_PLACEMENTS_TO_SCAN = 10_000
 _SERIALIZATION_BUDGET_EXHAUSTED = "serialization budget exhausted"
 _TYPE_NAME_TRUNCATION_MARKER = "... (truncated)"
+_HEX_DIGITS = b"0123456789abcdef"
 _PY_TPFLAGS_HEAPTYPE = 1 << 9
 _SAFE_ROW_KEY_TYPES = (str, bytes, int, float, bool, type(None))
 _MISSING = object()
@@ -1281,6 +1282,88 @@ def _serialize_text(
     )
 
 
+def _serialize_binary(
+    value: bytes | bytearray,
+    *,
+    budget: _SerializationBudget,
+) -> SerializedValue:
+    value_type = type(value)
+    if value_type is bytes:
+        original_size = bytes.__len__(value)
+        prefix = b"b'"
+        suffix = b"'"
+        type_name = "bytes"
+    else:
+        assert value_type is bytearray
+        original_size = bytearray.__len__(value)
+        prefix = b"bytearray(b'"
+        suffix = b"')"
+        type_name = "bytearray"
+
+    character_limit = min(
+        _MAX_TEXT_CHARACTERS,
+        budget.text_characters_remaining,
+    )
+    if bytes.__len__(prefix) + bytes.__len__(suffix) > character_limit:
+        return _budget_placeholder(value, original_size=original_size)
+
+    preview = bytearray(prefix)
+    source_index = 0
+    source_limit = min(original_size, _MAX_TEXT_CHARACTERS)
+    suffix_size = bytes.__len__(suffix)
+    while source_index < source_limit:
+        source_byte = bytes.__getitem__(value, source_index) if value_type is bytes else bytearray.__getitem__(value, source_index)
+        assert type(source_byte) is int
+
+        if source_byte == 92:
+            escaped = b"\\\\"
+        elif source_byte == 39:
+            escaped = b"\\'"
+        elif source_byte == 9:
+            escaped = b"\\t"
+        elif source_byte == 10:
+            escaped = b"\\n"
+        elif source_byte == 13:
+            escaped = b"\\r"
+        elif 32 <= source_byte <= 126:
+            if bytearray.__len__(preview) + 1 + suffix_size > character_limit:
+                break
+            bytearray.append(preview, source_byte)
+            source_index += 1
+            continue
+        else:
+            if bytearray.__len__(preview) + 4 + suffix_size > character_limit:
+                break
+            bytearray.extend(preview, b"\\x")
+            bytearray.append(
+                preview,
+                bytes.__getitem__(_HEX_DIGITS, source_byte >> 4),
+            )
+            bytearray.append(
+                preview,
+                bytes.__getitem__(_HEX_DIGITS, source_byte & 0x0F),
+            )
+            source_index += 1
+            continue
+
+        if bytearray.__len__(preview) + bytes.__len__(escaped) + suffix_size > character_limit:
+            break
+        bytearray.extend(preview, escaped)
+        source_index += 1
+
+    bytearray.extend(preview, suffix)
+    text = bytearray.decode(preview, "ascii")
+    if not budget.claim_text(str.__len__(text)):
+        return _budget_placeholder(value, original_size=original_size)
+    return SerializedValue(
+        kind="text",
+        type_name=type_name,
+        text=text,
+        original_size=original_size,
+        truncated=source_index < original_size,
+    )
+
+
 def _serialize_number(
     value: int | float,
     *,
@@ -1771,6 +1854,8 @@ def _serialize_value(
         )
     if value_type is str:
         return _serialize_text(value, type_name="str", budget=budget)
+    if value_type is bytes or value_type is bytearray:
+        return _serialize_binary(value, budget=budget)
     if any(value_type is exception_type for exception_type in _SAFE_EXCEPTION_TYPES):
         args = BaseException.args.__get__(value, value_type)
         if type(args) is not tuple:

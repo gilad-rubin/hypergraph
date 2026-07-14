@@ -220,6 +220,18 @@ built-in `tuple`, ordinary dataclasses, recognized Pydantic models, exact NumPy
 `ndarray`, exact pandas `DataFrame`, and a read-only mapping proxy
 (`MappingProxyType`) backed by an exact `dict`.
 
+Exact built-in `bytes` and `bytearray` values use a separate bounded scalar
+path. Hypergraph reads only a prefix that can fit in the 20,000-character
+preview, reports the exact original byte count, and marks the preview truncated
+when bytes remain. It never creates the whole binary `repr` before applying the
+limit, so temporary inspection memory stays bounded as the source grows.
+
+- **Before:** inspecting a 5.12 MB payload first created a multi-megabyte Python
+  `repr`, and the displayed original size counted repr characters rather than
+  source bytes.
+- **After:** the preview remains at most 20,000 characters, reports
+  `5,120,000 bytes`, and is explicitly truncated without a whole-value `repr`.
+
 For the NumPy, pandas, and Pydantic adapters, trust comes from canonical class
 provenance rather than mutable public aliases. Reassigning public names such as
 `numpy.ndarray`, `pandas.DataFrame`, or `pydantic.BaseModel` therefore cannot
@@ -248,12 +260,12 @@ implementation safety boundary, not an all-version guarantee. DataFrame
 - **After:** unrecognized storage says `unsupported DataFrame storage`; only
   proven ExtensionArray-backed data or axes receive the narrower placeholder.
 
-For unsupported subclasses and custom protocols—including objects that
-advertise mapping, sequence, model, array, or DataFrame hooks—Hypergraph uses
-one whole-value bounded `repr` fallback for each rendered occurrence and does
-not call their advertised traversal hooks. A proxy backed by a custom mapping
-uses the same whole-value bounded `repr` fallback instead of traversing that
-mapping.
+For unsupported subclasses and custom protocols—including `bytes` and
+`bytearray` subclasses, plus objects that advertise mapping, sequence, model,
+array, or DataFrame hooks—Hypergraph uses one whole-value bounded `repr`
+fallback for each rendered occurrence and does not call their advertised
+traversal hooks. A proxy backed by a custom mapping uses the same whole-value
+bounded `repr` fallback instead of traversing that mapping.
 
 `repr` is Python user code. Hypergraph cannot prevent or undo its side effects,
 and the same object can reach the fallback during multiple live snapshots. Any
