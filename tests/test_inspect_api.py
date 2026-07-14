@@ -79,8 +79,8 @@ def test_sync_map_inspection_keeps_completed_siblings_after_failure_and_falsifie
         error_handling="continue",
     )
 
-    artifact = first.inspect().artifact
-    changed_artifact = changed.inspect().artifact
+    artifact = first.inspect()._artifact
+    changed_artifact = changed.inspect()._artifact
 
     assert artifact.status == "partial"
     assert artifact.requested_count == 3
@@ -113,7 +113,7 @@ def test_sync_start_map_inspection_returns_the_same_settled_artifact_without_han
         inspect=True,
     )
     result = handle.result(raise_on_failure=False)
-    artifact = result.inspect().artifact
+    artifact = result.inspect()._artifact
 
     assert {name for name in vars(type(handle)) if not name.startswith("_")} == {
         "done",
@@ -125,8 +125,8 @@ def test_sync_start_map_inspection_returns_the_same_settled_artifact_without_han
         {"doubled": 6},
         {"doubled": 10},
     ]
-    assert result[0].inspect().artifact is artifact.items[0].run
-    assert result[1].inspect().artifact is artifact.items[1].run
+    assert result[0].inspect()._artifact is artifact.items[0].run
+    assert result[1].inspect()._artifact is artifact.items[1].run
 
 
 def test_sync_stopped_map_inspection_has_claimed_items_and_sparse_unstarted_metadata() -> None:
@@ -158,7 +158,7 @@ def test_sync_stopped_map_inspection_has_claimed_items_and_sparse_unstarted_meta
         release_second.set()
 
     result = handle.result(raise_on_failure=False)
-    artifact = result.inspect().artifact
+    artifact = result.inspect()._artifact
 
     assert entered == [0, 1]
     assert artifact.status == "stopped"
@@ -246,7 +246,7 @@ def test_sync_map_inspect_option_is_boolean_and_named_graph_input_uses_values() 
     )
 
     assert result["echoed"] == ["graph-owned value:1", "graph-owned value:2"]
-    assert [item.requested_inputs for item in result.inspect().artifact.items] == [
+    assert [item.requested_inputs for item in result.inspect()._artifact.items] == [
         {"inspect": "graph-owned value", "value": 1},
         {"inspect": "graph-owned value", "value": 2},
     ]
@@ -286,7 +286,7 @@ def test_map_without_capture_is_inspectable_but_does_not_invent_item_values() ->
         {"secret_input": ["map-secret-a", "map-secret-b"]},
         map_over="secret_input",
     )
-    artifact = result.inspect().artifact
+    artifact = result.inspect()._artifact
     html = result.inspect()._repr_html_()
 
     assert artifact.captured is False
@@ -325,7 +325,7 @@ def test_degraded_map_reconstructs_original_indexes_around_sparse_unstarted_item
         (0, 2),
     )
 
-    artifact = curtailed.inspect().artifact
+    artifact = curtailed.inspect()._artifact
 
     assert artifact.requested_count == 4
     assert artifact.unstarted_item_indexes == (0, 2)
@@ -348,7 +348,7 @@ def test_empty_inspected_map_returns_a_terminal_captured_batch_artifact() -> Non
         map_over="value",
         inspect=True,
     )
-    artifact = result.inspect().artifact
+    artifact = result.inspect()._artifact
 
     assert result.run_id is None
     assert artifact.run_id is None
@@ -441,7 +441,7 @@ def test_sync_nested_inspection_uses_slash_paths_and_real_child_run_identity() -
     outer = Graph([inner.as_node(name="child")], name="outer")
 
     result = SyncRunner().run(outer, {"value": 3}, inspect=True)
-    artifact = result.inspect().artifact
+    artifact = result.inspect()._artifact
     by_name = {item.qualified_name: item for item in artifact.nodes}
 
     assert set(by_name) == {"child", "child/inner_leaf"}
@@ -467,7 +467,7 @@ def test_sync_nested_failure_is_recorded_once_at_the_qualified_leaf() -> None:
         inspect=True,
         error_handling="continue",
     )
-    artifact = result.inspect().artifact
+    artifact = result.inspect()._artifact
 
     assert [failure.node_name for failure in artifact.failures] == ["child/fail_leaf"]
     assert artifact.failures[0].inputs == {"value": 7}
@@ -497,7 +497,7 @@ def test_inspected_node_does_not_capture_an_unrelated_runner() -> None:
         inspect=True,
     )
 
-    assert [item.qualified_name for item in result.inspect().artifact.nodes] == ["call_side_runner"]
+    assert [item.qualified_name for item in result.inspect()._artifact.nodes] == ["call_side_runner"]
 
 
 @pytest.mark.asyncio
@@ -555,7 +555,7 @@ async def test_async_map_inspection_keeps_original_indexes_when_items_finish_out
         await asyncio.wait_for(finished[item_index].wait(), timeout=5)
 
     result = await asyncio.wait_for(pending, timeout=5)
-    artifact = result.inspect().artifact
+    artifact = result.inspect()._artifact
 
     assert physical_completion_order == [1, 2, 0]
     assert [item.item_index for item in artifact.items] == [0, 1, 2]
@@ -586,7 +586,7 @@ async def test_async_map_inspect_option_is_boolean_and_named_graph_input_uses_va
     )
 
     assert result["echoed"] == ["graph-owned value:1", "graph-owned value:2"]
-    assert [item.requested_inputs for item in result.inspect().artifact.items] == [
+    assert [item.requested_inputs for item in result.inspect()._artifact.items] == [
         {"inspect": "graph-owned value", "value": 1},
         {"inspect": "graph-owned value", "value": 2},
     ]
@@ -612,7 +612,7 @@ async def test_async_start_map_inspection_returns_the_same_settled_artifact_with
         inspect=True,
     )
     result = await handle.result(raise_on_failure=False)
-    artifact = result.inspect().artifact
+    artifact = result.inspect()._artifact
 
     assert {name for name in vars(type(handle)) if not name.startswith("_")} == {
         "done",
@@ -624,8 +624,8 @@ async def test_async_start_map_inspection_returns_the_same_settled_artifact_with
         {"doubled": 6},
         {"doubled": 10},
     ]
-    assert result[0].inspect().artifact is artifact.items[0].run
-    assert result[1].inspect().artifact is artifact.items[1].run
+    assert result[0].inspect()._artifact is artifact.items[0].run
+    assert result[1].inspect()._artifact is artifact.items[1].run
 
 
 @pytest.mark.asyncio
@@ -702,7 +702,7 @@ async def test_async_map_inspection_separates_restored_items_from_fresh_capture(
         workflow_id="map-inspection-restore",
         inspect=True,
     )
-    artifact = resumed.inspect().artifact
+    artifact = resumed.inspect()._artifact
 
     assert executed == [20]
     assert artifact.status == "completed"
@@ -717,7 +717,7 @@ async def test_async_map_inspection_separates_restored_items_from_fresh_capture(
     assert artifact.items[0].run.nodes[0].values_captured is False
     assert artifact.items[0].run.nodes[0].inputs is None
     assert artifact.items[0].run.nodes[0].outputs is None
-    assert artifact.items[1].run is resumed[1].inspect().artifact
+    assert artifact.items[1].run is resumed[1].inspect()._artifact
     assert artifact.items[1].run.captured is True
     assert artifact.items[1].run.nodes[-1].outputs == {"answer": "fresh:40"}
     assert restored_only_secret not in resumed.inspect()._repr_html_()
@@ -738,7 +738,7 @@ async def test_async_inspection_marks_the_interrupt_boundary_paused() -> None:
         {"value": 3},
         inspect=True,
     )
-    artifact = result.inspect().artifact
+    artifact = result.inspect()._artifact
     by_name = {item.qualified_name: item for item in artifact.nodes}
 
     assert artifact.status == "paused"
@@ -761,7 +761,7 @@ async def test_async_nested_interrupt_marks_container_and_leaf_paused() -> None:
     outer = Graph([inner.as_node(name="child")], name="outer-pause")
 
     result = await AsyncRunner().run(outer, {"value": 7}, inspect=True)
-    artifact = result.inspect().artifact
+    artifact = result.inspect()._artifact
     by_name = {item.qualified_name: item for item in artifact.nodes}
 
     assert artifact.status == "paused"
@@ -806,7 +806,7 @@ async def test_async_resume_inspection_separates_restored_metadata_from_fresh_va
         workflow_id="inspect-resume",
         inspect=True,
     )
-    artifact = resumed.inspect().artifact
+    artifact = resumed.inspect()._artifact
     by_name = {item.qualified_name: item for item in artifact.nodes}
 
     assert artifact.captured is True
@@ -876,7 +876,7 @@ def test_sync_checkpoint_started_inspection_restores_metadata_without_values(tmp
         if checkpointer._sync_conn is not None:
             checkpointer._sync_conn.close()
 
-    artifact = resumed.inspect().artifact
+    artifact = resumed.inspect()._artifact
     by_name = {item.qualified_name: item for item in artifact.nodes}
 
     assert artifact.captured is True
@@ -921,7 +921,7 @@ def test_inspection_does_not_report_completed_after_cache_write_failure() -> Non
         inspect=True,
         error_handling="continue",
     )
-    artifact = result.inspect().artifact
+    artifact = result.inspect()._artifact
 
     assert artifact.status == "failed"
     assert len(artifact.nodes) == 1
@@ -959,7 +959,7 @@ def test_sync_inspection_completes_only_after_state_application(monkeypatch, cac
             error_handling="continue",
         )
 
-    failed_artifact = failed.inspect().artifact
+    failed_artifact = failed.inspect()._artifact
     assert failed_artifact.status == "failed"
     assert [item.status for item in failed_artifact.nodes] == ["failed"]
     assert failed_artifact.nodes[0].failure is None
@@ -967,7 +967,7 @@ def test_sync_inspection_completes_only_after_state_application(monkeypatch, cac
     assert failed.node_failures == ()
 
     succeeded = runner.run(graph, {"value": 6}, inspect=True)
-    successful_node = succeeded.inspect().artifact.nodes[0]
+    successful_node = succeeded.inspect()._artifact.nodes[0]
     assert successful_node.status == "completed"
     assert successful_node.outputs == {"answer": 12}
     assert successful_node.cached is cache_enabled
@@ -1010,7 +1010,7 @@ async def test_async_inspection_settles_all_executors_after_state_application_fa
             error_handling="continue",
         )
 
-    failed_artifact = failed.inspect().artifact
+    failed_artifact = failed.inspect()._artifact
     assert failed_artifact.status == "failed"
     assert [item.status for item in failed_artifact.nodes] == ["failed", "failed"]
     assert all(item.failure is None for item in failed_artifact.nodes)
@@ -1019,7 +1019,7 @@ async def test_async_inspection_settles_all_executors_after_state_application_fa
     assert all(item.status != "running" for item in failed_artifact.nodes)
 
     succeeded = await runner.run(graph, {"value": 6}, inspect=True)
-    successful_nodes = succeeded.inspect().artifact.nodes
+    successful_nodes = succeeded.inspect()._artifact.nodes
     assert [item.status for item in successful_nodes] == ["completed", "completed"]
     assert {item.qualified_name: item.outputs for item in successful_nodes} == {
         "calculate_left": {"left": 12},

@@ -21,6 +21,7 @@ from hypergraph.runners._shared._inspect_html import (
     render_run_inspection,
 )
 from hypergraph.runners._shared.results import FailureEvidence
+from hypergraph.runners.inspection import InspectionDisplay
 
 
 @pytest.fixture(scope="module")
@@ -29,6 +30,59 @@ def browser() -> Iterator[Browser]:
         instance = runtime.chromium.launch(headless=True)
         yield instance
         instance.close()
+
+
+def test_public_display_remains_interactive_inside_sandboxed_srcdoc(
+    browser: Browser,
+) -> None:
+    node = NodeInspection(
+        run_id="run-customer-23",
+        span_id="span-load",
+        node_name="load_customer",
+        qualified_name="load_customer",
+        graph_name="customer_enrichment",
+        item_index=None,
+        superstep=0,
+        sequence=0,
+        status="completed",
+        values_captured=True,
+        inputs={"customer_id": "maya-23"},
+        outputs={"segment": "enterprise"},
+        started_at_ms=1_000.0,
+        ended_at_ms=1_084.0,
+        duration_ms=84.0,
+    )
+    artifact = RunInspection(
+        run_id="run-customer-23",
+        graph_name="customer_enrichment",
+        workflow_id="workflow-customers",
+        item_index=None,
+        status="completed",
+        nodes=(node,),
+        failures=(),
+        total_duration_ms=84.0,
+        captured=True,
+        terminal=True,
+    )
+    requests: list[str] = []
+    errors: list[Exception] = []
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    page.on("request", lambda request: requests.append(request.url))
+    page.on("pageerror", lambda error: errors.append(error))
+    rendered = InspectionDisplay(artifact)._repr_html_()
+    assert isinstance(rendered, str)
+    page.set_content(rendered)
+
+    frame = page.frame_locator('iframe[title="Hypergraph execution inspection"]')
+    root = frame.locator('[data-hypergraph-inspect="run"]')
+    assert root.get_by_role("heading", name="customer_enrichment").is_visible()
+    graph_tab = root.get_by_role("tab", name="Graph")
+    graph_tab.click()
+
+    assert graph_tab.get_attribute("aria-selected") == "true"
+    assert requests == []
+    assert errors == []
+    page.close()
 
 
 def test_run_ladder_navigates_relative_timeline_values_and_failure_evidence(

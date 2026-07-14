@@ -613,7 +613,7 @@ async def test_sync_and_async_map_hostile_repr_settles_claimed_items_and_keeps_o
         inspect=True,
     )
     assert [result["kind"] for result in sync_plain] == ["int", "_HostileRepr", "int"]
-    assert sync_plain.inspect().artifact.status == "completed"
+    assert sync_plain.inspect()._artifact.status == "completed"
     assert "repr failed (RuntimeError)" in sync_plain.inspect()._repr_html_()
 
     async_plain_value = _HostileRepr(RuntimeError("ASYNC-PLAIN-REPR"))
@@ -625,7 +625,7 @@ async def test_sync_and_async_map_hostile_repr_settles_claimed_items_and_keeps_o
         inspect=True,
     )
     assert [result["kind"] for result in async_plain] == ["int", "_HostileRepr", "int"]
-    assert async_plain.inspect().artifact.status == "completed"
+    assert async_plain.inspect()._artifact.status == "completed"
     assert "repr failed (RuntimeError)" in async_plain.inspect()._repr_html_()
 
     sync_error = RuntimeError("SYNC-MAP-SIGNATURE-REPR")
@@ -839,8 +839,8 @@ def test_direct_sync_run_and_map_open_once_and_preserve_settled_identity(
     assert len(factory.calls) == 2
     assert isinstance(factory.calls[0].artifact, RunInspection)
     assert isinstance(factory.calls[1].artifact, MapInspection)
-    assert run_transport.artifacts[-1] is run_result.inspect().artifact
-    assert map_transport.artifacts[-1] is map_result.inspect().artifact
+    assert run_transport.artifacts[-1] is run_result.inspect()._artifact
+    assert map_transport.artifacts[-1] is map_result.inspect()._artifact
     assert run_result["doubled"] == 14
     assert [item["doubled"] for item in map_result] == [6, 10]
 
@@ -862,8 +862,8 @@ async def test_direct_async_run_and_map_open_once_and_preserve_settled_identity(
 
     assert len(factory.calls) == 2
     assert all(call.loop is asyncio.get_running_loop() for call in factory.calls)
-    assert run_transport.artifacts[-1] is run_result.inspect().artifact
-    assert map_transport.artifacts[-1] is map_result.inspect().artifact
+    assert run_transport.artifacts[-1] is run_result.inspect()._artifact
+    assert map_transport.artifacts[-1] is map_result.inspect()._artifact
 
 
 def test_sync_background_run_and_map_preopen_on_caller_and_keep_handle_surface(
@@ -891,8 +891,8 @@ def test_sync_background_run_and_map_preopen_on_caller_and_keep_handle_surface(
     assert factory.transports[1].attach_threads
     assert factory.transports[1].attach_threads[0] != caller
     assert any(thread != caller for thread in factory.transports[0].publication_threads)
-    assert factory.transports[0].artifacts[-1] is run_result.inspect().artifact
-    assert factory.transports[1].artifacts[-1] is map_result.inspect().artifact
+    assert factory.transports[0].artifacts[-1] is run_result.inspect()._artifact
+    assert factory.transports[1].artifacts[-1] is map_result.inspect()._artifact
     for handle in (run_handle, map_handle):
         assert {name for name in vars(type(handle)) if not name.startswith("_")} == {
             "done",
@@ -928,8 +928,8 @@ async def test_async_background_run_and_map_preopen_on_calling_loop(
     assert all(call.require_cross_thread is False for call in factory.calls)
     assert factory.transports[0].attach_loops == [loop]
     assert factory.transports[1].attach_loops == [loop]
-    assert factory.transports[0].artifacts[-1] is run_result.inspect().artifact
-    assert factory.transports[1].artifacts[-1] is map_result.inspect().artifact
+    assert factory.transports[0].artifacts[-1] is run_result.inspect()._artifact
+    assert factory.transports[1].artifacts[-1] is map_result.inspect()._artifact
     for handle in (run_handle, map_handle):
         assert {name for name in vars(type(handle)) if not name.startswith("_")} == {
             "done",
@@ -958,7 +958,7 @@ def test_sync_background_generated_workflow_identity_precedes_node_publication(
 
         assert transport.artifacts[0].workflow_id is None
         assert result.workflow_id is not None
-        assert result.inspect().artifact.workflow_id == result.workflow_id
+        assert result.inspect()._artifact.workflow_id == result.workflow_id
         assert first_node_snapshot.workflow_id == result.workflow_id
     finally:
         asyncio.run(checkpointer.close())
@@ -984,7 +984,7 @@ async def test_async_background_generated_workflow_identity_precedes_node_public
 
         assert transport.artifacts[0].workflow_id is None
         assert result.workflow_id is not None
-        assert result.inspect().artifact.workflow_id == result.workflow_id
+        assert result.inspect()._artifact.workflow_id == result.workflow_id
         assert first_node_snapshot.workflow_id == result.workflow_id
     finally:
         await checkpointer.close()
@@ -1039,7 +1039,7 @@ def test_sync_mapped_nested_inspection_keeps_leaf_item_truth_in_one_widget(
         {"value": [2, -1, 5]},
         inspect=True,
     )
-    artifact = result.inspect().artifact
+    artifact = result.inspect()._artifact
     leaves = [item for item in artifact.nodes if item.qualified_name == "child/double_or_fail"]
 
     assert result["doubled"] == [4, None, 10]
@@ -1094,7 +1094,7 @@ async def test_async_mapped_nested_inspection_keeps_leaf_item_truth_in_one_widge
         {"value": [2, -1, 5]},
         inspect=True,
     )
-    artifact = result.inspect().artifact
+    artifact = result.inspect()._artifact
     leaves = [item for item in artifact.nodes if item.qualified_name == "child/double_or_fail"]
 
     assert result["doubled"] == [4, None, 10]
@@ -1358,8 +1358,8 @@ async def test_inspect_false_and_factory_failure_are_observational(
 
     assert calls == 2
     assert sync_plain["doubled"] == async_plain["doubled"] == 4
-    assert sync_captured.inspect().artifact.terminal is True
-    assert async_captured.inspect().artifact.terminal is True
+    assert sync_captured.inspect()._artifact.terminal is True
+    assert async_captured.inspect()._artifact.terminal is True
 
 
 @pytest.mark.asyncio
@@ -1380,10 +1380,10 @@ async def test_empty_sync_and_async_maps_settle_saved_artifact(
     )
 
     assert len(factory.calls) == 2
-    assert factory.transports[0].artifacts[-1] is sync_result.inspect().artifact
-    assert factory.transports[1].artifacts[-1] is async_result.inspect().artifact
-    assert sync_result.inspect().artifact.terminal is True
-    assert async_result.inspect().artifact.terminal is True
+    assert factory.transports[0].artifacts[-1] is sync_result.inspect()._artifact
+    assert factory.transports[1].artifacts[-1] is async_result.inspect()._artifact
+    assert sync_result.inspect()._artifact.terminal is True
+    assert async_result.inspect()._artifact.terminal is True
 
 
 def test_direct_and_background_validation_failures_settle_exact_pending_shell(
@@ -1532,7 +1532,7 @@ def double(value: int) -> int:
     return value * 2
 result = SyncRunner().run(Graph([double], name='clean-import'), {'value': 3}, inspect=True)
 assert result['answer'] == 6
-assert result.inspect().artifact.terminal is True
+assert result.inspect()._artifact.terminal is True
 """
     completed = subprocess.run(
         [sys.executable, "-c", script],
@@ -1747,10 +1747,10 @@ async def test_plain_and_nonnotebook_modes_keep_exact_sync_async_capture(
     terminal_sync = SyncRunner().run(_graph("terminal-sync"), {"value": 4}, inspect=True)
     terminal_async = await AsyncRunner().run(_graph("terminal-async"), {"value": 5}, inspect=True)
 
-    assert plain_sync.inspect().artifact.nodes[-1].outputs == {"doubled": 4}
-    assert plain_async.inspect().artifact.nodes[-1].outputs == {"doubled": 6}
-    assert terminal_sync.inspect().artifact.nodes[-1].outputs == {"doubled": 8}
-    assert terminal_async.inspect().artifact.nodes[-1].outputs == {"doubled": 10}
+    assert plain_sync.inspect()._artifact.nodes[-1].outputs == {"doubled": 4}
+    assert plain_async.inspect()._artifact.nodes[-1].outputs == {"doubled": 6}
+    assert terminal_sync.inspect()._artifact.nodes[-1].outputs == {"doubled": 8}
+    assert terminal_async.inspect()._artifact.nodes[-1].outputs == {"doubled": 10}
 
 
 @pytest.mark.asyncio

@@ -127,11 +127,9 @@ class TestExplicitDisplayStaysRich:
 # Sweep: every _repr_html_ in the package obeys the mode
 # ---------------------------------------------------------------------------
 
-# Classes whose _repr_html_ is only reachable via an explicit user call
-# (`graph.visualize()` or `result.inspect()`); the contract keeps these rich
-# even in plain mode.
+# Classes whose _repr_html_ is only reachable via an explicit user call and
+# whose contract keeps them rich even in plain mode.
 EXPLICIT_DISPLAY_EXCEPTIONS = {
-    "hypergraph.runners.inspection.InspectionDisplay",
     "hypergraph.viz.widget._VizCellOutput",
 }
 
