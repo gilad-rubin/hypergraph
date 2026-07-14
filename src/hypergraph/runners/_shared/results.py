@@ -154,9 +154,13 @@ class RunResult:
     def inspect(self) -> InspectionDisplay[Any]:
         """Return an explicit rich inspection view for this settled result.
 
+        The method returns one display value and emits no hidden notebook output.
         Runs created with ``inspect=True`` include shallow successful-node
         input/output snapshots. Ordinary and restored results remain
         inspectable but say truthfully which values were not captured.
+        Unsupported values use a bounded ``repr`` fallback. ``repr`` is Python user code
+        and may have side effects; raised exceptions become typed
+        placeholders without changing the run status.
         """
         from hypergraph.runners._shared._inspect import degraded_run_inspection
 
@@ -521,7 +525,13 @@ class MapResult:
         return [r.get(key, default) for r in self.results]
 
     def inspect(self) -> InspectionDisplay[Any]:
-        """Return an explicit rich inspection view for this settled batch."""
+        """Return an explicit rich inspection view for this settled batch.
+
+        The method returns one display value and emits no hidden notebook output.
+        Unsupported values use a bounded ``repr`` fallback. ``repr`` is Python user code
+        and may have side effects; raised exceptions become typed
+        placeholders without changing the batch status.
+        """
         from hypergraph.runners._shared._inspect import degraded_map_inspection
 
         artifact = self._inspection

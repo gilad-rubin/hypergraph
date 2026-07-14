@@ -331,6 +331,13 @@ Passing any blocking runner control absent from the `start_*()` signature
 directly raises `TypeError` before launch; use `values={...}` when the name
 belongs to the graph rather than the runner.
 
+With a checkpointer, omitting `workflow_id` from `start_run()` assigns a
+generated workflow ID. It appears on the settled result and in its inspection
+view; the control-only handle gains no identity or presentation field.
+Inspection binds that ID before restored state or node evidence is published.
+`start_map()` persistence still requires an explicit `workflow_id`; omitting
+it keeps map inspection process-local.
+
 ```python
 handle = runner.start_run(graph, {"order_id": "order-100"}, inspect=True)
 do_other_work()
@@ -989,6 +996,13 @@ instead of producing an empty result or a handle that never settles. Passing a
 blocking runner control absent from the `start_*()` signature directly raises
 `TypeError` before launch; use `values={...}` when that name is a graph input.
 
+With a checkpointer, omitting `workflow_id` from `start_run()` assigns a
+generated workflow ID. It appears on the settled result and in its inspection
+view; the control-only handle gains no identity or presentation field.
+Inspection binds that ID before restored state or node evidence is published.
+`start_map()` persistence still requires an explicit `workflow_id`; omitting
+it keeps map inspection process-local.
+
 ### capabilities
 
 ```python
@@ -1248,8 +1262,11 @@ they execute through the core node seam.
 def inspect(self) -> InspectionDisplay[Any]: ...
 ```
 
-Return one explicit rich display for this settled result. Calling the method
-does not mutate the result and does not display anything by itself.
+Return one explicit rich display for this settled result. Hypergraph does not
+assign inspection state back onto the result, and the method does not emit a
+hidden notebook output. A notebook displays the returned value only when the
+host would ordinarily display that expression. Rendering may still execute
+user `repr` code under the bounded fallback described below.
 
 ```python
 # Before: read status, log, and failure separately.
@@ -1274,6 +1291,15 @@ contain sensitive values. Rendering enforces per-value limits of depth 6, 100
 mapping items, 200 sequence items, tables of 200 rows by 20 columns, and 20,000
 text characters. See [Debug Workflows](../05-how-to/debug-workflows.md) for the
 full privacy and live-to-saved contract.
+
+Structured rendering is limited to exact built-in `dict`, `list`, and `tuple`
+values, ordinary dataclasses, recognized Pydantic models, exact NumPy
+`ndarray` values, and exact pandas `DataFrame` values. Unsupported subclasses
+and custom protocols use a whole-value bounded `repr` fallback instead of
+calling advertised traversal hooks. `repr` is Python user code: Hypergraph
+cannot prevent or undo its side effects, and live rendering may call it for
+multiple snapshots. Raised `repr` exceptions become bounded typed placeholders
+without changing the run status or exception evidence.
 
 ### Progressive Disclosure
 

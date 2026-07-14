@@ -139,7 +139,10 @@ class SyncRunner(SyncRunnerTemplate):
             event_processors: Optional processors for execution events.
             show_progress: Override runner-level progress display.
             checkpoint: Optional checkpoint from which to resume.
-            workflow_id: Optional workflow identifier.
+            workflow_id: Optional workflow identifier. With a checkpointer,
+                omission assigns a generated workflow ID to the settled result;
+                inspection binds it before restored state or node evidence is
+                published.
             **input_values: Graph input shorthand.
 
         Returns:

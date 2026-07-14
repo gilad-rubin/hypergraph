@@ -86,9 +86,11 @@ result = await AsyncRunner().run(graph, values, inspect=True)
 result.inspect()
 ```
 
-Calling `.inspect()` is explicit and has no hidden display side effect. In a
-notebook, the returned display value renders when it is the final expression.
-In a script, assign or return it like any other value.
+Calling `.inspect()` is explicit: it returns one display value and does not
+emit a hidden notebook output. In a notebook, the returned value renders when
+it is the final expression. In a script, assign or return it like any other
+value. Rendering captured objects can still execute their bounded `repr`
+fallback, as described under sensitivity below.
 
 ### Find a Mapped Failure by Original Index
 
@@ -155,6 +157,25 @@ do not reconstruct successful inputs or outputs that were never captured in
 the current process. Freshly executed nodes can still show newly captured
 values.
 
+### Identify a Generated Background Run
+
+When a checkpointer-backed `start_run()` omits `workflow_id`, Hypergraph
+generates one. The generated workflow ID appears on the settled result and in
+its inspection view; the handle stays control-only:
+
+```python
+handle = runner.start_run(graph, values, inspect=True)
+result = handle.result(raise_on_failure=False)
+
+print(result.workflow_id)  # "run-..."
+result.inspect()
+```
+
+The sync and async runners bind inspection to that ID before restored state or
+node evidence is published. For an async handle, await `handle.result(...)`.
+`start_map()` persistence still requires an explicit `workflow_id`; omitting
+it gives the batch current-process inspection only.
+
 ### Understand Degraded Views
 
 `.inspect()` also works when the execution did not use `inspect=True`. It
@@ -189,8 +210,21 @@ The 20,000-character ceiling is also aggregate across captured strings and
 JSON number text in that value, rather than restarting for every nested leaf.
 When either global budget is exhausted, the affected leaf says
 `serialization budget exhausted` and its ancestors are marked truncated. A
-serialization or hostile `repr()` failure likewise becomes a bounded typed
-placeholder and never changes the workflow outcome.
+serialization failure or raised `repr()` exception likewise becomes a bounded
+typed placeholder and does not replace the run status.
+
+Structured inspection deliberately recognizes only exact inert containers and
+safe concrete adapters: exact built-in `dict`, exact built-in `list`, exact
+built-in `tuple`, ordinary dataclasses, recognized Pydantic models, exact NumPy
+`ndarray`, and exact pandas `DataFrame`. For unsupported subclasses and custom
+protocols—including objects that advertise mapping, sequence, model, array,
+or DataFrame hooks—Hypergraph uses one whole-value bounded `repr` fallback per
+snapshot and does not call their advertised traversal hooks.
+
+`repr` is Python user code. Hypergraph cannot prevent or undo its side effects,
+and the same object can reach the fallback during multiple live snapshots. Any
+raised `repr` exceptions become bounded typed placeholders and do not replace
+the run status or exception evidence.
 
 Sparse row tables use the bounded union of keys across captured rows instead
 of treating the first row as the whole schema:

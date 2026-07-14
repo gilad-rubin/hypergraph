@@ -48,6 +48,17 @@
 
 ### Fixed
 
+- **Observational inspect serialization** — structured rendering now traverses
+  only exact built-in containers, ordinary dataclasses, recognized Pydantic
+  models, and exact NumPy/pandas adapters. Unsupported subclasses and custom
+  protocols use a bounded whole-value `repr` fallback; raised `repr` errors
+  become placeholders without replacing the run status.
+
+- **Background inspect workflow identity** — checkpointer-backed sync and async
+  `start_run(..., inspect=True)` calls that omit `workflow_id` now bind their
+  generated ID before restored or node evidence is published. The settled
+  result and inspection view agree while handles remain control-only.
+
 - **Checkpointer run-filter parity** — async Memory/SQLite and SQLite sync reads now compose `graph_name`, inclusive UTC-normalized `since`, status, and parent filters before limit. Omitting `parent_run_id` returns all runs; explicit `None` returns top-level runs only. `count_runs()` uses the same three-state parent contract.
 
 - **Source-derived fork IDs** — before, `runner.run(..., fork_from="job-1")` generated an unrelated `run-...` ID; now it yields `job-1-fork-<hex>`. Explicit targets remain exact, retries keep generic runner IDs, and missing/nested implicit sources fail without creating a run.
