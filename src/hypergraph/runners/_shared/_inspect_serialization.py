@@ -376,6 +376,14 @@ def _pandas_storage_is_numpy_backed(value: object) -> bool:
         "pandas._libs.internals",
         "Block",
     )
+    index_type = _loaded_class(
+        "pandas.core.indexes.base",
+        "Index",
+    )
+    range_index_type = _loaded_class(
+        "pandas.core.indexes.range",
+        "RangeIndex",
+    )
     ndarray_type = _loaded_class(
         "numpy._core._multiarray_umath",
         "ndarray",
@@ -388,6 +396,8 @@ def _pandas_storage_is_numpy_backed(value: object) -> bool:
             manager_base,
             numpy_block_type,
             block_base,
+            index_type,
+            range_index_type,
             ndarray_type,
         )
     ):
@@ -404,13 +414,15 @@ def _pandas_storage_is_numpy_backed(value: object) -> bool:
     if manager_namespace is None:
         return False
     blocks_descriptor = manager_namespace.get("blocks", _MISSING)
-    if type(blocks_descriptor) is not GetSetDescriptorType:
+    axes_descriptor = manager_namespace.get("axes", _MISSING)
+    if type(blocks_descriptor) is not GetSetDescriptorType or type(axes_descriptor) is not GetSetDescriptorType:
         return False
     try:
         blocks = GetSetDescriptorType.__get__(blocks_descriptor, manager, manager_type)
+        axes = GetSetDescriptorType.__get__(axes_descriptor, manager, manager_type)
     except (AttributeError, TypeError):
         return False
-    if type(blocks) is not tuple:
+    if type(blocks) is not tuple or tuple.__len__(blocks) > _MAX_TABLE_COLUMNS or type(axes) is not list or list.__len__(axes) != 2:
         return False
 
     block_namespace = _class_namespace(block_base)
@@ -431,6 +443,22 @@ def _pandas_storage_is_numpy_backed(value: object) -> bool:
         except (AttributeError, TypeError):
             return False
         if type(values) is not ndarray_type:
+            return False
+
+    for axis in list.__iter__(axes):
+        axis_storage = _stored_instance_dict(axis)
+        if axis_storage is None:
+            return False
+        axis_type = type(axis)
+        if axis_type is index_type:
+            axis_values = dict.get(axis_storage, "_data", _MISSING)
+            if type(axis_values) is not ndarray_type:
+                return False
+        elif axis_type is range_index_type:
+            axis_range = dict.get(axis_storage, "_range", _MISSING)
+            if type(axis_range) is not range:
+                return False
+        else:
             return False
     return True
 
