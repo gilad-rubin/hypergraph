@@ -415,6 +415,103 @@ def test_row_table_schema_does_not_compare_invalid_unhashable_keys() -> None:
     assert equality_calls == 0
 
 
+def test_custom_row_mapping_item_failure_stays_in_its_cell() -> None:
+    class PartiallyHostileRow(Mapping[str, int]):
+        def __len__(self) -> int:
+            return 2
+
+        def __iter__(self) -> Iterator[str]:
+            yield "available"
+            yield "hostile"
+
+        def __getitem__(self, key: str) -> int:
+            if key == "available":
+                return 7
+            raise RuntimeError("item access failed")
+
+    serialized = serialize_value([PartiallyHostileRow()])
+
+    assert serialized.kind == "table"
+    assert serialized.table is not None
+    assert [column.text for column in serialized.table.columns] == ["available", "hostile"]
+    assert serialized.table.rows[0].cells[0].value == 7
+    assert serialized.table.rows[0].cells[1].reason == "item access failed (RuntimeError)"
+
+
+def test_row_table_schema_never_hashes_or_compares_hostile_hashable_keys() -> None:
+    hash_calls = 0
+    equality_calls = 0
+
+    class CollisionKey:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        def __hash__(self) -> int:
+            nonlocal hash_calls
+            hash_calls += 1
+            return 0
+
+        def __eq__(self, other: object) -> bool:
+            nonlocal equality_calls
+            equality_calls += 1
+            return isinstance(other, CollisionKey) and self.label == other.label
+
+        def __repr__(self) -> str:
+            return self.label
+
+    rows = [{CollisionKey(f"row-{row}-column-{column}"): row * 100 + column for column in range(20)} for row in range(200)]
+    hash_calls = 0
+    equality_calls = 0
+
+    serialized = serialize_value(rows)
+
+    assert serialized.kind == "table"
+    assert serialized.table is not None
+    assert len(serialized.table.columns) == 20
+    assert serialized.table.original_column_count == 20
+    assert serialized.table.original_column_count_exact is False
+    assert serialized.table.columns_truncated is True
+    assert hash_calls == 0
+    assert equality_calls == 0
+
+
+def test_semantically_equal_unsafe_keys_do_not_overstate_column_lower_bound() -> None:
+    hash_calls = 0
+    equality_calls = 0
+
+    class EqualKey:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        def __hash__(self) -> int:
+            nonlocal hash_calls
+            hash_calls += 1
+            return 0
+
+        def __eq__(self, other: object) -> bool:
+            nonlocal equality_calls
+            equality_calls += 1
+            return isinstance(other, EqualKey) and self.label == other.label
+
+        def __repr__(self) -> str:
+            return self.label
+
+    rows = [{EqualKey("customer_id"): "maya-23"}, {EqualKey("customer_id"): "ari-12"}]
+    hash_calls = 0
+    equality_calls = 0
+
+    serialized = serialize_value(rows)
+
+    assert serialized.kind == "table"
+    assert serialized.table is not None
+    assert len(serialized.table.columns) == 2
+    assert serialized.table.original_column_count == 1
+    assert serialized.table.original_column_count_exact is False
+    assert serialized.table.columns_truncated is True
+    assert hash_calls == 0
+    assert equality_calls == 0
+
+
 def test_dataframe_and_array_ducks_are_sliced_before_materialization() -> None:
     class FrameSlice:
         def __init__(self, frame: FakeFrame) -> None:
@@ -623,3 +720,49 @@ def test_array_shape_dimensions_cannot_inject_unbounded_json_numbers() -> None:
     assert serialized.kind == "placeholder"
     assert serialized.reason == "array dimension exceeds platform container size"
     assert len(encoded.encode("utf-8")) < 1_000
+
+
+def test_js_unsafe_size_metadata_crosses_the_wire_as_exact_decimal_strings() -> None:
+    unsafe_count = 2**53 + 1
+    safe_boundary = 2**53 - 1
+
+    class BoundedMatrix:
+        def tolist(self) -> list[list[int]]:
+            return [[1]]
+
+    class HugeMatrix:
+        shape = (unsafe_count, unsafe_count)
+
+        def __getitem__(self, key: object) -> BoundedMatrix:
+            return BoundedMatrix()
+
+        def tolist(self) -> list[list[int]]:
+            raise AssertionError("serializer must materialize only the bounded slice")
+
+    class BoundedVector:
+        def tolist(self) -> list[int]:
+            return [1]
+
+    class HugeVector:
+        shape = (unsafe_count,)
+
+        def __getitem__(self, key: object) -> BoundedVector:
+            return BoundedVector()
+
+        def tolist(self) -> list[int]:
+            raise AssertionError("serializer must materialize only the bounded slice")
+
+    matrix_wire = serialized_value_to_wire(serialize_value(HugeMatrix()))
+    vector_wire = serialized_value_to_wire(serialize_value(HugeVector()))
+
+    assert matrix_wire["original_size"] == str(unsafe_count)
+    table = matrix_wire["table"]
+    assert isinstance(table, dict)
+    assert table["original_row_count"] == str(unsafe_count)
+    assert table["original_column_count"] == str(unsafe_count)
+    assert vector_wire["original_size"] == str(unsafe_count)
+    assert serialized_value_to_wire(SerializedValue(kind="sequence", type_name="list", original_size=safe_boundary))["original_size"] == safe_boundary
+    assert serialized_value_to_wire(SerializedValue(kind="sequence", type_name="list", original_size=safe_boundary + 1))["original_size"] == str(
+        safe_boundary + 1
+    )
+    assert serialized_value_to_wire(serialize_value(list(range(201))))["original_size"] == 201

@@ -213,7 +213,7 @@
 
   function serializedCount(value) {
     if (!value) return 0;
-    if (typeof value.original_size === "number") return value.original_size;
+    if (typeof value.original_size === "number" || typeof value.original_size === "string") return value.original_size;
     if (Array.isArray(value.entries)) return value.entries.length;
     if (Array.isArray(value.items)) return value.items.length;
     return 0;
@@ -235,7 +235,8 @@
 
   function addTruncation(parent, value) {
     if (!value || !value.truncated) return;
-    var original = typeof value.original_size === "number" ? "; original size " + value.original_size : "";
+    var hasOriginalSize = typeof value.original_size === "number" || typeof value.original_size === "string";
+    var original = hasOriginalSize ? "; original size " + value.original_size : "";
     parent.appendChild(element("div", "hg-inspect-truncated", "Truncated" + original + "."));
   }
 
@@ -263,7 +264,7 @@
   function renderSequence(value, path) {
     var details = element("details", "hg-inspect-value");
     var count = serializedCount(value);
-    details.appendChild(element("summary", "", value.type_name + " · " + count + " item" + (count === 1 ? "" : "s")));
+    details.appendChild(element("summary", "", value.type_name + " · " + count + " item" + (count === 1 || count === "1" ? "" : "s")));
     bindDetailsState(details, path);
     var body = element("div", "hg-inspect-value-body");
     var items = Array.isArray(value.items) ? value.items : [];
@@ -281,9 +282,9 @@
   function renderTable(value, path) {
     var details = element("details", "hg-inspect-value");
     var table = value.table || {};
-    var rowCount = Number(table.original_row_count || 0);
-    var columnCount = Number(table.original_column_count || 0);
-    var columnCountLabel = table.original_column_count_exact === false ? "≥" + columnCount : String(columnCount);
+    var rowCount = typeof table.original_row_count === "number" || typeof table.original_row_count === "string" ? String(table.original_row_count) : "0";
+    var columnCount = typeof table.original_column_count === "number" || typeof table.original_column_count === "string" ? String(table.original_column_count) : "0";
+    var columnCountLabel = table.original_column_count_exact === false ? "≥" + columnCount : columnCount;
     details.appendChild(element("summary", "", rowCount + " × " + columnCountLabel + " table"));
     bindDetailsState(details, path);
     var body = element("div", "hg-inspect-value-body");
@@ -339,7 +340,7 @@
     if (value.kind === "mapping") {
       var details = element("details", "hg-inspect-value");
       var count = serializedCount(value);
-      details.appendChild(element("summary", "", value.type_name + " · " + count + " entr" + (count === 1 ? "y" : "ies")));
+      details.appendChild(element("summary", "", value.type_name + " · " + count + " entr" + (count === 1 || count === "1" ? "y" : "ies")));
       bindDetailsState(details, path);
       var body = element("div", "hg-inspect-value-body");
       body.appendChild(renderMappingRows(value, path));
@@ -375,7 +376,7 @@
     }
     var details = element("details", "hg-inspect-capture");
     var count = serializedCount(value);
-    details.appendChild(element("summary", "", label + " · " + count + " value" + (count === 1 ? "" : "s")));
+    details.appendChild(element("summary", "", label + " · " + count + " value" + (count === 1 || count === "1" ? "" : "s")));
     bindDetailsState(details, path);
     var body = element("div", "hg-inspect-capture-body");
     if (value.kind === "mapping") body.appendChild(renderMappingRows(value, path));

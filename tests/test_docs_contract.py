@@ -404,6 +404,8 @@ def test_inspect_mode_docs_mirror_public_contract() -> None:
         "20,000 characters",
         "per top-level value",
         "lower bound",
+        "safely comparable",
+        "JavaScript's safe integer range",
         "serialization budget exhausted",
         'values={"inspect": "graph-owned"}',
         "batch.failures",

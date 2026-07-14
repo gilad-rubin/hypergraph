@@ -207,12 +207,14 @@ rows = [{}, {"customer_id": "maya-23", "risk": 0.9}]
 
 The displayed table still stops at 20 columns. Its source column count is
 exact when every source row was captured and each row could be fully scanned
-within the 20-key-per-row safety cap. Otherwise the count is a proven lower
-bound: for example, `2 × ≥21 table`. The view marks those columns truncated
-instead of presenting `21` as an exact count that Hypergraph did not prove.
+within the 20-key-per-row safety cap, and its keys are safely comparable
+without executing user code. Otherwise the count is a proven lower bound: for
+example, `2 × ≥21 table`. The view marks those columns truncated instead of
+presenting `21` as an exact count that Hypergraph did not prove.
 
 Truncated values report their original size or proven lower bound when it can
-be determined.
+be determined. Counts above JavaScript's safe integer range cross the notebook
+boundary as exact decimal text instead of being rounded by the browser.
 
 Set `HYPERGRAPH_DISPLAY=plain` to suppress automatic notebook display while
 keeping capture and explicit `.inspect()` available:

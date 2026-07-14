@@ -39,10 +39,12 @@ _MAX_TABLE_COLUMNS = 20
 _MAX_DEPTH = 6
 _MAX_TYPE_NAME_CHARACTERS = 48
 _MAX_CONTAINER_SIZE = sys.maxsize
+_MAX_JS_SAFE_INTEGER = 2**53 - 1
 _MAX_SERIALIZED_NODES = _MAX_TABLE_ROWS * _MAX_TABLE_COLUMNS + _MAX_MAPPING_ITEMS
 _MAX_SERIALIZED_TEXT_CHARACTERS = _MAX_TEXT_CHARACTERS
 _SERIALIZATION_BUDGET_EXHAUSTED = "serialization budget exhausted"
 _TYPE_NAME_TRUNCATION_MARKER = "... (truncated)"
+_SAFE_ROW_KEY_TYPES = frozenset({str, bytes, int, float, bool, type(None)})
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,10 +117,21 @@ class _SerializationBudget:
 
 
 @dataclass(frozen=True, slots=True)
+class _RowTableItem:
+    """One captured row item or its localized access failure."""
+
+    key: object
+    value: object = None
+    failure: SerializedValue | None = None
+    missing: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class _RowTableSchema:
     """Displayed row keys plus exact-or-lower-bound source width truth."""
 
     displayed_keys: tuple[object, ...]
+    row_items: tuple[tuple[_RowTableItem, ...], ...]
     original_column_count: int
     original_column_count_exact: bool
 
@@ -231,26 +244,16 @@ def _serialize_number(
     return SerializedValue(kind="number", type_name=type_name, value=value)
 
 
-def _append_unique_key(
-    key: object,
-    *,
-    ordered_keys: list[object],
-    hashable_keys: set[object],
-    identity_keys: set[int],
-) -> bool:
-    try:
-        if key in hashable_keys:
-            return True
-        hashable_keys.add(key)
-    except BaseException:
-        key_id = id(key)
-        if key_id in identity_keys:
-            return False
-        identity_keys.add(key_id)
-        ordered_keys.append(key)
-        return False
-    ordered_keys.append(key)
-    return True
+def _is_safe_row_key(key: object) -> bool:
+    return type(key) in _SAFE_ROW_KEY_TYPES
+
+
+def _row_keys_match(left: object, right: object) -> bool:
+    if left is right:
+        return True
+    if _is_safe_row_key(left) and _is_safe_row_key(right):
+        return left == right
+    return False
 
 
 def _row_table_schema(
@@ -260,8 +263,9 @@ def _row_table_schema(
     original_row_count: int,
 ) -> tuple[_RowTableSchema | None, SerializedValue | None]:
     ordered_keys: list[object] = []
-    hashable_keys: set[object] = set()
+    safe_keys: set[object] = set()
     identity_keys: set[int] = set()
+    captured_rows: list[tuple[_RowTableItem, ...]] = []
     largest_row_count = 0
     exact = original_row_count == len(source_rows)
 
@@ -279,8 +283,12 @@ def _row_table_schema(
         largest_row_count = max(largest_row_count, row_count)
         if row_count > _MAX_TABLE_COLUMNS:
             exact = False
+        captured_count = min(row_count, _MAX_TABLE_COLUMNS)
         try:
-            row_keys = tuple(islice(iter(source_row), min(row_count, _MAX_TABLE_COLUMNS)))
+            if isinstance(source_row, dict):
+                row_items = tuple(_RowTableItem(key=key, value=item) for key, item in islice(dict.items(source_row), captured_count))
+            else:
+                row_keys = tuple(islice(iter(source_row), captured_count))
         except BaseException as error:
             return None, _failed_value(
                 value,
@@ -288,22 +296,49 @@ def _row_table_schema(
                 error=error,
                 original_size=original_row_count,
             )
-        if len(row_keys) != min(row_count, _MAX_TABLE_COLUMNS):
+        if not isinstance(source_row, dict):
+            mutable_row_items: list[_RowTableItem] = []
+            for key in row_keys:
+                try:
+                    item = source_row[key]
+                except KeyError:
+                    mutable_row_items.append(_RowTableItem(key=key, missing=True))
+                except BaseException as error:
+                    mutable_row_items.append(
+                        _RowTableItem(
+                            key=key,
+                            failure=_failed_value(
+                                source_row,
+                                operation="item access",
+                                error=error,
+                            ),
+                        )
+                    )
+                else:
+                    mutable_row_items.append(_RowTableItem(key=key, value=item))
+            row_items = tuple(mutable_row_items)
+        captured_rows.append(row_items)
+        if len(row_items) != captured_count:
             exact = False
-        for key in row_keys:
-            key_was_counted_semantically = _append_unique_key(
-                key,
-                ordered_keys=ordered_keys,
-                hashable_keys=hashable_keys,
-                identity_keys=identity_keys,
-            )
-            if not key_was_counted_semantically:
+        for row_item in row_items:
+            key = row_item.key
+            if _is_safe_row_key(key):
+                if key in safe_keys:
+                    continue
+                safe_keys.add(key)
+            else:
                 exact = False
+                key_id = id(key)
+                if key_id in identity_keys:
+                    continue
+                identity_keys.add(key_id)
+            ordered_keys.append(key)
 
-    original_column_count = len(ordered_keys) if exact else max(len(ordered_keys), largest_row_count)
+    original_column_count = len(safe_keys) if exact else max(len(safe_keys), largest_row_count)
     return (
         _RowTableSchema(
             displayed_keys=tuple(ordered_keys[:_MAX_TABLE_COLUMNS]),
+            row_items=tuple(captured_rows),
             original_column_count=original_column_count,
             original_column_count_exact=exact,
         ),
@@ -343,13 +378,14 @@ def _serialize_row_table(
         if budget.work_exhausted:
             break
     rows: list[SerializedTableRow] = []
-    for source_row in source_rows:
-        assert isinstance(source_row, Mapping)
+    for source_row, row_items in zip(source_rows, schema.row_items, strict=True):
         cells: list[SerializedValue] = []
         for key in column_keys[: len(columns)]:
-            try:
-                cell = source_row[key]
-            except KeyError:
+            matched_item = next(
+                (item for item in row_items if _row_keys_match(item.key, key)),
+                None,
+            )
+            if matched_item is None:
                 if budget.claim_node():
                     cells.append(
                         SerializedValue(
@@ -363,15 +399,24 @@ def _serialize_row_table(
                     cells.append(_budget_placeholder(source_row))
                     break
                 continue
-            except BaseException as error:
-                cells.append(
-                    _failed_value(
-                        source_row,
-                        operation="item access",
-                        error=error,
-                    )
-                )
+            if matched_item.failure is not None:
+                cells.append(matched_item.failure)
                 continue
+            if matched_item.missing:
+                if budget.claim_node():
+                    cells.append(
+                        SerializedValue(
+                            kind="placeholder",
+                            type_name="missing",
+                            truncated=True,
+                            reason="missing table cell",
+                        )
+                    )
+                else:
+                    cells.append(_budget_placeholder(source_row))
+                    break
+                continue
+            cell = matched_item.value
             cells.append(
                 _serialize_value(
                     cell,
@@ -975,6 +1020,12 @@ def serialize_value(value: object) -> SerializedValue:
         return _failed_value(value, operation="serialization", error=error)
 
 
+def _count_to_wire(count: int) -> int | str:
+    if count <= _MAX_JS_SAFE_INTEGER:
+        return count
+    return str(count)
+
+
 def serialized_value_to_wire(value: SerializedValue) -> dict[str, JSONValue]:
     """Cross the explicit boundary from typed nodes to JSON-compatible data."""
 
@@ -987,7 +1038,7 @@ def serialized_value_to_wire(value: SerializedValue) -> dict[str, JSONValue]:
     if value.text is not None:
         wire["text"] = value.text
     if value.original_size is not None:
-        wire["original_size"] = value.original_size
+        wire["original_size"] = _count_to_wire(value.original_size)
     if value.truncated:
         wire["truncated"] = True
     if value.reason is not None:
@@ -1006,8 +1057,8 @@ def serialized_value_to_wire(value: SerializedValue) -> dict[str, JSONValue]:
         table: dict[str, JSONValue] = {
             "columns": [serialized_value_to_wire(column) for column in value.table.columns],
             "rows": [[serialized_value_to_wire(cell) for cell in row.cells] for row in value.table.rows],
-            "original_row_count": value.table.original_row_count,
-            "original_column_count": value.table.original_column_count,
+            "original_row_count": _count_to_wire(value.table.original_row_count),
+            "original_column_count": _count_to_wire(value.table.original_column_count),
             "original_column_count_exact": value.table.original_column_count_exact,
             "rows_truncated": value.table.rows_truncated,
             "columns_truncated": value.table.columns_truncated,

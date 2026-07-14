@@ -706,6 +706,46 @@ def test_inexact_heterogeneous_table_width_renders_as_a_lower_bound(browser: Bro
     page.close()
 
 
+def test_js_unsafe_table_counts_render_as_exact_decimal_text(browser: Browser) -> None:
+    unsafe_count = 2**53 + 1
+
+    class BoundedMatrix:
+        def tolist(self) -> list[list[int]]:
+            return [[1]]
+
+    class HugeMatrix:
+        shape = (unsafe_count, unsafe_count)
+
+        def __getitem__(self, key: object) -> BoundedMatrix:
+            return BoundedMatrix()
+
+        def tolist(self) -> list[list[int]]:
+            raise AssertionError("renderer must materialize only the bounded slice")
+
+    node = replace(_node(0), outputs={"huge_table": HugeMatrix()})
+    artifact = replace(
+        _run(status="completed", terminal=True, node_count=1),
+        nodes=(node,),
+    )
+    envelope = _envelope(
+        artifact,
+        widget_id="widget-js-unsafe-count",
+        nonce="nonce-js-unsafe-count",
+        sequence=1,
+        state="saved",
+    )
+    page = browser.new_page()
+    _mount(page, envelope)
+    frame = _frame(page, "widget-js-unsafe-count")
+
+    summaries = frame.locator("summary").all_text_contents()
+    assert f"{unsafe_count} × {unsafe_count} table" in summaries
+    assert "9007199254740992" not in " ".join(summaries)
+    truncations = frame.locator(".hg-inspect-truncated").all_text_contents()
+    assert any(f"original size {unsafe_count}" in message for message in truncations)
+    page.close()
+
+
 @pytest.mark.parametrize("width", [1280, 360])
 def test_transport_is_offline_inert_and_fits_the_viewport(
     browser: Browser,
