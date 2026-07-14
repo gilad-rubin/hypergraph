@@ -163,7 +163,12 @@ def _safe_type_name(value: object) -> str:
     return f"{bounded_name[:prefix_size]}{_TYPE_NAME_TRUNCATION_MARKER}"
 
 
-def _loaded_class(module_name: str, class_name: str) -> type | None:
+def _loaded_class(
+    module_name: str,
+    class_name: str,
+    *,
+    declared_module_name: str | None = None,
+) -> type | None:
     sys_namespace = object.__getattribute__(sys, "__dict__")
     modules = dict.get(sys_namespace, "modules")
     if type(modules) is not dict:
@@ -175,13 +180,28 @@ def _loaded_class(module_name: str, class_name: str) -> type | None:
     candidate = dict.get(namespace, class_name)
     try:
         type.__getattribute__(candidate, "__mro__")
+        declared_name = type.__getattribute__(candidate, "__name__")
+        declared_module = type.__getattribute__(candidate, "__module__")
     except (AttributeError, TypeError):
+        return None
+    expected_module = declared_module_name or module_name
+    if type(declared_name) is not str or declared_name != class_name or type(declared_module) is not str or declared_module != expected_module:
         return None
     return candidate  # type: ignore[return-value]
 
 
-def _is_exact_loaded_type(value: object, module_name: str, class_name: str) -> bool:
-    loaded_class = _loaded_class(module_name, class_name)
+def _is_exact_loaded_type(
+    value: object,
+    module_name: str,
+    class_name: str,
+    *,
+    declared_module_name: str | None = None,
+) -> bool:
+    loaded_class = _loaded_class(
+        module_name,
+        class_name,
+        declared_module_name=declared_module_name,
+    )
     return loaded_class is not None and type(value) is loaded_class
 
 
@@ -337,6 +357,82 @@ def _stored_pydantic_items(
         )
     )
     return source_items, original_size
+
+
+def _pandas_storage_is_numpy_backed(value: object) -> bool:
+    manager_type = _loaded_class(
+        "pandas.core.internals.managers",
+        "BlockManager",
+    )
+    manager_base = _loaded_class(
+        "pandas._libs.internals",
+        "BlockManager",
+    )
+    numpy_block_type = _loaded_class(
+        "pandas.core.internals.blocks",
+        "NumpyBlock",
+    )
+    block_base = _loaded_class(
+        "pandas._libs.internals",
+        "Block",
+    )
+    ndarray_type = _loaded_class(
+        "numpy._core._multiarray_umath",
+        "ndarray",
+        declared_module_name="numpy",
+    )
+    if any(
+        candidate is None
+        for candidate in (
+            manager_type,
+            manager_base,
+            numpy_block_type,
+            block_base,
+            ndarray_type,
+        )
+    ):
+        return False
+
+    storage = _stored_instance_dict(value)
+    if storage is None:
+        return False
+    manager = dict.get(storage, "_mgr", _MISSING)
+    if type(manager) is not manager_type:
+        return False
+
+    manager_namespace = _class_namespace(manager_base)
+    if manager_namespace is None:
+        return False
+    blocks_descriptor = manager_namespace.get("blocks", _MISSING)
+    if type(blocks_descriptor) is not GetSetDescriptorType:
+        return False
+    try:
+        blocks = GetSetDescriptorType.__get__(blocks_descriptor, manager, manager_type)
+    except (AttributeError, TypeError):
+        return False
+    if type(blocks) is not tuple:
+        return False
+
+    block_namespace = _class_namespace(block_base)
+    if block_namespace is None:
+        return False
+    values_descriptor = block_namespace.get("values", _MISSING)
+    if type(values_descriptor) is not GetSetDescriptorType:
+        return False
+    for block in tuple.__iter__(blocks):
+        if type(block) is not numpy_block_type:
+            return False
+        try:
+            values = GetSetDescriptorType.__get__(
+                values_descriptor,
+                block,
+                numpy_block_type,
+            )
+        except (AttributeError, TypeError):
+            return False
+        if type(values) is not ndarray_type:
+            return False
+    return True
 
 
 def _bounded_string_repr_size(value: str, characters_remaining: int) -> int | None:
@@ -1148,7 +1244,12 @@ def _serialize_value(
                 active_ids=active_ids,
                 budget=budget,
             )
-    if _is_exact_loaded_type(value, "pandas", "DataFrame"):
+    if _is_exact_loaded_type(value, "pandas.core.frame", "DataFrame"):
+        if not _pandas_storage_is_numpy_backed(value):
+            return _placeholder(
+                value,
+                reason="unsupported extension-backed DataFrame",
+            )
         object_id = id(value)
         if object_id in active_ids:
             return _placeholder(value, reason="recursive reference")
@@ -1162,7 +1263,12 @@ def _serialize_value(
             )
         finally:
             active_ids.discard(object_id)
-    if _is_exact_loaded_type(value, "numpy", "ndarray"):
+    if _is_exact_loaded_type(
+        value,
+        "numpy._core._multiarray_umath",
+        "ndarray",
+        declared_module_name="numpy",
+    ):
         object_id = id(value)
         if object_id in active_ids:
             return _placeholder(value, reason="recursive reference")
