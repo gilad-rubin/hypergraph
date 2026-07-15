@@ -1,160 +1,93 @@
-# HyperTable — Incremental Persistent Tables
+# HyperTable
 
-HyperTable turns a Hypergraph graph into a persistent, incremental table. Each graph input becomes a source column, each node output becomes a derived column. A content-addressed fingerprint on each row decides whether to re-derive on the next insert — unchanged rows are skipped.
-
-## When to Use HyperTable
-
-Use HyperTable when your pipeline:
-
-- **Re-runs frequently** and you want to skip unchanged work (nightly ingestion, continuous sync)
-- **Processes collections with sub-items** — documents with pages, videos with utterances, datasets with rows — where each sub-item should be tracked independently
-- **Calls expensive external services** (LLMs, embedding APIs) and you can't afford to re-call them for unchanged inputs
-- **Needs partial failure tolerance** — one failed item shouldn't discard work done for all the others
-
-## The Core Idea
-
-A regular Hypergraph graph is stateless — run it, get output, forget:
+HyperTable is a Hypergraph graph with a durable table behind it. Graph inputs
+become source columns, node outputs become derived columns, and each domain
+entity has a stable identity.
 
 ```python
-result = runner.run(graph, text="hello world")
-# result["embedding"] = [0.1, 0.2, ...]
-# ... gone after the process exits
-```
+from hypergraph import Graph, node
+from hypergraph.materialization import LanceDBStore
 
-HyperTable adds identity, storage, and incrementality:
 
-```python
-from hypergraph import node, Graph
-from hypergraph.materialization import HyperTable
-from hypergraph.runners import SyncRunner
-
-@node(output_name="clean_text")
-def clean(text: str) -> str:
+@node(output_name="normalized")
+def normalize(text: str) -> str:
     return text.strip().lower()
 
-@node(output_name="embedding")
-def embed(clean_text: str, embedder) -> list[float]:
-    return embedder.embed(clean_text)
 
-# Same graph, but persistent and incremental
-docs = HyperTable(
-    [clean, embed],
-    identity="doc_id",
-    store=store,
-).bind(embedder=my_embedder).with_runner(SyncRunner())
-
-# First insert: runs the graph, stores all columns
-docs.insert(doc_id="d1", text="hello world")
-
-# Second insert, same data: skipped (fingerprint match)
-docs.insert(doc_id="d1", text="hello world")
-
-# Changed source: re-derives clean_text and embedding
-docs.insert(doc_id="d1", text="hello universe")
-
-# Swap embedder: fingerprint changes (includes component config hash)
-docs2 = docs.bind(embedder=better_embedder)
-docs2.insert(doc_id="d1", text="hello universe")  # re-embeds
-```
-
-## What Triggers Re-Derivation
-
-The row fingerprint is `hash(source values + node definition hashes + component config hashes)`. Any of these changing triggers re-derivation:
-
-| What changed | Example | Effect |
-|---|---|---|
-| Source column value | `text="hello"` → `text="goodbye"` | Row re-derives |
-| Node function body | Edit the `clean()` function | All rows re-derive on next insert/sync |
-| Component config | Swap `Embedder("v1")` for `Embedder("v2")` | All rows re-derive on next insert/sync |
-| Nothing | Same source, same code, same components | Row skipped |
-
-The row fingerprint is a fast skip/re-derive check. Underneath it, each derived column also carries its own per-column provenance hash, which stops a re-derivation cascade as soon as an upstream value comes out unchanged — see [Fingerprints and Provenance](api-reference.md#fingerprints-and-provenance) for the three hashes and a live example.
-
-## Child Tables
-
-When a single item expands into many sub-items (a document into pages, a video into utterances), use `map_over` to create a child table:
-
-```python
-from typing import TypedDict
-
-class Page(TypedDict):
-    page_id: str
-    text: str
-
-@node(output_name="pages")
-def split(raw_text: str) -> list[Page]:
-    chunks = raw_text.split("\n\n")
-    return [Page(page_id=f"p{i}", text=c) for i, c in enumerate(chunks)]
-
-@node(output_name="embedding")
-def embed_page(text: str, embedder) -> list[float]:
-    return embedder.embed(text)
-
-@node(output_name="raw_text")
-def extract_text(content: str) -> str:
-    return content  # your real extractor: PDF/HTML/etc. -> text
-
-page_graph = Graph([embed_page], name="process_page")
-
-docs = HyperTable(
-    [extract_text, split,
-     page_graph.as_node().map_over("pages", identity="page_id")],
-    identity="doc_id",
-    store=store,
-).bind(embedder=my_embedder).with_runner(SyncRunner())
-```
-
-Each page gets its own row in a child table, its own fingerprint (scoped to the child graph), and its own skip logic. Re-inserting a document only re-processes pages whose inputs changed.
-
-## Error Isolation
-
-By default, a failed derivation raises an exception (backward compatible). Set `on_error="store"` to write error rows instead — successful siblings are unaffected:
-
-```python
-docs = HyperTable(
-    [split, page_graph.as_node().map_over("pages", identity="page_id")],
-    identity="doc_id",
-    store=store,
-    on_error="store",
-).bind(embedder=my_embedder).with_runner(SyncRunner())
-
-# Page 3 fails (rate limit), pages 1-2 and 4-5 succeed
-docs.insert(doc_id="d1", text="...")
-
-# Inspect errors
-errors = docs.filter_children(
-    where=[("_status", "eq", "error")],
-    include_status=True,
+pipeline = Graph([normalize], name="documents")
+documents = pipeline.as_table(
+    identity="document_id",
+    store=LanceDBStore("./data/documents"),
 )
-# [{'page_id': 'p3', '_status': 'error', '_error': 'RateLimitError: ...'}]
 
-# Retry — only the errored page re-runs, successful pages are skipped
-docs.insert(doc_id="d1", text="...")
+receipt = documents.insert(document_id="d-1", text="  Hello  ")
+assert receipt.completed
+assert documents.get("d-1")["normalized"] == "hello"
 ```
 
-## How It Fits Together
+The graph remains the compute artifact. `as_table()` adds identity, storage,
+row convergence, and typed write receipts.
 
-```text
-                    HyperTable
-                   ┌───────────────────────────────┐
- insert()/sync()   │  Graph         TableStore      │
- ─────────────────►│  (compute) ──► (persistence)   │
-                   │                                │
- get()/filter()    │                                │
- ◄─────────────────│          read from store       │
-                   └───────────────────────────────┘
+## Rows converge; runs resume
+
+A checkpointer owns an execution. Resuming it re-enters that execution with
+its saved state. HyperTable owns a row. Updating it starts derivation against
+the row's stored facts and the current graph.
+
+That distinction produces these rules:
+
+- unchanged sources, code, and configuration are skipped;
+- changed facts re-derive only affected columns;
+- an answer remains valid while the provenance of its question is unchanged;
+- changed upstream facts invalidate a stale answer and ask again;
+- cycles and shared execution state belong to checkpointer-backed runs.
+
+## Pauses live in the table
+
+An interrupt is a node executed by a human. Its `answer_name` is a derived
+answer column whose value arrives through `update()`.
+
+```python
+receipt = await uploads.insert(upload_id="u-41", path="/in/a.pdf")
+
+if receipt.paused:
+    show(receipt.pause.value)
+    answer_key = receipt.pause.response_key
+    receipt = await uploads.update("u-41", **{answer_key: "keep-both"})
+
+assert receipt.completed
 ```
 
-- **Graph** defines the computation (nodes, edges, auto-wiring)
-- **Store** handles persistence (LanceDB, or any `TableStore` implementation)
-- **Runner** executes the graph (`SyncRunner` or `AsyncRunner`)
-- **Identity** is the stable key for each row — explicit, not convention-based
-- **Fingerprint** decides skip vs re-derive — automatic, no manual cache invalidation
-- **A named index (`create_index`) is a query spec, not a materialized table** — it records which table, which vector column, and which row slice to search; the store searches that column directly, so there is no separate index artifact to keep in sync
+A paused derivation is persisted as a waiting row carrying the question
+envelope. `waiting()` rebuilds the same `PauseInfo` shape used by runner
+results, so serving code reads `paused`, `pause.value`, and
+`pause.response_key` identically in both modes.
 
-## Next Steps
+Public row reads contain data columns only. Use receipts, `waiting()`, and
+`errors()` for derivation state.
 
-- [Getting Started](getting-started.md) — build your first table, understand incrementality, child tables, error handling
-- [API Reference](api-reference.md) — complete method documentation
-- [Example: Document Processing](examples/document-processing.md) — full pipeline with LLM enrichment and embeddings
-- [Example: Media Knowledge Base](examples/media-knowledge-base.md) — video/audio transcription and search index
+## Choose the right durable noun
+
+| Need | Use |
+|---|---|
+| A graph-derived entity table | `graph.as_table(...)` |
+| A durable table with no derivation | `Table(...)` and `append(...)` |
+| Resume a particular execution | a runner with a checkpointer |
+| Inspect work awaiting a human | `table.waiting()` |
+
+## What is stored
+
+HyperTable stores source columns, derived columns, answer columns, metadata,
+and internal provenance. Internal generations, recipe stamps, status, and the
+question envelope never appear as stringly fields in `get()` or `rows()`.
+
+The shipped `LanceDBStore` is available from
+`hypergraph.materialization`. Custom stores implement `TableStore` and can be
+checked with `check_store_conformance`.
+
+## Next
+
+- [Getting started](getting-started.md)
+- [API reference](api-reference.md)
+- [Implementing a store](implementing-a-store.md)
+- [Human-in-the-loop](../03-patterns/07-human-in-the-loop.md)

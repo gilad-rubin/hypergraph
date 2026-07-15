@@ -24,6 +24,15 @@ from hypergraph import (
 )
 from hypergraph.checkpointers import Checkpointer, MemoryCheckpointer, SqliteCheckpointer, SqliteRunInspector
 from hypergraph.events import RunEndEvent
+from hypergraph.materialization import (
+    ErroredRow,
+    LanceDBStore,
+    RowReceipt,
+    RowStatus,
+    TableReceipt,
+    WaitingRow,
+    WriteOutcome,
+)
 from hypergraph.runners._shared.results import NodeRecord
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -175,6 +184,64 @@ def test_interrupt_docs_pin_answer_name_contract() -> None:
     assert 'return Confirm(prompt=f"Publish this draft?", evidence=(draft,))' in human
     assert "always pauses" in " ".join(nodes.split())
     assert "output_params" not in runners
+
+
+def test_hypertable_docs_pin_graph_backed_receipt_contract() -> None:
+    pages = {name: _read(f"docs/08-hypertable/{name}.md") for name in ("overview", "getting-started", "api-reference", "implementing-a-store")}
+    examples = "\n".join(
+        _read(path)
+        for path in (
+            "docs/08-hypertable/examples/document-processing.md",
+            "docs/08-hypertable/examples/media-knowledge-base.md",
+            "docs/08-hypertable/examples/cold-boot.py",
+        )
+    )
+    human = _read("docs/03-patterns/07-human-in-the-loop.md")
+
+    parameters = inspect.signature(Graph.as_table).parameters
+    assert tuple(parameters) == ("self", "identity", "store", "runner", "on_error", "name")
+    assert parameters["runner"].default is None
+    assert parameters["on_error"].default == "raise"
+    assert parameters["name"].default is None
+
+    assert tuple(RowReceipt.__dataclass_fields__) == ("id", "outcome", "status", "pause", "error")
+    assert tuple(TableReceipt.__dataclass_fields__) == ("receipts", "deleted")
+    assert tuple(WaitingRow.__dataclass_fields__) == ("id", "pause", "row", "provenance")
+    assert tuple(ErroredRow.__dataclass_fields__) == ("id", "error", "row")
+    assert {status.value for status in RowStatus} == {"complete", "waiting", "error"}
+    assert {outcome.value for outcome in WriteOutcome} == {"inserted", "updated", "skipped"}
+    assert LanceDBStore.__module__ == "hypergraph.materialization._lancedb_store"
+
+    living = "\n".join((*pages.values(), examples, human))
+    for removed in (
+        "include_status",
+        "filter_children",
+        "set_children",
+        "delete_children",
+        "recompute(",
+        "backfill(",
+        "with_runner",
+        "HyperTable([",
+    ):
+        assert removed not in living
+
+    api = pages["api-reference"]
+    for contract in (
+        "Graph.as_table",
+        "RowReceipt",
+        "TableReceipt",
+        "WaitingRow",
+        "ErroredRow",
+        "provenance: str",
+        "result.paused",
+        "result.pause.value",
+        "result.pause.response_key",
+        "runner=AsyncRunner()",
+    ):
+        assert contract in api
+    assert "## Interrupts in a HyperTable" in human
+    assert "row convergence, not mid-run resume" in human
+    assert "cold-boot.py" in pages["getting-started"]
 
 
 def test_background_handle_docs_pin_public_contract() -> None:

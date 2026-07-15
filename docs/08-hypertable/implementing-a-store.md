@@ -1,144 +1,112 @@
-# Implementing a TableStore
+# Implementing a HyperTable store
 
-HyperTable separates **computation** (your graph) from **persistence** (a store).
-The store is a pluggable backend behind the `TableStore` interface — LanceDB ships
-as the reference implementation, but you can back a table with anything: SQLite,
-Postgres, DuckDB, S3 + a search index, or an in-memory dict for tests.
+`TableStore` is the synchronous persistence boundary beneath HyperTable and
+plain `Table`. The graph runner may be synchronous or asynchronous; the store
+contract remains synchronous.
 
-This page is for store *authors*. If you only use HyperTable, you never see these
-methods.
-
-## The shape
-
-Subclass `TableStore` and implement the required methods. Each operates on a
-`table_name` and plain row dicts:
+Use the shipped implementation unless you are adapting another database:
 
 ```python
-import pyarrow as pa
-from hypergraph.materialization import TableStore
+from hypergraph.materialization import LanceDBStore
 
-class MyStore(TableStore):
-    def open(self, spec, children): ...        # ensure tables exist -> {name: [columns]}
-    def count(self, table_name): ...           # physical row count
-    def read_rows(self, table_name, where=None, *, limit=None): ...
-    def read_one(self, table_name, identity_column, identity_value): ...
-    def write_rows(self, table_name, rows): ...
-    def delete_rows(self, table_name, where): ...   # -> count deleted
-    def max_write_gen(self, table_name): ...        # highest _write_gen, or 0
-    def evolve_schema(self, table_name, new_columns): ...  # new_columns: {name: pa.DataType}
+store = LanceDBStore("./data")
 ```
 
-`search`, `save_manifest`, `load_manifest`, and `column_names` are optional (they
-default to "not supported" / no-op / `[]`) — implement them only if your backend
-offers them.
+## Required methods
 
-**`column_names` lets HyperTable consult your schema.** It returns a table's
-physical column names (`[]` when the table doesn't exist yet). HyperTable's
-metadata evolution uses it to learn which columns already exist rather than
-inferring the set by sampling a row — a sample is empty exactly when a table has
-been emptied, which is when inference goes wrong. Override it if your store tracks
-a schema; leave the `[]` default if it doesn't, and `evolve_schema` idempotence
-(below) still protects you.
-
-**Named indexes need both manifest hooks.** `save_manifest` / `load_manifest`
-persist a table's index specs. They stay optional for any store that never uses
-indexes, but a store that *is* asked to `create_index` without implementing them
-fails loud at use time — `HyperTable.create_index` checks the pair and raises
-`NotImplementedError` naming your store and `save_manifest`, rather than
-"succeeding" silently and then having `list_indexes()` return nothing. So
-implement **both** hooks (not just one) if you want named indexes; leave both as
-the base no-op if you don't.
-
-## The invariants that aren't obvious
-
-Most of the interface is self-explanatory. These few are not, and a store that
-gets them wrong fails *silently* — so they're worth stating outright.
-
-### `read_one` returns the newest generation
-
-Every row carries a `_write_gen`. HyperTable writes the new generation **before**
-deleting the old one (crash-safe ordering), so after a crash a single identity can
-briefly have two physical rows. `read_one` **must** return the one with the highest
-`_write_gen`:
+A store subclasses `TableStore` and implements:
 
 ```python
-def read_one(self, table_name, identity_column, identity_value):
-    matches = [r for r in self._rows(table_name) if r[identity_column] == identity_value]
-    if not matches:
-        return None
-    return max(matches, key=lambda r: r.get("_write_gen", 0))   # newest, not first
+class TableStore(ABC):
+    def open(self, spec, children) -> dict[str, list[str]]: ...
+    def count(self, table_name: str) -> int: ...
+    def read_rows(
+        self,
+        table_name: str,
+        where=None,
+        *,
+        limit: int | None = None,
+        columns: list[str] | None = None,
+    ) -> list[dict]: ...
+    def read_one(
+        self,
+        table_name: str,
+        identity_column: str,
+        identity_value,
+        *,
+        columns: list[str] | None = None,
+    ) -> dict | None: ...
+    def write_rows(self, table_name: str, rows: list[dict]) -> None: ...
+    def delete_rows(self, table_name: str, where) -> int: ...
+    def max_write_gen(self, table_name: str) -> int: ...
+    def evolve_schema(self, table_name: str, new_columns: dict) -> list[str]: ...
 ```
 
-Returning the *first* match instead is the single most common store bug — and it's
-invisible until a crash leaves a stale row ahead of the current one.
+`open()` receives analyzed root and child table specifications. It ensures the
+physical tables exist and returns their column names.
 
-### Reserved columns pass through untouched
+## Predicates
 
-HyperTable manages several columns; your store must store and return them like any
-other, never reject or rewrite them: `_write_gen`, `_row_fingerprint`, `_status`,
-`_error`, `_parent_id`, and `_provenance_*`. Child rows are scoped by `_parent_id`
-— `read_rows(child, [("_parent_id", "eq", parent)])` is how HyperTable lists a
-parent's children.
+`where` is a sequence of `(column, operator, value)` tuples. Implement `eq`,
+`ne`, `lt`, `lte`, `gt`, `gte`, and `in`. Multiple predicates are combined
+with AND.
 
-### `delete_rows` returns the physical count; predicates use the operator set
+The physical child relationship uses `_parent_id`; HyperTable translates the
+public parent identity and performs parent-column joins above the store.
 
-`delete_rows` returns how many physical rows it removed. Predicates are
-`(column, op, value)` tuples; support every operator HyperTable emits:
-`eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`.
+## Generations and truthful reads
 
-### `evolve_schema` speaks Arrow, not Python
+Every physical row carries `_write_gen`. A write may append a newer generation
+before deleting the older one. Therefore:
 
-New columns arrive as `dict[str, pyarrow.DataType]` — **Arrow is the intermediate
-type system**. An Arrow-native store maps the Arrow type to its column type; a
-schemaless store (JSON, key-value) ignores the values and just records the names.
-No store converts from Python types — HyperTable does that once, upstream.
+- `read_one()` returns the highest generation for the requested identity;
+- logical root reads deduplicate by identity;
+- logical child reads deduplicate by parent identity plus child identity;
+- `max_write_gen()` is durable across process restarts.
+
+The conformance harness exercises overlapping generations and deletion.
+
+## Schema evolution
+
+`evolve_schema()` receives PyArrow data types. Adding an existing column must
+be a no-op, including when a table currently contains zero rows. Return the
+complete current column-name list.
+
+Override `column_names()` when the backend can inspect its schema. Returning
+`[]` is the base fallback.
+
+Projection is optional to push down. A store that accepts `columns=` on both
+read methods advertises projection automatically. Otherwise HyperTable reads
+full rows and uses `TableStore._project_rows()`.
+
+## Reserved storage
+
+The store treats HyperTable's internal fields as ordinary physical values:
+
+- `_row_fingerprint` and `_write_gen`;
+- `_provenance_*` and `_recipe_fingerprint`;
+- `_status` and `_error`;
+- `_question`, the serialized waiting-question envelope;
+- `_parent_id` on child grains.
+
+These fields never cross the public row-read boundary. The table reconstructs
+typed receipts, waiting rows, errors, and `PauseInfo` objects above the store.
+
+## Optional capabilities
+
+Implement `search()` for vector retrieval. Implement both `save_manifest()`
+and `load_manifest()` to support persistent named indexes. If either manifest
+method is missing, index creation fails loudly at use time.
+
+## Validate an implementation
 
 ```python
-# Arrow-native (LanceDB): use the type
-fields = [pa.field(name, arrow_type) for name, arrow_type in new_columns.items()]
+from hypergraph.materialization import check_store_conformance, validate_store
 
-# Schemaless (JSON store): use only the names
-self._schema[table_name] += list(new_columns.keys())
+validate_store(MyStore(...))
+check_store_conformance(lambda path: MyStore(path))
 ```
 
-**`evolve_schema` is idempotent.** Adding a column the schema already holds is a
-no-op for that column, never an error — skip it and return the current column
-names. HyperTable can ask to add an existing column: it re-infers the "new"
-metadata set from an emptied table (every row deleted) and doesn't always know
-the physical schema, so it may re-offer a column added earlier. An Arrow-native
-store that blindly appends builds a schema with a duplicate field and the backend
-rejects the next write; filter `new_columns` against your existing columns first.
-The conformance harness asserts this on the emptied-table shape.
-
-## What is *not* your job
-
-The store is a dumb persistence layer. HyperTable owns everything semantic:
-incrementality and fingerprints, write-new-then-delete-old ordering, the
-parent/child cascade, error rows, and dedup-on-read for query results. Don't
-re-implement any of it in the store — just store rows faithfully and honor the
-invariants above.
-
-## Validate against the contract
-
-`validate_store(store)` is a quick shape check (subclass + `open()`). For the real
-thing, run the **conformance harness** in your test suite — it drives a fresh store
-through the observable contract (newest-gen reads, every operator, delete counts,
-schema evolution and its idempotence, parent/child filtering) and fails with a
-precise message naming any invariant you missed:
-
-```python
-from hypergraph.materialization import check_store_conformance
-
-def test_my_store_conforms(tmp_path):
-    check_store_conformance(MyStore(path=str(tmp_path / "store")))
-```
-
-The reference `LanceDBStore` and both of Panda's stores (a JSON `LocalTableStore`
-and an `S3 + Azure Search` store) pass this same harness — so it's calibrated to
-accept both Arrow-native and schemaless designs.
-```text
-TableStore conformance failed:
-  - read_one_returns_newest_generation: read_one must return the highest _write_gen
-    when one identity has multiple generations (crash-leftover dedup). Got n=10,
-    expected the n=20 / _write_gen=2 row.
-```
+The same conformance suite is run against `LanceDBStore` and an in-memory dict
+store. It covers schema opening and evolution, predicates, projections,
+generations, manifests, identity, and child-table behavior.

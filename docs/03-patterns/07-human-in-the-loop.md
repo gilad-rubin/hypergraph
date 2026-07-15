@@ -247,6 +247,59 @@ assert result.completed
 
 There is no separate automation hook and no auto-resolving handler return.
 
+## Interrupts in a HyperTable
+
+A checkpointer resumes an execution. A HyperTable converges a domain row under
+the current graph and stored facts. The pause-reading contract is deliberately
+the same:
+
+```python
+from hypergraph import AsyncRunner
+from hypergraph.materialization import LanceDBStore
+
+reviews = graph.as_table(
+    identity="document_id",
+    store=LanceDBStore("./data/reviews"),
+    runner=AsyncRunner(),
+)
+
+receipt = await reviews.insert(document_id="d-1", draft="Release notes")
+if receipt.paused:
+    show(receipt.pause.value)
+    answer_key = receipt.pause.response_key
+    receipt = await reviews.update("d-1", **{answer_key: True})
+
+assert receipt.completed
+```
+
+A paused derivation is a waiting row carrying the question envelope. It is
+not a complete row with missing outputs:
+
+```python
+waiting = reviews.waiting()[0]
+assert waiting.id == "d-1"
+assert waiting.pause.value.prompt == "Publish this draft?"
+assert waiting.pause.response_key == "decision"
+assert waiting.provenance
+```
+
+The answer named by `response_key` is a derived column supplied by the human.
+`update()` re-drives derivation with stored sources and the new answer;
+provenance-clean upstream columns do not run again. Supplying that answer on
+the initial `insert()` is the headless path and bypasses the interrupt
+handler.
+
+Answer provenance records the question's direct inputs, code, and
+configuration. If an upstream fact changes after completion, the old answer
+is stale: the row returns to waiting with a fresh question and provenance.
+This is row convergence, not mid-run resume. Cycles and shared execution state
+still belong to a checkpointer-backed runner.
+
+Persisted questions retain `prompt`, `options`, `evidence`, and a stable
+display representation of `answer_type`. Evidence values must be
+JSON-serializable; an invalid item fails at pause-persist time rather than
+silently dropping context.
+
 ## Conditional questions belong in topology
 
 An interrupt cannot return an answer to avoid pausing. Route around the
