@@ -6,6 +6,7 @@ from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph import Graph
+from hypergraph.graph import GraphConfigError
 from hypergraph.materialization._fingerprint import compute_definition_hash
 from hypergraph.materialization._hypertable_viz import render_hypertable
 from hypergraph.materialization._indexes import IndexPolicy
@@ -208,7 +209,7 @@ class HyperTable:
         name: str | None = None,
     ) -> None:
         if on_error not in ("raise", "store"):
-            raise ValueError(
+            raise GraphConfigError(
                 "HyperTable on_error must be 'raise' or 'store'.\n\n"
                 f"Received: {on_error!r}\n\n"
                 "How to fix: pass on_error='raise' for immediate failures or "
@@ -229,7 +230,7 @@ class HyperTable:
         self._components = dict(graph._bound)
         graph_nodes = list(graph.nodes.values()) if isinstance(graph.nodes, dict) else []
         if not graph_nodes:
-            raise ValueError(
+            raise GraphConfigError(
                 "Graph.as_table() requires at least one derivation node.\n\n"
                 f"Graph: {graph.name or 'unnamed'}\n\n"
                 "How to fix: add a derivation node, or use hypergraph.materialization.Table "

@@ -19,7 +19,7 @@ on disk — same physical columns, same write semantics):
 
 import pytest
 
-from hypergraph import Graph
+from hypergraph import Graph, GraphConfigError
 from hypergraph.materialization import LanceDBStore, Table
 
 
@@ -29,7 +29,7 @@ def table(tmp_path):
 
 
 def test_empty_graph_as_table_raises_naming_table(tmp_path):
-    with pytest.raises(ValueError, match="Table"):
+    with pytest.raises(GraphConfigError, match="Table"):
         Graph([]).as_table(identity="upload_id", store=LanceDBStore(str(tmp_path)))
 
 

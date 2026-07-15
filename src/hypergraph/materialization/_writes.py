@@ -343,7 +343,11 @@ class WritePlanner:
                 roots.add(producer.name)
         selected = self._node_names_downstream(roots)
         if not selected:
-            raise RuntimeError(f"could not find interrupt node for answer column(s): {', '.join(key)}")
+            raise RuntimeError(
+                "HyperTable could not locate the interrupt that owns an answer column.\n\n"
+                f"Answer columns: {', '.join(key)}\n\n"
+                "How to fix: keep each answer_name on an interrupt node in the graph passed to as_table()."
+            )
 
         graph = Graph(
             [node for name, node in graph_nodes.items() if name in selected],
@@ -509,7 +513,11 @@ class WritePlanner:
                     provenances.update(self._provenances_for_values(values, pause, routed_executed, target))
                     pause_provenance = provenances.get(pause.response_key)
                     if pause_provenance is None:
-                        raise RuntimeError(f"could not compute provenance for interrupt answer {pause.response_key!r}")
+                        raise RuntimeError(
+                            "HyperTable could not compute provenance for a routed interrupt answer.\n\n"
+                            f"Answer column: {pause.response_key!r}\n\n"
+                            "How to fix: ensure every required interrupt input is a stored source or derived column."
+                        )
                     return _PausedConvergence(
                         pause=pause,
                         outputs=outputs,
@@ -932,7 +940,11 @@ class WritePlanner:
         if pause is not None:
             pause_provenance = provenances.get(pause.response_key)
             if pause_provenance is None:
-                raise RuntimeError(f"could not compute provenance for interrupt answer {pause.response_key!r}")
+                raise RuntimeError(
+                    "HyperTable could not compute provenance for an interrupt answer.\n\n"
+                    f"Answer column: {pause.response_key!r}\n\n"
+                    "How to fix: ensure every required interrupt input is a stored source or derived column."
+                )
             return self._write_waiting_parent(
                 item,
                 source_inputs,
@@ -1053,7 +1065,11 @@ class WritePlanner:
             provenances = self._provenances_for_values({**item, **outputs}, pause)
             pause_provenance = provenances.get(pause.response_key)
             if pause_provenance is None:
-                raise RuntimeError(f"could not compute provenance for interrupt answer {pause.response_key!r}")
+                raise RuntimeError(
+                    "HyperTable could not compute provenance for an interrupt answer.\n\n"
+                    f"Answer column: {pause.response_key!r}\n\n"
+                    "How to fix: ensure every required interrupt input is a stored source or derived column."
+                )
             return self._write_waiting_parent(
                 item,
                 source_inputs,
