@@ -160,7 +160,11 @@ def serialize_question(pause: PauseInfo, provenance: str) -> str:
 def deserialize_question(value: Any) -> tuple[PauseInfo, str]:
     """Rebuild ``PauseInfo`` and its opaque provenance from storage."""
     if not isinstance(value, str):
-        raise TypeError(f"stored question envelope must be a JSON string, got {type(value).__name__}")
+        raise TypeError(
+            "Stored question envelope must be a JSON string.\n\n"
+            f"Received: {type(value).__name__}\n\n"
+            "How to fix: preserve the HyperTable-managed _question value unchanged in the TableStore."
+        )
     envelope = json.loads(value)
     ask = _StoredQuestion(
         prompt=envelope["prompt"],

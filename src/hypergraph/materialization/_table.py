@@ -23,9 +23,13 @@ def _predicate(where: Any) -> list[tuple[str, str, Any]]:
 class Table:
     """A durable append-only fact table: identity, store, and schema evolution."""
 
-    def __init__(self, *, identity: str, store: TableStore):
+    def __init__(self, *, identity: str, store: TableStore) -> None:
         if not isinstance(store, TableStore):
-            raise TypeError(f"store must be a TableStore instance, got {type(store)}")
+            raise TypeError(
+                "Table store must implement TableStore.\n\n"
+                f"Received: {type(store).__name__}\n\n"
+                "How to fix: pass LanceDBStore(...) or a validated TableStore subclass."
+            )
         self._identity = identity
         self._store = store
         self._spec = TableSpec(
@@ -56,7 +60,11 @@ class Table:
             return args[0], False
         if kwargs:
             return [kwargs], True
-        raise ValueError("append() requires keyword columns or a list of row dicts")
+        raise ValueError(
+            "Table.append() requires one keyword row or a list of row dictionaries.\n\n"
+            "Received no row values.\n\n"
+            "How to fix: call append(item_id='i-1', ...) or append([{'item_id': 'i-1', ...}])."
+        )
 
     def _evolve(self, item: dict[str, Any]) -> None:
         known = set(self._store.column_names(self.table_name))
@@ -96,7 +104,11 @@ class Table:
     def update(self, identity_value: str, **changes: Any) -> RowReceipt:
         existing = self._store.read_one(self.table_name, self._identity, identity_value)
         if existing is None:
-            raise KeyError(identity_value)
+            raise KeyError(
+                "Table row does not exist.\n\n"
+                f"Identity: {identity_value!r}\n\n"
+                "How to fix: append the row before updating it, or use an existing identity."
+            )
         self._evolve({self._identity: identity_value, **changes})
         write_gen = self._store.max_write_gen(self.table_name) + 1
         row = {name: normalize_value(value) for name, value in existing.items()}

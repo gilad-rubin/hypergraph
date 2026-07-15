@@ -268,6 +268,25 @@ def test_on_error_store_returns_a_failed_receipt():
     assert table.errors()[0].id == "d1"
 
 
+def test_on_error_store_returns_a_failed_rederive_receipt():
+    store = MemoryStore()
+    table = Graph([parent_clean]).as_table(
+        identity="doc_id",
+        store=store,
+        on_error="store",
+        runner=SyncRunner(),
+    )
+    table.insert(doc_id="d1", text="test")
+    fail_on_text.add("test")
+
+    receipt = table.rederive("clean_text")
+
+    assert receipt.failed
+    assert receipt.errors[0].id == "d1"
+    assert "ValueError: Parent failed on test" in receipt.errors[0].error
+    assert table.errors()[0].id == "d1"
+
+
 # ---------------------------------------------------------------------------
 # include_status on reads
 # ---------------------------------------------------------------------------
@@ -425,3 +444,22 @@ async def test_async_store_parent_error_writes_error_row():
 
     assert table.errors()[0].id == "d1"
     assert "ValueError" in table.errors()[0].error
+
+
+@pytest.mark.asyncio
+async def test_async_store_rederive_error_returns_failed_receipt():
+    store = MemoryStore()
+    table = Graph([parent_clean]).as_table(
+        identity="doc_id",
+        store=store,
+        on_error="store",
+        runner=AsyncRunner(),
+    )
+    await table.insert(doc_id="d1", text="test")
+    fail_on_text.add("test")
+
+    receipt = await table.rederive("clean_text")
+
+    assert receipt.failed
+    assert receipt.errors[0].id == "d1"
+    assert table.errors()[0].id == "d1"

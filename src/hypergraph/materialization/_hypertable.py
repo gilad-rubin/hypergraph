@@ -73,7 +73,7 @@ def _where_predicate(where: Any) -> list[tuple[str, str, Any]]:
 class ChildTable:
     """Read and annotate one named child grain."""
 
-    def __init__(self, parent: HyperTable, spec: TableSpec):
+    def __init__(self, parent: HyperTable, spec: TableSpec) -> None:
         self._parent = parent
         self._spec = spec
 
@@ -149,7 +149,11 @@ class ChildTable:
     def set(self, where: Any, **fields: Any) -> int:
         blocked = sorted(column.name for column in self._spec.columns if column.content_key and column.name in fields)
         if blocked:
-            raise ValueError(f"set() cannot update content-key fields: {', '.join(blocked)}")
+            raise ValueError(
+                "ChildTable.set() cannot update content-key fields.\n\n"
+                f"Fields: {', '.join(blocked)}\n\n"
+                "How to fix: update annotation metadata only; converge content changes through the parent graph."
+            )
         rows = self._matching_rows(where)
         if not rows:
             return 0
@@ -301,7 +305,11 @@ class HyperTable:
         from hypergraph.materialization._table_store import TableStore
 
         if not isinstance(self._store, TableStore):
-            raise TypeError(f"store must be a TableStore instance (e.g. LanceDBStore), got {type(self._store)}")
+            raise TypeError(
+                "HyperTable store must implement TableStore.\n\n"
+                f"Received: {type(self._store).__name__}\n\n"
+                "How to fix: pass LanceDBStore(...) or a validated TableStore subclass."
+            )
 
         self._store.open(self._spec, self._spec.children)
 

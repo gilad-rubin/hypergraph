@@ -304,27 +304,6 @@ class WritePlanner:
         row["_write_gen"] = write_gen
         return row
 
-    def _build_node_row(
-        self,
-        existing: Mapping[str, Any],
-        node: Any,
-        outputs: Mapping[str, Any],
-        write_gen: int,
-    ) -> dict[str, Any]:
-        row = {key: normalize_value(value) for key, value in existing.items()}
-        for column in self._provenance.node_columns(node):
-            if column.name in outputs:
-                row[column.name] = outputs[column.name]
-        provenance = self._provenance.node_provenance(node, self._provenance.stored_values(row))
-        for column in self._provenance.node_columns(node):
-            row[f"_provenance_{column.name}"] = provenance
-        self._record_node_recipe(node)
-        row["_write_gen"] = write_gen
-        if self._provenance.row_converged(row):
-            row["_row_fingerprint"] = self._provenance.root_fingerprint(self._provenance.source_inputs(row))
-            self._stamp_recipe(row, self._spec.name)
-        return row
-
     def _evolve_for_backfill_column(self, column: str) -> None:
         sample = self._store.read_rows(self._spec.name, limit=1)
         if sample and column not in sample[0]:
@@ -1122,54 +1101,49 @@ class WritePlanner:
                 )
                 continue
             values = self._provenance.stored_values(existing)
-            result = yield RunGraph(
-                self._provenance.column_graph(node),
-                self._provenance.node_inputs(node, values),
-            )
-            pause = _run_pause(result)
-            if pause is not None:
-                stale_nodes = self._node_names_downstream({node.name})
-                stale_columns = {
-                    spec_column.name
-                    for spec_column in derived_columns
-                    if any(producer.name in stale_nodes for producer in self._provenance.column_producers(spec_column))
-                }
-                item = {name: value for name, value in values.items() if name == self._identity or name not in derived_names}
-                retained_outputs = {name: value for name, value in values.items() if name in derived_names and name not in stale_columns}
-                provenances = {name: existing[f"_provenance_{name}"] for name in retained_outputs if f"_provenance_{name}" in existing}
-                pause_provenance = self._provenance.node_provenance(node, values)
-                if pause_provenance is None:
-                    raise RuntimeError(f"could not compute provenance for interrupt answer {pause.response_key!r}")
-                provenances[pause.response_key] = pause_provenance
+            item = {name: value for name, value in values.items() if name == self._identity or name not in derived_names}
+            source_inputs = self._source_inputs(item)
+            forced = {key: normalize_value(value) for key, value in existing.items()}
+            for target_column in self._provenance.node_columns(node):
+                forced[f"_provenance_{target_column.name}"] = None
+            try:
+                reconciled = yield from self._reconcile(item, forced)
+            except Exception as error:
+                if self._on_error == "raise":
+                    raise
+                self._error_parent(item, source_inputs, write_gen, error, existing)
+                receipts.append(
+                    RowReceipt(
+                        str(existing[self._identity]),
+                        WriteOutcome.UPDATED,
+                        RowStatus.ERROR,
+                        error=f"{type(error).__name__}: {error}",
+                    )
+                )
+                continue
+            if isinstance(reconciled, _PausedConvergence):
                 receipt = self._write_waiting_parent(
                     item,
-                    self._source_inputs(item),
-                    retained_outputs,
-                    provenances,
-                    pause,
-                    pause_provenance,
+                    source_inputs,
+                    reconciled.outputs,
+                    reconciled.provenances,
+                    reconciled.pause,
+                    reconciled.provenance,
                     write_gen,
                     existing,
                     WriteOutcome.UPDATED,
                 )
                 receipts.append(receipt)
                 continue
-
-            outputs = _run_values(result)
-            new_row = self._build_node_row(existing, node, outputs, write_gen)
-            self._store.write_rows(self._spec.name, [new_row])
-            self._store.delete_rows(
-                self._spec.name,
-                [
-                    (self._identity, "eq", existing[self._identity]),
-                    ("_write_gen", "lt", write_gen),
-                ],
+            if reconciled is None:
+                raise RuntimeError(f"could not converge downstream of derived column {column!r}")
+            yield from self._apply_reconciled(
+                item,
+                source_inputs,
+                existing,
+                reconciled,
+                False,
+                write_gen,
             )
-            receipts.append(
-                self._receipt_for_row(
-                    existing[self._identity],
-                    WriteOutcome.UPDATED,
-                    new_row,
-                )
-            )
+            receipts.append(RowReceipt(str(existing[self._identity]), WriteOutcome.UPDATED, RowStatus.COMPLETE))
         return TableReceipt(tuple(receipts))

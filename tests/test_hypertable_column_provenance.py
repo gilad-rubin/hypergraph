@@ -241,3 +241,29 @@ class TestRecomputeBackfill:
         assert CALLS["embed_v2"] == 2
         assert extended.get("d1")["vector_v2"][0] == float(len("embed-v2"))
         assert extended.status().is_fresh, "backfilled table with unchanged siblings must be fresh"
+
+    def test_rederive_converges_columns_downstream_of_the_target(self, store):
+        @node(output_name="prepared")
+        def prepare(value: int, factor: int) -> int:
+            return value * factor
+
+        @node(output_name="final")
+        def finish(prepared: int) -> int:
+            return prepared * 10
+
+        def configured(factor: int):
+            return Graph([prepare, finish]).bind(factor=factor).as_table(identity="item_id", store=store, runner=SyncRunner())
+
+        configured(1).insert(item_id="i1", value=1)
+        rebound = configured(2)
+
+        receipt = rebound.rederive("prepared")
+
+        assert receipt.completed
+        assert rebound.get("i1") == {
+            "item_id": "i1",
+            "value": 1,
+            "prepared": 2,
+            "final": 20,
+        }
+        assert rebound.status().is_fresh
