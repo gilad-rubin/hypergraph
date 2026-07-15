@@ -15,11 +15,15 @@ from hypergraph.materialization._provenance import (
     ReconcileUnavailable,
     normalize_value,
 )
+from hypergraph.materialization._recipe_journal import RecipeJournal
 from hypergraph.materialization._schema import (
+    QUESTION_COLUMN,
     RECIPE_COLUMN,
     TableSpec,
     input_names,
     is_internal_column,
+    python_type_to_arrow,
+    return_type,
 )
 from hypergraph.materialization._types import (
     RowReceipt,
@@ -27,25 +31,9 @@ from hypergraph.materialization._types import (
     TableReceipt,
     WriteOutcome,
     deserialize_question,
+    serialize_question,
 )
-from hypergraph.materialization._write_actions import (
-    BuildChildRow,
-    BuildNodeRow,
-    BuildParentRow,
-    DeleteRows,
-    EvolveBackfillColumn,
-    EvolveMetadata,
-    MaxWriteGen,
-    ReadOne,
-    ReadRows,
-    RunGraph,
-    StampExistingRow,
-    WriteAction,
-    WriteOperation,
-    WriteRows,
-    _freeze,
-    _Predicate,
-)
+from hypergraph.materialization._write_actions import RunGraph, WriteOperation, _Predicate
 from hypergraph.runners import PauseInfo
 
 
@@ -112,6 +100,7 @@ class WritePlanner:
     def __init__(
         self,
         graph: Any,
+        store: Any,
         spec: TableSpec,
         identity: str,
         components: Mapping[str, Any],
@@ -119,11 +108,236 @@ class WritePlanner:
         provenance: Provenance,
     ):
         self._graph = graph
+        self._store = store
         self._spec = spec
         self._identity = identity
         self._components = dict(components)
         self._on_error = on_error
         self._provenance = provenance
+        self._recipe_column_ready: set[str] = set()
+        self._journal = RecipeJournal(store)
+
+    @property
+    def journal(self) -> RecipeJournal:
+        return self._journal
+
+    def _read_rows(
+        self,
+        table: str,
+        where: tuple[tuple[str, str, Any], ...] | None = None,
+        *,
+        limit: int | None = None,
+        columns: tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        predicate = list(where) if where is not None else None
+        projection = list(columns) if columns is not None else None
+        if projection is None or not self._store.supports_column_projection():
+            rows = self._store.read_rows(table, predicate, limit=limit)
+            return self._store._project_rows(rows, projection)
+        return self._store.read_rows(table, predicate, limit=limit, columns=projection)
+
+    def _evolve_for_metadata(
+        self,
+        item: Mapping[str, Any],
+        *,
+        table_name: str | None = None,
+        identity: str | None = None,
+    ) -> None:
+        target = table_name or self._spec.name
+        identity_column = identity or self._identity
+        known_columns = set(self._store.column_names(target))
+        if not known_columns:
+            sample = self._store.read_rows(target, limit=1)
+            known_columns = set(sample[0]) if sample else {column.name for column in self._spec.columns}
+        new_metadata = {
+            key: python_type_to_arrow(type(value) if value is not None else str)
+            for key, value in item.items()
+            if key not in known_columns and key != identity_column
+        }
+        if new_metadata:
+            self._store.evolve_schema(target, new_metadata)
+
+    def _ensure_recipe_column(self, table_name: str) -> None:
+        if table_name in self._recipe_column_ready:
+            return
+        physical = self._store.column_names(table_name)
+        if physical and RECIPE_COLUMN not in physical:
+            self._store.evolve_schema(table_name, {RECIPE_COLUMN: python_type_to_arrow(str)})
+        self._recipe_column_ready.add(table_name)
+
+    def _stamp_recipe(self, row: dict[str, Any], table_name: str, child_spec: TableSpec | None = None) -> None:
+        if not self._provenance.table_stamps_recipe():
+            return
+        if child_spec is not None:
+            if child_spec.child_graph is None:
+                return
+            fingerprint = self._provenance.current_child_recipe_fingerprint(child_spec)
+        else:
+            fingerprint = self._provenance.current_recipe_fingerprint()
+        self._ensure_recipe_column(table_name)
+        row[RECIPE_COLUMN] = fingerprint
+
+    def _record_node_recipe(self, node: Any) -> str:
+        entries = self._provenance.recipe_entries(node)
+        for entry in entries:
+            self._journal.record(entry.hash, entry.kind, entry.payload)
+        return entries[0].hash
+
+    def _provenance_node(self, name: str) -> Any:
+        for column in self._spec.columns:
+            if column.role in ("derived", "answer") and column.name == name:
+                producer = column.produced_by
+                return producer[0] if isinstance(producer, tuple) else producer
+        for child_spec in self._spec.children:
+            if child_spec.map_input == name:
+                return self._provenance.boundary_node(child_spec)
+        return None
+
+    def _build_parent_row(
+        self,
+        item: Mapping[str, Any],
+        source_inputs: Mapping[str, Any],
+        outputs: Mapping[str, Any],
+        write_gen: int,
+        mode: Literal["complete", "waiting", "error"],
+        *,
+        provenances: Mapping[str, str] | None = None,
+        error: str | None = None,
+        pause: PauseInfo | None = None,
+        pause_provenance: str | None = None,
+    ) -> dict[str, Any]:
+        row: dict[str, Any] = {self._identity: item[self._identity]}
+        row.update({key: value for key, value in item.items() if key != self._identity})
+        derived_columns = self._provenance.derived_columns()
+        if mode == "error":
+            for column in derived_columns:
+                row[column.name] = None
+        else:
+            for column in derived_columns:
+                if column.name in outputs:
+                    row[column.name] = outputs[column.name]
+                elif mode == "waiting" and column.role == "answer":
+                    row[column.name] = None
+        row["_row_fingerprint"] = self._provenance.root_fingerprint(source_inputs)
+        row["_write_gen"] = write_gen
+        self._stamp_recipe(row, self._spec.name)
+
+        if mode != "error":
+            if provenances is None:
+                values = {**{key: value for key, value in item.items() if key != self._identity}, **outputs}
+                provenances = {
+                    column.name: self._provenance.node_provenance(self._provenance.column_producers(column)[0], values) for column in derived_columns
+                }
+                for child_spec in self._spec.children:
+                    boundary = self._provenance.boundary_node(child_spec)
+                    if boundary is None:
+                        continue
+                    provenance = self._provenance.node_provenance(boundary, values)
+                    if provenance is not None:
+                        provenances[child_spec.map_input] = self._provenance.boundary_provenance_value(
+                            provenance,
+                            outputs.get(child_spec.map_input),
+                        )
+            for name, provenance in provenances.items():
+                row[f"_provenance_{name}"] = provenance
+                node = self._provenance_node(name)
+                if node is not None:
+                    self._record_node_recipe(node)
+
+        row["_status"] = mode
+        row["_error"] = error if mode == "error" else None
+        if mode == "waiting":
+            if pause is None or pause_provenance is None:
+                raise RuntimeError("waiting row requires a pause and provenance")
+            row[QUESTION_COLUMN] = serialize_question(pause, pause_provenance)
+        else:
+            row[QUESTION_COLUMN] = None
+        return row
+
+    def _build_child_row(
+        self,
+        spec: TableSpec,
+        item: Mapping[str, Any],
+        identity: Any,
+        parent_id: Any,
+        fingerprint: str,
+        write_gen: int,
+        *,
+        status: Literal["complete", "error"],
+        error: str | None,
+        outputs: Mapping[str, Any] | None = None,
+        provenances: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        row = {
+            spec.identity: identity,
+            "_parent_id": parent_id,
+            "_write_gen": write_gen,
+            "_row_fingerprint": fingerprint,
+            "_status": status,
+            "_error": error,
+            QUESTION_COLUMN: None,
+        }
+        self._stamp_recipe(row, spec.name, spec)
+        row.update({key: value for key, value in item.items() if key not in (spec.identity, "_parent_id")})
+        row.update(outputs or {})
+        for name, provenance in (provenances or {}).items():
+            row[f"_provenance_{name}"] = provenance
+            for column in spec.columns:
+                if column.role == "derived" and column.name == name:
+                    self._record_node_recipe(column.produced_by)
+                    break
+        return row
+
+    def _stamp_existing_row(
+        self,
+        table: str,
+        existing: Mapping[str, Any],
+        write_gen: int,
+        child_spec: TableSpec | None = None,
+        *,
+        normalize_values: bool = True,
+    ) -> dict[str, Any]:
+        row = {key: normalize_value(value) for key, value in existing.items()} if normalize_values else dict(existing)
+        self._stamp_recipe(row, table, child_spec)
+        row["_write_gen"] = write_gen
+        return row
+
+    def _build_node_row(
+        self,
+        existing: Mapping[str, Any],
+        node: Any,
+        outputs: Mapping[str, Any],
+        write_gen: int,
+    ) -> dict[str, Any]:
+        row = {key: normalize_value(value) for key, value in existing.items()}
+        for column in self._provenance.node_columns(node):
+            if column.name in outputs:
+                row[column.name] = outputs[column.name]
+        provenance = self._provenance.node_provenance(node, self._provenance.stored_values(row))
+        for column in self._provenance.node_columns(node):
+            row[f"_provenance_{column.name}"] = provenance
+        self._record_node_recipe(node)
+        row["_write_gen"] = write_gen
+        if self._provenance.row_converged(row):
+            row["_row_fingerprint"] = self._provenance.root_fingerprint(self._provenance.source_inputs(row))
+            self._stamp_recipe(row, self._spec.name)
+        return row
+
+    def _evolve_for_backfill_column(self, column: str) -> None:
+        sample = self._store.read_rows(self._spec.name, limit=1)
+        if sample and column not in sample[0]:
+            column_type = str
+            for spec_column in self._spec.columns:
+                if spec_column.name == column and spec_column.role == "derived" and spec_column.produced_by:
+                    column_type = return_type(spec_column.produced_by)
+                    break
+            self._store.evolve_schema(
+                self._spec.name,
+                {
+                    column: python_type_to_arrow(column_type),
+                    f"_provenance_{column}": python_type_to_arrow(str),
+                },
+            )
 
     def _graph_inputs(self, item: Mapping[str, Any], provided: set[str] | None = None) -> dict[str, Any]:
         required = input_names(self._graph.inputs.required)
@@ -152,11 +366,11 @@ class WritePlanner:
         existing: dict[str, Any],
         spec: TableSpec | None = None,
         provided: set[str] | None = None,
-    ) -> Generator[WriteAction, Any, ReconcileResult | _PausedConvergence | None]:
+    ) -> Generator[RunGraph, Any, ReconcileResult | _PausedConvergence | None]:
         target = spec or self._spec
         boundary_counts: dict[str, int] = {}
         for child_spec in target.children:
-            rows = yield ReadRows(
+            rows = self._read_rows(
                 child_spec.name,
                 (("_parent_id", "eq", item[target.identity]),),
             )
@@ -172,7 +386,7 @@ class WritePlanner:
                 return step.result
             result = yield RunGraph(
                 self._provenance.column_graph(step.node),
-                _freeze(step.input_values()),
+                step.input_values(),
             )
             pause = _run_pause(result)
             if pause is not None:
@@ -187,33 +401,33 @@ class WritePlanner:
             outputs = _run_values(result)
             state = self._provenance.apply_reconcile_result(state, step, outputs)
 
-    def _cleanup_parent(self, identity_value: Any, write_gen: int) -> DeleteRows:
-        return DeleteRows(
+    def _cleanup_parent(self, identity_value: Any, write_gen: int) -> None:
+        self._store.delete_rows(
             self._spec.name,
-            ((self._identity, "eq", identity_value), ("_write_gen", "lt", write_gen)),
+            [(self._identity, "eq", identity_value), ("_write_gen", "lt", write_gen)],
         )
 
-    def _cleanup_children(self, identity_value: Any, write_gen: int) -> Generator[WriteAction, Any, None]:
+    def _cleanup_children(self, identity_value: Any, write_gen: int) -> None:
         for child_spec in self._spec.children:
-            yield DeleteRows(
+            self._store.delete_rows(
                 child_spec.name,
-                (("_parent_id", "eq", identity_value), ("_write_gen", "lt", write_gen)),
+                [("_parent_id", "eq", identity_value), ("_write_gen", "lt", write_gen)],
             )
 
     def _refresh_missing_stamps(
         self,
         existing: dict[str, Any],
-    ) -> Generator[WriteAction, Any, None]:
+    ) -> None:
         identity_value = existing[self._identity]
-        write_gen = (yield MaxWriteGen(self._spec.name)) + 1
-        new_row = yield StampExistingRow(self._spec.name, _freeze(existing), write_gen)
-        yield WriteRows.from_rows(self._spec.name, [new_row])
-        yield self._cleanup_parent(identity_value, write_gen)
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
+        new_row = self._stamp_existing_row(self._spec.name, existing, write_gen)
+        self._store.write_rows(self._spec.name, [new_row])
+        self._cleanup_parent(identity_value, write_gen)
         for child_spec in self._spec.children:
             if child_spec.child_graph is None:
                 continue
-            child_gen = (yield MaxWriteGen(child_spec.name)) + 1
-            rows = yield ReadRows(child_spec.name, (("_parent_id", "eq", identity_value),))
+            child_gen = self._store.max_write_gen(child_spec.name) + 1
+            rows = self._read_rows(child_spec.name, (("_parent_id", "eq", identity_value),))
             for row in dedup_child_rows(rows, child_spec.identity):
                 stamp = row.get(RECIPE_COLUMN)
                 if isinstance(stamp, str) and stamp:
@@ -221,20 +435,20 @@ class WritePlanner:
                 inputs = self._provenance.child_source_inputs(row, child_spec)
                 if row.get("_row_fingerprint") != self._provenance.child_fingerprint(inputs, child_spec):
                     continue
-                new_child = yield StampExistingRow(
+                new_child = self._stamp_existing_row(
                     child_spec.name,
-                    _freeze(row),
+                    row,
                     child_gen,
                     child_spec,
                 )
-                yield WriteRows.from_rows(child_spec.name, [new_child])
-                yield DeleteRows(
+                self._store.write_rows(child_spec.name, [new_child])
+                self._store.delete_rows(
                     child_spec.name,
-                    (
+                    [
                         (child_spec.identity, "eq", row[child_spec.identity]),
                         ("_parent_id", "eq", identity_value),
                         ("_write_gen", "lt", child_gen),
-                    ),
+                    ],
                 )
 
     def _bind_child_components(self, child_graph: Any) -> Any:
@@ -282,18 +496,18 @@ class WritePlanner:
         error: str | None,
         outputs: Mapping[str, Any] | None = None,
         provenances: Mapping[str, Any] | None = None,
-    ) -> BuildChildRow:
-        return BuildChildRow(
+    ) -> dict[str, Any]:
+        return self._build_child_row(
             child_spec,
-            _freeze(child_item),
+            child_item,
             child_identity,
             parent_id,
             fingerprint,
             write_gen,
-            status,
-            error,
-            _freeze(outputs or {}),
-            _freeze(provenances or {}),
+            status=status,
+            error=error,
+            outputs=outputs,
+            provenances=provenances,
         )
 
     def _insert_children_items(
@@ -302,7 +516,7 @@ class WritePlanner:
         child_items: list[Any],
         child_spec: TableSpec,
         write_gen: int,
-    ) -> Generator[WriteAction, Any, None]:
+    ) -> Generator[RunGraph, Any, None]:
         if child_spec.child_graph is None:
             return
         bound_graph = self._bind_child_components(child_spec.child_graph)
@@ -315,7 +529,7 @@ class WritePlanner:
                 if column.role == "source" and column.content_key and column.name in child_item
             }
             fingerprint = self._provenance.child_fingerprint(child_inputs, child_spec)
-            existing_rows = yield ReadRows(
+            existing_rows = self._read_rows(
                 child_spec.name,
                 (
                     ("_parent_id", "eq", parent_id),
@@ -325,17 +539,17 @@ class WritePlanner:
             existing = max(existing_rows, key=lambda row: row.get("_write_gen", 0)) if existing_rows else None
             if existing is not None and existing.get("_row_fingerprint") == fingerprint and existing.get("_status") in (None, "complete"):
                 if self._provenance.row_missing_stamp(existing, RECIPE_COLUMN):
-                    bumped = yield StampExistingRow(
+                    bumped = self._stamp_existing_row(
                         child_spec.name,
-                        _freeze(existing),
+                        existing,
                         write_gen,
                         child_spec,
-                        False,
+                        normalize_values=False,
                     )
                 else:
                     bumped = dict(existing)
                     bumped["_write_gen"] = write_gen
-                yield WriteRows.from_rows(child_spec.name, [bumped])
+                self._store.write_rows(child_spec.name, [bumped])
                 continue
 
             row: dict[str, Any] | None = None
@@ -345,7 +559,7 @@ class WritePlanner:
                 except Exception as error:
                     if self._on_error == "raise":
                         raise
-                    row = yield self._build_child_action(
+                    row = self._build_child_action(
                         child_spec,
                         child_item,
                         child_identity,
@@ -355,10 +569,10 @@ class WritePlanner:
                         status="error",
                         error=f"{type(error).__name__}: {error}",
                     )
-                    yield WriteRows.from_rows(child_spec.name, [row])
+                    self._store.write_rows(child_spec.name, [row])
                     continue
-                if reconciled is not None:
-                    row = yield self._build_child_action(
+                if isinstance(reconciled, ReconcileResult):
+                    row = self._build_child_action(
                         child_spec,
                         child_item,
                         child_identity,
@@ -373,11 +587,11 @@ class WritePlanner:
 
             if row is None:
                 try:
-                    child_outputs = _run_values((yield RunGraph(bound_graph, _freeze(child_inputs))))
+                    child_outputs = _run_values((yield RunGraph(bound_graph, child_inputs)))
                 except Exception as error:
                     if self._on_error == "raise":
                         raise
-                    row = yield self._build_child_action(
+                    row = self._build_child_action(
                         child_spec,
                         child_item,
                         child_identity,
@@ -387,9 +601,9 @@ class WritePlanner:
                         status="error",
                         error=f"{type(error).__name__}: {error}",
                     )
-                    yield WriteRows.from_rows(child_spec.name, [row])
+                    self._store.write_rows(child_spec.name, [row])
                     continue
-                row = yield self._build_child_action(
+                row = self._build_child_action(
                     child_spec,
                     child_item,
                     child_identity,
@@ -401,7 +615,7 @@ class WritePlanner:
                     outputs=child_outputs,
                     provenances=self._child_provenances(child_spec, {**child_item, **child_outputs}),
                 )
-            yield WriteRows.from_rows(child_spec.name, [row])
+            self._store.write_rows(child_spec.name, [row])
 
     def _insert_children(
         self,
@@ -409,7 +623,7 @@ class WritePlanner:
         outputs: Mapping[str, Any],
         child_spec: TableSpec,
         write_gen: int,
-    ) -> Generator[WriteAction, Any, None]:
+    ) -> Generator[RunGraph, Any, None]:
         child_items = self._child_items(outputs, child_spec)
         if child_items is not None:
             yield from self._insert_children_items(parent_id, child_items, child_spec, write_gen)
@@ -422,13 +636,13 @@ class WritePlanner:
         reconciled: ReconcileResult,
         parent_skipped: bool,
         write_gen: int,
-    ) -> Generator[WriteAction, Any, str]:
+    ) -> Generator[RunGraph, Any, str]:
         outputs = reconciled.output_values()
         provenances = reconciled.provenance_values()
         identity_value = item[self._identity]
         for selection in reconciled.children:
             if isinstance(selection, RebuildChildren):
-                rows = yield ReadRows(selection.spec.name, (("_parent_id", "eq", identity_value),))
+                rows = self._read_rows(selection.spec.name, (("_parent_id", "eq", identity_value),))
                 child_items = self._rebuild_child_items(rows, selection.spec)
             elif isinstance(selection, DerivedChildren):
                 child_items = list(selection.items)
@@ -443,18 +657,18 @@ class WritePlanner:
         provenance_changed = any(existing.get(f"_provenance_{name}") != provenance for name, provenance in provenances.items())
         rewrite_parent = not parent_skipped or provenance_changed or self._provenance.row_missing_stamp(existing, RECIPE_COLUMN)
         if rewrite_parent:
-            yield EvolveMetadata(_freeze(item))
-            row = yield BuildParentRow(
-                _freeze(item),
-                _freeze(graph_inputs),
-                _freeze(outputs),
+            self._evolve_for_metadata(item)
+            row = self._build_parent_row(
+                item,
+                graph_inputs,
+                outputs,
                 write_gen,
                 "complete",
-                _freeze(provenances),
+                provenances=provenances,
             )
-            yield WriteRows.from_rows(self._spec.name, [row])
-            yield self._cleanup_parent(identity_value, write_gen)
-        yield from self._cleanup_children(identity_value, write_gen)
+            self._store.write_rows(self._spec.name, [row])
+            self._cleanup_parent(identity_value, write_gen)
+        self._cleanup_children(identity_value, write_gen)
         return "skipped" if parent_skipped else "updated"
 
     def _provenances_for_values(self, values: Mapping[str, Any], pause: PauseInfo | None = None) -> dict[str, str]:
@@ -483,23 +697,23 @@ class WritePlanner:
         write_gen: int,
         existing: dict[str, Any] | None,
         outcome: WriteOutcome,
-    ) -> Generator[WriteAction, Any, RowReceipt]:
+    ) -> RowReceipt:
         identity_value = item[self._identity]
-        yield EvolveMetadata(_freeze(item))
-        row = yield BuildParentRow(
-            _freeze(item),
-            _freeze(source_inputs),
-            _freeze(outputs),
+        self._evolve_for_metadata(item)
+        row = self._build_parent_row(
+            item,
+            source_inputs,
+            outputs,
             write_gen,
             "waiting",
-            _freeze(provenances),
+            provenances=provenances,
             pause=pause,
             pause_provenance=pause_provenance,
         )
-        yield WriteRows.from_rows(self._spec.name, [row])
+        self._store.write_rows(self._spec.name, [row])
         if existing is not None:
-            yield self._cleanup_parent(identity_value, write_gen)
-            yield from self._cleanup_children(identity_value, write_gen)
+            self._cleanup_parent(identity_value, write_gen)
+            self._cleanup_children(identity_value, write_gen)
         return RowReceipt(str(identity_value), outcome, RowStatus.WAITING, pause=pause)
 
     def _error_parent(
@@ -509,31 +723,31 @@ class WritePlanner:
         write_gen: int,
         error: Exception,
         existing: dict[str, Any] | None,
-    ) -> Generator[WriteAction, Any, None]:
-        yield EvolveMetadata(_freeze(item))
-        row = yield BuildParentRow(
-            _freeze(item),
-            _freeze(graph_inputs),
-            (),
+    ) -> None:
+        self._evolve_for_metadata(item)
+        row = self._build_parent_row(
+            item,
+            graph_inputs,
+            {},
             write_gen,
             "error",
             error=f"{type(error).__name__}: {error}",
         )
-        yield WriteRows.from_rows(self._spec.name, [row])
+        self._store.write_rows(self._spec.name, [row])
         if existing is not None:
-            yield self._cleanup_parent(item[self._identity], write_gen)
+            self._cleanup_parent(item[self._identity], write_gen)
 
     def _insert_one(
         self,
         item: dict[str, Any],
         write_gen: int,
         provided: set[str] | None = None,
-    ) -> Generator[WriteAction, Any, RowReceipt]:
+    ) -> Generator[RunGraph, Any, RowReceipt]:
         identity_value = item[self._identity]
         provided_names = provided if provided is not None else set(item) - {self._identity}
         graph_inputs = self._graph_inputs(item, provided_names)
         source_inputs = self._source_inputs(item)
-        existing = yield ReadOne(self._spec.name, self._identity, identity_value)
+        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
         outcome = WriteOutcome.UPDATED if existing is not None else WriteOutcome.INSERTED
         fingerprint = self._provenance.root_fingerprint(source_inputs)
         answer_names = {column.name for column in self._spec.columns if column.role == "answer"}
@@ -545,7 +759,7 @@ class WritePlanner:
             parent_skipped = False
         if parent_skipped and not self._spec.children:
             if self._provenance.row_missing_stamp(existing, RECIPE_COLUMN):
-                yield from self._refresh_missing_stamps(existing)
+                self._refresh_missing_stamps(existing)
             return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
 
         if self._can_reconcile(existing):
@@ -556,21 +770,19 @@ class WritePlanner:
                     raise
                 if parent_skipped:
                     return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
-                yield from self._error_parent(item, source_inputs, write_gen, error, existing)
+                self._error_parent(item, source_inputs, write_gen, error, existing)
                 return RowReceipt(str(identity_value), outcome, RowStatus.ERROR, error=f"{type(error).__name__}: {error}")
             if isinstance(reconciled, _PausedConvergence):
-                return (
-                    yield from self._write_waiting_parent(
-                        item,
-                        source_inputs,
-                        reconciled.outputs,
-                        reconciled.provenances,
-                        reconciled.pause,
-                        reconciled.provenance,
-                        write_gen,
-                        existing,
-                        outcome,
-                    )
+                return self._write_waiting_parent(
+                    item,
+                    source_inputs,
+                    reconciled.outputs,
+                    reconciled.provenances,
+                    reconciled.pause,
+                    reconciled.provenance,
+                    write_gen,
+                    existing,
+                    outcome,
                 )
             if reconciled is not None:
                 reconciled_outcome = yield from self._apply_reconciled(
@@ -588,13 +800,13 @@ class WritePlanner:
                 )
 
         try:
-            result = yield RunGraph(self._graph, _freeze(graph_inputs))
+            result = yield RunGraph(self._graph, graph_inputs)
         except Exception as error:
             if self._on_error == "raise":
                 raise
             if parent_skipped:
                 return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
-            yield from self._error_parent(item, source_inputs, write_gen, error, existing)
+            self._error_parent(item, source_inputs, write_gen, error, existing)
             return RowReceipt(str(identity_value), outcome, RowStatus.ERROR, error=f"{type(error).__name__}: {error}")
 
         outputs = _run_values(result)
@@ -604,44 +816,42 @@ class WritePlanner:
             pause_provenance = provenances.get(pause.response_key)
             if pause_provenance is None:
                 raise RuntimeError(f"could not compute provenance for interrupt answer {pause.response_key!r}")
-            return (
-                yield from self._write_waiting_parent(
-                    item,
-                    source_inputs,
-                    outputs,
-                    provenances,
-                    pause,
-                    pause_provenance,
-                    write_gen,
-                    existing,
-                    outcome,
-                )
+            return self._write_waiting_parent(
+                item,
+                source_inputs,
+                outputs,
+                provenances,
+                pause,
+                pause_provenance,
+                write_gen,
+                existing,
+                outcome,
             )
 
         if parent_skipped:
             for child_spec in self._spec.children:
                 yield from self._insert_children(identity_value, outputs, child_spec, write_gen)
-            yield from self._cleanup_children(identity_value, write_gen)
+            self._cleanup_children(identity_value, write_gen)
             return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
 
         for child_spec in self._spec.children:
             yield from self._insert_children(identity_value, outputs, child_spec, write_gen)
-        yield EvolveMetadata(_freeze(item))
-        row = yield BuildParentRow(
-            _freeze(item),
-            _freeze(source_inputs),
-            _freeze(outputs),
+        self._evolve_for_metadata(item)
+        row = self._build_parent_row(
+            item,
+            source_inputs,
+            outputs,
             write_gen,
             "complete",
         )
-        yield WriteRows.from_rows(self._spec.name, [row])
+        self._store.write_rows(self._spec.name, [row])
         if existing is not None:
-            yield self._cleanup_parent(identity_value, write_gen)
-            yield from self._cleanup_children(identity_value, write_gen)
+            self._cleanup_parent(identity_value, write_gen)
+            self._cleanup_children(identity_value, write_gen)
         return RowReceipt(str(identity_value), outcome, RowStatus.COMPLETE)
 
     def insert(self, items: list[dict[str, Any]]) -> WriteOperation:
-        write_gen = (yield MaxWriteGen(self._spec.name)) + 1
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
         receipts: list[RowReceipt] = []
         for item in items:
             receipts.append((yield from self._insert_one(item, write_gen)))
@@ -651,8 +861,8 @@ class WritePlanner:
         self,
         identity_value: str,
         changes: dict[str, Any],
-    ) -> Generator[WriteAction, Any, tuple[dict[str, Any], bool, int]]:
-        existing = yield ReadOne(self._spec.name, self._identity, identity_value)
+    ) -> tuple[dict[str, Any], bool, int]:
+        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
         if existing is None:
             raise KeyError(identity_value)
         item: dict[str, Any] = {self._identity: identity_value}
@@ -666,19 +876,19 @@ class WritePlanner:
         item.update(changes)
         derivation_inputs = {column.name for column in self._spec.columns if column.role in ("source", "answer")}
         needs_rederive = any(key in derivation_inputs for key in changes)
-        write_gen = (yield MaxWriteGen(self._spec.name)) + 1
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
         return item, needs_rederive, write_gen
 
     def update(self, identity_value: str, changes: dict[str, Any]) -> WriteOperation:
-        item, needs_rederive, write_gen = yield from self._prepare_update(identity_value, changes)
-        existing = yield ReadOne(self._spec.name, self._identity, identity_value)
+        item, needs_rederive, write_gen = self._prepare_update(identity_value, changes)
+        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
         if not needs_rederive:
-            yield EvolveMetadata(_freeze({self._identity: identity_value, **changes}))
+            self._evolve_for_metadata({self._identity: identity_value, **changes})
             row = {key: normalize_value(value) for key, value in existing.items()}
             row.update(changes)
             row["_write_gen"] = write_gen
-            yield WriteRows.from_rows(self._spec.name, [row])
-            yield self._cleanup_parent(identity_value, write_gen)
+            self._store.write_rows(self._spec.name, [row])
+            self._cleanup_parent(identity_value, write_gen)
             status = (
                 RowStatus.ERROR
                 if existing.get("_status") == "error"
@@ -698,23 +908,25 @@ class WritePlanner:
         return (yield from self._insert_one(item, write_gen, provided=set(changes)))
 
     def delete(self, identity_value: str) -> WriteOperation:
-        existing = yield ReadOne(self._spec.name, self._identity, identity_value)
+        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
         if existing is None:
             return
         for child_spec in self._spec.children:
-            yield DeleteRows(child_spec.name, (("_parent_id", "eq", identity_value),))
-        yield DeleteRows(self._spec.name, ((self._identity, "eq", identity_value),))
+            self._store.delete_rows(child_spec.name, [("_parent_id", "eq", identity_value)])
+        self._store.delete_rows(self._spec.name, [(self._identity, "eq", identity_value)])
+        if False:
+            yield RunGraph(self._graph, {})
 
     def _row_unchanged(self, item: dict[str, Any], existing: dict[str, Any]) -> bool:
         inputs = self._source_inputs(item)
         return existing.get("_row_fingerprint") == self._provenance.root_fingerprint(inputs)
 
     def sync(self, items: list[dict[str, Any]]) -> WriteOperation:
-        rows = yield ReadRows(self._spec.name)
+        rows = self._read_rows(self._spec.name)
         existing_by_id = {str(row[self._identity]): row for row in dedup_rows(rows, self._identity) if row.get(self._identity) is not None}
         incoming_ids: set[str] = set()
         receipts: list[RowReceipt] = []
-        write_gen = (yield MaxWriteGen(self._spec.name)) + 1
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
 
         for item in items:
             identity_value = str(item[self._identity])
@@ -724,7 +936,7 @@ class WritePlanner:
                 receipts.append((yield from self._insert_one(item, write_gen)))
             elif self._row_unchanged(item, existing) and existing.get("_status") in (None, "complete"):
                 if self._provenance.row_missing_stamp(existing, RECIPE_COLUMN):
-                    yield from self._refresh_missing_stamps(existing)
+                    self._refresh_missing_stamps(existing)
                 receipts.append(RowReceipt(identity_value, WriteOutcome.SKIPPED, RowStatus.COMPLETE))
             else:
                 if self._row_unchanged(item, existing):
@@ -745,65 +957,33 @@ class WritePlanner:
         blocked = sorted(content_keys.intersection(fields))
         if blocked:
             raise ValueError(f"set() cannot update content-key fields: {', '.join(blocked)}")
-        rows = dedup_rows((yield ReadRows(self._spec.name, where)), self._identity)
+        rows = dedup_rows(self._read_rows(self._spec.name, where), self._identity)
         if not rows:
             return 0
-        yield EvolveMetadata(_freeze({self._identity: rows[0][self._identity], **fields}))
-        write_gen = (yield MaxWriteGen(self._spec.name)) + 1
+        self._evolve_for_metadata({self._identity: rows[0][self._identity], **fields})
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
         updated = []
         for row in rows:
             new_row = {key: normalize_value(value) for key, value in row.items()}
             new_row.update(fields)
             new_row["_write_gen"] = write_gen
             updated.append(new_row)
-        yield WriteRows.from_rows(self._spec.name, updated)
+        self._store.write_rows(self._spec.name, updated)
         for row in rows:
-            yield DeleteRows(
+            self._store.delete_rows(
                 self._spec.name,
-                ((self._identity, "eq", row[self._identity]), ("_write_gen", "lt", write_gen)),
+                [(self._identity, "eq", row[self._identity]), ("_write_gen", "lt", write_gen)],
             )
-        return len(updated)
-
-    def set_children(self, where: _Predicate, fields: dict[str, Any]) -> WriteOperation:
-        if not self._spec.children:
-            return 0
-        child_spec = self._spec.children[0]
-        rows = dedup_child_rows(
-            (yield ReadRows(child_spec.name, where)),
-            child_spec.identity,
-        )
-        if not rows:
-            return 0
-        yield EvolveMetadata(
-            _freeze({child_spec.identity: rows[0][child_spec.identity], **fields}),
-            child_spec.name,
-            child_spec.identity,
-        )
-        write_gen = (yield MaxWriteGen(child_spec.name)) + 1
-        updated = []
-        for row in rows:
-            new_row = {key: normalize_value(value) for key, value in row.items()}
-            new_row.update(fields)
-            new_row["_write_gen"] = write_gen
-            updated.append(new_row)
-        yield WriteRows.from_rows(child_spec.name, updated)
-        for row in rows:
-            yield DeleteRows(
-                child_spec.name,
-                (
-                    (child_spec.identity, "eq", row[child_spec.identity]),
-                    ("_parent_id", "eq", row["_parent_id"]),
-                    ("_write_gen", "lt", write_gen),
-                ),
-            )
+        if False:
+            yield RunGraph(self._graph, {})
         return len(updated)
 
     def derive_column(self, column: str, *, backfill: bool) -> WriteOperation:
         if backfill:
-            yield EvolveBackfillColumn(column)
+            self._evolve_for_backfill_column(column)
         node = self._provenance.producing_node(column)
-        write_gen = (yield MaxWriteGen(self._spec.name)) + 1
-        rows = dedup_rows((yield ReadRows(self._spec.name)), self._identity)
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
+        rows = dedup_rows(self._read_rows(self._spec.name), self._identity)
         receipts: list[RowReceipt] = []
         for existing in rows:
             if backfill and not self._provenance.column_is_null(existing.get(column)):
@@ -814,18 +994,18 @@ class WritePlanner:
                 (
                     yield RunGraph(
                         self._provenance.column_graph(node),
-                        _freeze(self._provenance.node_inputs(node, values)),
+                        self._provenance.node_inputs(node, values),
                     )
                 )
             )
-            new_row = yield BuildNodeRow(_freeze(existing), node, _freeze(outputs), write_gen)
-            yield WriteRows.from_rows(self._spec.name, [new_row])
-            yield DeleteRows(
+            new_row = self._build_node_row(existing, node, outputs, write_gen)
+            self._store.write_rows(self._spec.name, [new_row])
+            self._store.delete_rows(
                 self._spec.name,
-                (
+                [
                     (self._identity, "eq", existing[self._identity]),
                     ("_write_gen", "lt", write_gen),
-                ),
+                ],
             )
             receipts.append(RowReceipt(str(existing[self._identity]), WriteOutcome.UPDATED, RowStatus.COMPLETE))
         return TableReceipt(tuple(receipts))

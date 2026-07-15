@@ -32,7 +32,6 @@ from hypergraph.materialization._types import (
     deserialize_question,
 )
 from hypergraph.materialization._write_actions import RunGraph, WriteOperation
-from hypergraph.materialization._write_executor import WriteExecutor
 from hypergraph.materialization._writes import WritePlanner
 from hypergraph.materialization._writes import (
     dedup_child_rows as _dedup_child_rows,
@@ -222,7 +221,6 @@ class HyperTable:
         self._provenance_obj: Provenance | None = None
         self._indexes_obj: IndexPolicy | None = None
         self._write_planner_obj: WritePlanner | None = None
-        self._write_executor_obj: WriteExecutor | None = None
 
     def _ensure_analyzed(self):
         if self._analyzed:
@@ -248,16 +246,11 @@ class HyperTable:
         self._indexes_obj = IndexPolicy(self._store, self._spec, self._provenance_obj)
         self._write_planner_obj = WritePlanner(
             self._graph,
+            self._store,
             self._spec,
             self._identity,
             self._components,
             self._on_error,
-            self._provenance_obj,
-        )
-        self._write_executor_obj = WriteExecutor(
-            self._store,
-            self._spec,
-            self._identity,
             self._provenance_obj,
         )
 
@@ -278,12 +271,6 @@ class HyperTable:
         if self._write_planner_obj is None:
             raise RuntimeError("HyperTable write planner requested before graph analysis")
         return self._write_planner_obj
-
-    @property
-    def _write_executor(self) -> WriteExecutor:
-        if self._write_executor_obj is None:
-            raise RuntimeError("HyperTable write executor requested before graph analysis")
-        return self._write_executor_obj
 
     def _resolve_store(self):
         from hypergraph.materialization._table_store import TableStore
@@ -317,7 +304,7 @@ class HyperTable:
                         return complete.value
                     continue
             else:
-                response = self._write_executor.apply(action)
+                raise TypeError(f"unsupported write effect: {type(action).__name__}")
             try:
                 action = operation.send(response)
             except StopIteration as complete:
@@ -340,7 +327,7 @@ class HyperTable:
                         return complete.value
                     continue
             else:
-                response = self._write_executor.apply(action)
+                raise TypeError(f"unsupported write effect: {type(action).__name__}")
             try:
                 action = operation.send(response)
             except StopIteration as complete:
@@ -572,7 +559,7 @@ class HyperTable:
             def_hash = compute_definition_hash(node_func(c.produced_by))
             explained[c.name] = {
                 "provenance": def_hash,
-                "source": self._write_executor.journal.resolve(def_hash),
+                "source": self._write_planner.journal.resolve(def_hash),
             }
         return explained
 
@@ -584,12 +571,12 @@ class HyperTable:
         config/bound-value payload hash) and get the readable payload back.
         """
         self._ensure_analyzed()
-        return self._write_executor.journal.resolve(stamp)
+        return self._write_planner.journal.resolve(stamp)
 
     def journal_rows(self) -> list[dict[str, Any]]:
         """Every journaled ``(hash, kind, payload, first_seen_at)`` row — the raw recipe journal."""
         self._ensure_analyzed()
-        return self._write_executor.journal.rows()
+        return self._write_planner.journal.rows()
 
     def rows(self, where: Any = None, *, limit: int | None = None) -> list[dict[str, Any]]:
         """Return public rows matching a store predicate."""
