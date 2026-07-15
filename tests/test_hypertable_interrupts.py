@@ -238,6 +238,21 @@ def test_routed_same_name_outputs_insert_into_one_lancedb_column(tmp_path) -> No
 
     assert receipt.completed
     assert table.get("i1")["label"] == "positive:3"
+
+    updated = table.update("i1", positive_number=False)
+
+    assert updated.completed
+    assert table.get("i1")["label"] == "negative:3"
+    assert table.status().is_fresh
+
+    rederived = table.rederive("label")
+    assert rederived.completed
+    assert table.get("i1")["label"] == "negative:3"
+
+    routed_back = table.update("i1", positive_number=True)
+    assert routed_back.completed
+    assert table.get("i1")["label"] == "positive:3"
+    assert table.status().is_fresh
     assert table._store.column_names(table.table_name).count("label") == 1
 
 

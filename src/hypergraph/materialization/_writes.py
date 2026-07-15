@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from hypergraph import Graph
@@ -118,6 +118,7 @@ class WritePlanner:
         self._recipe_column_ready: set[str] = set()
         self._journal = RecipeJournal(store)
         self._answer_graphs: dict[tuple[str, ...], Graph] = {}
+        self._routed_graphs: dict[tuple[str, str], Graph] = {}
 
     @property
     def journal(self) -> RecipeJournal:
@@ -354,16 +355,56 @@ class WritePlanner:
         self._answer_graphs[key] = graph
         return graph
 
-    def _node_names_downstream(self, roots: set[str]) -> set[str]:
+    def _node_names_downstream(self, roots: set[str], graph: Graph | None = None) -> set[str]:
+        target_graph = graph or self._graph
         selected = set(roots)
         pending = list(roots)
         while pending:
             node_name = pending.pop()
-            for successor in self._graph.nx_graph.successors(node_name):
+            for successor in target_graph.nx_graph.successors(node_name):
                 if successor not in selected:
                     selected.add(successor)
                     pending.append(successor)
         return selected
+
+    def _routing_gate(self, node: Any, graph: Graph) -> Any | None:
+        if getattr(node, "is_gate", False):
+            return node
+        seen = {node.name}
+        frontier = [node.name]
+        while frontier:
+            predecessors: list[str] = []
+            for name in frontier:
+                predecessors.extend(graph.nx_graph.predecessors(name))
+            predecessors = [name for name in predecessors if name not in seen]
+            for name in predecessors:
+                candidate = graph.nodes[name]
+                if getattr(candidate, "is_gate", False):
+                    return candidate
+            seen.update(predecessors)
+            frontier = predecessors
+        return None
+
+    def _routed_graph(self, gate: Any, source: Graph, table_name: str) -> Graph:
+        cache_key = (table_name, gate.name)
+        cached = self._routed_graphs.get(cache_key)
+        if cached is not None:
+            return cached
+        selected = self._node_names_downstream({gate.name}, source)
+        graph = Graph(
+            [node for name, node in source.nodes.items() if name in selected],
+            name=f"{table_name}__{gate.name}",
+        )
+        bindings = {name: value for name, value in self._components.items() if name in set(graph.inputs.all)}
+        if bindings:
+            graph = graph.bind(**bindings)
+        self._routed_graphs[cache_key] = graph
+        return graph
+
+    @staticmethod
+    def _executed_nodes(result: Any) -> set[str]:
+        log = getattr(result, "log", None)
+        return {step.node_name for step in getattr(log, "steps", ())}
 
     def _answer_inputs(
         self,
@@ -399,6 +440,9 @@ class WritePlanner:
         provided: set[str] | None = None,
     ) -> Generator[RunGraph, Any, ReconcileResult | _PausedConvergence | None]:
         target = spec or self._spec
+        target_graph = target.child_graph if spec is not None else self._graph
+        if target_graph is None:
+            return None
         boundary_counts: dict[str, int] = {}
         for child_spec in target.children:
             rows = self._read_rows(
@@ -409,12 +453,77 @@ class WritePlanner:
         provided_names = provided if provided is not None else set(item) - {target.identity}
         incoming = {key: value for key, value in item.items() if key in provided_names and key != target.identity}
         state = self._provenance.start_reconcile(target, existing, incoming, boundary_counts)
+        routed_scope: set[str] = set()
+        routed_outputs: dict[str, Any] = {}
+        routed_executed: set[str] = set()
         while True:
             state, step = self._provenance.next_reconcile_step(state)
             if isinstance(step, ReconcileUnavailable):
                 return None
             if isinstance(step, ReconcileComplete):
                 return step.result
+
+            if step.node.name in routed_scope:
+                routed_scope.remove(step.node.name)
+                routed_step = step
+                if step.node.name not in routed_executed:
+                    current_provenances = dict(state.provenances)
+                    shared = [
+                        current_provenances[column.name]
+                        for column in self._provenance.node_columns(step.node, target)
+                        if len(self._provenance.column_producers(column)) > 1 and column.name in current_provenances
+                    ]
+                    if shared:
+                        routed_step = replace(step, provenance=shared[0])
+                state = self._provenance.apply_reconcile_result(
+                    state,
+                    routed_step,
+                    routed_outputs if step.node.name in routed_executed else {},
+                )
+                continue
+
+            gate = self._routing_gate(step.node, target_graph)
+            if gate is not None:
+                graph = self._routed_graph(gate, target_graph, target.name)
+                values = dict(state.values)
+                result = yield RunGraph(
+                    graph,
+                    {name: values[name] for name in input_names(graph.inputs.required) if name in values},
+                )
+                routed_outputs = _run_values(result)
+                routed_executed = self._executed_nodes(result)
+                remaining = {node.name for node in state.nodes[state.node_index :]}
+                routed_scope = self._node_names_downstream({gate.name}, target_graph) & remaining
+                stale_existing = dict(state.existing)
+                for routed_name in routed_scope:
+                    routed_node = target_graph.nodes[routed_name]
+                    for column in self._provenance.node_columns(routed_node, target):
+                        stale_existing[f"_provenance_{column.name}"] = None
+                state = replace(state, existing=tuple(stale_existing.items()))
+                pause = _run_pause(result)
+                if pause is not None:
+                    outputs = dict(state.outputs)
+                    outputs.update(routed_outputs)
+                    values.update(routed_outputs)
+                    provenances = dict(state.provenances)
+                    provenances.update(self._provenances_for_values(values, pause, routed_executed, target))
+                    pause_provenance = provenances.get(pause.response_key)
+                    if pause_provenance is None:
+                        raise RuntimeError(f"could not compute provenance for interrupt answer {pause.response_key!r}")
+                    return _PausedConvergence(
+                        pause=pause,
+                        outputs=outputs,
+                        provenances=provenances,
+                        provenance=pause_provenance,
+                    )
+                routed_scope.discard(step.node.name)
+                state = self._provenance.apply_reconcile_result(
+                    state,
+                    step,
+                    routed_outputs if step.node.name in routed_executed else {},
+                )
+                continue
+
             result = yield RunGraph(
                 self._provenance.column_graph(step.node),
                 step.input_values(),
@@ -702,13 +811,21 @@ class WritePlanner:
         self._cleanup_children(identity_value, write_gen)
         return "skipped" if parent_skipped else "updated"
 
-    def _provenances_for_values(self, values: Mapping[str, Any], pause: PauseInfo | None = None) -> dict[str, str]:
+    def _provenances_for_values(
+        self,
+        values: Mapping[str, Any],
+        pause: PauseInfo | None = None,
+        executed: set[str] | None = None,
+        spec: TableSpec | None = None,
+    ) -> dict[str, str]:
         provenances: dict[str, str] = {}
-        for node in self._provenance.nodes_in_dependency_order():
+        for node in self._provenance.nodes_in_dependency_order(spec):
+            if executed is not None and node.name not in executed:
+                continue
             provenance = self._provenance.node_provenance(node, values)
             if provenance is None:
                 continue
-            for column in self._provenance.node_columns(node):
+            for column in self._provenance.node_columns(node, spec):
                 if column.name in values or (pause is not None and column.name == pause.response_key):
                     provenances[column.name] = provenance
         return provenances
@@ -1061,7 +1178,11 @@ class WritePlanner:
         content_keys = {column.name for column in self._spec.columns if column.content_key}
         blocked = sorted(content_keys.intersection(fields))
         if blocked:
-            raise ValueError(f"set() cannot update content-key fields: {', '.join(blocked)}")
+            raise ValueError(
+                "HyperTable.set() cannot update content-key fields.\n\n"
+                f"Fields: {', '.join(blocked)}\n\n"
+                "How to fix: update annotation metadata only; converge content changes with update()."
+            )
         rows = dedup_rows(self._read_rows(self._spec.name, where), self._identity)
         if not rows:
             return 0
@@ -1103,11 +1224,11 @@ class WritePlanner:
             values = self._provenance.stored_values(existing)
             item = {name: value for name, value in values.items() if name == self._identity or name not in derived_names}
             source_inputs = self._source_inputs(item)
-            forced = {key: normalize_value(value) for key, value in existing.items()}
+            stale_target_row = {key: normalize_value(value) for key, value in existing.items()}
             for target_column in self._provenance.node_columns(node):
-                forced[f"_provenance_{target_column.name}"] = None
+                stale_target_row[f"_provenance_{target_column.name}"] = None
             try:
-                reconciled = yield from self._reconcile(item, forced)
+                reconciled = yield from self._reconcile(item, stale_target_row)
             except Exception as error:
                 if self._on_error == "raise":
                     raise
@@ -1136,7 +1257,11 @@ class WritePlanner:
                 receipts.append(receipt)
                 continue
             if reconciled is None:
-                raise RuntimeError(f"could not converge downstream of derived column {column!r}")
+                raise RuntimeError(
+                    "HyperTable could not converge a re-derived column.\n\n"
+                    f"Column: {column!r}\n\n"
+                    "How to fix: run insert() or sync() with the row's source columns so the full graph can derive it."
+                )
             yield from self._apply_reconciled(
                 item,
                 source_inputs,

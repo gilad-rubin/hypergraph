@@ -647,7 +647,11 @@ class HyperTable:
             if name in (child_spec.name, child_spec.identity):
                 return ChildTable(self, child_spec)
         available = ", ".join(child.name for child in self._spec.children) or "none"
-        raise KeyError(f"unknown child table {name!r}; available: {available}")
+        raise KeyError(
+            "unknown child table requested from HyperTable.\n\n"
+            f"Requested: {name!r}\nAvailable: {available}\n\n"
+            "How to fix: pass one of child_table_names to child()."
+        )
 
     # --- Named indexes (persisted query specs) ---
     #
