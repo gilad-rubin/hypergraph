@@ -79,3 +79,10 @@ class TestTableReceipt:
         assert receipt.deleted == 3
         assert receipt.failed
         assert len(receipt.errors) == 1
+
+    def test_empty_receipt_is_settled_complete(self):
+        receipt = TableReceipt(())
+
+        assert receipt.completed
+        assert not receipt.paused
+        assert not receipt.failed

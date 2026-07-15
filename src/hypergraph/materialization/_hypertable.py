@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Awaitable
+from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph import Graph
 from hypergraph.materialization._fingerprint import compute_definition_hash
@@ -39,6 +40,10 @@ from hypergraph.materialization._writes import (
 from hypergraph.materialization._writes import (
     dedup_rows as _dedup_rows,
 )
+
+if TYPE_CHECKING:
+    from hypergraph.materialization._table_store import TableStore
+    from hypergraph.runners import BaseRunner
 
 
 def _public_row(row: dict[str, Any], spec: TableSpec | None = None) -> dict[str, Any]:
@@ -193,15 +198,24 @@ class HyperTable:
         graph: Graph,
         *,
         identity: str,
-        store: Any,
-        runner: Any,
-        on_error: str = "raise",
+        store: TableStore,
+        runner: BaseRunner,
+        on_error: Literal["raise", "store"] = "raise",
         name: str | None = None,
-    ):
+    ) -> None:
         if on_error not in ("raise", "store"):
-            raise ValueError(f"on_error must be 'raise' or 'store', got {on_error!r}")
+            raise ValueError(
+                "HyperTable on_error must be 'raise' or 'store'.\n\n"
+                f"Received: {on_error!r}\n\n"
+                "How to fix: pass on_error='raise' for immediate failures or "
+                "on_error='store' for typed errored rows."
+            )
         if not isinstance(graph, Graph):
-            raise TypeError("HyperTable is created from Graph.as_table(); pass a Graph, not a node list")
+            raise TypeError(
+                "HyperTable requires a Graph, not a node list.\n\n"
+                f"Received: {type(graph).__name__}\n\n"
+                "How to fix: construct Graph([...]) and call graph.as_table(...)."
+            )
         self._source_graph = graph
         self._identity = identity
         self._store = store
@@ -212,7 +226,10 @@ class HyperTable:
         graph_nodes = list(graph.nodes.values()) if isinstance(graph.nodes, dict) else []
         if not graph_nodes:
             raise ValueError(
-                "Graph.as_table() requires at least one derivation node; use hypergraph.materialization.Table for a durable table without derivation"
+                "Graph.as_table() requires at least one derivation node.\n\n"
+                f"Graph: {graph.name or 'unnamed'}\n\n"
+                "How to fix: add a derivation node, or use hypergraph.materialization.Table "
+                "for a durable table without derivation."
             )
         self._map_over_nodes = [node for node in graph_nodes if getattr(node, "_map_config", None)]
         if self._map_over_nodes:
@@ -681,13 +698,15 @@ class HyperTable:
             results.append(public)
         return results
 
-    def set(self, where: Any, **fields: Any) -> Any:
+    def set(self, where: Any, **fields: Any) -> int | Awaitable[int]:
         """Bulk metadata update for all rows matching a predicate."""
         self._ensure_analyzed()
-        operation = self._write_planner.set_rows(tuple(_where_predicate(where)), fields)
         if self._is_async_runner():
-            return self._drive_async(operation)
-        return self._drive_sync(operation)
+            return self._set_async(where, fields)
+        return self._write_planner.set_rows(tuple(_where_predicate(where)), fields)
+
+    async def _set_async(self, where: Any, fields: dict[str, Any]) -> int:
+        return self._write_planner.set_rows(tuple(_where_predicate(where)), fields)
 
     @staticmethod
     def _insert_items(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
@@ -695,9 +714,17 @@ class HyperTable:
             return args[0]
         if kwargs:
             return [kwargs]
-        raise ValueError("insert() requires kwargs or a list of dicts")
+        raise ValueError(
+            "HyperTable.insert() requires one keyword row or a list of row dictionaries.\n\n"
+            "Received no row values.\n\n"
+            "How to fix: call insert(item_id='i-1', ...) or insert([{'item_id': 'i-1', ...}])."
+        )
 
-    def insert(self, *args, **kwargs) -> Any:
+    def insert(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> RowReceipt | TableReceipt | Awaitable[RowReceipt | TableReceipt]:
         self._ensure_analyzed()
         items = self._insert_items(*args, **kwargs)
         single = not (args and isinstance(args[0], list))
@@ -711,7 +738,7 @@ class HyperTable:
         receipt = await self._drive_async(operation)
         return receipt.receipts[0] if single else receipt
 
-    def update(self, identity_value: str, **changes: Any) -> Any:
+    def update(self, identity_value: str, **changes: Any) -> RowReceipt | Awaitable[RowReceipt]:
         """Update a row. Re-derives downstream if source columns changed."""
         self._ensure_analyzed()
         operation = self._write_planner.update(identity_value, changes)
@@ -719,15 +746,17 @@ class HyperTable:
             return self._drive_async(operation)
         return self._drive_sync(operation)
 
-    def delete(self, identity_value: str) -> Any:
+    def delete(self, identity_value: str) -> None | Awaitable[None]:
         """Delete a row and cascade-delete its children."""
         self._ensure_analyzed()
-        operation = self._write_planner.delete(identity_value)
         if self._is_async_runner():
-            return self._drive_async(operation)
-        return self._drive_sync(operation)
+            return self._delete_async(identity_value)
+        return self._write_planner.delete(identity_value)
 
-    def sync(self, items: list[dict[str, Any]]) -> Any:
+    async def _delete_async(self, identity_value: str) -> None:
+        self._write_planner.delete(identity_value)
+
+    def sync(self, items: list[dict[str, Any]]) -> TableReceipt | Awaitable[TableReceipt]:
         """Reconcile: insert new, update changed, delete missing, skip unchanged."""
         self._ensure_analyzed()
         operation = self._write_planner.sync(items)
@@ -735,7 +764,12 @@ class HyperTable:
             return self._drive_async(operation)
         return self._drive_sync(operation)
 
-    def rederive(self, column: str, *, missing_only: bool = False) -> Any:
+    def rederive(
+        self,
+        column: str,
+        *,
+        missing_only: bool = False,
+    ) -> TableReceipt | Awaitable[TableReceipt]:
         """Re-derive one column, optionally only where its value is missing."""
         self._ensure_analyzed()
         operation = self._write_planner.derive_column(column, backfill=missing_only)

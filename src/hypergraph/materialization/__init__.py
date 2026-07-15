@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from hypergraph.materialization._hypertable import HyperTable
+from hypergraph.materialization._hypertable import ChildTable, HyperTable
 from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.materialization._table import Table
 from hypergraph.materialization._table_store import TableStore, validate_store
@@ -19,6 +19,7 @@ from hypergraph.materialization._types import (
 
 __all__ = [
     "HyperTable",
+    "ChildTable",
     "LanceDBStore",
     "Table",
     "TableStore",

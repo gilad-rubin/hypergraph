@@ -287,6 +287,6 @@ async def answer(upload_id: str, answer_key: str, value: str):
 
 ## Plain `Table`
 
-`Table(identity=..., store=..., name=...)` is the non-deriving companion.
+`Table(identity=..., store=...)` is the non-deriving companion.
 Use `append()` to store rows, plus `update()`, `delete()`, `get()`, `rows()`,
 and `count()`. It returns the same receipt vocabulary but never runs a graph.

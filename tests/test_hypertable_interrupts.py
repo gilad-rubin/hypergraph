@@ -179,6 +179,42 @@ async def test_non_serializable_evidence_fails_loudly_at_pause_persistence(tmp_p
         await table.insert(doc_id="d1", text="draft")
 
 
+@pytest.mark.asyncio
+async def test_rederive_answer_returns_truthful_waiting_receipt(tmp_path) -> None:
+    @node(output_name="prepared")
+    def prepare(text: str) -> str:
+        return text.upper()
+
+    @interrupt(answer_name="decision")
+    def review(prepared: str) -> ReviewQuestion:
+        return ReviewQuestion(prompt=f"Approve {prepared}?")
+
+    @node(output_name="filed")
+    def apply(prepared: str, decision: str) -> str:
+        return f"{decision}:{prepared}"
+
+    store = LanceDBStore(str(tmp_path / "rederive_answer"))
+    table = Graph([prepare, review, apply]).as_table(
+        identity="doc_id",
+        store=store,
+        runner=AsyncRunner(),
+    )
+    completed = await table.insert(doc_id="d1", text="draft", decision="publish")
+    assert completed.completed
+
+    receipt = await table.rederive("decision")
+
+    assert receipt.paused and not receipt.completed and not receipt.failed
+    assert len(receipt.waiting) == 1
+    assert receipt.waiting[0].pause is not None
+    assert receipt.waiting[0].pause.response_key == "decision"
+    assert table.waiting()[0].pause.value.prompt == "Approve DRAFT?"
+    assert [row["_status"] for row in store.read_rows(table.table_name)] == ["waiting"]
+
+    skipped = await table.rederive("prepared", missing_only=True)
+    assert skipped.paused and skipped.waiting[0].outcome is WriteOutcome.SKIPPED
+
+
 def test_routed_same_name_outputs_insert_into_one_lancedb_column(tmp_path) -> None:
     @ifelse(when_true="positive", when_false="negative")
     def choose(positive_number: bool) -> bool:

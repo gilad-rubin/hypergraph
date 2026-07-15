@@ -82,7 +82,7 @@ class TableReceipt:
 
     @property
     def completed(self) -> bool:
-        return bool(self.receipts) and all(receipt.completed for receipt in self.receipts)
+        return all(receipt.completed for receipt in self.receipts)
 
     @property
     def failed(self) -> bool:
@@ -129,13 +129,22 @@ def serialize_question(pause: PauseInfo, provenance: str) -> str:
     ask = pause.value
     missing = [name for name in ("prompt", "options", "evidence", "answer_type") if not hasattr(ask, name)]
     if missing:
-        raise TypeError(f"interrupt question is missing structural attribute(s): {', '.join(missing)}")
+        raise TypeError(
+            "Interrupt question does not satisfy the persisted structural contract.\n\n"
+            f"Missing attribute(s): {', '.join(missing)}\n\n"
+            "How to fix: return a frozen question value exposing prompt, options, "
+            "evidence, and answer_type."
+        )
     evidence = tuple(ask.evidence)
     for index, item in enumerate(evidence):
         try:
             json.dumps(item)
         except (TypeError, ValueError) as error:
-            raise TypeError(f"interrupt evidence item {index} is not JSON-serializable: {item!r}") from error
+            raise TypeError(
+                f"Interrupt question evidence item {index} is not JSON-serializable.\n\n"
+                f"Item: {item!r}\n\n"
+                "How to fix: replace it with a JSON scalar, list, mapping, or other serializable value."
+            ) from error
     envelope = {
         "node_name": pause.node_name,
         "response_key": pause.response_key,

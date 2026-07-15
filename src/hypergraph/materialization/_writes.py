@@ -96,7 +96,7 @@ def _run_pause(result: Any) -> PauseInfo | None:
 
 
 class WritePlanner:
-    """Emit immutable actions for every mutating HyperTable operation."""
+    """Own physical row convergence and yield only graph execution effects."""
 
     def __init__(
         self,
@@ -355,20 +355,13 @@ class WritePlanner:
             return cached
 
         graph_nodes = self._graph.nodes
-        selected: set[str] = set()
-        pending: list[str] = []
+        roots: set[str] = set()
         for column in self._spec.columns:
             if column.role != "answer" or column.name not in answer_names:
                 continue
             for producer in self._provenance.column_producers(column):
-                selected.add(producer.name)
-                pending.append(producer.name)
-        while pending:
-            node_name = pending.pop()
-            for successor in self._graph.nx_graph.successors(node_name):
-                if successor not in selected:
-                    selected.add(successor)
-                    pending.append(successor)
+                roots.add(producer.name)
+        selected = self._node_names_downstream(roots)
         if not selected:
             raise RuntimeError(f"could not find interrupt node for answer column(s): {', '.join(key)}")
 
@@ -381,6 +374,17 @@ class WritePlanner:
             graph = graph.bind(**bindings)
         self._answer_graphs[key] = graph
         return graph
+
+    def _node_names_downstream(self, roots: set[str]) -> set[str]:
+        selected = set(roots)
+        pending = list(roots)
+        while pending:
+            node_name = pending.pop()
+            for successor in self._graph.nx_graph.successors(node_name):
+                if successor not in selected:
+                    selected.add(successor)
+                    pending.append(successor)
+        return selected
 
     def _answer_inputs(
         self,
@@ -730,9 +734,19 @@ class WritePlanner:
                     provenances[column.name] = provenance
         return provenances
 
-    def _waiting_receipt(self, identity_value: Any, outcome: WriteOutcome, row: Mapping[str, Any]) -> RowReceipt:
-        pause, _provenance = deserialize_question(row["_question"])
-        return RowReceipt(str(identity_value), outcome, RowStatus.WAITING, pause=pause)
+    @staticmethod
+    def _receipt_for_row(identity_value: Any, outcome: WriteOutcome, row: Mapping[str, Any]) -> RowReceipt:
+        if row.get("_status") == "waiting":
+            pause, _provenance = deserialize_question(row["_question"])
+            return RowReceipt(str(identity_value), outcome, RowStatus.WAITING, pause=pause)
+        if row.get("_status") == "error":
+            return RowReceipt(
+                str(identity_value),
+                outcome,
+                RowStatus.ERROR,
+                error=str(row.get("_error") or ""),
+            )
+        return RowReceipt(str(identity_value), outcome, RowStatus.COMPLETE)
 
     def _write_waiting_parent(
         self,
@@ -870,7 +884,7 @@ class WritePlanner:
         source_names = {column.name for column in self._spec.columns if column.role == "source"}
         source_provided = bool(source_names & provided_names)
         if existing is not None and existing.get("_row_fingerprint") == fingerprint and existing.get("_status") == "waiting" and not answer_provided:
-            return self._waiting_receipt(identity_value, WriteOutcome.SKIPPED, existing)
+            return self._receipt_for_row(identity_value, WriteOutcome.SKIPPED, existing)
         parent_skipped = self._parent_skipped(existing, fingerprint)
         if answer_provided:
             parent_skipped = False
@@ -1017,33 +1031,17 @@ class WritePlanner:
             row["_write_gen"] = write_gen
             self._store.write_rows(self._spec.name, [row])
             self._cleanup_parent(identity_value, write_gen)
-            status = (
-                RowStatus.ERROR
-                if existing.get("_status") == "error"
-                else RowStatus.WAITING
-                if existing.get("_status") == "waiting"
-                else RowStatus.COMPLETE
-            )
-            pause = deserialize_question(existing["_question"])[0] if status is RowStatus.WAITING else None
-            return RowReceipt(
-                str(identity_value),
-                WriteOutcome.SKIPPED,
-                status,
-                pause=pause,
-                error=existing.get("_error") if status is RowStatus.ERROR else None,
-            )
+            return self._receipt_for_row(identity_value, WriteOutcome.SKIPPED, existing)
 
         return (yield from self._insert_one(item, write_gen, provided=set(changes)))
 
-    def delete(self, identity_value: str) -> WriteOperation:
+    def delete(self, identity_value: str) -> None:
         existing = self._store.read_one(self._spec.name, self._identity, identity_value)
         if existing is None:
             return
         for child_spec in self._spec.children:
             self._store.delete_rows(child_spec.name, [("_parent_id", "eq", identity_value)])
         self._store.delete_rows(self._spec.name, [(self._identity, "eq", identity_value)])
-        if False:
-            yield RunGraph(self._graph, {})
 
     def _row_unchanged(self, item: dict[str, Any], existing: dict[str, Any]) -> bool:
         inputs = self._source_inputs(item)
@@ -1076,11 +1074,11 @@ class WritePlanner:
         deleted = 0
         for identity_value in existing_by_id:
             if identity_value not in incoming_ids:
-                yield from self.delete(identity_value)
+                self.delete(identity_value)
                 deleted += 1
         return TableReceipt(tuple(receipts), deleted=deleted)
 
-    def set_rows(self, where: _Predicate, fields: dict[str, Any]) -> WriteOperation:
+    def set_rows(self, where: _Predicate, fields: dict[str, Any]) -> int:
         content_keys = {column.name for column in self._spec.columns if column.content_key}
         blocked = sorted(content_keys.intersection(fields))
         if blocked:
@@ -1102,8 +1100,6 @@ class WritePlanner:
                 self._spec.name,
                 [(self._identity, "eq", row[self._identity]), ("_write_gen", "lt", write_gen)],
             )
-        if False:
-            yield RunGraph(self._graph, {})
         return len(updated)
 
     def derive_column(self, column: str, *, backfill: bool) -> WriteOperation:
@@ -1113,19 +1109,53 @@ class WritePlanner:
         write_gen = self._store.max_write_gen(self._spec.name) + 1
         rows = dedup_rows(self._read_rows(self._spec.name), self._identity)
         receipts: list[RowReceipt] = []
+        derived_columns = self._provenance.derived_columns()
+        derived_names = {derived.name for derived in derived_columns}
         for existing in rows:
             if backfill and not self._provenance.column_is_null(existing.get(column)):
-                receipts.append(RowReceipt(str(existing[self._identity]), WriteOutcome.SKIPPED, RowStatus.COMPLETE))
-                continue
-            values = self._provenance.stored_values(existing)
-            outputs = _run_values(
-                (
-                    yield RunGraph(
-                        self._provenance.column_graph(node),
-                        self._provenance.node_inputs(node, values),
+                receipts.append(
+                    self._receipt_for_row(
+                        existing[self._identity],
+                        WriteOutcome.SKIPPED,
+                        existing,
                     )
                 )
+                continue
+            values = self._provenance.stored_values(existing)
+            result = yield RunGraph(
+                self._provenance.column_graph(node),
+                self._provenance.node_inputs(node, values),
             )
+            pause = _run_pause(result)
+            if pause is not None:
+                stale_nodes = self._node_names_downstream({node.name})
+                stale_columns = {
+                    spec_column.name
+                    for spec_column in derived_columns
+                    if any(producer.name in stale_nodes for producer in self._provenance.column_producers(spec_column))
+                }
+                item = {name: value for name, value in values.items() if name == self._identity or name not in derived_names}
+                retained_outputs = {name: value for name, value in values.items() if name in derived_names and name not in stale_columns}
+                provenances = {name: existing[f"_provenance_{name}"] for name in retained_outputs if f"_provenance_{name}" in existing}
+                pause_provenance = self._provenance.node_provenance(node, values)
+                if pause_provenance is None:
+                    raise RuntimeError(f"could not compute provenance for interrupt answer {pause.response_key!r}")
+                provenances[pause.response_key] = pause_provenance
+                receipt = self._write_waiting_parent(
+                    item,
+                    self._source_inputs(item),
+                    retained_outputs,
+                    provenances,
+                    pause,
+                    pause_provenance,
+                    write_gen,
+                    existing,
+                    WriteOutcome.UPDATED,
+                )
+                receipts.append(receipt)
+                continue
+
+            outputs = _run_values(result)
             new_row = self._build_node_row(existing, node, outputs, write_gen)
             self._store.write_rows(self._spec.name, [new_row])
             self._store.delete_rows(
@@ -1135,5 +1165,11 @@ class WritePlanner:
                     ("_write_gen", "lt", write_gen),
                 ],
             )
-            receipts.append(RowReceipt(str(existing[self._identity]), WriteOutcome.UPDATED, RowStatus.COMPLETE))
+            receipts.append(
+                self._receipt_for_row(
+                    existing[self._identity],
+                    WriteOutcome.UPDATED,
+                    new_row,
+                )
+            )
         return TableReceipt(tuple(receipts))

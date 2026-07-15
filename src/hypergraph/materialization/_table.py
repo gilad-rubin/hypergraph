@@ -23,13 +23,13 @@ def _predicate(where: Any) -> list[tuple[str, str, Any]]:
 class Table:
     """A durable append-only fact table: identity, store, and schema evolution."""
 
-    def __init__(self, *, identity: str, store: TableStore, name: str | None = None):
+    def __init__(self, *, identity: str, store: TableStore):
         if not isinstance(store, TableStore):
             raise TypeError(f"store must be a TableStore instance, got {type(store)}")
         self._identity = identity
         self._store = store
         self._spec = TableSpec(
-            name=name or identity.replace("_id", ""),
+            name=identity.replace("_id", ""),
             identity=identity,
             columns=[
                 ColumnSpec(identity, role="identity", arrow_type=python_type_to_arrow(str)),

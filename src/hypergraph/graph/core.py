@@ -6,7 +6,7 @@ import functools
 import hashlib
 import types
 import warnings
-from typing import TYPE_CHECKING, Annotated, Any, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Union, get_args, get_origin
 
 import networkx as nx
 
@@ -20,7 +20,9 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from hypergraph.events.processor import EventProcessor
+    from hypergraph.materialization import HyperTable, TableStore
     from hypergraph.nodes.graph_node import GraphNode
+    from hypergraph.runners import BaseRunner
     from hypergraph.viz.debug import VizDebugger
 
 
@@ -1461,11 +1463,11 @@ class Graph:
         self,
         *,
         identity: str,
-        store: Any,
-        runner: Any = None,
-        on_error: str = "raise",
+        store: TableStore,
+        runner: BaseRunner | None = None,
+        on_error: Literal["raise", "store"] = "raise",
         name: str | None = None,
-    ) -> Any:
+    ) -> HyperTable:
         """Persist this graph as an incremental table."""
         from hypergraph.materialization import HyperTable
         from hypergraph.runners import SyncRunner
