@@ -58,6 +58,7 @@ from hypergraph.runners._shared.readiness import find_missing_resume_seed_inputs
 from hypergraph.runners._shared.results import (
     ErrorHandling,
     MapResult,
+    PauseInfo,
     RunResult,
     RunStatus,
     build_failed_run_result,
@@ -91,6 +92,7 @@ from hypergraph.runners._shared.validation import (
 )
 from hypergraph.runners._shared.value_resolution import (
     build_resume_validation_values,
+    collect_inputs_for_node,
     warn_on_bind_overrides,
 )
 from hypergraph.runners.base import BaseRunner
@@ -695,7 +697,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             total_duration_ms = (time.time() - start_time) * 1000
             try:
-                _validate_pause_options_have_routes(graph, pause.pause_info)
+                _validate_pause_options_have_routes(graph, pause.pause_info, partial_state)
                 if dispatcher.active:
                     from hypergraph.events.types import InterruptEvent
 
@@ -1621,7 +1623,11 @@ async def _get_completed_child_runs(
     return [run for run in child_runs if run.status == WorkflowStatus.COMPLETED]
 
 
-def _validate_pause_options_have_routes(graph: Any, pause_info: Any) -> None:
+def _validate_pause_options_have_routes(
+    graph: Graph,
+    pause_info: PauseInfo,
+    state: GraphState | None,
+) -> None:
     """Reject a surfaced question whose answer can select a dead gate route."""
     options = getattr(pause_info.value, "options", None)
     if options is None:
@@ -1629,16 +1635,45 @@ def _validate_pause_options_have_routes(graph: Any, pause_info: Any) -> None:
 
     from hypergraph.nodes.gate import IfElseNode, RouteNode
 
+    if state is None:
+        raise RuntimeError(
+            f"InterruptNode '{pause_info.node_name}' could not validate its question options because no partial graph state is available\n\n"
+            f"How to fix: Surface this pause through AsyncRunner.run() so route inputs are available."
+        )
+
+    active_nodes = compute_execution_scope(graph).active_nodes
     for gate in graph._nodes.values():
         if not isinstance(gate, (RouteNode, IfElseNode)):
+            continue
+        if active_nodes is not None and gate.name not in active_nodes:
             continue
         if pause_info.response_key not in gate.inputs:
             continue
 
-        targets = {target for target in gate.targets if isinstance(target, str)}
         for option in options:
-            if option not in targets:
+            try:
+                gate_inputs = collect_inputs_for_node(
+                    gate,
+                    graph,
+                    state,
+                    {pause_info.response_key: option},
+                )
+                result = gate.func(**gate.map_inputs_to_params(gate_inputs))
+                if isinstance(gate, IfElseNode):
+                    decision = gate.when_true if result is True else gate.when_false if result is False else None
+                else:
+                    decision = gate.fallback if result is None else result
+                decisions = decision if isinstance(decision, list) else [decision]
+                has_matching_targets = bool(decisions) and all(candidate in gate.targets for candidate in decisions)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"InterruptNode '{pause_info.node_name}' option '{option}' could not be mapped to a route target on gate '{gate.name}'\n\n"
+                    f"How to fix: Make the gate a pure function that maps every question option to one declared target."
+                ) from exc
+
+            if not has_matching_targets:
                 raise RuntimeError(
                     f"InterruptNode '{pause_info.node_name}' returned option '{option}' with no matching route target on gate '{gate.name}'\n\n"
-                    f"How to fix: Add a route target named '{option}', or remove that option from the question."
+                    f"The gate returned {decision!r}; declared targets are {gate.targets!r}.\n\n"
+                    f"How to fix: Map that option to a declared route target, or remove it from the question."
                 )

@@ -287,9 +287,17 @@ run.status == WorkflowStatus.COMPLETED  # True
 You do not need a checkpointer to pause and resume a graph. Without one, each `run()` call replays the graph from the start, and you re-supply previously-collected interrupt responses by seeding them back into the input values:
 
 ```python
+from dataclasses import dataclass
+from typing import ClassVar
+
 from hypergraph import Graph, node, AsyncRunner, interrupt
 
-# FreeText is supplied by the companion question-vocabulary package.
+@dataclass(frozen=True)
+class FreeText:  # Stand-in for the companion question-vocabulary package.
+    answer_type: ClassVar[object] = str
+    prompt: str
+    options: tuple[str, ...] | None = None
+    evidence: tuple[object, ...] = ()
 
 @node(output_name="draft")
 def generate(prompt: str) -> str:

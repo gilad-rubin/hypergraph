@@ -249,10 +249,12 @@ These node types reject `cache=True` at build time:
 
 ### InterruptNode
 
-InterruptNode accepts `cache=True` (and defaults to `False`), but a question
-pause does not produce a dataflow value to cache. Supplying `answer_name` in
-the run values skips the question handler; use a checkpointer to persist the
-paused run rather than treating the cache as a pending-question store.
+InterruptNode accepts `cache=True` (and defaults to `False`), but the runner
+bypasses node-result caching for interrupts. A question pause does not produce
+a dataflow value to cache, and a supplied answer must never be replayed as the
+answer to a later run. Supplying `answer_name` in the run values skips the
+question handler; use a checkpointer to persist the paused run rather than
+treating the cache as a pending-question store.
 
 ## Real-World Example: Cached RAG Pipeline
 

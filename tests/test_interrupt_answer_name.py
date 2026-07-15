@@ -8,9 +8,9 @@ from typing import ClassVar
 import pytest
 
 from hypergraph import END, AsyncRunner, Graph, InterruptNode, RunStatus, interrupt, node, route
+from hypergraph.cache import InMemoryCache
 from hypergraph.checkpointers import MemoryCheckpointer
 from hypergraph.graph.validation import GraphConfigError
-
 
 MULTI_ANSWER_TYPE = tuple[str, ...]
 
@@ -150,12 +150,12 @@ async def test_dead_question_option_fails_before_pause_surfaces():
     def review_duplicate(upload_path: str) -> Choice:
         return Choice(
             prompt=f"What should happen to {upload_path}?",
-            options=("replace_existing", "archive_old"),
+            options=("replace-existing", "archive-old"),
         )
 
     @route(targets=["replace_existing"], default_open=False)
     def choose_path(dup_decision: str) -> str:
-        return dup_decision
+        return dup_decision.replace("-", "_")
 
     @node(output_name="result")
     def replace_existing(dup_decision: str) -> str:
@@ -163,8 +163,35 @@ async def test_dead_question_option_fails_before_pause_surfaces():
 
     graph = Graph([review_duplicate, choose_path, replace_existing])
 
-    with pytest.raises(RuntimeError, match="archive_old.*choose_path"):
+    with pytest.raises(RuntimeError, match="archive-old.*choose_path"):
         await AsyncRunner().run(graph, {"upload_path": "report.pdf"})
+
+
+@pytest.mark.asyncio
+async def test_dead_option_check_ignores_gate_outside_selected_scope():
+    @interrupt(answer_name="decision")
+    def review(draft: str) -> Choice:
+        return Choice(prompt="Publish?", options=("publish", "revise"))
+
+    @node(output_name="receipt")
+    def record(decision: str) -> str:
+        return f"recorded:{decision}"
+
+    @route(targets=["archive"], default_open=False)
+    def inactive_route(decision: str) -> str:
+        return "archive"
+
+    @node(output_name="archived")
+    def archive(decision: str) -> str:
+        return f"archived:{decision}"
+
+    graph = Graph([review, record, inactive_route, archive]).select("receipt")
+
+    result = await AsyncRunner().run(graph, {"draft": "v4"})
+
+    assert result.status == RunStatus.PAUSED
+    assert result.pause is not None
+    assert result.pause.response_key == "decision"
 
 
 @pytest.mark.asyncio
@@ -177,12 +204,12 @@ async def test_answer_routes_to_distinct_terminals_and_upfront_answer_skips_ques
         handler_calls += 1
         return Choice(
             prompt=f"What should happen to {upload_path}?",
-            options=("replace_existing", "keep_both"),
+            options=("replace-existing", "keep-both"),
         )
 
     @route(targets=["replace_existing", "keep_both"], default_open=False)
     def choose_path(dup_decision: str) -> str:
-        return dup_decision
+        return dup_decision.replace("-", "_")
 
     @node(output_name="replaced")
     def replace_existing(dup_decision: str) -> str:
@@ -201,18 +228,41 @@ async def test_answer_routes_to_distinct_terminals_and_upfront_answer_skips_ques
 
     replaced = await runner.run(
         graph,
-        {"upload_path": "report.pdf", "dup_decision": "replace_existing"},
+        {"upload_path": "report.pdf", "dup_decision": "replace-existing"},
     )
     kept = await runner.run(
         graph,
-        {"upload_path": "report.pdf", "dup_decision": "keep_both"},
+        {"upload_path": "report.pdf", "dup_decision": "keep-both"},
     )
 
-    assert replaced["replaced"] == "replaced:replace_existing"
+    assert replaced["replaced"] == "replaced:replace-existing"
     assert "kept" not in replaced.values
-    assert kept["kept"] == "kept:keep_both"
+    assert kept["kept"] == "kept:keep-both"
     assert "replaced" not in kept.values
     assert handler_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_interrupt_answers_are_never_replayed_from_node_cache():
+    handler_calls = 0
+
+    @interrupt(answer_name="decision", cache=True)
+    def review(draft: str) -> Choice:
+        nonlocal handler_calls
+        handler_calls += 1
+        return Choice(prompt="Publish?", evidence=(draft,))
+
+    graph = Graph([review])
+    runner = AsyncRunner(cache=InMemoryCache())
+
+    supplied = await runner.run(graph, {"draft": "v4", "decision": "yes"})
+    unanswered = await runner.run(graph, {"draft": "v4"})
+
+    assert supplied.status == RunStatus.COMPLETED
+    assert handler_calls == 1
+    assert unanswered.status == RunStatus.PAUSED
+    assert unanswered.pause is not None
+    assert unanswered.pause.response_key == "decision"
 
 
 @pytest.mark.asyncio
@@ -221,7 +271,7 @@ async def test_docs_review_confirm_publish_example_is_runnable():
 
     @interrupt(answer_name="decision")
     def review(draft: str) -> Confirm:
-        return Confirm(prompt=f"Publish this draft?", evidence=(draft,))
+        return Confirm(prompt=f"Publish this draft?", evidence=(draft,))  # noqa: F541
 
     @node(output_name="result")
     def publish(draft: str, decision: bool) -> str:

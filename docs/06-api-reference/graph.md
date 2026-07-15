@@ -207,15 +207,23 @@ print(g.has_async_nodes)  # True
 True if any node in the graph is an interrupt node.
 
 ```python
-from hypergraph import interrupt
+from dataclasses import dataclass
+from typing import ClassVar
 
-# Confirm is supplied by the companion question-vocabulary package.
+from hypergraph import Graph, interrupt
+
+@dataclass(frozen=True)
+class Confirm:  # Stand-in for the companion question-vocabulary package.
+    answer_type: ClassVar[object] = bool
+    prompt: str
+    options: tuple[str, ...] | None = None
+    evidence: tuple[object, ...] = ()
 
 @interrupt(answer_name="decision")
 def approval(draft: str) -> Confirm:
     return Confirm(prompt="Publish?", evidence=(draft,))
 
-g = Graph([make_draft, approval, finalize])
+g = Graph([approval])
 print(g.has_interrupts)  # True
 ```
 

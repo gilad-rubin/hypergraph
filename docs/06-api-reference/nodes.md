@@ -1283,9 +1283,17 @@ pauses unless that answer is already supplied.
 The `@interrupt` decorator creates an InterruptNode from a function, just like `@node` creates a FunctionNode:
 
 ```python
+from dataclasses import dataclass
+from typing import ClassVar
+
 from hypergraph import interrupt
 
-# Confirm is supplied by the companion question-vocabulary package.
+@dataclass(frozen=True)
+class Confirm:  # Stand-in for the companion question-vocabulary package.
+    answer_type: ClassVar[object] = bool
+    prompt: str
+    options: tuple[str, ...] | None = None
+    evidence: tuple[object, ...] = ()
 
 @interrupt(answer_name="decision")
 def approval(draft: str) -> Confirm:

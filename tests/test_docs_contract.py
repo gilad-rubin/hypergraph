@@ -13,11 +13,14 @@ from hypergraph import (
     DaftRunner,
     FailureEvidence,
     Graph,
+    InterruptNode,
     MapResult,
+    PauseInfo,
     RunResult,
     SyncHandle,
     SyncRunner,
     WorkflowStoppedError,
+    interrupt,
 )
 from hypergraph.checkpointers import Checkpointer, MemoryCheckpointer, SqliteCheckpointer, SqliteRunInspector
 from hypergraph.events import RunEndEvent
@@ -143,6 +146,35 @@ def test_public_docs_track_current_api_contracts() -> None:
     assert run_result_docs is not None
     assert "STOPPED" in run_result_docs
     assert "PARTIAL" not in run_result_docs
+
+
+def test_interrupt_docs_pin_answer_name_contract() -> None:
+    human = _read("docs/03-patterns/07-human-in-the-loop.md")
+    nodes = _scoped_section(_read("docs/06-api-reference/nodes.md"), "## InterruptNode")
+    runners = _scoped_section(_read("docs/06-api-reference/runners.md"), "## RunResult")
+    readme = _section(_read("README.md"), "### Human-in-the-Loop")
+
+    for callable_ in (interrupt, InterruptNode):
+        parameters = inspect.signature(callable_).parameters
+        answer_name = parameters["answer_name"]
+        assert answer_name.kind is inspect.Parameter.KEYWORD_ONLY
+        assert answer_name.default is inspect.Parameter.empty
+        assert "output_name" not in parameters
+
+    assert tuple(PauseInfo.__dataclass_fields__) == (
+        "node_name",
+        "value",
+        "response_key",
+    )
+    for surface in (human, nodes, readme):
+        assert "answer_name" in surface
+        assert "response_key" in surface
+    assert "response_key" in runners
+
+    assert "def review(draft: str) -> Confirm:" in human
+    assert 'return Confirm(prompt=f"Publish this draft?", evidence=(draft,))' in human
+    assert "always pauses" in " ".join(nodes.split())
+    assert "output_params" not in runners
 
 
 def test_background_handle_docs_pin_public_contract() -> None:

@@ -29,6 +29,11 @@ def check_cache(
     Returns:
         (cache_key, outputs) — outputs is None on miss.
     """
+    # An InterruptNode's executor output is a caller-supplied answer, not the
+    # handler's return. Replaying it for the same question inputs would turn a
+    # later unanswered run into a silent auto-resolution.
+    if node.is_interrupt:
+        return "", None
     if not getattr(node, "cache", False):
         return "", None
 

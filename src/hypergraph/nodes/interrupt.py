@@ -140,6 +140,8 @@ def _validate_answer_name(owner: str, answer_name: Any, unsupported: dict[str, A
     """Reject legacy, tuple, and otherwise invalid answer slots."""
     if unsupported:
         names = ", ".join(sorted(unsupported))
-        raise TypeError(f"{owner} requires keyword-only answer_name; unsupported argument(s): {names}")
+        raise TypeError(f"{owner} received unsupported argument(s): {names}\n\nHow to fix: Provide one keyword-only answer_name string.")
     if not isinstance(answer_name, str):
-        raise TypeError(f"{owner} answer_name must be a str, got {type(answer_name).__name__}")
+        raise TypeError(
+            f"{owner} answer_name must be a str, got {type(answer_name).__name__}\n\nHow to fix: Provide one keyword-only answer_name string."
+        )

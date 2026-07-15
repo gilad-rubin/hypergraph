@@ -51,8 +51,15 @@
 - Introduced `_validate_pause_options_have_routes` at the async runner's pause
   boundary. The executor intentionally does not carry a Graph reference; the
   pause boundary sees the correct graph-scope `response_key` and therefore also
-  re-checks after each nested GraphNode projection. Every runtime option must
-  equal a target on every RouteNode/IfElseNode consuming that answer port.
+  re-checks after each nested GraphNode projection. It is restricted to active
+  gates and evaluates each consuming gate as a pure function with each runtime
+  option, so answer tokens such as `replace-existing` may map to valid Python
+  node names such as `replace_existing`. This evaluation is necessary because
+  neither the decorator nor the return annotation duplicates runtime options.
+- Kept runtime question/route contract failures as `RuntimeError`, matching the
+  existing interrupt executor's handler-failure surface. The exception module
+  has no interrupt-contract domain type; introducing and exporting one would
+  widen the public API beyond T27.
 - `PauseInfo` now has only `node_name`, `value`, and `response_key`; deleted
   `output_param`, `output_params`, `values`, and `response_keys` rather than
   retaining aliases.
@@ -67,6 +74,9 @@
   `response_key` through a nested GraphNode boundary.
 - `src/hypergraph/runners/_shared/template_async.py`: emit interrupt events
   from `PauseInfo.response_key`.
+- `src/hypergraph/runners/_shared/caching.py`: bypass node-result cache lookup
+  and storage for interrupts so a previously supplied answer can never
+  auto-resolve a later unanswered run.
 - `src/hypergraph/runners/_shared/template_sync.py`: mechanical shared-template
   field migration only; no sync interrupt support was added.
 - `src/hypergraph/runners/_shared/AGENTS.md`: replaced the canonical local

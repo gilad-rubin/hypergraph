@@ -1,5 +1,8 @@
 # Human-in-the-Loop
 
+Use an interrupt when a workflow has enough context to ask a human one
+specific question, then must wait for that answer before continuing.
+
 {% hint style="warning" %}
 Interrupts require `AsyncRunner`. Running a graph that contains an
 `InterruptNode` on `SyncRunner` raises `IncompatibleRunnerError`.
@@ -82,6 +85,9 @@ def publish(draft: str, decision: bool) -> str:
     return draft if decision else "not published"
 
 graph = Graph([review, publish], strict_types=True)
+
+# The decorated handler remains ordinary, directly testable Python.
+assert review.func("Release notes").prompt == "Publish?"
 ```
 
 Graph construction fails if the return annotation is missing or does not
@@ -163,7 +169,7 @@ The same name auto-wires matching consumers:
 def review_duplicate(upload_path: str) -> Choice:
     return Choice(
         prompt=f"What should happen to {upload_path}?",
-        options=("replace_existing", "keep_both"),
+        options=("replace-existing", "keep-both"),
     )
 
 @node(output_name="receipt")
@@ -277,11 +283,16 @@ def review_duplicate(upload_path: str) -> Choice:
     default_open=False,
 )
 def choose_path(dup_decision: str) -> str:
-    return dup_decision
+    return dup_decision.replace("-", "_")
 ```
 
-If the question also offered `"archive_old"` but the route omitted that
-target, `run()` raises before a human sees a dead option.
+If the question also offered `"archive-old"` but the route mapped it to an
+undeclared `archive_old` target, `run()` raises before a human sees a dead
+option.
+
+At pause time Hypergraph evaluates each consuming gate once per option using
+the gate's current inputs. Keep routing functions pure and cheap, as they may
+run again after the human answer arrives.
 
 ## Cycles and entrypoints
 
