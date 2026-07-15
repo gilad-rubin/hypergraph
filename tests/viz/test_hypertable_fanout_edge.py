@@ -63,10 +63,8 @@ def _combined_flat_graph(table: HyperTable):
 
 def test_fanout_edge_connects_producer_to_mapped_node(store):
     """The node producing the mapped column links to the mapped GraphNode."""
-    table = HyperTable(
-        [produce_items, Graph([clean], name="proc").as_node(name="items_node").map_over("items", identity="item_id")],
-        identity="doc_id",
-        store=store,
+    table = Graph([produce_items, Graph([clean], name="proc").as_node(name="items_node").map_over("items", identity="item_id")]).as_table(
+        identity="doc_id", store=store
     )
 
     G = _combined_flat_graph(table)
@@ -86,10 +84,8 @@ def test_without_fix_the_nodes_are_disconnected(store):
     """
     from hypergraph.graph import Graph as _Graph
 
-    table = HyperTable(
-        [produce_items, Graph([clean], name="proc").as_node(name="items_node").map_over("items", identity="item_id")],
-        identity="doc_id",
-        store=store,
+    table = Graph([produce_items, Graph([clean], name="proc").as_node(name="items_node").map_over("items", identity="item_id")]).as_table(
+        identity="doc_id", store=store
     )
     table._ensure_analyzed()
     nodes = list(table._graph.nodes.values())
@@ -102,10 +98,8 @@ def test_without_fix_the_nodes_are_disconnected(store):
 
 def test_visualize_renders_without_raising(store):
     """End-to-end: visualize(include_children=True) produces a widget, no raise."""
-    table = HyperTable(
-        [produce_items, Graph([clean], name="proc").as_node(name="items_node").map_over("items", identity="item_id")],
-        identity="doc_id",
-        store=store,
+    table = Graph([produce_items, Graph([clean], name="proc").as_node(name="items_node").map_over("items", identity="item_id")]).as_table(
+        identity="doc_id", store=store
     )
     out = table.visualize()
     assert out is not None
@@ -116,10 +110,8 @@ def test_visualize_renders_without_raising(store):
 
 def test_extra_edges_are_viz_only_not_in_runtime_graph(store):
     """The fan-out edge lives only in the viz flat graph, never in the derive graph."""
-    table = HyperTable(
-        [produce_items, Graph([clean], name="proc").as_node(name="items_node").map_over("items", identity="item_id")],
-        identity="doc_id",
-        store=store,
+    table = Graph([produce_items, Graph([clean], name="proc").as_node(name="items_node").map_over("items", identity="item_id")]).as_table(
+        identity="doc_id", store=store
     )
     table._ensure_analyzed()
 
@@ -151,16 +143,14 @@ def test_two_children_each_get_their_own_fanout_edge(store):
     lists are always parallel because ``analyze_table`` builds one child spec
     per map node, in order.
     """
-    table = HyperTable(
+    table = Graph(
         [
             produce_a,
             produce_b,
             Graph([clean], name="proc_a").as_node(name="a_node").map_over("items_a", identity="item_id"),
             Graph([clean], name="proc_b").as_node(name="b_node").map_over("items_b", identity="item_id"),
-        ],
-        identity="doc_id",
-        store=store,
-    )
+        ]
+    ).as_table(identity="doc_id", store=store)
     table._ensure_analyzed()
 
     edges = fanout_viz_edges(table._graph, table._spec, table._map_over_nodes)
@@ -243,10 +233,8 @@ def test_visualize_sizes_for_the_injected_fanout_edge(store):
     layer-0 roots, and the estimate is too wide/too short — visibly wrong
     versus the two-layer graph actually rendered.
     """
-    table = HyperTable(
-        [produce_items, Graph([clean], name="proc").as_node(name="items_node").map_over("items", identity="item_id")],
-        identity="doc_id",
-        store=store,
+    table = Graph([produce_items, Graph([clean], name="proc").as_node(name="items_node").map_over("items", identity="item_id")]).as_table(
+        identity="doc_id", store=store
     )
 
     out = table.visualize()
@@ -269,10 +257,8 @@ def test_fanout_edge_ir_reroutes_into_expanded_container(store):
     """
     from hypergraph.viz.renderer.ir_builder import build_graph_ir
 
-    table = HyperTable(
-        [produce_items, Graph([clean], name="proc").as_node(name="items_node").map_over("items", identity="item_id")],
-        identity="doc_id",
-        store=store,
+    table = Graph([produce_items, Graph([clean], name="proc").as_node(name="items_node").map_over("items", identity="item_id")]).as_table(
+        identity="doc_id", store=store
     )
 
     ir = build_graph_ir(_combined_flat_graph(table))
@@ -297,10 +283,8 @@ def test_map_fed_field_pill_is_not_a_plain_external_input(store):
     """
     from hypergraph.viz.renderer.ir_builder import build_graph_ir
 
-    table = HyperTable(
-        [produce_items, Graph([clean], name="proc").as_node(name="items_node").map_over("items", identity="item_id")],
-        identity="doc_id",
-        store=store,
+    table = Graph([produce_items, Graph([clean], name="proc").as_node(name="items_node").map_over("items", identity="item_id")]).as_table(
+        identity="doc_id", store=store
     )
     ir = build_graph_ir(_combined_flat_graph(table))
 
@@ -325,11 +309,9 @@ def test_broadcast_input_is_untouched_and_edge_falls_back(store):
     """
     from hypergraph.viz.renderer.ir_builder import build_graph_ir
 
-    table = HyperTable(
-        [produce_items, Graph([broadcast_consumer], name="proc").as_node(name="items_node").map_over("items", identity="item_id")],
-        identity="doc_id",
-        store=store,
-    )
+    table = Graph(
+        [produce_items, Graph([broadcast_consumer], name="proc").as_node(name="items_node").map_over("items", identity="item_id")]
+    ).as_table(identity="doc_id", store=store)
     ir = build_graph_ir(_combined_flat_graph(table))
 
     (config_pill,) = [e for e in ir.external_inputs if e.synthetic_id == "input_config"]
@@ -360,11 +342,9 @@ def test_fieldless_item_falls_back_to_entrypoint(store):
     """
     from hypergraph.viz.renderer.ir_builder import build_graph_ir
 
-    table = HyperTable(
-        [produce_plain_items, Graph([clean_plain], name="proc").as_node(name="items_node").map_over("plain_items", identity="item_id")],
-        identity="doc_id",
-        store=store,
-    )
+    table = Graph(
+        [produce_plain_items, Graph([clean_plain], name="proc").as_node(name="items_node").map_over("plain_items", identity="item_id")]
+    ).as_table(identity="doc_id", store=store)
     ir = build_graph_ir(_combined_flat_graph(table))
 
     assert not any(e.map_fed for e in ir.external_inputs), "a fieldless list[str] item feeds no field pills"
@@ -385,7 +365,7 @@ def test_field_consumer_nested_a_graph_deeper_is_still_map_fed(store):
 
     inner = Graph([clean], name="inner").as_node(name="inner_node")
     child = Graph([inner], name="proc").as_node(name="items_node").map_over("items", identity="item_id")
-    table = HyperTable([produce_items, child], identity="doc_id", store=store)
+    table = Graph([produce_items, child]).as_table(identity="doc_id", store=store)
     ir = build_graph_ir(_combined_flat_graph(table))
 
     (text_pill,) = [e for e in ir.external_inputs if e.synthetic_id == "input_text"]
@@ -413,7 +393,7 @@ def test_renamed_inner_input_is_still_map_fed(store):
     from hypergraph.viz.renderer.ir_builder import build_graph_ir
 
     child = Graph([embed_chunk], name="proc").as_node(name="items_node").with_inputs(chunk="text").map_over("items", identity="item_id")
-    table = HyperTable([produce_items, child], identity="doc_id", store=store)
+    table = Graph([produce_items, child]).as_table(identity="doc_id", store=store)
     ir = build_graph_ir(_combined_flat_graph(table))
 
     (text_pill,) = [e for e in ir.external_inputs if e.synthetic_id == "input_text"]

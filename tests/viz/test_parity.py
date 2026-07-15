@@ -267,13 +267,12 @@ def _fanout_ir(inner_inputs: tuple[str, ...]):
 
     from hypergraph import Graph
     from hypergraph.graph import Graph as _Graph
-    from hypergraph.materialization import HyperTable
     from hypergraph.materialization._hypertable_viz import fanout_map_fields, fanout_viz_edges
     from hypergraph.materialization._lancedb_store import LanceDBStore
 
     store = LanceDBStore(tempfile.mkdtemp() + "/store")
     child = Graph([_FANOUT_EMBED[inner_inputs]], name="proc").as_node(name="items_node").map_over("items", identity="item_id")
-    table = HyperTable([_produce_fanout_items, child], identity="doc_id", store=store)
+    table = Graph([_produce_fanout_items, child]).as_table(identity="doc_id", store=store)
     table._ensure_analyzed()
     nodes = list(table._graph.nodes.values())
     nodes.extend(table._map_over_nodes)

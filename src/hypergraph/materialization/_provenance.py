@@ -124,6 +124,7 @@ class ReconcileState:
     spec: TableSpec
     existing: _Items
     values: _Items
+    incoming_names: tuple[str, ...]
     outputs: _Items
     provenances: tuple[tuple[str, str], ...]
     nodes: tuple[Any, ...]
@@ -179,7 +180,12 @@ class Provenance:
 
     def derived_columns(self, spec: TableSpec | None = None) -> list[Any]:
         target = spec or self.spec
-        return [column for column in target.columns if column.role == "derived"]
+        return [column for column in target.columns if column.role in ("derived", "answer")]
+
+    @staticmethod
+    def column_producers(column: Any) -> tuple[Any, ...]:
+        producer = column.produced_by
+        return producer if isinstance(producer, tuple) else (producer,)
 
     @staticmethod
     def node_params(node: Any) -> Mapping[str, inspect.Parameter]:
@@ -195,12 +201,12 @@ class Provenance:
         return params
 
     def node_columns(self, node: Any, spec: TableSpec | None = None) -> list[Any]:
-        return [column for column in self.derived_columns(spec) if column.produced_by is node]
+        return [column for column in self.derived_columns(spec) if any(producer is node for producer in self.column_producers(column))]
 
     def producing_node(self, column: str) -> Any:
         for column_spec in self.derived_columns():
             if column_spec.name == column:
-                return column_spec.produced_by
+                return self.column_producers(column_spec)[0]
         raise KeyError(f"{column!r} is not a derived column")
 
     def nodes_in_dependency_order(self, spec: TableSpec | None = None) -> tuple[Any, ...]:
@@ -208,9 +214,10 @@ class Provenance:
         nodes: list[Any] = []
         seen: set[int] = set()
         for column in derived:
-            if id(column.produced_by) not in seen:
-                seen.add(id(column.produced_by))
-                nodes.append(column.produced_by)
+            for producer in self.column_producers(column):
+                if id(producer) not in seen:
+                    seen.add(id(producer))
+                    nodes.append(producer)
         derived_names = {column.name for column in derived}
         placed: set[str] = set()
         ordered: list[Any] = []
@@ -367,6 +374,7 @@ class Provenance:
             spec=spec,
             existing=_freeze(existing),
             values=_freeze(values),
+            incoming_names=tuple(incoming_values),
             outputs=(),
             provenances=(),
             nodes=self.nodes_in_dependency_order(spec),
@@ -385,6 +393,16 @@ class Provenance:
             provenance = self.node_provenance(node, values)
             if provenance is None:
                 return current, ReconcileUnavailable()
+            if getattr(node, "is_interrupt", False):
+                answer_columns = self.node_columns(node, current.spec)
+                if answer_columns and all(column.name in current.incoming_names for column in answer_columns):
+                    current = self._advance_column(
+                        current,
+                        node,
+                        provenance,
+                        {column.name: values[column.name] for column in answer_columns},
+                    )
+                    continue
             if not self.node_is_fresh(node, provenance, existing, current.spec):
                 return current, RunNode(
                     node=node,
@@ -398,7 +416,7 @@ class Provenance:
         while current.boundary_index < len(current.spec.children):
             child_spec = current.spec.children[current.boundary_index]
             boundary = self.boundary_node(child_spec)
-            if boundary is None or any(column.produced_by is boundary for column in self.derived_columns()):
+            if boundary is None or any(boundary in self.column_producers(column) for column in self.derived_columns()):
                 return current, ReconcileUnavailable()
             values = _thaw(current.values)
             provenance = self.node_provenance(boundary, values)
@@ -413,6 +431,7 @@ class Provenance:
                     spec=current.spec,
                     existing=current.existing,
                     values=current.values,
+                    incoming_names=current.incoming_names,
                     outputs=current.outputs,
                     provenances=(*current.provenances, (child_spec.map_input, stored)),
                     nodes=current.nodes,
@@ -455,6 +474,7 @@ class Provenance:
             spec=state.spec,
             existing=state.existing,
             values=state.values,
+            incoming_names=state.incoming_names,
             outputs=state.outputs,
             provenances=(
                 *state.provenances,
@@ -486,6 +506,7 @@ class Provenance:
             spec=state.spec,
             existing=state.existing,
             values=_freeze(values),
+            incoming_names=state.incoming_names,
             outputs=_freeze(outputs),
             provenances=tuple(provenances.items()),
             nodes=state.nodes,

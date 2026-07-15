@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from hypergraph import node
-from hypergraph.materialization import HyperTable
+from hypergraph import Graph, node
 from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.runners import SyncRunner
 
@@ -22,11 +21,7 @@ def count_words(clean_text: str) -> int:
 
 @pytest.fixture
 def table(tmp_path):
-    return HyperTable(
-        [clean, count_words],
-        identity="doc_id",
-        store=LanceDBStore(str(tmp_path / "readpath_store")),
-    ).with_runner(SyncRunner())
+    return Graph([clean, count_words]).as_table(identity="doc_id", store=LanceDBStore(str(tmp_path / "readpath_store")), runner=SyncRunner())
 
 
 def test_filter_returns_matching_public_rows(table) -> None:
@@ -36,7 +31,7 @@ def test_filter_returns_matching_public_rows(table) -> None:
     table.insert(doc_id="d2", text="cardiology", station="PICU", active=True)
     table.insert(doc_id="d3", text="neonatal", station="NICU", active=False)
 
-    rows = table.filter(where=[("station", "eq", "NICU"), ("active", "eq", True)])
+    rows = table.rows(where=[("station", "eq", "NICU"), ("active", "eq", True)])
 
     assert [row["doc_id"] for row in rows] == ["d1"]
     assert rows[0]["clean_text"] == "hello world"
@@ -52,7 +47,7 @@ def test_set_updates_matching_metadata_rows(table) -> None:
     updated = table.set([("active", "eq", False)], active=True, station="NICU")
 
     assert updated == 2
-    rows = table.filter(where=[("active", "eq", True), ("station", "eq", "NICU")])
+    rows = table.rows(where=[("active", "eq", True), ("station", "eq", "NICU")])
     assert {row["doc_id"] for row in rows} == {"d1", "d2"}
     assert {row["word_count"] for row in rows} == {2}
 

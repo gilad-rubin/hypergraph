@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from hypergraph.materialization._schema import TableSpec
+from hypergraph.runners import PauseInfo
 
 _Items = tuple[tuple[str, Any], ...]
 _Rows = tuple[_Items, ...]
@@ -89,9 +90,11 @@ class BuildParentRow:
     graph_inputs: _Items
     outputs: _Items
     write_gen: int
-    mode: Literal["complete", "update", "error"]
+    mode: Literal["complete", "update", "waiting", "error"]
     provenances: _Items | None = None
     error: str | None = None
+    pause: PauseInfo | None = None
+    pause_provenance: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,42 +1,177 @@
-"""Core types for materialization."""
+"""Public value types for materialization."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from enum import Enum
+from typing import Any
+
+from hypergraph.runners import PauseInfo
+
+
+class RowStatus(Enum):
+    """Current derivation state of one row."""
+
+    COMPLETE = "complete"
+    WAITING = "waiting"
+    ERROR = "error"
+
+
+class WriteOutcome(Enum):
+    """Physical effect of a row write."""
+
+    INSERTED = "inserted"
+    UPDATED = "updated"
+    SKIPPED = "skipped"
 
 
 @dataclass(frozen=True)
-class ErrorRow:
-    """A row that failed derivation."""
+class RowReceipt:
+    """What one write did to one row."""
 
-    identity: dict
-    error_type: str
-    error_msg: str
+    id: str
+    outcome: WriteOutcome
+    status: RowStatus
+    pause: PauseInfo | None = None
+    error: str | None = None
+
+    @property
+    def paused(self) -> bool:
+        return self.status is RowStatus.WAITING
+
+    @property
+    def completed(self) -> bool:
+        return self.status is RowStatus.COMPLETE
+
+    @property
+    def failed(self) -> bool:
+        return self.status is RowStatus.ERROR
 
 
 @dataclass(frozen=True)
-class SyncResult:
-    """Counts returned by sync()."""
+class TableReceipt:
+    """Aggregate receipt for a batch insert, sync, or re-derive."""
 
-    inserted: int
-    updated: int
-    deleted: int
-    skipped: int
-    errored: int
-    errors: tuple[ErrorRow, ...] = ()
+    receipts: tuple[RowReceipt, ...]
+    deleted: int = 0
+
+    @property
+    def inserted(self) -> int:
+        return sum(receipt.outcome is WriteOutcome.INSERTED for receipt in self.receipts)
+
+    @property
+    def updated(self) -> int:
+        return sum(receipt.outcome is WriteOutcome.UPDATED for receipt in self.receipts)
+
+    @property
+    def skipped(self) -> int:
+        return sum(receipt.outcome is WriteOutcome.SKIPPED for receipt in self.receipts)
+
+    @property
+    def waiting(self) -> tuple[RowReceipt, ...]:
+        return tuple(receipt for receipt in self.receipts if receipt.paused)
+
+    @property
+    def errors(self) -> tuple[RowReceipt, ...]:
+        return tuple(receipt for receipt in self.receipts if receipt.failed)
+
+    @property
+    def paused(self) -> bool:
+        return bool(self.waiting)
+
+    @property
+    def completed(self) -> bool:
+        return bool(self.receipts) and all(receipt.completed for receipt in self.receipts)
+
+    @property
+    def failed(self) -> bool:
+        return bool(self.errors)
+
+
+@dataclass(frozen=True)
+class WaitingRow:
+    """A row whose derivation is waiting for one answer."""
+
+    id: str
+    pause: PauseInfo
+    row: dict[str, Any]
+    provenance: str
+
+
+@dataclass(frozen=True)
+class ErroredRow:
+    """A row whose derivation raised under ``on_error='store'``."""
+
+    id: str
+    error: str
+    row: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _StoredQuestion:
+    """Frozen structural ask view rebuilt from a persisted question envelope."""
+
+    prompt: str
+    options: tuple[Any, ...] | None
+    evidence: tuple[Any, ...]
+    answer_type: str
+
+
+def _stable_answer_type(value: Any) -> str:
+    if isinstance(value, type):
+        return f"{value.__module__}.{value.__qualname__}"
+    return repr(value)
+
+
+def serialize_question(pause: PauseInfo, provenance: str) -> str:
+    """Serialize the structural ask seam without importing an ask package."""
+    ask = pause.value
+    missing = [name for name in ("prompt", "options", "evidence", "answer_type") if not hasattr(ask, name)]
+    if missing:
+        raise TypeError(f"interrupt question is missing structural attribute(s): {', '.join(missing)}")
+    evidence = tuple(ask.evidence)
+    for index, item in enumerate(evidence):
+        try:
+            json.dumps(item)
+        except (TypeError, ValueError) as error:
+            raise TypeError(f"interrupt evidence item {index} is not JSON-serializable: {item!r}") from error
+    envelope = {
+        "node_name": pause.node_name,
+        "response_key": pause.response_key,
+        "prompt": str(ask.prompt),
+        "options": None if ask.options is None else tuple(ask.options),
+        "evidence": evidence,
+        "answer_type": _stable_answer_type(ask.answer_type),
+        "provenance": provenance,
+    }
+    return json.dumps(envelope, sort_keys=True, separators=(",", ":"))
+
+
+def deserialize_question(value: Any) -> tuple[PauseInfo, str]:
+    """Rebuild ``PauseInfo`` and its opaque provenance from storage."""
+    if not isinstance(value, str):
+        raise TypeError(f"stored question envelope must be a JSON string, got {type(value).__name__}")
+    envelope = json.loads(value)
+    ask = _StoredQuestion(
+        prompt=envelope["prompt"],
+        options=None if envelope["options"] is None else tuple(envelope["options"]),
+        evidence=tuple(envelope["evidence"]),
+        answer_type=envelope["answer_type"],
+    )
+    return (
+        PauseInfo(
+            node_name=envelope["node_name"],
+            value=ask,
+            response_key=envelope["response_key"],
+        ),
+        envelope["provenance"],
+    )
 
 
 @dataclass(frozen=True)
 class RecipeDrift:
-    """Per-table recipe-drift report, returned by ``HyperTable.recipe_drift()``.
-
-    A row DRIFTED when its stored ``_recipe_fingerprint`` stamp differs from
-    the table's current recipe (node code + component configs + bound plain
-    values — input values never participate). A row is UNKNOWN when it carries
-    no stamp at all (written before stamping existed) — reported honestly as
-    needing a re-derive, never as current. Unlike ``status()``, computing this
-    reads only identity/reserved columns: content bytes never leave the disk.
-    """
+    """Per-table recipe-drift report, returned by ``HyperTable.recipe_drift()``."""
 
     table: str
     total: int
@@ -47,19 +182,12 @@ class RecipeDrift:
 
     @property
     def stale_total(self) -> int:
-        """Rows here and in child tables derived under something other than today's recipe."""
         return self.drifted + self.unknown + sum(child.stale_total for child in self.children)
 
 
 @dataclass(frozen=True)
 class TableStatus:
-    """Dry-run staleness report for one table, returned by status().
-
-    A row is stale when its stored fingerprint no longer matches
-    hash(stored source values + current node code + current component
-    configs) — the recipe or the content changed after the row was written.
-    Errored rows are reported separately; both re-derive on the next sync.
-    """
+    """Dry-run staleness report for one table, returned by ``status()``."""
 
     table: str
     total: int
@@ -73,5 +201,4 @@ class TableStatus:
 
     @property
     def is_fresh(self) -> bool:
-        """True when no row here or in any child table would re-derive."""
         return self.stale == 0 and self.errored == 0 and all(child.is_fresh for child in self.children)

@@ -3,19 +3,34 @@
 from __future__ import annotations
 
 from hypergraph.materialization._hypertable import HyperTable
+from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.materialization._table import Table
 from hypergraph.materialization._table_store import TableStore, validate_store
-from hypergraph.materialization._types import ErrorRow, RecipeDrift, SyncResult, TableStatus
+from hypergraph.materialization._types import (
+    ErroredRow,
+    RecipeDrift,
+    RowReceipt,
+    RowStatus,
+    TableReceipt,
+    TableStatus,
+    WaitingRow,
+    WriteOutcome,
+)
 
 __all__ = [
     "HyperTable",
+    "LanceDBStore",
     "Table",
     "TableStore",
     "validate_store",
-    "ErrorRow",
+    "ErroredRow",
     "RecipeDrift",
-    "SyncResult",
+    "RowReceipt",
+    "RowStatus",
+    "TableReceipt",
     "TableStatus",
+    "WaitingRow",
+    "WriteOutcome",
     "check_store_conformance",
 ]
 

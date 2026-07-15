@@ -1,4 +1,4 @@
-"""Tests for child-row operations: filter_children, set_children, delete_children."""
+"""Tests for the named child-table handle."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from typing import TypedDict
 import pytest
 
 from hypergraph import Graph, node
-from hypergraph.materialization import HyperTable
 from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.runners import SyncRunner
 
@@ -86,18 +85,16 @@ def embedder():
 def table(store, embedder):
     """A HyperTable with two parents, each having two child utterances."""
     t = (
-        HyperTable(
+        Graph(
             [
                 extract_audio,
                 transcribe,
                 split_utterances,
                 process_utterance.as_node().map_over("utterances", identity="utterance_id"),
-            ],
-            identity="video_id",
-            store=store,
+            ]
         )
         .bind(embedder=embedder)
-        .with_runner(SyncRunner())
+        .as_table(identity="video_id", store=store, runner=SyncRunner())
     )
     t.insert(video_id="v1", path="/data/a.mp4")
     t.insert(video_id="v2", path="/data/b.mp4")
@@ -109,33 +106,30 @@ def table(store, embedder):
 # ---------------------------------------------------------------------------
 
 
-class TestFilterChildren:
+class TestChildRows:
     def test_filter_by_predicate(self, table):
-        rows = table.filter_children(where=[("clean_text", "eq", "hello")])
+        rows = table.child("utterance").rows(where=[("clean_text", "eq", "hello")])
         assert len(rows) == 2  # one "hello" utterance per parent
         assert all(r["clean_text"] == "hello" for r in rows)
 
     def test_filter_by_parent(self, table):
-        rows = table.filter_children(where=[("_parent_id", "eq", "v1")])
+        rows = table.child("utterance").rows(parent="v1")
         assert len(rows) == 2
-        assert all(r["_parent_id"] == "v1" for r in rows)
+        assert all(r["video_id"] == "v1" for r in rows)
 
     def test_filter_no_match_returns_empty(self, table):
-        rows = table.filter_children(where=[("clean_text", "eq", "nonexistent")])
+        rows = table.child("utterance").rows(where=[("clean_text", "eq", "nonexistent")])
         assert rows == []
 
     def test_filter_with_limit(self, table):
-        rows = table.filter_children(where=[("clean_text", "eq", "hello")], limit=1)
+        rows = table.child("utterance").rows(where=[("clean_text", "eq", "hello")], limit=1)
         assert len(rows) == 1
 
     def test_filter_no_children_table(self, store):
-        flat = HyperTable(
-            [clean],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        flat = Graph([clean]).as_table(identity="doc_id", store=store, runner=SyncRunner())
         flat.insert(doc_id="d1", text="hello")
-        assert flat.filter_children() == []
+        with pytest.raises(KeyError, match="unknown child"):
+            flat.child("utterance")
 
 
 # ---------------------------------------------------------------------------
@@ -143,60 +137,57 @@ class TestFilterChildren:
 # ---------------------------------------------------------------------------
 
 
-class TestSetChildren:
+class TestChildSet:
     def test_set_updates_matching_children(self, table):
-        count = table.set_children(
-            where=[("_parent_id", "eq", "v1"), ("clean_text", "eq", "hello")],
+        count = table.child("utterance").set(
+            where=[("video_id", "eq", "v1"), ("clean_text", "eq", "hello")],
             station="NICU",
         )
         assert count == 1
-        rows = table.filter_children(where=[("_parent_id", "eq", "v1"), ("clean_text", "eq", "hello")])
+        rows = table.child("utterance").rows(where=[("video_id", "eq", "v1"), ("clean_text", "eq", "hello")])
         assert rows[0]["station"] == "NICU"
 
     def test_set_does_not_touch_non_matching(self, table):
-        table.set_children(
-            where=[("_parent_id", "eq", "v1")],
+        table.child("utterance").set(
+            where=[("video_id", "eq", "v1")],
             station="ER",
         )
-        v2_rows = table.filter_children(where=[("_parent_id", "eq", "v2")])
+        v2_rows = table.child("utterance").rows(parent="v2")
         assert all("station" not in r or r.get("station") != "ER" for r in v2_rows)
 
     def test_set_no_match_returns_zero(self, table):
-        count = table.set_children(
+        count = table.child("utterance").set(
             where=[("clean_text", "eq", "nonexistent")],
             station="X",
         )
         assert count == 0
 
     def test_set_no_children_table(self, store):
-        flat = HyperTable(
-            [clean],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        flat = Graph([clean]).as_table(identity="doc_id", store=store, runner=SyncRunner())
         flat.insert(doc_id="d1", text="hello")
-        assert flat.set_children(where=[("doc_id", "eq", "d1")], tag="x") == 0
+        with pytest.raises(KeyError, match="unknown child"):
+            flat.child("utterance")
 
     def test_set_children_scoped_to_parent(self, table):
         """set_children for one parent must not delete another parent's children
         that share the same child identity value."""
         # Both v1 and v2 have children with utterance_id "u0" and "u1".
         # Updating v1's children should leave v2's children intact.
-        v2_before = table.filter_children(where=[("_parent_id", "eq", "v2")])
+        v2_before = table.child("utterance").rows(parent="v2")
         assert len(v2_before) == 2
 
-        table.set_children(
-            where=[("_parent_id", "eq", "v1")],
+        table.child("utterance").set(
+            where=[("video_id", "eq", "v1")],
             reviewed=True,
         )
 
         # v2's children must still be present and unmodified
-        v2_after = table.filter_children(where=[("_parent_id", "eq", "v2")])
+        v2_after = table.child("utterance").rows(parent="v2")
         assert len(v2_after) == 2
         assert all("reviewed" not in r or r.get("reviewed") is not True for r in v2_after)
 
         # v1's children should have the new metadata
-        v1_after = table.filter_children(where=[("_parent_id", "eq", "v1")])
+        v1_after = table.child("utterance").rows(parent="v1")
         assert len(v1_after) == 2
         assert all(r["reviewed"] is True for r in v1_after)
 
@@ -206,29 +197,26 @@ class TestSetChildren:
 # ---------------------------------------------------------------------------
 
 
-class TestDeleteChildren:
+class TestChildDelete:
     def test_delete_by_predicate(self, table):
-        count = table.delete_children(where=[("_parent_id", "eq", "v1"), ("clean_text", "eq", "hello")])
+        count = table.child("utterance").delete(where=[("video_id", "eq", "v1"), ("clean_text", "eq", "hello")])
         assert count == 1
-        remaining = table.filter_children(where=[("_parent_id", "eq", "v1")])
+        remaining = table.child("utterance").rows(parent="v1")
         assert len(remaining) == 1
         assert remaining[0]["clean_text"] == "world"
 
     def test_delete_all_children_of_parent(self, table):
-        count = table.delete_children(where=[("_parent_id", "eq", "v1")])
+        count = table.child("utterance").delete(where=[("video_id", "eq", "v1")])
         assert count == 2
-        assert table.filter_children(where=[("_parent_id", "eq", "v1")]) == []
-        assert len(table.filter_children(where=[("_parent_id", "eq", "v2")])) == 2
+        assert table.child("utterance").rows(parent="v1") == []
+        assert len(table.child("utterance").rows(parent="v2")) == 2
 
     def test_delete_no_match_returns_zero(self, table):
-        count = table.delete_children(where=[("clean_text", "eq", "nonexistent")])
+        count = table.child("utterance").delete(where=[("clean_text", "eq", "nonexistent")])
         assert count == 0
 
     def test_delete_no_children_table(self, store):
-        flat = HyperTable(
-            [clean],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        flat = Graph([clean]).as_table(identity="doc_id", store=store, runner=SyncRunner())
         flat.insert(doc_id="d1", text="hello")
-        assert flat.delete_children(where=[("doc_id", "eq", "d1")]) == 0
+        with pytest.raises(KeyError, match="unknown child"):
+            flat.child("utterance")

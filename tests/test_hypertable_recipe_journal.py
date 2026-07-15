@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from hypergraph import node
-from hypergraph.materialization import HyperTable
+from hypergraph import Graph, node
 from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.runners import SyncRunner
 
@@ -43,7 +42,7 @@ def _make_table(store, clean_fn, embedder=None):
     def embed_text(clean_text: str, embedder: Embedder) -> list[float]:
         return embedder.embed(clean_text)
 
-    return HyperTable([clean_fn, embed_text], identity="doc_id", store=store).bind(embedder=embedder or Embedder("embed-a")).with_runner(SyncRunner())
+    return Graph([clean_fn, embed_text]).bind(embedder=embedder or Embedder("embed-a")).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
 
 # ---------------------------------------------------------------------------

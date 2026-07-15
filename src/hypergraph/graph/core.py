@@ -1457,6 +1457,28 @@ class Graph:
             return node.with_runner(runner)
         return node
 
+    def as_table(
+        self,
+        *,
+        identity: str,
+        store: Any,
+        runner: Any = None,
+        on_error: str = "raise",
+        name: str | None = None,
+    ) -> Any:
+        """Persist this graph as an incremental table."""
+        from hypergraph.materialization import HyperTable
+        from hypergraph.runners import SyncRunner
+
+        return HyperTable(
+            self,
+            identity=identity,
+            store=store,
+            runner=runner if runner is not None else SyncRunner(),
+            on_error=on_error,
+            name=name,
+        )
+
     def describe(self, *, show_types: bool = True) -> str:
         """Return a compact human-readable summary of the configured graph."""
         active_nodes, active_subgraph = _compute_active_scope(

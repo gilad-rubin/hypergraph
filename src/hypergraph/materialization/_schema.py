@@ -18,6 +18,7 @@ from typing import Any
 
 FINGERPRINT_COLUMNS = ("_row_fingerprint", "_write_gen")
 STATUS_COLUMNS = ("_status", "_error")
+QUESTION_COLUMN = "_question"
 PARENT_LINK_COLUMN = "_parent_id"
 PROVENANCE_PREFIX = "_provenance_"
 # The per-row RECIPE-ONLY stamp (node code + component configs + bound plain
@@ -28,7 +29,7 @@ RECIPE_COLUMN = "_recipe_fingerprint"
 
 # Names a user may not give an identity/source/derived column. A reserved name is
 # any framework-managed column plus the parent link.
-RESERVED_NAMES = frozenset({*FINGERPRINT_COLUMNS, *STATUS_COLUMNS, PARENT_LINK_COLUMN, RECIPE_COLUMN})
+RESERVED_NAMES = frozenset({*FINGERPRINT_COLUMNS, *STATUS_COLUMNS, PARENT_LINK_COLUMN, RECIPE_COLUMN, QUESTION_COLUMN})
 
 
 def is_reserved_name(name: str) -> bool:
@@ -37,7 +38,12 @@ def is_reserved_name(name: str) -> bool:
 
 def is_internal_column(name: str) -> bool:
     """Internal columns are stripped from public rows (status is handled separately)."""
-    return name in FINGERPRINT_COLUMNS or name in STATUS_COLUMNS or name == RECIPE_COLUMN or name.startswith(PROVENANCE_PREFIX)
+    return (
+        name in FINGERPRINT_COLUMNS
+        or name in STATUS_COLUMNS
+        or name in (PARENT_LINK_COLUMN, RECIPE_COLUMN, QUESTION_COLUMN)
+        or name.startswith(PROVENANCE_PREFIX)
+    )
 
 
 # --- Column / table specs ---
@@ -170,10 +176,18 @@ def _internal_columns() -> list[ColumnSpec]:
         _column("_write_gen", role="internal", python_type=int),
         _column("_status", role="internal"),
         _column("_error", role="internal"),
+        _column(QUESTION_COLUMN, role="internal"),
     ]
 
 
-def analyze_table(graph: Any, identity: str, components: dict[str, Any], map_over_nodes: list) -> TableSpec:
+def analyze_table(
+    graph: Any,
+    identity: str,
+    components: dict[str, Any],
+    map_over_nodes: list,
+    *,
+    name: str | None = None,
+) -> TableSpec:
     """Build the root ``TableSpec``: identity + source columns + derived columns + child tables."""
     input_types = _input_types(graph)
     _validate_column_name(identity, "identity")
@@ -189,13 +203,31 @@ def analyze_table(graph: Any, identity: str, components: dict[str, Any], map_ove
     child_map_inputs = {cs.map_input for cs in child_specs if cs.map_input}
 
     nodes_dict = graph.nodes if isinstance(graph.nodes, dict) else {}
+    output_columns: dict[str, ColumnSpec] = {}
     for _name, n in nodes_dict.items():
         for out_name in n.data_outputs if hasattr(n, "data_outputs") else ():
             if out_name not in child_map_inputs:
                 _validate_column_name(out_name, "derived")
-                root_columns.append(_column(out_name, role="derived", produced_by=n, python_type=return_type(n)))
+                role = "answer" if getattr(n, "is_interrupt", False) else "derived"
+                python_type = n.get_output_type(out_name) if role == "answer" else return_type(n)
+                column = _column(out_name, role=role, produced_by=n, python_type=python_type or str)
+                existing = output_columns.get(out_name)
+                if existing is None:
+                    output_columns[out_name] = column
+                    root_columns.append(column)
+                else:
+                    producers = existing.produced_by if isinstance(existing.produced_by, tuple) else (existing.produced_by,)
+                    merged = ColumnSpec(
+                        name=existing.name,
+                        role=existing.role,
+                        produced_by=(*producers, n),
+                        content_key=existing.content_key,
+                        arrow_type=existing.arrow_type,
+                    )
+                    output_columns[out_name] = merged
+                    root_columns[root_columns.index(existing)] = merged
 
-    derived_cols = [c for c in root_columns if c.role == "derived"]
+    derived_cols = [c for c in root_columns if c.role in ("derived", "answer")]
     prov_cols = [_column(f"{PROVENANCE_PREFIX}{c.name}", role="internal") for c in derived_cols]
     # One boundary provenance column per child spec: the recipe hash (+ item count)
     # of the node producing the mapped items. The items list itself is never stored.
@@ -212,9 +244,10 @@ def analyze_table(graph: Any, identity: str, components: dict[str, Any], map_ove
         _column("_write_gen", role="internal", python_type=int),
         _column("_status", role="internal"),
         _column("_error", role="internal"),
+        _column(QUESTION_COLUMN, role="internal"),
     ]
 
-    return TableSpec(name=identity.replace("_id", ""), identity=identity, columns=final_columns, children=child_specs)
+    return TableSpec(name=name or identity.replace("_id", ""), identity=identity, columns=final_columns, children=child_specs)
 
 
 def _analyze_map_over(map_node: Any, components: dict[str, Any]) -> TableSpec | None:

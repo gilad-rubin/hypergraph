@@ -12,7 +12,7 @@ from typing import TypedDict
 import pytest
 
 from hypergraph import Graph, node
-from hypergraph.materialization import HyperTable, TableStore
+from hypergraph.materialization import TableStore
 from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.runners import SyncRunner
 
@@ -40,7 +40,7 @@ def embed_doc(text: str, embedder: Embedder) -> list[float]:
 
 
 def make_table(store, embedder=None):
-    return HyperTable([embed_doc], identity="doc_id", store=store).bind(embedder=embedder or Embedder()).with_runner(SyncRunner())
+    return Graph([embed_doc]).bind(embedder=embedder or Embedder()).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
 
 DOCS = [
@@ -155,7 +155,7 @@ process_page = Graph([embed_page], name="process_page")
 
 def make_child_table(store, embedder=None):
     pages_node = process_page.as_node().map_over("pages", identity="page_id")
-    return HyperTable([split_pages, pages_node], identity="doc_id", store=store).bind(embedder=embedder or Embedder()).with_runner(SyncRunner())
+    return Graph([split_pages, pages_node]).bind(embedder=embedder or Embedder()).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
 
 class TestChildTableIndex:
@@ -168,7 +168,7 @@ class TestChildTableIndex:
 
         hits = table.search([0.0, 0.95, 0.05], index="pages_idx", limit=1)
         assert hits[0]["page_text"] == "beta"
-        assert hits[0]["_parent_id"] == "d1"
+        assert hits[0]["doc_id"] == "d1"
 
     def test_child_table_names_is_the_public_index_on_target(self, tmp_path):
         # The application names its 1:many index over child_table_names[0]

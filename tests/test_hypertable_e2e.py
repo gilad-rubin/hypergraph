@@ -104,17 +104,7 @@ class TestVectorSearchE2E:
         """Insert documents, then search by vector similarity via LanceDB."""
         import lancedb
 
-        from hypergraph.materialization import HyperTable
-
-        table = (
-            HyperTable(
-                [clean, embed_text, count_words],
-                identity="doc_id",
-                store=store,
-            )
-            .bind(embedder=embedder)
-            .with_runner(SyncRunner())
-        )
+        table = Graph([clean, embed_text, count_words]).bind(embedder=embedder).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(
             [
@@ -140,17 +130,8 @@ class TestVectorSearchE2E:
 
     def test_multiple_inserts_accumulate(self, store, store_path, embedder):
         """Multiple insert calls accumulate rows."""
-        from hypergraph.materialization import HyperTable
 
-        table = (
-            HyperTable(
-                [clean, embed_text],
-                identity="doc_id",
-                store=store,
-            )
-            .bind(embedder=embedder)
-            .with_runner(SyncRunner())
-        )
+        table = Graph([clean, embed_text]).bind(embedder=embedder).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="first")
         table.insert(doc_id="d2", text="second")
@@ -170,16 +151,11 @@ class TestGrainBoundaryE2E:
 
     def test_parent_child_full_pipeline(self, store, store_path, embedder):
         """Insert video → transcribe → split → embed each utterance."""
-        from hypergraph.materialization import HyperTable
 
         table = (
-            HyperTable(
-                [extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
-                identity="video_id",
-                store=store,
-            )
+            Graph([extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")])
             .bind(embedder=embedder)
-            .with_runner(SyncRunner())
+            .as_table(identity="video_id", store=store, runner=SyncRunner())
         )
 
         table.insert(video_id="v1", path="/data/meeting.mp4")
@@ -189,7 +165,7 @@ class TestGrainBoundaryE2E:
         assert parent["audio_path"] == "/tmp/meeting.mp4.wav"
         assert "transcript" in parent["transcript"]
 
-        children = table.children("v1")
+        children = table.child(table.child_table_names[0]).rows(parent="v1")
         assert len(children) > 0
         assert all("clean_text" in c for c in children)
         assert all("vector" in c for c in children)
@@ -199,16 +175,10 @@ class TestGrainBoundaryE2E:
         """Search child table vectors directly via LanceDB."""
         import lancedb
 
-        from hypergraph.materialization import HyperTable
-
         table = (
-            HyperTable(
-                [extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
-                identity="video_id",
-                store=store,
-            )
+            Graph([extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")])
             .bind(embedder=embedder)
-            .with_runner(SyncRunner())
+            .as_table(identity="video_id", store=store, runner=SyncRunner())
         )
 
         table.insert(video_id="v1", path="/data/meeting.mp4")
@@ -223,28 +193,23 @@ class TestGrainBoundaryE2E:
 
     def test_multiple_parents_children_isolated(self, store, store_path, embedder):
         """Children from different parents are correctly linked."""
-        from hypergraph.materialization import HyperTable
 
         table = (
-            HyperTable(
-                [extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
-                identity="video_id",
-                store=store,
-            )
+            Graph([extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")])
             .bind(embedder=embedder)
-            .with_runner(SyncRunner())
+            .as_table(identity="video_id", store=store, runner=SyncRunner())
         )
 
         table.insert(video_id="v1", path="/data/a.mp4")
         table.insert(video_id="v2", path="/data/b.mp4")
 
         assert table.count() == 2
-        children_v1 = table.children("v1")
-        children_v2 = table.children("v2")
+        children_v1 = table.child(table.child_table_names[0]).rows(parent="v1")
+        children_v2 = table.child(table.child_table_names[0]).rows(parent="v2")
         assert len(children_v1) > 0
         assert len(children_v2) > 0
-        assert all(c["_parent_id"] == "v1" for c in children_v1)
-        assert all(c["_parent_id"] == "v2" for c in children_v2)
+        assert all(c["video_id"] == "v1" for c in children_v1)
+        assert all(c["video_id"] == "v2" for c in children_v2)
 
 
 # ---------------------------------------------------------------------------
@@ -282,23 +247,18 @@ class TestTypedMappedItems:
 
     def test_pydantic_model_mapped_items(self, store, store_path, embedder):
         """A node returning list[PydanticModel] should work in map_over."""
-        from hypergraph.materialization import HyperTable
 
         child_graph = Graph([clean, embed_text], name="process_item")
 
         table = (
-            HyperTable(
-                [transcribe, split_into_pydantic_items, child_graph.as_node().map_over("items", identity="item_id")],
-                identity="doc_id",
-                store=store,
-            )
+            Graph([transcribe, split_into_pydantic_items, child_graph.as_node().map_over("items", identity="item_id")])
             .bind(embedder=embedder)
-            .with_runner(SyncRunner())
+            .as_table(identity="doc_id", store=store, runner=SyncRunner())
         )
 
         table.insert(doc_id="d1", audio_path="test.wav")
 
-        children = table.children("d1")
+        children = table.child(table.child_table_names[0]).rows(parent="d1")
         assert len(children) > 0
         assert all("clean_text" in c for c in children)
         assert all("vector" in c for c in children)
@@ -306,23 +266,18 @@ class TestTypedMappedItems:
 
     def test_dataclass_mapped_items(self, store, store_path, embedder):
         """A node returning list[dataclass] should work in map_over."""
-        from hypergraph.materialization import HyperTable
 
         child_graph = Graph([clean, embed_text], name="process_dc_item")
 
         table = (
-            HyperTable(
-                [transcribe, split_into_dc_items, child_graph.as_node().map_over("items", identity="item_id")],
-                identity="doc_id",
-                store=store,
-            )
+            Graph([transcribe, split_into_dc_items, child_graph.as_node().map_over("items", identity="item_id")])
             .bind(embedder=embedder)
-            .with_runner(SyncRunner())
+            .as_table(identity="doc_id", store=store, runner=SyncRunner())
         )
 
         table.insert(doc_id="d1", audio_path="test.wav")
 
-        children = table.children("d1")
+        children = table.child(table.child_table_names[0]).rows(parent="d1")
         assert len(children) > 0
         assert all("clean_text" in c for c in children)
         assert all("text" in c for c in children)
@@ -340,17 +295,7 @@ class TestIncrementality:
         """Same input → same fingerprint."""
         import lancedb
 
-        from hypergraph.materialization import HyperTable
-
-        table = (
-            HyperTable(
-                [clean, embed_text],
-                identity="doc_id",
-                store=store,
-            )
-            .bind(embedder=embedder)
-            .with_runner(SyncRunner())
-        )
+        table = Graph([clean, embed_text]).bind(embedder=embedder).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="hello")
 
@@ -364,17 +309,7 @@ class TestIncrementality:
         """Different source values → different fingerprint."""
         import lancedb
 
-        from hypergraph.materialization import HyperTable
-
-        table = (
-            HyperTable(
-                [clean, embed_text],
-                identity="doc_id",
-                store=store,
-            )
-            .bind(embedder=embedder)
-            .with_runner(SyncRunner())
-        )
+        table = Graph([clean, embed_text]).bind(embedder=embedder).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="hello")
         table.insert(doc_id="d2", text="world")
@@ -390,17 +325,7 @@ class TestIncrementality:
         """Each derived column has its own provenance hash."""
         import lancedb
 
-        from hypergraph.materialization import HyperTable
-
-        table = (
-            HyperTable(
-                [clean, embed_text, count_words],
-                identity="doc_id",
-                store=store,
-            )
-            .bind(embedder=embedder)
-            .with_runner(SyncRunner())
-        )
+        table = Graph([clean, embed_text, count_words]).bind(embedder=embedder).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="hello world")
 
@@ -418,17 +343,7 @@ class TestIncrementality:
         """Each insert call increments _write_gen."""
         import lancedb
 
-        from hypergraph.materialization import HyperTable
-
-        table = (
-            HyperTable(
-                [clean, embed_text],
-                identity="doc_id",
-                store=store,
-            )
-            .bind(embedder=embedder)
-            .with_runner(SyncRunner())
-        )
+        table = Graph([clean, embed_text]).bind(embedder=embedder).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="first")
         table.insert(doc_id="d2", text="second")
@@ -451,29 +366,16 @@ class TestComponentSwap:
 
     def test_different_embedder_different_vectors(self, store_path):
         """Same text with different embedder config → different vectors."""
-        from hypergraph.materialization import HyperTable
 
         emb_a = Embedder(model_name="model-a", dim=4)
         emb_b = Embedder(model_name="model-b", dim=8)
 
         table_a = (
-            HyperTable(
-                [clean, embed_text],
-                identity="doc_id",
-                store=LanceDBStore(f"{store_path}_a"),
-            )
-            .bind(embedder=emb_a)
-            .with_runner(SyncRunner())
+            Graph([clean, embed_text]).bind(embedder=emb_a).as_table(identity="doc_id", store=LanceDBStore(f"{store_path}_a"), runner=SyncRunner())
         )
 
         table_b = (
-            HyperTable(
-                [clean, embed_text],
-                identity="doc_id",
-                store=LanceDBStore(f"{store_path}_b"),
-            )
-            .bind(embedder=emb_b)
-            .with_runner(SyncRunner())
+            Graph([clean, embed_text]).bind(embedder=emb_b).as_table(identity="doc_id", store=LanceDBStore(f"{store_path}_b"), runner=SyncRunner())
         )
 
         table_a.insert(doc_id="d1", text="hello")

@@ -19,7 +19,7 @@ schema evolution the first time a stamped row is written.
 
 from __future__ import annotations
 
-from hypergraph import node
+from hypergraph import Graph, node
 from hypergraph.materialization import HyperTable, RecipeDrift
 from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.materialization._schema import RECIPE_COLUMN
@@ -32,7 +32,7 @@ def to_upper(text: str, mode: str) -> str:
 
 
 def _table(tmp_path, mode: str) -> HyperTable:
-    return HyperTable([to_upper], identity="doc_id", store=LanceDBStore(str(tmp_path))).bind(mode=mode).with_runner(SyncRunner())
+    return Graph([to_upper]).bind(mode=mode).as_table(identity="doc_id", store=LanceDBStore(str(tmp_path)), runner=SyncRunner())
 
 
 class RecordingStore(LanceDBStore):
@@ -93,7 +93,7 @@ def test_bound_value_change_flips_drift_and_rederive_clears_it(tmp_path):
 
 def test_drift_count_reads_no_content_columns(tmp_path):
     store = RecordingStore(str(tmp_path))
-    table = HyperTable([to_upper], identity="doc_id", store=store).bind(mode="loud").with_runner(SyncRunner())
+    table = Graph([to_upper]).bind(mode="loud").as_table(identity="doc_id", store=store, runner=SyncRunner())
     table.insert(doc_id="d1", text="a very large body of content" * 100)
 
     store.read_projections.clear()
@@ -143,7 +143,7 @@ def test_child_rows_stamp_their_own_child_recipe(tmp_path):
     per_page = Graph([tag], name="per_page").as_node(name="pages").map_over("pages", identity="page_id")
 
     def build(tag_value: str) -> HyperTable:
-        return HyperTable([split, per_page], identity="doc_id", store=LanceDBStore(str(tmp_path))).bind(tag_value=tag_value).with_runner(SyncRunner())
+        return Graph([split, per_page]).bind(tag_value=tag_value).as_table(identity="doc_id", store=LanceDBStore(str(tmp_path)), runner=SyncRunner())
 
     v1 = build("v1")
     v1.insert(doc_id="d1", text="alpha beta")
@@ -178,7 +178,7 @@ def test_sync_stamps_unstamped_rows_it_proves_current_without_rederiving(tmp_pat
         return text + suffix
 
     def build() -> HyperTable:
-        return HyperTable([shout], identity="doc_id", store=LanceDBStore(str(tmp_path))).bind(suffix="!").with_runner(SyncRunner())
+        return Graph([shout]).bind(suffix="!").as_table(identity="doc_id", store=LanceDBStore(str(tmp_path)), runner=SyncRunner())
 
     table = build()
     table.insert(doc_id="d1", text="hello")
@@ -214,7 +214,7 @@ def test_sync_stamps_unstamped_child_rows_via_the_bump_path(tmp_path):
     per_page = Graph([tag], name="per_page").as_node(name="pages").map_over("pages", identity="page_id")
 
     def build() -> HyperTable:
-        return HyperTable([split, per_page], identity="doc_id", store=LanceDBStore(str(tmp_path))).with_runner(SyncRunner())
+        return Graph([split, per_page]).as_table(identity="doc_id", store=LanceDBStore(str(tmp_path)), runner=SyncRunner())
 
     table = build()
     table.insert(doc_id="d1", text="alpha beta")

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from hypergraph import node
+from hypergraph import Graph, node
 from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.runners import SyncRunner
 
@@ -81,9 +81,8 @@ def store(tmp_path):
 
 
 def make_table(store, embedder, nodes=None):
-    from hypergraph.materialization import HyperTable
 
-    return HyperTable(nodes or [clean, embed_text], identity="doc_id", store=store).bind(embedder=embedder).with_runner(SyncRunner())
+    return Graph(nodes or [clean, embed_text]).bind(embedder=embedder).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
 
 DOCS = [{"doc_id": "d1", "text": "Chest pain"}, {"doc_id": "d2", "text": "Stroke triage"}]
@@ -109,17 +108,10 @@ class TestComponentSwap:
         assert rebound.status().is_fresh
 
     def test_unconsumed_component_swap_heals_without_execution(self, store):
-        table = make_table(store, Embedder("embed-a")).bind(unused=Embedder("x")).with_runner(SyncRunner())
-        table.insert(DOCS)
-        calls_before = dict(CALLS)
+        graph = Graph([clean, embed_text]).bind(embedder=Embedder("embed-a"))
 
-        rebound = make_table(store, Embedder("embed-a")).bind(unused=Embedder("y")).with_runner(SyncRunner())
-        assert rebound.status().stale == 2
-        assert rebound.status().stale_columns == ()
-
-        rebound.sync(DOCS)
-        assert dict(CALLS) == calls_before, "no node may execute for an unconsumed component swap"
-        assert rebound.status().is_fresh
+        with pytest.raises(ValueError, match="not a graph input"):
+            graph.bind(unused=Embedder("x"))
 
 
 class TestValueChaining:
@@ -154,12 +146,11 @@ class TestValueChaining:
 
 def make_bound_value_table(store, mode: str):
     """A table binding a plain scalar (segment_semantics-style) beside a component."""
-    from hypergraph.materialization import HyperTable
 
     return (
-        HyperTable([shape_text, clean, embed_text], identity="doc_id", store=store)
+        Graph([shape_text, clean, embed_text])
         .bind(embedder=Embedder("embed-a"), mode=mode)
-        .with_runner(SyncRunner())
+        .as_table(identity="doc_id", store=store, runner=SyncRunner())
     )
 
 
@@ -228,7 +219,7 @@ class TestRecomputeBackfill:
         clean_before = CALLS["clean"]
 
         rebound = make_table(store, Embedder("embed-b"))
-        rebound.recompute("vector")
+        rebound.rederive("vector")
 
         assert CALLS["clean"] == clean_before, "recompute('vector') must not run clean()"
         assert CALLS["embed"] == 4
@@ -239,11 +230,11 @@ class TestRecomputeBackfill:
         calls_before = dict(CALLS)
 
         extended = (
-            make_table(store, Embedder("embed-a"), nodes=[clean, embed_text, embed_text_v2])
-            .bind(embedder_v2=Embedder("embed-v2"))
-            .with_runner(SyncRunner())
+            Graph([clean, embed_text, embed_text_v2])
+            .bind(embedder=Embedder("embed-a"), embedder_v2=Embedder("embed-v2"))
+            .as_table(identity="doc_id", store=store, runner=SyncRunner())
         )
-        extended.backfill("vector_v2")
+        extended.rederive("vector_v2", missing_only=True)
 
         assert CALLS["clean"] == calls_before["clean"], "backfill must not re-run clean()"
         assert CALLS["embed"] == calls_before["embed"], "backfill must not re-run embed()"

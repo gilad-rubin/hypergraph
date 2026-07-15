@@ -7,7 +7,7 @@ from typing import Any, TypedDict
 import pytest
 
 from hypergraph import Graph, node
-from hypergraph.materialization import HyperTable, TableStore
+from hypergraph.materialization import TableStore
 from hypergraph.runners import SyncRunner
 
 
@@ -85,39 +85,35 @@ def test_upsert_writes_new_children_before_deleting_old_children() -> None:
     """A failed child rewrite must not erase the previously readable children."""
 
     store = MemoryStore()
-    table = HyperTable(
-        [split_words, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
-        identity="doc_id",
-        store=store,
-    ).with_runner(SyncRunner())
+    table = Graph([split_words, process_utterance.as_node().map_over("utterances", identity="utterance_id")]).as_table(
+        identity="doc_id", store=store, runner=SyncRunner()
+    )
 
     table.insert(doc_id="d1", text="old words")
-    assert [child["text"] for child in table.children("d1")] == ["old", "words"]
+    assert [child["text"] for child in table.child(table.child_table_names[0]).rows(parent="d1")] == ["old", "words"]
 
     store.fail_child_writes = True
     with pytest.raises(RuntimeError, match="child write failed"):
         table.insert(doc_id="d1", text="new child rows")
 
-    assert [child["text"] for child in table.children("d1")] == ["old", "words"]
+    assert [child["text"] for child in table.child(table.child_table_names[0]).rows(parent="d1")] == ["old", "words"]
 
 
 def test_children_and_count_deduplicate_crash_leftovers() -> None:
     """Public child reads expose one logical child per identity."""
 
     store = MemoryStore()
-    table = HyperTable(
-        [split_words, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
-        identity="doc_id",
-        store=store,
-    ).with_runner(SyncRunner())
+    table = Graph([split_words, process_utterance.as_node().map_over("utterances", identity="utterance_id")]).as_table(
+        identity="doc_id", store=store, runner=SyncRunner()
+    )
 
     table.insert(doc_id="d1", text="old words")
     stale = store.read_one("utterance", "utterance_id", "u0")
     store.write_rows("utterance", [{**stale, "text": "new", "clean_text": "NEW", "_write_gen": stale["_write_gen"] + 100}])
 
-    children = table.children("d1")
+    children = table.child(table.child_table_names[0]).rows(parent="d1")
 
     assert len(children) == 2
     assert {child["utterance_id"] for child in children} == {"u0", "u1"}
     assert next(child for child in children if child["utterance_id"] == "u0")["text"] == "new"
-    assert table.count("utterance") == 2
+    assert table.child("utterance").count() == 2

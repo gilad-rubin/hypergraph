@@ -86,14 +86,9 @@ def _cycle_node():
 
 def _table(tmp_path, proposer: FlakyProposer, hint: str = "h1") -> HyperTable:
     return (
-        HyperTable(
-            [_cycle_node()],
-            identity="row_id",
-            store=LanceDBStore(str(tmp_path / "graphnode_col_store")),
-            on_error="store",
-        )
+        Graph([_cycle_node()])
         .bind(proposer=proposer, hint=hint)
-        .with_runner(SyncRunner())
+        .as_table(identity="row_id", store=LanceDBStore(str(tmp_path / "graphnode_col_store")), on_error="store", runner=SyncRunner())
     )
 
 
@@ -144,14 +139,9 @@ def test_provenance_is_code_sensitive_via_the_node_definition_hash(tmp_path):
         .as_node(name="derive_checked")
     )
     table_v2 = (
-        HyperTable(
-            [cycle_v2],
-            identity="row_id",
-            store=LanceDBStore(str(tmp_path / "graphnode_col_store")),
-            on_error="store",
-        )
+        Graph([cycle_v2])
         .bind(proposer=FlakyProposer(), hint="h1")
-        .with_runner(SyncRunner())
+        .as_table(identity="row_id", store=LanceDBStore(str(tmp_path / "graphnode_col_store")), on_error="store", runner=SyncRunner())
     )
     table_v2.sync([{"row_id": "r1", "text": "alpha"}])
     after = table_v2._store.read_rows(table_v2.table_name)[0]["_provenance_checked"]

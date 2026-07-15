@@ -6,8 +6,8 @@ from typing import Any
 
 import pyarrow as pa
 
-from hypergraph import node
-from hypergraph.materialization import HyperTable, TableStore
+from hypergraph import Graph, node
+from hypergraph.materialization import TableStore
 
 
 class RecordingStore(TableStore):
@@ -59,7 +59,7 @@ def test_column_specs_include_arrow_types_for_store_open() -> None:
     """Stores receive backend-agnostic Arrow types on every column spec."""
 
     store = RecordingStore()
-    table = HyperTable([clean, count_words, embed], identity="doc_id", store=store)
+    table = Graph([clean, count_words, embed]).as_table(identity="doc_id", store=store)
 
     assert table.count() == 0
 

@@ -101,17 +101,8 @@ class TestUpdate:
 
     def test_update_source_column_re_derives(self, store, embedder):
         """Updating a source column re-derives downstream columns."""
-        from hypergraph.materialization import HyperTable
 
-        table = (
-            HyperTable(
-                [clean, embed_text, count_words],
-                identity="doc_id",
-                store=store,
-            )
-            .bind(embedder=embedder)
-            .with_runner(SyncRunner())
-        )
+        table = Graph([clean, embed_text, count_words]).bind(embedder=embedder).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="hello world")
         assert table.get("d1")["word_count"] == 2
@@ -124,13 +115,8 @@ class TestUpdate:
 
     def test_update_metadata_no_re_derive(self, store, embedder):
         """Updating a metadata column does not re-derive."""
-        from hypergraph.materialization import HyperTable
 
-        table = HyperTable(
-            [clean, count_words],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table = Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="hello", title="Old Title")
         table.update("d1", title="New Title")
@@ -146,9 +132,8 @@ class TestUpdate:
         silently drops keys the schema has never seen; a curated tag added after
         insert would vanish. The update must evolve for the new column first.
         """
-        from hypergraph.materialization import HyperTable
 
-        table = HyperTable([clean, count_words], identity="doc_id", store=store).with_runner(SyncRunner())
+        table = Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=SyncRunner())
         table.insert(doc_id="d1", text="hello")
 
         table.update("d1", topic="presets")
@@ -157,7 +142,6 @@ class TestUpdate:
 
     def test_update_cascades_to_children(self, store, embedder):
         """Updating a parent source re-derives children."""
-        from hypergraph.materialization import HyperTable
 
         @node(output_name="utterances")
         def split_dynamic(transcript: str) -> list[Utterance]:
@@ -165,20 +149,16 @@ class TestUpdate:
             return [Utterance(utterance_id=f"u{i}", text=w, speaker="A") for i, w in enumerate(words)]
 
         table = (
-            HyperTable(
-                [extract_audio, transcribe, split_dynamic, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
-                identity="video_id",
-                store=store,
-            )
+            Graph([extract_audio, transcribe, split_dynamic, process_utterance.as_node().map_over("utterances", identity="utterance_id")])
             .bind(embedder=embedder)
-            .with_runner(SyncRunner())
+            .as_table(identity="video_id", store=store, runner=SyncRunner())
         )
 
         table.insert(video_id="v1", path="/data/a.mp4")
-        children_before = table.children("v1")
+        children_before = table.child(table.child_table_names[0]).rows(parent="v1")
 
         table.update("v1", path="/data/b.mp4")
-        children_after = table.children("v1")
+        children_after = table.child(table.child_table_names[0]).rows(parent="v1")
 
         # Different path → different transcript → different utterances
         before_texts = {c["clean_text"] for c in children_before}
@@ -187,26 +167,16 @@ class TestUpdate:
 
     def test_update_nonexistent_row_errors(self, store):
         """Updating a row that doesn't exist raises an error."""
-        from hypergraph.materialization import HyperTable
 
-        table = HyperTable(
-            [clean],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table = Graph([clean]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         with pytest.raises(KeyError):
             table.update("nonexistent", text="nope")
 
     def test_update_changes_row(self, store):
         """update() applies changes and re-derives downstream columns."""
-        from hypergraph.materialization import HyperTable
 
-        table = HyperTable(
-            [clean, count_words],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table = Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="hello")
         assert table.get("d1")["word_count"] == 1
@@ -234,10 +204,9 @@ class TestMetadataEvolveOnEmptyTable:
 
     def test_reinsert_metadata_column_after_emptying_table(self, store):
         """Add a metadata column, delete every row, re-insert with it — must not crash."""
-        from hypergraph.materialization import HyperTable
 
         def build_table():
-            return HyperTable([clean, count_words], identity="doc_id", store=store).with_runner(SyncRunner())
+            return Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         # 1. Insert a row and add a brand-new metadata column via update.
         #    This evolves the physical schema to carry ``station``.
@@ -270,13 +239,8 @@ class TestDelete:
 
     def test_delete_removes_row(self, store):
         """delete(id) removes the row."""
-        from hypergraph.materialization import HyperTable
 
-        table = HyperTable(
-            [clean, count_words],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table = Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="hello")
         table.insert(doc_id="d2", text="world")
@@ -289,36 +253,26 @@ class TestDelete:
 
     def test_delete_cascades_children(self, store, embedder):
         """delete(parent_id) also deletes all child rows."""
-        from hypergraph.materialization import HyperTable
 
         table = (
-            HyperTable(
-                [extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
-                identity="video_id",
-                store=store,
-            )
+            Graph([extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")])
             .bind(embedder=embedder)
-            .with_runner(SyncRunner())
+            .as_table(identity="video_id", store=store, runner=SyncRunner())
         )
 
         table.insert(video_id="v1", path="/data/a.mp4")
         table.insert(video_id="v2", path="/data/b.mp4")
-        assert table.count("utterance") == 4  # 2 per parent
+        assert table.child("utterance").count() == 4  # 2 per parent
 
         table.delete("v1")
         assert table.count() == 1
-        assert table.children("v1") == []
-        assert len(table.children("v2")) == 2
+        assert table.child(table.child_table_names[0]).rows(parent="v1") == []
+        assert len(table.child(table.child_table_names[0]).rows(parent="v2")) == 2
 
     def test_delete_nonexistent_is_noop(self, store):
         """Deleting a nonexistent row does nothing."""
-        from hypergraph.materialization import HyperTable
 
-        table = HyperTable(
-            [clean],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table = Graph([clean]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="hello")
         table.delete("nonexistent")
@@ -335,13 +289,8 @@ class TestSync:
 
     def test_sync_inserts_new(self, store):
         """sync inserts items not in the table."""
-        from hypergraph.materialization import HyperTable
 
-        table = HyperTable(
-            [clean, count_words],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table = Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         result = table.sync(
             [
@@ -355,13 +304,8 @@ class TestSync:
 
     def test_sync_skips_unchanged(self, store):
         """sync skips rows whose fingerprint matches."""
-        from hypergraph.materialization import HyperTable
 
-        table = HyperTable(
-            [clean, count_words],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table = Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="hello")
 
@@ -371,13 +315,8 @@ class TestSync:
 
     def test_sync_updates_changed(self, store):
         """sync updates rows whose source values changed."""
-        from hypergraph.materialization import HyperTable
 
-        table = HyperTable(
-            [clean, count_words],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table = Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="hello")
 
@@ -387,13 +326,8 @@ class TestSync:
 
     def test_sync_deletes_missing(self, store):
         """sync deletes rows not in the current items list."""
-        from hypergraph.materialization import HyperTable
 
-        table = HyperTable(
-            [clean, count_words],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table = Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="hello")
         table.insert(doc_id="d2", text="world")
@@ -405,13 +339,8 @@ class TestSync:
 
     def test_sync_combined(self, store):
         """sync handles insert + update + delete + skip in one call."""
-        from hypergraph.materialization import HyperTable
 
-        table = HyperTable(
-            [clean, count_words],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table = Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="unchanged")
         table.insert(doc_id="d2", text="will change")
@@ -442,13 +371,8 @@ class TestIncrementality:
 
     def test_insert_skips_unchanged(self, store):
         """Re-inserting the same row is a no-op (same fingerprint)."""
-        from hypergraph.materialization import HyperTable
 
-        table = HyperTable(
-            [clean, count_words],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table = Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="hello")
         assert table.count() == 1
@@ -458,13 +382,8 @@ class TestIncrementality:
 
     def test_insert_updates_changed(self, store):
         """Re-inserting with different source updates the row."""
-        from hypergraph.materialization import HyperTable
 
-        table = HyperTable(
-            [clean, count_words],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table = Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="hello")
         assert table.get("d1")["word_count"] == 1
@@ -484,18 +403,9 @@ class TestRecompute:
 
     def test_recompute_with_new_component(self, store):
         """Recompute re-derives using current bound components."""
-        from hypergraph.materialization import HyperTable
 
         emb_small = Embedder(dim=3)
-        table = (
-            HyperTable(
-                [clean, embed_text],
-                identity="doc_id",
-                store=store,
-            )
-            .bind(embedder=emb_small)
-            .with_runner(SyncRunner())
-        )
+        table = Graph([clean, embed_text]).bind(embedder=emb_small).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="hello")
         old_vec = table.get("d1")["vector"]
@@ -503,8 +413,8 @@ class TestRecompute:
 
         # Swap to a different embedder and recompute
         emb_big = Embedder(model_name="big", dim=3)
-        table_rebound = table.bind(embedder=emb_big)
-        table_rebound.recompute("vector")
+        table_rebound = table.graph.bind(embedder=emb_big).as_table(identity="doc_id", store=store, runner=SyncRunner())
+        table_rebound.rederive("vector")
 
         new_vec = table_rebound.get("d1")["vector"]
         assert len(new_vec) == 3
@@ -524,26 +434,17 @@ class TestBackfill:
 
     def test_backfill_populates_null_columns(self, store):
         """After adding a node, backfill derives values for existing rows."""
-        from hypergraph.materialization import HyperTable
 
         # Insert with a smaller graph (no word_count)
-        table_v1 = HyperTable(
-            [clean],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table_v1 = Graph([clean]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table_v1.insert(doc_id="d1", text="hello world")
         table_v1.insert(doc_id="d2", text="one two three")
 
         # Upgrade to graph with word_count
-        table_v2 = HyperTable(
-            [clean, count_words],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table_v2 = Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
-        table_v2.backfill("word_count")
+        table_v2.rederive("word_count", missing_only=True)
 
         assert table_v2.get("d1")["word_count"] == 2
         assert table_v2.get("d2")["word_count"] == 3
@@ -560,13 +461,8 @@ class TestCrashRecovery:
     def test_read_one_returns_highest_write_gen(self, store):
         """If duplicate rows exist (simulating a crash between write and delete),
         read_one returns the row with the highest _write_gen."""
-        from hypergraph.materialization import HyperTable
 
-        table = HyperTable(
-            [clean, count_words],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table = Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="original")
 
@@ -583,13 +479,8 @@ class TestCrashRecovery:
 
     def test_sync_deduplicates_crash_leftovers(self, store):
         """sync() deduplicates rows by identity before processing, keeping highest gen."""
-        from hypergraph.materialization import HyperTable
 
-        table = HyperTable(
-            [clean, count_words],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table = Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table.insert(doc_id="d1", text="hello")
 
@@ -610,17 +501,12 @@ class TestFingerprintCorrectness:
 
     def test_fingerprint_detects_node_code_change(self, store):
         """Changing a node's code produces a different fingerprint → sync re-derives."""
-        from hypergraph.materialization import HyperTable
 
         @node(output_name="label")
         def classify_v1(clean_text: str) -> str:
             return "v1:" + clean_text
 
-        table_v1 = HyperTable(
-            [clean, classify_v1],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table_v1 = Graph([clean, classify_v1]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table_v1.insert(doc_id="d1", text="hello")
         assert table_v1.get("d1")["label"] == "v1:hello"
@@ -630,11 +516,7 @@ class TestFingerprintCorrectness:
         def classify_v2(clean_text: str) -> str:
             return "v2:" + clean_text
 
-        table_v2 = HyperTable(
-            [clean, classify_v2],
-            identity="doc_id",
-            store=store,
-        ).with_runner(SyncRunner())
+        table_v2 = Graph([clean, classify_v2]).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         result = table_v2.sync([dict(doc_id="d1", text="hello")])
         # Different node code → different fingerprint → should re-derive
@@ -643,33 +525,16 @@ class TestFingerprintCorrectness:
 
     def test_fingerprint_detects_component_config_change(self, store):
         """Changing a component's config produces a different fingerprint."""
-        from hypergraph.materialization import HyperTable
 
         emb_a = Embedder(model_name="model-a", dim=3)
-        table_a = (
-            HyperTable(
-                [clean, embed_text],
-                identity="doc_id",
-                store=store,
-            )
-            .bind(embedder=emb_a)
-            .with_runner(SyncRunner())
-        )
+        table_a = Graph([clean, embed_text]).bind(embedder=emb_a).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table_a._ensure_analyzed()
         graph_inputs = {"text": "hello"}
         fp_a = table_a._provenance_policy.root_fingerprint(graph_inputs)
 
         emb_b = Embedder(model_name="model-b", dim=3)
-        table_b = (
-            HyperTable(
-                [clean, embed_text],
-                identity="doc_id",
-                store=store,
-            )
-            .bind(embedder=emb_b)
-            .with_runner(SyncRunner())
-        )
+        table_b = Graph([clean, embed_text]).bind(embedder=emb_b).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
         table_b._ensure_analyzed()
         fp_b = table_b._provenance_policy.root_fingerprint(graph_inputs)
@@ -681,7 +546,6 @@ class TestChildCascadeOrdering:
 
     def test_update_preserves_children_count(self, store, embedder):
         """After updating a parent with children, the new child count is correct."""
-        from hypergraph.materialization import HyperTable
 
         @node(output_name="utterances")
         def split_fixed(transcript: str) -> list[Utterance]:
@@ -692,41 +556,32 @@ class TestChildCascadeOrdering:
             ]
 
         table = (
-            HyperTable(
-                [extract_audio, transcribe, split_fixed, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
-                identity="video_id",
-                store=store,
-            )
+            Graph([extract_audio, transcribe, split_fixed, process_utterance.as_node().map_over("utterances", identity="utterance_id")])
             .bind(embedder=embedder)
-            .with_runner(SyncRunner())
+            .as_table(identity="video_id", store=store, runner=SyncRunner())
         )
 
         table.insert(video_id="v1", path="/data/a.mp4")
-        assert len(table.children("v1")) == 3
+        assert len(table.child(table.child_table_names[0]).rows(parent="v1")) == 3
 
         table.update("v1", path="/data/b.mp4")
         # After update, should still have exactly 3 children (not 0 from a crash)
-        assert len(table.children("v1")) == 3
+        assert len(table.child(table.child_table_names[0]).rows(parent="v1")) == 3
 
     def test_delete_removes_children_before_parent(self, store, embedder):
         """delete() removes children first so no orphans remain on crash."""
-        from hypergraph.materialization import HyperTable
 
         table = (
-            HyperTable(
-                [extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
-                identity="video_id",
-                store=store,
-            )
+            Graph([extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")])
             .bind(embedder=embedder)
-            .with_runner(SyncRunner())
+            .as_table(identity="video_id", store=store, runner=SyncRunner())
         )
 
         table.insert(video_id="v1", path="/data/a.mp4")
         table.insert(video_id="v2", path="/data/b.mp4")
-        assert table.count("utterance") == 4
+        assert table.child("utterance").count() == 4
 
         table.delete("v1")
         assert table.count() == 1
-        assert table.children("v1") == []
-        assert table.count("utterance") == 2  # only v2's children remain
+        assert table.child(table.child_table_names[0]).rows(parent="v1") == []
+        assert table.child("utterance").count() == 2  # only v2's children remain

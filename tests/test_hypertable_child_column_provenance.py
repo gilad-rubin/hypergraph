@@ -85,13 +85,12 @@ def store(tmp_path):
 
 
 def make_table(store, embedder=None, enricher=None, split_node=split_pages):
-    from hypergraph.materialization import HyperTable
 
     pages_node = process_page.as_node().map_over("pages", identity="page_id")
     return (
-        HyperTable([split_node, pages_node], identity="doc_id", store=store)
+        Graph([split_node, pages_node])
         .bind(embedder=embedder or Embedder(), enricher=enricher or Enricher())
-        .with_runner(SyncRunner())
+        .as_table(identity="doc_id", store=store, runner=SyncRunner())
     )
 
 
@@ -112,7 +111,7 @@ class TestRecipeChanges:
         assert CALLS["split"] == 2, "document split must not re-run on an embedder swap"
         assert CALLS["enrich"] == 5, "per-page enrichment (the LLM) must not re-run"
         assert CALLS["embed"] == 10, "embeddings must re-run for all 5 pages"
-        assert swapped.children("d1")[0]["page_vector"][0] == float(len("embed-b"))
+        assert swapped.child(swapped.child_table_names[0]).rows(parent="d1")[0]["page_vector"][0] == float(len("embed-b"))
         assert swapped.status().is_fresh
 
     def test_enricher_swap_leaves_embeddings_alone(self, store):
@@ -124,7 +123,7 @@ class TestRecipeChanges:
         assert CALLS["split"] == 2
         assert CALLS["enrich"] == 10
         assert CALLS["embed"] == 5, "embeddings must not re-run on an enricher swap"
-        assert swapped.children("d1")[0]["summary"].startswith("enrich-b:")
+        assert swapped.child(swapped.child_table_names[0]).rows(parent="d1")[0]["summary"].startswith("enrich-b:")
         assert swapped.status().is_fresh
 
     def test_split_code_change_with_same_pages_skips_children(self, store):
@@ -157,7 +156,7 @@ class TestContentChanges:
         assert CALLS["split"] == 3, "d1 must re-split (its text changed)"
         assert CALLS["enrich"] == 6, "only the changed page re-enriches"
         assert CALLS["embed"] == 6, "only the changed page re-embeds"
-        texts = {c["page_text"] for c in table.children("d1")}
+        texts = {c["page_text"] for c in table.child(table.child_table_names[0]).rows(parent="d1")}
         assert texts == {"alpha", "zeta"}
 
 

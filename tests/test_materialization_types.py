@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from hypergraph.materialization import ErrorRow, SyncResult
+from hypergraph.materialization import (
+    ErroredRow,
+    RowReceipt,
+    RowStatus,
+    TableReceipt,
+    WriteOutcome,
+)
 from hypergraph.materialization._fingerprint import compute_definition_hash
 
 # ---------------------------------------------------------------------------
@@ -47,19 +53,29 @@ class TestDefinitionHash:
 # ---------------------------------------------------------------------------
 
 
-class TestErrorRow:
+class TestErroredRow:
     def test_fields(self):
-        e = ErrorRow(identity={"utt_id": "u1"}, error_type="ValueError", error_msg="bad")
-        assert e.identity == {"utt_id": "u1"}
-        assert e.error_type == "ValueError"
-        assert e.error_msg == "bad"
+        error = ErroredRow(id="u1", error="ValueError: bad", row={"utt_id": "u1"})
+
+        assert error.id == "u1"
+        assert error.error == "ValueError: bad"
+        assert error.row == {"utt_id": "u1"}
 
 
-class TestSyncResult:
-    def test_fields(self):
-        r = SyncResult(inserted=1, updated=2, deleted=3, skipped=4, errored=5)
-        assert r.inserted == 1
-        assert r.updated == 2
-        assert r.deleted == 3
-        assert r.skipped == 4
-        assert r.errored == 5
+class TestTableReceipt:
+    def test_aggregates_row_receipts(self):
+        receipt = TableReceipt(
+            (
+                RowReceipt("u1", WriteOutcome.INSERTED, RowStatus.COMPLETE),
+                RowReceipt("u2", WriteOutcome.UPDATED, RowStatus.ERROR, error="bad"),
+                RowReceipt("u3", WriteOutcome.SKIPPED, RowStatus.COMPLETE),
+            ),
+            deleted=3,
+        )
+
+        assert receipt.inserted == 1
+        assert receipt.updated == 1
+        assert receipt.skipped == 1
+        assert receipt.deleted == 3
+        assert receipt.failed
+        assert len(receipt.errors) == 1

@@ -7,11 +7,13 @@ from typing import Any
 from hypergraph.materialization._provenance import Provenance, normalize_value
 from hypergraph.materialization._recipe_journal import RecipeJournal
 from hypergraph.materialization._schema import (
+    QUESTION_COLUMN,
     RECIPE_COLUMN,
     TableSpec,
     python_type_to_arrow,
     return_type,
 )
+from hypergraph.materialization._types import serialize_question
 from hypergraph.materialization._write_actions import (
     BuildChildRow,
     BuildNodeRow,
@@ -135,8 +137,9 @@ class WriteExecutor:
 
     def _provenance_node(self, name: str) -> Any:
         for column in self._spec.columns:
-            if column.role == "derived" and column.name == name:
-                return column.produced_by
+            if column.role in ("derived", "answer") and column.name == name:
+                producer = column.produced_by
+                return producer[0] if isinstance(producer, tuple) else producer
         for child_spec in self._spec.children:
             if child_spec.map_input == name:
                 return self._provenance.boundary_node(child_spec)
@@ -158,6 +161,8 @@ class WriteExecutor:
             for column in derived_columns:
                 if column.name in outputs:
                     row[column.name] = outputs[column.name]
+                elif action.mode == "waiting" and column.role == "answer":
+                    row[column.name] = None
 
         row["_row_fingerprint"] = self._provenance.root_fingerprint(graph_inputs)
         row["_write_gen"] = action.write_gen
@@ -184,12 +189,20 @@ class WriteExecutor:
                 if node is not None:
                     self._record_node_recipe(node)
 
-        if action.mode == "complete":
+        if action.mode in ("complete", "update"):
             row["_status"] = "complete"
             row["_error"] = None
+            row[QUESTION_COLUMN] = None
+        elif action.mode == "waiting":
+            if action.pause is None or action.pause_provenance is None:
+                raise RuntimeError("waiting row requires a pause and provenance")
+            row["_status"] = "waiting"
+            row["_error"] = None
+            row[QUESTION_COLUMN] = serialize_question(action.pause, action.pause_provenance)
         elif action.mode == "error":
             row["_status"] = "error"
             row["_error"] = action.error
+            row[QUESTION_COLUMN] = None
         return row
 
     def _build_child_row(self, action: BuildChildRow) -> dict[str, Any]:

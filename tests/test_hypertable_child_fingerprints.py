@@ -97,11 +97,9 @@ def _reset_call_count():
 
 
 def _make_table(store: MemoryStore) -> HyperTable:
-    return HyperTable(
-        [split_words, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
-        identity="doc_id",
-        store=store,
-    ).with_runner(SyncRunner())
+    return Graph([split_words, process_utterance.as_node().map_over("utterances", identity="utterance_id")]).as_table(
+        identity="doc_id", store=store, runner=SyncRunner()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +123,7 @@ def test_reinsert_skips_unchanged_children():
     assert second_count == first_count
 
     # Children should still be readable
-    children = table.children("d1")
+    children = table.child(table.child_table_names[0]).rows(parent="d1")
     assert len(children) == 2
 
 
@@ -144,7 +142,7 @@ def test_changed_child_source_re_derives_only_that_child():
     # Only u1 re-derives — u0 has same fingerprint and is skipped
     assert second_count == first_count + 1
 
-    children = table.children("d1")
+    children = table.child(table.child_table_names[0]).rows(parent="d1")
     texts = {c["utterance_id"]: c["clean_text"] for c in children}
     assert texts["u0"] == "HELLO"
     assert texts["u1"] == "EARTH"
@@ -156,11 +154,11 @@ def test_skipped_children_survive_write_gen_cleanup():
     table = _make_table(store)
 
     table.insert(doc_id="d1", text="hello world")
-    assert len(table.children("d1")) == 2
+    assert len(table.child(table.child_table_names[0]).rows(parent="d1")) == 2
 
     # Re-insert same parent — children should be skipped but survive cleanup
     table.insert(doc_id="d1", text="hello world")
-    children = table.children("d1")
+    children = table.child(table.child_table_names[0]).rows(parent="d1")
     assert len(children) == 2
     assert {c["utterance_id"] for c in children} == {"u0", "u1"}
 
@@ -171,14 +169,14 @@ def test_parent_skip_still_reconciles_children():
     table = _make_table(store)
 
     table.insert(doc_id="d1", text="hello world")
-    assert len(table.children("d1")) == 2
+    assert len(table.child(table.child_table_names[0]).rows(parent="d1")) == 2
 
     # Manually delete one child to simulate a crash
     store.delete_rows("utterance", [("_parent_id", "eq", "d1"), ("utterance_id", "eq", "u1")])
-    assert len(table.children("d1")) == 1
+    assert len(table.child(table.child_table_names[0]).rows(parent="d1")) == 1
 
     # Re-insert same parent — parent matches, but missing child should be re-derived
     table.insert(doc_id="d1", text="hello world")
-    children = table.children("d1")
+    children = table.child(table.child_table_names[0]).rows(parent="d1")
     assert len(children) == 2
     assert {c["utterance_id"] for c in children} == {"u0", "u1"}

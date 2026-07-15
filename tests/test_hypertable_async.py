@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from hypergraph import node
-from hypergraph.materialization import HyperTable
+from hypergraph import Graph, node
 from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.runners import AsyncRunner
 
@@ -22,11 +21,7 @@ def count_words(clean_text: str) -> int:
 
 @pytest.fixture
 def table(tmp_path):
-    return HyperTable(
-        [clean, count_words],
-        identity="doc_id",
-        store=LanceDBStore(str(tmp_path / "async_store")),
-    ).with_runner(AsyncRunner())
+    return Graph([clean, count_words]).as_table(identity="doc_id", store=LanceDBStore(str(tmp_path / "async_store")), runner=AsyncRunner())
 
 
 @pytest.mark.asyncio
@@ -79,12 +74,12 @@ async def test_async_backfill_populates_null_columns(tmp_path) -> None:
     fed an un-awaited coroutine to _extract_outputs, deriving nothing."""
     store = LanceDBStore(str(tmp_path / "async_backfill_store"))
 
-    table_v1 = HyperTable([clean], identity="doc_id", store=store).with_runner(AsyncRunner())
+    table_v1 = Graph([clean]).as_table(identity="doc_id", store=store, runner=AsyncRunner())
     await table_v1.insert(doc_id="d1", text="hello world")
     await table_v1.insert(doc_id="d2", text="one two three")
 
-    table_v2 = HyperTable([clean, count_words], identity="doc_id", store=store).with_runner(AsyncRunner())
-    await table_v2.backfill("word_count")
+    table_v2 = Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=AsyncRunner())
+    await table_v2.rederive("word_count", missing_only=True)
 
     assert table_v2.get("d1")["word_count"] == 2
     assert table_v2.get("d2")["word_count"] == 3
@@ -95,10 +90,10 @@ async def test_async_recompute_rederives_column(tmp_path) -> None:
     """recompute() is awaitable under AsyncRunner and re-derives through the async
     graph instead of leaving a stale value (or raising on an un-awaitable None)."""
     store = LanceDBStore(str(tmp_path / "async_recompute_store"))
-    table = HyperTable([clean, count_words], identity="doc_id", store=store).with_runner(AsyncRunner())
+    table = Graph([clean, count_words]).as_table(identity="doc_id", store=store, runner=AsyncRunner())
 
     await table.insert(doc_id="d1", text="hello world")
     assert table.get("d1")["word_count"] == 2
 
-    await table.recompute("word_count")
+    await table.rederive("word_count")
     assert table.get("d1")["word_count"] == 2

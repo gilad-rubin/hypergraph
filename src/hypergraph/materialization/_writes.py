@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator, Mapping
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from hypergraph.materialization._provenance import (
@@ -20,7 +21,13 @@ from hypergraph.materialization._schema import (
     input_names,
     is_internal_column,
 )
-from hypergraph.materialization._types import ErrorRow, SyncResult
+from hypergraph.materialization._types import (
+    RowReceipt,
+    RowStatus,
+    TableReceipt,
+    WriteOutcome,
+    deserialize_question,
+)
 from hypergraph.materialization._write_actions import (
     BuildChildRow,
     BuildNodeRow,
@@ -39,6 +46,7 @@ from hypergraph.materialization._write_actions import (
     _freeze,
     _Predicate,
 )
+from hypergraph.runners import PauseInfo
 
 
 def normalize_to_dict(item: Any) -> dict[str, Any]:
@@ -76,6 +84,28 @@ def dedup_child_rows(rows: list[dict[str, Any]], identity: str) -> list[dict[str
     return list(best.values())
 
 
+@dataclass(frozen=True)
+class _PausedConvergence:
+    pause: PauseInfo
+    outputs: dict[str, Any]
+    provenances: dict[str, str]
+    provenance: str
+
+
+def _run_values(result: Any) -> dict[str, Any]:
+    if hasattr(result, "values") and isinstance(result.values, dict):
+        return result.values
+    if isinstance(result, dict):
+        return result
+    return {}
+
+
+def _run_pause(result: Any) -> PauseInfo | None:
+    if getattr(result, "paused", False):
+        return getattr(result, "pause", None)
+    return None
+
+
 class WritePlanner:
     """Emit immutable actions for every mutating HyperTable operation."""
 
@@ -95,9 +125,16 @@ class WritePlanner:
         self._on_error = on_error
         self._provenance = provenance
 
-    def _graph_inputs(self, item: Mapping[str, Any]) -> dict[str, Any]:
+    def _graph_inputs(self, item: Mapping[str, Any], provided: set[str] | None = None) -> dict[str, Any]:
         required = input_names(self._graph.inputs.required)
-        return {key: value for key, value in item.items() if key != self._identity and key in required}
+        answers = {column.name for column in self._spec.columns if column.role == "answer"}
+        accepted_answers = answers if provided is None else answers & provided
+        accepted = required | accepted_answers
+        return {key: value for key, value in item.items() if key != self._identity and key in accepted}
+
+    def _source_inputs(self, item: Mapping[str, Any]) -> dict[str, Any]:
+        sources = {column.name for column in self._spec.columns if column.role == "source"}
+        return {key: value for key, value in item.items() if key in sources}
 
     @staticmethod
     def _parent_skipped(existing: dict[str, Any] | None, fingerprint: str) -> bool:
@@ -114,7 +151,8 @@ class WritePlanner:
         item: dict[str, Any],
         existing: dict[str, Any],
         spec: TableSpec | None = None,
-    ) -> Generator[WriteAction, Any, ReconcileResult | None]:
+        provided: set[str] | None = None,
+    ) -> Generator[WriteAction, Any, ReconcileResult | _PausedConvergence | None]:
         target = spec or self._spec
         boundary_counts: dict[str, int] = {}
         for child_spec in target.children:
@@ -123,7 +161,8 @@ class WritePlanner:
                 (("_parent_id", "eq", item[target.identity]),),
             )
             boundary_counts[child_spec.name] = len(dedup_child_rows(rows, child_spec.identity))
-        incoming = {key: value for key, value in item.items() if key != target.identity}
+        provided_names = provided if provided is not None else set(item) - {target.identity}
+        incoming = {key: value for key, value in item.items() if key in provided_names and key != target.identity}
         state = self._provenance.start_reconcile(target, existing, incoming, boundary_counts)
         while True:
             state, step = self._provenance.next_reconcile_step(state)
@@ -131,10 +170,21 @@ class WritePlanner:
                 return None
             if isinstance(step, ReconcileComplete):
                 return step.result
-            outputs = yield RunGraph(
+            result = yield RunGraph(
                 self._provenance.column_graph(step.node),
                 _freeze(step.input_values()),
             )
+            pause = _run_pause(result)
+            if pause is not None:
+                provenances = dict(state.provenances)
+                provenances[pause.response_key] = step.provenance
+                return _PausedConvergence(
+                    pause=pause,
+                    outputs=dict(state.outputs),
+                    provenances=provenances,
+                    provenance=step.provenance,
+                )
+            outputs = _run_values(result)
             state = self._provenance.apply_reconcile_result(state, step, outputs)
 
     def _cleanup_parent(self, identity_value: Any, write_gen: int) -> DeleteRows:
@@ -323,7 +373,7 @@ class WritePlanner:
 
             if row is None:
                 try:
-                    child_outputs = yield RunGraph(bound_graph, _freeze(child_inputs))
+                    child_outputs = _run_values((yield RunGraph(bound_graph, _freeze(child_inputs))))
                 except Exception as error:
                     if self._on_error == "raise":
                         raise
@@ -407,6 +457,51 @@ class WritePlanner:
         yield from self._cleanup_children(identity_value, write_gen)
         return "skipped" if parent_skipped else "updated"
 
+    def _provenances_for_values(self, values: Mapping[str, Any], pause: PauseInfo | None = None) -> dict[str, str]:
+        provenances: dict[str, str] = {}
+        for node in self._provenance.nodes_in_dependency_order():
+            provenance = self._provenance.node_provenance(node, values)
+            if provenance is None:
+                continue
+            for column in self._provenance.node_columns(node):
+                if column.name in values or (pause is not None and column.name == pause.response_key):
+                    provenances[column.name] = provenance
+        return provenances
+
+    def _waiting_receipt(self, identity_value: Any, outcome: WriteOutcome, row: Mapping[str, Any]) -> RowReceipt:
+        pause, _provenance = deserialize_question(row["_question"])
+        return RowReceipt(str(identity_value), outcome, RowStatus.WAITING, pause=pause)
+
+    def _write_waiting_parent(
+        self,
+        item: dict[str, Any],
+        source_inputs: dict[str, Any],
+        outputs: Mapping[str, Any],
+        provenances: Mapping[str, str],
+        pause: PauseInfo,
+        pause_provenance: str,
+        write_gen: int,
+        existing: dict[str, Any] | None,
+        outcome: WriteOutcome,
+    ) -> Generator[WriteAction, Any, RowReceipt]:
+        identity_value = item[self._identity]
+        yield EvolveMetadata(_freeze(item))
+        row = yield BuildParentRow(
+            _freeze(item),
+            _freeze(source_inputs),
+            _freeze(outputs),
+            write_gen,
+            "waiting",
+            _freeze(provenances),
+            pause=pause,
+            pause_provenance=pause_provenance,
+        )
+        yield WriteRows.from_rows(self._spec.name, [row])
+        if existing is not None:
+            yield self._cleanup_parent(identity_value, write_gen)
+            yield from self._cleanup_children(identity_value, write_gen)
+        return RowReceipt(str(identity_value), outcome, RowStatus.WAITING, pause=pause)
+
     def _error_parent(
         self,
         item: dict[str, Any],
@@ -432,60 +527,109 @@ class WritePlanner:
         self,
         item: dict[str, Any],
         write_gen: int,
-    ) -> Generator[WriteAction, Any, str]:
+        provided: set[str] | None = None,
+    ) -> Generator[WriteAction, Any, RowReceipt]:
         identity_value = item[self._identity]
-        graph_inputs = self._graph_inputs(item)
+        provided_names = provided if provided is not None else set(item) - {self._identity}
+        graph_inputs = self._graph_inputs(item, provided_names)
+        source_inputs = self._source_inputs(item)
         existing = yield ReadOne(self._spec.name, self._identity, identity_value)
-        parent_skipped = self._parent_skipped(existing, self._provenance.root_fingerprint(graph_inputs))
+        outcome = WriteOutcome.UPDATED if existing is not None else WriteOutcome.INSERTED
+        fingerprint = self._provenance.root_fingerprint(source_inputs)
+        answer_names = {column.name for column in self._spec.columns if column.role == "answer"}
+        answer_provided = bool(answer_names & provided_names)
+        if existing is not None and existing.get("_row_fingerprint") == fingerprint and existing.get("_status") == "waiting" and not answer_provided:
+            return self._waiting_receipt(identity_value, WriteOutcome.SKIPPED, existing)
+        parent_skipped = self._parent_skipped(existing, fingerprint)
+        if answer_provided:
+            parent_skipped = False
         if parent_skipped and not self._spec.children:
             if self._provenance.row_missing_stamp(existing, RECIPE_COLUMN):
                 yield from self._refresh_missing_stamps(existing)
-            return "skipped"
+            return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
 
         if self._can_reconcile(existing):
             try:
-                reconciled = yield from self._reconcile(item, existing)
+                reconciled = yield from self._reconcile(item, existing, provided=provided_names)
             except Exception as error:
                 if self._on_error == "raise":
                     raise
                 if parent_skipped:
-                    return "skipped"
-                yield from self._error_parent(item, graph_inputs, write_gen, error, existing)
-                return "errored"
-            if reconciled is not None:
+                    return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
+                yield from self._error_parent(item, source_inputs, write_gen, error, existing)
+                return RowReceipt(str(identity_value), outcome, RowStatus.ERROR, error=f"{type(error).__name__}: {error}")
+            if isinstance(reconciled, _PausedConvergence):
                 return (
-                    yield from self._apply_reconciled(
+                    yield from self._write_waiting_parent(
                         item,
-                        graph_inputs,
-                        existing,
-                        reconciled,
-                        parent_skipped,
+                        source_inputs,
+                        reconciled.outputs,
+                        reconciled.provenances,
+                        reconciled.pause,
+                        reconciled.provenance,
                         write_gen,
+                        existing,
+                        outcome,
                     )
+                )
+            if reconciled is not None:
+                reconciled_outcome = yield from self._apply_reconciled(
+                    item,
+                    source_inputs,
+                    existing,
+                    reconciled,
+                    parent_skipped,
+                    write_gen,
+                )
+                return RowReceipt(
+                    str(identity_value),
+                    WriteOutcome.SKIPPED if reconciled_outcome == "skipped" else outcome,
+                    RowStatus.COMPLETE,
                 )
 
         try:
-            outputs = yield RunGraph(self._graph, _freeze(graph_inputs))
+            result = yield RunGraph(self._graph, _freeze(graph_inputs))
         except Exception as error:
             if self._on_error == "raise":
                 raise
             if parent_skipped:
-                return "skipped"
-            yield from self._error_parent(item, graph_inputs, write_gen, error, existing)
-            return "errored"
+                return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
+            yield from self._error_parent(item, source_inputs, write_gen, error, existing)
+            return RowReceipt(str(identity_value), outcome, RowStatus.ERROR, error=f"{type(error).__name__}: {error}")
+
+        outputs = _run_values(result)
+        pause = _run_pause(result)
+        if pause is not None:
+            provenances = self._provenances_for_values({**item, **outputs}, pause)
+            pause_provenance = provenances.get(pause.response_key)
+            if pause_provenance is None:
+                raise RuntimeError(f"could not compute provenance for interrupt answer {pause.response_key!r}")
+            return (
+                yield from self._write_waiting_parent(
+                    item,
+                    source_inputs,
+                    outputs,
+                    provenances,
+                    pause,
+                    pause_provenance,
+                    write_gen,
+                    existing,
+                    outcome,
+                )
+            )
 
         if parent_skipped:
             for child_spec in self._spec.children:
                 yield from self._insert_children(identity_value, outputs, child_spec, write_gen)
             yield from self._cleanup_children(identity_value, write_gen)
-            return "skipped"
+            return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
 
         for child_spec in self._spec.children:
             yield from self._insert_children(identity_value, outputs, child_spec, write_gen)
         yield EvolveMetadata(_freeze(item))
         row = yield BuildParentRow(
             _freeze(item),
-            _freeze(graph_inputs),
+            _freeze(source_inputs),
             _freeze(outputs),
             write_gen,
             "complete",
@@ -494,12 +638,14 @@ class WritePlanner:
         if existing is not None:
             yield self._cleanup_parent(identity_value, write_gen)
             yield from self._cleanup_children(identity_value, write_gen)
-        return "updated" if existing is not None else "inserted"
+        return RowReceipt(str(identity_value), outcome, RowStatus.COMPLETE)
 
     def insert(self, items: list[dict[str, Any]]) -> WriteOperation:
         write_gen = (yield MaxWriteGen(self._spec.name)) + 1
+        receipts: list[RowReceipt] = []
         for item in items:
-            yield from self._insert_one(item, write_gen)
+            receipts.append((yield from self._insert_one(item, write_gen)))
+        return TableReceipt(tuple(receipts))
 
     def _prepare_update(
         self,
@@ -511,15 +657,15 @@ class WritePlanner:
             raise KeyError(identity_value)
         item: dict[str, Any] = {self._identity: identity_value}
         for column in self._spec.columns:
-            if column.role == "source" and column.name in existing:
+            if column.role in ("source", "answer") and column.name in existing and not self._provenance.column_is_null(existing[column.name]):
                 item[column.name] = normalize_value(existing[column.name])
         spec_columns = {column.name for column in self._spec.columns}
         for key, value in existing.items():
             if key not in spec_columns and not is_internal_column(key):
                 item[key] = normalize_value(value)
         item.update(changes)
-        source_names = {column.name for column in self._spec.columns if column.role == "source"}
-        needs_rederive = any(key in source_names for key in changes)
+        derivation_inputs = {column.name for column in self._spec.columns if column.role in ("source", "answer")}
+        needs_rederive = any(key in derivation_inputs for key in changes)
         write_gen = (yield MaxWriteGen(self._spec.name)) + 1
         return item, needs_rederive, write_gen
 
@@ -533,36 +679,23 @@ class WritePlanner:
             row["_write_gen"] = write_gen
             yield WriteRows.from_rows(self._spec.name, [row])
             yield self._cleanup_parent(identity_value, write_gen)
-            return
+            status = (
+                RowStatus.ERROR
+                if existing.get("_status") == "error"
+                else RowStatus.WAITING
+                if existing.get("_status") == "waiting"
+                else RowStatus.COMPLETE
+            )
+            pause = deserialize_question(existing["_question"])[0] if status is RowStatus.WAITING else None
+            return RowReceipt(
+                str(identity_value),
+                WriteOutcome.SKIPPED,
+                status,
+                pause=pause,
+                error=existing.get("_error") if status is RowStatus.ERROR else None,
+            )
 
-        graph_inputs = self._graph_inputs(item)
-        if self._can_reconcile(existing):
-            reconciled = yield from self._reconcile(item, existing)
-            if reconciled is not None:
-                yield from self._apply_reconciled(
-                    item,
-                    graph_inputs,
-                    existing,
-                    reconciled,
-                    False,
-                    write_gen,
-                )
-                return
-
-        outputs = yield RunGraph(self._graph, _freeze(graph_inputs))
-        yield EvolveMetadata(_freeze(item))
-        row = yield BuildParentRow(
-            _freeze(item),
-            _freeze(graph_inputs),
-            _freeze(outputs),
-            write_gen,
-            "update",
-        )
-        for child_spec in self._spec.children:
-            yield from self._insert_children(identity_value, outputs, child_spec, write_gen)
-        yield WriteRows.from_rows(self._spec.name, [row])
-        yield from self._cleanup_children(identity_value, write_gen)
-        yield self._cleanup_parent(identity_value, write_gen)
+        return (yield from self._insert_one(item, write_gen, provided=set(changes)))
 
     def delete(self, identity_value: str) -> WriteOperation:
         existing = yield ReadOne(self._spec.name, self._identity, identity_value)
@@ -573,26 +706,14 @@ class WritePlanner:
         yield DeleteRows(self._spec.name, ((self._identity, "eq", identity_value),))
 
     def _row_unchanged(self, item: dict[str, Any], existing: dict[str, Any]) -> bool:
-        inputs = self._graph_inputs(item)
+        inputs = self._source_inputs(item)
         return existing.get("_row_fingerprint") == self._provenance.root_fingerprint(inputs)
-
-    def _error_row(self, identity_value: str) -> Generator[WriteAction, Any, ErrorRow | None]:
-        row = yield ReadOne(self._spec.name, self._identity, identity_value)
-        if not row:
-            return None
-        error = row.get("_error", "")
-        return ErrorRow(
-            identity={self._identity: identity_value},
-            error_type=error.split(":")[0] if error else "Unknown",
-            error_msg=error,
-        )
 
     def sync(self, items: list[dict[str, Any]]) -> WriteOperation:
         rows = yield ReadRows(self._spec.name)
         existing_by_id = {str(row[self._identity]): row for row in dedup_rows(rows, self._identity) if row.get(self._identity) is not None}
         incoming_ids: set[str] = set()
-        inserted = updated = skipped = errored = 0
-        errors: list[ErrorRow] = []
+        receipts: list[RowReceipt] = []
         write_gen = (yield MaxWriteGen(self._spec.name)) + 1
 
         for item in items:
@@ -600,29 +721,24 @@ class WritePlanner:
             incoming_ids.add(identity_value)
             existing = existing_by_id.get(identity_value)
             if existing is None:
-                result = yield from self._insert_one(item, write_gen)
-                if result == "errored":
-                    errored += 1
-                    error = yield from self._error_row(identity_value)
-                    if error is not None:
-                        errors.append(error)
-                else:
-                    inserted += 1
-            elif self._row_unchanged(item, existing):
+                receipts.append((yield from self._insert_one(item, write_gen)))
+            elif self._row_unchanged(item, existing) and existing.get("_status") in (None, "complete"):
                 if self._provenance.row_missing_stamp(existing, RECIPE_COLUMN):
                     yield from self._refresh_missing_stamps(existing)
-                skipped += 1
+                receipts.append(RowReceipt(identity_value, WriteOutcome.SKIPPED, RowStatus.COMPLETE))
             else:
-                changes = {key: value for key, value in item.items() if key != self._identity}
-                yield from self.update(identity_value, changes)
-                updated += 1
+                if self._row_unchanged(item, existing):
+                    receipts.append((yield from self._insert_one(item, write_gen)))
+                else:
+                    changes = {key: value for key, value in item.items() if key != self._identity}
+                    receipts.append((yield from self.update(identity_value, changes)))
 
         deleted = 0
         for identity_value in existing_by_id:
             if identity_value not in incoming_ids:
                 yield from self.delete(identity_value)
                 deleted += 1
-        return SyncResult(inserted, updated, deleted, skipped, errored, tuple(errors))
+        return TableReceipt(tuple(receipts), deleted=deleted)
 
     def set_rows(self, where: _Predicate, fields: dict[str, Any]) -> WriteOperation:
         content_keys = {column.name for column in self._spec.columns if column.content_key}
@@ -688,13 +804,19 @@ class WritePlanner:
         node = self._provenance.producing_node(column)
         write_gen = (yield MaxWriteGen(self._spec.name)) + 1
         rows = dedup_rows((yield ReadRows(self._spec.name)), self._identity)
+        receipts: list[RowReceipt] = []
         for existing in rows:
             if backfill and not self._provenance.column_is_null(existing.get(column)):
+                receipts.append(RowReceipt(str(existing[self._identity]), WriteOutcome.SKIPPED, RowStatus.COMPLETE))
                 continue
             values = self._provenance.stored_values(existing)
-            outputs = yield RunGraph(
-                self._provenance.column_graph(node),
-                _freeze(self._provenance.node_inputs(node, values)),
+            outputs = _run_values(
+                (
+                    yield RunGraph(
+                        self._provenance.column_graph(node),
+                        _freeze(self._provenance.node_inputs(node, values)),
+                    )
+                )
             )
             new_row = yield BuildNodeRow(_freeze(existing), node, _freeze(outputs), write_gen)
             yield WriteRows.from_rows(self._spec.name, [new_row])
@@ -705,3 +827,5 @@ class WritePlanner:
                     ("_write_gen", "lt", write_gen),
                 ),
             )
+            receipts.append(RowReceipt(str(existing[self._identity]), WriteOutcome.UPDATED, RowStatus.COMPLETE))
+        return TableReceipt(tuple(receipts))

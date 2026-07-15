@@ -11,14 +11,26 @@ from hypergraph.materialization._indexes import IndexPolicy
 from hypergraph.materialization._provenance import Provenance
 from hypergraph.materialization._provenance import normalize_value as _normalize_value
 from hypergraph.materialization._schema import (
+    PARENT_LINK_COLUMN,
+    QUESTION_COLUMN,
     RECIPE_COLUMN,
     STATUS_COLUMNS,
     TableSpec,
     analyze_table,
     is_internal_column,
     node_func,
+    python_type_to_arrow,
 )
-from hypergraph.materialization._types import RecipeDrift, TableStatus
+from hypergraph.materialization._types import (
+    ErroredRow,
+    RecipeDrift,
+    RowReceipt,
+    RowStatus,
+    TableReceipt,
+    TableStatus,
+    WaitingRow,
+    deserialize_question,
+)
 from hypergraph.materialization._write_actions import RunGraph, WriteOperation
 from hypergraph.materialization._write_executor import WriteExecutor
 from hypergraph.materialization._writes import WritePlanner
@@ -30,15 +42,10 @@ from hypergraph.materialization._writes import (
 )
 
 
-def _public_row(row: dict[str, Any], *, include_status: bool = False) -> dict[str, Any]:
+def _public_row(row: dict[str, Any]) -> dict[str, Any]:
     result = {}
     for k, v in row.items():
-        if include_status and k in STATUS_COLUMNS:
-            if k == "_status" and v is None:
-                result[k] = "complete"
-            else:
-                result[k] = _normalize_value(v)
-        elif not is_internal_column(k):
+        if not is_internal_column(k):
             result[k] = _normalize_value(v)
     return result
 
@@ -51,43 +58,164 @@ def _where_predicate(where: Any) -> list[tuple[str, str, Any]]:
     return list(where)
 
 
+class ChildTable:
+    """Read and annotate one named child grain."""
+
+    def __init__(self, parent: HyperTable, spec: TableSpec):
+        self._parent = parent
+        self._spec = spec
+
+    def _public_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        public = _public_row(row)
+        public[self._parent._identity] = _normalize_value(row[PARENT_LINK_COLUMN])
+        return public
+
+    def _matching_rows(
+        self,
+        where: Any = None,
+        *,
+        parent: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        predicates = _where_predicate(where)
+        child_columns = set(self._parent._store.column_names(self._spec.name))
+        parent_columns = set(self._parent._store.column_names(self._parent._spec.name))
+        child_predicates: list[tuple[str, str, Any]] = []
+        parent_predicates: list[tuple[str, str, Any]] = []
+        for predicate in predicates:
+            column = predicate[0]
+            if column in child_columns:
+                child_predicates.append(predicate)
+            elif column in parent_columns:
+                parent_predicates.append(predicate)
+            else:
+                child_predicates.append(predicate)
+        if parent is not None:
+            child_predicates.append((PARENT_LINK_COLUMN, "eq", parent))
+        if parent_predicates:
+            parents = _dedup_rows(
+                self._parent._store.read_rows(self._parent._spec.name, parent_predicates),
+                self._parent._identity,
+            )
+            parent_ids = [row[self._parent._identity] for row in parents]
+            if not parent_ids:
+                return []
+            child_predicates.append((PARENT_LINK_COLUMN, "in", parent_ids))
+        rows = self._parent._store.read_rows(self._spec.name, child_predicates or None)
+        rows = _dedup_child_rows(rows, self._spec.identity)
+        return rows[:limit] if limit is not None else rows
+
+    def get(self, parent_id: str, child_id: str) -> dict[str, Any] | None:
+        rows = self._matching_rows(
+            [(PARENT_LINK_COLUMN, "eq", parent_id), (self._spec.identity, "eq", child_id)],
+            limit=1,
+        )
+        return self._public_row(rows[0]) if rows else None
+
+    def rows(
+        self,
+        where: Any = None,
+        *,
+        parent: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        return [self._public_row(row) for row in self._matching_rows(where, parent=parent, limit=limit)]
+
+    def waiting(self) -> tuple[WaitingRow, ...]:
+        result: list[WaitingRow] = []
+        for row in self._matching_rows([(STATUS_COLUMNS[0], "eq", RowStatus.WAITING.value)]):
+            pause, provenance = deserialize_question(row[QUESTION_COLUMN])
+            result.append(WaitingRow(str(row[self._spec.identity]), pause, self._public_row(row), provenance))
+        return tuple(result)
+
+    def errors(self) -> tuple[ErroredRow, ...]:
+        return tuple(
+            ErroredRow(str(row[self._spec.identity]), str(row.get("_error") or ""), self._public_row(row))
+            for row in self._matching_rows([(STATUS_COLUMNS[0], "eq", RowStatus.ERROR.value)])
+        )
+
+    def set(self, where: Any, **fields: Any) -> int:
+        blocked = sorted(column.name for column in self._spec.columns if column.content_key and column.name in fields)
+        if blocked:
+            raise ValueError(f"set() cannot update content-key fields: {', '.join(blocked)}")
+        rows = self._matching_rows(where)
+        if not rows:
+            return 0
+        self._parent._store.evolve_schema(
+            self._spec.name,
+            {name: python_type_to_arrow(type(value) if value is not None else str) for name, value in fields.items()},
+        )
+        write_gen = self._parent._store.max_write_gen(self._spec.name) + 1
+        for existing in rows:
+            row = {key: _normalize_value(value) for key, value in existing.items()}
+            row.update(fields)
+            row["_write_gen"] = write_gen
+            self._parent._store.write_rows(self._spec.name, [row])
+            self._parent._store.delete_rows(
+                self._spec.name,
+                [
+                    (self._spec.identity, "eq", existing[self._spec.identity]),
+                    (PARENT_LINK_COLUMN, "eq", existing[PARENT_LINK_COLUMN]),
+                    ("_write_gen", "lt", write_gen),
+                ],
+            )
+        return len(rows)
+
+    def delete(self, where: Any) -> int:
+        rows = self._matching_rows(where)
+        deleted = 0
+        for row in rows:
+            deleted += self._parent._store.delete_rows(
+                self._spec.name,
+                [
+                    (self._spec.identity, "eq", row[self._spec.identity]),
+                    (PARENT_LINK_COLUMN, "eq", row[PARENT_LINK_COLUMN]),
+                ],
+            )
+        return deleted
+
+    def count(self) -> int:
+        return len(self._matching_rows())
+
+
 class HyperTable:
     """A Hypergraph graph where each node output is a stored column."""
 
     def __init__(
         self,
-        nodes: list,
+        graph: Graph,
         *,
         identity: str,
         store: Any,
+        runner: Any,
         on_error: str = "raise",
-        _components: dict[str, Any] | None = None,
-        _runner: Any | None = None,
-        _graph: Graph | None = None,
-        _plain: bool = False,
+        name: str | None = None,
     ):
         if on_error not in ("raise", "store"):
             raise ValueError(f"on_error must be 'raise' or 'store', got {on_error!r}")
-        if not nodes and not _plain:
-            # The degenerate no-derivation mode is promoted to its own class:
-            # a derivation substrate declaring "I don't derive" hides what the
-            # table is. Table wraps this machinery through the private _plain
-            # flag, so the on-disk shape stays byte-identical.
-            raise ValueError(
-                "HyperTable requires at least one derivation node — a table with "
-                "no nodes is not a derivation substrate. For a durable typed "
-                "table (identity + store + schema, zero derivation) use "
-                "hypergraph.materialization.Table instead."
-            )
-        self._plain = _plain
-        self._nodes = nodes
+        if not isinstance(graph, Graph):
+            raise TypeError("HyperTable is created from Graph.as_table(); pass a Graph, not a node list")
+        self._source_graph = graph
         self._identity = identity
         self._store = store
         self._on_error = on_error
-        self._components = _components or {}
-        self._runner = _runner
-        self._graph = _graph
-        self._map_over_nodes: list[Any] = []
+        self._name = name
+        self._runner = runner
+        self._components = dict(graph._bound)
+        graph_nodes = list(graph.nodes.values()) if isinstance(graph.nodes, dict) else []
+        if not graph_nodes:
+            raise ValueError(
+                "Graph.as_table() requires at least one derivation node; use hypergraph.materialization.Table for a durable table without derivation"
+            )
+        self._map_over_nodes = [node for node in graph_nodes if getattr(node, "_map_config", None)]
+        if self._map_over_nodes:
+            plain_nodes = [node for node in graph_nodes if node not in self._map_over_nodes]
+            self._graph = Graph(plain_nodes, name=graph.name)
+            root_bindings = {key: value for key, value in self._components.items() if key in set(self._graph.inputs.all)}
+            if root_bindings:
+                self._graph = self._graph.bind(root_bindings)
+        else:
+            self._graph = graph
         self._spec: TableSpec | None = None
         self._analyzed = False
         self._column_graphs: dict[int, Any] = {}
@@ -96,57 +224,21 @@ class HyperTable:
         self._write_planner_obj: WritePlanner | None = None
         self._write_executor_obj: WriteExecutor | None = None
 
-    def bind(self, **components: Any) -> HyperTable:
-        merged = {**self._components, **components}
-        return HyperTable(
-            self._nodes,
-            identity=self._identity,
-            store=self._store,
-            on_error=self._on_error,
-            _components=merged,
-            _runner=self._runner,
-            _plain=self._plain,
-        )
-
-    def with_runner(self, runner: Any) -> HyperTable:
-        return HyperTable(
-            self._nodes,
-            identity=self._identity,
-            store=self._store,
-            on_error=self._on_error,
-            _components=self._components,
-            _runner=runner,
-            _plain=self._plain,
-        )
-
     def _ensure_analyzed(self):
         if self._analyzed:
             return
-        self._build_graph()
         self._analyze_graph()
         self._resolve_store()
         self._analyzed = True
 
-    def _build_graph(self):
-        if self._graph is not None:
-            return
-        plain_nodes = []
-        self._map_over_nodes.clear()
-        for n in self._nodes:
-            if hasattr(n, "_map_config") and n._map_config:
-                self._map_over_nodes.append(n)
-            else:
-                plain_nodes.append(n)
-
-        self._graph = Graph(plain_nodes, name=f"hypertable_{self._identity}")
-        if self._components:
-            valid_inputs = set(self._graph.inputs.all)
-            root_binds = {k: v for k, v in self._components.items() if k in valid_inputs}
-            if root_binds:
-                self._graph = self._graph.bind(**root_binds)
-
     def _analyze_graph(self):
-        self._spec = analyze_table(self._graph, self._identity, self._components, self._map_over_nodes)
+        self._spec = analyze_table(
+            self._graph,
+            self._identity,
+            self._components,
+            self._map_over_nodes,
+            name=self._name,
+        )
         self._provenance_obj = Provenance(
             self._graph,
             self._spec,
@@ -201,23 +293,12 @@ class HyperTable:
 
         self._store.open(self._spec, self._spec.children)
 
-    def _require_runner(self):
-        if self._runner is None:
-            raise RuntimeError("No runner set. Call .with_runner(SyncRunner()) before write operations.")
-
     def _is_async_runner(self) -> bool:
         from hypergraph.runners import AsyncRunner
 
         return isinstance(self._runner, AsyncRunner)
 
     # --- Shared helpers ---
-
-    def _extract_outputs(self, result: Any) -> dict[str, Any]:
-        if hasattr(result, "values") and isinstance(result.values, dict):
-            return result.values
-        if isinstance(result, dict):
-            return result
-        return {}
 
     def _drive_sync(self, operation: WriteOperation) -> Any:
         """Execute one shared write plan with a synchronous runner."""
@@ -228,7 +309,7 @@ class HyperTable:
         while True:
             if isinstance(action, RunGraph):
                 try:
-                    response = self._extract_outputs(self._runner.run(action.graph, **action.input_values()))
+                    response = self._runner.run(action.graph, **action.input_values())
                 except Exception as error:
                     try:
                         action = operation.throw(error)
@@ -251,7 +332,7 @@ class HyperTable:
         while True:
             if isinstance(action, RunGraph):
                 try:
-                    response = self._extract_outputs(await self._runner.run(action.graph, **action.input_values()))
+                    response = await self._runner.run(action.graph, **action.input_values())
                 except Exception as error:
                     try:
                         action = operation.throw(error)
@@ -334,6 +415,11 @@ class HyperTable:
         return self._spec.name
 
     @property
+    def graph(self) -> Graph:
+        """The graph artifact this table persists."""
+        return self._source_graph
+
+    @property
     def child_table_names(self) -> tuple[str, ...]:
         """The child (mapped) tables' physical names, in declaration order.
 
@@ -370,14 +456,8 @@ class HyperTable:
             return self._store.read_rows(table_name, predicate, columns=columns)
         return self._store.read_rows(table_name, predicate)
 
-    def count(self, child_table: str | None = None) -> int:
+    def count(self) -> int:
         self._ensure_analyzed()
-        if child_table:
-            for child in self._spec.children:
-                if child.name == child_table:
-                    rows = self._read_projected(child.name, [child.identity, "_parent_id", "_write_gen"])
-                    return len(_dedup_child_rows(rows, child.identity))
-            return 0
         rows = self._read_projected(self._spec.name, [self._identity, "_write_gen"])
         return len(_dedup_rows(rows, self._identity))
 
@@ -454,12 +534,12 @@ class HyperTable:
             "errored_ids": tuple(sorted(errored_ids)),
         }
 
-    def get(self, identity_value: str, *, include_status: bool = False) -> dict[str, Any] | None:
+    def get(self, identity_value: str) -> dict[str, Any] | None:
         self._ensure_analyzed()
         row = self._store.read_one(self._spec.name, self._identity, identity_value)
         if row is None:
             return None
-        return _public_row(row, include_status=include_status)
+        return _public_row(row)
 
     def explain(self, identity_value: str) -> dict[str, dict[str, str | None]]:
         """Resolve a row's per-column recipe to the readable source of THIS table's nodes.
@@ -511,39 +591,43 @@ class HyperTable:
         self._ensure_analyzed()
         return self._write_executor.journal.rows()
 
-    def children(self, parent_id: str, *, include_status: bool = False) -> list[dict[str, Any]]:
-        self._ensure_analyzed()
-        if not self._spec.children:
-            return []
-        child_spec = self._spec.children[0]
-        rows = self._store.read_rows(child_spec.name, [("_parent_id", "eq", parent_id)])
-        rows = _dedup_child_rows(rows, child_spec.identity)
-        return [_public_row(row, include_status=include_status) for row in rows]
-
-    def filter(self, where: Any = None, *, limit: int | None = None, include_status: bool = False) -> list[dict[str, Any]]:
+    def rows(self, where: Any = None, *, limit: int | None = None) -> list[dict[str, Any]]:
         """Return public rows matching a store predicate."""
         self._ensure_analyzed()
         rows = self._store.read_rows(self._spec.name, _where_predicate(where), limit=limit)
         rows = _dedup_rows(rows, self._identity)
-        return [_public_row(row, include_status=include_status) for row in rows]
+        return [_public_row(row) for row in rows]
 
-    def delete_children(self, where: Any = None) -> int:
-        """Delete child rows matching a predicate. Returns count deleted."""
+    def waiting(self) -> tuple[WaitingRow, ...]:
+        """Return the typed inbox of rows blocked on a human answer."""
         self._ensure_analyzed()
-        if not self._spec.children:
-            return 0
-        child_spec = self._spec.children[0]
-        return self._store.delete_rows(child_spec.name, _where_predicate(where))
+        rows = _dedup_rows(
+            self._store.read_rows(self._spec.name, [("_status", "eq", RowStatus.WAITING.value)]),
+            self._identity,
+        )
+        waiting: list[WaitingRow] = []
+        for row in rows:
+            pause, provenance = deserialize_question(row[QUESTION_COLUMN])
+            waiting.append(WaitingRow(str(row[self._identity]), pause, _public_row(row), provenance))
+        return tuple(waiting)
 
-    def filter_children(self, where: Any = None, *, limit: int | None = None, include_status: bool = False) -> list[dict[str, Any]]:
-        """Return child rows matching a store predicate."""
+    def errors(self) -> tuple[ErroredRow, ...]:
+        """Return rows whose stored derivation failed."""
         self._ensure_analyzed()
-        if not self._spec.children:
-            return []
-        child_spec = self._spec.children[0]
-        rows = self._store.read_rows(child_spec.name, _where_predicate(where), limit=limit)
-        rows = _dedup_child_rows(rows, child_spec.identity)
-        return [_public_row(row, include_status=include_status) for row in rows]
+        rows = _dedup_rows(
+            self._store.read_rows(self._spec.name, [("_status", "eq", RowStatus.ERROR.value)]),
+            self._identity,
+        )
+        return tuple(ErroredRow(str(row[self._identity]), str(row.get("_error") or ""), _public_row(row)) for row in rows)
+
+    def child(self, name: str) -> ChildTable:
+        """Return the handle for one child grain by physical name or identity."""
+        self._ensure_analyzed()
+        for child_spec in self._spec.children:
+            if name in (child_spec.name, child_spec.identity):
+                return ChildTable(self, child_spec)
+        available = ", ".join(child.name for child in self._spec.children) or "none"
+        raise KeyError(f"unknown child table {name!r}; available: {available}")
 
     # --- Named indexes (persisted query specs) ---
     #
@@ -582,7 +666,6 @@ class HyperTable:
         index: str,
         limit: int = 10,
         where: Any = None,
-        include_status: bool = False,
     ) -> list[dict[str, Any]]:
         """Vector search through a named index: public rows plus a ``_distance`` field.
 
@@ -596,16 +679,12 @@ class HyperTable:
         results = []
         for row in hits:
             distance = row.pop("_distance", None)
-            public = _public_row(row, include_status=include_status)
+            public = _public_row(row)
+            if PARENT_LINK_COLUMN in row:
+                public[self._identity] = _normalize_value(row[PARENT_LINK_COLUMN])
             public["_distance"] = _normalize_value(distance)
             results.append(public)
         return results
-
-    def set_children(self, where: Any = None, **fields: Any) -> int:
-        """Bulk metadata update for child rows matching a predicate."""
-        self._ensure_analyzed()
-        operation = self._write_planner.set_children(tuple(_where_predicate(where)), fields)
-        return self._drive_sync(operation)
 
     def set(self, where: Any, **fields: Any) -> Any:
         """Bulk metadata update for all rows matching a predicate."""
@@ -624,16 +703,21 @@ class HyperTable:
         raise ValueError("insert() requires kwargs or a list of dicts")
 
     def insert(self, *args, **kwargs) -> Any:
-        self._require_runner()
         self._ensure_analyzed()
-        operation = self._write_planner.insert(self._insert_items(*args, **kwargs))
+        items = self._insert_items(*args, **kwargs)
+        single = not (args and isinstance(args[0], list))
+        operation = self._write_planner.insert(items)
         if self._is_async_runner():
-            return self._drive_async(operation)
-        return self._drive_sync(operation)
+            return self._insert_async(operation, single=single)
+        receipt = self._drive_sync(operation)
+        return receipt.receipts[0] if single else receipt
+
+    async def _insert_async(self, operation: WriteOperation, *, single: bool) -> RowReceipt | TableReceipt:
+        receipt = await self._drive_async(operation)
+        return receipt.receipts[0] if single else receipt
 
     def update(self, identity_value: str, **changes: Any) -> Any:
         """Update a row. Re-derives downstream if source columns changed."""
-        self._require_runner()
         self._ensure_analyzed()
         operation = self._write_planner.update(identity_value, changes)
         if self._is_async_runner():
@@ -650,27 +734,16 @@ class HyperTable:
 
     def sync(self, items: list[dict[str, Any]]) -> Any:
         """Reconcile: insert new, update changed, delete missing, skip unchanged."""
-        self._require_runner()
         self._ensure_analyzed()
         operation = self._write_planner.sync(items)
         if self._is_async_runner():
             return self._drive_async(operation)
         return self._drive_sync(operation)
 
-    def recompute(self, column: str) -> Any:
-        """Re-derive one column for all rows using current bound components."""
-        self._require_runner()
+    def rederive(self, column: str, *, missing_only: bool = False) -> Any:
+        """Re-derive one column, optionally only where its value is missing."""
         self._ensure_analyzed()
-        operation = self._write_planner.derive_column(column, backfill=False)
-        if self._is_async_runner():
-            return self._drive_async(operation)
-        return self._drive_sync(operation)
-
-    def backfill(self, column: str) -> Any:
-        """Derive a new column for existing rows that have NULL."""
-        self._require_runner()
-        self._ensure_analyzed()
-        operation = self._write_planner.derive_column(column, backfill=True)
+        operation = self._write_planner.derive_column(column, backfill=missing_only)
         if self._is_async_runner():
             return self._drive_async(operation)
         return self._drive_sync(operation)

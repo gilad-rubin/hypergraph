@@ -7,11 +7,9 @@ from typing import Any
 import pyarrow as pa
 import pytest
 
-from hypergraph import node
-from hypergraph.materialization import HyperTable
+from hypergraph import Graph, node
 from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.materialization._schema import ColumnSpec, TableSpec
-from hypergraph.runners import SyncRunner
 
 
 def _store_spec() -> TableSpec:
@@ -190,8 +188,8 @@ def _derive(source: str) -> str:
 
 
 def test_hypertable_owns_map_over_state_before_lazy_analysis(tmp_path) -> None:
-    table = HyperTable([_derive], identity="cid", store=LanceDBStore(str(tmp_path / "constructor-state")))
+    graph = Graph([_derive])
+    table = graph.as_table(identity="cid", store=LanceDBStore(str(tmp_path / "constructor-state")))
 
     assert table._map_over_nodes == []
-    assert table.bind(unused="value")._map_over_nodes == []
-    assert table.with_runner(SyncRunner())._map_over_nodes == []
+    assert table.graph is graph

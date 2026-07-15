@@ -81,9 +81,8 @@ def embedder():
 
 
 def make_table(store, embedder):
-    from hypergraph.materialization import HyperTable
 
-    return HyperTable([clean, embed_text], identity="doc_id", store=store).bind(embedder=embedder).with_runner(SyncRunner())
+    return Graph([clean, embed_text]).bind(embedder=embedder).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
 
 # ---------------------------------------------------------------------------
@@ -105,27 +104,25 @@ class TestStatusRoot:
         table = make_table(store, embedder)
         table.insert([{"doc_id": "d1", "text": "hello"}, {"doc_id": "d2", "text": "world"}])
 
-        rebound = table.bind(embedder=Embedder(model_name="new-embed")).with_runner(SyncRunner())
+        rebound = table.graph.bind(embedder=Embedder(model_name="new-embed")).as_table(identity="doc_id", store=store, runner=SyncRunner())
         report = rebound.status()
         assert (report.fresh, report.stale) == (0, 2)
         assert report.stale_ids == ("d1", "d2")
         assert not report.is_fresh
 
     def test_node_definition_change_marks_stale(self, store, embedder):
-        from hypergraph.materialization import HyperTable
 
         make_table(store, embedder).insert(doc_id="d1", text="a-b")
 
-        variant = HyperTable([clean_variant, embed_text], identity="doc_id", store=store).bind(embedder=embedder).with_runner(SyncRunner())
+        variant = Graph([clean_variant, embed_text]).bind(embedder=embedder).as_table(identity="doc_id", store=store, runner=SyncRunner())
         report = variant.status()
         assert (report.fresh, report.stale) == (0, 1)
 
     def test_status_requires_no_runner(self, store, embedder):
-        from hypergraph.materialization import HyperTable
 
         make_table(store, embedder).insert(doc_id="d1", text="hello")
 
-        readonly = HyperTable([clean, embed_text], identity="doc_id", store=store).bind(embedder=embedder)
+        readonly = Graph([clean, embed_text]).bind(embedder=embedder).as_table(identity="doc_id", store=store)
         report = readonly.status()
         assert report.is_fresh
 
@@ -134,15 +131,14 @@ class TestStatusRoot:
         items = [{"doc_id": "d1", "text": "hello"}, {"doc_id": "d2", "text": "world"}]
         table.insert(items)
 
-        rebound = table.bind(embedder=Embedder(model_name="new-embed")).with_runner(SyncRunner())
+        rebound = table.graph.bind(embedder=Embedder(model_name="new-embed")).as_table(identity="doc_id", store=store, runner=SyncRunner())
         assert rebound.status().stale == 2
         rebound.sync(items)
         assert rebound.status().is_fresh
 
     def test_errored_rows_reported_separately(self, store):
-        from hypergraph.materialization import HyperTable
 
-        table = HyperTable([measure], identity="doc_id", store=store, on_error="store").with_runner(SyncRunner())
+        table = Graph([measure]).as_table(identity="doc_id", store=store, on_error="store", runner=SyncRunner())
         table.insert([{"doc_id": "ok", "text": "fine"}, {"doc_id": "bad", "text": "boom"}])
 
         report = table.status()
@@ -164,10 +160,9 @@ class TestStatusRoot:
 
 class TestStatusChildren:
     def make_parent_child(self, store, embedder):
-        from hypergraph.materialization import HyperTable
 
         pages_node = process_page.as_node().map_over("pages", identity="page_id")
-        return HyperTable([split_pages, pages_node], identity="doc_id", store=store).bind(embedder=embedder).with_runner(SyncRunner())
+        return Graph([split_pages, pages_node]).bind(embedder=embedder).as_table(identity="doc_id", store=store, runner=SyncRunner())
 
     def test_children_fresh_after_insert(self, store, embedder):
         table = self.make_parent_child(store, embedder)
@@ -183,7 +178,7 @@ class TestStatusChildren:
         table = self.make_parent_child(store, embedder)
         table.insert(doc_id="d1", text="alpha|beta")
 
-        rebound = table.bind(embedder=Embedder(model_name="new-embed")).with_runner(SyncRunner())
+        rebound = table.graph.bind(embedder=Embedder(model_name="new-embed")).as_table(identity="doc_id", store=store, runner=SyncRunner())
         child = rebound.status().children[0]
         assert (child.fresh, child.stale) == (0, 2)
         assert not rebound.status().is_fresh
