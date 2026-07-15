@@ -17,14 +17,16 @@
   skipped. The pristine baseline browser launch failed with
   `MachPortRendezvousServer ... Permission denied (1100)` and produced `35
   failed, 3328 passed, 15 skipped, 195 errors`. This is recorded rather than
-  worked around, as directed by the sandbox note.
+  worked around, as directed by the sandbox note. The final unfiltered
+  all-extras run later launched Chromium successfully and passed all 3587
+  tests.
 - After installing the required `daft` extra, its stateful worker-resource test
   failed because the sandbox denies POSIX shared-memory creation:
   `PermissionError: [Errno 1] Operation not permitted: '/psm_...'` from
   `multiprocessing.shared_memory.SharedMemory`. The focused framework-port and
   ordinary Daft tests still run; the single shared-memory test is deselected
-  only in the supplemental sandbox-green suite and remains included in the
-  final unfiltered CI-parity attempt.
+  only in the supplemental sandbox-green suite. It remained included and
+  passed in the final unfiltered CI-parity run.
 - The repository has no configured Python type-check command and the attempted
   focused `uv run pyright ...` could not spawn (`No such file or directory`).
   Type-facing behavior is covered by strict-types construction tests; lint,
