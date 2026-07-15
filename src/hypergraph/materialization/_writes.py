@@ -6,6 +6,7 @@ from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from hypergraph import Graph
 from hypergraph.materialization._provenance import (
     DerivedChildren,
     Provenance,
@@ -116,6 +117,7 @@ class WritePlanner:
         self._provenance = provenance
         self._recipe_column_ready: set[str] = set()
         self._journal = RecipeJournal(store)
+        self._answer_graphs: dict[tuple[str, ...], Graph] = {}
 
     @property
     def journal(self) -> RecipeJournal:
@@ -345,6 +347,52 @@ class WritePlanner:
         accepted_answers = answers if provided is None else answers & provided
         accepted = required | accepted_answers
         return {key: value for key, value in item.items() if key != self._identity and key in accepted}
+
+    def _answer_graph(self, answer_names: set[str]) -> Graph:
+        key = tuple(sorted(answer_names))
+        cached = self._answer_graphs.get(key)
+        if cached is not None:
+            return cached
+
+        graph_nodes = self._graph.nodes
+        selected: set[str] = set()
+        pending: list[str] = []
+        for column in self._spec.columns:
+            if column.role != "answer" or column.name not in answer_names:
+                continue
+            for producer in self._provenance.column_producers(column):
+                selected.add(producer.name)
+                pending.append(producer.name)
+        while pending:
+            node_name = pending.pop()
+            for successor in self._graph.nx_graph.successors(node_name):
+                if successor not in selected:
+                    selected.add(successor)
+                    pending.append(successor)
+        if not selected:
+            raise RuntimeError(f"could not find interrupt node for answer column(s): {', '.join(key)}")
+
+        graph = Graph(
+            [node for name, node in graph_nodes.items() if name in selected],
+            name=f"{self._spec.name}__answer",
+        )
+        bindings = {name: value for name, value in self._components.items() if name in set(graph.inputs.all)}
+        if bindings:
+            graph = graph.bind(**bindings)
+        self._answer_graphs[key] = graph
+        return graph
+
+    def _answer_inputs(
+        self,
+        graph: Graph,
+        item: Mapping[str, Any],
+        existing: Mapping[str, Any],
+        answer_names: set[str],
+    ) -> dict[str, Any]:
+        values = self._provenance.stored_values(existing)
+        values.update(item)
+        accepted = input_names(graph.inputs.required) | answer_names
+        return {name: values[name] for name in accepted if name in values}
 
     def _source_inputs(self, item: Mapping[str, Any]) -> dict[str, Any]:
         sources = {column.name for column in self._spec.columns if column.role == "source"}
@@ -737,6 +785,72 @@ class WritePlanner:
         if existing is not None:
             self._cleanup_parent(item[self._identity], write_gen)
 
+    def _resume_answer(
+        self,
+        item: dict[str, Any],
+        source_inputs: dict[str, Any],
+        existing: dict[str, Any],
+        answer_names: set[str],
+        write_gen: int,
+    ) -> Generator[RunGraph, Any, RowReceipt]:
+        identity_value = item[self._identity]
+        graph = self._answer_graph(answer_names)
+        try:
+            result = yield RunGraph(
+                graph,
+                self._answer_inputs(graph, item, existing, answer_names),
+            )
+        except Exception as error:
+            if self._on_error == "raise":
+                raise
+            self._error_parent(item, source_inputs, write_gen, error, existing)
+            return RowReceipt(
+                str(identity_value),
+                WriteOutcome.UPDATED,
+                RowStatus.ERROR,
+                error=f"{type(error).__name__}: {error}",
+            )
+
+        outputs = {
+            column.name: normalize_value(existing[column.name])
+            for column in self._provenance.derived_columns()
+            if column.name in existing and not self._provenance.column_is_null(existing[column.name])
+        }
+        outputs.update(_run_values(result))
+        pause = _run_pause(result)
+        provenances = self._provenances_for_values({**item, **outputs}, pause)
+        if pause is not None:
+            pause_provenance = provenances.get(pause.response_key)
+            if pause_provenance is None:
+                raise RuntimeError(f"could not compute provenance for interrupt answer {pause.response_key!r}")
+            return self._write_waiting_parent(
+                item,
+                source_inputs,
+                outputs,
+                provenances,
+                pause,
+                pause_provenance,
+                write_gen,
+                existing,
+                WriteOutcome.UPDATED,
+            )
+
+        for child_spec in self._spec.children:
+            yield from self._insert_children(identity_value, outputs, child_spec, write_gen)
+        self._evolve_for_metadata(item)
+        row = self._build_parent_row(
+            item,
+            source_inputs,
+            outputs,
+            write_gen,
+            "complete",
+            provenances=provenances,
+        )
+        self._store.write_rows(self._spec.name, [row])
+        self._cleanup_parent(identity_value, write_gen)
+        self._cleanup_children(identity_value, write_gen)
+        return RowReceipt(str(identity_value), WriteOutcome.UPDATED, RowStatus.COMPLETE)
+
     def _insert_one(
         self,
         item: dict[str, Any],
@@ -751,7 +865,10 @@ class WritePlanner:
         outcome = WriteOutcome.UPDATED if existing is not None else WriteOutcome.INSERTED
         fingerprint = self._provenance.root_fingerprint(source_inputs)
         answer_names = {column.name for column in self._spec.columns if column.role == "answer"}
-        answer_provided = bool(answer_names & provided_names)
+        provided_answers = answer_names & provided_names
+        answer_provided = bool(provided_answers)
+        source_names = {column.name for column in self._spec.columns if column.role == "source"}
+        source_provided = bool(source_names & provided_names)
         if existing is not None and existing.get("_row_fingerprint") == fingerprint and existing.get("_status") == "waiting" and not answer_provided:
             return self._waiting_receipt(identity_value, WriteOutcome.SKIPPED, existing)
         parent_skipped = self._parent_skipped(existing, fingerprint)
@@ -761,6 +878,17 @@ class WritePlanner:
             if self._provenance.row_missing_stamp(existing, RECIPE_COLUMN):
                 self._refresh_missing_stamps(existing)
             return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
+
+        if existing is not None and answer_provided and not source_provided:
+            return (
+                yield from self._resume_answer(
+                    item,
+                    source_inputs,
+                    existing,
+                    provided_answers,
+                    write_gen,
+                )
+            )
 
         if self._can_reconcile(existing):
             try:

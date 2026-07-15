@@ -41,10 +41,18 @@ from hypergraph.materialization._writes import (
 )
 
 
-def _public_row(row: dict[str, Any]) -> dict[str, Any]:
+def _public_row(row: dict[str, Any], spec: TableSpec | None = None) -> dict[str, Any]:
+    gate_outputs = {
+        column.name
+        for column in (spec.columns if spec is not None else ())
+        if any(
+            getattr(producer, "is_gate", False)
+            for producer in (column.produced_by if isinstance(column.produced_by, tuple) else (column.produced_by,))
+        )
+    }
     result = {}
     for k, v in row.items():
-        if not is_internal_column(k):
+        if not is_internal_column(k) and k not in gate_outputs:
             result[k] = _normalize_value(v)
     return result
 
@@ -65,7 +73,7 @@ class ChildTable:
         self._spec = spec
 
     def _public_row(self, row: dict[str, Any]) -> dict[str, Any]:
-        public = _public_row(row)
+        public = _public_row(row, self._spec)
         public[self._parent._identity] = _normalize_value(row[PARENT_LINK_COLUMN])
         return public
 
@@ -526,7 +534,7 @@ class HyperTable:
         row = self._store.read_one(self._spec.name, self._identity, identity_value)
         if row is None:
             return None
-        return _public_row(row)
+        return _public_row(row, self._spec)
 
     def explain(self, identity_value: str) -> dict[str, dict[str, str | None]]:
         """Resolve a row's per-column recipe to the readable source of THIS table's nodes.
@@ -583,7 +591,7 @@ class HyperTable:
         self._ensure_analyzed()
         rows = self._store.read_rows(self._spec.name, _where_predicate(where), limit=limit)
         rows = _dedup_rows(rows, self._identity)
-        return [_public_row(row) for row in rows]
+        return [_public_row(row, self._spec) for row in rows]
 
     def waiting(self) -> tuple[WaitingRow, ...]:
         """Return the typed inbox of rows blocked on a human answer."""
@@ -595,7 +603,7 @@ class HyperTable:
         waiting: list[WaitingRow] = []
         for row in rows:
             pause, provenance = deserialize_question(row[QUESTION_COLUMN])
-            waiting.append(WaitingRow(str(row[self._identity]), pause, _public_row(row), provenance))
+            waiting.append(WaitingRow(str(row[self._identity]), pause, _public_row(row, self._spec), provenance))
         return tuple(waiting)
 
     def errors(self) -> tuple[ErroredRow, ...]:
@@ -605,7 +613,7 @@ class HyperTable:
             self._store.read_rows(self._spec.name, [("_status", "eq", RowStatus.ERROR.value)]),
             self._identity,
         )
-        return tuple(ErroredRow(str(row[self._identity]), str(row.get("_error") or ""), _public_row(row)) for row in rows)
+        return tuple(ErroredRow(str(row[self._identity]), str(row.get("_error") or ""), _public_row(row, self._spec)) for row in rows)
 
     def child(self, name: str) -> ChildTable:
         """Return the handle for one child grain by physical name or identity."""
@@ -666,7 +674,7 @@ class HyperTable:
         results = []
         for row in hits:
             distance = row.pop("_distance", None)
-            public = _public_row(row)
+            public = _public_row(row, self._spec)
             if PARENT_LINK_COLUMN in row:
                 public[self._identity] = _normalize_value(row[PARENT_LINK_COLUMN])
             public["_distance"] = _normalize_value(distance)

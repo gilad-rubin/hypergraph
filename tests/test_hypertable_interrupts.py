@@ -43,13 +43,22 @@ async def test_cold_boot_waits_then_answer_update_converges_without_rerunning_up
             evidence=({"preview": prepared},),
         )
 
+    @ifelse(when_true="publish", when_false="archive")
+    def choose_route(decision: str) -> bool:
+        return decision == "publish"
+
     @node(output_name="filed")
-    def apply(prepared: str, decision: str) -> str:
+    def publish(prepared: str) -> str:
         calls["apply"] += 1
-        return f"{decision}:{prepared}"
+        return f"published:{prepared}"
+
+    @node(output_name="filed")
+    def archive(prepared: str) -> str:
+        calls["apply"] += 1
+        return f"archived:{prepared}"
 
     store = LanceDBStore(str(tmp_path / "cold_boot"))
-    table = Graph([prepare, review, apply], name="intake").as_table(
+    table = Graph([prepare, review, choose_route, publish, archive], name="intake").as_table(
         identity="upload_id",
         store=store,
         runner=AsyncRunner(),
@@ -89,8 +98,9 @@ async def test_cold_boot_waits_then_answer_update_converges_without_rerunning_up
         "text": "  Draft  ",
         "prepared": "draft",
         "decision": "publish",
-        "filed": "publish:draft",
+        "filed": "published:draft",
     }
+    assert table.status().is_fresh
     assert calls == {"prepare": 1, "ask": 1, "apply": 1}
 
     reasked = await table.update("u-041", text="A new draft")
