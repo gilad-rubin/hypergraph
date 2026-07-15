@@ -46,6 +46,11 @@ def validate_output_conflicts(
             are neither mutex nor ordered.
     """
     expanded_groups = _expand_mutex_groups(G, nodes)
+    # Identity-mapped GraphNodes are HyperTable child grains. Their outputs
+    # live in separate child tables rather than this graph's root value lane.
+    grain_scoped = {
+        node.name for node in nodes if (config := getattr(node, "map_execution_config", None)) is not None and config.identity is not None
+    }
 
     # Collect outputs that have multiple producers
     contested_outputs = {output: sources for output, sources in output_to_sources.items() if len(sources) > 1}
@@ -56,6 +61,8 @@ def validate_output_conflicts(
         # Explicit mode: trust the declared topology directly
         for output, sources in contested_outputs.items():
             for a, b in combinations(sources, 2):
+                if a in grain_scoped or b in grain_scoped:
+                    continue
                 if _is_pair_mutex(a, b, expanded_groups):
                     continue
                 if nx.has_path(G, a, b) or nx.has_path(G, b, a):
@@ -80,6 +87,8 @@ def validate_output_conflicts(
         all_contested = _contested_values_for(producer_set, output_to_sources)
 
         for a, b in combinations(sources, 2):
+            if a in grain_scoped or b in grain_scoped:
+                continue
             if _is_pair_mutex(a, b, expanded_groups):
                 continue
             if _is_pair_ordered(a, b, all_contested, node_names, edge_map):
