@@ -1628,7 +1628,7 @@ def _validate_pause_options_have_routes(
     pause_info: PauseInfo,
     state: GraphState | None,
 ) -> None:
-    """Reject a surfaced question whose answer can select a dead gate route."""
+    """Reject dead gate options when every gate input is settled at pause time."""
     options = getattr(pause_info.value, "options", None)
     if options is None:
         return
@@ -1658,6 +1658,12 @@ def _validate_pause_options_have_routes(
                     state,
                     {pause_info.response_key: option},
                 )
+            except KeyError:
+                # Another gate input has not settled at this pause boundary.
+                # Ordinary routing-time target validation remains authoritative.
+                break
+
+            try:
                 result = gate.func(**gate.map_inputs_to_params(gate_inputs))
                 if isinstance(gate, IfElseNode):
                     decision = gate.when_true if result is True else gate.when_false if result is False else None

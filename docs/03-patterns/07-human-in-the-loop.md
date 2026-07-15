@@ -293,6 +293,8 @@ option.
 At pause time Hypergraph evaluates each consuming gate once per option using
 the gate's current inputs. Keep routing functions pure and cheap, as they may
 run again after the human answer arrives.
+If another gate input is not yet settled, Hypergraph defers that gate's check
+to its ordinary routing-time validation.
 
 ## Cycles and entrypoints
 

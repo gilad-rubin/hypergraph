@@ -195,6 +195,41 @@ async def test_dead_option_check_ignores_gate_outside_selected_scope():
 
 
 @pytest.mark.asyncio
+async def test_unsettled_sibling_gate_input_defers_option_check_to_routing():
+    @node(output_name="policy")
+    def prepare_policy(source: str) -> str:
+        return f"policy:{source}"
+
+    @interrupt(answer_name="decision")
+    def ask(source: str) -> Choice:
+        return Choice(prompt="What should happen?", options=("keep-both",))
+
+    @route(targets=["keep_both"], default_open=False)
+    def choose_path(decision: str, policy: str) -> str:
+        assert policy == "policy:upload"
+        return "missing_target"
+
+    @node(output_name="kept")
+    def keep_both(decision: str) -> str:
+        return f"kept:{decision}"
+
+    graph = Graph([prepare_policy, ask, choose_path, keep_both])
+    runner = AsyncRunner()
+
+    paused = await runner.run(graph, {"source": "upload"})
+
+    assert paused.status == RunStatus.PAUSED
+    assert paused.pause is not None
+    assert paused.pause.response_key == "decision"
+
+    with pytest.raises(ValueError, match="invalid target 'missing_target'"):
+        await runner.run(
+            graph,
+            {"source": "upload", "decision": "keep-both"},
+        )
+
+
+@pytest.mark.asyncio
 async def test_answer_routes_to_distinct_terminals_and_upfront_answer_skips_question():
     handler_calls = 0
 

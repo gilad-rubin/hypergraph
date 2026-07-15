@@ -113,16 +113,11 @@
   `answer_type = str` and its concrete options exist only on the returned
   instance. Not implemented in T27 to avoid silently widening the frozen seam.
 
-## Open contract conflict
+## Ratified options-check resolution
 
-- Pause-time option validation cannot currently validate a consuming gate when
-  one of that gate's other inputs would be produced by a sibling node. The
-  runner deliberately isolates a ready InterruptNode, so the sibling has not
-  executed and its value is absent from the pause's partial state. The current
-  implementation raises rather than surface an unvalidated question. Resolving
-  this requires a maintainer choice: (1) restrict options-consuming gates to
-  inputs available before the interrupt, (2) broaden interrupt scheduling so
-  selected prerequisite siblings execute before the pause, or (3) weaken the
-  no-dead-option guarantee when route inputs are unavailable. Option 2 best
-  preserves the stated contract but is a scheduler change outside T27's scope
-  fence; options 1 and 3 change the public contract.
+- The foreman ratified narrow option 3: pause-time validation still checks
+  every consuming gate whose inputs can be resolved from the answer and the
+  current partial state. When another gate input is not yet settled, that gate
+  is skipped at the pause boundary so the question surfaces; its normal
+  routing-time target validation remains loud for an unmatched answer. This
+  intentionally adds no scheduler machinery and no public API.
