@@ -695,6 +695,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             total_duration_ms = (time.time() - start_time) * 1000
             try:
+                _validate_pause_options_have_routes(graph, pause.pause_info)
                 if dispatcher.active:
                     from hypergraph.events.types import InterruptEvent
 
@@ -708,7 +709,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                             node_name=pause.pause_info.node_name,
                             graph_name=graph.name,
                             value=pause.pause_info.value,
-                            response_param=pause.pause_info.output_param,
+                            response_param=pause.pause_info.response_key,
                         )
                     )
                     await self._emit_run_end_async(
@@ -1618,3 +1619,26 @@ async def _get_completed_child_runs(
 
     child_runs = await checkpointer.list_runs(parent_run_id=workflow_id)
     return [run for run in child_runs if run.status == WorkflowStatus.COMPLETED]
+
+
+def _validate_pause_options_have_routes(graph: Any, pause_info: Any) -> None:
+    """Reject a surfaced question whose answer can select a dead gate route."""
+    options = getattr(pause_info.value, "options", None)
+    if options is None:
+        return
+
+    from hypergraph.nodes.gate import IfElseNode, RouteNode
+
+    for gate in graph._nodes.values():
+        if not isinstance(gate, (RouteNode, IfElseNode)):
+            continue
+        if pause_info.response_key not in gate.inputs:
+            continue
+
+        targets = {target for target in gate.targets if isinstance(target, str)}
+        for option in options:
+            if option not in targets:
+                raise RuntimeError(
+                    f"InterruptNode '{pause_info.node_name}' returned option '{option}' with no matching route target on gate '{gate.name}'\n\n"
+                    f"How to fix: Add a route target named '{option}', or remove that option from the question."
+                )

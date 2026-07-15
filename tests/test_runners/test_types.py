@@ -154,10 +154,8 @@ class TestRunResult:
         error = ValueError("x" * 500)
         pause = PauseInfo(
             node_name="review/interrupt",
-            output_param="decision",
             value=[1] * 100,
-            output_params=("decision", "notes"),
-            values={"decision": "approve", "notes": "x" * 300},
+            response_key="decision",
         )
         result = RunResult(
             values={"result": "partial"},

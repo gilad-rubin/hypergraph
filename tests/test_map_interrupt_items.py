@@ -1,10 +1,9 @@
 """Pin per-item interrupts in runner-level ``.map()`` (superposition PRD 0027 F2).
 
 A mapped batch is N independent runs: one item pausing at an ``@interrupt``
-must not poison its siblings. These tests pin the per-item statuses
-(``[completed, paused, completed]``) and that the paused item carries its
-identifiable resume handle (the hierarchical child ``workflow_id``) plus the
-full pause payload.
+must not poison its siblings. Reaching the interrupt pauses each item unless
+that item's answer is supplied. These tests pin the per-item pause envelopes
+and the supported fresh single-item re-drive with an up-front answer.
 
 Deliberately NOT pinned — in-place resume of a paused map child. Resuming
 ``run(graph, ..., workflow_id="batch/1")`` is rejected ('/' is reserved for
@@ -23,6 +22,7 @@ import pytest_asyncio
 
 from hypergraph import AsyncRunner, Graph, RunStatus, interrupt, node
 from hypergraph.checkpointers import CheckpointPolicy, SqliteCheckpointer
+from tests._interrupt_questions import StringQuestion
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -32,10 +32,9 @@ def make_draft(x: int) -> str:
     return f"draft-{x}"
 
 
-@interrupt(output_name="decision")
-def approval(draft: str, x: int) -> str:
-    # Auto-resolves for every item except x == 2, which pauses for a human.
-    return None if x == 2 else "auto"
+@interrupt(answer_name="decision")
+def approval(draft: str, x: int) -> StringQuestion:
+    return StringQuestion(prompt=f"Approve item {x}?", evidence=(draft,))
 
 
 @node(output_name="result")
@@ -58,13 +57,9 @@ async def test_map_pauses_one_item_without_poisoning_the_batch(checkpointer):
 
     batch = await runner.map(graph, {"x": [1, 2, 3]}, map_over="x", workflow_id="batch")
 
-    assert [r.status for r in batch.results] == [
-        RunStatus.COMPLETED,
-        RunStatus.PAUSED,
-        RunStatus.COMPLETED,
-    ]
+    assert [r.status for r in batch.results] == [RunStatus.PAUSED] * 3
     assert batch.paused is True
-    assert [r.get("result") for r in batch.results] == ["1:auto", None, "3:auto"]
+    assert [r.get("result") for r in batch.results] == [None, None, None]
 
     # The paused item is individually identifiable: it carries its own
     # hierarchical workflow id and the full pause payload.
@@ -73,7 +68,10 @@ async def test_map_pauses_one_item_without_poisoning_the_batch(checkpointer):
     assert paused.pause is not None
     assert paused.pause.node_name == "approval"
     assert paused.pause.response_key == "decision"
-    assert paused.pause.value == "draft-2"
+    assert paused.pause.value == StringQuestion(
+        prompt="Approve item 2?",
+        evidence=("draft-2",),
+    )
 
 
 @pytest.mark.asyncio
@@ -89,10 +87,9 @@ async def test_paused_item_is_re_drivable_alone_as_a_fresh_run(checkpointer):
     # fresh run with the answer seeded up-front — the superposition door model
     # (re-drive the graph fresh, no checkpointer, interrupts seeded from
     # durable truth). On a checkpointer-free runner ``is_resuming`` is always
-    # True, so a seeded interrupt output auto-resolves instead of pausing; a
-    # checkpointer-bearing runner deliberately does NOT consume up-front seeds
-    # on a fresh workflow (the false-auto-resolve guard in the interrupt
-    # executor), which is why the re-drive happens on a fresh runner.
+    # True, so a supplied answer skips the question instead of pausing. A
+    # checkpointer-bearing runner reserves that path for an actual resume,
+    # which is why the stateless re-drive happens on a fresh runner.
     resumed = await AsyncRunner().run(graph, {"x": 2, paused.pause.response_key: "human"})
     assert resumed.status == RunStatus.COMPLETED
     assert resumed["result"] == "2:human"

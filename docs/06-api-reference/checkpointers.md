@@ -289,17 +289,19 @@ You do not need a checkpointer to pause and resume a graph. Without one, each `r
 ```python
 from hypergraph import Graph, node, AsyncRunner, interrupt
 
+# FreeText is supplied by the companion question-vocabulary package.
+
 @node(output_name="draft")
 def generate(prompt: str) -> str:
     return f"Draft: {prompt}"
 
-@interrupt(output_name="feedback")
-def review(draft: str) -> str | None:
-    return None
+@interrupt(answer_name="feedback")
+def review(draft: str) -> FreeText:
+    return FreeText(prompt="What should change?", evidence=(draft,))
 
-@interrupt(output_name="final_draft")
-def edit(feedback: str) -> str | None:
-    return None
+@interrupt(answer_name="final_draft")
+def edit(feedback: str) -> FreeText:
+    return FreeText(prompt="Provide the final draft", evidence=(feedback,))
 
 @node(output_name="result")
 def publish(final_draft: str) -> str:

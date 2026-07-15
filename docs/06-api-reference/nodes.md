@@ -1274,7 +1274,9 @@ No framework setup needed — pass a mock or stub directly.
 
 ## InterruptNode
 
-**InterruptNode** is a thin FunctionNode subclass that acts as a declarative pause point for human-in-the-loop workflows. When the handler returns `None`, execution pauses. When it returns a value, the interrupt auto-resolves.
+**InterruptNode** is a FunctionNode subclass that asks a typed question and
+declares where the eventual answer enters dataflow. Reaching the node always
+pauses unless that answer is already supplied.
 
 ### `@interrupt` Decorator
 
@@ -1283,15 +1285,16 @@ The `@interrupt` decorator creates an InterruptNode from a function, just like `
 ```python
 from hypergraph import interrupt
 
-@interrupt(output_name="decision")
-def approval(draft: str) -> str | None:
-    return None  # pause for human review
-    # return "auto-approved"  # returns value -> auto-resolve
+# Confirm is supplied by the companion question-vocabulary package.
+
+@interrupt(answer_name="decision")
+def approval(draft: str) -> Confirm:
+    return Confirm(prompt="Publish this draft?", evidence=(draft,))
 ```
 
 **Decorator args:**
 
-- `output_name` (required): Output name(s)
+- `answer_name` (required, keyword-only): Name of the single answer output port
 - `rename_inputs`: Optional dict to rename inputs
 - `cache`: Enable result caching (default: `False`)
 - `emit`: Ordering-only local output name(s) (see [emit/wait_for](../03-patterns/03-agentic-loops.md#ordering-with-emitwait_for))
@@ -1300,20 +1303,21 @@ def approval(draft: str) -> str | None:
 
 ### Constructor
 
-Like FunctionNode, InterruptNode can also be created via the constructor. `output_name` is required.
+Like FunctionNode, InterruptNode can also be created via the constructor.
+`answer_name` is required, keyword-only, and must be a string.
 
 ```python
 from hypergraph import InterruptNode
 
-def my_handler(draft: str) -> str:
-    return "approved"
+def my_handler(draft: str) -> Confirm:
+    return Confirm(prompt="Publish?", evidence=(draft,))
 
-approval = InterruptNode(my_handler, output_name="decision")
+approval = InterruptNode(my_handler, answer_name="decision")
 # Or with all options:
 approval = InterruptNode(
     my_handler,
     name="review",
-    output_name="decision",
+    answer_name="decision",
     emit="reviewed",
     wait_for="ready",
 )
@@ -1326,6 +1330,7 @@ approval = InterruptNode(
 | `inputs` | `tuple[str, ...]` | Input parameter names (from function signature) |
 | `outputs` | `tuple[str, ...]` | All output names (data + emit) |
 | `data_outputs` | `tuple[str, ...]` | Data-only outputs (excluding emit) |
+| `answer_name` | `str` | Current local answer port (including output renames) |
 | `is_interrupt` | `bool` | Always `True` |
 | `cache` | `bool` | Whether caching is enabled (default: `False`) |
 | `hide` | `bool` | Whether hidden from visualization |
@@ -1349,12 +1354,12 @@ from hypergraph import Graph, node, AsyncRunner, interrupt
 def make_draft(query: str) -> str:
     return f"Draft for: {query}"
 
-@interrupt(output_name="decision")
-def approval(draft: str) -> str | None:
-    return None  # pause for human review
+@interrupt(answer_name="decision")
+def approval(draft: str) -> Confirm:
+    return Confirm(prompt="Publish?", evidence=(draft,))
 
 @node(output_name="result")
-def finalize(decision: str) -> str:
+def finalize(decision: bool) -> str:
     return f"Final: {decision}"
 
 graph = Graph([make_draft, approval, finalize])
@@ -1363,14 +1368,21 @@ runner = AsyncRunner()
 # Pauses at the interrupt
 result = await runner.run(graph, {"query": "hello"})
 assert result.paused
-assert result.pause.value == "Draft for: hello"
+assert isinstance(result.pause.value, Confirm)
+assert result.pause.value.evidence == ("Draft for: hello",)
 
 # Resume with response
 result = await runner.run(graph, {
     "query": "hello",
-    result.pause.response_key: "approved",
+    result.pause.response_key: True,
 })
-assert result["result"] == "Final: approved"
+assert result["result"] == "Final: True"
 ```
+
+The return annotation must expose class-level `answer_type`; under strict type
+checking that exact type is compared with consumers of `answer_name`. The
+returned instance must expose `prompt`, `options`, and `evidence`. Returning
+`None` is an error, and tuple answer names are not supported. Multi-field
+questions use one structured answer value, such as `Form[Model]`.
 
 For a full guide with multiple interrupts, nested graphs, and handler patterns, see [Human-in-the-Loop](../03-patterns/07-human-in-the-loop.md).

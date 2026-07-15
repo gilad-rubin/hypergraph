@@ -4,6 +4,7 @@ import pytest
 
 from hypergraph import AsyncRunner, Graph, RunStatus, interrupt, node
 from hypergraph.checkpointers import CheckpointPolicy, MemoryCheckpointer, StepRecord, StepStatus, WorkflowStatus
+from tests._interrupt_questions import StringQuestion
 
 
 @node(output_name="doubled")
@@ -71,8 +72,9 @@ class TestMemoryCheckpointer:
         assert {run.id for run in runs} == {"wf-1", "wf-2", "wf-3"}
 
     async def test_forked_nested_pause_resumes_child_from_source_lineage(self, checkpointer):
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
+        @interrupt(answer_name="decision")
+        def approval(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve?", evidence=(draft,))
 
         inner = Graph([approval], name="inner")
 
@@ -107,8 +109,9 @@ class TestMemoryCheckpointer:
         assert child.forked_from == "wf-nested-paused/inner"
 
     async def test_retried_nested_pause_resumes_child_from_source_lineage(self, checkpointer):
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
+        @interrupt(answer_name="decision")
+        def approval(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve?", evidence=(draft,))
 
         inner = Graph([approval], name="inner")
 

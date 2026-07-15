@@ -9,6 +9,7 @@ from hypergraph.exceptions import MissingInputError
 from hypergraph.graph.validation import GraphConfigError
 from hypergraph.nodes import RenameError
 from hypergraph.runners import AsyncRunner, SyncRunner
+from tests._interrupt_questions import StringQuestion
 
 
 def test_namespaced_graphnode_projects_parent_facing_addresses_and_runs():
@@ -33,9 +34,9 @@ def test_namespaced_graphnode_projects_parent_facing_addresses_and_runs():
 
 @pytest.mark.asyncio
 async def test_deep_namespaced_interrupt_resume_key_is_validated_as_parent_address():
-    @interrupt(output_name="decision")
-    def approve() -> str | None:
-        return None
+    @interrupt(answer_name="decision")
+    def approve() -> StringQuestion:
+        return StringQuestion(prompt="Approve?")
 
     inner = Graph([approve], name="inner")
     middle = Graph([inner.as_node(namespaced=True)], name="middle")
@@ -54,9 +55,9 @@ async def test_deep_namespaced_interrupt_resume_key_is_validated_as_parent_addre
 
 @pytest.mark.asyncio
 async def test_stale_partial_interrupt_resume_key_is_not_accepted_for_deep_namespaced_graphnode():
-    @interrupt(output_name="decision")
-    def approve() -> str | None:
-        return None
+    @interrupt(answer_name="decision")
+    def approve() -> StringQuestion:
+        return StringQuestion(prompt="Approve?")
 
     inner = Graph([approve], name="inner")
     middle = Graph([inner.as_node(namespaced=True)], name="middle")

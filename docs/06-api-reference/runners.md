@@ -1126,6 +1126,21 @@ With async checkpoint durability, step saves are best-effort: a persistence gap
 does not change the execution status. Check `checkpoint_ok` and
 `checkpoint_errors` when durable history is required.
 
+### PauseInfo
+
+`RunResult.pause` is populated when `status == RunStatus.PAUSED`:
+
+```python
+@dataclass
+class PauseInfo:
+    node_name: str    # Interrupt node; nested execution uses "/"
+    value: Any        # The typed question returned by the handler
+    response_key: str # Resolved answer port to provide on resume
+```
+
+An interrupt has one answer slot. Multi-field questions return one structured
+answer model rather than multiple response keys.
+
 ### Convenience Properties
 
 ```python

@@ -45,6 +45,7 @@ def validate_graph(
     _validate_gate_targets(nodes)
     _validate_no_gate_self_loop(nodes)
     _validate_multi_target_output_conflicts(nodes)
+    _validate_interrupt_return_annotations(nodes)
     _validate_no_interrupt_in_map_over(nodes)
     _validate_no_cache_on_non_function_nodes(nodes)
     _validate_wait_for_references(nodes)
@@ -308,6 +309,30 @@ def _raise_boundary_type_conflict(
 # =============================================================================
 # Interrupt Validation Functions
 # =============================================================================
+
+
+def _validate_interrupt_return_annotations(nodes: dict[str, HyperNode]) -> None:
+    """Interrupt handlers must declare the structural ask/answer seam."""
+    from hypergraph.nodes.interrupt import InterruptNode
+
+    for node in nodes.values():
+        if not isinstance(node, InterruptNode):
+            continue
+        annotation = node.ask_annotation
+        if annotation is not None and hasattr(annotation, "answer_type"):
+            continue
+
+        found = "no return annotation" if annotation is None else repr(annotation)
+        raise GraphConfigError(
+            f"Invalid return annotation for InterruptNode '{node.name}'\n\n"
+            f"  -> Interrupt handlers must return an ask-like payload whose class\n"
+            f"     exposes answer_type (the type accepted by answer_name)\n"
+            f"  -> Found: {found}\n\n"
+            f"How to fix:\n"
+            f"  Annotate the handler with your question class, for example:\n"
+            f"  @interrupt(answer_name={node.answer_name!r})\n"
+            f"  def {node.name}(...) -> Choice: ..."
+        )
 
 
 def _validate_no_interrupt_in_map_over(nodes: dict[str, HyperNode]) -> None:

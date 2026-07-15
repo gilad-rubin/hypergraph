@@ -11,6 +11,7 @@ from hypergraph.runners._shared.validation import (
     validate_inputs,
     validate_runner_compatibility,
 )
+from tests._interrupt_questions import StringQuestion
 
 # === Test Fixtures ===
 
@@ -317,8 +318,9 @@ class TestGraphNodeMapOverInterrupts:
     """
 
     def test_graphnode_map_over_rejects_interrupts(self):
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
+        @interrupt(answer_name="decision")
+        def approval(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve?", evidence=(draft,))
 
         inner = Graph([approval], name="inner")
 

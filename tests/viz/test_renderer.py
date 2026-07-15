@@ -9,6 +9,7 @@ from hypergraph import END, Graph, ifelse, interrupt, node, route
 from hypergraph.viz import visualize
 from hypergraph.viz._common import get_expandable_nodes
 from hypergraph.viz.renderer import render_graph
+from tests._interrupt_questions import StringQuestion
 from tests.viz.conftest import scene_for_state
 
 
@@ -79,9 +80,9 @@ def step_d(b_val: int, c_val: int) -> int:
 def _build_interrupt_cycle_graph() -> Graph:
     """Notebook demo graph: ask_user <-> llm with should_continue gate."""
 
-    @interrupt(output_name="user_input")
-    def ask_slack(messages: list[str], slack: object) -> None:
-        return None
+    @interrupt(answer_name="user_input")
+    def ask_slack(messages: list[str], slack: object) -> StringQuestion:
+        return StringQuestion(prompt="What should the user say?", evidence=(messages, slack))
 
     @node(output_name="assistant_text")
     def llm_step(messages: list[str]) -> str:

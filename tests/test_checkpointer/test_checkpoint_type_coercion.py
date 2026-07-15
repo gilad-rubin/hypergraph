@@ -7,6 +7,7 @@ graph's output type annotations.
 """
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 import pytest
 import pytest_asyncio
@@ -25,6 +26,14 @@ aiosqlite = pytest.importorskip("aiosqlite")
 class Score(BaseModel, frozen=True):
     value: float
     label: str
+
+
+@dataclass(frozen=True)
+class ScoreQuestion:
+    answer_type: ClassVar[object] = Score
+    prompt: str
+    options: tuple[str, ...] | None = None
+    evidence: tuple[object, ...] = ()
 
 
 class Tag(BaseModel, frozen=True):
@@ -135,11 +144,9 @@ class TestInterruptResumeCoercion:
     """Interrupt resume payloads are coerced to typed models."""
 
     async def test_interrupt_resume_dict_coerced(self, checkpointer):
-        @interrupt(output_name="decision")
-        def wait_for_decision(score: Score) -> Score | None:
-            if score.value > 100:
-                return score
-            return None
+        @interrupt(answer_name="decision")
+        def wait_for_decision(score: Score) -> ScoreQuestion:
+            return ScoreQuestion(prompt="Override this score?", evidence=(score,))
 
         @node(output_name="final")
         def use_decision(decision: Score) -> str:

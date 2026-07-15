@@ -573,7 +573,7 @@ def test_failed_result_without_node_attribution_has_empty_evidence() -> None:
 
 
 def test_run_result_keeps_preexisting_positional_field_order() -> None:
-    pause = PauseInfo(node_name="approval", output_param="answer", value="draft")
+    pause = PauseInfo(node_name="approval", value="draft", response_key="answer")
 
     result = RunResult({}, RunStatus.PAUSED, "run-positional", None, None, pause)
 

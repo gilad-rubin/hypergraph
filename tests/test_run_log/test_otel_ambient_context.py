@@ -21,6 +21,7 @@ import textwrap
 import pytest
 
 from hypergraph import AsyncRunner, Graph, SyncRunner, interrupt, node
+from tests._interrupt_questions import StringQuestion
 
 try:
     from opentelemetry import context as otel_context
@@ -321,9 +322,9 @@ class TestFailureDetach:
 
         provider, exporter = _local_provider()
 
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str | None:
-            return None
+        @interrupt(answer_name="decision")
+        def approval(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve?", evidence=(draft,))
 
         before = otel_context.get_current()
         with caplog.at_level(logging.ERROR, logger="opentelemetry.context"):

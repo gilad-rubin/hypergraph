@@ -5,6 +5,7 @@ from __future__ import annotations
 from hypergraph import END, Graph, node
 from hypergraph.nodes.gate import route
 from hypergraph.nodes.interrupt import interrupt
+from tests._interrupt_questions import StringQuestion
 
 
 class TestCacheValidationOnGates:
@@ -28,16 +29,16 @@ class TestCacheValidationOnInterruptNode:
     """InterruptNode cache defaults to False but is configurable."""
 
     def test_interrupt_node_cache_default_false(self):
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str | None:
-            return None
+        @interrupt(answer_name="decision")
+        def approval(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve?", evidence=(draft,))
 
         assert approval.cache is False
 
     def test_interrupt_node_cache_configurable(self):
-        @interrupt(output_name="decision", cache=True)
-        def approval(draft: str) -> str | None:
-            return None
+        @interrupt(answer_name="decision", cache=True)
+        def approval(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve?", evidence=(draft,))
 
         assert approval.cache is True
 
@@ -48,9 +49,9 @@ class TestCacheValidationOnInterruptNode:
         def producer() -> str:
             return "hello"
 
-        @interrupt(output_name="decision", cache=True)
-        def approval(draft: str) -> str | None:
-            return None
+        @interrupt(answer_name="decision", cache=True)
+        def approval(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve?", evidence=(draft,))
 
         graph = Graph([producer, approval])
         assert graph is not None

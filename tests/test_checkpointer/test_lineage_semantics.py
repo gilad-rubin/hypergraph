@@ -24,6 +24,7 @@ from hypergraph.exceptions import (
 )
 from hypergraph.runners._shared.readiness import get_ready_nodes
 from hypergraph.runners._shared.state import GraphState
+from tests._interrupt_questions import StringQuestion
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -159,8 +160,9 @@ class TestLineageSemantics:
         assert resumed["out"] == 50
 
     async def test_paused_workflow_accepts_interrupt_response_on_resume(self, checkpointer):
-        @interrupt(output_name="decision")
-        def approval() -> str: ...
+        @interrupt(answer_name="decision")
+        def approval() -> StringQuestion:
+            return StringQuestion(prompt="Approve?")
 
         @node(output_name="result")
         def finalize(decision: str) -> str:
@@ -185,8 +187,9 @@ class TestLineageSemantics:
         assert resumed["result"] == "Final: approved"
 
     async def test_nested_paused_workflow_accepts_dotted_interrupt_response_on_resume(self, checkpointer):
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
+        @interrupt(answer_name="decision")
+        def approval(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve?", evidence=(draft,))
 
         inner = Graph([approval], name="inner")
 
@@ -223,8 +226,9 @@ class TestLineageSemantics:
         def make_draft(prompt: str) -> str:
             return f"Draft for: {prompt}"
 
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
+        @interrupt(answer_name="decision")
+        def approval(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve?", evidence=(draft,))
 
         @node(output_name="inner_result")
         def finish_inner(decision: str) -> str:
@@ -252,8 +256,9 @@ class TestLineageSemantics:
         assert resumed["result"] == "Final: Inner: approved"
 
     async def test_nested_paused_workflow_accepts_renamed_dotted_interrupt_response_on_resume(self, checkpointer):
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
+        @interrupt(answer_name="decision")
+        def approval(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve?", evidence=(draft,))
 
         inner = Graph([approval], name="inner")
 
@@ -282,11 +287,13 @@ class TestLineageSemantics:
         assert resumed["result"] == "Final: approved"
 
     async def test_inactive_nested_interrupt_key_does_not_count_as_resume_payload(self, checkpointer):
-        @interrupt(output_name="decision_a")
-        def approval_a(draft: str) -> str: ...
+        @interrupt(answer_name="decision_a")
+        def approval_a(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve A?", evidence=(draft,))
 
-        @interrupt(output_name="decision_b")
-        def approval_b(draft: str) -> str: ...
+        @interrupt(answer_name="decision_b")
+        def approval_b(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve B?", evidence=(draft,))
 
         inner = Graph([approval_a, approval_b], name="inner").select("decision_a")
 
@@ -314,8 +321,9 @@ class TestLineageSemantics:
             )
 
     def test_graphnode_output_value_alone_does_not_satisfy_missing_input(self):
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
+        @interrupt(answer_name="decision")
+        def approval(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve?", evidence=(draft,))
 
         inner = Graph([approval], name="inner")
         graph_node = inner.as_node().rename_outputs(decision="verdict")

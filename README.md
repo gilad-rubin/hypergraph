@@ -164,21 +164,39 @@ Each nested graph runs to completion before the outer graph continues. Test the 
 Pause execution for user input. Resume with a response.
 
 ```python
+from dataclasses import dataclass
+from typing import ClassVar
+
 from hypergraph import AsyncRunner, Graph, interrupt, node
 
-@interrupt(output_name="decision")
-def approval(draft: str) -> str | None:
-    return None  # pause for human review
+@dataclass(frozen=True)
+class Confirm:  # The concrete vocabulary ships in a companion package.
+    answer_type: ClassVar[object] = bool
+    prompt: str
+    options: tuple[str, ...] | None = None
+    evidence: tuple[object, ...] = ()
+
+@node(output_name="draft")
+def generate_draft(prompt: str) -> str:
+    return f"Draft: {prompt}"
+
+@interrupt(answer_name="decision")
+def approval(draft: str) -> Confirm:
+    return Confirm(prompt="Publish this draft?", evidence=(draft,))
+
+@node(output_name="result")
+def finalize(draft: str, decision: bool) -> str:
+    return draft if decision else "not published"
 
 graph = Graph(nodes=[generate_draft, approval, finalize])
 runner = AsyncRunner()
 
 result = await runner.run(graph, {"prompt": "Write a blog post"})
-# result.paused == True, result.pause.value has the draft
+# result.paused == True; result.pause.value is the Confirm question
 
 result = await runner.run(graph, {
     "prompt": "Write a blog post",
-    result.pause.response_key: "approved",
+    result.pause.response_key: True,
 })
 # Completed!
 ```

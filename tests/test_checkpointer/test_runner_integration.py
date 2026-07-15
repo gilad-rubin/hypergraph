@@ -10,6 +10,7 @@ from hypergraph.checkpointers import (
     StepStatus,
     WorkflowStatus,
 )
+from tests._interrupt_questions import StringQuestion
 
 # Skip all tests if aiosqlite is not installed
 aiosqlite = pytest.importorskip("aiosqlite")
@@ -81,9 +82,9 @@ class TestRunnerCheckpointIntegration:
         """Interrupt isolation should not mark skipped ready siblings as paused."""
         checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
 
-        @interrupt(output_name="answer")
-        def ask() -> str | None:
-            return None
+        @interrupt(answer_name="answer")
+        def ask() -> StringQuestion:
+            return StringQuestion(prompt="Answer?")
 
         @node(output_name="side")
         def ready_sibling() -> str:

@@ -211,15 +211,8 @@ class AsyncGraphNodeExecutor:
             assert result.pause is not None, "PAUSED status requires pause info"
             nested_pause = PauseInfo(
                 node_name=f"{node.name}/{result.pause.node_name}",
-                output_param=node.map_output_name_from_original(result.pause.output_param),
                 value=result.pause.value,
-                # Propagate multi-output fields (new in PR #40)
-                output_params=(
-                    tuple(node.map_output_name_from_original(name) for name in result.pause.output_params)
-                    if result.pause.output_params is not None
-                    else None
-                ),
-                values=result.pause.values,
+                response_key=node.map_output_name_from_original(result.pause.response_key),
             )
             raise PauseExecution(nested_pause)
         return node.map_outputs_from_original(result.values)

@@ -16,6 +16,9 @@ Test:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import ClassVar
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -39,9 +42,20 @@ class FakeLLM:
 # --- Graph ---
 
 
-@interrupt(output_name="user_input")
-def wait_for_user() -> None:
-    return None
+@dataclass(frozen=True)
+class UserMessageQuestion:
+    answer_type: ClassVar[object] = str
+    prompt: str
+    options: tuple[str, ...] | None = None
+    evidence: tuple[object, ...] = ()
+
+
+@interrupt(answer_name="user_input")
+def wait_for_user(messages: list) -> UserMessageQuestion:
+    return UserMessageQuestion(
+        prompt="What would you like to say?",
+        evidence=(messages,),
+    )
 
 
 @node(output_name="messages")

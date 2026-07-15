@@ -11,13 +11,14 @@ from hypergraph import END, AsyncRunner, Graph, interrupt, node, route
 from hypergraph.runners._shared.readiness import get_ready_nodes
 from hypergraph.runners._shared.scheduling import compute_execution_scope
 from hypergraph.runners._shared.state import GraphState
+from tests._interrupt_questions import StringQuestion
 
 # --- Nodes (mirrors the notebook) ---
 
 
-@interrupt(output_name="user_input")
-def ask(messages: list) -> None:
-    return None  # always pause
+@interrupt(answer_name="user_input")
+def ask(messages: list) -> StringQuestion:
+    return StringQuestion(prompt="What should the user say?", evidence=(messages,))
 
 
 @node(output_name="messages")
@@ -211,7 +212,9 @@ class TestInterruptSharedCycleE2E:
         assert r2.paused, "Should pause at ask again after pipeline completes"
 
         # The critical check: messages should contain BOTH user and assistant entries
-        pause_messages = r2.pause.value
+        question = r2.pause.value
+        assert isinstance(question, StringQuestion)
+        pause_messages = question.evidence[0]
         assert any("user:" in m for m in pause_messages), f"Expected user message in {pause_messages}"
         assert any("assistant:" in m for m in pause_messages), (
             f"BUG: No assistant message — pipeline didn't complete before ask re-fired. Messages: {pause_messages}"

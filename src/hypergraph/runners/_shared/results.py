@@ -627,38 +627,13 @@ class PauseInfo:
 
     Attributes:
         node_name: Name of the InterruptNode that paused (uses "/" for nesting)
-        output_param: The first output parameter name (backward compat)
-        value: The first input value surfaced to the caller (backward compat)
-        output_params: All output parameter names if multi-output, else None
-        values: All input values as {name: value} if multi-input, else None
+        value: The ask payload returned by the interrupt handler
+        response_key: Graph-scope answer port to provide when resuming
     """
 
     node_name: str
-    output_param: str
     value: Any
-    output_params: tuple[str, ...] | None = None
-    values: dict[str, Any] | None = None
-
-    @property
-    def response_key(self) -> str:
-        """Key to use in values dict when resuming (first output).
-
-        ``output_param`` is already the resolved graph-scope response address.
-        """
-        return self.output_param
-
-    @property
-    def response_keys(self) -> dict[str, str]:
-        """Map output names to resume keys.
-
-        Returns a dict mapping each output parameter name to the key to use when
-        providing the response value in the input dict. The names are already
-        resolved graph-scope addresses after GraphNode projection, so both key
-        and value are the same address (for example, ``"decision"`` in flat
-        mode or ``"review.decision"`` in namespaced mode).
-        """
-        params = self.output_params or (self.output_param,)
-        return {p: p for p in params}
+    response_key: str
 
 
 # ---------------------------------------------------------------------------

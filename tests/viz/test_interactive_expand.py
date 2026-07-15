@@ -27,6 +27,7 @@ For collapse:
 import pytest
 
 from hypergraph import END, Graph, interrupt, node, route
+from tests._interrupt_questions import StringQuestion
 
 # Import shared fixtures and helpers from conftest
 from tests.viz.conftest import (
@@ -43,9 +44,9 @@ from tests.viz.conftest import (
 def make_interrupt_cycle_graph() -> Graph:
     """Build the interrupt-cycle graph used in the notebook regression reports."""
 
-    @interrupt(output_name="user_input")
-    def ask_slack(messages: list[str], slack: object) -> None:
-        return None
+    @interrupt(answer_name="user_input")
+    def ask_slack(messages: list[str], slack: object) -> StringQuestion:
+        return StringQuestion(prompt="What should the user say?", evidence=(messages, slack))
 
     @node(output_name="assistant_text")
     def llm_step(messages: list[str]) -> str:

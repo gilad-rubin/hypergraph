@@ -209,9 +209,11 @@ True if any node in the graph is an interrupt node.
 ```python
 from hypergraph import interrupt
 
-@interrupt(output_name="decision")
-def approval(draft: str) -> str | None:
-    return None
+# Confirm is supplied by the companion question-vocabulary package.
+
+@interrupt(answer_name="decision")
+def approval(draft: str) -> Confirm:
+    return Confirm(prompt="Publish?", evidence=(draft,))
 
 g = Graph([make_draft, approval, finalize])
 print(g.has_interrupts)  # True

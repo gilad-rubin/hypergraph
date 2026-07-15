@@ -14,11 +14,20 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, ClassVar
 
 from slack_mock import SlackClient
 
 from hypergraph import END, AsyncRunner, Graph, PauseInfo, interrupt, node, route
+
+
+@dataclass(frozen=True)
+class SlackQuestion:
+    answer_type: ClassVar[object] = str
+    prompt: str
+    options: tuple[str, ...] | None = None
+    evidence: tuple[object, ...] = ()
 
 
 def with_receiver(interrupt_node: Any, receiver: Any) -> Any:
@@ -85,9 +94,9 @@ async def run_auto_resume_cycle(
         if asyncio.iscoroutine(response):
             response = await response
 
-        # Carry cycle seed forward from pause context.
-        if pause.value is not None:
-            merged["messages"] = pause.value
+        # Carry the cycle seed from the typed question evidence.
+        if isinstance(pause.value, SlackQuestion) and pause.value.evidence:
+            merged["messages"] = pause.value.evidence[0]
         merged[pause.response_key] = response
         print(f"[demo] received reply -> {pause.response_key}={response!r}")
 
@@ -106,14 +115,14 @@ async def main() -> None:
     args = parse_args()
     slack = SlackClient(args.slack_url)
 
-    @interrupt(output_name="user_input")
-    def ask_slack(messages: list[str]) -> None:
+    @interrupt(answer_name="user_input")
+    def ask_slack(messages: list[str]) -> SlackQuestion:
         turn_number = sum(1 for m in messages if m.startswith("assistant: ")) + 1
         prompt = f"Turn {turn_number}. {args.question}"
         if messages:
             prompt = f"Turn {turn_number}. Prior context:\n" + "\n".join(messages[-4:])
         slack.post_message(prompt)
-        return None
+        return SlackQuestion(prompt=prompt, evidence=(messages,))
 
     async def receive_slack(_: PauseInfo) -> str:
         return await slack.receive_response()

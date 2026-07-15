@@ -1,675 +1,373 @@
 # Human-in-the-Loop
 
 {% hint style="warning" %}
-Interrupts require `AsyncRunner`. Running a graph that contains an `InterruptNode` on `SyncRunner` raises `IncompatibleRunnerError` — the sync runner does not support pausing.
+Interrupts require `AsyncRunner`. Running a graph that contains an
+`InterruptNode` on `SyncRunner` raises `IncompatibleRunnerError`.
 {% endhint %}
 
-Pause execution for human input. Resume when ready.
+## Interrupts: ask a question, name the answer
 
-- **`@interrupt`** - Decorator to create a pause point (like `@node` but pauses on `None`)
-- **PauseInfo** - Metadata about the pause (what value is surfaced, where to resume)
-- **Handlers** - Auto-resolve interrupts programmatically (testing, automation)
+An `@interrupt` node declares two things and nothing else:
 
-## The Problem
-
-Many workflows need human judgment at key points: approving a draft, confirming a destructive action, providing feedback on generated content. You need a way to pause the graph, surface a value to the user, and resume with their response.
-
-This page focuses on the **graph-level** pause/resume pattern:
-
-- a run pauses at an interrupt
-- the caller inspects the pause payload
-- the caller later resumes the workflow with a response
-
-That makes interrupts a strong fit for:
-
-- interactive apps
-- review UIs
-- multi-step assistants
-- application-managed human approval flows
-
-For longer-lived event-driven orchestration, checkpointing gives you the persistence foundation, but more of the surrounding runtime shell still lives in your app today.
-
-## Basic Pause and Resume
-
-The `@interrupt` decorator creates a pause point. Inputs come from the function signature, outputs from `output_name`. When the handler returns `None`, execution pauses.
+- **What the human sees** — the function's return value, a typed question
+  (`Choice`, `Confirm`, `FreeText`, `Form[Model]`). It becomes
+  `result.pause.value`. It never enters the graph's dataflow.
+- **Where the answer lands** — `answer_name`. This is the node's output:
+  downstream nodes consume it by parameter name like any other value, and it
+  is the `response_key` your app passes back when resuming.
 
 ```python
-from hypergraph import Graph, node, AsyncRunner, interrupt
-
-@node(output_name="draft")
-def generate_draft(prompt: str) -> str:
-    return f"Blog post about: {prompt}"
-
-@interrupt(output_name="decision")
-def approval(draft: str) -> str | None:
-    return None  # pause for human review
+@interrupt(answer_name="decision")
+def review(draft: str) -> Confirm:
+    return Confirm(prompt=f"Publish this draft?", evidence=(draft,))
 
 @node(output_name="result")
-def finalize(decision: str) -> str:
-    return f"Published: {decision}"
+def publish(draft: str, decision: bool) -> str: ...
 
-graph = Graph([generate_draft, approval, finalize])
+result = await runner.run(graph, {"draft": d})
+result.pause.value          # the Confirm — show it to the user
+result.pause.response_key   # "decision" — where to return their answer
+
+await runner.run(graph, {"draft": d, "decision": True})   # resumes
+```
+
+Reaching an interrupt means asking: the node always pauses — unless the answer
+is already in the values dict, in which case it never pauses at all (the same
+line serves headless/CSV/batch callers). To ask only sometimes, route into it
+(`@ifelse`/`@route`): conditionality lives in topology, where `describe()` and
+the visualizer can show it.
+
+`answer_name` is `output_name`'s sibling, renamed because on an interrupt the
+return is the question, not the output. Everything you know about outputs still
+applies to it: name matching, `describe()`, renaming via `rename_outputs`, and
+(in a HyperTable) one column per answer.
+
+## The structural question seam
+
+The question vocabulary ships in a companion package. Hypergraph does not
+import its concrete `Choice`, `Confirm`, or `Form` classes; it checks this
+small structural contract:
+
+- The handler's **return annotation** exposes class-level `answer_type`.
+  Hypergraph uses that exact object as the answer port's type. It can be a
+  normal class such as `bool` or a typing alias such as `tuple[str, ...]`.
+- The returned **question instance** has `prompt: str`,
+  `options: tuple[str, ...] | None`, and `evidence: tuple`.
+
+Until the companion vocabulary is installed, this minimal class is enough for
+a runnable application or test:
+
+```python
+from dataclasses import dataclass
+from typing import ClassVar
+
+@dataclass(frozen=True)
+class Confirm:
+    answer_type: ClassVar[object] = bool
+    prompt: str
+    options: tuple[str, ...] | None = None
+    evidence: tuple[object, ...] = ()
+```
+
+`answer_type` describes the human's answer, not the question object. Under
+`strict_types=True`, a `Confirm` therefore connects to a `bool` parameter:
+
+```python
+@interrupt(answer_name="decision")
+def review(draft: str) -> Confirm:
+    return Confirm(prompt="Publish?", evidence=(draft,))
+
+@node(output_name="result")
+def publish(draft: str, decision: bool) -> str:
+    return draft if decision else "not published"
+
+graph = Graph([review, publish], strict_types=True)
+```
+
+Graph construction fails if the return annotation is missing or does not
+expose `answer_type`. Returning `None` also fails loudly at runtime: an
+interrupt that asks nothing is a bug.
+
+## A complete pause and resume
+
+```python
+from dataclasses import dataclass
+from typing import ClassVar
+
+from hypergraph import AsyncRunner, Graph, interrupt, node
+
+@dataclass(frozen=True)
+class Confirm:
+    answer_type: ClassVar[object] = bool
+    prompt: str
+    options: tuple[str, ...] | None = None
+    evidence: tuple[object, ...] = ()
+
+@interrupt(answer_name="decision")
+def review(draft: str) -> Confirm:
+    return Confirm(prompt="Publish this draft?", evidence=(draft,))
+
+@node(output_name="result")
+def publish(draft: str, decision: bool) -> str:
+    return f"published: {draft}" if decision else "not published"
+
+graph = Graph([review, publish])
 runner = AsyncRunner()
+draft = "Hypergraph v4"
 
-# First run: pauses at the interrupt
-result = await runner.run(graph, {"prompt": "Python async"})
+paused = await runner.run(graph, {"draft": draft})
+assert paused.paused
+assert isinstance(paused.pause.value, Confirm)
+assert paused.pause.value.prompt == "Publish this draft?"
+assert paused.pause.response_key == "decision"
 
-assert result.paused
-assert result.pause.value == "Blog post about: Python async"
-assert result.pause.response_key == "decision"
-
-# Resume with the user's response
-result = await runner.run(graph, {
-    "prompt": "Python async",
-    result.pause.response_key: "Looks great, publish it!",
-})
-
-assert result["result"] == "Published: Looks great, publish it!"
-```
-
-The key flow:
-
-1. **Run** the graph. Execution pauses at the interrupt.
-2. **Inspect** `result.pause.value` to see what the user needs to review.
-3. **Resume** by passing the response via `result.pause.response_key`.
-
-This is intentionally different from event-driven workflow systems like Inngest, DBOS, or Restate, where the runtime often owns external event delivery directly. In hypergraph, the pause/resume primitive is already there; the application typically decides how the later response gets routed back into the run.
-
-### RunResult Properties
-
-When paused, the `RunResult` has:
-
-| Property | Description |
-|----------|-------------|
-| `result.paused` | `True` when execution is paused |
-| `result.pause.value` | The input value surfaced to the caller |
-| `result.pause.node_name` | Name of the interrupt node that paused |
-| `result.pause.output_param` | Output parameter name |
-| `result.pause.response_key` | Key to use in the values dict when resuming |
-
-## Multi-Turn Chat with Human Input
-
-Combine `@interrupt` with agentic loops for a multi-turn conversation where the user provides input each turn.
-
-{% hint style="warning" %}
-Cyclic graphs (this one loops `should_continue` → `ask_user`) require an explicit `entrypoint=`. Hypergraph raises `GraphConfigError: Cyclic graphs require an explicit entrypoint` at construction if you omit it — there is no default starting node for a cycle.
-{% endhint %}
-
-```python
-from hypergraph import Graph, node, route, END, AsyncRunner, interrupt
-
-# Pause and wait for user input
-@interrupt(output_name="user_input")
-def ask_user(messages: list) -> str | None:
-    return None  # always pause for human input
-
-@node(output_name="messages")
-def add_user_message(messages: list, user_input: str) -> list:
-    return messages + [{"role": "user", "content": user_input}]
-
-@node(output_name="response")
-def generate(messages: list) -> str:
-    return llm.chat(messages)  # your LLM client
-
-@node(output_name="messages", emit="turn_done")
-def accumulate(messages: list, response: str) -> list:
-    return messages + [{"role": "assistant", "content": response}]
-
-@route(targets=["ask_user", END], wait_for="turn_done")
-def should_continue(messages: list) -> str:
-    if len(messages) >= 20:
-        return END
-    return "ask_user"
-
-graph = Graph(
-    [ask_user, add_user_message, generate, accumulate, should_continue],
-    edges=[
-        (ask_user, add_user_message),
-        (add_user_message, generate),
-        (generate, accumulate),
-        (accumulate, should_continue),
-    ],
-    shared=["messages"],
-    entrypoint=["ask_user", "add_user_message"],
+# Without a checkpointer, re-drive with the full original values plus the answer.
+completed = await runner.run(
+    graph,
+    {"draft": draft, paused.pause.response_key: True},
 )
-
-# Pre-fill messages so the first step (ask_user) can run immediately
-chat = graph.bind(messages=[])
-
-runner = AsyncRunner()
-
-# Turn 1: graph pauses at ask_user (shows empty messages)
-result = await runner.run(chat, {})
-assert result.paused
-assert result.pause.node_name == "ask_user"
-
-# Resume with user's first message
-result = await runner.run(chat, {"user_input": "Hello!"})
-# Pauses again at ask_user for the next turn
-assert result.paused
-
-# Resume with second message
-result = await runner.run(chat, {"user_input": "Tell me more"})
+assert completed["result"] == "published: Hypergraph v4"
 ```
 
-Key patterns:
-- **`.bind(messages=[])`** pre-fills the seed input so `.run({})` works with no values
-- **Interrupt as first step**: the graph pauses immediately, asking the user for input
-- **`emit="turn_done"` + `wait_for="turn_done"`**: ensures `should_continue` sees the fully updated messages
-- **Explicit `edges=[...]`**: `messages` has two producers (`add_user_message` and `accumulate`) feeding downstream nodes across the cycle, so auto-wiring can't pick one on its own — declare the edges directly
-- Each resume replays the graph, providing all previous responses
+The `Confirm` object is preserved by identity in `PauseInfo.value`; Hypergraph
+does not serialize, flatten, or send it through downstream nodes. Only the
+later `bool` answer enters the `decision` port.
 
-### The Entrypoint Must Include the Interrupt
+## The two roles of `answer_name`
 
-`entrypoint=["ask_user", "add_user_message"]` lists **two** entrypoints, not one. This matters because of how a resumed cyclic run picks its starting node: on each call, the runner starts from whichever entrypoint's inputs are satisfied by the values you passed.
+`answer_name` connects the application boundary and graph topology without
+making either side understand the other.
 
-If you only set `entrypoint="add_user_message"` (skipping `ask_user`), the first turn still "works" in the sense that it doesn't raise — but it silently never reaches the interrupt:
+### Outside the graph: the return address
+
+A FastAPI endpoint, decisions inbox, or queue worker can persist the whole
+pause envelope. `response_key` tells it where to put the answer:
 
 ```python
-# entrypoint="add_user_message" only (WRONG for a graph that should pause at ask_user)
-graph = Graph(
-    [ask_user, add_user_message, generate, accumulate, should_continue],
-    edges=[...],
-    shared=["messages"],
-    entrypoint="add_user_message",
-)
-chat = graph.bind(messages=[])
-
-result = await runner.run(chat, {"user_input": "hello"})
-# result.status == RunStatus.COMPLETED, result.paused == False
-# add_user_message ran; generate/accumulate/should_continue never ran;
-# ask_user never ran either. No error, no warning.
+if result.paused:
+    pending.store(
+        workflow_id=result.workflow_id,
+        question=result.pause.value,
+        answer_name=result.pause.response_key,
+    )
 ```
 
-Because `add_user_message` was the only entrypoint and its required input (`user_input`) was already supplied, the run starts and finishes there — the rest of the cycle, including `ask_user`, is simply never scheduled. Nothing here is invalid input or a missing value, so there is no exception to catch. The fix is always the same: **every node the graph should be able to pause at must be listed in `entrypoint=`**, so a call with only the seed values (an empty `{}` or just `messages=[]`) can still reach it.
+The host does not need to inspect graph nodes or reconstruct a parameter name.
 
-### Alternative: Explicit Edges
+### Inside the graph: the output port
 
-The same chat loop without `emit`/`wait_for` signals. When multiple nodes produce `messages`, explicit edges declare the topology directly:
+The same name auto-wires matching consumers:
 
 ```python
-from hypergraph import Graph, node, route, END, AsyncRunner, interrupt
+@interrupt(answer_name="dup_decision")
+def review_duplicate(upload_path: str) -> Choice:
+    return Choice(
+        prompt=f"What should happen to {upload_path}?",
+        options=("replace_existing", "keep_both"),
+    )
 
-@interrupt(output_name="query")
-def ask_user(response: str) -> str | None:
-    return None  # always pause for human input
+@node(output_name="receipt")
+def apply(dup_decision: str) -> str:
+    return f"applied:{dup_decision}"
 
-@node(output_name="messages")
-def add_query(messages: list, query: str) -> list:
-    return [*messages, {"role": "user", "content": query}]
-
-@node(output_name="response")
-def generate(messages: list) -> str:
-    return llm.chat(messages)
-
-@node(output_name="messages")
-def add_response(messages: list, response: str) -> list:
-    return [*messages, {"role": "assistant", "content": response}]
-
-graph = Graph(
-    [ask_user, add_query, generate, add_response],
-    edges=[
-        (ask_user, add_query),                   # query
-        (add_query, generate),                    # messages
-        (generate, add_response),                 # response
-        (add_response, ask_user),                 # ordering only
-        (add_response, add_query),                # messages (cycle)
-    ],
-)
-
-chat = graph.bind(messages=[])
-runner = AsyncRunner()
-
-# Turn 1: pauses at ask_user
-result = await runner.run(chat, {})
-assert result.paused
-
-# Resume with user's first message
-result = await runner.run(chat, {"query": "Hello!"})
-assert result.paused  # pauses again for next turn
+graph = Graph([review_duplicate, apply])
+assert "dup_decision" not in graph.inputs.required
 ```
 
-No ordering signals needed — the edge list makes execution order unambiguous. Both `add_query` and `add_response` produce `messages`, but the edges declare which runs first.
+`dup_decision` is produced by the interrupt, so it is not a phantom graph
+input. The consumer runs only after that answer is supplied.
 
-## Persistent Multi-Turn with Checkpointer
+## Resume channels
 
-The examples above are stateless — each resume replays from scratch, passing all previous responses. For production multi-turn workflows, use a **checkpointer** to persist state between calls. Each `.run()` only needs the new user input.
+### Stateless re-drive
+
+Without a checkpointer, send the original graph inputs again and add every
+answer collected so far:
 
 ```python
-from hypergraph import Graph, AsyncRunner, END, node, route, interrupt
+values = {"draft": "Release notes"}
+paused = await runner.run(graph, values)
+
+values[paused.pause.response_key] = True
+completed = await runner.run(graph, values)
+```
+
+The second call skips the interrupt handler because its answer port is already
+supplied.
+
+### Checkpointed answer-only resume
+
+With a checkpointer and `workflow_id`, completed upstream state is restored.
+Resume with only the answer:
+
+```python
+from hypergraph import AsyncRunner
 from hypergraph.checkpointers import SqliteCheckpointer
 
-@interrupt(output_name="user_input")
-def wait_for_user() -> None:
-    return None
-
-@node(output_name="messages")
-def add_user_message(messages: list, user_input: str) -> list:
-    return [*messages, {"role": "user", "content": user_input}]
-
-@node(output_name="response")
-async def llm_reply(messages: list, llm_client) -> str:
-    return await llm_client.chat(messages)
-
-@node(output_name="messages")
-def add_response(messages: list, response: str) -> list:
-    return [*messages, {"role": "assistant", "content": response}]
-
-@route(targets=["wait_for_user", END])
-def should_continue(messages: list, max_turns: int) -> str:
-    turns = sum(1 for m in messages if m["role"] == "assistant")
-    return END if turns >= max_turns else "wait_for_user"
-
-chat = Graph(
-    [wait_for_user, add_user_message, llm_reply, add_response, should_continue],
-    edges=[
-        (add_user_message, llm_reply),
-        (llm_reply, add_response),
-        (add_response, should_continue),
-    ],
-    name="chat",
-    shared=["messages"],
-    entrypoint="add_user_message",
-).bind(messages=[], llm_client=my_llm, max_turns=5)
-
-# Checkpointer persists state between calls
-checkpointer = SqliteCheckpointer("chat.db")
+checkpointer = SqliteCheckpointer("runs.db")
 runner = AsyncRunner(checkpointer=checkpointer)
 
-# Turn 1
-r1 = await runner.run(chat, workflow_id="conv-1", user_input="hello")
-assert r1.paused
-print(r1["messages"][-1])  # {"role": "assistant", "content": "..."}
-
-# Turn 2 — only pass the new input, state is restored from checkpoint
-r2 = await runner.run(chat, workflow_id="conv-1", user_input="tell me more")
-assert r2.paused
-```
-
-Key differences from the stateless pattern:
-
-- **`workflow_id`** identifies the conversation — same ID resumes, different ID starts fresh
-- **`shared=["messages"]`** accumulates the message list across the cycle
-- **`entrypoint="add_user_message"`** skips `wait_for_user` on the first call (no need to pause before the user has spoken)
-- Each `.run()` only needs the new `user_input`, not all previous messages
-
-### When the Conversation Ends
-
-When `should_continue` routes to `END`, the workflow completes. Further `.run()` calls with the same `workflow_id` raise `WorkflowAlreadyCompletedError`:
-
-```python
-from hypergraph.exceptions import WorkflowAlreadyCompletedError
-
-try:
-    await runner.run(chat, workflow_id="conv-1", user_input="one more?")
-except WorkflowAlreadyCompletedError:
-    print("Conversation ended — use a new workflow_id")
-```
-
-### Inspecting Checkpoint History
-
-The checkpointer records every node execution. You can inspect the full step log:
-
-```python
-checkpointer = SqliteCheckpointer("chat.db")
-
-# Sync reads — no await needed
-run = checkpointer.get_run("conv-1")
-print(run.status)  # "paused" or "completed"
-
-steps = checkpointer.steps("conv-1")
-for s in steps:
-    print(f"  ss={s.superstep}  {s.node_name:25s}  {s.status}")
-```
-
-A two-turn conversation produces steps like:
-
-```
-  ss=0   add_user_message           completed
-  ss=1   llm_reply                  completed
-  ss=2   add_response               completed
-  ss=3   should_continue            completed    → wait_for_user
-  ss=4   wait_for_user              paused
-  ss=5   wait_for_user              completed    (user_input resolved)
-  ss=6   add_user_message           completed
-  ss=7   llm_reply                  completed
-  ss=8   add_response               completed
-  ss=9   should_continue            completed    → wait_for_user
-  ss=10  wait_for_user              paused
-```
-
-Notice the interrupt appears twice per turn: first as `paused` (waiting), then as `completed` (resolved with the user's input on the next `.run()` call).
-
-> **Full example**: See [`examples/chat_app.py`](../../examples/chat_app.py) for a complete FastAPI integration with durable multi-turn chat, error handling, and checkpoint inspection endpoint.
-
-## Auto-Resolve with Handlers
-
-For testing or automation, the handler function resolves the interrupt without human input. Return a value to auto-resolve, return `None` to pause.
-
-```python
-@interrupt(output_name="decision")
-def approval(draft: str) -> str:
-    return "auto-approved"  # always resolves, never pauses
-
-graph = Graph([generate_draft, approval, finalize])
-result = await runner.run(graph, {"prompt": "Python async"})
-
-# No pause — handler resolved it
-assert result["result"] == "Published: auto-approved"
-```
-
-### Conditional Pause
-
-Return `None` to pause, return a value to auto-resolve:
-
-```python
-@interrupt(output_name="decision")
-def approval(draft: str) -> str | None:
-    if "LGTM" in draft:
-        return "auto-approved"
-    return None  # pause for human review
-```
-
-### Async Handlers
-
-Handlers can be async:
-
-```python
-@interrupt(output_name="decision")
-async def approval(draft: str) -> str:
-    """Use an LLM to auto-review the draft."""
-    return await call_llm(f"Review this draft: {draft}")
-```
-
-## Preparing Data for the UI
-
-When an interrupt pauses, `PauseInfo.value` carries the interrupt node's first input. The key insight: **structure your graph so that input is the prepared UI data**. No special payload API needed — a prep node upstream computes everything the UI needs, and the interrupt receives it.
-
-```python
-from hypergraph import Graph, node, route, interrupt, AsyncRunner
-
-# Step 1: Compute everything the UI needs
-@node(output_name="comparison")
-def prepare_comparison(existing_doc, new_doc) -> dict:
-    return {
-        "similarity": compute_similarity(existing_doc, new_doc),
-        "existing": {"title": existing_doc.title, "pages": existing_doc.page_count},
-        "new": {"title": new_doc.title, "pages": new_doc.page_count},
-    }
-
-# Step 2: Route on the computed data (auto-resolve low-confidence cases)
-@route(targets=["review_duplicate", "process"])
-def duplicate_gate(comparison: dict) -> str:
-    return "review_duplicate" if comparison["similarity"] >= 0.3 else "process"
-
-# Step 3: Interrupt receives the prepared comparison
-# PauseInfo.value = comparison dict (similarity, titles, page counts)
-@interrupt(output_name="duplicate_decision")
-def review_duplicate(comparison: dict) -> str | None:
-    return None
-
-@node(output_name="result")
-def process(duplicate_decision: str) -> str:
-    return f"Processed with decision: {duplicate_decision}"
-
-graph = Graph([prepare_comparison, duplicate_gate, review_duplicate, process])
-runner = AsyncRunner()
-
-result = await runner.run(graph, {"existing_doc": doc_a, "new_doc": doc_b})
-assert result.paused
-# The UI gets everything it needs from PauseInfo:
-print(result.pause.value)  # {"similarity": 0.87, "existing": {...}, "new": {...}}
-print(result.pause.response_key)  # "duplicate_decision"
-```
-
-Key patterns:
-
-- **`PauseInfo.value` is always the first input** — structure your graph so that input is the prepared UI data
-- **Separation of concerns**: computation (`@node`), routing (`@route`), pause (`@interrupt`) — each is independently testable as a plain function
-- **Auto-resolve via route**: the `@route` node skips the interrupt entirely for clear-cut cases; only ambiguous ones reach the human
-
-### Validating the Response
-
-The interrupt node produces `duplicate_decision` as a raw string — the user can type anything. Validate downstream:
-
-```python
-@node(output_name="validated_decision")
-def validate_decision(duplicate_decision: str) -> str:
-    if duplicate_decision not in ("keep_both", "replace", "skip"):
-        raise ValueError(f"Invalid decision: {duplicate_decision}")
-    return duplicate_decision
-```
-
-This keeps the interrupt node clean (pause only, no logic) and makes validation testable without running the graph.
-
-## Multiple Sequential Interrupts
-
-A graph can have multiple interrupts. Execution pauses at each one in topological order.
-
-```python
-@node(output_name="draft")
-def generate(prompt: str) -> str:
-    return f"Draft: {prompt}"
-
-@interrupt(output_name="feedback")
-def review(draft: str) -> str | None:
-    return None  # pause for reviewer
-
-@interrupt(output_name="final_draft")
-def edit(feedback: str) -> str | None:
-    return None  # pause for editor
-
-@node(output_name="result")
-def publish(final_draft: str) -> str:
-    return f"Published: {final_draft}"
-
-graph = Graph([generate, review, edit, publish])
-runner = AsyncRunner()
-
-# Pause 1: review
-r1 = await runner.run(graph, {"prompt": "hello"})
-assert r1.pause.node_name == "review"
-
-# Pause 2: edit (provide review response)
-r2 = await runner.run(graph, {
-    "prompt": "hello",
-    "feedback": "Needs more detail",
-})
-assert r2.pause.node_name == "edit"
-assert r2.pause.value == "Needs more detail"
-
-# Complete (provide both responses)
-r3 = await runner.run(graph, {
-    "prompt": "hello",
-    "feedback": "Needs more detail",
-    "final_draft": "Detailed draft about hello",
-})
-assert r3["result"] == "Published: Detailed draft about hello"
-```
-
-Each resume call replays the graph from the start, providing previously-collected responses as input values. The interrupt detects that its output is already in the state and skips the pause.
-
-## Nested Graph Interrupts
-
-Interrupts inside nested graphs propagate the pause to the outer graph. The `node_name` is prefixed with the nested graph's name.
-
-```python
-# Inner graph with an interrupt
-@interrupt(output_name="y")
-def approval(x: str) -> str | None:
-    return None
-
-inner = Graph([approval], name="inner")
-
-@node(output_name="x")
-def produce(query: str) -> str:
-    return query
-
-@node(output_name="result")
-def consume(y: str) -> str:
-    return f"got: {y}"
-
-outer = Graph([produce, inner.as_node(), consume])
-runner = AsyncRunner()
-
-result = await runner.run(outer, {"query": "hello"})
-
-assert result.paused
-assert result.pause.node_name == "inner/approval"
-assert result.pause.response_key == "y"
-```
-
-The `response_key` uses the parent-facing GraphNode boundary address. For the default flat boundary, that can stay as `"y"`; for `inner.as_node(namespaced=True)`, it would be `"inner.y"`.
-
-Think of `response_key` as a **resume slot identifier**. It is precise and stable, but it is primarily a runtime-facing detail. In user-facing applications, you will often wrap it behind your own inbox, form, or webhook layer.
-
-## Checkpointed Pauses
-
-For durable pause/resume across process restarts, pair interrupts with a checkpointer and a `workflow_id`:
-
-```python
-from hypergraph import AsyncRunner, Graph, interrupt, node
-from hypergraph.checkpointers import SqliteCheckpointer
-
-@interrupt(output_name="decision")
-def approval(draft: str) -> str | None:
-    return None
-
-@node(output_name="result")
-def finalize(decision: str) -> str:
-    return f"Final: {decision}"
-
-graph = Graph([approval, finalize])
-runner = AsyncRunner(checkpointer=SqliteCheckpointer("./runs.db"))
-
-paused = await runner.run(graph, {"draft": "hello"}, workflow_id="review-1")
-
-# ... later, possibly in another process ...
-resumed = await runner.run(
+paused = await runner.run(
     graph,
-    {paused.pause.response_key: "approved"},
-    workflow_id="review-1",
+    {"draft": "Release notes"},
+    workflow_id="release-42",
+)
+
+completed = await runner.run(
+    graph,
+    {paused.pause.response_key: True},
+    workflow_id="release-42",
 )
 ```
 
-This is the current durable HITL story:
-
-- checkpoint state stores the paused execution
-- `workflow_id` identifies the workflow instance
-- `response_key` identifies the waiting output slot
-
-If your application needs approval inboxes, event matching, or webhook-driven resume, build those on top of this pause primitive today.
-
-## Runner Compatibility
-
-Only `AsyncRunner` supports interrupts. `SyncRunner` raises `IncompatibleRunnerError` at runtime if the graph contains interrupt nodes.
+Close the SQLite checkpointer when the application shuts down:
 
 ```python
-from hypergraph import SyncRunner
-from hypergraph.exceptions import IncompatibleRunnerError
-
-runner = SyncRunner()
-
-# Raises IncompatibleRunnerError
-runner.run(graph_with_interrupt, {"query": "hello"})
+await checkpointer.close()
 ```
 
-Similarly, `AsyncRunner.map()` does not support interrupts — a graph with interrupts cannot be used with `map()`.
+### Supply an answer up front
 
-The same restriction applies to `GraphNode.map_over(...)`: a nested graph that
-contains interrupts cannot be wrapped in `map_over()`. If you need batched
-human-in-the-loop processing today, orchestrate the batch at the application
-layer rather than nesting an interrupting graph inside `map_over()`.
-
-## With emit/wait_for
-
-InterruptNode supports ordering signals like FunctionNode:
+Headless and batch callers use the same port. With no checkpointer, supplying
+the answer on the first run skips the question handler entirely:
 
 ```python
-@interrupt(output_name="decision", emit="reviewed")
-def approval(draft: str) -> str:
-    ...
-
-@node(output_name="result", wait_for="reviewed")
-def finalize(decision: str) -> str:
-    return f"Final: {decision}"
+result = await runner.run(
+    graph,
+    {"draft": "Release notes", "decision": True},
+)
+assert result.completed
 ```
 
-## API Reference
+There is no separate automation hook and no auto-resolving handler return.
 
-### `@interrupt` Decorator
+## Conditional questions belong in topology
 
-The `@interrupt` decorator is the preferred way to create an interrupt node. Like `@node`, inputs come from the function signature, outputs from `output_name`, and types from annotations.
+An interrupt cannot return an answer to avoid pausing. Route around the
+interrupt when review is conditional:
 
 ```python
-from hypergraph import interrupt
-
-@interrupt(output_name="decision")
-def approval(draft: str) -> str | None:
-    return None  # pause for human review
+@route(
+    targets=["review", "publish_without_review"],
+    default_open=False,
+)
+def review_policy(risk: float) -> str:
+    return "review" if risk >= 0.8 else "publish_without_review"
 ```
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `output_name` | `str \| tuple[str, ...]` | Name(s) for output value(s) — **required** |
-| `rename_inputs` | `dict[str, str] \| None` | Mapping to rename inputs {old: new} |
-| `cache` | `bool` | Enable result caching (default: `False`) |
-| `emit` | `str \| tuple[str, ...] \| None` | Ordering-only local output name(s) |
-| `wait_for` | `str \| tuple[str, ...] \| None` | Ordering-only graph-scope output/emit address(es) |
-| `hide` | `bool` | Whether to hide from visualization |
+Now `describe()` and visualization show the condition. Every time `review`
+is reached it asks; when the other route is selected, it does not run.
 
-### InterruptNode Constructor
+## Choice options and route targets
 
-InterruptNode can also be created directly (like `FunctionNode`):
+When a question has `options` and its answer feeds a `RouteNode` or
+`IfElseNode`, every option must have a matching route target. Hypergraph checks
+this immediately before surfacing the pause, when the runtime question exists:
 
 ```python
-from hypergraph import InterruptNode
+@interrupt(answer_name="dup_decision")
+def review_duplicate(upload_path: str) -> Choice:
+    return Choice(
+        prompt=f"What should happen to {upload_path}?",
+        options=("replace_existing", "keep_both"),
+    )
 
-InterruptNode(my_func, output_name="decision")
-InterruptNode(my_func, name="review", output_name="decision",
-             emit="done", wait_for="ready")
+@route(
+    targets=["replace_existing", "keep_both"],
+    default_open=False,
+)
+def choose_path(dup_decision: str) -> str:
+    return dup_decision
 ```
 
-`output_name` is required — `InterruptNode(func)` without it raises `TypeError`.
+If the question also offered `"archive_old"` but the route omitted that
+target, `run()` raises before a human sees a dead option.
 
-**Properties:**
+## Cycles and entrypoints
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `inputs` | `tuple[str, ...]` | Input parameter names (from function signature) |
-| `outputs` | `tuple[str, ...]` | All output names (data + emit) |
-| `data_outputs` | `tuple[str, ...]` | Data-only outputs (excluding emit) |
-| `is_interrupt` | `bool` | Always `True` |
-| `cache` | `bool` | Whether caching is enabled (default: `False`) |
-| `hide` | `bool` | Whether hidden from visualization |
-| `wait_for` | `tuple[str, ...]` | Ordering-only graph-scope output/emit addresses |
-| `is_async` | `bool` | True if handler is async |
-| `is_generator` | `bool` | True if handler yields |
-| `definition_hash` | `str` | SHA256 hash of function source |
+Cyclic graphs still require an explicit entrypoint, and the interrupt must be
+in the entrypoint scope:
 
-**Methods:**
+```python
+@interrupt(answer_name="user_input")
+def ask_user(messages: list[dict]) -> FreeText:
+    return FreeText(prompt="What would you like to say?", evidence=(messages,))
 
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `with_name(name)` | `InterruptNode` | New instance with a different name |
-| `rename_inputs(**kwargs)` | `InterruptNode` | New instance with renamed inputs |
-| `rename_outputs(**kwargs)` | `InterruptNode` | New instance with renamed outputs |
+graph = Graph(
+    [ask_user, add_user_message, generate, remember, should_continue],
+    shared=["messages"],
+    entrypoint="ask_user",
+)
+```
 
-### PauseInfo
+On a resumed iteration, the supplied `user_input` passes through the interrupt
+port. When the cycle reaches `ask_user` again after consuming that value, the
+handler runs and produces the next question.
+
+## Nested graphs and renaming
+
+Nested pauses prefix `node_name` and project `response_key` to the outer graph's
+port address:
+
+```python
+review_graph = Graph([review], name="review")
+review_node = review_graph.as_node().rename_outputs(decision="verdict")
+outer = Graph([review_node, publish_verdict])
+
+paused = await runner.run(outer, {"draft": "Release notes"})
+assert paused.pause.node_name == "review/review"
+assert paused.pause.response_key == "verdict"
+```
+
+Namespaced GraphNodes similarly return addresses such as
+`"editor.review.decision"`. Always resume with `pause.response_key`; do not
+reconstruct nested addresses yourself.
+
+## `PauseInfo`
+
+The pause envelope has one answer slot:
 
 ```python
 @dataclass
 class PauseInfo:
-    node_name: str                          # Name of the interrupt node (uses "/" for nesting)
-    output_param: str                       # First output parameter name
-    value: Any                              # First input value surfaced to the caller
-    output_params: tuple[str, ...] | None   # All output names (multi-output), else None
-    values: dict[str, Any] | None           # All input values (multi-input), else None
+    node_name: str    # Interrupt node, using "/" for nested execution
+    value: Any        # The returned question payload
+    response_key: str # Resolved graph-scope answer port
 ```
 
-**Properties:**
+The old multi-output fields do not exist. A multi-field form still has one
+`answer_name`; its answer is one structured model, for example `Form[Profile]`
+with `answer_type = Profile`.
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `response_key` | `str` | Key to use when resuming (first output). Uses the resolved graph-scope address after GraphNode projection. |
-| `response_keys` | `dict[str, str]` | Map of all output names to resume keys (for multi-output interrupts) |
+## InterruptNode API
+
+```python
+from hypergraph import InterruptNode
+
+review = InterruptNode(my_question_handler, answer_name="decision")
+review = InterruptNode(
+    my_question_handler,
+    name="review",
+    answer_name="decision",
+    emit="reviewed",
+    wait_for="ready",
+)
+```
+
+`answer_name` is required and keyword-only. It must be a `str`; tuple answer
+names are rejected. The inherited node APIs continue to work:
+
+| Surface | Meaning |
+|---|---|
+| `inputs` | Values needed to construct the question |
+| `outputs` | The single answer port plus any emit-only ports |
+| `data_outputs` | A one-item tuple containing the answer port |
+| `answer_name` | Current local answer port, including output renames |
+| `rename_inputs(...)` | Rename question inputs |
+| `rename_outputs(...)` | Rename the answer port |
+| `with_name(...)` | Rename the interrupt node |
+| `is_interrupt` | Always `True` |
+
+`@interrupt(output_name=...)` and `InterruptNode(..., output_name=...)` are not
+accepted. Use `answer_name` to keep the question return distinct from the
+answer output.

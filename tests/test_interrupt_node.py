@@ -1,1579 +1,228 @@
-"""Tests for InterruptNode — human-in-the-loop pause/resume."""
+"""Core InterruptNode tests for the question/answer-name contract."""
 
 from __future__ import annotations
+
+import inspect
 
 import pytest
 
 from hypergraph import (
-    END,
     AsyncRunner,
     Graph,
     InterruptNode,
     PauseInfo,
-    RunResult,
     RunStatus,
     SyncRunner,
     interrupt,
     node,
-    route,
 )
 from hypergraph.exceptions import IncompatibleRunnerError
 from hypergraph.nodes.function import FunctionNode
+from tests._interrupt_questions import BoolQuestion, StringQuestion
 
-# ── Node construction ──
+
+def _review(draft: str) -> StringQuestion:
+    return StringQuestion(prompt="Approve?", evidence=(draft,))
 
 
 class TestInterruptNodeConstruction:
-    def test_basic_construction(self):
-        def approval(draft: str) -> str:
-            return "approved"
+    def test_constructor_declares_single_answer_port(self):
+        review = InterruptNode(_review, answer_name="decision")
 
-        n = InterruptNode(approval, output_name="decision")
-        assert n.name == "approval"
-        assert n.inputs == ("draft",)
-        assert n.outputs == ("decision",)
-        assert n.func is approval
+        assert review.name == "_review"
+        assert review.inputs == ("draft",)
+        assert review.outputs == ("decision",)
+        assert review.data_outputs == ("decision",)
+        assert review.answer_name == "decision"
+        assert review.get_output_type("decision") is str
+        assert review.get_output_type("missing") is None
+        assert review.is_interrupt is True
+        assert isinstance(review, FunctionNode)
 
-    def test_cache_default_false(self):
-        def approval(draft: str) -> str:
-            return "ok"
+    def test_answer_name_is_required_and_must_be_a_string(self):
+        assert inspect.signature(interrupt).parameters["answer_name"].default is inspect.Parameter.empty
+        assert inspect.signature(InterruptNode).parameters["answer_name"].default is inspect.Parameter.empty
+        with pytest.raises(TypeError, match="answer_name"):
+            InterruptNode(_review)
+        with pytest.raises(TypeError, match="answer_name"):
+            InterruptNode(_review, output_name="decision")
+        with pytest.raises(TypeError, match="answer_name"):
+            InterruptNode(_review, answer_name=("decision", "notes"))
 
-        n = InterruptNode(approval, output_name="decision")
-        assert n.cache is False
+    def test_constructor_configuration_matches_function_nodes(self):
+        review = InterruptNode(
+            _review,
+            name="approval",
+            answer_name="decision",
+            cache=True,
+            hide=True,
+            emit="reviewed",
+            wait_for="draft_ready",
+        )
 
-    def test_cache_configurable(self):
-        def approval(draft: str) -> str:
-            return "ok"
+        assert review.name == "approval"
+        assert review.cache is True
+        assert review.hide is True
+        assert review.outputs == ("decision", "reviewed")
+        assert review.wait_for == ("draft_ready",)
+        assert "approval" in repr(review)
 
-        n = InterruptNode(approval, output_name="decision", cache=True)
-        assert n.cache is True
+    def test_decorator_preserves_direct_handler_testing(self):
+        @interrupt(answer_name="decision")
+        def review(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve?", evidence=(draft,))
 
-    def test_is_async_false(self):
-        def approval(draft: str) -> str:
-            return "ok"
+        question = review("draft")
 
-        n = InterruptNode(approval, output_name="decision")
-        assert n.is_async is False
+        assert question == StringQuestion(prompt="Approve?", evidence=("draft",))
+        assert review.__wrapped__("other") == StringQuestion(
+            prompt="Approve?",
+            evidence=("other",),
+        )
 
-    def test_is_generator_false(self):
-        def approval(draft: str) -> str:
-            return "ok"
+    def test_renames_keep_answer_type_and_current_answer_name(self):
+        review = InterruptNode(_review, answer_name="decision")
 
-        n = InterruptNode(approval, output_name="decision")
-        assert n.is_generator is False
+        renamed = review.rename_inputs(draft="document").rename_outputs(decision="verdict")
 
-    def test_definition_hash_from_source(self):
-        def v1(x: str) -> str:
-            return "one"
-
-        def v2(x: str) -> str:
-            return "two"
-
-        n1 = InterruptNode(v1, output_name="out")
-        n2 = InterruptNode(v2, output_name="out")
-        assert n1.definition_hash != n2.definition_hash
-
-    def test_output_name_required(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        with pytest.raises(TypeError, match="output_name"):
-            InterruptNode(approval)
-
-    def test_is_interrupt_property(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        n = InterruptNode(approval, output_name="decision")
-        assert n.is_interrupt is True
-
-    def test_function_node_not_interrupt(self):
-        @node(output_name="x")
-        def f(a: int) -> int:
-            return a
-
-        assert f.is_interrupt is False
-
-    def test_isinstance_function_node(self):
-        """InterruptNode is a FunctionNode subclass."""
-
-        def approval(draft: str) -> str:
-            return "ok"
-
-        n = InterruptNode(approval, output_name="decision")
-        assert isinstance(n, FunctionNode)
-        assert isinstance(n, InterruptNode)
-
-
-class TestInterruptNodeMultiParam:
-    """Tests for multi-input/output InterruptNode construction."""
-
-    def test_multi_input_construction(self):
-        def review(draft: str, metadata: dict) -> str:
-            return "ok"
-
-        n = InterruptNode(review, output_name="decision")
-        assert n.inputs == ("draft", "metadata")
-        assert n.outputs == ("decision",)
-        assert len(n.inputs) > 1
-
-    def test_multi_output_construction(self):
-        def review(draft: str) -> tuple[str, str]:
-            return ("approved", "notes")
-
-        n = InterruptNode(review, output_name=("decision", "notes"))
-        assert n.inputs == ("draft",)
-        assert n.outputs == ("decision", "notes")
-        assert len(n.data_outputs) > 1
-
-    def test_multi_both_construction(self):
-        def review(draft: str, metadata: dict) -> tuple[str, str]:
-            return ("approved", "notes")
-
-        n = InterruptNode(review, output_name=("decision", "notes"))
-        assert n.inputs == ("draft", "metadata")
-        assert n.outputs == ("decision", "notes")
-
-    def test_multi_output_type_annotations(self):
-        def review(draft: str) -> tuple[bool, str]:
-            return (True, "looks good")
-
-        n = InterruptNode(review, output_name=("decision", "notes"))
-        assert n.get_output_type("decision") is bool
-        assert n.get_output_type("notes") is str
-        assert n.get_output_type("unknown") is None
-
-    def test_single_output_type_annotation(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        n = InterruptNode(approval, output_name="decision")
-        assert n.get_output_type("decision") is str
-        assert n.get_output_type("unknown") is None
-
-
-class TestInterruptNodeRename:
-    def test_with_name(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        n = InterruptNode(approval, output_name="decision")
-        renamed = n.with_name("review_step")
-        assert renamed.name == "review_step"
-        assert n.name == "approval"  # original unchanged
-
-    def test_rename_inputs(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        n = InterruptNode(approval, output_name="decision")
-        renamed = n.rename_inputs(draft="document")
+        assert review.inputs == ("draft",)
+        assert review.outputs == ("decision",)
         assert renamed.inputs == ("document",)
-
-    def test_rename_outputs(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        n = InterruptNode(approval, output_name="decision")
-        renamed = n.rename_outputs(decision="verdict")
         assert renamed.outputs == ("verdict",)
+        assert renamed.answer_name == "verdict"
+        assert renamed.get_input_type("document") is str
+        assert renamed.get_output_type("verdict") is str
+        assert renamed.map_inputs_to_params({"document": "draft"}) == {"draft": "draft"}
 
-    def test_rename_inputs_multi(self):
-        def review(a: str, b: str) -> str:
-            return "ok"
+    def test_multiple_question_inputs_still_produce_one_answer(self):
+        def review(draft: str, author: str) -> BoolQuestion:
+            return BoolQuestion(prompt="Publish?", evidence=(draft, author))
 
-        n = InterruptNode(review, output_name="out")
-        renamed = n.rename_inputs(a="c", b="d")
-        assert renamed.inputs == ("c", "d")
+        review_node = InterruptNode(review, answer_name="approved")
 
-    def test_rename_outputs_multi(self):
-        def review(inp: str) -> tuple[str, str]:
-            return ("a", "b")
+        assert review_node.inputs == ("draft", "author")
+        assert review_node.data_outputs == ("approved",)
+        assert review_node.get_output_type("approved") is bool
 
-        n = InterruptNode(review, output_name=("a", "b"))
-        renamed = n.rename_outputs(a="c", b="d")
-        assert renamed.outputs == ("c", "d")
+    def test_function_mode_metadata_is_preserved(self):
+        async def async_review(draft: str) -> StringQuestion:
+            return StringQuestion(prompt=draft)
 
+        def generator_review(draft: str):
+            yield StringQuestion(prompt=draft)
 
-class TestGraphInterruptDetection:
-    def test_has_interrupts_true(self):
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return query
+        assert InterruptNode(_review, answer_name="decision").is_async is False
+        assert InterruptNode(async_review, answer_name="decision").is_async is True
+        assert InterruptNode(generator_review, answer_name="decision").is_generator is True
 
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
-
-        graph = Graph([make_draft, approval])
-        assert graph.has_interrupts is True
-
-    def test_has_interrupts_false(self):
-        @node(output_name="result")
-        def double(x: int) -> int:
-            return x * 2
-
-        graph = Graph([double])
-        assert graph.has_interrupts is False
-
-    def test_interrupt_nodes_property(self):
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return query
-
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
-
-        graph = Graph([make_draft, approval])
-        assert len(graph.interrupt_nodes) == 1
-        assert graph.interrupt_nodes[0] is approval
-
-
-# ── Runtime types ──
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            ({"emit": "decision"}, "emit names overlap"),
+            ({"wait_for": "draft"}, "wait_for names overlap"),
+            (
+                {"emit": "signal", "wait_for": "signal"},
+                "emit and wait_for share",
+            ),
+        ],
+    )
+    def test_emit_and_wait_for_validation_is_unchanged(self, kwargs, message):
+        with pytest.raises(ValueError, match=message):
+            InterruptNode(_review, answer_name="decision", **kwargs)
 
 
 class TestPauseInfo:
-    def test_construction(self):
-        p = PauseInfo(node_name="approval", output_param="decision", value="draft text")
-        assert p.node_name == "approval"
-        assert p.output_param == "decision"
-        assert p.value == "draft text"
-
-    def test_response_key_top_level(self):
-        p = PauseInfo(node_name="approval", output_param="decision", value=None)
-        assert p.response_key == "decision"
-
-    def test_response_key_nested(self):
-        p = PauseInfo(node_name="review/approval", output_param="decision", value=None)
-        assert p.response_key == "decision"
-
-    def test_response_key_deeply_nested(self):
-        p = PauseInfo(node_name="outer/review/approval", output_param="decision", value=None)
-        assert p.response_key == "decision"
-
-    def test_response_keys_single_output(self):
-        p = PauseInfo(node_name="approval", output_param="decision", value=None)
-        assert p.response_keys == {"decision": "decision"}
-
-    def test_response_keys_multi_output(self):
-        p = PauseInfo(
-            node_name="approval",
-            output_param="decision",
-            value=None,
-            output_params=("decision", "notes"),
-        )
-        assert p.response_keys == {"decision": "decision", "notes": "notes"}
-
-    def test_response_keys_nested_multi_output(self):
-        p = PauseInfo(
-            node_name="review/approval",
-            output_param="decision",
-            value=None,
-            output_params=("decision", "notes"),
-        )
-        assert p.response_keys == {"decision": "decision", "notes": "notes"}
-
-    def test_multi_input_values(self):
-        p = PauseInfo(
+    def test_pause_envelope_has_only_the_single_answer_slot(self):
+        question = StringQuestion(prompt="Approve?")
+        pause = PauseInfo(
             node_name="review",
-            output_param="decision",
-            value="draft text",
-            values={"draft": "draft text", "metadata": {"author": "me"}},
+            value=question,
+            response_key="decision",
         )
-        assert p.value == "draft text"
-        assert p.values == {"draft": "draft text", "metadata": {"author": "me"}}
+
+        assert pause.node_name == "review"
+        assert pause.value is question
+        assert pause.response_key == "decision"
+        assert not hasattr(pause, "output_param")
+        assert not hasattr(pause, "output_params")
+        assert not hasattr(pause, "values")
+        assert not hasattr(pause, "response_keys")
 
 
-class TestRunResultPaused:
-    def test_paused_property(self):
-        r = RunResult(values={}, status=RunStatus.PAUSED)
-        assert r.paused is True
+class TestGraphAndRunnerContract:
+    def test_graph_detects_interrupts(self):
+        review = InterruptNode(_review, answer_name="decision")
+        graph = Graph([review])
 
-    def test_not_paused(self):
-        r = RunResult(values={}, status=RunStatus.COMPLETED)
-        assert r.paused is False
+        assert graph.has_interrupts is True
+        assert graph.interrupt_nodes == [review]
 
-    def test_pause_field(self):
-        info = PauseInfo(node_name="x", output_param="y", value=42)
-        r = RunResult(values={}, status=RunStatus.PAUSED, pause=info)
-        assert r.pause is info
+    def test_sync_runner_still_rejects_interrupts(self):
+        graph = Graph([InterruptNode(_review, answer_name="decision")])
 
-
-# ── Validation ──
-
-
-class TestInterruptValidation:
-    def test_sync_runner_rejects_interrupts(self):
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return query
-
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
-
-        graph = Graph([make_draft, approval])
-        runner = SyncRunner()
         with pytest.raises(IncompatibleRunnerError, match="InterruptNode"):
-            runner.run(graph, {"query": "hello"})
+            SyncRunner().run(graph, {"draft": "hello"})
 
-    def test_sync_map_rejects_interrupts(self):
-        # AsyncRunner.map() supports per-item pauses (tests/test_map_interrupt_items.py);
-        # SyncRunner cannot pause at all, so its map() must keep rejecting
-        # interrupt graphs via the capability check.
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return query
-
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
-
-        graph = Graph([make_draft, approval])
-        runner = SyncRunner()
-        with pytest.raises(IncompatibleRunnerError, match="InterruptNode"):
-            runner.map(graph, {"query": ["a", "b"]}, map_over="query")
-
-
-# ── AsyncRunner pause/resume ──
-
-
-class TestAsyncRunnerPause:
     @pytest.mark.asyncio
-    async def test_basic_pause(self):
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return f"Draft for: {query}"
+    async def test_async_handler_return_is_awaited_then_paused(self):
+        question = StringQuestion(prompt="Approve?")
 
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...  # returns None → pause
+        @interrupt(answer_name="decision")
+        async def review(draft: str) -> StringQuestion:
+            return question
 
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return f"Final: {decision}"
+        result = await AsyncRunner().run(Graph([review]), {"draft": "hello"})
 
-        graph = Graph([make_draft, approval, finalize])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
         assert result.status == RunStatus.PAUSED
-        assert result.paused is True
         assert result.pause is not None
-        assert result.pause.node_name == "approval"
-        assert result.pause.output_param == "decision"
-        assert result.pause.value == "Draft for: hello"
-        assert result.pause.response_key == "decision"
+        assert result.pause.value is question
 
     @pytest.mark.asyncio
-    async def test_resume_with_response(self):
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return f"Draft for: {query}"
+    async def test_none_question_is_a_loud_handler_bug(self):
+        @interrupt(answer_name="decision")
+        def review(draft: str) -> StringQuestion:
+            return None  # type: ignore[return-value]
 
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
-
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return f"Final: {decision}"
-
-        graph = Graph([make_draft, approval, finalize])
-        runner = AsyncRunner()
-
-        # First run: pauses
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.paused
-
-        # Resume with response
-        result = await runner.run(graph, {"query": "hello", result.pause.response_key: "approved"})
-        assert result.status == RunStatus.COMPLETED
-        assert result["result"] == "Final: approved"
+        with pytest.raises(RuntimeError, match="returned None.*question payload"):
+            await AsyncRunner().run(Graph([review]), {"draft": "hello"})
 
     @pytest.mark.asyncio
-    async def test_handler_auto_resolves(self):
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return f"Draft for: {query}"
-
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            return "auto-approved"
-
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return f"Final: {decision}"
-
-        graph = Graph([make_draft, approval, finalize])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.status == RunStatus.COMPLETED
-        assert result["result"] == "Final: auto-approved"
-
-    @pytest.mark.asyncio
-    async def test_async_handler_auto_resolves(self):
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return "draft"
-
-        @interrupt(output_name="decision")
-        async def approval(draft: str) -> str:
-            return "async-approved"
-
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return f"Final: {decision}"
-
-        graph = Graph([make_draft, approval, finalize])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.status == RunStatus.COMPLETED
-        assert result["result"] == "Final: async-approved"
-
-    @pytest.mark.asyncio
-    async def test_multiple_sequential_interrupts(self):
-        """Two interrupts in sequence: pauses at first, then second."""
-
-        @node(output_name="step1")
-        def produce(x: str) -> str:
-            return x
-
-        @interrupt(output_name="response1")
-        def interrupt1(step1: str) -> str: ...
-
-        @interrupt(output_name="response2")
-        def interrupt2(response1: str) -> str: ...
-
-        @node(output_name="result")
-        def final(response2: str) -> str:
-            return f"done: {response2}"
-
-        graph = Graph([produce, interrupt1, interrupt2, final])
-        runner = AsyncRunner()
-
-        # First pause
-        r1 = await runner.run(graph, {"x": "hello"})
-        assert r1.paused
-        assert r1.pause.node_name == "interrupt1"
-
-        # Resume first, pause at second
-        r2 = await runner.run(graph, {"x": "hello", "response1": "resp1"})
-        assert r2.paused
-        assert r2.pause.node_name == "interrupt2"
-        assert r2.pause.value == "resp1"
-
-        # Resume second
-        r3 = await runner.run(graph, {"x": "hello", "response1": "resp1", "response2": "resp2"})
-        assert r3.status == RunStatus.COMPLETED
-        assert r3["result"] == "done: resp2"
-
-
-class TestAsyncRunnerMultiParam:
-    """Tests for multi-input/output InterruptNode execution."""
-
-    @pytest.mark.asyncio
-    async def test_multi_input_pause(self):
-        """InterruptNode with multiple inputs receives all values in pause."""
-
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return f"Draft for: {query}"
-
-        @node(output_name="metadata")
-        def make_meta(query: str) -> dict:
-            return {"query": query}
-
-        @interrupt(output_name="decision")
-        def review(draft: str, metadata: dict) -> str: ...
-
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return f"Final: {decision}"
-
-        graph = Graph([make_draft, make_meta, review, finalize])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.paused
-        assert result.pause.node_name == "review"
-        assert result.pause.value == "Draft for: hello"  # first input
-        assert result.pause.values == {
-            "draft": "Draft for: hello",
-            "metadata": {"query": "hello"},
-        }
-
-    @pytest.mark.asyncio
-    async def test_multi_output_pause(self):
-        """InterruptNode with multiple outputs exposes all output keys."""
-
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return f"Draft for: {query}"
-
-        @interrupt(output_name=("decision", "notes"))
-        def review(draft: str) -> tuple[str, str]: ...
-
-        @node(output_name="result")
-        def finalize(decision: str, notes: str) -> str:
-            return f"{decision}: {notes}"
-
-        graph = Graph([make_draft, review, finalize])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.paused
-        assert result.pause.output_param == "decision"  # first output
-        assert result.pause.output_params == ("decision", "notes")
-        assert result.pause.response_keys == {
-            "decision": "decision",
-            "notes": "notes",
-        }
-
-    @pytest.mark.asyncio
-    async def test_multi_output_resume(self):
-        """Resuming multi-output interrupt with all values completes."""
-
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return f"Draft for: {query}"
-
-        @interrupt(output_name=("decision", "notes"))
-        def review(draft: str) -> tuple[str, str]: ...
-
-        @node(output_name="result")
-        def finalize(decision: str, notes: str) -> str:
-            return f"{decision}: {notes}"
-
-        graph = Graph([make_draft, review, finalize])
-        runner = AsyncRunner()
-
-        # Pause
-        r1 = await runner.run(graph, {"query": "hello"})
-        assert r1.paused
-
-        # Resume with all outputs
-        r2 = await runner.run(graph, {"query": "hello", "decision": "approved", "notes": "looks good"})
-        assert r2.status == RunStatus.COMPLETED
-        assert r2["result"] == "approved: looks good"
-
-    @pytest.mark.asyncio
-    async def test_multi_input_handler_receives_kwargs(self):
-        """Handler for multi-input InterruptNode receives kwargs."""
-        received = {}
-
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return "draft"
-
-        @node(output_name="metadata")
-        def make_meta(query: str) -> dict:
-            return {"key": "value"}
-
-        @interrupt(output_name="decision")
-        def review(draft: str, metadata: dict) -> str:
-            received["draft"] = draft
-            received["metadata"] = metadata
-            return "handled"
-
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return decision
-
-        graph = Graph([make_draft, make_meta, review, finalize])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.status == RunStatus.COMPLETED
-        assert received == {"draft": "draft", "metadata": {"key": "value"}}
-
-    @pytest.mark.asyncio
-    async def test_multi_output_handler_returns_dict(self):
-        """Handler for multi-output InterruptNode can return dict."""
-
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return "draft"
-
-        @interrupt(output_name=("decision", "notes"))
-        def review(draft: str) -> dict:
-            return {"decision": "approved", "notes": f"for: {draft}"}
-
-        @node(output_name="result")
-        def finalize(decision: str, notes: str) -> str:
-            return f"{decision}: {notes}"
-
-        graph = Graph([make_draft, review, finalize])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.status == RunStatus.COMPLETED
-        assert result["result"] == "approved: for: draft"
-
-    @pytest.mark.asyncio
-    async def test_multi_output_handler_single_value_goes_to_first(self):
-        """Handler returning single value for multi-output assigns to first."""
-
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return "draft"
-
-        @interrupt(output_name=("decision", "notes"))
-        def review(draft: str) -> str:
-            return "only_decision"
-
-        graph = Graph([make_draft, review])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.status == RunStatus.COMPLETED
-        assert result["decision"] == "only_decision"
-        assert "notes" not in result.values
-
-
-class TestHandlerFailure:
-    @pytest.mark.asyncio
-    async def test_handler_exception_wrapped_in_runtime_error(self):
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return "draft"
-
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
+    async def test_handler_failure_keeps_interrupt_context(self):
+        @interrupt(answer_name="decision")
+        def review(draft: str) -> StringQuestion:
             raise ValueError("handler broke")
 
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return decision
+        with pytest.raises(
+            RuntimeError,
+            match="Handler for InterruptNode 'review' failed: ValueError: handler broke",
+        ):
+            await AsyncRunner().run(Graph([review]), {"draft": "hello"})
 
-        graph = Graph([make_draft, approval, finalize])
-        runner = AsyncRunner()
-
-        with pytest.raises(RuntimeError, match="handler broke"):
-            await runner.run(graph, {"query": "hello"})
-
-
-class TestNestedInterruptPropagation:
     @pytest.mark.asyncio
-    async def test_nested_graph_pause_propagation(self):
-        """InterruptNode in nested graph propagates with prefixed node_name."""
+    async def test_nested_pause_projects_response_key_and_preserves_question(self):
+        question = StringQuestion(prompt="Approve?")
 
-        @interrupt(output_name="y")
-        def approval(x: str) -> str: ...
-
-        inner = Graph([approval], name="inner")
-
-        @node(output_name="x")
-        def produce(query: str) -> str:
-            return query
+        @interrupt(answer_name="decision")
+        def review(draft: str) -> StringQuestion:
+            return question
 
         @node(output_name="result")
-        def consume(y: str) -> str:
-            return f"got: {y}"
+        def publish(verdict: str) -> str:
+            return f"published:{verdict}"
 
-        outer = Graph([produce, inner.as_node(), consume])
+        inner = Graph([review], name="inner")
+        outer = Graph([inner.as_node().rename_outputs(decision="verdict"), publish])
         runner = AsyncRunner()
 
-        result = await runner.run(outer, {"query": "hello"})
-        assert result.paused
-        assert result.pause.node_name == "inner/approval"
-        assert result.pause.response_key == "y"
-        assert result.pause.value == "hello"
-
-
-# ── InterruptNode in cycles ──
-
-
-class TestInterruptNodeInCycle:
-    """InterruptNode inside a cycle should pause on every iteration."""
-
-    def test_interrupt_output_not_classified_as_seed(self):
-        """Interrupt output in a cycle should NOT be a seed input."""
-
-        @interrupt(output_name="query")
-        def ask_user(messages: list) -> str: ...
-
-        @node(output_name="response")
-        def process(query: str) -> str:
-            return f"response to {query}"
-
-        @node(output_name="messages")
-        def accumulate(messages: list, response: str) -> list:
-            return messages + [response]
-
-        @route(targets=["ask_user", END])
-        def decide(messages: list) -> str:
-            return END if len(messages) > 2 else "ask_user"
-
-        graph = Graph([ask_user, process, accumulate, decide], entrypoint="ask_user")
-        assert "query" not in graph.inputs.required
-        assert "query" not in graph.inputs.optional
-        assert "messages" in graph.inputs.required
-
-    @pytest.mark.asyncio
-    async def test_cycle_interrupt_pauses_first_run(self):
-        """First run with no query should pause at the interrupt."""
-
-        @interrupt(output_name="query")
-        def ask_user(messages: list) -> str: ...
-
-        @node(output_name="response")
-        def process(query: str) -> str:
-            return f"response to {query}"
-
-        @node(output_name="messages")
-        def accumulate(messages: list, response: str) -> list:
-            return messages + [response]
-
-        @route(targets=["ask_user", END])
-        def decide(messages: list) -> str:
-            return END if len(messages) > 2 else "ask_user"
-
-        graph = Graph([ask_user, process, accumulate, decide], entrypoint="ask_user")
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"messages": []})
-        assert result.paused
-        assert result.pause.node_name == "ask_user"
-        assert result.pause.value == []
-
-    @pytest.mark.asyncio
-    async def test_cycle_interrupt_resumes_then_pauses_again(self):
-        """Resuming with a query should process it, then pause again on next iteration."""
-
-        @interrupt(output_name="query")
-        def ask_user(messages: list) -> str: ...
-
-        @node(output_name="response")
-        def process(query: str) -> str:
-            return f"response to {query}"
-
-        @node(output_name="messages")
-        def accumulate(messages: list, response: str) -> list:
-            return messages + [response]
-
-        @route(targets=["ask_user", END])
-        def decide(messages: list) -> str:
-            return END if len(messages) > 2 else "ask_user"
-
-        graph = Graph([ask_user, process, accumulate, decide], entrypoint="ask_user")
-        runner = AsyncRunner()
-
-        # Run 1: pause immediately
-        r1 = await runner.run(graph, {"messages": []})
-        assert r1.paused
-
-        # Run 2: provide query -> processes -> loops -> pauses again
-        r2 = await runner.run(graph, {"messages": [], "query": "What is RAG?"})
-        assert r2.paused
-        assert r2.pause.node_name == "ask_user"
-        # Messages now contain the response from first query
-        assert r2.pause.value == ["response to What is RAG?"]
-
-    @pytest.mark.asyncio
-    async def test_cycle_interrupt_completes_after_enough_messages(self):
-        """Cycle should complete when decide returns END."""
-
-        @interrupt(output_name="query")
-        def ask_user(messages: list) -> str: ...
-
-        @node(output_name="response")
-        def process(query: str) -> str:
-            return f"response to {query}"
-
-        @node(output_name="messages")
-        def accumulate(messages: list, response: str) -> list:
-            return messages + [response]
-
-        @route(targets=["ask_user", END])
-        def decide(messages: list) -> str:
-            return END if len(messages) >= 1 else "ask_user"
-
-        graph = Graph([ask_user, process, accumulate, decide], entrypoint="ask_user")
-        runner = AsyncRunner()
-
-        # Provide query, process completes, decide returns END
-        result = await runner.run(graph, {"messages": [], "query": "hello"})
-        assert result.status == RunStatus.COMPLETED
-        assert result["messages"] == ["response to hello"]
-
-    @pytest.mark.asyncio
-    async def test_nested_interrupt_resumes_and_accumulates(self):
-        """Nested interrupt inside a cycle: resume value routes through the GraphNode.
-
-        Mirrors the notebook pattern: ask(interrupt + accumulate) -> llm(process +
-        accumulate) -> decide -> ask.  Two nested subgraphs with the route AFTER
-        processing so the gate sees fully-updated messages.
-        """
-
-        @interrupt(output_name="query")
-        def ask_user(messages: list) -> str: ...
-
-        @node(output_name="messages")
-        def add_query(messages: list, query: str) -> list:
-            return [*messages, f"q: {query}"]
-
-        @node(output_name="response")
-        def process(messages: list, query: str) -> str:
-            return f"answer to {query}"
-
-        @node(output_name="messages")
-        def add_response(messages: list, response: str) -> list:
-            return [*messages, f"a: {response}"]
-
-        @route(targets=["ask", END])
-        def decide(messages: list) -> str:
-            return END if sum(1 for m in messages if m.startswith("a: ")) >= 2 else "ask"
-
-        ask_node = Graph([ask_user, add_query], edges=[(ask_user, add_query)], name="ask").as_node()
-        llm_node = Graph([process, add_response], edges=[(process, add_response)], name="llm").as_node()
-
-        graph = Graph(
-            [ask_node, llm_node, decide],
-            edges=[
-                (ask_node, llm_node),
-                (llm_node, decide),
-                (llm_node, ask_node),  # data back-edge (carries messages)
-                (decide, ask_node),  # control edge (routing)
-            ],
-            entrypoint="ask",
-        )
-        runner = AsyncRunner()
-
-        # Run 1: pauses at nested interrupt
-        r1 = await runner.run(graph, {"messages": []})
-        assert r1.paused
-        assert r1.pause.node_name == "ask/ask_user"
-        assert r1.pause.response_key == "query"
-
-        # Run 2: resume with query — cycle processes it, pauses again with updated messages
-        r2 = await runner.run(
-            graph,
-            {"messages": r1.pause.value, r1.pause.response_key: "What is RAG?"},
-        )
-        assert r2.paused
-        assert r2.pause.node_name == "ask/ask_user"
-        # Messages accumulated through the full cycle
-        assert r2.pause.value == ["q: What is RAG?", "a: answer to What is RAG?"]
-
-        # Run 3: resume again — cycle completes (2 answers >= 2)
-        r3 = await runner.run(
-            graph,
-            {"messages": r2.pause.value, r2.pause.response_key: "What is LLM?"},
-        )
-        assert r3.status == RunStatus.COMPLETED
-        assert r3["messages"] == [
-            "q: What is RAG?",
-            "a: answer to What is RAG?",
-            "q: What is LLM?",
-            "a: answer to What is LLM?",
-        ]
-
-
-# ── @interrupt decorator ──
-
-
-class TestInterruptDecorator:
-    """Tests for the @interrupt decorator."""
-
-    def test_basic_construction(self):
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            return "approved"
-
-        assert isinstance(approval, InterruptNode)
-        assert approval.name == "approval"
-        assert approval.inputs == ("draft",)
-        assert approval.outputs == ("decision",)
-
-    def test_func_accessible(self):
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            return "approved"
-
-        assert approval.func is not None
-        assert approval.func("anything") == "approved"
-
-    def test_callable_directly(self):
-        """InterruptNode created via decorator is callable for testing."""
-
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            return "approved"
-
-        assert approval("test") == "approved"
-
-    def test_ellipsis_body_returns_none(self):
-        """Function with ... body returns None → pause."""
-
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
-
-        assert approval("test") is None
-
-    def test_multi_input(self):
-        @interrupt(output_name="decision")
-        def review(draft: str, metadata: dict) -> str:
-            return "ok"
-
-        assert review.inputs == ("draft", "metadata")
-        assert len(review.inputs) > 1
-
-    def test_multi_output(self):
-        @interrupt(output_name=("decision", "notes"))
-        def review(draft: str) -> tuple[str, str]:
-            return ("approved", "looks good")
-
-        assert review.outputs == ("decision", "notes")
-        assert len(review.data_outputs) > 1
-
-    def test_type_inference_from_annotations(self):
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> bool: ...
-
-        assert approval.get_input_type("draft") is str
-        assert approval.get_output_type("decision") is bool
-
-    def test_defaults_from_signature(self):
-        @interrupt(output_name="decision")
-        def approval(draft: str, threshold: float = 0.8) -> str: ...
-
-        assert approval.has_default_for("threshold") is True
-        assert approval.get_default_for("threshold") == 0.8
-        assert approval.has_default_for("draft") is False
-
-    def test_decorator_rename_inputs(self):
-        @interrupt(output_name="decision", rename_inputs={"draft": "document"})
-        def approval(draft: str) -> str:
-            return "ok"
-
-        assert approval.inputs == ("document",)
-        assert approval.get_input_type("document") is str
-
-    def test_with_name(self):
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
-
-        renamed = approval.with_name("review_step")
-        assert renamed.name == "review_step"
-        assert approval.name == "approval"  # original unchanged
-
-    def test_rename_inputs(self):
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
-
-        renamed = approval.rename_inputs(draft="document")
-        assert renamed.inputs == ("document",)
-
-    def test_rename_outputs(self):
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
-
-        renamed = approval.rename_outputs(decision="verdict")
-        assert renamed.outputs == ("verdict",)
-
-    def test_definition_hash_changes_with_code(self):
-        @interrupt(output_name="a")
-        def v1(x: str) -> str:
-            return "one"
-
-        @interrupt(output_name="a")
-        def v2(x: str) -> str:
-            return "two"
-
-        # Different function bodies → different hashes
-        assert v1.definition_hash != v2.definition_hash
-
-    def test_cache_default_false(self):
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
-
-        assert approval.cache is False
-
-    def test_cache_configurable_via_decorator(self):
-        @interrupt(output_name="decision", cache=True)
-        def approval(draft: str) -> str: ...
-
-        assert approval.cache is True
-
-    def test_repr(self):
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
-
-        assert "InterruptNode" in repr(approval)
-        assert "approval" in repr(approval)
-
-
-class TestInterruptDecoratorExecution:
-    """Tests for @interrupt decorator in graph execution."""
-
-    @pytest.mark.asyncio
-    async def test_auto_resolve(self):
-        """Decorator handler that returns a value auto-resolves."""
-
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return f"Draft for: {query}"
-
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            return "auto-approved"
-
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return f"Final: {decision}"
-
-        graph = Graph([make_draft, approval, finalize])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.status == RunStatus.COMPLETED
-        assert result["result"] == "Final: auto-approved"
-
-    @pytest.mark.asyncio
-    async def test_pause_on_none_return(self):
-        """Decorator handler that returns None pauses."""
-
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return f"Draft for: {query}"
-
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...  # returns None → pause
-
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return f"Final: {decision}"
-
-        graph = Graph([make_draft, approval, finalize])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.paused
-        assert result.pause.node_name == "approval"
-        assert result.pause.value == "Draft for: hello"
-
-    @pytest.mark.asyncio
-    async def test_pause_then_resume(self):
-        """Pause at decorator node, then resume with user value."""
-
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return f"Draft for: {query}"
-
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
-
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return f"Final: {decision}"
-
-        graph = Graph([make_draft, approval, finalize])
-        runner = AsyncRunner()
-
-        r1 = await runner.run(graph, {"query": "hello"})
-        assert r1.paused
-
-        r2 = await runner.run(graph, {"query": "hello", r1.pause.response_key: "user-approved"})
-        assert r2.status == RunStatus.COMPLETED
-        assert r2["result"] == "Final: user-approved"
-
-    @pytest.mark.asyncio
-    async def test_conditional_handler(self):
-        """Handler that conditionally returns or pauses."""
-
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return query
-
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str | None:
-            if "LGTM" in draft:
-                return "auto-approved"
-            return None  # pause for human review
-
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return f"Final: {decision}"
-
-        graph = Graph([make_draft, approval, finalize])
-        runner = AsyncRunner()
-
-        # "LGTM" → auto-resolves
-        r1 = await runner.run(graph, {"query": "LGTM looks great"})
-        assert r1.status == RunStatus.COMPLETED
-        assert r1["result"] == "Final: auto-approved"
-
-        # No "LGTM" → pauses
-        r2 = await runner.run(graph, {"query": "needs work"})
-        assert r2.paused
-
-    @pytest.mark.asyncio
-    async def test_async_handler(self):
-        """Async decorator handler."""
-
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return "draft"
-
-        @interrupt(output_name="decision")
-        async def approval(draft: str) -> str:
-            return "async-approved"
-
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return f"Final: {decision}"
-
-        graph = Graph([make_draft, approval, finalize])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.status == RunStatus.COMPLETED
-        assert result["result"] == "Final: async-approved"
-
-    @pytest.mark.asyncio
-    async def test_multi_input_kwargs(self):
-        """Decorator handler with multiple inputs receives kwargs."""
-
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return "the draft"
-
-        @node(output_name="metadata")
-        def make_meta(query: str) -> dict:
-            return {"author": "test"}
-
-        @interrupt(output_name="decision")
-        def review(draft: str, metadata: dict) -> str:
-            return f"reviewed:{draft}:{metadata['author']}"
-
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return decision
-
-        graph = Graph([make_draft, make_meta, review, finalize])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.status == RunStatus.COMPLETED
-        assert result["result"] == "reviewed:the draft:test"
-
-    @pytest.mark.asyncio
-    async def test_multi_output_dict_return(self):
-        """Decorator handler returning dict for multi-output."""
-
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return "draft"
-
-        @interrupt(output_name=("decision", "notes"))
-        def review(draft: str) -> dict:
-            return {"decision": "approved", "notes": f"for: {draft}"}
-
-        @node(output_name="result")
-        def finalize(decision: str, notes: str) -> str:
-            return f"{decision}: {notes}"
-
-        graph = Graph([make_draft, review, finalize])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.status == RunStatus.COMPLETED
-        assert result["result"] == "approved: for: draft"
-
-    @pytest.mark.asyncio
-    async def test_rename_inputs_in_execution(self):
-        """Renamed inputs work correctly during execution."""
-
-        @node(output_name="document")
-        def produce(query: str) -> str:
-            return "the doc"
-
-        @interrupt(output_name="decision", rename_inputs={"draft": "document"})
-        def approval(draft: str) -> str:
-            return f"approved:{draft}"
-
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return decision
-
-        graph = Graph([produce, approval, finalize])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.status == RunStatus.COMPLETED
-        assert result["result"] == "approved:the doc"
-
-    @pytest.mark.asyncio
-    async def test_defaults_in_execution(self):
-        """Function defaults work as node defaults in graph execution."""
-
-        @interrupt(output_name="decision")
-        def approval(draft: str, mode: str = "auto") -> str:
-            return f"{mode}:{draft}"
-
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return "the draft"
-
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return decision
-
-        graph = Graph([make_draft, approval, finalize])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.status == RunStatus.COMPLETED
-        assert result["result"] == "auto:the draft"
-
-    @pytest.mark.asyncio
-    async def test_nested_graph_decorator_interrupt(self):
-        """Decorator interrupt in nested graph propagates with prefix."""
-
-        @interrupt(output_name="decision")
-        def approval(x: str) -> str: ...
-
-        inner = Graph([approval], name="inner")
-
-        @node(output_name="x")
-        def produce(query: str) -> str:
-            return query
-
-        @node(output_name="result")
-        def consume(decision: str) -> str:
-            return f"got: {decision}"
-
-        outer = Graph([produce, inner.as_node(), consume])
-        runner = AsyncRunner()
-
-        result = await runner.run(outer, {"query": "hello"})
-        assert result.paused
-        assert result.pause.node_name == "inner/approval"
-        assert result.pause.response_key == "decision"
-
-    @pytest.mark.asyncio
-    async def test_nested_graph_interrupt_respects_graphnode_output_rename(self):
-        """Nested interrupt response keys should use renamed GraphNode outputs."""
-
-        @interrupt(output_name="decision")
-        def approval(x: str) -> str: ...
-
-        inner = Graph([approval], name="inner")
-
-        @node(output_name="x")
-        def produce(query: str) -> str:
-            return query
-
-        @node(output_name="result")
-        def consume(verdict: str) -> str:
-            return f"got: {verdict}"
-
-        outer = Graph([produce, inner.as_node().rename_outputs(decision="verdict"), consume])
-        runner = AsyncRunner()
-
-        paused = await runner.run(outer, {"query": "hello"})
-        assert paused.paused
-        assert paused.pause.node_name == "inner/approval"
+        paused = await runner.run(outer, {"draft": "hello"})
+
+        assert paused.pause is not None
+        assert paused.pause.node_name == "inner/review"
+        assert paused.pause.value is question
         assert paused.pause.response_key == "verdict"
 
-        resumed = await runner.run(outer, {"query": "hello", paused.pause.response_key: "approved"})
-        assert resumed.status == RunStatus.COMPLETED
-        assert resumed["result"] == "got: approved"
-
-    @pytest.mark.asyncio
-    async def test_paused_nested_interrupt_is_visible_in_run_log(self):
-        """Paused nested runs should include the interrupt node in the RunLog."""
-
-        @interrupt(output_name="decision")
-        def approval(x: str) -> str: ...
-
-        inner = Graph([approval], name="inner")
-
-        @node(output_name="x")
-        def produce(query: str) -> str:
-            return query
-
-        outer = Graph([produce, inner.as_node()], name="outer")
-        runner = AsyncRunner()
-
-        paused = await runner.run(outer, {"query": "hello"})
-        assert paused.paused
-        assert paused.log is not None
-        assert [step.node_name for step in paused.log.steps] == ["produce", "inner/approval"]
-        assert paused.log.steps[-1].status == "paused"
-
-
-# ── FunctionNode-like constructor + emit/wait_for ──
-
-
-class TestInterruptNodeFunctionStyleConstructor:
-    """Tests for the FunctionNode-like InterruptNode constructor."""
-
-    def test_constructor_with_source_func(self):
-        """InterruptNode(source=func, output_name=...) like FunctionNode."""
-
-        def approval(draft: str) -> str:
-            return "approved"
-
-        n = InterruptNode(approval, output_name="decision")
-        assert n.name == "approval"
-        assert n.inputs == ("draft",)
-        assert n.outputs == ("decision",)
-        assert n.func is approval
-
-    def test_constructor_with_explicit_name(self):
-        def approval(draft: str) -> str:
-            return "approved"
-
-        n = InterruptNode(approval, name="review", output_name="decision")
-        assert n.name == "review"
-
-    def test_constructor_rename_inputs(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        n = InterruptNode(approval, output_name="decision", rename_inputs={"draft": "document"})
-        assert n.inputs == ("document",)
-        assert n.get_input_type("document") is str
-
-    def test_constructor_defaults_from_signature(self):
-        def approval(draft: str, mode: str = "auto") -> str:
-            return "ok"
-
-        n = InterruptNode(approval, output_name="decision")
-        assert n.has_default_for("mode") is True
-        assert n.get_default_for("mode") == "auto"
-        assert n.has_default_for("draft") is False
-
-    def test_constructor_type_annotations(self):
-        def approval(draft: str, score: float) -> bool:
-            return True
-
-        n = InterruptNode(approval, output_name="decision")
-        assert n.get_input_type("draft") is str
-        assert n.get_input_type("score") is float
-        assert n.get_output_type("decision") is bool
-
-    def test_constructor_definition_hash_from_source(self):
-        def approval(draft: str) -> str:
-            return "v1"
-
-        def approval2(draft: str) -> str:
-            return "v2"
-
-        n1 = InterruptNode(approval, output_name="decision")
-        n2 = InterruptNode(approval2, output_name="decision")
-        assert n1.definition_hash != n2.definition_hash
-
-    def test_constructor_callable(self):
-        """InterruptNode created via constructor is callable."""
-
-        def approval(draft: str) -> str:
-            return "yes"
-
-        n = InterruptNode(approval, output_name="decision")
-        assert n("test") == "yes"
-
-    def test_constructor_map_inputs_to_params(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        n = InterruptNode(approval, output_name="decision", rename_inputs={"draft": "document"})
-        mapped = n.map_inputs_to_params({"document": "text"})
-        assert mapped == {"draft": "text"}
-
-
-class TestInterruptNodeEmitWaitFor:
-    """Tests for emit/wait_for support on InterruptNode."""
-
-    def test_emit_support(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        n = InterruptNode(approval, output_name="decision", emit="approved_signal")
-        assert "approved_signal" in n.outputs
-        assert "decision" in n.outputs
-
-    def test_wait_for_support(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        n = InterruptNode(approval, output_name="decision", wait_for="ready_signal")
-        assert n.wait_for == ("ready_signal",)
-
-    def test_data_outputs_excludes_emit(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        n = InterruptNode(approval, output_name="decision", emit="done")
-        assert n.data_outputs == ("decision",)
-        assert n.outputs == ("decision", "done")
-
-    def test_emit_wait_for_validation_overlap_with_output(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        with pytest.raises(ValueError, match="emit names overlap"):
-            InterruptNode(approval, output_name="decision", emit="decision")
-
-    def test_emit_wait_for_validation_overlap_with_input(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        with pytest.raises(ValueError, match="wait_for names overlap"):
-            InterruptNode(approval, output_name="decision", wait_for="draft")
-
-    def test_emit_wait_for_validation_overlap_each_other(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        with pytest.raises(ValueError, match="emit and wait_for share"):
-            InterruptNode(approval, output_name="decision", emit="sig", wait_for="sig")
-
-    def test_decorator_with_emit(self):
-        @interrupt(output_name="decision", emit="approved_done")
-        def approval(draft: str) -> str:
-            return "ok"
-
-        assert "approved_done" in approval.outputs
-        assert approval.data_outputs == ("decision",)
-
-    def test_decorator_with_wait_for(self):
-        @interrupt(output_name="decision", wait_for="ready")
-        def approval(draft: str) -> str:
-            return "ok"
-
-        assert approval.wait_for == ("ready",)
-
-    @pytest.mark.asyncio
-    async def test_emit_produces_sentinel_in_execution(self):
-        """emit output produces sentinel value during execution."""
-
-        @node(output_name="draft")
-        def make_draft(query: str) -> str:
-            return "draft"
-
-        @interrupt(output_name="decision", emit="approval_done")
-        def approval(draft: str) -> str:
-            return "approved"
-
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return f"Final: {decision}"
-
-        graph = Graph([make_draft, approval, finalize])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.status == RunStatus.COMPLETED
-        assert result["result"] == "Final: approved"
-        # approval_done sentinel should be filtered from final output
-        assert "approval_done" not in result.values
-
-    @pytest.mark.asyncio
-    async def test_wait_for_ordering_in_graph(self):
-        """InterruptNode with wait_for respects ordering in a graph."""
-
-        @node(output_name="draft", emit="draft_ready")
-        def make_draft(query: str) -> str:
-            return f"Draft: {query}"
-
-        @interrupt(output_name="decision", wait_for="draft_ready")
-        def approval(draft: str) -> str:
-            return "approved"
-
-        @node(output_name="result")
-        def finalize(decision: str) -> str:
-            return f"Final: {decision}"
-
-        # Should build without error — wait_for creates ordering edge
-        graph = Graph([make_draft, approval, finalize])
-        runner = AsyncRunner()
-
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.status == RunStatus.COMPLETED
-
-
-class TestInterruptNodeAsyncAndGenerator:
-    """Tests for is_async and is_generator detection."""
-
-    def test_sync_handler(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        n = InterruptNode(approval, output_name="decision")
-        assert n.is_async is False
-        assert n.is_generator is False
-
-    def test_async_handler_detected(self):
-        async def approval(draft: str) -> str:
-            return "ok"
-
-        n = InterruptNode(approval, output_name="decision")
-        assert n.is_async is True
-
-    def test_generator_handler_detected(self):
-        def approval(draft: str):
-            yield "ok"
-
-        n = InterruptNode(approval, output_name="decision")
-        assert n.is_generator is True
-
-
-class TestInterruptNodeHide:
-    """Tests for hide support on InterruptNode."""
-
-    def test_hide_default_false(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        n = InterruptNode(approval, output_name="decision")
-        assert n.hide is False
-
-    def test_hide_true(self):
-        def approval(draft: str) -> str:
-            return "ok"
-
-        n = InterruptNode(approval, output_name="decision", hide=True)
-        assert n.hide is True
-
-    def test_decorator_with_hide(self):
-        @interrupt(output_name="decision", hide=True)
-        def approval(draft: str) -> str:
-            return "ok"
-
-        assert approval.hide is True
-
-
-class TestInterruptNodeStrictTypes:
-    """Tests for strict_types compatibility with InterruptNode."""
-
-    def test_strict_types_with_func_constructor(self):
-        """Type checking works when InterruptNode is created with source func."""
-
-        @node(output_name="draft")
-        def produce() -> str:
-            return "draft"
-
-        def approval(draft: str) -> bool:
-            return True
-
-        consumer_node = InterruptNode(approval, output_name="decision")
-
-        # Should pass type check: str -> str
-        graph = Graph([produce, consumer_node], strict_types=True)
-        assert graph is not None
-
-    def test_strict_types_mismatch_with_func_constructor(self):
-        """Type mismatch caught when InterruptNode has source func."""
-        from hypergraph import GraphConfigError
-
-        @node(output_name="value")
-        def produce() -> int:
-            return 42
-
-        def approval(value: str) -> bool:  # expects str, gets int
-            return True
-
-        consumer_node = InterruptNode(approval, output_name="decision")
-
-        with pytest.raises(GraphConfigError, match=r"[Tt]ype mismatch"):
-            Graph([produce, consumer_node], strict_types=True)
+        resumed = await runner.run(
+            outer,
+            {"draft": "hello", paused.pause.response_key: "yes"},
+        )
+        assert resumed["result"] == "published:yes"

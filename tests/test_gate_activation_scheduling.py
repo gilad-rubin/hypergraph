@@ -12,13 +12,14 @@ from hypergraph.runners._shared import readiness as readiness_module
 from hypergraph.runners._shared.readiness import gate_permits_startup, get_ready_nodes
 from hypergraph.runners._shared.scheduling import compute_execution_scope
 from hypergraph.runners._shared.state import GraphState, NodeExecution
+from tests._interrupt_questions import StringQuestion
 
 # --- Fixtures ---
 
 
-@interrupt(output_name="user_input")
-def wait_for_user() -> None:
-    return None
+@interrupt(answer_name="user_input")
+def wait_for_user() -> StringQuestion:
+    return StringQuestion(prompt="What should the user say?")
 
 
 @node(output_name="messages")

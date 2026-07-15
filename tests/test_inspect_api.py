@@ -22,6 +22,7 @@ from hypergraph import (
     node,
 )
 from hypergraph.checkpointers import MemoryCheckpointer, SqliteCheckpointer
+from tests._interrupt_questions import StringQuestion
 
 
 def _result_copy_graph() -> Graph:
@@ -903,9 +904,9 @@ async def test_async_inspection_marks_the_interrupt_boundary_paused() -> None:
     async def prepare(value: int) -> str:
         return f"draft:{value}"
 
-    @interrupt(output_name="decision")
-    def review(draft: str) -> str | None:
-        return None
+    @interrupt(answer_name="decision")
+    def review(draft: str) -> StringQuestion:
+        return StringQuestion(prompt="Review?", evidence=(draft,))
 
     result = await AsyncRunner().run(
         Graph([prepare, review], name="pause-inspection"),
@@ -927,9 +928,9 @@ async def test_async_inspection_marks_the_interrupt_boundary_paused() -> None:
 
 @pytest.mark.asyncio
 async def test_async_nested_interrupt_marks_container_and_leaf_paused() -> None:
-    @interrupt(output_name="decision")
-    def review(value: int) -> str | None:
-        return None
+    @interrupt(answer_name="decision")
+    def review(value: int) -> StringQuestion:
+        return StringQuestion(prompt="Review?", evidence=(value,))
 
     inner = Graph([review], name="inner-pause")
     outer = Graph([inner.as_node(name="child")], name="outer-pause")
@@ -958,9 +959,9 @@ async def test_async_resume_inspection_separates_restored_metadata_from_fresh_va
     async def remember_secret(value: int) -> str:
         return restored_only_sentinel
 
-    @interrupt(output_name="decision")
-    def review(draft: str) -> str | None:
-        return None
+    @interrupt(answer_name="decision")
+    def review(draft: str) -> StringQuestion:
+        return StringQuestion(prompt="Review?", evidence=(draft,))
 
     @node(output_name="final")
     async def finalize(decision: str) -> str:

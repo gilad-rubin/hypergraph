@@ -855,7 +855,7 @@ class TestFunctionSignatures:
 
         with pytest.raises(TypeError, match="kwargs"):
 
-            @interrupt(output_name="decision")
+            @interrupt(answer_name="decision")
             def approval(**kwargs):
                 return None
 

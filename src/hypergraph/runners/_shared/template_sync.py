@@ -680,7 +680,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                             node_name=pause.pause_info.node_name,
                             graph_name=graph.name,
                             value=pause.pause_info.value,
-                            response_param=pause.pause_info.output_param,
+                            response_param=pause.pause_info.response_key,
                         )
                     )
                     self._emit_run_end_sync(

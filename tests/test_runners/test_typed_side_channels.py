@@ -176,7 +176,7 @@ class TestAsyncSuperstepControlFlowPriority:
             )
 
     async def test_pause_dominates_earlier_ordinary_exception(self):
-        pause = PauseExecution(PauseInfo(node_name="approval", output_param="decision", value="draft"))
+        pause = PauseExecution(PauseInfo(node_name="approval", value="draft", response_key="decision"))
 
         @node(output_name="ordinary_out")
         async def ordinary_failure(x: int) -> int:
@@ -701,7 +701,7 @@ class TestGraphStateStopFields:
 
 class TestPauseExecutionTypedFields:
     def _pause_info(self) -> PauseInfo:
-        return PauseInfo(node_name="approval", output_param="decision", value="draft")
+        return PauseInfo(node_name="approval", value="draft", response_key="decision")
 
     def test_defaults(self):
         pause = PauseExecution(self._pause_info())

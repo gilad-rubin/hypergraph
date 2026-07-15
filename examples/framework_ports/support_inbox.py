@@ -7,6 +7,9 @@ Restate examples while staying idiomatic Hypergraph.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import ClassVar
+
 from hypergraph import AsyncRunner, Graph, interrupt, node, route
 
 
@@ -53,11 +56,37 @@ def search_release_notes(ticket: dict, release_notes: list[str]) -> list[str]:
     return [entry for entry in release_notes if any(word in entry.lower() for word in issue.split())][:2]
 
 
-@interrupt(output_name="developer_reply")
-def request_developer_review(ticket: dict, release_note_hits: list[str]) -> str | None:
-    if ticket["priority"] != "critical":
-        return "No manual escalation required."
-    return None
+@dataclass(frozen=True)
+class DeveloperReplyQuestion:
+    """Test/example stand-in for the companion question vocabulary."""
+
+    answer_type: ClassVar[object] = str
+    prompt: str
+    options: tuple[str, ...] | None = None
+    evidence: tuple[object, ...] = ()
+
+
+@route(targets=["request_developer_review", "skip_developer_review"])
+def developer_review_policy(ticket: dict) -> str:
+    if ticket["priority"] == "critical":
+        return "request_developer_review"
+    return "skip_developer_review"
+
+
+@interrupt(answer_name="developer_reply")
+def request_developer_review(
+    ticket: dict,
+    release_note_hits: list[str],
+) -> DeveloperReplyQuestion:
+    return DeveloperReplyQuestion(
+        prompt=f"How should support answer critical ticket {ticket['id']}?",
+        evidence=tuple(release_note_hits),
+    )
+
+
+@node(output_name="developer_reply")
+def skip_developer_review(ticket: dict) -> str:
+    return "No manual escalation required."
 
 
 @node(output_name="resolution")
@@ -69,7 +98,9 @@ def compose_technical_reply(ticket: dict, release_note_hits: list[str], develope
 technical_support_graph = Graph(
     [
         search_release_notes,
+        developer_review_policy,
         request_developer_review,
+        skip_developer_review,
         compose_technical_reply,
     ],
     name="technical_support",

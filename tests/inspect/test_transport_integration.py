@@ -19,6 +19,7 @@ from hypergraph.checkpointers.types import StepRecord, StepStatus, WorkflowStatu
 from hypergraph.runners._shared import _inspect_transport
 from hypergraph.runners._shared._inspect import MapInspection, RunInspection
 from hypergraph.runners._shared.input_normalization import runner_option_names
+from tests._interrupt_questions import StringQuestion
 
 
 class _RecordingTransport:
@@ -2056,9 +2057,9 @@ async def test_async_shutdown_failure_never_publishes_completed_terminal(
 async def test_async_pause_shutdown_failure_never_publishes_paused_terminal(
     factory: _FactoryRecorder,
 ) -> None:
-    @interrupt(output_name="decision")
-    def review(value: int) -> str | None:
-        return None
+    @interrupt(answer_name="decision")
+    def review(value: int) -> StringQuestion:
+        return StringQuestion(prompt="Review?", evidence=(value,))
 
     error = RuntimeError("ASYNC-PAUSE-SHUTDOWN-BOOM")
     with pytest.raises(RuntimeError) as raised:

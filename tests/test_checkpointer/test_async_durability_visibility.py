@@ -18,6 +18,7 @@ from hypergraph.checkpointers.base import CheckpointPolicy
 from hypergraph.checkpointers.types import StepRecord
 from hypergraph.exceptions import IncompatibleRunnerError
 from hypergraph.runners._shared.node_context import NodeContext
+from tests._interrupt_questions import StringQuestion
 
 
 @node(output_name="doubled")
@@ -216,8 +217,9 @@ class TestNestedAsyncDurabilityBestEffort:
         )
 
     async def test_nested_pause_surfaces_child_failure(self):
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str: ...
+        @interrupt(answer_name="decision")
+        def approval(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve?", evidence=(draft,))
 
         checkpointer = ChildOnlyFailingSaveCheckpointer()
         runner = AsyncRunner(checkpointer=checkpointer)

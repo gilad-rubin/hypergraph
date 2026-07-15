@@ -49,13 +49,15 @@ Both rules are **disabled for gate-controlled nodes** — gates explicitly drive
 
 ## Interrupt Lifecycle
 
-InterruptNode execution has three paths:
+InterruptNode execution has two paths and one loud error:
 
-1. **Resume path** (`is_resuming=True` + all outputs in `provided_values`): auto-resolve from provided values, pop consumed keys
-2. **Handler path** (function returns non-None): normalize response to output dict
-3. **Pause path** (function returns None): raise `PauseExecution` with `PauseInfo`
+1. **Answer-supplied path** (`is_resuming=True` + the answer port in `provided_values`): pass the answer through as the node output and pop the consumed key
+2. **Question path**: call the handler, validate its structural question payload, and raise `PauseExecution` with `PauseInfo(value=question, response_key=answer_name)`
+3. **Invalid question**: a `None` return or malformed payload raises loudly; handler returns never become dataflow outputs
 
-The `is_resuming` flag prevents false auto-resolve on fresh runs when provided_values happen to match interrupt output names.
+With a checkpointer, `is_resuming` prevents fresh-run values from masquerading
+as a resume payload. Without a checkpointer it is intentionally true so an
+answer supplied up front supports headless/CSV/batch execution.
 
 ## Resume Payload State
 

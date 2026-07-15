@@ -11,6 +11,7 @@ from hypergraph import AsyncRunner, Graph, InterruptNode, node
 from hypergraph.checkpointers import MemoryCheckpointer
 from hypergraph.checkpointers.types import StepStatus
 from hypergraph.runners._shared.scheduling import plan_interrupt_batch
+from tests._interrupt_questions import StringQuestion
 
 
 @node(output_name="side_out")
@@ -23,12 +24,12 @@ def other(x: int) -> int:
     return x + 2
 
 
-def _always_pause(draft: str) -> str | None:
-    return None
+def _always_pause(draft: str) -> StringQuestion:
+    return StringQuestion(prompt="Approve?", evidence=(draft,))
 
 
 def _make_interrupt() -> InterruptNode:
-    return InterruptNode(_always_pause, name="approval", output_name="decision")
+    return InterruptNode(_always_pause, name="approval", answer_name="decision")
 
 
 class TestPlanInterruptBatch:
