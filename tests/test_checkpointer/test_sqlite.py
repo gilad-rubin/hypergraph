@@ -132,6 +132,9 @@ class TestRunLifecycle:
         assert paused[0].id == "wf-paused"
 
     async def test_create_run_with_lineage_fields(self, checkpointer):
+        # Referenced lineage runs must exist (foreign keys are enforced).
+        await checkpointer.create_run("wf-parent")
+        await checkpointer.create_run("wf-root")
         run = await checkpointer.create_run(
             "wf-child",
             forked_from="wf-parent",
@@ -250,6 +253,9 @@ class TestStepPersistence:
 
     async def test_upsert_preserves_fields_outside_the_update_policy(self, checkpointer):
         await checkpointer.create_run("wf-1")
+        # Referenced child runs must exist (foreign keys are enforced).
+        await checkpointer.create_run("child-original", parent_run_id="wf-1")
+        await checkpointer.create_run("child-replacement", parent_run_id="wf-1")
         original_created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
         replacement_created_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
         await checkpointer.save_step(
@@ -428,19 +434,19 @@ class TestLazyInit:
         finally:
             await cp.close()
 
-    async def test_concurrent_lazy_initialize_runs_once(self, tmp_path):
+    async def test_concurrent_lazy_initialize_runs_once(self, tmp_path, monkeypatch):
         """Concurrent first-use calls should serialize initialization."""
         cp = SqliteCheckpointer(str(tmp_path / "lazy-race.db"))
-        init_calls = 0
-        original_initialize = cp.initialize
+        connect_calls = 0
+        original_connect = cp._aiosqlite.connect
 
-        async def counted_initialize():
-            nonlocal init_calls
-            init_calls += 1
+        async def counted_connect(*args, **kwargs):
+            nonlocal connect_calls
+            connect_calls += 1
             await asyncio.sleep(0)
-            await original_initialize()
+            return await original_connect(*args, **kwargs)
 
-        cp.initialize = counted_initialize  # type: ignore[method-assign]
+        monkeypatch.setattr(cp._aiosqlite, "connect", counted_connect)
 
         try:
             await asyncio.gather(
@@ -448,7 +454,7 @@ class TestLazyInit:
                 cp.create_run("wf-b"),
                 cp.create_run("wf-c"),
             )
-            assert init_calls == 1
+            assert connect_calls == 1
         finally:
             await cp.close()
 
@@ -913,8 +919,8 @@ class TestSearch:
 
 
 class TestMigration:
-    def test_fresh_db_gets_v3_schema(self, tmp_path):
-        """A new database gets v3 schema automatically."""
+    def test_fresh_db_gets_v4_schema(self, tmp_path):
+        """A new database gets v4 schema automatically."""
         cp = SqliteCheckpointer(str(tmp_path / "fresh.db"))
         # Trigger sync schema creation
         assert cp.runs() == []
@@ -925,10 +931,12 @@ class TestMigration:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         assert "runs" in tables
         assert "steps" in tables
+        assert "attempt_series" in tables
+        assert "attempt_records" in tables
         assert "_schema_version" in tables
 
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 3
+        assert version == 4
         conn.close()
 
     def test_migration_idempotent(self, tmp_path):
@@ -942,7 +950,7 @@ class TestMigration:
         ensure_schema(conn)
         ensure_schema(conn)  # Second time should be a no-op
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 3
+        assert version == 4
         conn.close()
 
     def test_unknown_schema_version_raises(self, tmp_path):
