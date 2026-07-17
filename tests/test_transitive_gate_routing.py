@@ -530,6 +530,65 @@ async def test_ungated_sibling_runs_in_the_refire_superstep(runner_kind):
 
 
 # ---------------------------------------------------------------------------
+# C14 — suspension must never change reachability: quiesce-time lift
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("runner_kind", RUNNER_KINDS)
+async def test_starved_stale_controller_does_not_strand_pending_target(runner_kind):
+    """gate_a goes stale (helper wrote sig) but can never re-fire: its own
+    controller gate_top already consumed its selection, so gate_a is
+    unroutable. Suspension of gate_b must not strand gate_b's pending
+    ["target"] selection forever — when nothing else can make progress,
+    gate-first is vacuous and master semantics apply: target runs."""
+
+    @node(output_name="n")
+    def start(x: int) -> int:
+        return x
+
+    @route(targets=["gate_a"])
+    def gate_top(n: int) -> str:
+        return "gate_a"
+
+    @route(targets=["gate_b", END])
+    def gate_a(n: int, sig: int = 0):
+        return "gate_b"
+
+    @route(targets=["helper", "target"], multi_target=True)
+    def gate_b(n: int) -> list[str]:
+        return ["helper", "target"]
+
+    @node(output_name=("sig", "fuel"))
+    def helper(n: int) -> tuple[int, int]:
+        return 1, 1
+
+    @node(output_name="target_out")
+    def target(n: int, fuel: int) -> int:
+        return n * 420
+
+    graph = Graph(
+        [start, gate_top, gate_a, gate_b, helper, target],
+        name="starved_controller",
+        entrypoint="start",
+    )
+    listener = ListProcessor()
+
+    result = await run_graph(
+        runner_kind,
+        graph,
+        {"x": 1},
+        event_processors=[listener],
+    )
+
+    assert result.completed
+    assert result["sig"] == 1, "helper legitimately ran off gate_b's selection"
+    assert result.values.get("target_out") == 420, "starved suspension must lift: target is reachable on master"
+
+    gate_a_runs = [e for e in listener.events if isinstance(e, NodeEndEvent) and e.node_name == "gate_a"]
+    assert len(gate_a_runs) == 1, "gate_a stays starved — the lift must not force-fire it"
+
+
+# ---------------------------------------------------------------------------
 # C7 — chained gates in a cycle: gate-driven re-activation still re-executes
 # ---------------------------------------------------------------------------
 
