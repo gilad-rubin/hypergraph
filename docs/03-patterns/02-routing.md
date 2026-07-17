@@ -489,6 +489,25 @@ def process(text: str) -> str:
 graph = Graph([check_length, check_quality, process])
 ```
 
+Termination is transitive across the chain: if `check_length` returns `END`,
+neither `check_quality` nor `process` executes — even when their data inputs
+(like `text` above) are already available as graph inputs. A node behind
+chained gates runs only when every gate along the selected path activates the
+next hop. Nodes on independent, ungated paths are unaffected and keep running.
+
+This also covers decisions already in flight: if a mid-chain gate has selected
+targets that have not run yet, and an upstream gate then explicitly terminates
+the chain (`END`) or routes elsewhere, those pending selections are discarded —
+the not-yet-run targets do not execute. Only an explicit upstream decision
+cancels in-flight selections; a gate whose earlier selection was simply
+consumed by its target keeps downstream selections live, which is what lets
+loops route through chained gates across iterations.
+
+Gates fire before their consequences: when a loop makes an upstream gate
+re-evaluate, in-flight selections further down the chain wait for its verdict
+instead of racing it in the same superstep. Unrelated nodes are not held up —
+independent work still runs in parallel with the re-evaluating gate.
+
 ## Next Steps
 
 - [API Reference: Gates](../06-api-reference/gates.md) - Complete IfElseNode, RouteNode, and @ifelse/@route documentation

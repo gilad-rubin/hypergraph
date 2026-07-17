@@ -7,12 +7,14 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.checkpointers.types import StepRecord, StepStatus
+from hypergraph.exceptions import CompactedRetentionError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.runners._shared.state import GraphState, NodeExecution
 
 if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Checkpoint
     from hypergraph.graph import Graph
+    from hypergraph.nodes.graph_node import GraphNode
 
 
 def initialize_state(
@@ -71,6 +73,11 @@ def _extract_model_type(hint: Any) -> type | None:
             return hint  # return the full list[Model] hint
         return None
 
+    # tuple[...] — JSON persistence round-trips tuples as lists, so any
+    # parameterized tuple annotation is worth reconstructing on restore.
+    if origin is tuple:
+        return hint
+
     # Optional[Model] / Union[Model, None] / Model | None (PEP 604)
     if origin is Union or isinstance(hint, _types.UnionType):
         args = [a for a in get_args(hint) if a is not type(None)]
@@ -114,11 +121,34 @@ def _coerce_value(value: Any, hint: Any) -> Any:
         elem_type = args[0]
         return [_coerce_single(item, elem_type) for item in value]
 
+    # tuple[...] — rebuild the tuple, coercing model elements where annotated
+    if origin is tuple:
+        return _coerce_tuple(value, hint)
+
     # Scalar model
     if isinstance(hint, type):
         return _coerce_single(value, hint)
 
     return value
+
+
+def _coerce_tuple(value: Any, hint: Any) -> Any:
+    """Reconstruct an annotated tuple from a JSON-deserialized list."""
+    from typing import get_args
+
+    if not isinstance(value, (list, tuple)):
+        return value
+    args = get_args(hint)
+    if len(args) == 2 and args[1] is Ellipsis:
+        elem = args[0]
+        if isinstance(elem, type) and _is_model_class(elem):
+            return tuple(_coerce_single(item, elem) for item in value)
+        return tuple(value)
+    if args and len(args) == len(value):
+        return tuple(
+            _coerce_single(item, elem) if isinstance(elem, type) and _is_model_class(elem) else item for item, elem in zip(value, args, strict=False)
+        )
+    return tuple(value)
 
 
 def _coerce_single(value: Any, model: type) -> Any:
@@ -353,6 +383,64 @@ def graphnode_child_workflow_id(
     # so advance one step beyond the highest seen value.
     iteration = max(execution.output_versions.values()) if execution.output_versions else max(execution.input_versions.values(), default=0) + 1
     return f"{base}/{iteration}"
+
+
+# Mirrors the private retention-carrier constants in
+# checkpointers/sqlite.py and checkpointers/memory.py.
+_RETENTION_BASELINE_NODE_NAME = "__retained_state__"
+_RETENTION_BASELINE_NODE_TYPE = "RetentionBaseline"
+
+
+def has_prior_completion_evidence(
+    steps: list[StepRecord],
+    node: GraphNode,
+) -> bool:
+    """Return durable proof that this parent run completed this GraphNode.
+
+    Callers must pass raw step history queried with ``show_internal=True``:
+    retention compaction hides its carrier rows from public step reads.
+
+    A COMPLETED StepRecord for the node itself is durable evidence (normally
+    consumed by checkpoint replay before the executor runs; kept here as
+    belt-and-suspenders). A retention-baseline carrier is not evidence: it
+    folds values without producer provenance. Without the node's own row,
+    compacted history makes restore versus re-execution ambiguous and must be
+    rejected until provenance support tracked in #277 exists.
+
+    PAUSED/FAILED rows for the node are attempt evidence, not completion
+    evidence: the crash window legitimately contains them.
+    """
+    has_retention_baseline = False
+    for step in steps:
+        if step.node_name == node.name and step.status is StepStatus.COMPLETED:
+            return True
+        is_baseline = step.node_name == _RETENTION_BASELINE_NODE_NAME or step.node_type == _RETENTION_BASELINE_NODE_TYPE
+        has_retention_baseline = has_retention_baseline or is_baseline
+    if has_retention_baseline:
+        raise CompactedRetentionError(node.name)
+    return False
+
+
+def restore_completed_child_outputs(
+    node: GraphNode,
+    child_values: dict[str, Any],
+) -> dict[str, Any]:
+    """Project a terminal COMPLETED child workflow's persisted state onto the parent.
+
+    Crash-window recovery: the child workflow committed COMPLETED, but the
+    parent crashed before writing its GraphNode StepRecord. On resume the
+    parent must not re-invoke the terminal child (that raises
+    ``WorkflowAlreadyCompletedError``); instead it restores the child's
+    persisted outputs so the missing parent step commits with truthful values.
+
+    Mirrors the normal execution path: values are coerced with the child
+    graph's type map (as a real child resume would), filtered to the child
+    graph's outputs, and projected through the GraphNode boundary map.
+    """
+    from hypergraph.runners._shared.outputs import filter_outputs
+
+    restored = GraphState(values=coerce_checkpoint_values(node.graph, child_values))
+    return node.map_outputs_from_original(filter_outputs(restored, node.graph))
 
 
 def validate_workflow_id(workflow_id: str | None, parent_run_id: str | None) -> None:

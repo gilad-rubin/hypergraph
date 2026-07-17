@@ -53,7 +53,13 @@ def build_superstep_records(
         execution = state.node_executions.get(name)
         now = _utcnow()
         node_type = type(graph._nodes[name]).__name__ if name in graph._nodes else None
-        if child_run_ids is not None and name in child_run_ids:
+        # The executor records the child id it actually used (crash-window
+        # restore and retention-pruned re-executions can diverge from the
+        # precomputed candidate); prefer that ground truth for the receipt.
+        recorded_child_run_id = state.graphnode_child_run_ids.get(name)
+        if recorded_child_run_id is not None:
+            child_run_id = recorded_child_run_id
+        elif child_run_ids is not None and name in child_run_ids:
             child_run_id = child_run_ids[name]
         else:
             child_run_id = _compute_child_run_id(

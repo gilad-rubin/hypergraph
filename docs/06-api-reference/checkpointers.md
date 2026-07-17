@@ -108,6 +108,54 @@ synchronous; async and exit modes retain their existing guarantees and report
 best-effort gaps through `result.checkpoint_ok` and
 `result.checkpoint_errors`.
 
+## Nested Recovery
+
+A nested `GraphNode` runs its child graph as its own child workflow
+(`"order-100/enrich"` under `"order-100"`). The child commits its terminal
+status before the parent writes the StepRecord for the `GraphNode`, so a crash
+can land exactly between the two:
+
+```text
+child workflow "order-100/enrich": COMPLETED
+parent StepRecord for "enrich":    missing
+```
+
+Resuming `workflow_id="order-100"` recovers this state by restoring, not
+re-running:
+
+```python
+# Before (bug): resume re-invoked the terminal child.
+runner.run(order_graph, workflow_id="order-100")
+# WorkflowAlreadyCompletedError: Workflow 'order-100/enrich' is already completed.
+
+# After: resume restores the child's persisted outputs and commits the
+# missing parent step. The child's inner nodes do not execute again.
+result = runner.run(order_graph, workflow_id="order-100")
+# result.values contains the child's outputs; the parent step is COMPLETED
+# with child_run_id "order-100/enrich".
+```
+
+The restore is truthful: no fresh child-node execution events are emitted, and
+the recovery recurses through deeper nesting (a terminal grandchild under a
+crashed middle parent heals the same way, level by level). A terminal `FAILED`
+child is never restored as success — resume follows the ordinary failure path,
+re-executing the failed child nodes and resurfacing their error under the
+run's `error_handling` mode.
+
+Recovery is evidence-gated so it never shadows a legitimate re-execution. A
+real persisted `COMPLETED` parent step is proof that the nested graph completed;
+folded carrier values are not, because they lack producer provenance.
+Windowed/compacted retention with nested crash-window recovery is therefore
+explicitly rejected once parent history has been compacted. Use
+`retention="full"` or `retention="latest"` for workflows that combine nested
+graphs with resume/crash recovery, or fork the workflow. Windowed support is
+tracked in #277.
+
+With a delegated runner (`as_node(runner=...)`), the child workflow persists
+in the delegated runner's checkpointer. Crash recovery reads the child's
+status and outputs from that store, while the parent's own step receipts stay
+in the parent runner's checkpointer.
+
 ## Checkpointer ABC
 
 Every checkpointer implements the same contract, so runners don't need to know which backend is behind `checkpointer=`:

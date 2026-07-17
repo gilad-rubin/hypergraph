@@ -20,11 +20,9 @@ wheels/
 AGENTS.md.bak
 CLAUDE.md.bak
 # END Ruler Generated Files
-specs/tmp/*
 docs/plans/*
 # Continuous Claude cache (local only)
 thoughts/*
-specs/deprecated/*
 .claude/*
 !.claude/skills/
 !.claude/skills/**
@@ -36,7 +34,6 @@ specs/deprecated/*
 !.doc-manager/cache/.gitkeep
 .DS_Store
 tmp/*
-specs/*
 deprecated/*
 .doc-manager/*
 

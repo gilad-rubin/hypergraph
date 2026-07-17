@@ -50,6 +50,44 @@
 
 ### Fixed
 
+- **HyperTable definition fingerprints harden to construction-time
+  `hash_definition`** — before, a derive node that was a bound method of a
+  configured object (`summarizer.summarize` with `model="gpt-4"` vs
+  `model="o3"`) produced the SAME recipe fingerprint, so changing the
+  configuration silently skipped the re-derive; and a dynamically-created
+  function (exec/eval, no retrievable source) hashed its `repr` — a
+  per-process memory address — so its rows re-derived on every run. Now a
+  producing node's recipe identity is its `definition_hash`, captured ONCE at
+  node construction via the repo's single definition-identity function
+  `hash_definition`: bound methods mix in the instance's configuration,
+  dynamic functions hash their bytecode, and builtins hash their qualified
+  name. Because identity is frozen at construction, instance state that
+  mutates during execution (a call counter, a cache, a client) does NOT drift
+  the recipe — three inserts through the same node stamp one fingerprint.
+  One-time migration consequence: rows whose recipes involve bound methods,
+  dynamically-created functions, builtins, partials, or callable objects
+  carry a changed fingerprint and re-derive once on the next
+  `insert`/`update`/`sync`; component-config and bound-value journal entries
+  re-journal under content hashes, and a functionless subgraph producer's
+  journal entry re-keys from a meaningless shared hash-of-`None` to the
+  node's own definition hash. Rows derived from ordinary module-level
+  functions keep their exact previous fingerprint (both schemes hash the
+  function's source text) and are not re-derived. Callable objects whose
+  state cannot be fingerprinted now fail loudly with guidance to define
+  `cache_key()` instead of drifting forever, and a non-callable that carries
+  no `definition_hash` is rejected instead of silently hashing its repr.
+  Routed union columns (several producers writing one column): a named
+  index's recipe fingerprint is now the order-free combination of EVERY
+  producer's recipe — previously it hashed the producer tuple's repr, which
+  differed in every process, so such indexes always read as stale; existing
+  union-column indexes flag stale once more and then stay current. And
+  `explain()` no longer attributes a union column to whichever producer was
+  listed first in the graph: it returns
+  `{"producers": {<node name>: {"provenance", "source"}}}` with every
+  producer labeled (single-producer columns keep the flat
+  `{"provenance", "source"}` shape); row-actual attribution would require a
+  durable producer identifier on the row and is not recorded.
+
 - **Truthful notebook scheduler availability** — before, an
   `add_callback`-only kernel could look cross-thread capable while lacking the
   delayed owner-thread call needed for the 250 ms live-inspection update. Now
