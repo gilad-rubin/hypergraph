@@ -10,6 +10,9 @@ import sys
 import textwrap
 from dataclasses import dataclass
 
+import pytest
+
+from hypergraph import Graph
 from hypergraph.materialization import (
     ErroredRow,
     RowReceipt,
@@ -17,7 +20,15 @@ from hypergraph.materialization import (
     TableReceipt,
     WriteOutcome,
 )
-from hypergraph.materialization._fingerprint import compute_definition_hash, compute_payload_hash
+from hypergraph.materialization._fingerprint import (
+    compute_definition_hash,
+    compute_payload_hash,
+    compute_table_recipe_fingerprint,
+)
+from hypergraph.materialization._provenance import Provenance
+from hypergraph.materialization._recipe_journal import KIND_NODE_SOURCE
+from hypergraph.materialization._schema import TableSpec
+from hypergraph.nodes import FunctionNode
 
 # ---------------------------------------------------------------------------
 # Definition hash
@@ -135,6 +146,62 @@ class TestDefinitionHash:
         bare_source_hash = hashlib.sha256(inspect.getsource(bound).encode()).hexdigest()
 
         assert compute_definition_hash(bound) != bare_source_hash
+
+
+class MutatingSummarizer:
+    """A component whose execution mutates its own state (a call counter)."""
+
+    def __init__(self, model: str):
+        self.model = model
+        self.calls = 0
+
+    def summarize(self, text: str) -> str:
+        self.calls += 1
+        return f"{self.model}:{text}"
+
+
+class TestNodeIdentity:
+    def test_recipe_fingerprint_stable_across_instance_mutation(self):
+        """Recipe identity is captured at NODE CONSTRUCTION: executing a
+        bound-method node that mutates its instance (a counter, a cache, a
+        client) must not change the table's recipe fingerprint run over run."""
+        summarizer = MutatingSummarizer(model="gpt-4")
+        n = FunctionNode(summarizer.summarize, output_name="summary")
+        graph = Graph([n])
+
+        before = compute_table_recipe_fingerprint(graph, {})
+        summarizer.summarize("hello")  # execution mutates self.calls
+        after = compute_table_recipe_fingerprint(graph, {})
+
+        assert before == after
+        assert before == compute_table_recipe_fingerprint(graph, {})
+
+    def test_recipe_entries_use_node_hash_for_functionless_nodes(self):
+        """A functionless producer (a GraphNode) journals under ITS definition
+        hash — never under a hash of None."""
+
+        class SubgraphNode:
+            definition_hash = "a" * 64
+            inputs = ()
+            name = "child"
+
+        provenance = Provenance(
+            graph=None,
+            spec=TableSpec(name="t", identity="id", columns=[]),
+            components={},
+            column_graphs={},
+        )
+
+        entries = provenance.recipe_entries(SubgraphNode())
+
+        assert entries[0].kind == KIND_NODE_SOURCE
+        assert entries[0].hash == "a" * 64
+
+    def test_non_callable_without_definition_hash_is_rejected(self):
+        """A non-callable that is neither a node nor a definition fails loudly —
+        a silent repr-based hash would differ in every process."""
+        with pytest.raises(TypeError, match="definition_hash"):
+            compute_definition_hash(object())
 
 
 class TestPayloadHash:

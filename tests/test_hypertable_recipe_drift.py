@@ -23,12 +23,45 @@ from hypergraph import Graph, node
 from hypergraph.materialization import HyperTable, RecipeDrift
 from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.materialization._schema import RECIPE_COLUMN
+from hypergraph.nodes import FunctionNode
 from hypergraph.runners import SyncRunner
 
 
 @node(output_name="upper")
 def to_upper(text: str, mode: str) -> str:
     return text.upper() if mode == "loud" else text
+
+
+class CountingUpper:
+    """A component whose execution mutates its own state (a call counter)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def upper(self, text: str) -> str:
+        self.calls += 1
+        return text.upper()
+
+
+def test_mutable_instance_state_does_not_drift_the_recipe(tmp_path):
+    """Three inserts through a bound-method node whose instance mutates on every
+    call stamp ONE recipe fingerprint and read back zero drift: recipe identity
+    is captured at node construction, not from the live instance per execution."""
+    component = CountingUpper()
+    table = Graph([FunctionNode(component.upper, output_name="upper")]).as_table(
+        identity="doc_id", store=LanceDBStore(str(tmp_path)), runner=SyncRunner()
+    )
+
+    table.insert(doc_id="d1", text="a")
+    table.insert(doc_id="d2", text="b")
+    table.insert(doc_id="d3", text="c")
+    assert component.calls == 3
+
+    raw = LanceDBStore(str(tmp_path)).read_rows("doc")
+    assert len({row[RECIPE_COLUMN] for row in raw}) == 1
+
+    drift = table.recipe_drift()
+    assert (drift.total, drift.current, drift.drifted) == (3, 3, 0)
 
 
 def _table(tmp_path, mode: str) -> HyperTable:
