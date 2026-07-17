@@ -64,6 +64,14 @@ class AsyncGraphNodeExecutor:
         child_workflow_id = graphnode_child_workflow_id(ctx.workflow_id, node.name, state)
         map_config = node.map_config
 
+        # Resolve the effective runner before any persistence reads: a
+        # delegated runner (runner_override) owns the child workflow's
+        # persistence boundary, while the parent's own receipts stay in the
+        # parent runner's checkpointer.
+        runner = node.runner_override or self.runner
+        parent_cp = self.runner._checkpointer
+        child_cp = getattr(runner, "_checkpointer", None)
+
         # Route interrupt resume values into the inner graph. The parent sees
         # the GraphNode's resolved output address ("decision", "review.verdict",
         # etc.); the child run resumes with the inner graph's local output name.
@@ -98,8 +106,8 @@ class AsyncGraphNodeExecutor:
                 }
             )
 
-            if map_config is None and child_workflow_id is not None and self.runner._checkpointer is not None:
-                existing_child_run = await self.runner._checkpointer.get_run_async(child_workflow_id)
+            if map_config is None and child_workflow_id is not None and parent_cp is not None and child_cp is not None:
+                existing_child_run = await child_cp.get_run_async(child_workflow_id)
                 if existing_child_run is not None:
                     if existing_child_run.status is WorkflowStatus.COMPLETED:
                         # Crash-window recovery: the child committed COMPLETED but
@@ -108,19 +116,17 @@ class AsyncGraphNodeExecutor:
                         # would raise WorkflowAlreadyCompletedError). Terminal
                         # FAILED children fall through to the resume path below so
                         # their failure resurfaces — never restored-as-success.
-                        child_values = await self.runner._checkpointer.get_state(child_workflow_id)
+                        child_values = await child_cp.get_state(child_workflow_id)
                         return restore_completed_child_outputs(node, child_values)
                     inner_inputs = {}
                 elif resume_values:
-                    current_parent_run = await self.runner._checkpointer.get_run_async(ctx.workflow_id) if ctx.workflow_id else None
+                    current_parent_run = await parent_cp.get_run_async(ctx.workflow_id) if ctx.workflow_id else None
                     source_parent_run_id = None
                     if current_parent_run is not None:
                         source_parent_run_id = current_parent_run.retry_of or current_parent_run.forked_from
                     if source_parent_run_id is not None:
                         source_child_run_id = graphnode_child_workflow_id(source_parent_run_id, node.name, state)
-                        source_child_run = (
-                            await self.runner._checkpointer.get_run_async(source_child_run_id) if source_child_run_id is not None else None
-                        )
+                        source_child_run = await child_cp.get_run_async(source_child_run_id) if source_child_run_id is not None else None
                         if source_child_run is not None:
                             inner_inputs = {}
                             if current_parent_run is not None and current_parent_run.retry_of is not None:
@@ -133,8 +139,6 @@ class AsyncGraphNodeExecutor:
             child_fork_from = None
             child_retry_from = None
 
-        # Use delegated runner if configured, otherwise inherit parent
-        runner = node.runner_override or self.runner
         accepts_checkpoint_error_sink = isinstance(runner, CheckpointErrorSinkRunner) and runner._accepts_checkpoint_error_sink is True
         if (
             ctx.checkpoint_error_sink is not None
