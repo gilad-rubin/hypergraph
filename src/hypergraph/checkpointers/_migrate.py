@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def detect_schema_version(conn: Any) -> int:
@@ -13,7 +13,8 @@ def detect_schema_version(conn: Any) -> int:
     Returns:
         0 — empty database (no tables)
         3 — v3 schema (pre attempt ledger)
-        4 — current v4 schema (attempt ledger tables present)
+        4 — v4 schema (attempt ledger tables, false cross-store FKs)
+        5 — current v5 schema (cross-store lineage columns carry no FK)
     """
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
@@ -24,8 +25,8 @@ def detect_schema_version(conn: Any) -> int:
     return 0
 
 
-def create_v4_schema(conn: Any) -> None:
-    """Create a fresh v4 schema on an empty database."""
+def create_v5_schema(conn: Any) -> None:
+    """Create a fresh v5 schema on an empty database."""
     conn.execute(_CREATE_RUNS)
     conn.execute(_CREATE_STEPS)
     conn.execute(_CREATE_ATTEMPT_SERIES)
@@ -48,19 +49,29 @@ def ensure_schema(conn: Any) -> None:
         _ensure_v4_objects(conn)
         return
     if version == 0:
-        create_v4_schema(conn)
+        create_v5_schema(conn)
         return
     if version == 2:
         _migrate_v2_to_v3(conn)
         _migrate_v3_to_v4(conn)
+        _migrate_v4_to_v5(conn)
         return
     if version == 3:
         _migrate_v3_to_v4(conn)
+        _migrate_v4_to_v5(conn)
+        return
+    if version == 4:
+        _migrate_v4_to_v5(conn)
         return
     raise ValueError(f"Unsupported database schema version {version} (current: {SCHEMA_VERSION}). Please upgrade hypergraph.")
 
 
 # === SQL Definitions ===
+#
+# runs.parent_run_id and steps.child_run_id deliberately carry NO foreign key:
+# delegated child runners (#235/#279) store cross-database lineage, so the
+# referenced run may live in a different sqlite file. All remaining REFERENCES
+# clauses are same-store by contract and enforced via PRAGMA foreign_keys=ON.
 
 _CREATE_RUNS = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -72,7 +83,7 @@ CREATE TABLE IF NOT EXISTS runs (
     error_count INTEGER DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     completed_at TEXT,
-    parent_run_id TEXT REFERENCES runs(id),
+    parent_run_id TEXT,
     forked_from TEXT REFERENCES runs(id),
     fork_superstep INTEGER,
     retry_of TEXT REFERENCES runs(id),
@@ -96,7 +107,7 @@ CREATE TABLE IF NOT EXISTS steps (
     decision TEXT,
     input_versions TEXT,
     values_data BLOB,
-    child_run_id TEXT REFERENCES runs(id),
+    child_run_id TEXT,
     partial INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     completed_at TEXT,
@@ -104,6 +115,16 @@ CREATE TABLE IF NOT EXISTS steps (
     UNIQUE(run_id, superstep, node_name)
 )
 """
+
+_RUNS_COPY_COLS = (
+    "id, graph_name, status, duration_ms, node_count, error_count, created_at, completed_at, "
+    "parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config"
+)
+# Explicit id: preserves FTS rowids and keeps AUTOINCREMENT continuing past it.
+_STEPS_COPY_COLS = (
+    "id, run_id, step_index, superstep, node_name, node_type, status, duration_ms, cached, error, "
+    "decision, input_versions, values_data, child_run_id, partial, created_at, completed_at, attempt_series_id"
+)
 
 _CREATE_ATTEMPT_SERIES = """
 CREATE TABLE IF NOT EXISTS attempt_series (
@@ -218,6 +239,55 @@ def _migrate_v3_to_v4(conn: Any) -> None:
     _ensure_v4_objects(conn)
     conn.execute("UPDATE _schema_version SET version = 4")
     conn.commit()
+
+
+def _rebuild_table(conn: Any, table: str, create_sql: str, copy_cols: str) -> None:
+    """Rebuild one table using the documented sqlite pattern.
+
+    SQLite cannot drop a foreign key in place: create the new table under a
+    temporary name, copy rows with an explicit column list (physical column
+    order varies across in-place-migrated databases), drop the old table, and
+    rename. Caller owns the surrounding transaction and FK-off window.
+    """
+    tmp = f"{table}_v5_new"
+    conn.execute(create_sql.replace(f"CREATE TABLE IF NOT EXISTS {table} ", f"CREATE TABLE {tmp} ", 1))
+    conn.execute(f"INSERT INTO {tmp} ({copy_cols}) SELECT {copy_cols} FROM {table}")
+    conn.execute(f"DROP TABLE {table}")
+    conn.execute(f"ALTER TABLE {tmp} RENAME TO {table}")
+
+
+def _migrate_v4_to_v5(conn: Any) -> None:
+    """Rebuild runs/steps without the false cross-store FK declarations.
+
+    v4 declared ``runs.parent_run_id`` and ``steps.child_run_id`` as
+    ``REFERENCES runs(id)``, but delegated child runners store cross-database
+    lineage there — the referenced run can live in a different sqlite file.
+    Rows are copied verbatim (including cross-store ids); ``PRAGMA
+    foreign_keys`` must be OFF during the rebuild, so it runs before the
+    transaction opens (the pragma is a no-op inside one).
+    """
+    _ensure_v3_columns(conn)
+    _ensure_v4_objects(conn)
+
+    (prev_fk,) = conn.execute("PRAGMA foreign_keys").fetchone()
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Dropping steps also drops its FTS sync triggers; the steps_fts
+            # table itself survives and stays valid because step ids are copied.
+            _rebuild_table(conn, "steps", _CREATE_STEPS, _STEPS_COPY_COLS)
+            _rebuild_table(conn, "runs", _CREATE_RUNS, _RUNS_COPY_COLS)
+            _create_indexes(conn)
+            _create_fts(conn)
+            conn.execute("UPDATE _schema_version SET version = 5")
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+    finally:
+        if prev_fk:
+            conn.execute("PRAGMA foreign_keys=ON")
 
 
 def _create_fts(conn: Any) -> None:

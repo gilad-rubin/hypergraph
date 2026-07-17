@@ -476,11 +476,14 @@ class SqliteCheckpointer(Checkpointer):
             db = await self._aiosqlite.connect(self._connect_path, uri=self._connect_uri)
             try:
                 await db.execute("PRAGMA journal_mode=WAL")
-                # Legacy FKs (runs.parent_run_id, steps.child_run_id) are cross-store by contract; enforcement requires schema cleanup first (tracked in a follow-up issue).
                 # For in-memory DBs, schema must be created after async connect
                 # so the shared-cache database stays alive across connections.
                 if self._is_memory:
                     self._ensure_sync_schema()
+                # Defense-in-depth for same-store references (steps.run_id, fork/retry
+                # lineage, attempt ledger). Cross-store lineage columns
+                # (runs.parent_run_id, steps.child_run_id) carry no FK since schema v5.
+                await db.execute("PRAGMA foreign_keys=ON")
                 await db.commit()
             except BaseException:
                 with contextlib.suppress(Exception):
@@ -1193,8 +1196,11 @@ class SqliteCheckpointer(Checkpointer):
                     check_same_thread=False,
                 )
                 conn.execute("PRAGMA journal_mode=WAL")
-                # Legacy FKs (runs.parent_run_id, steps.child_run_id) are cross-store by contract; enforcement requires schema cleanup first (tracked in a follow-up issue).
                 ensure_schema(conn)
+                # Defense-in-depth for same-store references, mirroring the async
+                # connection. Set after ensure_schema so a v4->v5 table rebuild
+                # runs with foreign keys off.
+                conn.execute("PRAGMA foreign_keys=ON")
                 self._sync_conn = conn
             return self._sync_conn
 

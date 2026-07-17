@@ -293,8 +293,8 @@ async def test_pre_ledger_database_migrates_in_place(tmp_path):
         assert steps[1].values == {"z": 2}
         assert all(step.attempt_series_id is None for step in steps)
 
-        # New objects appeared; existing columns are unchanged and the new
-        # steps column is a nullable append.
+        # New objects appeared; the column list is the v3 list plus a nullable
+        # attempt_series_id (the v5 rebuild preserves names, order, and rows).
         probe = sqlite3.connect(path)
         try:
             tables = {row[0] for row in probe.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -306,7 +306,7 @@ async def test_pre_ledger_database_migrates_in_place(tmp_path):
             assert new_col[3] == 0  # notnull flag: nullable
             assert new_col[4] is None  # no default
             (version,) = probe.execute("SELECT version FROM _schema_version").fetchone()
-            assert version == 4
+            assert version == 5
         finally:
             probe.close()
 
