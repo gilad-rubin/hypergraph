@@ -199,6 +199,8 @@ CheckpointPolicy()
 | `window` | `int \| None` | Required when `retention="windowed"`. |
 | `ttl` | `timedelta \| None` | Auto-expire completed runs after this duration. |
 
+**Retry evidence writes through under every durability mode.** For a node with a [RetryPolicy](nodes.md#retrypolicy), attempt reservations/outcomes and the series-closing StepRecord are persisted immediately even under `durability="async"` or `"exit"`: the final attempt outcome, its linked StepRecord, and the series closure must commit atomically, and that invariant takes precedence over buffering. Non-retrying nodes buffer normally.
+
 **Async durability is best-effort.** With `durability="async"` (the default), step writes happen in background tasks: a failed write does not fail the run — the run still returns `COMPLETED`, and the failure is reported on the result instead. Check `result.checkpoint_ok` (and `result.checkpoint_errors`, a tuple of error strings) to detect gaps in the persisted history:
 
 ```python

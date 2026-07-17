@@ -219,6 +219,7 @@ def run_superstep_sync(
                     graph_name=graph.name,
                     provided_values=provided_values,
                     on_inner_log=inner_logs.append,
+                    superstep=superstep_idx if superstep_idx is not None else 0,
                 )
 
                 # Publish the node span so in-node telemetry (LLM clients, stores)

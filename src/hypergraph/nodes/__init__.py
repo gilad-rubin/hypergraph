@@ -6,12 +6,15 @@ from hypergraph.nodes.function import FunctionNode, node
 from hypergraph.nodes.gate import END, GateNode, IfElseNode, RouteNode, ifelse, route
 from hypergraph.nodes.graph_node import GraphNode, GraphNodeMapExecutionConfig
 from hypergraph.nodes.interrupt import InterruptNode, interrupt
+from hypergraph.nodes.retry import RetryAfterError, RetryPolicy
 
 __all__ = [
     "HyperNode",
     "_EMIT_SENTINEL",
     "RenameEntry",
     "RenameError",
+    "RetryAfterError",
+    "RetryPolicy",
     "FunctionNode",
     "GraphNode",
     "GraphNodeMapExecutionConfig",

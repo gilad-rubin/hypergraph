@@ -431,6 +431,8 @@ class AsyncRunner(AsyncRunnerTemplate):
                 is_resuming=(checkpoint is not None if self._checkpointer_instance is not None else True),
                 checkpoint_error_sink=checkpoint_save_errors.append if checkpoint_save_errors is not None else None,
                 emit_fn=dispatcher.emit if dispatcher.active else None,
+                checkpointer=checkpointer if has_checkpointer else None,
+                superstep_offset=superstep_offset,
             )
 
             while frontier.has_pending_components():
@@ -618,6 +620,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         node_errors: dict[str, BaseException] | None = None,
     ) -> int:
         """Build StepRecords and dispatch to the appropriate durability mode."""
+        from hypergraph.runners._shared.attempts import maybe_close_attempt_series_async
         from hypergraph.runners._shared.checkpoint_helpers import build_superstep_records
 
         records, step_counter = build_superstep_records(
@@ -639,6 +642,12 @@ class AsyncRunner(AsyncRunnerTemplate):
 
         durability = checkpointer.policy.durability
         for record in records:
+            # A record that closes an attempt series persists write-through
+            # inside the atomic close (awaited, never a background task) —
+            # a deferred close would leave the series open against a later
+            # re-execution of the same node.
+            if await maybe_close_attempt_series_async(checkpointer, graph, record, node_errors):
+                continue
             if durability == "sync":
                 await checkpointer.save_step(record)
             elif durability == "async":

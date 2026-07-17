@@ -795,3 +795,63 @@ def test_inspect_docs_pin_exception_labels_and_recovery_runner_truth() -> None:
     assert "After (truthful async recovery)" in debug
     assert "Before (a boundary retry can raise or print `None`)" in debug
     assert "After (the assignment and evidence read are both guarded)" in debug
+
+
+def test_retry_docs_pin_public_contract() -> None:
+    import dataclasses
+
+    from hypergraph import RetryPolicy
+    from hypergraph import node as node_decorator
+
+    nodes_api = _read("docs/06-api-reference/nodes.md")
+    how_to = _read("docs/05-how-to/retry-transient-failures.md")
+    summary = _read("docs/SUMMARY.md")
+
+    assert "05-how-to/retry-transient-failures.md" in summary
+
+    # The decorator surface exposes retry= and the docs track it.
+    assert "retry" in inspect.signature(node_decorator).parameters
+    node_section = _scoped_section(nodes_api, "## @node Decorator")
+    assert "retry: RetryPolicy | None = None" in node_section
+
+    # RetryPolicy fields match the documented signature block, in order.
+    policy_fields = tuple(field.name for field in dataclasses.fields(RetryPolicy))
+    assert policy_fields == (
+        "max_attempts",
+        "retry_on",
+        "retry_window",
+        "initial_delay",
+        "backoff_multiplier",
+        "max_delay",
+        "jitter",
+    )
+    policy_section = _scoped_section(nodes_api, "## RetryPolicy")
+    for name in policy_fields:
+        assert name in policy_section
+    assert "including the first" in policy_section
+    assert "no `retry=True` shorthand" in policy_section
+    assert "min(max_delay, initial_delay * backoff_multiplier ** (n - 1))" in policy_section
+    assert "exact final underlying exception" in policy_section
+
+    # Documented defaults are the real defaults.
+    defaults = RetryPolicy(max_attempts=1, retry_on=(ValueError,))
+    assert defaults.retry_window is None
+    assert defaults.initial_delay == 1.0
+    assert defaults.backoff_multiplier == 2.0
+    assert defaults.max_delay == 60.0
+    assert defaults.jitter == "full"
+    for pinned in ("initial_delay: float = 1.0", "backoff_multiplier: float = 2.0", "max_delay: float = 60.0"):
+        assert pinned in policy_section
+
+    carrier_section = _scoped_section(nodes_api, "## RetryAfterError")
+    assert "never authorizes" in carrier_section
+    assert "no jitter" in carrier_section
+    assert "retry_after: float" in carrier_section
+
+    # The how-to's example is actually runnable, with the documented outputs.
+    assert "## Before / After" in how_to
+    example = how_to.split("## Runnable example", 1)[1].split("```python\n", 1)[1].split("\n```", 1)[0]
+    namespace: dict = {}
+    exec(example, namespace)  # noqa: S102
+    assert namespace["result"]["done"] == 41
+    assert len(namespace["attempts"]) == 2

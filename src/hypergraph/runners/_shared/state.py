@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from hypergraph.runners._shared.results import PauseInfo, RunLog
 
 if TYPE_CHECKING:
+    from hypergraph.checkpointers.base import Checkpointer
     from hypergraph.events.processor import EventProcessor
 
 CheckpointErrorSink = Callable[[str], None]
@@ -87,6 +88,13 @@ class ExecutionContext:
     Note:
         ``provided_values`` intentionally remains a shared mutable dict so
         interrupt resume payloads can be consumed across supersteps.
+
+    Attempt-ledger fields (#230): ``checkpointer`` is the active persistence
+    for THIS run — set only when a checkpointer and workflow_id are both
+    present, so the retry coordinator can tell ledger-backed budgets from
+    process-local ones. ``superstep_offset`` (per-run resume offset) plus
+    ``superstep`` (current index, set per superstep) give attempt reservations
+    the same superstep numbering StepRecords use.
     """
 
     event_processors: list[EventProcessor] | None = None
@@ -101,6 +109,9 @@ class ExecutionContext:
     on_inner_log: Callable[[RunLog], None] | None = None
     checkpoint_error_sink: CheckpointErrorSink | None = None
     emit_fn: Callable[[Any], None] | None = None
+    checkpointer: Checkpointer | None = None
+    superstep_offset: int = 0
+    superstep: int = 0
 
 
 @dataclass

@@ -18,6 +18,7 @@ from hypergraph.checkpointers.base import (
     _UNSET,
     Checkpointer,
     CheckpointPolicy,
+    _check_closable,
     _check_close_request,
     _check_no_live_reservation,
     _check_no_open_series,
@@ -1030,19 +1031,23 @@ class SqliteCheckpointer(Checkpointer):
                 await self._db.execute("BEGIN IMMEDIATE")
                 series = _require_series(await self._fetch_attempt_series(series_id), series_id)
                 _check_close_request(series, status, step_record)
-                _require_started(await self._fetch_attempt_record(series_id, attempt_number), series_id, attempt_number)
-                cursor = await self._db.execute(
-                    _ATTEMPT_FINAL_SQL,
-                    (
-                        status.value,
-                        now.isoformat(),
-                        error.type_name if error else None,
-                        error.message if error else None,
-                        series_id,
-                        attempt_number,
-                    ),
-                )
-                self._check_settled_exactly_one(cursor.rowcount, f"Attempt #{attempt_number} in series {series_id!r}")
+                record = await self._fetch_attempt_record(series_id, attempt_number)
+                cursor = await self._db.execute(_ATTEMPT_MAX_NUMBER_SQL, (series_id,))
+                (max_number,) = await cursor.fetchone()
+                settle = _check_closable(record, series_id, attempt_number, status, int(max_number))
+                if settle:
+                    cursor = await self._db.execute(
+                        _ATTEMPT_FINAL_SQL,
+                        (
+                            status.value,
+                            now.isoformat(),
+                            error.type_name if error else None,
+                            error.message if error else None,
+                            series_id,
+                            attempt_number,
+                        ),
+                    )
+                    self._check_settled_exactly_one(cursor.rowcount, f"Attempt #{attempt_number} in series {series_id!r}")
                 await self._db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(step_record))
                 cursor = await self._db.execute(_ATTEMPT_SERIES_CLOSE_SQL, (now.isoformat(), step_record.superstep, series_id))
                 self._check_settled_exactly_one(cursor.rowcount, f"Attempt series {series_id!r}")
@@ -1914,19 +1919,22 @@ class SqliteCheckpointer(Checkpointer):
                 db.execute("BEGIN IMMEDIATE")
                 series = _require_series(self._fetch_attempt_series_sync(db, series_id), series_id)
                 _check_close_request(series, status, step_record)
-                _require_started(self._fetch_attempt_record_sync(db, series_id, attempt_number), series_id, attempt_number)
-                cursor = db.execute(
-                    _ATTEMPT_FINAL_SQL,
-                    (
-                        status.value,
-                        now.isoformat(),
-                        error.type_name if error else None,
-                        error.message if error else None,
-                        series_id,
-                        attempt_number,
-                    ),
-                )
-                self._check_settled_exactly_one(cursor.rowcount, f"Attempt #{attempt_number} in series {series_id!r}")
+                record = self._fetch_attempt_record_sync(db, series_id, attempt_number)
+                (max_number,) = db.execute(_ATTEMPT_MAX_NUMBER_SQL, (series_id,)).fetchone()
+                settle = _check_closable(record, series_id, attempt_number, status, int(max_number))
+                if settle:
+                    cursor = db.execute(
+                        _ATTEMPT_FINAL_SQL,
+                        (
+                            status.value,
+                            now.isoformat(),
+                            error.type_name if error else None,
+                            error.message if error else None,
+                            series_id,
+                            attempt_number,
+                        ),
+                    )
+                    self._check_settled_exactly_one(cursor.rowcount, f"Attempt #{attempt_number} in series {series_id!r}")
                 db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(step_record))
                 cursor = db.execute(_ATTEMPT_SERIES_CLOSE_SQL, (now.isoformat(), step_record.superstep, series_id))
                 self._check_settled_exactly_one(cursor.rowcount, f"Attempt series {series_id!r}")

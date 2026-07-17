@@ -161,6 +161,7 @@ def __init__(
     hide: bool = False,
     emit: str | tuple[str, ...] | None = None,
     wait_for: str | tuple[str, ...] | None = None,
+    retry: RetryPolicy | None = None,
 ) -> None: ...
 ```
 
@@ -177,6 +178,7 @@ def __init__(
 - `hide`: Whether to hide this node from visualization (default: False)
 - `emit`: Ordering-only local output name(s). Auto-produced when the node runs
 - `wait_for`: Ordering-only graph-scope output/emit address(es). Node waits until these values exist and are fresh
+- `retry`: Optional [RetryPolicy](#retrypolicy). Node-owned only — there is no runner, graph, or per-call retry default, and no `retry=True` shorthand. Direct calls stay raw single-shot invocations
 
 **Returns:** FunctionNode instance
 
@@ -498,6 +500,7 @@ def node(
     hide: bool = False,
     emit: str | tuple[str, ...] | None = None,
     wait_for: str | tuple[str, ...] | None = None,
+    retry: RetryPolicy | None = None,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]: ...
 ```
 
@@ -509,6 +512,7 @@ def node(
 - `hide`: Whether to hide this node from visualization (default: False)
 - `emit`: Ordering-only local output name(s). Auto-produced when the node runs. Used with `wait_for` to enforce execution order without data dependency. See [Ordering](../03-patterns/03-agentic-loops.md#ordering-with-emitwait_for)
 - `wait_for`: Ordering-only graph-scope output/emit address(es). Node won't run until these values exist and are fresh. Must reference an `emit` or `output_name` of another node at the current graph scope
+- `retry`: Optional [RetryPolicy](#retrypolicy) declaring which failures are safe to repeat and with what budget/backoff. See [How to Retry Transient Failures](../05-how-to/retry-transient-failures.md)
 
 **Returns:**
 - FunctionNode if source provided (decorator without parens)
@@ -581,6 +585,96 @@ def log(msg: str) -> None:  # Explicitly None → no warning
 def log(msg: str):  # No return annotation → no warning
     print(msg)
 ```
+
+---
+
+## RetryPolicy
+
+Frozen, node-owned retry declaration with capped-exponential backoff. Passed to `@node(retry=...)` or `FunctionNode(retry=...)`.
+
+```python
+from hypergraph import RetryPolicy, node
+
+@node(
+    output_name="response",
+    retry=RetryPolicy(
+        max_attempts=3,
+        retry_on=(ConnectionError, TimeoutError),
+    ),
+)
+def call_model(prompt: str) -> str:
+    return client.generate(prompt)
+```
+
+### Signature
+
+```python
+@dataclass(frozen=True)
+class RetryPolicy:
+    max_attempts: int
+    retry_on: tuple[type[Exception], ...]
+    retry_window: float | None = None
+    initial_delay: float = 1.0
+    backoff_multiplier: float = 2.0
+    max_delay: float = 60.0
+    jitter: Literal["full", "none"] = "full"
+```
+
+**Args:**
+
+- `max_attempts`: Total callable invocations **including the first**. `max_attempts=3` means at most three calls
+- `retry_on` (required): Explicit allowlist of `Exception` subclasses that may retry. There is no retry-all default and no `retry=True` shorthand. `BaseException` control flow (KeyboardInterrupt, cancellation, pause/stop) is never eligible and is rejected at construction
+- `retry_window`: Optional bound in seconds on one attempt series. The absolute deadline is fixed once when the series opens; attempt execution, backoff, persistence overhead, and process downtime all consume it. Independent OR-limit with `max_attempts`
+- `initial_delay`: Base delay in seconds before the second attempt (default: 1.0)
+- `backoff_multiplier`: Exponential growth factor; `1.0` expresses constant delay (default: 2.0)
+- `max_delay`: Cap on the nominal delay in seconds (default: 60.0)
+- `jitter`: `"full"` samples uniformly from `[0, nominal]`; `"none"` uses the nominal delay directly (default: `"full"`)
+
+After failed one-based attempt `n`, the nominal delay is `min(max_delay, initial_delay * backoff_multiplier ** (n - 1))`.
+
+**Raises:** `ValueError` / `TypeError` at construction — before any execution — for a missing or empty `retry_on`, `BaseException`-family entries, non-positive or non-finite timing fields, `max_attempts < 1`, or an unknown jitter mode.
+
+### Semantics
+
+- **Node-owned only.** Only the node declaration can make its callable repeat. Runners, graphs, and `run()`/`map()` calls have no retry defaults or overrides.
+- **One logical step.** A retrying node stays a single graph step: downstream scheduling, state application, and the cache write happen once, after the final success. Intermediate attempts never fold state or emit node events.
+- **Exact exception, no wrapper.** After exhaustion or an ineligible failure, the exact final underlying exception is re-raised — never a generic retry-exhausted wrapper.
+- **Durable budget.** With a persistent checkpointer (e.g. `SqliteCheckpointer`) and a `workflow_id`, every attempt is reserved write-through in the durable attempt ledger before user code runs: `max_attempts` is a hard cap across crash and resume, and the sampled backoff plus its absolute wake time are persisted so a restart neither redraws jitter nor restarts the wait. With `MemoryCheckpointer` the budget survives in-process resume only; without a checkpointer it is process-local.
+- **Cache first.** A cache hit invokes nothing, consumes zero attempts, and opens no series. Changing a retry policy does not invalidate cached results.
+- **Composition.** The declaration travels with the node through nested graphs and background execution; each `.map()` item owns its own attempt series and budget. Gates, interrupts, and the GraphNode boundary are not retryable.
+- **Direct calls stay raw.** `node(...)` and `node.func(...)` invoke exactly once regardless of policy.
+
+## RetryAfterError
+
+Typed carrier for a server-supplied retry delay (e.g. an HTTP `Retry-After` header). It never authorizes a retry by itself.
+
+```python
+from hypergraph import RetryAfterError
+
+@node(
+    output_name="response",
+    retry=RetryPolicy(max_attempts=5, retry_on=(RateLimited,)),
+)
+def send(message: str) -> str:
+    try:
+        return client.send(message)
+    except RateLimited as error:
+        raise RetryAfterError(error, retry_after=30) from error
+```
+
+### Signature
+
+```python
+class RetryAfterError(Exception):
+    def __init__(self, error: Exception, *, retry_after: float) -> None: ...
+```
+
+**Args:**
+
+- `error`: The exact underlying exception. Eligibility is checked against the node's `retry_on` allowlist using this object's type — the carrier never makes an ineligible error retryable
+- `retry_after`: Finite delay in seconds, `>= 0`. When a retry may start, this delay is honored **exactly** — no jitter and no `max_delay` cap — but it remains bounded by `max_attempts` and `retry_window`. If the wait cannot end before the series deadline, hypergraph skips the pointless sleep and re-raises the exact underlying exception (never the carrier)
+
+**Raises:** `TypeError` for a non-`Exception` or nested-carrier `error`; `ValueError` for a negative or non-finite `retry_after`.
 
 ---
 
