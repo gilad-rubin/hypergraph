@@ -1,0 +1,40 @@
+# Dependabot version-update configuration.
+#
+# Docs:
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# Dependency-vulnerability alerts and security updates are enabled/managed
+# via repository settings, not this file.
+version: 2
+
+updates:
+  # Python dependencies, resolved via uv.lock at the repo root.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # NOTE: the "uv" ecosystem does not support the `dependency-type`
+      # groups filter (development vs. production) as of this writing —
+      # see https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#dependency-type-groups
+      # ("Supported by: bundler, composer, mix, maven, npm, and pip.").
+      # All minor/patch updates are grouped together regardless of
+      # dependency type; major updates are left out of the group so each
+      # opens its own pull request for individual review.
+      python-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions referenced from workflow files under .github/workflows/.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
