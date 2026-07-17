@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -324,15 +325,25 @@ def plan_interrupt_batch(ready_nodes: list[HyperNode]) -> list[HyperNode]:
 
 def ensure_progress_processor(
     event_processors: list[Any] | None,
+    *,
+    carried: Sequence[Any] = (),
 ) -> list[Any]:
-    """Ensure at least one RichProgressProcessor is in the list.
+    """Ensure at least one RichProgressProcessor across the merged sequence.
 
-    Returns a new list. If a RichProgressProcessor is already present,
-    the list is returned as-is (copied). Otherwise a default one is prepended.
+    ``carried`` is the graph-carried processor tuple that the caller merges in
+    front of the call-site list afterwards. The presence check inspects the
+    merged view ``[*carried, *event_processors]`` so an explicit Rich processor
+    anywhere in it suppresses the auto-synthesized default (issue #207).
+
+    Returns a new call-site list: unchanged (copied) when a Rich processor is
+    already present, otherwise with one default prepended. ``carried``
+    processors are only inspected, never included in the returned list — the
+    caller owns that merge (and map templates must forward only the call-site
+    list into per-item runs).
     """
     from hypergraph.events.rich_progress import RichProgressProcessor
 
     processors = list(event_processors) if event_processors else []
-    if not any(isinstance(p, RichProgressProcessor) for p in processors):
+    if not any(isinstance(p, RichProgressProcessor) for p in (*carried, *processors)):
         processors.insert(0, RichProgressProcessor())
     return processors
