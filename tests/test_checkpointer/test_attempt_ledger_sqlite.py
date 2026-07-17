@@ -1,12 +1,18 @@
 """SQLite-only attempt-ledger contract tests (#229).
 
 Assertion map (validation contract, wave A):
-    A6  write-through independence      test_reservation_writes_through_under_exit_durability,
+    A6  write-through independence      test_reservation_writes_through_while_step_record_is_buffered,
                                         test_reservation_visible_to_second_connection_before_close
     A12 migration                       test_pre_ledger_database_migrates_in_place
     (sync mirrors)                      TestSyncMirrors
     (raw-SQL falsifiers)                test_superstep_drift_creates_no_second_series_row,
                                         test_retention_deletes_closed_series_rows
+
+Review probes (wave-A FIX-FIRST verdict):
+    FA1a close interleaving             test_competing_settle_cannot_overwrite_settled_attempt
+    FA1b reservation race               test_async_sync_reservation_race_reserves_exactly_once
+    FA1c orphan/foreign keys            test_foreign_keys_enforced_on_both_connections,
+                                        test_retention_prune_not_observed_half_applied
 """
 
 from __future__ import annotations
@@ -86,9 +92,7 @@ async def test_reservation_writes_through_while_step_record_is_buffered(tmp_path
                 "SELECT COUNT(*) FROM attempt_records WHERE series_id = ? AND status = 'started'",
                 (series.id,),
             ).fetchone()
-            (steps_flushed,) = second.execute(
-                "SELECT COUNT(*) FROM steps WHERE run_id = 'wf-exit'"
-            ).fetchone()
+            (steps_flushed,) = second.execute("SELECT COUNT(*) FROM steps WHERE run_id = 'wf-exit'").fetchone()
         finally:
             second.close()
         probe["series_id"] = series.id
@@ -368,7 +372,7 @@ async def test_competing_settle_cannot_overwrite_settled_attempt(tmp_path, monke
                 step_record=_step(attempt_series_id=series.id),
             )
         )
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), timeout=10)
 
         # C2: competing settle over the sync connection while C1 is in flight.
         outcome: dict[str, str] = {}
@@ -427,7 +431,7 @@ async def test_async_sync_reservation_race_reserves_exactly_once(tmp_path, monke
         # C1: async reservation paused between its budget check and its insert.
         entered, hold = _pause_on_sql(cp, "COALESCE(MAX(attempt_number)", monkeypatch)
         begin_task = asyncio.create_task(cp.begin_attempt(series.id, policy_fingerprint=FP, scheduled_superstep=0))
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), timeout=10)
 
         outcome: dict[str, object] = {}
 
@@ -511,7 +515,7 @@ async def test_retention_prune_not_observed_half_applied(tmp_path, monkeypatch):
         # series. Pause between the record-delete and the series-delete.
         entered, hold = _pause_on_sql(cp, "DELETE FROM attempt_series", monkeypatch)
         save_task = asyncio.create_task(cp.save_step(_step(superstep=4, index=9, values={"answer": 2})))
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), timeout=10)
 
         async def observe() -> tuple[object, list]:
             return (await cp.get_attempt_series(series.id), await cp.get_attempt_records(series.id))
@@ -530,9 +534,7 @@ async def test_retention_prune_not_observed_half_applied(tmp_path, monkeypatch):
         assert await cp.get_attempt_records(series.id) == []
         probe = sqlite3.connect(path)
         try:
-            (orphans,) = probe.execute(
-                "SELECT COUNT(*) FROM attempt_records WHERE series_id NOT IN (SELECT id FROM attempt_series)"
-            ).fetchone()
+            (orphans,) = probe.execute("SELECT COUNT(*) FROM attempt_records WHERE series_id NOT IN (SELECT id FROM attempt_series)").fetchone()
         finally:
             probe.close()
         assert orphans == 0

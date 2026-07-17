@@ -10,6 +10,7 @@ from hypergraph.checkpointers.base import (
     _UNSET,
     Checkpointer,
     _check_close_request,
+    _check_no_live_reservation,
     _check_no_open_series,
     _check_recordable_outcome,
     _check_reservation,
@@ -241,8 +242,9 @@ class MemoryCheckpointer(Checkpointer):
         records = self._attempt_records[series_id]
         now = datetime.now(timezone.utc)
         _check_reservation(series, policy_fingerprint=policy_fingerprint, consumed=len(records), now=now)
-        # A new reservation is proof any prior STARTED row can no longer resolve.
-        self._settle_stranded(records, now)
+        # A STARTED row may belong to a live invocation — never reserve over it.
+        live = next((record for record in records.values() if record.status is AttemptStatus.STARTED), None)
+        _check_no_live_reservation(live, series_id)
         record = AttemptRecord(
             series_id=series_id,
             attempt_number=max(records, default=0) + 1,

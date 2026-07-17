@@ -132,6 +132,9 @@ class TestRunLifecycle:
         assert paused[0].id == "wf-paused"
 
     async def test_create_run_with_lineage_fields(self, checkpointer):
+        # Referenced lineage runs must exist (foreign keys are enforced).
+        await checkpointer.create_run("wf-parent")
+        await checkpointer.create_run("wf-root")
         run = await checkpointer.create_run(
             "wf-child",
             forked_from="wf-parent",
@@ -250,6 +253,9 @@ class TestStepPersistence:
 
     async def test_upsert_preserves_fields_outside_the_update_policy(self, checkpointer):
         await checkpointer.create_run("wf-1")
+        # Referenced child runs must exist (foreign keys are enforced).
+        await checkpointer.create_run("child-original", parent_run_id="wf-1")
+        await checkpointer.create_run("child-replacement", parent_run_id="wf-1")
         original_created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
         replacement_created_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
         await checkpointer.save_step(

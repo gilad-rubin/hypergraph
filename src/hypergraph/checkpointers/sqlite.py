@@ -19,6 +19,7 @@ from hypergraph.checkpointers.base import (
     Checkpointer,
     CheckpointPolicy,
     _check_close_request,
+    _check_no_live_reservation,
     _check_no_open_series,
     _check_recordable_outcome,
     _check_reservation,
@@ -33,6 +34,7 @@ from hypergraph.checkpointers.presenters import render_checkpointer_explorer_htm
 from hypergraph.checkpointers.serializers import JsonSerializer, Serializer
 from hypergraph.checkpointers.types import (
     AttemptError,
+    AttemptLedgerError,
     AttemptRecord,
     AttemptSeries,
     AttemptStatus,
@@ -100,14 +102,19 @@ _ATTEMPT_RECORDS_SQL = f"SELECT {_ATTEMPT_RECORD_COLS} FROM attempt_records WHER
 _ATTEMPT_RECORD_SQL = f"SELECT {_ATTEMPT_RECORD_COLS} FROM attempt_records WHERE series_id = ? AND attempt_number = ?"
 _ATTEMPT_COUNT_SQL = "SELECT COUNT(*) FROM attempt_records WHERE series_id = ?"
 _ATTEMPT_SETTLE_STRANDED_SQL = "UPDATE attempt_records SET status = ?, completed_at = ? WHERE series_id = ? AND status = ?"
+# Compare-and-set updates: the trailing status/closed_at guards make a settle
+# strictly one-shot — a competing writer that lost the race matches 0 rows and
+# the checked rowcount raises loudly instead of silently overwriting.
 _ATTEMPT_OUTCOME_SQL = (
     "UPDATE attempt_records SET status = ?, completed_at = ?, error_type = ?, error_message = ?, "
-    "retry_not_before = ?, sampled_delay = ? WHERE series_id = ? AND attempt_number = ?"
+    "retry_not_before = ?, sampled_delay = ? WHERE series_id = ? AND attempt_number = ? AND status = 'started'"
 )
 _ATTEMPT_FINAL_SQL = (
-    "UPDATE attempt_records SET status = ?, completed_at = ?, error_type = ?, error_message = ? WHERE series_id = ? AND attempt_number = ?"
+    "UPDATE attempt_records SET status = ?, completed_at = ?, error_type = ?, error_message = ? "
+    "WHERE series_id = ? AND attempt_number = ? AND status = 'started'"
 )
-_ATTEMPT_SERIES_CLOSE_SQL = "UPDATE attempt_series SET closed_at = ?, committed_superstep = ? WHERE id = ?"
+_ATTEMPT_SERIES_CLOSE_SQL = "UPDATE attempt_series SET closed_at = ?, committed_superstep = ? WHERE id = ? AND closed_at IS NULL"
+_ATTEMPT_LIVE_SQL = f"SELECT {_ATTEMPT_RECORD_COLS} FROM attempt_records WHERE series_id = ? AND status = 'started' LIMIT 1"
 _ATTEMPT_MAX_NUMBER_SQL = "SELECT COALESCE(MAX(attempt_number), 0) FROM attempt_records WHERE series_id = ?"
 _RUN_EXISTS_SQL = "SELECT 1 FROM runs WHERE id = ?"
 
@@ -335,6 +342,7 @@ class SqliteCheckpointer(Checkpointer):
         self._sync_conn: Any = None
         self._sync_lock = threading.RLock()
         self._init_lock: asyncio.Lock | None = None
+        self._async_txn_lock: asyncio.Lock | None = None
         self._aiosqlite = _require_aiosqlite()
 
     def __del__(self) -> None:
@@ -450,6 +458,7 @@ class SqliteCheckpointer(Checkpointer):
 
         self._db = await self._aiosqlite.connect(self._connect_path, uri=self._connect_uri)
         await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("PRAGMA foreign_keys=ON")
         # For in-memory DBs, schema must be created after async connect so the
         # shared-cache database stays alive across connections.
         if self._is_memory:
@@ -477,6 +486,7 @@ class SqliteCheckpointer(Checkpointer):
             await self._db.close()
             self._db = None
         self._init_lock = None
+        self._async_txn_lock = None
 
     async def _ensure_db(self) -> None:
         """Lazy-initialize on first use."""
@@ -487,6 +497,18 @@ class SqliteCheckpointer(Checkpointer):
         async with self._init_lock:
             if self._db is None:
                 await self.initialize()
+
+    def _txn_lock(self) -> asyncio.Lock:
+        """Serialize multi-statement work on the shared async connection.
+
+        aiosqlite shares ONE connection between coroutines, so without this
+        lock an interleaved coroutine observes uncommitted half-state and its
+        ``commit()`` can commit another coroutine's half-open transaction.
+        Every async write path and every attempt-ledger operation must hold it.
+        """
+        if self._async_txn_lock is None:
+            self._async_txn_lock = asyncio.Lock()
+        return self._async_txn_lock
 
     # === Write ===
 
@@ -516,9 +538,10 @@ class SqliteCheckpointer(Checkpointer):
     async def save_step(self, record: StepRecord) -> None:
         """Save a step with upsert semantics."""
         await self._ensure_db()
-        await self._db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
-        await self._apply_retention_policy_async(record.run_id)
-        await self._db.commit()
+        async with self._txn_lock():
+            await self._db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
+            await self._apply_retention_policy_async(record.run_id)
+            await self._db.commit()
 
     async def create_run(
         self,
@@ -536,34 +559,35 @@ class SqliteCheckpointer(Checkpointer):
         await self._ensure_db()
         now = datetime.now(timezone.utc)
         config_json = json.dumps(config) if config is not None else None
-        await self._db.execute(
-            "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, duration_ms = NULL, node_count = 0, "
-            "error_count = 0, completed_at = NULL, parent_run_id = ?, forked_from = ?, "
-            "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?",
-            (
-                run_id,
-                WorkflowStatus.ACTIVE.value,
-                graph_name or "",
-                now.isoformat(),
-                parent_run_id,
-                forked_from,
-                fork_superstep,
-                retry_of,
-                retry_index,
-                config_json,
-                WorkflowStatus.ACTIVE.value,
-                graph_name or "",
-                parent_run_id,
-                forked_from,
-                fork_superstep,
-                retry_of,
-                retry_index,
-                config_json,
-            ),
-        )
-        await self._db.commit()
+        async with self._txn_lock():
+            await self._db.execute(
+                "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, duration_ms = NULL, node_count = 0, "
+                "error_count = 0, completed_at = NULL, parent_run_id = ?, forked_from = ?, "
+                "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?",
+                (
+                    run_id,
+                    WorkflowStatus.ACTIVE.value,
+                    graph_name or "",
+                    now.isoformat(),
+                    parent_run_id,
+                    forked_from,
+                    fork_superstep,
+                    retry_of,
+                    retry_index,
+                    config_json,
+                    WorkflowStatus.ACTIVE.value,
+                    graph_name or "",
+                    parent_run_id,
+                    forked_from,
+                    fork_superstep,
+                    retry_of,
+                    retry_index,
+                    config_json,
+                ),
+            )
+            await self._db.commit()
         return Run(
             id=run_id,
             status=WorkflowStatus.ACTIVE,
@@ -609,11 +633,12 @@ class SqliteCheckpointer(Checkpointer):
             params.append(error_count)
 
         params.append(run_id)
-        await self._db.execute(
-            f"UPDATE runs SET {', '.join(sets)} WHERE id = ?",
-            params,
-        )
-        await self._db.commit()
+        async with self._txn_lock():
+            await self._db.execute(
+                f"UPDATE runs SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
+            await self._db.commit()
 
     # === Read ===
 
@@ -797,8 +822,17 @@ class SqliteCheckpointer(Checkpointer):
     #
     # Reservations and outcomes write through immediately: every method
     # commits before returning, independent of the CheckpointPolicy
-    # durability timing the runner applies to StepRecords. On any failure the
-    # open transaction is rolled back so nothing partial can commit later.
+    # durability timing the runner applies to StepRecords.
+    #
+    # Concurrency contract (wave-A review):
+    # - every operation holds the async transaction lock, so coroutines
+    #   sharing the aiosqlite connection never observe uncommitted half-state;
+    # - every write path issues BEGIN IMMEDIATE before validation, so a
+    #   competing writer on the OTHER connection blocks until commit and then
+    #   re-validates against committed truth (no stale-snapshot decisions);
+    # - settles are compare-and-set with checked rowcounts — losing a race
+    #   raises loudly instead of silently overwriting;
+    # - on any failure the open transaction is rolled back.
 
     async def _rollback_async(self) -> None:
         with contextlib.suppress(Exception):
@@ -809,10 +843,26 @@ class SqliteCheckpointer(Checkpointer):
         row = await cursor.fetchone()
         return _row_to_attempt_series(row) if row is not None else None
 
+    async def _fetch_open_series(self, run_id: str, node_name: str) -> AttemptSeries | None:
+        cursor = await self._db.execute(_ATTEMPT_SERIES_OPEN_SQL, (run_id, node_name))
+        row = await cursor.fetchone()
+        return _row_to_attempt_series(row) if row is not None else None
+
     async def _fetch_attempt_record(self, series_id: str, attempt_number: int) -> AttemptRecord | None:
         cursor = await self._db.execute(_ATTEMPT_RECORD_SQL, (series_id, attempt_number))
         row = await cursor.fetchone()
         return _row_to_attempt_record(row) if row is not None else None
+
+    async def _fetch_attempt_records(self, series_id: str) -> list[AttemptRecord]:
+        cursor = await self._db.execute(_ATTEMPT_RECORDS_SQL, (series_id,))
+        rows = await cursor.fetchall()
+        return [_row_to_attempt_record(row) for row in rows]
+
+    @staticmethod
+    def _check_settled_exactly_one(rowcount: int, what: str) -> None:
+        """Invariant check behind the CAS guards — a lost race fails loudly."""
+        if rowcount != 1:
+            raise AttemptLedgerError(f"{what} was concurrently modified; the write was aborted and rolled back.")
 
     async def open_attempt_series(
         self,
@@ -824,48 +874,50 @@ class SqliteCheckpointer(Checkpointer):
         deadline_at: datetime | None = None,
     ) -> AttemptSeries:
         await self._ensure_db()
-        try:
-            cursor = await self._db.execute(_RUN_EXISTS_SQL, (run_id,))
-            _check_run_exists(await cursor.fetchone() is not None, run_id)
-            _check_no_open_series(await self.get_open_attempt_series(run_id, node_name), run_id, node_name)
-            series = AttemptSeries(
-                id=_new_attempt_series_id(),
-                run_id=run_id,
-                node_name=node_name,
-                policy_fingerprint=policy_fingerprint,
-                max_attempts=max_attempts,
-                opened_at=datetime.now(timezone.utc),
-                deadline_at=deadline_at,
-            )
-            await self._db.execute(_ATTEMPT_SERIES_INSERT_SQL, _attempt_series_insert_params(series))
-            await self._db.commit()
-            return series
-        except BaseException:
-            await self._rollback_async()
-            raise
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                cursor = await self._db.execute(_RUN_EXISTS_SQL, (run_id,))
+                _check_run_exists(await cursor.fetchone() is not None, run_id)
+                _check_no_open_series(await self._fetch_open_series(run_id, node_name), run_id, node_name)
+                series = AttemptSeries(
+                    id=_new_attempt_series_id(),
+                    run_id=run_id,
+                    node_name=node_name,
+                    policy_fingerprint=policy_fingerprint,
+                    max_attempts=max_attempts,
+                    opened_at=datetime.now(timezone.utc),
+                    deadline_at=deadline_at,
+                )
+                await self._db.execute(_ATTEMPT_SERIES_INSERT_SQL, _attempt_series_insert_params(series))
+                await self._db.commit()
+                return series
+            except BaseException:
+                await self._rollback_async()
+                raise
 
     async def get_attempt_series(self, series_id: str) -> AttemptSeries | None:
         await self._ensure_db()
-        return await self._fetch_attempt_series(series_id)
+        async with self._txn_lock():
+            return await self._fetch_attempt_series(series_id)
 
     async def get_open_attempt_series(self, run_id: str, node_name: str) -> AttemptSeries | None:
         await self._ensure_db()
-        cursor = await self._db.execute(_ATTEMPT_SERIES_OPEN_SQL, (run_id, node_name))
-        row = await cursor.fetchone()
-        return _row_to_attempt_series(row) if row is not None else None
+        async with self._txn_lock():
+            return await self._fetch_open_series(run_id, node_name)
 
     async def get_attempt_records(self, series_id: str) -> list[AttemptRecord]:
         await self._ensure_db()
-        cursor = await self._db.execute(_ATTEMPT_RECORDS_SQL, (series_id,))
-        rows = await cursor.fetchall()
-        return [_row_to_attempt_record(row) for row in rows]
+        async with self._txn_lock():
+            return await self._fetch_attempt_records(series_id)
 
     async def remaining_attempts(self, series_id: str) -> int:
         await self._ensure_db()
-        series = _require_series(await self._fetch_attempt_series(series_id), series_id)
-        cursor = await self._db.execute(_ATTEMPT_COUNT_SQL, (series_id,))
-        (consumed,) = await cursor.fetchone()
-        return series.max_attempts - int(consumed)
+        async with self._txn_lock():
+            series = _require_series(await self._fetch_attempt_series(series_id), series_id)
+            cursor = await self._db.execute(_ATTEMPT_COUNT_SQL, (series_id,))
+            (consumed,) = await cursor.fetchone()
+            return series.max_attempts - int(consumed)
 
     async def begin_attempt(
         self,
@@ -876,31 +928,32 @@ class SqliteCheckpointer(Checkpointer):
     ) -> AttemptRecord:
         await self._ensure_db()
         now = datetime.now(timezone.utc)
-        try:
-            series = _require_series(await self._fetch_attempt_series(series_id), series_id)
-            cursor = await self._db.execute(_ATTEMPT_COUNT_SQL, (series_id,))
-            (consumed,) = await cursor.fetchone()
-            _check_reservation(series, policy_fingerprint=policy_fingerprint, consumed=int(consumed), now=now)
-            # A new reservation is proof any prior STARTED row can no longer resolve.
-            await self._db.execute(
-                _ATTEMPT_SETTLE_STRANDED_SQL,
-                (AttemptStatus.OUTCOME_UNKNOWN.value, now.isoformat(), series_id, AttemptStatus.STARTED.value),
-            )
-            cursor = await self._db.execute(_ATTEMPT_MAX_NUMBER_SQL, (series_id,))
-            (max_number,) = await cursor.fetchone()
-            record = AttemptRecord(
-                series_id=series_id,
-                attempt_number=int(max_number) + 1,
-                scheduled_superstep=scheduled_superstep,
-                status=AttemptStatus.STARTED,
-                started_at=now,
-            )
-            await self._db.execute(_ATTEMPT_RECORD_INSERT_SQL, _attempt_record_insert_params(record))
-            await self._db.commit()
-            return record
-        except BaseException:
-            await self._rollback_async()
-            raise
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                series = _require_series(await self._fetch_attempt_series(series_id), series_id)
+                cursor = await self._db.execute(_ATTEMPT_COUNT_SQL, (series_id,))
+                (consumed,) = await cursor.fetchone()
+                _check_reservation(series, policy_fingerprint=policy_fingerprint, consumed=int(consumed), now=now)
+                # A STARTED row may belong to a live invocation — never reserve over it.
+                cursor = await self._db.execute(_ATTEMPT_LIVE_SQL, (series_id,))
+                live_row = await cursor.fetchone()
+                _check_no_live_reservation(_row_to_attempt_record(live_row) if live_row is not None else None, series_id)
+                cursor = await self._db.execute(_ATTEMPT_MAX_NUMBER_SQL, (series_id,))
+                (max_number,) = await cursor.fetchone()
+                record = AttemptRecord(
+                    series_id=series_id,
+                    attempt_number=int(max_number) + 1,
+                    scheduled_superstep=scheduled_superstep,
+                    status=AttemptStatus.STARTED,
+                    started_at=now,
+                )
+                await self._db.execute(_ATTEMPT_RECORD_INSERT_SQL, _attempt_record_insert_params(record))
+                await self._db.commit()
+                return record
+            except BaseException:
+                await self._rollback_async()
+                raise
 
     async def record_attempt_outcome(
         self,
@@ -915,34 +968,37 @@ class SqliteCheckpointer(Checkpointer):
         await self._ensure_db()
         _check_recordable_outcome(status)
         now = datetime.now(timezone.utc)
-        try:
-            _require_series(await self._fetch_attempt_series(series_id), series_id)
-            record = _require_started(await self._fetch_attempt_record(series_id, attempt_number), series_id, attempt_number)
-            await self._db.execute(
-                _ATTEMPT_OUTCOME_SQL,
-                (
-                    status.value,
-                    now.isoformat(),
-                    error.type_name if error else None,
-                    error.message if error else None,
-                    _iso_or_none(retry_not_before),
-                    sampled_delay,
-                    series_id,
-                    attempt_number,
-                ),
-            )
-            await self._db.commit()
-            return replace(
-                record,
-                status=status,
-                completed_at=now,
-                error=error,
-                retry_not_before=retry_not_before,
-                sampled_delay=sampled_delay,
-            )
-        except BaseException:
-            await self._rollback_async()
-            raise
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                _require_series(await self._fetch_attempt_series(series_id), series_id)
+                record = _require_started(await self._fetch_attempt_record(series_id, attempt_number), series_id, attempt_number)
+                cursor = await self._db.execute(
+                    _ATTEMPT_OUTCOME_SQL,
+                    (
+                        status.value,
+                        now.isoformat(),
+                        error.type_name if error else None,
+                        error.message if error else None,
+                        _iso_or_none(retry_not_before),
+                        sampled_delay,
+                        series_id,
+                        attempt_number,
+                    ),
+                )
+                self._check_settled_exactly_one(cursor.rowcount, f"Attempt #{attempt_number} in series {series_id!r}")
+                await self._db.commit()
+                return replace(
+                    record,
+                    status=status,
+                    completed_at=now,
+                    error=error,
+                    retry_not_before=retry_not_before,
+                    sampled_delay=sampled_delay,
+                )
+            except BaseException:
+                await self._rollback_async()
+                raise
 
     async def close_attempt_series(
         self,
@@ -955,43 +1011,49 @@ class SqliteCheckpointer(Checkpointer):
     ) -> None:
         await self._ensure_db()
         now = datetime.now(timezone.utc)
-        try:
-            series = _require_series(await self._fetch_attempt_series(series_id), series_id)
-            _check_close_request(series, status, step_record)
-            _require_started(await self._fetch_attempt_record(series_id, attempt_number), series_id, attempt_number)
-            await self._db.execute(
-                _ATTEMPT_FINAL_SQL,
-                (
-                    status.value,
-                    now.isoformat(),
-                    error.type_name if error else None,
-                    error.message if error else None,
-                    series_id,
-                    attempt_number,
-                ),
-            )
-            await self._db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(step_record))
-            await self._db.execute(_ATTEMPT_SERIES_CLOSE_SQL, (now.isoformat(), step_record.superstep, series_id))
-            await self._apply_retention_policy_async(step_record.run_id)
-            await self._db.commit()
-        except BaseException:
-            await self._rollback_async()
-            raise
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                series = _require_series(await self._fetch_attempt_series(series_id), series_id)
+                _check_close_request(series, status, step_record)
+                _require_started(await self._fetch_attempt_record(series_id, attempt_number), series_id, attempt_number)
+                cursor = await self._db.execute(
+                    _ATTEMPT_FINAL_SQL,
+                    (
+                        status.value,
+                        now.isoformat(),
+                        error.type_name if error else None,
+                        error.message if error else None,
+                        series_id,
+                        attempt_number,
+                    ),
+                )
+                self._check_settled_exactly_one(cursor.rowcount, f"Attempt #{attempt_number} in series {series_id!r}")
+                await self._db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(step_record))
+                cursor = await self._db.execute(_ATTEMPT_SERIES_CLOSE_SQL, (now.isoformat(), step_record.superstep, series_id))
+                self._check_settled_exactly_one(cursor.rowcount, f"Attempt series {series_id!r}")
+                await self._apply_retention_policy_async(step_record.run_id)
+                await self._db.commit()
+            except BaseException:
+                await self._rollback_async()
+                raise
 
     async def resolve_stranded_attempts(self, series_id: str) -> list[AttemptRecord]:
         await self._ensure_db()
         now = datetime.now(timezone.utc)
-        try:
-            _require_series(await self._fetch_attempt_series(series_id), series_id)
-            await self._db.execute(
-                _ATTEMPT_SETTLE_STRANDED_SQL,
-                (AttemptStatus.OUTCOME_UNKNOWN.value, now.isoformat(), series_id, AttemptStatus.STARTED.value),
-            )
-            await self._db.commit()
-        except BaseException:
-            await self._rollback_async()
-            raise
-        return await self.get_attempt_records(series_id)
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                _require_series(await self._fetch_attempt_series(series_id), series_id)
+                await self._db.execute(
+                    _ATTEMPT_SETTLE_STRANDED_SQL,
+                    (AttemptStatus.OUTCOME_UNKNOWN.value, now.isoformat(), series_id, AttemptStatus.STARTED.value),
+                )
+                await self._db.commit()
+                return await self._fetch_attempt_records(series_id)
+            except BaseException:
+                await self._rollback_async()
+                raise
 
     # === Internal ===
 
@@ -1071,6 +1133,7 @@ class SqliteCheckpointer(Checkpointer):
                     check_same_thread=False,
                 )
                 conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA foreign_keys=ON")
                 ensure_schema(conn)
                 self._sync_conn = conn
             return self._sync_conn
@@ -1672,8 +1735,10 @@ class SqliteCheckpointer(Checkpointer):
 
     # === Attempt Ledger (sync mirrors) ===
     #
-    # Same write-through and rollback contract as the async methods, over the
-    # cached sync connection used by SyncRunner.
+    # Same write-through, BEGIN IMMEDIATE, and CAS/rowcount contract as the
+    # async methods, over the cached sync connection used by SyncRunner. The
+    # threading RLock serializes in-process sync users; BEGIN IMMEDIATE
+    # serializes against the async connection at the database level.
 
     @staticmethod
     def _rollback_sync(db: Any) -> None:
@@ -1700,8 +1765,10 @@ class SqliteCheckpointer(Checkpointer):
         with self._sync_lock:
             db = self._sync_db()
             try:
+                db.execute("BEGIN IMMEDIATE")
                 _check_run_exists(db.execute(_RUN_EXISTS_SQL, (run_id,)).fetchone() is not None, run_id)
-                _check_no_open_series(self.get_open_attempt_series_sync(run_id, node_name), run_id, node_name)
+                open_row = db.execute(_ATTEMPT_SERIES_OPEN_SQL, (run_id, node_name)).fetchone()
+                _check_no_open_series(_row_to_attempt_series(open_row) if open_row is not None else None, run_id, node_name)
                 series = AttemptSeries(
                     id=_new_attempt_series_id(),
                     run_id=run_id,
@@ -1750,14 +1817,13 @@ class SqliteCheckpointer(Checkpointer):
             db = self._sync_db()
             now = datetime.now(timezone.utc)
             try:
+                db.execute("BEGIN IMMEDIATE")
                 series = _require_series(self._fetch_attempt_series_sync(db, series_id), series_id)
                 (consumed,) = db.execute(_ATTEMPT_COUNT_SQL, (series_id,)).fetchone()
                 _check_reservation(series, policy_fingerprint=policy_fingerprint, consumed=int(consumed), now=now)
-                # A new reservation is proof any prior STARTED row can no longer resolve.
-                db.execute(
-                    _ATTEMPT_SETTLE_STRANDED_SQL,
-                    (AttemptStatus.OUTCOME_UNKNOWN.value, now.isoformat(), series_id, AttemptStatus.STARTED.value),
-                )
+                # A STARTED row may belong to a live invocation — never reserve over it.
+                live_row = db.execute(_ATTEMPT_LIVE_SQL, (series_id,)).fetchone()
+                _check_no_live_reservation(_row_to_attempt_record(live_row) if live_row is not None else None, series_id)
                 (max_number,) = db.execute(_ATTEMPT_MAX_NUMBER_SQL, (series_id,)).fetchone()
                 record = AttemptRecord(
                     series_id=series_id,
@@ -1788,9 +1854,10 @@ class SqliteCheckpointer(Checkpointer):
             db = self._sync_db()
             now = datetime.now(timezone.utc)
             try:
+                db.execute("BEGIN IMMEDIATE")
                 _require_series(self._fetch_attempt_series_sync(db, series_id), series_id)
                 record = _require_started(self._fetch_attempt_record_sync(db, series_id, attempt_number), series_id, attempt_number)
-                db.execute(
+                cursor = db.execute(
                     _ATTEMPT_OUTCOME_SQL,
                     (
                         status.value,
@@ -1803,6 +1870,7 @@ class SqliteCheckpointer(Checkpointer):
                         attempt_number,
                     ),
                 )
+                self._check_settled_exactly_one(cursor.rowcount, f"Attempt #{attempt_number} in series {series_id!r}")
                 db.commit()
                 return replace(
                     record,
@@ -1829,10 +1897,11 @@ class SqliteCheckpointer(Checkpointer):
             db = self._sync_db()
             now = datetime.now(timezone.utc)
             try:
+                db.execute("BEGIN IMMEDIATE")
                 series = _require_series(self._fetch_attempt_series_sync(db, series_id), series_id)
                 _check_close_request(series, status, step_record)
                 _require_started(self._fetch_attempt_record_sync(db, series_id, attempt_number), series_id, attempt_number)
-                db.execute(
+                cursor = db.execute(
                     _ATTEMPT_FINAL_SQL,
                     (
                         status.value,
@@ -1843,8 +1912,10 @@ class SqliteCheckpointer(Checkpointer):
                         attempt_number,
                     ),
                 )
+                self._check_settled_exactly_one(cursor.rowcount, f"Attempt #{attempt_number} in series {series_id!r}")
                 db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(step_record))
-                db.execute(_ATTEMPT_SERIES_CLOSE_SQL, (now.isoformat(), step_record.superstep, series_id))
+                cursor = db.execute(_ATTEMPT_SERIES_CLOSE_SQL, (now.isoformat(), step_record.superstep, series_id))
+                self._check_settled_exactly_one(cursor.rowcount, f"Attempt series {series_id!r}")
                 self._apply_retention_policy_sync(step_record.run_id)
                 db.commit()
             except BaseException:
@@ -1856,6 +1927,7 @@ class SqliteCheckpointer(Checkpointer):
             db = self._sync_db()
             now = datetime.now(timezone.utc)
             try:
+                db.execute("BEGIN IMMEDIATE")
                 _require_series(self._fetch_attempt_series_sync(db, series_id), series_id)
                 db.execute(
                     _ATTEMPT_SETTLE_STRANDED_SQL,
@@ -1865,4 +1937,5 @@ class SqliteCheckpointer(Checkpointer):
             except BaseException:
                 self._rollback_sync(db)
                 raise
-            return self.get_attempt_records_sync(series_id)
+            rows = db.execute(_ATTEMPT_RECORDS_SQL, (series_id,)).fetchall()
+            return [_row_to_attempt_record(row) for row in rows]

@@ -291,7 +291,7 @@ attempts = #1 failed, #2 timed out, #3 succeeded   # the attempt ledger
 | `AttemptSeries` | `id`, `run_id`, `node_name`, `policy_fingerprint`, `max_attempts`, `opened_at`, `deadline_at`, `committed_superstep`, `closed_at` | One durable retry budget per logical node execution. The id stays stable across superstep drift; open (`closed_at is None`) series are never pruned. |
 | `AttemptRecord` | `series_id`, `attempt_number`, `scheduled_superstep`, `status`, `started_at`, `completed_at`, `error`, `retry_not_before`, `sampled_delay` | One-based `attempt_number`. Backoff is sampled once and persisted as data. |
 | `AttemptStatus` | `STARTED`, `FAILED`, `TIMED_OUT`, `SUCCEEDED`, `CANCELLED`, `OUTCOME_UNKNOWN` | Enum. `STARTED` is a durable reservation that consumes budget; crash-stranded reservations settle as `OUTCOME_UNKNOWN` on resume. |
-| `AttemptError` | `type_name`, `message` | Bounded, privacy-safe projection — exception type plus a truncated message. No args, no stack traces, no `repr` of user values. |
+| `AttemptError` | `type_name`, `message` | Bounded error projection (type name + capped message text). No args, no stack traces, no `repr` of user values — but the capped message is stored verbatim; message-content redaction is #233's diagnostics scope. |
 
 Attempt rows never participate in state folding, step counts, baselines, or staleness — `get_state()` and `get_steps()` are byte-identical with or without retry history. A closed series links its final `StepRecord` via `StepRecord.attempt_series_id` and follows that step's retention fate.
 
@@ -349,6 +349,10 @@ Crash-recovery queries used on resume:
 ```python
 open_series = await checkpointer.get_open_attempt_series("wf-1", "call_model")
 if open_series is not None:
+    # Precondition: the caller must know no other invocation of this series can
+    # still be live (the runner's resume path owns that assertion). This is the
+    # ONLY path that converts STARTED rows — begin_attempt over a STARTED row
+    # raises instead, because the ledger cannot tell dead from live.
     records = await checkpointer.resolve_stranded_attempts(open_series.id)
     remaining = await checkpointer.remaining_attempts(open_series.id)
     # A reservation that never settled is now OUTCOME_UNKNOWN and stays consumed:

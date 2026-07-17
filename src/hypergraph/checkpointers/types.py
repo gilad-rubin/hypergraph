@@ -66,10 +66,12 @@ class AttemptLedgerError(RuntimeError):
 
 @dataclass(frozen=True)
 class AttemptError:
-    """Bounded, privacy-safe projection of an attempt's exception.
+    """Bounded error projection: exception type name + capped message text.
 
-    Stores only the exception type name and a truncated message — no args
-    tuple, no stack trace, no ``repr`` of user values.
+    Stores no args tuple, no stack trace, no ``repr`` of user values — but the
+    capped ``str(exc)`` message is persisted verbatim, so secrets embedded in
+    an exception message survive the cap. Message-content redaction is #233's
+    diagnostics scope.
     """
 
     type_name: str

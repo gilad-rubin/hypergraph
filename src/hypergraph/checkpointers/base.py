@@ -76,6 +76,19 @@ def _check_reservation(
         raise AttemptLedgerError(f"Attempt deadline elapsed for node {series.node_name!r}: deadline_at={series.deadline_at.isoformat()} has passed.")
 
 
+def _check_no_live_reservation(record: AttemptRecord | None, series_id: str) -> None:
+    """A STARTED row has no dead/live discriminator — reserving over it is a conflict."""
+    if record is not None:
+        raise AttemptLedgerError(
+            f"Attempt #{record.attempt_number} in series {series_id!r} is still STARTED; "
+            "a live invocation may exist and the ledger cannot tell dead from live.\n\n"
+            "How to fix:\n"
+            "  If resuming after a crash — when the caller can assert no other invocation\n"
+            "  remains live — call resolve_stranded_attempts() first to settle it as\n"
+            "  OUTCOME_UNKNOWN, then reserve the next attempt."
+        )
+
+
 def _check_recordable_outcome(status: AttemptStatus) -> None:
     if status is AttemptStatus.STARTED:
         raise AttemptLedgerError("STARTED is a reservation, not an outcome; use begin_attempt().")
@@ -405,6 +418,12 @@ class Checkpointer(ABC):
         ``CheckpointPolicy.durability`` timing StepRecords use — and only
         returns after it is durable. On persistence failure it raises before
         any user code may run; nothing is consumed.
+
+        If the series already holds a STARTED row, this raises
+        :class:`AttemptLedgerError`: the ledger has no dead/live discriminator,
+        so an existing reservation is never converted or reserved over. A
+        resume path settles stranded rows via
+        :meth:`resolve_stranded_attempts` first.
         """
         raise self._attempt_ledger_unsupported()
 
@@ -447,10 +466,12 @@ class Checkpointer(ABC):
     async def resolve_stranded_attempts(self, series_id: str) -> list[AttemptRecord]:
         """Durably settle crash-stranded STARTED rows as OUTCOME_UNKNOWN.
 
-        Called on resume, when the caller knows no other process can still be
-        running the attempt. Stranded work is never invented as cancelled or
-        never-run — external side effects may have completed. Returns the full
-        record list after settling.
+        This is the ONLY path that converts STARTED rows. Precondition: the
+        caller holds the single-live-invocation assertion — it must know no
+        other invocation of this series can still be running (the runner's
+        resume path owns that via its workflow reservation). Stranded work is
+        never invented as cancelled or never-run — external side effects may
+        have completed. Returns the full record list after settling.
         """
         raise self._attempt_ledger_unsupported()
 
