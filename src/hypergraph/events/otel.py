@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from hypergraph.events.types import (
         CacheHitEvent,
         InterruptEvent,
+        NodeAttemptEndEvent,
+        NodeAttemptStartEvent,
         NodeEndEvent,
         NodeErrorEvent,
         NodeStartEvent,
@@ -320,6 +322,55 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         self._contexts[event.span_id] = self._trace.set_span_in_context(span)
         self._attach_ambient(event.span_id)
 
+    def on_node_attempt_start(self, event: NodeAttemptStartEvent) -> None:
+        """Attempt start = span event on the single logical node span."""
+        span = self._spans.get(event.parent_span_id) if event.parent_span_id else None
+        if span is None:
+            return
+        span.add_event(
+            "hypergraph.attempt.start",
+            attributes=_clean_attrs(
+                {
+                    "hypergraph.attempt.series_id": event.attempt_series_id,
+                    "hypergraph.attempt.number": event.attempt_number,
+                    "hypergraph.attempt.max_attempts": event.max_attempts,
+                    "hypergraph.attempt.timeout_seconds": event.timeout_seconds,
+                    "hypergraph.attempt.deadline_at": (event.attempt_deadline_at.isoformat() if event.attempt_deadline_at else None),
+                    "hypergraph.attempt.series_deadline_at": (event.series_deadline_at.isoformat() if event.series_deadline_at else None),
+                    "hypergraph.node_name": event.node_name,
+                }
+            ),
+        )
+
+    def on_node_attempt_end(self, event: NodeAttemptEndEvent) -> None:
+        """Attempt end = span event; it NEVER marks the node span as error.
+
+        Only the terminal escaping failure (``NodeErrorEvent``) sets error
+        status on the logical node span.
+        """
+        span = self._spans.get(event.parent_span_id) if event.parent_span_id else None
+        if span is None:
+            return
+        span.add_event(
+            "hypergraph.attempt.end",
+            attributes=_clean_attrs(
+                {
+                    "hypergraph.attempt.series_id": event.attempt_series_id,
+                    "hypergraph.attempt.number": event.attempt_number,
+                    "hypergraph.attempt.outcome": event.outcome,
+                    "hypergraph.attempt.settlement": event.settlement,
+                    "hypergraph.attempt.deadline_scope": event.deadline_scope,
+                    "hypergraph.attempt.deadline_elapsed": event.deadline_elapsed,
+                    "hypergraph.attempt.cancellation_requested": event.cancellation_requested,
+                    "hypergraph.attempt.duration_ms": event.duration_ms,
+                    "hypergraph.attempt.error_type": event.error_type,
+                    "hypergraph.attempt.retry_scheduled": event.retry_scheduled,
+                    "hypergraph.attempt.retry_not_before": (event.retry_not_before.isoformat() if event.retry_not_before else None),
+                    "hypergraph.node_name": event.node_name,
+                }
+            ),
+        )
+
     def on_node_end(self, event: NodeEndEvent) -> None:
         self._detach_ambient(event.span_id)
         span = self._spans.pop(event.span_id, None)
@@ -337,6 +388,8 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         span.end()
 
     def on_node_error(self, event: NodeErrorEvent) -> None:
+        # Only the terminal escaping failure reaches this handler and marks
+        # the logical node span as error; intermediate attempts never do.
         self._detach_ambient(event.span_id)
         span = self._spans.pop(event.span_id, None)
         self._contexts.pop(event.span_id, None)

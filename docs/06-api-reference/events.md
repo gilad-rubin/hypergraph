@@ -137,19 +137,84 @@ class NodeEndEvent(BaseEvent):
     cached: bool                 # True if result was served from cache
 ```
 
+### NodeAttemptStartEvent
+
+Emitted when one callable invocation (attempt) begins inside an
+attempt-managed node — a node declaring `retry=` and/or `timeout=`. One
+logical execution emits `1 × NodeStartEvent`, `N × NodeAttemptStartEvent`,
+`N × NodeAttemptEndEvent`, and `1 × (NodeEndEvent | NodeErrorEvent)`. A cache
+hit emits zero attempt events; nodes without a policy emit none either.
+
+```python
+@dataclass(frozen=True)
+class NodeAttemptStartEvent(BaseEvent):
+    node_name: str               # Name of the node
+    graph_name: str              # Graph containing the node
+    superstep: int | None        # Zero-indexed superstep, if known
+    attempt_series_id: str       # Attempt-series identity (durable when checkpointed)
+    attempt_number: int          # One-based attempt number
+    max_attempts: int            # Series budget (counts the initial invocation)
+    timeout_seconds: float | None       # Configured per-attempt timeout
+    attempt_deadline_at: datetime | None  # Absolute per-attempt deadline
+    series_deadline_at: datetime | None   # Immutable retry-window deadline
+```
+
+`parent_span_id` is the logical node span — attempt events never open a
+second node span.
+
+### NodeAttemptEndEvent
+
+Emitted when one callable invocation settles. Intermediate failed attempts
+emit this event and nothing else: no `NodeErrorEvent`, no logical error-count
+bump, no progress-row completion, no span close. No end event is fabricated
+after process death — the durable attempt record alone transitions to
+`OUTCOME_UNKNOWN`.
+
+```python
+@dataclass(frozen=True)
+class NodeAttemptEndEvent(BaseEvent):
+    node_name: str               # Name of the node
+    graph_name: str              # Graph containing the node
+    superstep: int | None        # Zero-indexed superstep, if known
+    attempt_series_id: str       # Attempt-series identity
+    attempt_number: int          # One-based attempt number
+    outcome: str                 # "succeeded" | "failed" | "timed_out" | "cancelled"
+    settlement: str              # "returned" | "raised" | "cancelled"
+    deadline_scope: str | None   # "attempt" | "series" | None
+    deadline_elapsed: bool       # Witnessed fact: a cooperative deadline elapsed
+    cancellation_requested: bool # Witnessed fact: cancellation was requested
+    duration_ms: float           # Attempt wall-clock duration
+    error_type: str | None       # Qualified exception type for failed attempts
+    retry_scheduled: bool        # True when another attempt was granted
+    retry_not_before: datetime | None  # Persisted absolute wake time for a granted retry
+```
+
+`deadline_elapsed`, `cancellation_requested`, and the settled `outcome` are
+three independent facts — no field ever claims `work_stopped=True` for
+arbitrary user code. A suppressed cancellation that returns a real value
+settles as `outcome="succeeded"` with its deadline evidence intact.
+
 ### NodeErrorEvent
 
-Emitted when a node fails with an exception.
+Emitted when a node fails with an exception — once per logical failure, never
+for intermediate retry attempts.
 
 ```python
 @dataclass(frozen=True)
 class NodeErrorEvent(BaseEvent):
     node_name: str               # Name of the node
     graph_name: str              # Graph containing the node
-    error: str                   # Error message
+    error: str                   # Privacy-safe error projection (never str(exception))
     error_type: str              # Fully qualified exception type
     superstep: int | None        # Zero-indexed superstep, if known
+    diagnostic: Diagnostic | None  # Typed privacy-safe diagnostic
 ```
+
+`error` carries the safe projection — exception type name, stable diagnostic
+code, and static wording. Raw exception message text never enters the event
+stream; the exact exception object stays on local surfaces
+(`RunResult.error`, `get_failure_evidence`). See
+[Errors — diagnostic code registry](errors.md#diagnostic-code-registry).
 
 ### RouteDecisionEvent
 
@@ -264,7 +329,8 @@ class InnerCacheEvent(BaseEvent):
 
 ```python
 Event = (
-    RunStartEvent | RunEndEvent | NodeStartEvent | NodeEndEvent
+    RunStartEvent | RunEndEvent | NodeStartEvent
+    | NodeAttemptStartEvent | NodeAttemptEndEvent | NodeEndEvent
     | NodeErrorEvent | RouteDecisionEvent | SuperstepStartEvent
     | InterruptEvent | StopRequestedEvent | CacheHitEvent
     | StreamingChunkEvent | InnerCacheEvent
@@ -320,6 +386,8 @@ class TypedEventProcessor(EventProcessor):
     def on_run_start(self, event: RunStartEvent) -> None: ...
     def on_run_end(self, event: RunEndEvent) -> None: ...
     def on_node_start(self, event: NodeStartEvent) -> None: ...
+    def on_node_attempt_start(self, event: NodeAttemptStartEvent) -> None: ...
+    def on_node_attempt_end(self, event: NodeAttemptEndEvent) -> None: ...
     def on_node_end(self, event: NodeEndEvent) -> None: ...
     def on_node_error(self, event: NodeErrorEvent) -> None: ...
     def on_route_decision(self, event: RouteDecisionEvent) -> None: ...

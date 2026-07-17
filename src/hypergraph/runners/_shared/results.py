@@ -12,6 +12,7 @@ from hypergraph._utils import plural
 from hypergraph.runners.inspection import InspectionDisplay
 
 if TYPE_CHECKING:
+    from hypergraph.diagnostics import Diagnostic
     from hypergraph.runners._shared._inspect import MapInspection, RunInspection
 
 ErrorHandling = Literal["raise", "continue"]
@@ -27,6 +28,9 @@ class FailureEvidence:
     values retain identity and stay referenced until this evidence is
     collected. Raw inputs are intentionally available only through explicit
     attribute access; implicit representations and serialization omit them.
+
+    ``error`` is the exact exception object (a local surface); ``diagnostic``
+    is its typed privacy-safe companion projection for durable consumers.
     """
 
     node_name: str
@@ -41,6 +45,24 @@ class FailureEvidence:
     def __post_init__(self) -> None:
         """Own the input mapping without copying any contained value."""
         object.__setattr__(self, "inputs", dict(self.inputs))
+
+    @property
+    def diagnostic(self) -> Diagnostic:
+        """Stable, privacy-safe diagnostic for this failure.
+
+        Derived from the exact exception object plus this evidence's node
+        identity — codes, type names, counts, and static help only.
+        """
+        from hypergraph.diagnostics import derive_diagnostic
+
+        return derive_diagnostic(
+            self.error,
+            node_name=self.node_name,
+            graph_name=self.graph_name or None,
+            superstep=self.superstep,
+            item_index=self.item_index,
+            workflow_id=self.workflow_id,
+        )
 
     def __repr__(self) -> str:
         """Return a safe summary that never renders raw inputs or the error."""

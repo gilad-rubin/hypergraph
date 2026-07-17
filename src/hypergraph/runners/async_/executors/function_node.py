@@ -127,8 +127,20 @@ class AsyncFunctionNodeExecutor:
                 # cache lookup, above state application. Timeout wraps only
                 # the callable invocation inside an attempt. The ledger keys
                 # off workflow_id (StepRecords use it as run_id).
-                from hypergraph.runners._shared.attempts import run_attempts_async
+                from hypergraph.runners._shared.attempts import AttemptEventSink, run_attempts_async
 
+                events = None
+                if ctx.emit_fn is not None:
+                    events = AttemptEventSink(
+                        emit=ctx.emit_fn,
+                        run_id=ctx.run_id,
+                        node_span_id=ctx.parent_span_id,
+                        workflow_id=ctx.workflow_id,
+                        item_index=ctx.item_index,
+                        node_name=node.name,
+                        graph_name=ctx.graph_name,
+                        superstep=ctx.superstep,
+                    )
                 result = await run_attempts_async(
                     invoke,
                     node_name=node.name,
@@ -138,6 +150,7 @@ class AsyncFunctionNodeExecutor:
                     run_id=ctx.workflow_id,
                     scheduled_superstep=ctx.superstep_offset + ctx.superstep,
                     attempt_scope=_attempt_concurrency_scope,
+                    events=events,
                 )
 
         return wrap_outputs(node, result)

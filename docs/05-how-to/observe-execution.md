@@ -110,6 +110,30 @@ Hypergraph emits:
 - Span events for supersteps, routing, cache hits, pauses, stops, forks, resumes, and retries
 - Explicit attributes such as `workflow_id`, `run_id`, `item_index`, `graph_name`, `node_name`, and batch summary counts
 
+### Attempt Span Events
+
+A retrying or timeout-bearing node stays ONE logical node span. Each callable
+invocation projects as a pair of span events on that span —
+`hypergraph.attempt.start` and `hypergraph.attempt.end` — carrying
+`hypergraph.attempt.*` attributes (`series_id`, one-based `number`,
+`max_attempts`, `outcome`, `settlement`, `deadline_scope`,
+`deadline_elapsed`, `cancellation_requested`, `duration_ms`, `error_type`,
+`retry_scheduled`, `retry_not_before`).
+
+Intermediate failed attempts never mark the node span as error and never
+close it; only the terminal escaping failure sets error status. A cache hit
+opens no attempts and emits no attempt span events.
+
+### Export Privacy
+
+Exported spans follow the diagnostics privacy boundary: span error status,
+`exception.message`, and attempt `error_type` attributes carry the safe
+projection — exception type names and stable `hypergraph.diagnostic.code`
+values — never raw exception message text (which can embed secrets; see the
+OTel `exception.message` sensitivity warning). The exact exception object
+stays local on `RunResult.error` and `get_failure_evidence(...)`. See
+[Errors — diagnostic code registry](../06-api-reference/errors.md#diagnostic-code-registry).
+
 ### Tag Spans and Keep the Global Tracer Untouched
 
 `OpenTelemetryProcessor` accepts two constructor options for embedding

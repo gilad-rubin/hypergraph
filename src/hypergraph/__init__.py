@@ -7,6 +7,12 @@ from hypergraph.checkpointers import (
     CheckpointPolicy,
     SqliteCheckpointer,
 )
+from hypergraph.diagnostics import (
+    Diagnostic,
+    DiagnosticContext,
+    DiagnosticFix,
+    DiagnosticLocation,
+)
 from hypergraph.events import (
     AsyncEventProcessor,
     BaseEvent,
@@ -16,6 +22,8 @@ from hypergraph.events import (
     EventProcessor,
     InnerCacheEvent,
     InterruptEvent,
+    NodeAttemptEndEvent,
+    NodeAttemptStartEvent,
     NodeEndEvent,
     NodeErrorEvent,
     NodeStartEvent,
@@ -29,6 +37,7 @@ from hypergraph.events import (
 )
 from hypergraph.events.rich_progress import RichProgressProcessor
 from hypergraph.exceptions import (
+    AttemptOutcomeUnknownError,
     AttemptTimeoutError,
     CompactedRetentionError,
     ExecutionError,
@@ -123,6 +132,7 @@ __all__ = [
     # Errors
     "RenameError",
     "GraphConfigError",
+    "AttemptOutcomeUnknownError",
     "AttemptTimeoutError",
     "RetryWindowExpiredError",
     "CompactedRetentionError",
@@ -138,6 +148,11 @@ __all__ = [
     "InputOverrideRequiresForkError",
     "WorkflowAlreadyRunningError",
     "WorkflowStoppedError",
+    # Diagnostics
+    "Diagnostic",
+    "DiagnosticContext",
+    "DiagnosticFix",
+    "DiagnosticLocation",
     # RunLog
     "RunLog",
     "MapLog",
@@ -152,6 +167,8 @@ __all__ = [
     "AsyncEventProcessor",
     "TypedEventProcessor",
     "InterruptEvent",
+    "NodeAttemptEndEvent",
+    "NodeAttemptStartEvent",
     "NodeEndEvent",
     "NodeErrorEvent",
     "NodeStartEvent",

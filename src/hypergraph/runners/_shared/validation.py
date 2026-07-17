@@ -323,6 +323,7 @@ def validate_runner_compatibility(
                 "  - use the client library's own timeout.",
                 node_name=node.name,
                 capability="supports_cooperative_timeout",
+                code="HG_TIMEOUT_UNSUPPORTED",
             )
 
     # Check async nodes

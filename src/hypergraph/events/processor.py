@@ -8,6 +8,8 @@ from hypergraph.events.types import (
     CacheHitEvent,
     InnerCacheEvent,
     InterruptEvent,
+    NodeAttemptEndEvent,
+    NodeAttemptStartEvent,
     NodeEndEvent,
     NodeErrorEvent,
     NodeStartEvent,
@@ -28,6 +30,8 @@ _EVENT_METHOD_MAP: dict[type, str] = {
     RunStartEvent: "on_run_start",
     RunEndEvent: "on_run_end",
     NodeStartEvent: "on_node_start",
+    NodeAttemptStartEvent: "on_node_attempt_start",
+    NodeAttemptEndEvent: "on_node_attempt_end",
     NodeEndEvent: "on_node_end",
     CacheHitEvent: "on_cache_hit",
     NodeErrorEvent: "on_node_error",
@@ -87,6 +91,8 @@ class TypedEventProcessor(EventProcessor):
     def on_run_start(self, event: RunStartEvent) -> None: ...
     def on_run_end(self, event: RunEndEvent) -> None: ...
     def on_node_start(self, event: NodeStartEvent) -> None: ...
+    def on_node_attempt_start(self, event: NodeAttemptStartEvent) -> None: ...
+    def on_node_attempt_end(self, event: NodeAttemptEndEvent) -> None: ...
     def on_node_end(self, event: NodeEndEvent) -> None: ...
     def on_cache_hit(self, event: CacheHitEvent) -> None: ...
     def on_node_error(self, event: NodeErrorEvent) -> None: ...
