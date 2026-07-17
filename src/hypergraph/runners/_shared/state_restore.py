@@ -72,6 +72,11 @@ def _extract_model_type(hint: Any) -> type | None:
             return hint  # return the full list[Model] hint
         return None
 
+    # tuple[...] — JSON persistence round-trips tuples as lists, so any
+    # parameterized tuple annotation is worth reconstructing on restore.
+    if origin is tuple:
+        return hint
+
     # Optional[Model] / Union[Model, None] / Model | None (PEP 604)
     if origin is Union or isinstance(hint, _types.UnionType):
         args = [a for a in get_args(hint) if a is not type(None)]
@@ -115,11 +120,34 @@ def _coerce_value(value: Any, hint: Any) -> Any:
         elem_type = args[0]
         return [_coerce_single(item, elem_type) for item in value]
 
+    # tuple[...] — rebuild the tuple, coercing model elements where annotated
+    if origin is tuple:
+        return _coerce_tuple(value, hint)
+
     # Scalar model
     if isinstance(hint, type):
         return _coerce_single(value, hint)
 
     return value
+
+
+def _coerce_tuple(value: Any, hint: Any) -> Any:
+    """Reconstruct an annotated tuple from a JSON-deserialized list."""
+    from typing import get_args
+
+    if not isinstance(value, (list, tuple)):
+        return value
+    args = get_args(hint)
+    if len(args) == 2 and args[1] is Ellipsis:
+        elem = args[0]
+        if isinstance(elem, type) and _is_model_class(elem):
+            return tuple(_coerce_single(item, elem) for item in value)
+        return tuple(value)
+    if args and len(args) == len(value):
+        return tuple(
+            _coerce_single(item, elem) if isinstance(elem, type) and _is_model_class(elem) else item for item, elem in zip(value, args, strict=False)
+        )
+    return tuple(value)
 
 
 def _coerce_single(value: Any, model: type) -> Any:
