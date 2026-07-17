@@ -76,6 +76,17 @@
   state cannot be fingerprinted now fail loudly with guidance to define
   `cache_key()` instead of drifting forever, and a non-callable that carries
   no `definition_hash` is rejected instead of silently hashing its repr.
+  Routed union columns (several producers writing one column): a named
+  index's recipe fingerprint is now the order-free combination of EVERY
+  producer's recipe — previously it hashed the producer tuple's repr, which
+  differed in every process, so such indexes always read as stale; existing
+  union-column indexes flag stale once more and then stay current. And
+  `explain()` no longer attributes a union column to whichever producer was
+  listed first in the graph: it returns
+  `{"producers": {<node name>: {"provenance", "source"}}}` with every
+  producer labeled (single-producer columns keep the flat
+  `{"provenance", "source"}` shape); row-actual attribution would require a
+  durable producer identifier on the row and is not recorded.
 
 - **Truthful notebook scheduler availability** — before, an
   `add_callback`-only kernel could look cross-thread capable while lacking the

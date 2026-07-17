@@ -561,15 +561,24 @@ class HyperTable:
             return None
         return _public_row(row, self._spec)
 
-    def explain(self, identity_value: str) -> dict[str, dict[str, str | None]]:
+    def explain(self, identity_value: str) -> dict[str, dict[str, Any]]:
         """Resolve a row's per-column recipe to the readable source of THIS table's nodes.
 
-        For each derived column returns ``{"provenance": <node definition hash>,
-        "source": <node source verbatim>}``, pulled from the store's recipe
-        journal (commits or not). The ``provenance`` key is the node's DEFINITION
-        hash (stable across rows, the journal key), NOT the row's value-chained
-        ``_provenance_*`` stamp — the journal deliberately holds recipe meaning,
-        one payload per recipe, never one per row.
+        For each derived column with one producer returns ``{"provenance":
+        <node definition hash>, "source": <node source verbatim>}``, pulled
+        from the store's recipe journal (commits or not). The ``provenance``
+        key is the node's DEFINITION hash (stable across rows, the journal
+        key), NOT the row's value-chained ``_provenance_*`` stamp — the
+        journal deliberately holds recipe meaning, one payload per recipe,
+        never one per row.
+
+        A routed union column has SEVERAL producers, and which one derived
+        THIS row is not durably recorded — attributing it to any single node
+        would fabricate provenance. Such a column instead returns
+        ``{"producers": {<node name>: {"provenance": ..., "source": ...}}}``
+        with every producer's recipe labeled by node name. Row-actual
+        attribution would require a durable producer identifier on the row
+        and is out of scope here.
 
         The source reported is that of the node objects bound to THIS table
         instance — i.e. the recipe the row would derive under now. On a fresh or
@@ -585,15 +594,20 @@ class HyperTable:
         row = self._store.read_one(self._spec.name, self._identity, identity_value)
         if row is None:
             raise KeyError(identity_value)
-        explained: dict[str, dict[str, str | None]] = {}
+
+        def entry(producer: Any) -> dict[str, str | None]:
+            def_hash = compute_node_definition_hash(producer)
+            return {"provenance": def_hash, "source": self._write_planner.journal.resolve(def_hash)}
+
+        explained: dict[str, dict[str, Any]] = {}
         for c in self._provenance_policy.derived_columns():
             if c.produced_by is None:
                 continue
-            def_hash = compute_node_definition_hash(self._provenance_policy.column_producers(c)[0])
-            explained[c.name] = {
-                "provenance": def_hash,
-                "source": self._write_planner.journal.resolve(def_hash),
-            }
+            producers = self._provenance_policy.column_producers(c)
+            if len(producers) == 1:
+                explained[c.name] = entry(producers[0])
+            else:
+                explained[c.name] = {"producers": {getattr(producer, "name", repr(producer)): entry(producer) for producer in producers}}
         return explained
 
     def resolve_provenance(self, stamp: str) -> str | None:

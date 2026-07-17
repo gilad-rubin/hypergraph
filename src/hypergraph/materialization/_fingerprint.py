@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from typing import Any
 
 from hypergraph._utils import hash_definition
@@ -74,6 +75,17 @@ def compute_payload_hash(payload: str) -> str:
     Journal keys for non-callable recipe text: a payload is data, not a
     function definition, so it hashes by content.
     """
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def combine_recipe_fingerprints(fingerprints: Iterable[str]) -> str:
+    """One recipe identity for a column with several producers (a routed union).
+
+    The hash of the SORTED per-producer recipe fingerprints — order-free, so
+    graph insertion order does not matter, and a code or config change in ANY
+    branch flips the combined recipe.
+    """
+    payload = json.dumps(sorted(fingerprints))
     return hashlib.sha256(payload.encode()).hexdigest()
 
 

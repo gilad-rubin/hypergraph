@@ -17,6 +17,7 @@ from hypergraph import Graph
 from hypergraph.materialization._fingerprint import (
     _component_config_hashes,
     _plain_value_payload,
+    combine_recipe_fingerprints,
     compute_child_fingerprint,
     compute_column_provenance,
     compute_node_definition_hash,
@@ -254,6 +255,15 @@ class Provenance:
         params = self.node_params(node)
         components = {name: value for name, value in self.components.items() if name in params}
         return compute_recipe_fingerprint(node, _component_config_hashes(components))
+
+    def column_recipe(self, column: Any) -> str:
+        """Recipe identity of a derived COLUMN: its producer's recipe — or, for a
+        routed union column with several producers, the order-free combination
+        of every producer's recipe, so a change in ANY branch flips it."""
+        producers = self.column_producers(column)
+        if len(producers) == 1:
+            return self.node_recipe(producers[0])
+        return combine_recipe_fingerprints([self.node_recipe(producer) for producer in producers])
 
     def root_fingerprint(self, graph_inputs: Mapping[str, Any]) -> str:
         return compute_row_fingerprint(self.graph, dict(self.components), dict(graph_inputs))
