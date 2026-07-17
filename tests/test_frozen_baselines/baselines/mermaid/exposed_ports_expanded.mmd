@@ -1,0 +1,19 @@
+flowchart TD
+    %% Inputs
+    input_raw_text(["raw_text: str"])
+    %% Nodes
+    subgraph prep ["prep"]
+        prep__clean_text["clean_text<br/>------------<br/>cleaned: str"]
+        prep__normalize["normalize<br/>---------------<br/>normalized: str"]
+    end
+    publish["publish<br/>--------------<br/>published: str"]
+    %% Edges
+    input_raw_text --> prep
+    prep --> publish
+    prep__clean_text --> prep__normalize
+
+    %% Styling
+    classDef function fill:#E8F5E8,stroke:#388E3C,stroke-width:2px,color:#1B5E20
+    classDef input fill:#E3F2FD,stroke:#1976D2,stroke-width:2px,color:#0D47A1
+    class prep__clean_text,prep__normalize,publish function
+    class input_raw_text input

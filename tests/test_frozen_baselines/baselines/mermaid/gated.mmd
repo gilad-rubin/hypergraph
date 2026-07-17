@@ -1,0 +1,32 @@
+flowchart TD
+    %% Inputs
+    input_query(["query: str"])
+    %% Nodes
+    draft_answer["draft_answer<br/>------------<br/>draft: str"]
+    needs_polish{{"needs_polish<br/>-------------<br/>_needs_polish"}}
+    polish["polish<br/>-------------<br/>polished: str"]
+    deliver["deliver<br/>-------------<br/>delivery: str"]
+    route_delivery{{"route_delivery<br/>---------------<br/>_route_delivery"}}
+    archive["archive<br/>--------------<br/>archived: bool"]
+    __end__(["End"])
+    %% Edges
+    input_query --> draft_answer
+    draft_answer --> needs_polish
+    draft_answer --> polish
+    draft_answer --> deliver
+    needs_polish -.->|True| polish
+    needs_polish -.->|False| deliver
+    deliver --> route_delivery
+    deliver --> archive
+    route_delivery -.-> archive
+    route_delivery -.-> __end__
+
+    %% Styling
+    classDef function fill:#E8F5E8,stroke:#388E3C,stroke-width:2px,color:#1B5E20
+    classDef branch fill:#FFF8E1,stroke:#FBC02D,stroke-width:2px,color:#F57F17
+    classDef input fill:#E3F2FD,stroke:#1976D2,stroke-width:2px,color:#0D47A1
+    classDef end fill:#ECEFF1,stroke:#546E7A,stroke-width:2px,color:#263238
+    class needs_polish,route_delivery branch
+    class __end__ end
+    class draft_answer,polish,deliver,archive function
+    class input_query input
