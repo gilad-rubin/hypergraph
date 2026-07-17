@@ -243,7 +243,7 @@ class CacheHitEvent(BaseEvent):
 
 Emitted when a hypercache-decorated call happens inside a running node. This
 bridge activates when `hypercache` is installed, including via
-`pip install 'hypergraph[cache]'`. The event is emitted when the installed
+`pip install 'hypergraph-ai[cache]'`. The event is emitted when the installed
 Hypercache version exposes its public observer API.
 
 ```python
@@ -413,7 +413,7 @@ Graph: my_graph | 3 nodes | 2 edges | no cycles · 1 processor
 Hierarchical Rich progress bars for graph execution. Requires the `rich` package.
 
 ```bash
-pip install 'hypergraph[progress]'
+pip install 'hypergraph-ai[progress]'
 # or
 pip install rich
 ```

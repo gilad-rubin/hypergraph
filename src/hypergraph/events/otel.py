@@ -37,7 +37,7 @@ def _require_opentelemetry() -> None:
     except ImportError:
         raise ImportError(
             "The 'opentelemetry' package is required for OpenTelemetryProcessor. "
-            "Install with: pip install 'hypergraph[otel]' "
+            "Install with: pip install 'hypergraph-ai[otel]' "
             "or: pip install opentelemetry-api opentelemetry-sdk"
         ) from None
 

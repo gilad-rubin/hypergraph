@@ -718,7 +718,7 @@ starts a new execution under the existing resume rules.
 ### Quick Start
 
 ```bash
-pip install 'hypergraph[checkpoint]'
+pip install 'hypergraph-ai[checkpoint]'
 ```
 
 ```python

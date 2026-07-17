@@ -91,6 +91,7 @@ understand planned work.
 | `../examples/` | Canonical runnable patterns; examples must match the real API |
 | `adr/` | Canonical durable decisions; later ADRs supersede earlier decisions explicitly |
 | `changelog.md` | Historical record of shipped change sets |
+| `release.md` | Canonical distribution identity, release trigger, tag, and yank contract |
 | `prd/` and `07-design/roadmap.md` | Intent and planning, not evidence of current behavior |
 | `research/` | Dated investigations and decision evidence; intent, not evidence of shipped behavior |
 
@@ -164,6 +165,7 @@ For native execution inspection, start with
 - [Philosophy](07-design/philosophy.md) - Why hypergraph exists and design principles
 - [Inspiration](07-design/inspiration.md) - Frameworks that influenced hypergraph's design
 - [Roadmap](07-design/roadmap.md) - What's implemented, what's coming next
+- [Release Contract](release.md) - Distribution identity, publication trigger, tags, and yanking
 - [Changelog](changelog.md) - Release history and changes
 
 ## Design Principles

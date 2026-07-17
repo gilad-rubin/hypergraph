@@ -1,6 +1,6 @@
 [project]
-name = "hypergraph"
-version = "0.1.0"
+name = "hypergraph-ai"
+version = "0.2.0b1"
 description = "A hierarchical and modular graph workflow framework for AI & ML"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,7 +13,7 @@ authors = [
 license = {text = "MIT"}
 keywords = ["graph", "pipeline", "workflow", "ml", "ai", "dag", "machine-learning"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",

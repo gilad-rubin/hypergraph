@@ -286,7 +286,7 @@ def _require_aiosqlite() -> Any:
 
         return aiosqlite
     except ImportError:
-        raise ImportError("SqliteCheckpointer requires aiosqlite. Install it with: pip install hypergraph[checkpoint]") from None
+        raise ImportError("SqliteCheckpointer requires aiosqlite. Install it with: pip install hypergraph-ai[checkpoint]") from None
 
 
 class SqliteCheckpointer(Checkpointer):
