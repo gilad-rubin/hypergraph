@@ -64,11 +64,32 @@ class SyncFunctionNodeExecutor:
             graph_name=ctx.graph_name,
             node_span_id=ctx.parent_span_id or "",
         ):
-            result = node.func(**func_inputs)
 
-            # Sync generator bodies execute lazily during iteration, so consume
-            # them inside the observer scope to preserve inner-cache telemetry.
-            if node.is_generator:
-                result = list(result)
+            def invoke() -> Any:
+                result = node.func(**func_inputs)
+                # Sync generator bodies execute lazily during iteration, so
+                # consume them inside the observer scope (and inside the
+                # attempt, so a failing generator body counts as a failed
+                # attempt) to preserve inner-cache telemetry.
+                if node.is_generator:
+                    return list(result)
+                return result
+
+            if node.retry is None:
+                result = invoke()
+            else:
+                # The attempt coordinator sits here: below the superstep's
+                # cache lookup, above state application. The ledger keys off
+                # the workflow_id (StepRecords use it as run_id).
+                from hypergraph.runners._shared.attempts import run_attempts_sync
+
+                result = run_attempts_sync(
+                    invoke,
+                    node_name=node.name,
+                    policy=node.retry,
+                    checkpointer=ctx.checkpointer,
+                    run_id=ctx.workflow_id,
+                    scheduled_superstep=ctx.superstep_offset + ctx.superstep,
+                )
 
         return wrap_outputs(node, result)

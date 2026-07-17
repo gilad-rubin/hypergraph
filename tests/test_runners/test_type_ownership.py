@@ -26,6 +26,8 @@ ROOT_EXPORTS = (
     "InterruptNode",
     "HyperNode",
     "END",
+    "RetryPolicy",
+    "RetryAfterError",
     "Graph",
     "InputSpec",
     "SyncHandle",

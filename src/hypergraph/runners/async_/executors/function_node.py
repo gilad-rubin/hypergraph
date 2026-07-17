@@ -89,17 +89,38 @@ class AsyncFunctionNodeExecutor:
             graph_name=ctx.graph_name,
             node_span_id=ctx.parent_span_id or "",
         ):
-            result = node.func(**func_inputs)
 
-            # Await if coroutine
-            if inspect.iscoroutine(result):
-                result = await result
+            async def invoke() -> Any:
+                result = node.func(**func_inputs)
 
-            # Handle async generators
-            if inspect.isasyncgen(result):
-                result = [item async for item in result]
-            # Handle sync generators
-            elif inspect.isgenerator(result):
-                result = list(result)
+                # Await if coroutine
+                if inspect.iscoroutine(result):
+                    result = await result
+
+                # Generators are consumed inside the observer scope (and
+                # inside the attempt, so a failing generator body counts as a
+                # failed attempt) to preserve inner-cache telemetry.
+                if inspect.isasyncgen(result):
+                    return [item async for item in result]
+                if inspect.isgenerator(result):
+                    return list(result)
+                return result
+
+            if node.retry is None:
+                result = await invoke()
+            else:
+                # The attempt coordinator sits here: below the superstep's
+                # cache lookup, above state application. The ledger keys off
+                # the workflow_id (StepRecords use it as run_id).
+                from hypergraph.runners._shared.attempts import run_attempts_async
+
+                result = await run_attempts_async(
+                    invoke,
+                    node_name=node.name,
+                    policy=node.retry,
+                    checkpointer=ctx.checkpointer,
+                    run_id=ctx.workflow_id,
+                    scheduled_superstep=ctx.superstep_offset + ctx.superstep,
+                )
 
         return wrap_outputs(node, result)

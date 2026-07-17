@@ -272,8 +272,10 @@ async def test_kill_resume_honors_persisted_backoff(family, make_sqlite, monkeyp
     monkeypatch.setattr(attempts_module, "_sleep_sync", dying_sleep)
     monkeypatch.setattr(attempts_module, "_sleep_async", dying_sleep_async)
 
+    # x has a default so the "new process" can resume the SAME workflow_id
+    # bare — the resume contract rejects re-supplying input values.
     @node(output_name="fetched", retry=_policy(max_attempts=3, initial_delay=3600.0, jitter="full"))
-    def flaky(x: int) -> int:
+    def flaky(x: int = 1) -> int:
         calls.append(x)
         if len(calls) == 1:
             raise ConnectionError("transient")
@@ -282,7 +284,7 @@ async def test_kill_resume_honors_persisted_backoff(family, make_sqlite, monkeyp
     graph = Graph([flaky])
     runner = _make_runner(family, checkpointer=cp)
     with pytest.raises(_SimulatedProcessDeath):
-        await _run(runner, graph, {"x": 1}, workflow_id="wf-crash")
+        await _run(runner, graph, workflow_id="wf-crash")
 
     assert calls == [1]
     series = await cp.get_open_attempt_series("wf-crash", "flaky")
@@ -311,7 +313,7 @@ async def test_kill_resume_honors_persisted_backoff(family, make_sqlite, monkeyp
     monkeypatch.setattr(attempts_module, "_sleep_async", recording_sleep_async)
 
     resumed_runner = _make_runner(family, checkpointer=make_sqlite())
-    result = await _run(resumed_runner, graph, {"x": 1}, workflow_id="wf-crash")
+    result = await _run(resumed_runner, graph, workflow_id="wf-crash")
 
     assert result["fetched"] == 10
     assert calls == [1, 1], "resume continues the same budget with attempt 2"

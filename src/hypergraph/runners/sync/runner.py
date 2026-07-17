@@ -375,6 +375,8 @@ class SyncRunner(SyncRunnerTemplate):
             run_id=run_id,
             provided_values=values,
             emit_fn=dispatcher.emit if dispatcher.active else None,
+            checkpointer=sync_cp,
+            superstep_offset=superstep_offset,
         )
 
         try:
@@ -570,6 +572,7 @@ def _save_superstep_sync(
     node_errors: dict[str, BaseException] | None = None,
 ) -> int:
     """Build StepRecords and dispatch to sync durability mode."""
+    from hypergraph.runners._shared.attempts import maybe_close_attempt_series_sync
     from hypergraph.runners._shared.checkpoint_helpers import build_superstep_records
 
     records, step_counter = build_superstep_records(
@@ -592,6 +595,11 @@ def _save_superstep_sync(
     # "exit" buffers for flushing after run completes.
     durability = sync_cp.policy.durability
     for record in records:
+        # A record that closes an attempt series persists write-through inside
+        # the atomic close, whatever the durability mode — a deferred close
+        # would leave the series open against a later re-execution.
+        if maybe_close_attempt_series_sync(sync_cp, graph, record, node_errors):
+            continue
         if durability == "exit" and step_buffer is not None:
             step_buffer.append(record)
         else:
