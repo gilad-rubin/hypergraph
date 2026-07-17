@@ -156,7 +156,11 @@ for row_receipt in receipt.errors:
 ```
 
 `sync()` inserts new identities, converges changed ones, skips fresh ones,
-and deletes identities absent from the incoming collection.
+and deletes identities absent from the incoming collection. An unchanged
+parent whose child rows were physically lost is self-repairing: `sync()`
+compares each child table's recorded fan-out count against the child rows
+physically present and rebuilds only the missing children, reporting the row
+as `healed` instead of `skipped`.
 
 ## Stored errors
 
