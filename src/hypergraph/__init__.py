@@ -53,6 +53,8 @@ from hypergraph.nodes import (
     IfElseNode,
     InterruptNode,
     RenameError,
+    RetryAfterError,
+    RetryPolicy,
     RouteNode,
     ifelse,
     interrupt,
@@ -96,6 +98,8 @@ __all__ = [
     "InterruptNode",
     "HyperNode",
     "END",
+    "RetryPolicy",
+    "RetryAfterError",
     # Graph
     "Graph",
     "InputSpec",

@@ -12,6 +12,7 @@ from hypergraph.nodes._callable import CallableMixin
 from hypergraph.nodes._input_extraction import extract_inputs
 from hypergraph.nodes._rename import _apply_renames
 from hypergraph.nodes.base import HyperNode, _validate_emit_wait_for
+from hypergraph.nodes.retry import RetryPolicy
 
 
 def _resolve_outputs(
@@ -101,6 +102,7 @@ class FunctionNode(CallableMixin, HyperNode):
     _is_generator: bool
     _wait_for: tuple[str, ...]
     _emit: tuple[str, ...]
+    _retry: RetryPolicy | None
 
     def __init__(
         self,
@@ -113,6 +115,7 @@ class FunctionNode(CallableMixin, HyperNode):
         hide: bool = False,
         emit: str | tuple[str, ...] | None = None,
         wait_for: str | tuple[str, ...] | None = None,
+        retry: RetryPolicy | None = None,
     ) -> None:
         """Wrap a function as a node.
 
@@ -128,6 +131,9 @@ class FunctionNode(CallableMixin, HyperNode):
                   when node runs. Participates in edge inference like output_name.
             wait_for: Ordering-only graph-scope output/emit address(es). Node
                       won't run until these values exist and are fresh.
+            retry: Optional :class:`RetryPolicy`. Only a node declaration can
+                   make its callable repeat; runners execute the attempt loop.
+                   Direct calls stay raw single-shot invocations.
         Warning:
             If the function has a return type annotation but no output_name
             is provided, a warning is emitted. This helps catch cases where
@@ -142,9 +148,18 @@ class FunctionNode(CallableMixin, HyperNode):
         # Extract func if source is FunctionNode
         func = source.func if isinstance(source, FunctionNode) else source
 
+        if retry is not None and not isinstance(retry, RetryPolicy):
+            raise TypeError(
+                f"retry must be a RetryPolicy (or None), got {retry!r}.\n\n"
+                "How to fix:\n"
+                "  There is no retry=True shorthand. Declare the failure classes that\n"
+                "  are safe to repeat: retry=RetryPolicy(max_attempts=3, retry_on=(TimeoutError,))."
+            )
+
         self.func = func
         self._cache = cache
         self._hide = hide
+        self._retry = retry
         self._definition_hash = hash_definition(func)
         self._emit = ensure_tuple(emit) if emit else ()
         self._wait_for = ensure_tuple(wait_for) if wait_for else ()
@@ -183,6 +198,11 @@ class FunctionNode(CallableMixin, HyperNode):
     def cache(self) -> bool:
         """Whether results should be cached."""
         return self._cache
+
+    @property
+    def retry(self) -> RetryPolicy | None:
+        """The node-owned retry declaration, or None (no retry)."""
+        return self._retry
 
     @property
     def hide(self) -> bool:
@@ -297,6 +317,7 @@ def node(
     hide: bool = False,
     emit: str | tuple[str, ...] | None = None,
     wait_for: str | tuple[str, ...] | None = None,
+    retry: RetryPolicy | None = None,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]:
     """Decorator to wrap a function as a FunctionNode.
 
@@ -319,6 +340,10 @@ def node(
               when node runs. Participates in edge inference like output_name.
         wait_for: Ordering-only graph-scope output/emit address(es). Node
                   won't run until these values exist and are fresh.
+        retry: Optional RetryPolicy declaring which failures are safe to
+               repeat and with what budget/backoff. Node-owned only: there is
+               no runner, graph, or per-call retry default, and no retry=True
+               shorthand. Direct calls stay raw single-shot invocations.
     Returns:
         FunctionNode if source provided, else decorator function.
 
@@ -342,6 +367,7 @@ def node(
             hide=hide,
             emit=emit,
             wait_for=wait_for,
+            retry=retry,
         )
         fn_node.__wrapped__ = func
         return fn_node
