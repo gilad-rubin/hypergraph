@@ -11,12 +11,15 @@ Assertion map (validation contract, wave A):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
+import threading
 from datetime import datetime, timezone
 
 import pytest
 
+from hypergraph import AsyncRunner, Graph, node
 from hypergraph.checkpointers import (
     AttemptLedgerError,
     AttemptStatus,
@@ -57,27 +60,62 @@ def _step(
 # === A6: write-through independence from StepRecord durability ===
 
 
-async def test_reservation_writes_through_under_exit_durability(tmp_path):
+async def test_reservation_writes_through_while_step_record_is_buffered(tmp_path):
+    """With durability="exit" a REAL StepRecord sits in the runner's buffer.
+
+    Mid-run, a second connection must already see the committed STARTED
+    reservation while the earlier node's buffered StepRecord is genuinely
+    pending — and the buffered step must land after the exit flush.
+    """
     path = str(tmp_path / "exit.db")
     cp = SqliteCheckpointer(path, durability="exit", retention="latest")
-    await cp.create_run(RUN, graph_name="g")
-    series = await cp.open_attempt_series(RUN, NODE, policy_fingerprint=FP, max_attempts=3)
-    await cp.begin_attempt(series.id, policy_fingerprint=FP, scheduled_superstep=0)
+    probe: dict[str, object] = {}
 
-    # The runner would be buffering StepRecords until exit; nothing flushed.
-    # Kill before flush: no save_step calls ever happen.
+    @node(output_name="doubled")
+    def produce(x: int) -> int:
+        return x * 2
+
+    @node(output_name="witness")
+    async def reserve_and_probe(doubled: int) -> int:
+        # `produce` already executed: its StepRecord exists but is buffered.
+        series = await cp.open_attempt_series("wf-exit", NODE, policy_fingerprint=FP, max_attempts=3)
+        await cp.begin_attempt(series.id, policy_fingerprint=FP, scheduled_superstep=1)
+        second = sqlite3.connect(path)
+        try:
+            (reserved,) = second.execute(
+                "SELECT COUNT(*) FROM attempt_records WHERE series_id = ? AND status = 'started'",
+                (series.id,),
+            ).fetchone()
+            (steps_flushed,) = second.execute(
+                "SELECT COUNT(*) FROM steps WHERE run_id = 'wf-exit'"
+            ).fetchone()
+        finally:
+            second.close()
+        probe["series_id"] = series.id
+        probe["reserved_durably_mid_run"] = reserved
+        probe["steps_flushed_mid_run"] = steps_flushed
+        return doubled
+
+    runner = AsyncRunner(checkpointer=cp)
+    await runner.run(Graph([produce, reserve_and_probe]), {"x": 2}, workflow_id="wf-exit")
     await cp.close()
 
-    reopened = SqliteCheckpointer(path)
+    # Mid-run: reservation durable, buffered StepRecord genuinely pending.
+    assert probe["reserved_durably_mid_run"] == 1
+    assert probe["steps_flushed_mid_run"] == 0
+
+    # After the exit flush the buffered steps landed; the reservation persists.
+    second = sqlite3.connect(path)
     try:
-        assert await reopened.get_steps(RUN) == []
-        records = await reopened.get_attempt_records(series.id)
-        assert [record.attempt_number for record in records] == [1]
-        open_series = await reopened.get_open_attempt_series(RUN, NODE)
-        assert open_series is not None
-        assert open_series.id == series.id
+        (steps_after,) = second.execute("SELECT COUNT(*) FROM steps WHERE run_id = 'wf-exit'").fetchone()
+        (reserved_after,) = second.execute(
+            "SELECT COUNT(*) FROM attempt_records WHERE series_id = ? AND status = 'started'",
+            (probe["series_id"],),
+        ).fetchone()
     finally:
-        await reopened.close()
+        second.close()
+    assert steps_after >= 1
+    assert reserved_after == 1
 
 
 async def test_reservation_visible_to_second_connection_before_close(tmp_path):
@@ -277,6 +315,227 @@ async def test_pre_ledger_database_migrates_in_place(tmp_path):
         closed = await cp.get_attempt_series(series.id)
         assert closed is not None
         assert closed.closed_at is not None
+    finally:
+        await cp.close()
+
+
+# === FA1: concurrency probes (from the wave-A review verdict) ===
+
+
+def _pause_on_sql(cp, fragment: str, monkeypatch) -> tuple[asyncio.Event, asyncio.Event]:
+    """Pause the next async statement matching ``fragment`` until released.
+
+    Returns (entered, hold): ``entered`` fires when the statement is reached;
+    the statement executes only after ``hold`` is set.
+    """
+    entered = asyncio.Event()
+    hold = asyncio.Event()
+    real_execute = cp._db.execute
+
+    def wrapper(sql, *args, **kwargs):
+        async def _run():
+            if fragment.lower() in " ".join(sql.split()).lower() and not entered.is_set():
+                entered.set()
+                await hold.wait()
+            return await real_execute(sql, *args, **kwargs)
+
+        return _run()
+
+    monkeypatch.setattr(cp._db, "execute", wrapper)
+    return entered, hold
+
+
+async def test_competing_settle_cannot_overwrite_settled_attempt(tmp_path, monkeypatch):
+    """Review probe (close interleaving): two settles can never both win.
+
+    A close that validated a stale snapshot must not blindly overwrite a
+    settle committed in between (previous final state: attempt=FAILED over a
+    committed SUCCEEDED close)."""
+    path = str(tmp_path / "close-race.db")
+    cp = SqliteCheckpointer(path)
+    try:
+        await cp.create_run(RUN, graph_name="g")
+        series = await cp.open_attempt_series(RUN, NODE, policy_fingerprint=FP, max_attempts=3)
+        first = await cp.begin_attempt(series.id, policy_fingerprint=FP, scheduled_superstep=0)
+
+        # C1: async close, paused just before it writes the final outcome.
+        entered, hold = _pause_on_sql(cp, "UPDATE attempt_records", monkeypatch)
+        close_task = asyncio.create_task(
+            cp.close_attempt_series(
+                series.id,
+                first.attempt_number,
+                AttemptStatus.SUCCEEDED,
+                step_record=_step(attempt_series_id=series.id),
+            )
+        )
+        await entered.wait()
+
+        # C2: competing settle over the sync connection while C1 is in flight.
+        outcome: dict[str, str] = {}
+
+        def compete() -> None:
+            try:
+                cp.record_attempt_outcome_sync(series.id, first.attempt_number, AttemptStatus.FAILED)
+                outcome["settle"] = "won"
+            except Exception as error:  # noqa: BLE001
+                outcome["settle"] = f"raised:{type(error).__name__}"
+
+        thread = threading.Thread(target=compete)
+        thread.start()
+        await asyncio.sleep(0.3)
+        hold.set()
+
+        close_error: str | None = None
+        try:
+            await close_task
+        except Exception as error:  # noqa: BLE001
+            close_error = type(error).__name__
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+        close_won = close_error is None
+        settle_won = outcome["settle"] == "won"
+        # Exactly one writer may win; the loser must fail loudly.
+        assert close_won != settle_won, f"both settles claimed success: close_error={close_error}, settle={outcome['settle']}"
+
+        records = await cp.get_attempt_records(series.id)
+        closed = await cp.get_attempt_series(series.id)
+        steps = await cp.get_steps(RUN)
+        if close_won:
+            assert [record.status for record in records] == [AttemptStatus.SUCCEEDED]
+            assert closed is not None and closed.closed_at is not None
+            assert any(step.attempt_series_id == series.id for step in steps)
+        else:
+            assert [record.status for record in records] == [AttemptStatus.FAILED]
+            assert closed is not None and closed.closed_at is None
+            assert all(step.attempt_series_id != series.id for step in steps)
+    finally:
+        await cp.close()
+
+
+async def test_async_sync_reservation_race_reserves_exactly_once(tmp_path, monkeypatch):
+    """Review probe (reservation race): max_attempts=1 → exactly ONE reservation.
+
+    Previous final state: attempts #1 AND #2 recorded, remaining == -1, and a
+    genuinely LIVE reservation converted to OUTCOME_UNKNOWN."""
+    path = str(tmp_path / "reservation-race.db")
+    cp = SqliteCheckpointer(path)
+    try:
+        await cp.create_run(RUN, graph_name="g")
+        series = await cp.open_attempt_series(RUN, NODE, policy_fingerprint=FP, max_attempts=1)
+
+        # C1: async reservation paused between its budget check and its insert.
+        entered, hold = _pause_on_sql(cp, "COALESCE(MAX(attempt_number)", monkeypatch)
+        begin_task = asyncio.create_task(cp.begin_attempt(series.id, policy_fingerprint=FP, scheduled_superstep=0))
+        await entered.wait()
+
+        outcome: dict[str, object] = {}
+
+        def compete() -> None:
+            try:
+                record = cp.begin_attempt_sync(series.id, policy_fingerprint=FP, scheduled_superstep=0)
+                outcome["sync"] = f"reserved:#{record.attempt_number}"
+            except Exception as error:  # noqa: BLE001
+                outcome["sync"] = f"raised:{type(error).__name__}"
+
+        thread = threading.Thread(target=compete)
+        thread.start()
+        await asyncio.sleep(0.3)
+        hold.set()
+
+        async_error: str | None = None
+        try:
+            await begin_task
+        except Exception as error:  # noqa: BLE001
+            async_error = type(error).__name__
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+        async_won = async_error is None
+        sync_won = str(outcome["sync"]).startswith("reserved")
+        assert async_won != sync_won, f"reservations: async_error={async_error}, sync={outcome['sync']}"
+
+        records = await cp.get_attempt_records(series.id)
+        # Exactly one reservation ever; never remaining == -1; no live
+        # reservation was converted to OUTCOME_UNKNOWN.
+        assert [(record.attempt_number, record.status) for record in records] == [(1, AttemptStatus.STARTED)]
+        assert await cp.remaining_attempts(series.id) == 0
+    finally:
+        await cp.close()
+
+
+async def test_foreign_keys_enforced_on_both_connections(tmp_path):
+    """Review probe (retention interleaving): an orphan attempt record must be
+    structurally impossible — foreign keys ON for both connections."""
+    path = str(tmp_path / "fk.db")
+    cp = SqliteCheckpointer(path)
+    try:
+        await cp.create_run(RUN, graph_name="g")
+
+        cursor = await cp._db.execute("PRAGMA foreign_keys")
+        (fk_async,) = await cursor.fetchone()
+        db = cp._sync_db()
+        (fk_sync,) = db.execute("PRAGMA foreign_keys").fetchone()
+        assert fk_async == 1
+        assert fk_sync == 1
+
+        # The probe's end state — a record without its series — must be rejected.
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO attempt_records (series_id, attempt_number, scheduled_superstep, status, started_at) "
+                "VALUES ('ghost-series', 1, 0, 'started', '2026-01-01T00:00:00+00:00')"
+            )
+        db.rollback()
+    finally:
+        await cp.close()
+
+
+async def test_retention_prune_not_observed_half_applied(tmp_path, monkeypatch):
+    """Review probe (retention interleaving): a concurrent ledger reader on the
+    shared async connection must never observe the half-deleted state
+    (records already gone, series row still present)."""
+    path = str(tmp_path / "retention-race.db")
+    cp = SqliteCheckpointer(path, retention="latest")
+    try:
+        await cp.create_run(RUN, graph_name="g")
+        series = await cp.open_attempt_series(RUN, NODE, policy_fingerprint=FP, max_attempts=2)
+        first = await cp.begin_attempt(series.id, policy_fingerprint=FP, scheduled_superstep=0)
+        await cp.close_attempt_series(
+            series.id,
+            first.attempt_number,
+            AttemptStatus.SUCCEEDED,
+            step_record=_step(attempt_series_id=series.id),
+        )
+
+        # save_step supersedes the linked step -> retention prunes the closed
+        # series. Pause between the record-delete and the series-delete.
+        entered, hold = _pause_on_sql(cp, "DELETE FROM attempt_series", monkeypatch)
+        save_task = asyncio.create_task(cp.save_step(_step(superstep=4, index=9, values={"answer": 2})))
+        await entered.wait()
+
+        async def observe() -> tuple[object, list]:
+            return (await cp.get_attempt_series(series.id), await cp.get_attempt_records(series.id))
+
+        observe_task = asyncio.create_task(observe())
+        await asyncio.sleep(0.3)
+        hold.set()
+        observed_series, observed_records = await observe_task
+        await save_task
+
+        half_applied = observed_series is not None and observed_records == []
+        assert not half_applied, "reader observed records deleted while the series row was still present"
+
+        # Final state: fully pruned, no orphans.
+        assert await cp.get_attempt_series(series.id) is None
+        assert await cp.get_attempt_records(series.id) == []
+        probe = sqlite3.connect(path)
+        try:
+            (orphans,) = probe.execute(
+                "SELECT COUNT(*) FROM attempt_records WHERE series_id NOT IN (SELECT id FROM attempt_series)"
+            ).fetchone()
+        finally:
+            probe.close()
+        assert orphans == 0
     finally:
         await cp.close()
 

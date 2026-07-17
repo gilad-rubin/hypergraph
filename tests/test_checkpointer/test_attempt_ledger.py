@@ -456,6 +456,31 @@ async def test_reservation_failure_stops_before_user_code(backend, monkeypatch):
     assert calls == ["begin_attempt:enter", "reservation_committed", "user_code"]
 
 
+# === FA2: a live STARTED reservation is a loud conflict, never auto-settled ===
+
+
+async def test_begin_attempt_conflicts_on_live_reservation(backend):
+    """begin_attempt cannot know whether a STARTED row is dead or live.
+
+    There is no dead/live discriminator in the ledger, so encountering an
+    existing STARTED row must fail loudly. Only the explicit
+    resolve_stranded_attempts() seam — whose precondition is that the caller
+    holds the single-live-invocation assertion — may settle it.
+    """
+    cp = await backend.make()
+    series = await _open_series(cp)
+    first = await cp.begin_attempt(series.id, policy_fingerprint=FP, scheduled_superstep=0)
+    assert first.status is AttemptStatus.STARTED
+
+    with pytest.raises(AttemptLedgerError, match="resolve_stranded_attempts"):
+        await cp.begin_attempt(series.id, policy_fingerprint=FP, scheduled_superstep=1)
+
+    records = await cp.get_attempt_records(series.id)
+    # The live reservation was neither consumed-over nor converted.
+    assert [(record.attempt_number, record.status) for record in records] == [(1, AttemptStatus.STARTED)]
+    assert await cp.remaining_attempts(series.id) == 2
+
+
 # === Reservation verification (ticket: fingerprint + budget + deadline) ===
 
 
