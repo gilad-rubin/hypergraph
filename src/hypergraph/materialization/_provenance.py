@@ -19,7 +19,7 @@ from hypergraph.materialization._fingerprint import (
     _plain_value_payload,
     compute_child_fingerprint,
     compute_column_provenance,
-    compute_definition_hash,
+    compute_node_definition_hash,
     compute_payload_hash,
     compute_recipe_fingerprint,
     compute_row_fingerprint,
@@ -248,12 +248,12 @@ class Provenance:
                 inputs[name] = values[name]
             elif parameter.default is inspect.Parameter.empty:
                 return None
-        return compute_column_provenance(node_func(node) or node, inputs, _component_config_hashes(components))
+        return compute_column_provenance(node, inputs, _component_config_hashes(components))
 
     def node_recipe(self, node: Any) -> str:
         params = self.node_params(node)
         components = {name: value for name, value in self.components.items() if name in params}
-        return compute_recipe_fingerprint(node_func(node) or node, _component_config_hashes(components))
+        return compute_recipe_fingerprint(node, _component_config_hashes(components))
 
     def root_fingerprint(self, graph_inputs: Mapping[str, Any]) -> str:
         return compute_row_fingerprint(self.graph, dict(self.components), dict(graph_inputs))
@@ -278,7 +278,10 @@ class Provenance:
 
     def recipe_entries(self, node: Any) -> tuple[RecipeEntry, ...]:
         func = node_func(node)
-        entries = [RecipeEntry(compute_definition_hash(func), KIND_NODE_SOURCE, self.node_source(func))]
+        # Identity is the node's construction-time hash; the func is kept only
+        # for the readable source text (a functionless GraphNode reads as its
+        # repr — never as "None").
+        entries = [RecipeEntry(compute_node_definition_hash(node), KIND_NODE_SOURCE, self.node_source(func if func is not None else node))]
         params = self.node_params(node)
         for name, component in self.components.items():
             if name not in params:

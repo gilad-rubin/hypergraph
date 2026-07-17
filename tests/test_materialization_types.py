@@ -22,6 +22,7 @@ from hypergraph.materialization import (
 )
 from hypergraph.materialization._fingerprint import (
     compute_definition_hash,
+    compute_node_definition_hash,
     compute_payload_hash,
     compute_table_recipe_fingerprint,
 )
@@ -202,6 +203,22 @@ class TestNodeIdentity:
         a silent repr-based hash would differ in every process."""
         with pytest.raises(TypeError, match="definition_hash"):
             compute_definition_hash(object())
+
+    def test_node_identity_is_construction_time_definition_hash(self):
+        """The identity used for recipes IS the node's captured hash, frozen at
+        construction — not a re-capture of the live instance."""
+        summarizer = MutatingSummarizer(model="gpt-4")
+        n = FunctionNode(summarizer.summarize, output_name="summary")
+        captured = n.definition_hash
+
+        summarizer.summarize("x")
+
+        assert compute_node_definition_hash(n) == captured
+
+    def test_raw_callable_falls_back_to_definition_hash(self):
+        """A raw callable that never passed through node construction hashes as
+        its own definition."""
+        assert compute_node_definition_hash(sample_derive) == compute_definition_hash(sample_derive)
 
 
 class TestPayloadHash:
