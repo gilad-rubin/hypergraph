@@ -233,6 +233,17 @@
 
 ### Changed
 
+- **`MapResult.failed` now mirrors the aggregate status (alpha breaking
+  change)** — `batch.failed` is True only when `status == RunStatus.FAILED`
+  (at least one item failed and none completed), matching `RunResult.failed`.
+  Use the new `batch.any_failed` (`bool(batch.failures)`) for "did anything
+  fail" regardless of status. Consequences: a 99/100-success batch is
+  `partial`, not `failed`, and `batch.stopped` and `batch.failed` can no
+  longer both be True — a curtailed stopped batch with real attempted-item
+  failures reports `stopped=True, failed=False, any_failed=True`.
+  ([#296](https://github.com/gilad-rubin/hypergraph/issues/296), decision
+  [#251](https://github.com/gilad-rubin/hypergraph/issues/251))
+
 - **Active workflow identity covers every execution shape** — a runner permits
   only one active execution per `workflow_id`; duplicate blocking/background
   starts fail before a second handle is returned. Different IDs are

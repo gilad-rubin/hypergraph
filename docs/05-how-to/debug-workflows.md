@@ -681,7 +681,7 @@ for i, r in enumerate(results):
     print(f"Item {i}: {r.log.summary()}")
 
 # Failed items
-if results.failed:
+if results.any_failed:
     for f in results.failures:
         print(f"Failed: {f.error}")
 ```

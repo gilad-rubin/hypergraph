@@ -558,7 +558,8 @@ class TestPartialStatus:
         )
         assert mr.status == RunStatus.PARTIAL
         assert mr.partial is True
-        assert mr.failed is True  # any() check
+        assert mr.failed is False  # mirrors status == FAILED
+        assert mr.any_failed is True  # any-item check
 
     def test_all_failed(self):
         mr = MapResult(

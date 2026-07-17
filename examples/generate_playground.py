@@ -571,8 +571,8 @@ results = runner_sync.map(
 >>> results.summary()
 '{results_map.summary()}'
 
->>> results.failed
-{results_map.failed}
+>>> results.any_failed
+{results_map.any_failed}
 
 >>> [f.error for f in results.failures]
 {failure_errors}

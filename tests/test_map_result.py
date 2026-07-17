@@ -323,7 +323,8 @@ class TestMapResultAggregateStatus:
         mr = _make_map_result(items)
         assert mr.status == RunStatus.PARTIAL
         assert mr.partial is True
-        assert mr.failed is True  # .failed checks any(), not .status
+        assert mr.failed is False  # .failed mirrors status == FAILED
+        assert mr.any_failed is True  # any-item check lives on .any_failed
         assert mr.completed is False
 
     def test_all_failed_is_failed(self):
@@ -370,6 +371,60 @@ class TestMapResultAggregateStatus:
         assert mr.failures == []
 
 
+class TestMapResultFailedMirrorsAggregate:
+    """`failed` mirrors `status == FAILED`; `any_failed` is the any-item check.
+
+    Locked semantics from decision #251 (issue #296): every boolean helper
+    mirrors exactly one aggregate status value, and `any_failed` is the
+    detailed-path convenience for "did anything fail".
+    """
+
+    def test_completed_plus_failed_is_partial_not_failed(self):
+        items = [
+            _make_result(),
+            _make_result(status=RunStatus.FAILED, error=ValueError("x")),
+        ]
+        mr = _make_map_result(items)
+        assert mr.partial is True
+        assert mr.failed is False
+        assert mr.any_failed is True
+
+    def test_all_failed_is_failed(self):
+        items = [
+            _make_result(status=RunStatus.FAILED, error=ValueError("a")),
+            _make_result(status=RunStatus.FAILED, error=ValueError("b")),
+        ]
+        mr = _make_map_result(items)
+        assert mr.failed is True
+        assert mr.any_failed is True
+        assert mr.partial is False
+
+    def test_stopped_with_some_failures_is_stopped_not_failed(self):
+        items = [
+            _make_result(status=RunStatus.FAILED, error=ValueError("x")),
+            _make_result(status=RunStatus.STOPPED),
+        ]
+        mr = _make_map_result(items, unstarted_item_indexes=(2, 3))
+        assert mr.stopped is True
+        assert mr.failed is False
+        assert mr.any_failed is True
+
+    def test_all_completed_only_completed_is_true(self):
+        mr = _make_map_result([_make_result(), _make_result()])
+        assert mr.completed is True
+        assert mr.failed is False
+        assert mr.any_failed is False
+        assert mr.partial is False
+        assert mr.stopped is False
+        assert mr.paused is False
+
+    def test_empty_batch_is_completed_with_no_failures(self):
+        mr = _make_map_result([])
+        assert mr.completed is True
+        assert mr.any_failed is False
+        assert mr.failed is False
+
+
 class TestMapResultRequestedScope:
     def test_full_batch_defaults_to_no_unstarted_items(self):
         mapped = _make_map_result([_make_result(), _make_result()])
@@ -392,7 +447,8 @@ class TestMapResultRequestedScope:
         assert mapped.unstarted_item_indexes == (2, 3, 4)
         assert mapped.status == RunStatus.STOPPED
         assert mapped.stopped is True
-        assert mapped.failed is True
+        assert mapped.failed is False  # aggregate is STOPPED, not FAILED
+        assert mapped.any_failed is True
         assert mapped.partial is False
         assert mapped.failures == [failure]
 
@@ -854,7 +910,8 @@ class TestSyncRunnerMapResult:
         )
 
         assert len(results) == 3
-        assert results.failed is True
+        assert results.any_failed is True
+        assert results.failed is False  # 2 of 3 completed, so PARTIAL
         assert len(results.failures) == 1
         assert results["result"] == [4, None, 8]
 
