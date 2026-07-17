@@ -5,8 +5,10 @@ import pytest
 from hypergraph import Graph, SyncRunner, node
 from hypergraph.checkpointers import (
     CheckpointPolicy,
+    MemoryCheckpointer,
     SqliteCheckpointer,
 )
+from hypergraph.events import EventProcessor
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -151,6 +153,28 @@ class TestSyncRunnerCheckpointing:
 
         with pytest.raises(TypeError, match="does not support sync writes"):
             runner.run(graph, {"x": 1}, workflow_id="wf-proto")
+
+    def test_map_protocol_mismatch_fails_before_emitting_events(self):
+        class Recorder(EventProcessor):
+            def __init__(self) -> None:
+                self.events: list[object] = []
+
+            def on_event(self, event) -> None:
+                self.events.append(event)
+
+        recorder = Recorder()
+        runner = SyncRunner(checkpointer=MemoryCheckpointer())
+
+        with pytest.raises(TypeError, match="does not support sync writes"):
+            runner.map(
+                Graph([double]),
+                {"x": [1]},
+                map_over="x",
+                workflow_id="batch-proto",
+                event_processors=[recorder],
+            )
+
+        assert recorder.events == []
 
     def test_workflow_id_with_slash_rejected(self):
         """User-provided workflow_id containing '/' is rejected."""

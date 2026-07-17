@@ -374,6 +374,8 @@ class SyncRunner(SyncRunnerTemplate):
             item_index=item_index,
             run_id=run_id,
             provided_values=values,
+            # Sync has no InterruptNode executor, but custom/nested executors still receive parity metadata.
+            is_resuming=(checkpoint is not None if self._checkpointer_instance is not None else True),
             emit_fn=dispatcher.emit if dispatcher.active else None,
             checkpointer=sync_cp,
             superstep_offset=superstep_offset,

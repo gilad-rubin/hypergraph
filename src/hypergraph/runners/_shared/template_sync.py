@@ -932,6 +932,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             validate_runner_compatibility(graph, self.capabilities)
             validate_node_types(graph, self.supported_node_types)
             validate_delegated_runners(graph, self.capabilities)
+            sync_cp = self._get_sync_checkpointer(workflow_id)
         except BaseException as error:
             if inspection_transport is not None:
                 inspection_transport.fail_to_start(error)
@@ -998,7 +999,6 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             raise
         dispatcher = None
         signal_token = None
-        sync_cp = None
         parent_run_row_created = False
         claimed_indexes: set[int] = set()
         results: list[RunResult] = []
@@ -1039,7 +1039,6 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             start_time = time.time()
 
             # Create parent batch run if checkpointing
-            sync_cp = self._get_sync_checkpointer(workflow_id)
             if sync_cp is not None:
                 sync_cp.create_run_sync(
                     workflow_id,
@@ -1261,6 +1260,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                         graph,
                         start_time,
                         _parent_span_id,
+                        context=RunContext(workflow_id=workflow_id, item_index=_item_index),
                         error=e,
                     )
                 # Mark parent batch run as failed
