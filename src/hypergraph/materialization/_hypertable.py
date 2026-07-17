@@ -203,10 +203,16 @@ class HyperTable:
         *,
         identity: str,
         store: TableStore,
-        runner: BaseRunner,
+        runner: BaseRunner | None = None,
         on_error: Literal["raise", "store"] = "raise",
         name: str | None = None,
     ) -> None:
+        if runner is None:
+            # Default constructed here (eagerly, at construction time) so the
+            # graph facade never depends on runners; materialization owns it.
+            from hypergraph.runners import SyncRunner
+
+            runner = SyncRunner()
         if on_error not in ("raise", "store"):
             raise GraphConfigError(
                 "HyperTable on_error must be 'raise' or 'store'.\n\n"

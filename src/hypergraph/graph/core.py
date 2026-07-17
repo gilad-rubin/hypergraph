@@ -1468,15 +1468,18 @@ class Graph:
         on_error: Literal["raise", "store"] = "raise",
         name: str | None = None,
     ) -> HyperTable:
-        """Persist this graph as an incremental table."""
+        """Persist this graph as an incremental table.
+
+        When ``runner`` is None, materialization supplies the default
+        (a ``SyncRunner``) — the graph facade does not import runners.
+        """
         from hypergraph.materialization import HyperTable
-        from hypergraph.runners import SyncRunner
 
         return HyperTable(
             self,
             identity=identity,
             store=store,
-            runner=runner if runner is not None else SyncRunner(),
+            runner=runner,
             on_error=on_error,
             name=name,
         )
