@@ -467,6 +467,29 @@ class TestMapEvents:
         # 1 map-level RunEnd + 2 individual RunEnds
         assert len(run_ends) == 3
 
+    @pytest.mark.asyncio
+    async def test_failed_map_run_end_preserves_workflow_context(self):
+        @node(output_name="out")
+        def failing(x: int) -> int:
+            raise ValueError(f"boom: {x}")
+
+        runner = AsyncRunner()
+        lp = ListProcessor()
+
+        with pytest.raises(ValueError, match="boom: 1"):
+            await runner.map(
+                Graph([failing]),
+                {"x": [1]},
+                map_over="x",
+                workflow_id="failed-async-map",
+                event_processors=[lp],
+            )
+
+        map_start = next(event for event in lp.of_type(RunStartEvent) if event.is_map)
+        map_end = next(event for event in lp.of_type(RunEndEvent) if event.run_id == map_start.run_id)
+        assert map_end.workflow_id == "failed-async-map"
+        assert map_end.item_index is None
+
 
 # ---------------------------------------------------------------------------
 # Shutdown

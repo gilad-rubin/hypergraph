@@ -1403,6 +1403,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         graph,
                         start_time,
                         _parent_span_id,
+                        context=RunContext(workflow_id=workflow_id, item_index=_item_index),
                         error=e,
                     )
                 # Mark parent batch run as failed

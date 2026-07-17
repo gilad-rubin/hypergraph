@@ -357,16 +357,21 @@ def run_superstep_sync(
                         )
                     )
 
-            except BaseException as e:
+            except PauseExecution as e:
+                e.span_id = node_span_id
+                raise
+            except _NodeExecutionError:
+                raise
+            except Exception as e:
                 duration_ms = (time.time() - node_start) * 1000
-                if inspection_session is not None and isinstance(e, Exception) and not isinstance(e, _NodeExecutionError):
+                if inspection_session is not None:
                     inspection_session.abort_node(
                         span_id=node_span_id,
                         error=e,
                         ended_at_ms=time.perf_counter() * 1000,
                         duration_ms=duration_ms,
                     )
-                if active and not node_error_event_attempted and not isinstance(e, _NodeExecutionError):
+                if active and not node_error_event_attempted:
                     dispatcher.emit(
                         build_node_error_event(
                             run_id,
@@ -379,31 +384,21 @@ def run_superstep_sync(
                             superstep=superstep_idx,
                         )
                     )
-                # Re-raise PauseExecution unwrapped (needed for InterruptNode)
-                if isinstance(e, PauseExecution):
-                    e.span_id = node_span_id
-                    raise
-                if isinstance(e, _NodeExecutionError):
-                    raise
-                # Wrap only Exception subclasses
-                if isinstance(e, Exception):
-                    if isinstance(e, ExecutionError):
-                        error = ExecutionError(
-                            e,
-                            e.partial_state,
-                            attempted_node_names=e.attempted_node_names,
-                            node_errors=e.node_errors,
-                        )
-                        raise error from e
+                if isinstance(e, ExecutionError):
                     error = ExecutionError(
                         e,
-                        new_state,
-                        attempted_node_names=tuple(attempted_node_names),
-                        node_errors={node.name: e},
+                        e.partial_state,
+                        attempted_node_names=e.attempted_node_names,
+                        node_errors=e.node_errors,
                     )
                     raise error from e
-                # Re-raise other BaseExceptions (KeyboardInterrupt, SystemExit, etc.)
-                raise
+                error = ExecutionError(
+                    e,
+                    new_state,
+                    attempted_node_names=tuple(attempted_node_names),
+                    node_errors={node.name: e},
+                )
+                raise error from e
 
         # Record wait_for versions
         wait_for_versions = {name: state.get_version(name) for name in node.wait_for}

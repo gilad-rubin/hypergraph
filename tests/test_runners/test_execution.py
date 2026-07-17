@@ -6,7 +6,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from hypergraph import Graph, node
+from hypergraph import Graph, SyncRunner, node
 from hypergraph.nodes.gate import END, route
 from hypergraph.runners._shared.map_inputs import generate_map_inputs
 from hypergraph.runners._shared.outputs import filter_outputs
@@ -426,6 +426,25 @@ class TestSyncFunctionNodeExecutor:
         self.executor = SyncFunctionNodeExecutor()
         self.state = GraphState()
         self.ctx = ExecutionContext()
+
+    def test_runner_marks_stateless_execution_context_as_resuming(self):
+        @node(output_name="out")
+        def step(x: int) -> int:
+            return x
+
+        runner = SyncRunner()
+        observed: list[bool] = []
+        executor = runner._executors[type(step)]
+
+        def recording_executor(node, state, inputs, ctx):
+            observed.append(ctx.is_resuming)
+            return executor(node, state, inputs, ctx)
+
+        runner._executors[type(step)] = recording_executor
+
+        runner.run(Graph([step]), {"x": 1})
+
+        assert observed == [True]
 
     def test_executes_function_rename_inputs(self):
         """Function is called with provided inputs."""
