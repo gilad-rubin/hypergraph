@@ -81,6 +81,36 @@ class _PausedConvergence:
     provenance: str
 
 
+class _ChildGenerations:
+    """Per-mutation write generations for child tables.
+
+    Child rows historically inherited the parent table's generation counter, but
+    the two counters can diverge — a crash between the child write and the parent
+    write leaves child rows one generation ahead, and ``ChildTable.set()`` bumps
+    child generations independently. A child upsert that then reuses an existing
+    physical generation survives cleanup (which deletes only OLDER generations)
+    and the stale row can win the public dedup tie (#205).
+
+    Every child-table mutation therefore allocates a generation strictly greater
+    than every physical row currently in that table, never merely the parent's
+    counter. Allocation is lazy (a mutation that never touches a child table
+    never reads its max) and cached per table, so a mutation's writes and its
+    cleanup agree on one generation.
+    """
+
+    def __init__(self, store: Any, root_gen: int) -> None:
+        self._store = store
+        self._root_gen = root_gen
+        self._allocated: dict[str, int] = {}
+
+    def for_table(self, table_name: str) -> int:
+        gen = self._allocated.get(table_name)
+        if gen is None:
+            gen = max(self._root_gen, self._store.max_write_gen(table_name) + 1)
+            self._allocated[table_name] = gen
+        return gen
+
+
 def _run_values(result: Any) -> dict[str, Any]:
     if hasattr(result, "values") and isinstance(result.values, dict):
         return result.values
@@ -555,11 +585,11 @@ class WritePlanner:
             [(self._identity, "eq", identity_value), ("_write_gen", "lt", write_gen)],
         )
 
-    def _cleanup_children(self, identity_value: Any, write_gen: int) -> None:
+    def _cleanup_children(self, identity_value: Any, child_gens: _ChildGenerations) -> None:
         for child_spec in self._spec.children:
             self._store.delete_rows(
                 child_spec.name,
-                [("_parent_id", "eq", identity_value), ("_write_gen", "lt", write_gen)],
+                [("_parent_id", "eq", identity_value), ("_write_gen", "lt", child_gens.for_table(child_spec.name))],
             )
 
     def _refresh_missing_stamps(
@@ -663,10 +693,14 @@ class WritePlanner:
         parent_id: Any,
         child_items: list[Any],
         child_spec: TableSpec,
-        write_gen: int,
+        child_gens: _ChildGenerations,
     ) -> Generator[RunGraph, Any, None]:
         if child_spec.child_graph is None:
             return
+        # Allocated before any write in this batch: strictly greater than every
+        # physical row currently in the child table, so cleanup (which deletes
+        # older generations) removes every stale row and no tie can survive.
+        write_gen = child_gens.for_table(child_spec.name)
         bound_graph = self._bind_child_components(child_spec.child_graph)
         for raw_item in child_items:
             child_item = normalize_to_dict(raw_item)
@@ -770,11 +804,11 @@ class WritePlanner:
         parent_id: Any,
         outputs: Mapping[str, Any],
         child_spec: TableSpec,
-        write_gen: int,
+        child_gens: _ChildGenerations,
     ) -> Generator[RunGraph, Any, None]:
         child_items = self._child_items(outputs, child_spec)
         if child_items is not None:
-            yield from self._insert_children_items(parent_id, child_items, child_spec, write_gen)
+            yield from self._insert_children_items(parent_id, child_items, child_spec, child_gens)
 
     def _apply_reconciled(
         self,
@@ -784,6 +818,7 @@ class WritePlanner:
         reconciled: ReconcileResult,
         parent_skipped: bool,
         write_gen: int,
+        child_gens: _ChildGenerations,
     ) -> Generator[RunGraph, Any, str]:
         outputs = reconciled.output_values()
         provenances = reconciled.provenance_values()
@@ -800,7 +835,7 @@ class WritePlanner:
                 identity_value,
                 child_items,
                 selection.spec,
-                write_gen,
+                child_gens,
             )
         provenance_changed = any(existing.get(f"_provenance_{name}") != provenance for name, provenance in provenances.items())
         rewrite_parent = not parent_skipped or provenance_changed or self._provenance.row_missing_stamp(existing, RECIPE_COLUMN)
@@ -816,7 +851,7 @@ class WritePlanner:
             )
             self._store.write_rows(self._spec.name, [row])
             self._cleanup_parent(identity_value, write_gen)
-        self._cleanup_children(identity_value, write_gen)
+        self._cleanup_children(identity_value, child_gens)
         return "skipped" if parent_skipped else "updated"
 
     def _provenances_for_values(
@@ -861,6 +896,7 @@ class WritePlanner:
         pause: PauseInfo,
         pause_provenance: str,
         write_gen: int,
+        child_gens: _ChildGenerations,
         existing: dict[str, Any] | None,
         outcome: WriteOutcome,
     ) -> RowReceipt:
@@ -879,7 +915,7 @@ class WritePlanner:
         self._store.write_rows(self._spec.name, [row])
         if existing is not None:
             self._cleanup_parent(identity_value, write_gen)
-            self._cleanup_children(identity_value, write_gen)
+            self._cleanup_children(identity_value, child_gens)
         return RowReceipt(str(identity_value), outcome, RowStatus.WAITING, pause=pause)
 
     def _error_parent(
@@ -910,6 +946,7 @@ class WritePlanner:
         existing: dict[str, Any],
         answer_names: set[str],
         write_gen: int,
+        child_gens: _ChildGenerations,
     ) -> Generator[RunGraph, Any, RowReceipt]:
         identity_value = item[self._identity]
         graph = self._answer_graph(answer_names)
@@ -953,12 +990,13 @@ class WritePlanner:
                 pause,
                 pause_provenance,
                 write_gen,
+                child_gens,
                 existing,
                 WriteOutcome.UPDATED,
             )
 
         for child_spec in self._spec.children:
-            yield from self._insert_children(identity_value, outputs, child_spec, write_gen)
+            yield from self._insert_children(identity_value, outputs, child_spec, child_gens)
         self._evolve_for_metadata(item)
         row = self._build_parent_row(
             item,
@@ -970,7 +1008,7 @@ class WritePlanner:
         )
         self._store.write_rows(self._spec.name, [row])
         self._cleanup_parent(identity_value, write_gen)
-        self._cleanup_children(identity_value, write_gen)
+        self._cleanup_children(identity_value, child_gens)
         return RowReceipt(str(identity_value), WriteOutcome.UPDATED, RowStatus.COMPLETE)
 
     def _insert_one(
@@ -980,6 +1018,7 @@ class WritePlanner:
         provided: set[str] | None = None,
     ) -> Generator[RunGraph, Any, RowReceipt]:
         identity_value = item[self._identity]
+        child_gens = _ChildGenerations(self._store, write_gen)
         provided_names = provided if provided is not None else set(item) - {self._identity}
         graph_inputs = self._graph_inputs(item, provided_names)
         source_inputs = self._source_inputs(item)
@@ -1009,6 +1048,7 @@ class WritePlanner:
                     existing,
                     provided_answers,
                     write_gen,
+                    child_gens,
                 )
             )
 
@@ -1031,6 +1071,7 @@ class WritePlanner:
                     reconciled.pause,
                     reconciled.provenance,
                     write_gen,
+                    child_gens,
                     existing,
                     outcome,
                 )
@@ -1042,6 +1083,7 @@ class WritePlanner:
                     reconciled,
                     parent_skipped,
                     write_gen,
+                    child_gens,
                 )
                 return RowReceipt(
                     str(identity_value),
@@ -1078,18 +1120,19 @@ class WritePlanner:
                 pause,
                 pause_provenance,
                 write_gen,
+                child_gens,
                 existing,
                 outcome,
             )
 
         if parent_skipped:
             for child_spec in self._spec.children:
-                yield from self._insert_children(identity_value, outputs, child_spec, write_gen)
-            self._cleanup_children(identity_value, write_gen)
+                yield from self._insert_children(identity_value, outputs, child_spec, child_gens)
+            self._cleanup_children(identity_value, child_gens)
             return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
 
         for child_spec in self._spec.children:
-            yield from self._insert_children(identity_value, outputs, child_spec, write_gen)
+            yield from self._insert_children(identity_value, outputs, child_spec, child_gens)
         self._evolve_for_metadata(item)
         row = self._build_parent_row(
             item,
@@ -1101,7 +1144,7 @@ class WritePlanner:
         self._store.write_rows(self._spec.name, [row])
         if existing is not None:
             self._cleanup_parent(identity_value, write_gen)
-            self._cleanup_children(identity_value, write_gen)
+            self._cleanup_children(identity_value, child_gens)
         return RowReceipt(str(identity_value), outcome, RowStatus.COMPLETE)
 
     def insert(self, items: list[dict[str, Any]]) -> WriteOperation:
@@ -1228,6 +1271,7 @@ class WritePlanner:
         derived_columns = self._provenance.derived_columns()
         derived_names = {derived.name for derived in derived_columns}
         for existing in rows:
+            child_gens = _ChildGenerations(self._store, write_gen)
             if backfill and not self._provenance.column_is_null(existing.get(column)):
                 receipts.append(
                     self._receipt_for_row(
@@ -1267,6 +1311,7 @@ class WritePlanner:
                     reconciled.pause,
                     reconciled.provenance,
                     write_gen,
+                    child_gens,
                     existing,
                     WriteOutcome.UPDATED,
                 )
@@ -1285,6 +1330,7 @@ class WritePlanner:
                 reconciled,
                 False,
                 write_gen,
+                child_gens,
             )
             receipts.append(RowReceipt(str(existing[self._identity]), WriteOutcome.UPDATED, RowStatus.COMPLETE))
         return TableReceipt(tuple(receipts))
