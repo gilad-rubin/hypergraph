@@ -204,6 +204,24 @@ def build_failing_child_graph():
     return parent, counters
 
 
+def build_zero_step_failing_child_graph():
+    """Parent whose child fails before persisting any completed step."""
+    counters = {"boom": 0}
+
+    @node(output_name="prepared")
+    def prepare(x: int) -> int:
+        return x + 100
+
+    @node(output_name="doubled")
+    def boom(prepared: int) -> int:
+        counters["boom"] += 1
+        raise ValueError("first child step exploded")
+
+    child = Graph(nodes=[boom], name="child")
+    parent = Graph(nodes=[prepare, child.as_node(name="child_wf")], name="parent")
+    return parent, counters
+
+
 class TestAsyncNestedCrashResume:
     async def test_resume_restores_completed_child_after_parent_step_crash(self, tmp_path):
         """B1/B2/B3: resume restores the child's outputs instead of re-invoking."""
@@ -396,6 +414,86 @@ class TestAsyncNestedCrashResume:
         finally:
             await cp.close()
 
+    @pytest.mark.parametrize("error_handling", ["raise", "continue"])
+    async def test_resume_replays_failed_child_with_no_completed_steps(self, tmp_path, error_handling):
+        """#270: child seeds survive resume when its first step failed."""
+        parent, counters = build_zero_step_failing_child_graph()
+        cp = SqliteCheckpointer(str(tmp_path / "test.db"), durability="sync")
+        try:
+            runner = AsyncRunner(checkpointer=cp)
+            if error_handling == "raise":
+                with pytest.raises(ValueError, match="first child step exploded"):
+                    await runner.run(parent, {"x": 5}, workflow_id="wf", error_handling=error_handling)
+            else:
+                first = await runner.run(parent, {"x": 5}, workflow_id="wf", error_handling=error_handling)
+                assert first.status is RunStatus.FAILED
+                assert isinstance(first.error, ValueError)
+
+            child_steps = await cp.get_steps("wf/child_wf")
+            assert not any(step.status is StepStatus.COMPLETED for step in child_steps)
+
+            if error_handling == "raise":
+                with pytest.raises(ValueError, match="first child step exploded"):
+                    await runner.run(parent, workflow_id="wf", error_handling=error_handling)
+            else:
+                resumed = await runner.run(parent, workflow_id="wf", error_handling=error_handling)
+                assert resumed.status is RunStatus.FAILED
+                assert isinstance(resumed.error, ValueError)
+                assert str(resumed.error) == "first child step exploded"
+
+            assert counters["boom"] == 2
+        finally:
+            await cp.close()
+
+    async def test_paused_child_persists_runtime_answer_before_parent_step(self, tmp_path):
+        """#278: a terminal child durably folds its consumed interrupt answer."""
+
+        @node(output_name="draft")
+        def prepare(query: str) -> str:
+            return f"Draft for: {query}"
+
+        @interrupt(answer_name="decision")
+        def approval(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve?", evidence=(draft,))
+
+        @node(output_name="result")
+        def finalize(decision: str) -> str:
+            return f"Final: {decision}"
+
+        child = Graph([approval], name="review")
+        parent = Graph([prepare, child.as_node(name="child_wf"), finalize], name="parent")
+        cp = CrashingStepCheckpointer(str(tmp_path / "test.db"), {("wf", "child_wf")})
+        cp.armed = False
+        try:
+            runner = AsyncRunner(checkpointer=cp)
+            paused = await runner.run(parent, {"query": "hello"}, workflow_id="wf")
+            assert paused.status is RunStatus.PAUSED
+            assert await cp.get_state("wf/child_wf") == {}
+
+            cp.armed = True
+            with pytest.raises(RuntimeError, match=CRASH_MESSAGE):
+                await runner.run(parent, {"decision": "approved"}, workflow_id="wf")
+
+            child_run = await cp.get_run_async("wf/child_wf")
+            assert child_run is not None
+            assert child_run.status is WorkflowStatus.COMPLETED
+            assert await cp.get_state("wf/child_wf") == {"decision": "approved"}
+            child_steps = await cp.get_steps("wf/child_wf")
+            assert any(
+                step.node_name == "approval" and step.status is StepStatus.COMPLETED and step.values == {"decision": "approved"}
+                for step in child_steps
+            )
+
+            cp.armed = False
+            restored = await runner.run(parent, workflow_id="wf")
+            assert restored.values == {
+                "draft": "Draft for: hello",
+                "decision": "approved",
+                "result": "Final: approved",
+            }
+        finally:
+            await cp.close()
+
 
 class TestSyncNestedCrashResume:
     """B4: sync-runner parity for the crash-window restore."""
@@ -527,6 +625,39 @@ class TestSyncNestedCrashResume:
             child_run = cp.get_run("wf/child_wf")
             assert child_run is not None
             assert child_run.status is WorkflowStatus.FAILED
+        finally:
+            if cp._sync_conn:
+                cp._sync_conn.close()
+
+    @pytest.mark.parametrize("error_handling", ["raise", "continue"])
+    def test_resume_replays_failed_child_with_no_completed_steps(self, tmp_path, error_handling):
+        """#270: child seeds survive resume when its first step failed."""
+        parent, counters = build_zero_step_failing_child_graph()
+        cp = SqliteCheckpointer(str(tmp_path / "test.db"), durability="sync")
+        cp._sync_db()
+        try:
+            runner = SyncRunner(checkpointer=cp)
+            if error_handling == "raise":
+                with pytest.raises(ValueError, match="first child step exploded"):
+                    runner.run(parent, {"x": 5}, workflow_id="wf", error_handling=error_handling)
+            else:
+                first = runner.run(parent, {"x": 5}, workflow_id="wf", error_handling=error_handling)
+                assert first.status is RunStatus.FAILED
+                assert isinstance(first.error, ValueError)
+
+            child_steps = cp.steps("wf/child_wf")
+            assert not any(step.status is StepStatus.COMPLETED for step in child_steps)
+
+            if error_handling == "raise":
+                with pytest.raises(ValueError, match="first child step exploded"):
+                    runner.run(parent, workflow_id="wf", error_handling=error_handling)
+            else:
+                resumed = runner.run(parent, workflow_id="wf", error_handling=error_handling)
+                assert resumed.status is RunStatus.FAILED
+                assert isinstance(resumed.error, ValueError)
+                assert str(resumed.error) == "first child step exploded"
+
+            assert counters["boom"] == 2
         finally:
             if cp._sync_conn:
                 cp._sync_conn.close()
