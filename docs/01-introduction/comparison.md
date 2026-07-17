@@ -319,7 +319,7 @@ Hypergraph is younger than these alternatives. Tradeoffs to consider:
 
 | Area | Status |
 |------|--------|
-| Maturity | Alpha - API may change |
+| Maturity | Beta - stable-beta APIs follow the documented deprecation policy |
 | Production use | Limited testing at scale |
 | Ecosystem | Smaller community |
 | Integrations | Fewer pre-built connectors |

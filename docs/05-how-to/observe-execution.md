@@ -24,7 +24,7 @@ sensitivity, degraded views, and map failure drill-down.
 The fastest way to observe execution — hierarchical progress bars powered by Rich.
 
 ```bash
-pip install 'hypergraph[progress]'
+pip install 'hypergraph-ai[progress]'
 ```
 
 ```python
@@ -88,7 +88,7 @@ Hypergraph's native `result.inspect()` view, failure evidence, and checkpoint
 tools remain the primary debugging experience; OTel is the export layer.
 
 ```bash
-pip install 'hypergraph[otel]'
+pip install 'hypergraph-ai[otel]'
 ```
 
 ```python

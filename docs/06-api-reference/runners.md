@@ -401,7 +401,7 @@ class DaftRunner:
 - `cache` - Optional cache backend for node-level caching.
 
 **Raises:**
-- `ImportError` - If the `daft` dependency is not installed. Install with `pip install 'hypergraph[daft]'`.
+- `ImportError` - If the `daft` dependency is not installed. Install with `pip install 'hypergraph-ai[daft]'`.
 
 ### run()
 

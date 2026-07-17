@@ -60,7 +60,7 @@ cache = InMemoryCache(max_size=1000)
 Persistent across runs. Requires the optional cache dependencies:
 
 ```bash
-pip install 'hypergraph[cache]'
+pip install 'hypergraph-ai[cache]'
 ```
 
 This installs:
@@ -175,7 +175,7 @@ CacheHitEvent(node_name="embed", cache_key="abc123...")
 NodeEndEvent(node_name="embed", cached=True, duration_ms=0.0)
 ```
 
-If your node body uses `hypercache` internally, Hypergraph also emits `InnerCacheEvent` entries for those nested cache decisions. Installing `hypergraph[cache]` gives you both Hypergraph's disk backend and the Hypercache observer bridge:
+If your node body uses `hypercache` internally, Hypergraph also emits `InnerCacheEvent` entries for those nested cache decisions. Installing `hypergraph-ai[cache]` gives you both Hypergraph's disk backend and the Hypercache observer bridge:
 
 ```python
 from hypergraph import InnerCacheEvent, TypedEventProcessor
