@@ -2,6 +2,8 @@
 
 **Status:** Accepted on 2026-07-13 and implemented by the change set tracked in [issue #155](https://github.com/gilad-rubin/hypergraph/issues/155). This ADR supersedes ADR 0003 only where ADR 0003 proposed `wait()`; its background-map collection and retrieval policy remains accepted.
 
+**Amended 2026-07-18** by [issue #296](https://github.com/gilad-rubin/hypergraph/issues/296) (decision [#251](https://github.com/gilad-rubin/hypergraph/issues/251)): `MapResult.failed` now mirrors the batch aggregate (`status == FAILED`) instead of "any item failed", so a stopped batch is no longer both `stopped` and `failed`. Item-level failures on a stopped or partial batch are exposed by `any_failed` and `failures`. Where the text below says `failed` exposes failures on a stopped batch (Decision bullet on curtailed stop; first Consequences bullet), read `any_failed`/`failures`.
+
 A background handle exists to let one Python process control a live Hypergraph execution without turning the handle into a second result model or a durable job reference. We keep the control surface minimal and preserve execution truth on `RunResult` and `MapResult`.
 
 ## Decision

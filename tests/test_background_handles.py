@@ -337,7 +337,8 @@ def test_sync_stopped_map_contains_only_claimed_results() -> None:
     assert early_batch.unstarted_item_indexes == (2, 3, 4)
     assert early_batch.status is RunStatus.STOPPED
     assert early_batch.stopped is True
-    assert early_batch.failed is True
+    assert early_batch.failed is False
+    assert early_batch.any_failed is True
     assert early_batch.partial is False
     assert early_batch.failures == [early_batch[0]]
     assert evidence.item_index == 0
@@ -416,7 +417,8 @@ async def test_bounded_async_stopped_map_is_sparse_and_input_ordered() -> None:
     assert batch.unstarted_item_indexes == (2, 3, 4)
     assert batch.status is RunStatus.STOPPED
     assert batch.stopped is True
-    assert batch.failed is True
+    assert batch.failed is False
+    assert batch.any_failed is True
     assert batch.partial is False
     assert batch.failures == [batch[1]]
     assert evidence.item_index == 1

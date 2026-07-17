@@ -284,8 +284,9 @@ After:  10 requested inputs -> 4 real outcomes + 6 unstarted indexes
 
 `results`, iteration, indexing, logs, child run IDs, child events, and child
 checkpoint rows contain only claimed work, in original input order. A stopped
-batch may also have real failures: `batch.stopped` and `batch.failed` can both
-be true, while `batch.failures` retains those attempted-item failures. Default
+batch may also have real failures: `batch.stopped` and `batch.any_failed` can
+both be true (`batch.failed` stays false — it mirrors the aggregate status),
+while `batch.failures` retains those attempted-item failures. Default
 retrieval still raises the first real failed item; non-raising retrieval gives
 the settled stopped batch.
 

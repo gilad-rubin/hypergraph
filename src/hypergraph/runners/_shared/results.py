@@ -128,22 +128,22 @@ class RunResult:
 
     @property
     def stopped(self) -> bool:
-        """Whether execution was stopped via runner.stop()."""
+        """True when ``status == RunStatus.STOPPED`` (stopped via runner.stop())."""
         return self.status == RunStatus.STOPPED
 
     @property
     def paused(self) -> bool:
-        """Whether execution is paused at an InterruptNode."""
+        """True when ``status == RunStatus.PAUSED`` (paused at an InterruptNode)."""
         return self.status == RunStatus.PAUSED
 
     @property
     def completed(self) -> bool:
-        """Whether execution completed successfully."""
+        """True when ``status == RunStatus.COMPLETED``."""
         return self.status == RunStatus.COMPLETED
 
     @property
     def failed(self) -> bool:
-        """Whether execution failed."""
+        """True when ``status == RunStatus.FAILED``."""
         return self.status == RunStatus.FAILED
 
     @property
@@ -451,27 +451,41 @@ class MapResult:
 
     @property
     def completed(self) -> bool:
-        """Whether the batch aggregate completed (including an empty map)."""
+        """True when ``status == RunStatus.COMPLETED`` (including an empty map)."""
         return self.status == RunStatus.COMPLETED
 
     @property
     def paused(self) -> bool:
-        """Whether the batch aggregate paused."""
+        """True when ``status == RunStatus.PAUSED``."""
         return self.status == RunStatus.PAUSED
 
     @property
     def stopped(self) -> bool:
-        """Whether the batch aggregate stopped."""
+        """True when ``status == RunStatus.STOPPED``."""
         return self.status == RunStatus.STOPPED
 
     @property
     def failed(self) -> bool:
-        """True if any item failed (FAILED or PARTIAL)."""
-        return any(r.status == RunStatus.FAILED for r in self.results)
+        """True when ``status == RunStatus.FAILED``.
+
+        Mirrors the aggregate exactly (parity with ``RunResult.failed``): at
+        least one item failed and none completed. Use ``any_failed`` for
+        "did anything fail" regardless of the aggregate status.
+        """
+        return self.status == RunStatus.FAILED
+
+    @property
+    def any_failed(self) -> bool:
+        """True when ``bool(self.failures)`` — at least one item failed.
+
+        Independent of the aggregate status: also True for PARTIAL batches
+        and for STOPPED batches that carry real attempted-item failures.
+        """
+        return bool(self.failures)
 
     @property
     def partial(self) -> bool:
-        """True if some items completed and some failed."""
+        """True when ``status == RunStatus.PARTIAL`` — some items completed and some failed."""
         return self.status == RunStatus.PARTIAL
 
     @property

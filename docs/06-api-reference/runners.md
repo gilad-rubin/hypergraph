@@ -274,7 +274,7 @@ results = runner.map(
     inspect=True,
     error_handling="continue",
 )
-if results.failed:
+if results.any_failed:
     print(f"{len(results.failures)} items failed")
 
 results.inspect()
@@ -1489,9 +1489,10 @@ results.get("doubled", 0)   # [2, 4, 6] (with default for missing)
 
 # Aggregate status
 results.status       # RunStatus.COMPLETED, PARTIAL, FAILED, PAUSED, or STOPPED
-results.completed    # True if all completed
-results.failed       # True if any failed
-results.partial      # True if some items completed and some failed
+results.completed    # True if status is COMPLETED (all completed, or empty)
+results.failed       # True if status is FAILED (some failed, none completed)
+results.any_failed   # True if at least one item failed, whatever the status
+results.partial      # True if status is PARTIAL (some completed, some failed)
 results.stopped      # True if status is STOPPED, including curtailed scope
 results.failures     # List of failed RunResult items
 results.requested_count          # Real outcomes + inputs never started
