@@ -234,8 +234,8 @@ results = runner.map(
     error_handling="continue",
 )
 
-# Aggregate status
-if results.failed:
+# Any-item failure check (status-independent)
+if results.any_failed:
     print(f"{len(results.failures)} items failed out of {len(results)}")
 
 # Collect values with None for failures
@@ -305,9 +305,11 @@ print(batch.unstarted_item_indexes)  # sorted original indexes never claimed
 ```
 
 A curtailed batch has `status == RunStatus.STOPPED` even when a real attempted
-item failed. In that case `batch.stopped` and `batch.failed` are both true, and
-`batch.failures` preserves the failure. A stop received only after every input
-settles does not rewrite the ordinary completed/partial/failed aggregation.
+item failed. In that case `batch.stopped` is true and `batch.failed` is false
+(it mirrors the aggregate status), while `batch.any_failed` and
+`batch.failures` preserve the attempted-item failures. A stop received only
+after every input settles does not rewrite the ordinary
+completed/partial/failed aggregation.
 
 See [Control Work After It Starts](control-background-execution.md) for sync
 and async submission, cancellation isolation, duplicate workflow IDs, and
