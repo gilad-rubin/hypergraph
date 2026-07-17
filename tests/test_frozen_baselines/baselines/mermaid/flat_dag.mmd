@@ -1,0 +1,19 @@
+flowchart TD
+    %% Inputs
+    input_query(["query: str"])
+    input_text(["text: str"])
+    %% Nodes
+    embed["embed<br/>---------------<br/>embedding: list"]
+    retrieve["retrieve<br/>----------<br/>docs: list"]
+    generate["generate<br/>-----------<br/>answer: str"]
+    %% Edges
+    input_query --> generate
+    input_text --> embed
+    embed --> retrieve
+    retrieve --> generate
+
+    %% Styling
+    classDef function fill:#E8F5E8,stroke:#388E3C,stroke-width:2px,color:#1B5E20
+    classDef input fill:#E3F2FD,stroke:#1976D2,stroke-width:2px,color:#0D47A1
+    class embed,retrieve,generate function
+    class input_query,input_text input
