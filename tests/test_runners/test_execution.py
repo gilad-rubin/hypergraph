@@ -1,7 +1,6 @@
 """Tests for execution logic: ready nodes, supersteps, executors, etc."""
 
 import asyncio
-import time
 from contextlib import contextmanager
 
 import pytest
@@ -624,23 +623,27 @@ class TestRunSuperstepAsync:
 
     async def test_executes_nodes_concurrently(self):
         """Multiple nodes execute concurrently."""
-        timestamps: dict[str, list[float]] = {"a": [], "b": []}
+        arrived = 0
+        both_arrived = asyncio.Event()
+
+        async def wait_for_both() -> None:
+            nonlocal arrived
+            arrived += 1
+            if arrived == 2:
+                both_arrived.set()
+            await asyncio.wait_for(both_arrived.wait(), timeout=15)
 
         @node(output_name="a")
-        async def slow_a(x: int) -> int:
-            timestamps["a"].append(time.monotonic())  # start
-            await asyncio.sleep(0.1)
-            timestamps["a"].append(time.monotonic())  # end
+        async def wait_a(x: int) -> int:
+            await wait_for_both()
             return x + 1
 
         @node(output_name="b")
-        async def slow_b(x: int) -> int:
-            timestamps["b"].append(time.monotonic())  # start
-            await asyncio.sleep(0.1)
-            timestamps["b"].append(time.monotonic())  # end
+        async def wait_b(x: int) -> int:
+            await wait_for_both()
             return x + 2
 
-        graph = Graph([slow_a, slow_b])
+        graph = Graph([wait_a, wait_b])
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
@@ -649,17 +652,11 @@ class TestRunSuperstepAsync:
             state,
             ready,
             {"x": 5},
-            {type(slow_a): self.executor, type(slow_b): self.executor},
+            {type(wait_a): self.executor, type(wait_b): self.executor},
             ExecutionContext(),
         )
 
-        # Verify concurrency: each task must have started before the other finished.
-        # If sequential, one task's start would be after the other's end.
-        a_start, a_end = timestamps["a"]
-        b_start, b_end = timestamps["b"]
-        assert a_start < b_end, "a should start before b finishes (concurrent)"
-        assert b_start < a_end, "b should start before a finishes (concurrent)"
-
+        assert arrived == 2
         assert new_state.values["a"] == 6
         assert new_state.values["b"] == 7
 
@@ -669,20 +666,25 @@ class TestRunSuperstepAsync:
         Note: Concurrency is controlled at the FunctionNode executor level
         via a global ContextVar semaphore, not at the superstep level.
         """
-        execution_times = []
+        execution_order: list[str] = []
+
+        async def yield_to_ready_tasks() -> None:
+            resume = asyncio.Event()
+            asyncio.get_running_loop().call_soon(resume.set)
+            await resume.wait()
 
         @node(output_name="a")
         async def track_a(x: int) -> int:
-            execution_times.append(("a_start", time.time()))
-            await asyncio.sleep(0.05)
-            execution_times.append(("a_end", time.time()))
+            execution_order.append("a_start")
+            await yield_to_ready_tasks()
+            execution_order.append("a_end")
             return x + 1
 
         @node(output_name="b")
         async def track_b(x: int) -> int:
-            execution_times.append(("b_start", time.time()))
-            await asyncio.sleep(0.05)
-            execution_times.append(("b_end", time.time()))
+            execution_order.append("b_start")
+            await yield_to_ready_tasks()
+            execution_order.append("b_end")
             return x + 2
 
         graph = Graph([track_a, track_b])
@@ -694,7 +696,6 @@ class TestRunSuperstepAsync:
         token = set_concurrency_limiter(semaphore)
 
         try:
-            start = time.time()
             await run_superstep_async(
                 graph,
                 state,
@@ -704,10 +705,11 @@ class TestRunSuperstepAsync:
                 ExecutionContext(),
                 max_concurrency=1,
             )
-            elapsed = time.time() - start
 
-            # With max_concurrency=1, should be sequential (~0.1s)
-            assert elapsed >= 0.09
+            assert execution_order in (
+                ["a_start", "a_end", "b_start", "b_end"],
+                ["b_start", "b_end", "a_start", "a_end"],
+            )
         finally:
             reset_concurrency_limiter(token)
 
