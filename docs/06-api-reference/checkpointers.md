@@ -142,13 +142,14 @@ child is never restored as success — resume follows the ordinary failure path,
 re-executing the failed child nodes and resurfacing their error under the
 run's `error_handling` mode.
 
-Recovery is evidence-gated so it never shadows a legitimate re-execution.
-Under `retention="windowed"`, a prior completion of the same GraphNode may
-survive only as folded values in the hidden retention carrier; resume checks
-the raw step history for that evidence. When it exists (for example the next
-turn of a multi-turn conversation), the child re-executes under a fresh
-suffixed child id (`order-100/enrich/1`) with its current inputs — restore
-only happens when no trace of a prior completion exists anywhere.
+Recovery is evidence-gated so it never shadows a legitimate re-execution. A
+real persisted `COMPLETED` parent step is proof that the nested graph completed;
+folded carrier values are not, because they lack producer provenance.
+Windowed/compacted retention with nested crash-window recovery is therefore
+explicitly rejected once parent history has been compacted. Use
+`retention="full"` or `retention="latest"` for workflows that combine nested
+graphs with resume/crash recovery, or fork the workflow. Windowed support is
+tracked in #277.
 
 With a delegated runner (`as_node(runner=...)`), the child workflow persists
 in the delegated runner's checkpointer. Crash recovery reads the child's

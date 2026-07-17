@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.checkpointers.types import StepRecord, StepStatus
+from hypergraph.exceptions import CompactedRetentionError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.runners._shared.state import GraphState, NodeExecution
 
@@ -394,28 +395,29 @@ def has_prior_completion_evidence(
     steps: list[StepRecord],
     node: GraphNode,
 ) -> bool:
-    """Durable proof that this parent run already completed this GraphNode.
+    """Return durable proof that this parent run completed this GraphNode.
 
     Callers must pass raw step history queried with ``show_internal=True``:
-    retention compaction hides its carrier rows from public step reads, and
-    the compacted carrier is exactly where the evidence survives. Two forms:
+    retention compaction hides its carrier rows from public step reads.
 
-    - a COMPLETED StepRecord for the node itself (normally consumed by
-      checkpoint replay before the executor runs; kept as belt-and-suspenders),
-    - a retention-baseline carrier whose folded values contain any of the
-      node's outputs — compaction drops the node's own row but keeps its
-      produced values, which proves a prior completion.
+    A COMPLETED StepRecord for the node itself is durable evidence (normally
+    consumed by checkpoint replay before the executor runs; kept here as
+    belt-and-suspenders). A retention-baseline carrier is not evidence: it
+    folds values without producer provenance. Without the node's own row,
+    compacted history makes restore versus re-execution ambiguous and must be
+    rejected until provenance support tracked in #277 exists.
 
     PAUSED/FAILED rows for the node are attempt evidence, not completion
     evidence: the crash window legitimately contains them.
     """
-    output_names = set(node.outputs)
+    has_retention_baseline = False
     for step in steps:
         if step.node_name == node.name and step.status is StepStatus.COMPLETED:
             return True
         is_baseline = step.node_name == _RETENTION_BASELINE_NODE_NAME or step.node_type == _RETENTION_BASELINE_NODE_TYPE
-        if is_baseline and step.values and output_names.intersection(step.values):
-            return True
+        has_retention_baseline = has_retention_baseline or is_baseline
+    if has_retention_baseline:
+        raise CompactedRetentionError(node.name)
     return False
 
 

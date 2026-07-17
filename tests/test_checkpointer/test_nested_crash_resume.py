@@ -10,7 +10,7 @@ FAILED child as success.
 
 import pytest
 
-from hypergraph import END, AsyncRunner, Graph, SyncRunner, interrupt, node, route
+from hypergraph import END, AsyncRunner, CompactedRetentionError, Graph, SyncRunner, interrupt, node, route
 from hypergraph.checkpointers import CheckpointPolicy, SqliteCheckpointer, WorkflowStatus
 from hypergraph.checkpointers.types import StepStatus
 from hypergraph.events import EventProcessor
@@ -45,8 +45,17 @@ class CrashingStepCheckpointer(SqliteCheckpointer):
     against the same database.
     """
 
-    def __init__(self, path: str, targets: set[tuple[str, str]]):
-        super().__init__(path, durability="sync")
+    def __init__(
+        self,
+        path: str,
+        targets: set[tuple[str, str]],
+        *,
+        policy: CheckpointPolicy | None = None,
+    ):
+        if policy is None:
+            super().__init__(path, durability="sync")
+        else:
+            super().__init__(path, policy=policy)
         self.targets = targets
         self.armed = True
 
@@ -120,6 +129,17 @@ def retention_policy(retention: str) -> CheckpointPolicy:
     if retention == "windowed":
         return CheckpointPolicy(durability="sync", retention="windowed", window=1)
     return CheckpointPolicy(durability="sync", retention=retention)
+
+
+def assert_compacted_retention_guidance(error: pytest.ExceptionInfo[BaseException]) -> None:
+    """The rejection names the boundary and both supported escape hatches."""
+    message = str(error.value)
+    assert "windowed" in message
+    assert "compacted" in message
+    assert "retention='full'" in message
+    assert "retention='latest'" in message
+    assert "fork" in message.lower()
+    assert "#277" in message
 
 
 def build_two_level_graph():
@@ -512,19 +532,11 @@ class TestSyncNestedCrashResume:
                 cp._sync_conn.close()
 
 
-class TestRetentionShadowedReExecution:
-    """F1 (review): a pruned prior completion must not look like a crash window.
+class TestCompactedRetentionNestedRecovery:
+    """F1 re-review: compacted parent history is not completion provenance."""
 
-    Windowed retention compacts the parent GraphNode's COMPLETED step into a
-    hidden value-only baseline. On the next legitimate turn the node is absent
-    from replayed executions while the previous child run is terminal
-    COMPLETED — exactly the crash-window shape. Recovery must consult durable
-    evidence (raw step history including retention carriers) and re-execute
-    under a fresh child id instead of restoring stale outputs.
-    """
-
-    @pytest.mark.parametrize("retention", ["full", "latest", "windowed"])
-    async def test_async_multi_turn_reexecution_survives_retention(self, tmp_path, retention):
+    @pytest.mark.parametrize("retention", ["full", "latest"])
+    async def test_async_multi_turn_reexecution_survives_non_windowed_retention(self, tmp_path, retention):
         parent, calls = build_multi_turn_graph()
         cp = SqliteCheckpointer(str(tmp_path / "test.db"), policy=retention_policy(retention))
         try:
@@ -546,16 +558,34 @@ class TestRetentionShadowedReExecution:
             turn2_run = await cp.get_run_async("wfm/child_wf/1")
             assert turn2_run is not None
             assert turn2_run.status is WorkflowStatus.COMPLETED
-            if retention != "windowed":
-                # Truthful receipt (windowed prunes the row itself later).
-                child_steps = [step for step in await cp.get_steps("wfm") if step.node_name == "child_wf" and step.status is StepStatus.COMPLETED]
-                assert child_steps
-                assert child_steps[-1].child_run_id == "wfm/child_wf/1"
+            child_steps = [step for step in await cp.get_steps("wfm") if step.node_name == "child_wf" and step.status is StepStatus.COMPLETED]
+            assert child_steps
+            assert child_steps[-1].child_run_id == "wfm/child_wf/1"
         finally:
             await cp.close()
 
-    def test_sync_windowed_pruned_completion_reexecutes_child(self, tmp_path):
-        """Sync parity for the evidence branch.
+    async def test_async_windowed_multi_turn_rejects_ambiguous_resume(self, tmp_path):
+        parent, calls = build_multi_turn_graph()
+        cp = SqliteCheckpointer(str(tmp_path / "test.db"), policy=retention_policy("windowed"))
+        try:
+            runner = AsyncRunner(checkpointer=cp)
+            first = await runner.run(parent, {}, workflow_id="wfm")
+            assert first.status is RunStatus.PAUSED
+
+            second = await runner.run(parent, {"answer": "one"}, workflow_id="wfm")
+            assert second.status is RunStatus.PAUSED
+            assert calls == ["one"]
+
+            with pytest.raises(CompactedRetentionError) as error:
+                await runner.run(parent, {"answer": "two"}, workflow_id="wfm")
+
+            assert_compacted_retention_guidance(error)
+            assert calls == ["one"]
+        finally:
+            await cp.close()
+
+    def test_sync_windowed_pruned_completion_rejects_ambiguous_resume(self, tmp_path):
+        """Sync parity for the compacted-history rejection.
 
         SyncRunner does not support interrupts (validated capability boundary:
         IncompatibleRunnerError says "Use AsyncRunner instead"), so the
@@ -599,15 +629,63 @@ class TestRetentionShadowedReExecution:
             assert "child_wf" not in {step.node_name for step in cp.steps("wfw")}
 
             flaky_armed[0] = False
-            result = runner.run(parent, workflow_id="wfw")
+            with pytest.raises(CompactedRetentionError) as error:
+                runner.run(parent, workflow_id="wfw")
 
-            # prepare re-ran (its row was pruned) and produced a NEW value, so
-            # the child must re-execute — restoring doubled=210 would be stale.
-            assert child_inputs == [105, 205]
-            assert result.values["final"] == 411
-            turn2_run = cp.get_run("wfw/child_wf/1")
-            assert turn2_run is not None
-            assert turn2_run.status is WorkflowStatus.COMPLETED
+            assert_compacted_retention_guidance(error)
+            assert child_inputs == [105]
+        finally:
+            if cp._sync_conn:
+                cp._sync_conn.close()
+
+    def test_windowed_same_named_shared_value_is_not_completion_evidence(self, tmp_path):
+        """A carrier value from another producer cannot prove child completion."""
+        calls: list[int] = []
+
+        @node(output_name=("prepared", "result"))
+        def prepare(x: int = 2) -> tuple[int, int]:
+            return x, x * 10
+
+        @node(output_name="ready")
+        def order_after_prepare(prepared: int) -> int:
+            return prepared
+
+        @node(output_name="result")
+        def child_work(ready: int, result: int) -> int:
+            calls.append(ready)
+            return ready * 100 + result
+
+        child = Graph(nodes=[child_work], name="child", shared=["result"])
+        parent = Graph(
+            nodes=[prepare, order_after_prepare, child.as_node(name="child_wf")],
+            name="parent",
+            shared=["result"],
+        )
+
+        cp = CrashingStepCheckpointer(
+            str(tmp_path / "test.db"),
+            {("wfe", "child_wf")},
+            policy=retention_policy("windowed"),
+        )
+        cp._sync_db()
+        try:
+            runner = SyncRunner(checkpointer=cp)
+            with pytest.raises(RuntimeError, match=CRASH_MESSAGE):
+                runner.run(parent, {"result": 0}, workflow_id="wfe")
+
+            assert calls == [2]
+            internal_steps = cp.steps("wfe", show_internal=True)
+            baseline = next(step for step in internal_steps if step.node_type == "RetentionBaseline")
+            assert baseline.values is not None
+            assert baseline.values["result"] == 20
+            assert cp.get_run("wfe/child_wf").status is WorkflowStatus.COMPLETED
+
+            cp.armed = False
+            with pytest.raises(CompactedRetentionError) as error:
+                runner.run(parent, workflow_id="wfe")
+
+            assert_compacted_retention_guidance(error)
+            assert calls == [2]
         finally:
             if cp._sync_conn:
                 cp._sync_conn.close()

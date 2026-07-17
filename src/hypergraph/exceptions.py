@@ -268,6 +268,22 @@ class WorkflowAlreadyCompletedError(Exception):
         super().__init__(f"Workflow '{workflow_id}' is already completed. Fork to create a new lineage.")
 
 
+class CompactedRetentionError(Exception):
+    """Raised when compacted history makes nested recovery ambiguous."""
+
+    def __init__(self, node_name: str) -> None:
+        self.node_name = node_name
+        super().__init__(
+            f"Cannot safely recover nested graph '{node_name}': windowed/compacted retention "
+            "may have pruned the parent step history, so Hypergraph cannot distinguish a "
+            "crash-window restore from a legitimate re-execution.\n\n"
+            "How to fix:\n"
+            "  Use retention='full' or retention='latest' for workflows that combine nested "
+            "graphs with resume/crash recovery, or fork the workflow.\n\n"
+            "Windowed nested recovery support is tracked in #277."
+        )
+
+
 class WorkflowStoppedError(Exception):
     """Raised when a stopped workflow is rerun without an explicit signal."""
 
