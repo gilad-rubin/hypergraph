@@ -14,15 +14,16 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
-#: Fingerprint schema/algorithm tag. The random jitter sample is attempt
-#: state, not policy identity, so it never enters the fingerprint.
-_FINGERPRINT_SCHEMA = "hypergraph.retry/v1|capped-exponential"
+#: Fingerprint schema/algorithm tag (#232: ``capped_exponential_v1``). The
+#: random jitter sample is attempt state, not policy identity, so it never
+#: enters the fingerprint.
+_FINGERPRINT_SCHEMA = "hypergraph.retry/capped_exponential_v1"
 
 _JITTER_MODES = ("full", "none")
 
 
-def _qualified_type_name(exc_type: type[BaseException]) -> str:
-    """Canonical module-qualified exception name (builtins stay bare)."""
+def qualified_exception_name(exc_type: type[BaseException]) -> str:
+    """Canonical ``module.qualname`` exception name (builtins stay bare)."""
     if exc_type.__module__ in ("builtins", "__main__"):
         return exc_type.__qualname__
     return f"{exc_type.__module__}.{exc_type.__qualname__}"
@@ -51,7 +52,7 @@ def _normalize_retry_on(retry_on: object) -> tuple[type[Exception], ...]:
             raise TypeError(f"retry_on entries must be exception types, got {entry!r}.")
         if not issubclass(entry, Exception):
             raise ValueError(
-                f"retry_on must not contain BaseException-family control flow: {_qualified_type_name(entry)}.\n\n"
+                f"retry_on must not contain BaseException-family control flow: {qualified_exception_name(entry)}.\n\n"
                 "How to fix:\n"
                 "  KeyboardInterrupt, SystemExit, cancellation, and other BaseException\n"
                 "  control flow are never retryable. List Exception subclasses only."
@@ -120,7 +121,7 @@ class RetryPolicy:
         as sorted module-qualified names. Equal policies share a fingerprint
         regardless of ``retry_on`` ordering.
         """
-        names = ",".join(sorted(_qualified_type_name(entry) for entry in self.retry_on))
+        names = ",".join(sorted(qualified_exception_name(entry) for entry in self.retry_on))
         return (
             f"{_FINGERPRINT_SCHEMA}"
             f"|max_attempts={self.max_attempts}"

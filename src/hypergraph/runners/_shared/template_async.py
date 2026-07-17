@@ -54,6 +54,7 @@ from hypergraph.runners._shared.outputs import (
     validate_error_handling,
     validate_on_missing,
 )
+from hypergraph.runners._shared.policy_manifest import RETRY_POLICY_CONFIG_KEY, RetryPolicyManifest
 from hypergraph.runners._shared.readiness import find_missing_resume_seed_inputs
 from hypergraph.runners._shared.results import (
     ErrorHandling,
@@ -554,6 +555,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 run_config = {
                     "graph_struct_hash": graph.structural_hash,
                     "graph_code_hash": graph.code_hash,
+                    RETRY_POLICY_CONFIG_KEY: RetryPolicyManifest.from_graph(graph).to_config_value(),
                 }
                 if _run_config:
                     run_config.update(_run_config)
@@ -1139,6 +1141,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     config={
                         "graph_struct_hash": graph.structural_hash,
                         "graph_code_hash": graph.code_hash,
+                        RETRY_POLICY_CONFIG_KEY: RetryPolicyManifest.from_graph(graph).to_config_value(),
                     },
                 )
                 parent_run_row_created = True

@@ -215,6 +215,8 @@ With persistence, every attempt is durably reserved **before** your code runs, a
 
 This is an at-most-N-invocations guarantee, not exactly-once side effects: a crash mid-attempt cannot know whether the external call landed (the attempt is recorded as outcome-unknown). Payment-style APIs still need idempotency keys.
 
+Because resume continues the same series, the policy must stay identical for the same `workflow_id`: each run stores a per-node policy manifest with its configuration, and resuming after a policy edit raises `RetryPolicyChangedError` (`HG_RETRY_POLICY_CHANGED`) with a field-level diff — before any user code runs. Fork or start a new `workflow_id` to adopt the new policy; cached successful outputs stay valid either way. See [Checkpointers — Policy Compatibility on Resume](../06-api-reference/checkpointers.md#policy-compatibility-on-resume).
+
 Retry/timeout evidence deliberately overrides `CheckpointPolicy` durability timing: an attempt-managed node's records AND its series-closing StepRecord write through immediately under every durability mode (including `"async"` and `"exit"`), because the final outcome, its linked step, and the series closure must commit atomically. Nodes without retry or timeout buffer according to the configured durability as usual.
 
 ## What retry does NOT change

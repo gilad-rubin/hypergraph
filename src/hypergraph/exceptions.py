@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from hypergraph.runners._shared.policy_manifest import PolicyFieldChange
     from hypergraph.runners._shared.results import FailureEvidence
     from hypergraph.runners._shared.state import GraphState
 
@@ -339,6 +340,44 @@ class GraphChangedError(Exception):
     def __init__(self, workflow_id: str) -> None:
         self.workflow_id = workflow_id
         super().__init__(f"Graph structure changed for workflow '{workflow_id}'. Fork instead of resuming in place.")
+
+
+class RetryPolicyChangedError(Exception):
+    """A node's retry/timeout policy changed for an existing workflow lineage.
+
+    Raised on same-``workflow_id`` resume BEFORE checkpoint restoration and
+    before any user code runs, when the graph's effective per-node policy
+    manifest no longer matches the manifest stored with the run's
+    configuration. Same-workflow resume continues the persisted attempt
+    series and its remaining budget, so the policy must stay identical; a
+    fork or a new workflow may adopt a new policy freely.
+
+    Changing a policy never invalidates successful-output caches — policy
+    identity is deliberately separate from graph and cache identity.
+
+    Attributes:
+        workflow_id: The workflow whose resume was rejected.
+        changes: Field-level differences (``PolicyFieldChange`` records with
+            ``node_name``, ``field``, ``stored``, and ``current``).
+        code: Stable diagnostic code ``"HG_RETRY_POLICY_CHANGED"``.
+    """
+
+    code = "HG_RETRY_POLICY_CHANGED"
+
+    def __init__(self, workflow_id: str, changes: tuple[PolicyFieldChange, ...]) -> None:
+        self.workflow_id = workflow_id
+        self.changes = tuple(changes)
+        detail = "\n".join(f"  {change.node_name}.{change.field}: stored {change.stored!r} -> current {change.current!r}" for change in self.changes)
+        super().__init__(
+            f"Retry/timeout policy changed for workflow '{workflow_id}' [{self.code}].\n\n"
+            f"Field-level changes against the stored policy manifest:\n{detail}\n\n"
+            "Same-workflow resume continues the persisted attempt series and its "
+            "remaining budget, so the policy must stay identical.\n\n"
+            "How to fix:\n"
+            "  Resume with the original policy, or adopt the new policy on a fresh\n"
+            "  lineage: fork_from=..., override_workflow=True, or a new workflow_id.\n"
+            "  Cached successful outputs remain valid either way."
+        )
 
 
 class WorkflowForkError(Exception):
