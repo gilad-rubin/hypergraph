@@ -78,7 +78,7 @@ class TestGatePermitsStartupTable:
             pytest.param(False, False, True, ("other",), None, True, False, id="non-entrypoint-waits"),
             pytest.param(False, False, False, None, None, True, False, id="default-closed-waits"),
             pytest.param(True, False, False, ("other",), "target", True, True, id="decision-target-wins"),
-            pytest.param(True, False, False, ("other",), "target", False, True, id="decision-ignores-transitive-blocking"),
+            pytest.param(True, False, False, ("other",), "target", False, False, id="orphaned-decision-blocks"),
             pytest.param(True, True, True, None, "other", True, False, id="decision-other-blocks"),
             pytest.param(True, False, True, None, None, True, False, id="stale-cleared-decision-blocks"),
         ],
@@ -270,6 +270,145 @@ class TestTransitiveChainActivation:
 
         assert "gate_b" in activated, "gate_a's decision activates gate_b"
         assert "target" in activated, "default_open flows through the activated gate_b"
+
+
+class TestOrphanedDecisionClearing:
+    """A pending decision is live only while its gate is not cut off upstream."""
+
+    @staticmethod
+    def _executed(node_name: str, input_versions: dict | None = None) -> NodeExecution:
+        return NodeExecution(node_name=node_name, input_versions=input_versions or {"x": 1}, outputs={})
+
+    @staticmethod
+    def _chain_graph():
+        @node(output_name="result")
+        def target(x: int) -> int:
+            return x
+
+        @route(targets=["target", END])
+        def gate_b(x: int) -> str:
+            return "target"
+
+        @route(targets=["gate_b", END])
+        def gate_a(x: int) -> str:
+            return "gate_b"
+
+        return Graph([gate_a, gate_b, target])
+
+    def _state(self, decisions: dict, executed: tuple[str, ...]) -> GraphState:
+        return GraphState(
+            values={"x": 1},
+            versions={"x": 1},
+            node_executions={name: self._executed(name) for name in executed},
+            routing_decisions=dict(decisions),
+        )
+
+    def test_explicit_upstream_end_orphans_pending_decision(self):
+        graph = self._chain_graph()
+        state = self._state({"gate_a": END, "gate_b": "target"}, executed=("gate_a", "gate_b"))
+
+        activated = readiness_module._get_activated_nodes(graph, state)
+
+        assert "gate_b" not in state.routing_decisions, "orphaned decision must be dropped"
+        assert "target" not in activated
+        assert state.routing_decisions.get("gate_a") is END, "END stays as terminal marker"
+
+    def test_consumed_upstream_selection_keeps_pending_decision(self):
+        graph = self._chain_graph()
+        # gate_a executed and its selection was consumed (no current decision).
+        state = self._state({"gate_b": "target"}, executed=("gate_a", "gate_b"))
+
+        activated = readiness_module._get_activated_nodes(graph, state)
+
+        assert state.routing_decisions.get("gate_b") == "target", "consumed upstream keeps decision live"
+        assert "target" in activated
+
+    def test_orphaning_is_transitive_across_gates(self):
+        @node(output_name="result")
+        def target(x: int) -> int:
+            return x
+
+        @route(targets=["target", END])
+        def gate_c(x: int) -> str:
+            return "target"
+
+        @route(targets=["gate_c", END])
+        def gate_b(x: int) -> str:
+            return "gate_c"
+
+        @route(targets=["gate_b", END])
+        def gate_a(x: int) -> str:
+            return "gate_b"
+
+        graph = Graph([gate_a, gate_b, gate_c, target])
+        state = self._state(
+            {"gate_a": END, "gate_b": "gate_c", "gate_c": "target"},
+            executed=("gate_a", "gate_b", "gate_c"),
+        )
+
+        activated = readiness_module._get_activated_nodes(graph, state)
+
+        assert "gate_b" not in state.routing_decisions
+        assert "gate_c" not in state.routing_decisions, "orphaning must cascade through the chain"
+        assert "target" not in activated
+
+    def test_cut_gate_keeps_its_end_decision(self):
+        graph = self._chain_graph()
+        state = self._state({"gate_a": END, "gate_b": END}, executed=("gate_a", "gate_b"))
+
+        readiness_module._get_activated_nodes(graph, state)
+
+        assert state.routing_decisions.get("gate_b") is END, "END activates nothing and is kept"
+
+
+class TestActivationCostLinear:
+    """C10: activation is a worklist — linear predicate calls on long chains."""
+
+    N = 2000
+
+    @classmethod
+    def _chain_nodes(cls):
+        from hypergraph.nodes.gate import RouteNode
+
+        def make_router(next_name: str):
+            def router(x: int) -> str:
+                return next_name
+
+            return router
+
+        gates = [RouteNode(make_router(f"g{i + 1}"), targets=[f"g{i + 1}"], name=f"g{i}") for i in range(cls.N - 1)]
+
+        @node(output_name="terminal_out")
+        def terminal(x: int) -> int:
+            return x
+
+        gates.append(RouteNode(make_router("terminal"), targets=["terminal"], name=f"g{cls.N - 1}"))
+        return [*gates, terminal]
+
+    @pytest.mark.parametrize("order", ["forward", "reversed"])
+    def test_end_at_head_costs_linear_predicate_calls(self, order, monkeypatch):
+        nodes = self._chain_nodes()
+        graph = Graph(nodes if order == "forward" else list(reversed(nodes)))
+        state = GraphState(
+            values={"x": 1},
+            versions={"x": 1},
+            node_executions={"g0": NodeExecution(node_name="g0", input_versions={"x": 1}, outputs={})},
+            routing_decisions={"g0": END},
+        )
+
+        calls = {"count": 0}
+        real_predicate = readiness_module.gate_permits_startup
+
+        def counting_predicate(*args, **kwargs):
+            calls["count"] += 1
+            return real_predicate(*args, **kwargs)
+
+        monkeypatch.setattr(readiness_module, "gate_permits_startup", counting_predicate)
+
+        activated = readiness_module._get_activated_nodes(graph, state)
+
+        assert activated == {"g0"}, "END at the head deactivates the whole chain"
+        assert calls["count"] <= 5 * self.N, f"expected linear predicate calls, got {calls['count']}"
 
 
 class TestPendingActivationRetrigger:

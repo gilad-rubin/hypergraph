@@ -182,15 +182,22 @@ def gate_permits_startup(
     The early returns mirror the canonical gate-activation decision table.
     Executed decisions take precedence over startup-only defaults.
 
-    ``gate_activated`` says whether the controlling gate itself is currently
-    activated. First-pass ``default_open`` permission is only as alive as the
-    gate handing it out: a gate whose own control path is already blocked can
-    never fire, so its targets must not start on data readiness alone
-    (transitive chain termination, issue #220). Explicit entrypoints are
-    exempt — the user asked to start there, and the controlling gate may be
-    outside the active scope entirely.
+    ``gate_activated`` says whether the controlling gate's authority is still
+    causally live, and it scopes both branches (issue #220):
+
+    - Decision branch: a pending decision activates its targets only while
+      the deciding gate is not cut off upstream (see ``_compute_cut_gates``).
+      An orphaned decision — the deciding gate's own control path was
+      explicitly terminated or routed away — must not fire anything.
+    - First-pass ``default_open`` branch: permission is only as alive as the
+      gate handing it out; a gate whose own control path is already blocked
+      can never fire, so its targets must not start on data readiness alone.
+      Explicit entrypoints are exempt — the user asked to start there, and
+      the controlling gate may be outside the active scope entirely.
     """
     if decision is not None:
+        if not gate_activated:
+            return False
         return _is_node_activated_by_decision(node_name, decision)
     if gate_executed:
         return False
@@ -212,23 +219,39 @@ def _get_activated_nodes(graph: Graph, state: GraphState) -> set[str]:
     first-pass ``default_open`` permission through ``gate_b``. Starting from
     "everything activated" (greatest fixpoint) preserves first-pass startup
     for undecided gate chains, including gates that control each other in a
-    cycle. Decision-based activation never depends on the fixpoint, so gate
-    re-firing in cycles re-activates targets as before.
+    cycle. Live decision-based activation never depends on the fixpoint, so
+    gate re-firing in cycles re-activates targets as before; orphaned
+    decisions of cut-off gates are dropped first and activate nothing.
+
+    Implemented as a worklist: a node is re-examined only when one of its
+    controlling gates was just deactivated, keeping the total predicate-call
+    count linear in graph size regardless of node declaration order.
     """
-    # Stale decisions must be cleared before any activation is evaluated.
+    from collections import deque
+
+    # Stale decisions must be cleared before any activation is evaluated,
+    # then orphaned decisions of cut-off gates dropped (issue #220).
     _clear_stale_gate_decisions(graph, state)
+    controls = _build_controls_map(graph)
+    cut_gates = _compute_cut_gates(graph, state, controls)
+    _drop_orphaned_decisions(state, cut_gates)
 
     activated = set(graph._nodes)
     gated_names = [name for name in graph._nodes if graph.controlled_by.get(name)]
-    changed = True
-    while changed:
-        changed = False
-        for node_name in gated_names:
-            if node_name not in activated:
-                continue
-            if not _any_gate_permits_startup(node_name, graph, state, activated):
-                activated.discard(node_name)
-                changed = True
+    queue = deque(gated_names)
+    queued = set(gated_names)
+    while queue:
+        node_name = queue.popleft()
+        queued.discard(node_name)
+        if node_name not in activated:
+            continue
+        if _any_gate_permits_startup(node_name, graph, state, activated, cut_gates):
+            continue
+        activated.discard(node_name)
+        for dependent in controls.get(node_name, ()):
+            if dependent in activated and dependent not in queued:
+                queue.append(dependent)
+                queued.add(dependent)
 
     return activated
 
@@ -238,23 +261,111 @@ def _any_gate_permits_startup(
     graph: Graph,
     state: GraphState,
     activated: set[str],
+    cut_gates: set[str],
 ) -> bool:
     """Whether at least one controlling gate permits this node to start."""
     for gate_name in graph.controlled_by.get(node_name, []):
         gate = graph._nodes.get(gate_name)
         if gate is None:
             continue
+        decision = state.routing_decisions.get(gate_name)
+        # The liveness signal matches the branch the predicate will take:
+        # a pending decision is live while its gate is not cut off; first-pass
+        # default_open permission is live while the gate is still activated.
+        alive = gate_name not in cut_gates if decision is not None else gate_name in activated
         if gate_permits_startup(
             node_name,
-            decision=state.routing_decisions.get(gate_name),
+            decision=decision,
             gate_executed=gate_name in state.node_executions,
             node_executed=node_name in state.node_executions,
             default_open=getattr(gate, "default_open", True),
             entrypoints=graph.entrypoints_config,
-            gate_activated=gate_name in activated,
+            gate_activated=alive,
         ):
             return True
     return False
+
+
+def _build_controls_map(graph: Graph) -> dict[str, list[str]]:
+    """Invert ``controlled_by``: gate name -> nodes it controls."""
+    controls: dict[str, list[str]] = {}
+    for target, gates in graph.controlled_by.items():
+        for gate_name in gates:
+            controls.setdefault(gate_name, []).append(target)
+    return controls
+
+
+def _compute_cut_gates(
+    graph: Graph,
+    state: GraphState,
+    controls: dict[str, list[str]],
+) -> set[str]:
+    """Gates whose control path is explicitly severed upstream (worklist).
+
+    A gate is *cut off* when every controlling gate either currently holds an
+    explicit decision that excludes it (END or routed elsewhere) or is itself
+    cut off. A controller with no current decision — never fired, or its
+    selection was already consumed — keeps its targets alive: it may still
+    (re-)fire and route to them. That consumed-means-live rule is what keeps
+    in-flight pending decisions working across cycle iterations.
+    """
+    from collections import deque
+
+    from hypergraph.nodes.gate import GateNode
+
+    controlled_gates = [name for name, node in graph._nodes.items() if isinstance(node, GateNode) and graph.controlled_by.get(name)]
+    cut: set[str] = set()
+    queue = deque(controlled_gates)
+    queued = set(controlled_gates)
+    while queue:
+        gate_name = queue.popleft()
+        queued.discard(gate_name)
+        if gate_name in cut:
+            continue
+        if _any_controller_keeps_alive(gate_name, graph, state, cut):
+            continue
+        cut.add(gate_name)
+        for dependent in controls.get(gate_name, ()):
+            if isinstance(graph._nodes.get(dependent), GateNode) and dependent not in cut and dependent not in queued:
+                queue.append(dependent)
+                queued.add(dependent)
+
+    return cut
+
+
+def _any_controller_keeps_alive(
+    gate_name: str,
+    graph: Graph,
+    state: GraphState,
+    cut: set[str],
+) -> bool:
+    """Whether any controlling gate can still (re-)route to this gate."""
+    for controller in graph.controlled_by.get(gate_name, []):
+        if controller not in graph._nodes:
+            continue
+        if controller in cut:
+            continue
+        decision = state.routing_decisions.get(controller)
+        if decision is None or _is_node_activated_by_decision(gate_name, decision):
+            return True
+    return False
+
+
+def _drop_orphaned_decisions(state: GraphState, cut_gates: set[str]) -> None:
+    """Delete pending decisions made by cut-off gates.
+
+    Once a gate's control path is explicitly severed, its in-flight selection
+    is causally dead — deleting it (rather than suppressing it) prevents the
+    decision from resurrecting later, e.g. after the upstream exclusion is
+    itself consumed. END decisions are kept: they activate nothing and remain
+    a truthful terminal marker.
+    """
+    from hypergraph.nodes.gate import END
+
+    for gate_name in cut_gates:
+        decision = state.routing_decisions.get(gate_name)
+        if decision is not None and decision is not END:
+            del state.routing_decisions[gate_name]
 
 
 def _clear_stale_gate_decisions(graph: Graph, state: GraphState) -> None:

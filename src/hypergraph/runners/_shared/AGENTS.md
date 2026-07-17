@@ -30,21 +30,35 @@ After collecting ready nodes, two filters apply:
 | Never executed | Never executed | True | Yes, node IS entrypoint | **Activated** |
 | Never executed | Never executed | True | Yes, node NOT entrypoint | **Blocked** (wait for gate) |
 | Never executed | Never executed | False | Any | **Blocked** |
-| Executed, decision=this node | Any | Any | Any | **Activated** |
+| Executed, live decision=this node | Any | Any | Any | **Activated** |
+| Executed, orphaned decision (gate cut off upstream) | Any | Any | Any | **Blocked** (decision dropped) |
 | Executed, decision=other | Any | Any | Any | **Blocked** |
 | Executed, decision cleared (stale) | Any | Any | Any | **Blocked** |
 
 **Key insight**: the entrypoint restriction prevents inputless gate targets (like interrupt nodes) from firing before the gate on first pass.
 
 **Transitive chain termination** (issue #220): activation is a shrinking
-fixpoint. First-pass `default_open` permission requires the controlling gate
-itself to still be activated, so `gate_a -> gate_b -> target` blocks `target`
-when `gate_a` decides END or routes elsewhere — data readiness cannot bypass a
-dead control path. Decision-based activation ignores the fixpoint (an executed
-decision explicitly names its targets), which is what lets gates in cycles
-re-activate their targets on later iterations. Explicit entrypoint targets are
-exempt from the transitive requirement: the user asked to start there, and the
-controlling gate may be outside the active scope.
+fixpoint (worklist — linear predicate calls regardless of declaration order).
+First-pass `default_open` permission requires the controlling gate itself to
+still be activated, so `gate_a -> gate_b -> target` blocks `target` when
+`gate_a` decides END or routes elsewhere — data readiness cannot bypass a dead
+control path. Explicit entrypoint targets are exempt from the transitive
+requirement: the user asked to start there, and the controlling gate may be
+outside the active scope.
+
+**Orphaned pending decisions** (issue #220, review finding): a pending
+decision is causally live only while its deciding gate is not *cut off* — a
+gate is cut off when every controlling gate either currently holds an explicit
+decision that excludes it (END or routed elsewhere) or is itself cut off.
+Cut-off gates' pending non-END decisions are DELETED before activation
+(`_drop_orphaned_decisions`), so a half-consumed multi-target selection cannot
+fire targets after the chain was explicitly terminated upstream. The
+distinguishing signal that keeps cycles working: a controller whose selection
+was merely CONSUMED (decision None) keeps its targets' pending decisions live —
+it may re-fire and route to them again. Deletion (not suppression) prevents an
+orphaned decision from resurrecting after the upstream exclusion is consumed.
+END decisions are never deleted: they activate nothing and stay as terminal
+markers.
 
 ## Staleness (`_is_stale`)
 
