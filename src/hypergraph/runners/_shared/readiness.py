@@ -175,11 +175,20 @@ def gate_permits_startup(
     node_executed: bool,
     default_open: bool,
     entrypoints: tuple[str, ...] | None,
+    gate_activated: bool = True,
 ) -> bool:
     """Return whether one controlling gate permits a target to start.
 
     The early returns mirror the canonical gate-activation decision table.
     Executed decisions take precedence over startup-only defaults.
+
+    ``gate_activated`` says whether the controlling gate itself is currently
+    activated. First-pass ``default_open`` permission is only as alive as the
+    gate handing it out: a gate whose own control path is already blocked can
+    never fire, so its targets must not start on data readiness alone
+    (transitive chain termination, issue #220). Explicit entrypoints are
+    exempt — the user asked to start there, and the controlling gate may be
+    outside the active scope entirely.
     """
     if decision is not None:
         return _is_node_activated_by_decision(node_name, decision)
@@ -189,40 +198,63 @@ def gate_permits_startup(
         return False
     if not default_open:
         return False
-    # Keep this branch explicit so the predicate mirrors the canonical table.
-    if entrypoints and node_name not in entrypoints:  # noqa: SIM103
-        return False
-    return True
+    if entrypoints:
+        return node_name in entrypoints
+    return gate_activated
 
 
 def _get_activated_nodes(graph: Graph, state: GraphState) -> set[str]:
-    """Get all nodes activated by gate routing or first-pass startup."""
+    """Get all nodes activated by gate routing or first-pass startup.
+
+    Computed as a shrinking fixpoint so blocking propagates through chained
+    gates (``gate_a -> gate_b -> target``): when ``gate_a`` decides END or
+    routes elsewhere, ``gate_b`` is deactivated, and ``target`` loses its
+    first-pass ``default_open`` permission through ``gate_b``. Starting from
+    "everything activated" (greatest fixpoint) preserves first-pass startup
+    for undecided gate chains, including gates that control each other in a
+    cycle. Decision-based activation never depends on the fixpoint, so gate
+    re-firing in cycles re-activates targets as before.
+    """
     # Stale decisions must be cleared before any activation is evaluated.
     _clear_stale_gate_decisions(graph, state)
 
-    activated: set[str] = set()
-    for node_name in graph._nodes:
-        gates = graph.controlled_by.get(node_name, [])
-        if not gates:
-            activated.add(node_name)
-            continue
-
-        for gate_name in gates:
-            gate = graph._nodes.get(gate_name)
-            if gate is None:
+    activated = set(graph._nodes)
+    gated_names = [name for name in graph._nodes if graph.controlled_by.get(name)]
+    changed = True
+    while changed:
+        changed = False
+        for node_name in gated_names:
+            if node_name not in activated:
                 continue
-            if gate_permits_startup(
-                node_name,
-                decision=state.routing_decisions.get(gate_name),
-                gate_executed=gate_name in state.node_executions,
-                node_executed=node_name in state.node_executions,
-                default_open=getattr(gate, "default_open", True),
-                entrypoints=graph.entrypoints_config,
-            ):
-                activated.add(node_name)
-                break
+            if not _any_gate_permits_startup(node_name, graph, state, activated):
+                activated.discard(node_name)
+                changed = True
 
     return activated
+
+
+def _any_gate_permits_startup(
+    node_name: str,
+    graph: Graph,
+    state: GraphState,
+    activated: set[str],
+) -> bool:
+    """Whether at least one controlling gate permits this node to start."""
+    for gate_name in graph.controlled_by.get(node_name, []):
+        gate = graph._nodes.get(gate_name)
+        if gate is None:
+            continue
+        if gate_permits_startup(
+            node_name,
+            decision=state.routing_decisions.get(gate_name),
+            gate_executed=gate_name in state.node_executions,
+            node_executed=node_name in state.node_executions,
+            default_open=getattr(gate, "default_open", True),
+            entrypoints=graph.entrypoints_config,
+            gate_activated=gate_name in activated,
+        ):
+            return True
+    return False
 
 
 def _clear_stale_gate_decisions(graph: Graph, state: GraphState) -> None:

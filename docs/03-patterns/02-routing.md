@@ -489,6 +489,12 @@ def process(text: str) -> str:
 graph = Graph([check_length, check_quality, process])
 ```
 
+Termination is transitive across the chain: if `check_length` returns `END`,
+neither `check_quality` nor `process` executes — even when their data inputs
+(like `text` above) are already available as graph inputs. A node behind
+chained gates runs only when every gate along the selected path activates the
+next hop. Nodes on independent, ungated paths are unaffected and keep running.
+
 ## Next Steps
 
 - [API Reference: Gates](../06-api-reference/gates.md) - Complete IfElseNode, RouteNode, and @ifelse/@route documentation

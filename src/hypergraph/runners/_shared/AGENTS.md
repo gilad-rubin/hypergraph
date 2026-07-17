@@ -25,7 +25,8 @@ After collecting ready nodes, two filters apply:
 
 | Gate state | Node state | `default_open` | Entrypoints set | Result |
 |-----------|-----------|----------------|-----------------|--------|
-| Never executed | Never executed | True | No | **Activated** (first-pass startup) |
+| Never executed, gate itself activated | Never executed | True | No | **Activated** (first-pass startup) |
+| Never executed, gate itself blocked | Never executed | True | No | **Blocked** (transitive chain termination) |
 | Never executed | Never executed | True | Yes, node IS entrypoint | **Activated** |
 | Never executed | Never executed | True | Yes, node NOT entrypoint | **Blocked** (wait for gate) |
 | Never executed | Never executed | False | Any | **Blocked** |
@@ -34,6 +35,16 @@ After collecting ready nodes, two filters apply:
 | Executed, decision cleared (stale) | Any | Any | Any | **Blocked** |
 
 **Key insight**: the entrypoint restriction prevents inputless gate targets (like interrupt nodes) from firing before the gate on first pass.
+
+**Transitive chain termination** (issue #220): activation is a shrinking
+fixpoint. First-pass `default_open` permission requires the controlling gate
+itself to still be activated, so `gate_a -> gate_b -> target` blocks `target`
+when `gate_a` decides END or routes elsewhere — data readiness cannot bypass a
+dead control path. Decision-based activation ignores the fixpoint (an executed
+decision explicitly names its targets), which is what lets gates in cycles
+re-activate their targets on later iterations. Explicit entrypoint targets are
+exempt from the transitive requirement: the user asked to start there, and the
+controlling gate may be outside the active scope.
 
 ## Staleness (`_is_stale`)
 

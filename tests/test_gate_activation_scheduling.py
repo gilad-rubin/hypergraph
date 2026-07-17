@@ -67,16 +67,20 @@ class TestGatePermitsStartupTable:
             "default_open",
             "entrypoints",
             "decision",
+            "gate_activated",
             "expected",
         ),
         [
-            pytest.param(False, False, True, None, None, True, id="never-never-default-open"),
-            pytest.param(False, False, True, ("target",), None, True, id="entrypoint-target-starts"),
-            pytest.param(False, False, True, ("other",), None, False, id="non-entrypoint-waits"),
-            pytest.param(False, False, False, None, None, False, id="default-closed-waits"),
-            pytest.param(True, False, False, ("other",), "target", True, id="decision-target-wins"),
-            pytest.param(True, True, True, None, "other", False, id="decision-other-blocks"),
-            pytest.param(True, False, True, None, None, False, id="stale-cleared-decision-blocks"),
+            pytest.param(False, False, True, None, None, True, True, id="never-never-default-open"),
+            pytest.param(False, False, True, None, None, False, False, id="gate-itself-blocked-transitive"),
+            pytest.param(False, False, True, ("target",), None, True, True, id="entrypoint-target-starts"),
+            pytest.param(False, False, True, ("target",), None, False, True, id="entrypoint-target-exempt-from-transitive"),
+            pytest.param(False, False, True, ("other",), None, True, False, id="non-entrypoint-waits"),
+            pytest.param(False, False, False, None, None, True, False, id="default-closed-waits"),
+            pytest.param(True, False, False, ("other",), "target", True, True, id="decision-target-wins"),
+            pytest.param(True, False, False, ("other",), "target", False, True, id="decision-ignores-transitive-blocking"),
+            pytest.param(True, True, True, None, "other", True, False, id="decision-other-blocks"),
+            pytest.param(True, False, True, None, None, True, False, id="stale-cleared-decision-blocks"),
         ],
     )
     def test_canonical_decision_table(
@@ -86,6 +90,7 @@ class TestGatePermitsStartupTable:
         default_open,
         entrypoints,
         decision,
+        gate_activated,
         expected,
     ):
         assert (
@@ -96,6 +101,7 @@ class TestGatePermitsStartupTable:
                 node_executed=node_executed,
                 default_open=default_open,
                 entrypoints=entrypoints,
+                gate_activated=gate_activated,
             )
             is expected
         )
@@ -198,6 +204,72 @@ class TestGatePermitsStartupTable:
 
         assert (gate.name in state.routing_decisions) is expected_present
         assert (target.name in activated) is expected_activated
+
+
+class TestTransitiveChainActivation:
+    """Blocking propagates through chained gates via the activation fixpoint."""
+
+    @staticmethod
+    def _chain_graph():
+        @node(output_name="result")
+        def target(x: int) -> int:
+            return x
+
+        @route(targets=["target", END])
+        def gate_b(x: int) -> str:
+            return "target"
+
+        @route(targets=["gate_b", END])
+        def gate_a(x: int) -> str:
+            return "gate_b"
+
+        return Graph([gate_a, gate_b, target])
+
+    def test_undecided_chain_is_fully_open_on_first_pass(self):
+        graph = self._chain_graph()
+        activated = readiness_module._get_activated_nodes(graph, GraphState())
+        assert activated == {"gate_a", "gate_b", "target"}
+
+    def test_end_at_head_deactivates_whole_chain(self):
+        graph = self._chain_graph()
+        state = GraphState(
+            values={"x": 1},
+            versions={"x": 1},
+            node_executions={
+                "gate_a": NodeExecution(
+                    node_name="gate_a",
+                    input_versions={"x": 1},
+                    outputs={},
+                )
+            },
+            routing_decisions={"gate_a": END},
+        )
+
+        activated = readiness_module._get_activated_nodes(graph, state)
+
+        assert "gate_b" not in activated, "END at gate_a blocks gate_b"
+        assert "target" not in activated, "blocking must propagate through gate_b"
+        assert "gate_a" in activated
+
+    def test_decision_for_mid_gate_keeps_chain_alive(self):
+        graph = self._chain_graph()
+        state = GraphState(
+            values={"x": 1},
+            versions={"x": 1},
+            node_executions={
+                "gate_a": NodeExecution(
+                    node_name="gate_a",
+                    input_versions={"x": 1},
+                    outputs={},
+                )
+            },
+            routing_decisions={"gate_a": "gate_b"},
+        )
+
+        activated = readiness_module._get_activated_nodes(graph, state)
+
+        assert "gate_b" in activated, "gate_a's decision activates gate_b"
+        assert "target" in activated, "default_open flows through the activated gate_b"
 
 
 class TestPendingActivationRetrigger:
