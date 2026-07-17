@@ -10,12 +10,13 @@ FAILED child as success.
 
 import pytest
 
-from hypergraph import AsyncRunner, Graph, SyncRunner, node
-from hypergraph.checkpointers import SqliteCheckpointer, WorkflowStatus
+from hypergraph import END, AsyncRunner, Graph, SyncRunner, interrupt, node, route
+from hypergraph.checkpointers import CheckpointPolicy, SqliteCheckpointer, WorkflowStatus
 from hypergraph.checkpointers.types import StepStatus
 from hypergraph.events import EventProcessor
 from hypergraph.events.types import NodeEndEvent, NodeStartEvent, RunStartEvent
 from hypergraph.runners._shared.results import RunStatus
+from tests._interrupt_questions import StringQuestion
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -63,7 +64,7 @@ class CrashingStepCheckpointer(SqliteCheckpointer):
         super().save_step_sync(record)
 
 
-def build_nested_graph():
+def build_nested_graph(child_runner=None):
     """parent: prepare -> child_wf(double) -> consume, with invocation counters."""
     counters = {"prepare": 0, "double": 0, "consume": 0}
 
@@ -83,8 +84,42 @@ def build_nested_graph():
         return doubled + 1
 
     child = Graph(nodes=[double], name="child")
-    parent = Graph(nodes=[prepare, child.as_node(name="child_wf"), consume], name="parent")
+    parent = Graph(nodes=[prepare, child.as_node(name="child_wf", runner=child_runner), consume], name="parent")
     return parent, counters
+
+
+def build_multi_turn_graph():
+    """Cyclic chat shape: ask (interrupt) -> child_wf(respond) -> gate -> ask.
+
+    Each turn ends in a pause; every resume that supplies a new answer must
+    RE-execute the nested child under a fresh suffixed child id — never treat
+    the previous turn's terminal child as a crash window to restore from.
+    """
+    calls: list[str] = []
+
+    @interrupt(answer_name="answer")
+    def ask(prompt: str = "next?") -> StringQuestion:
+        return StringQuestion(prompt=prompt)
+
+    @node(output_name="reply")
+    def respond(answer: str) -> str:
+        calls.append(answer)
+        return f"reply:{answer}"
+
+    child = Graph(nodes=[respond], name="turn")
+
+    @route(targets=["ask", END])
+    def gate(reply: str) -> str:
+        return END if reply == "reply:two" else "ask"
+
+    parent = Graph(nodes=[ask, child.as_node(name="child_wf"), gate], name="chat", entrypoint="ask")
+    return parent, calls
+
+
+def retention_policy(retention: str) -> CheckpointPolicy:
+    if retention == "windowed":
+        return CheckpointPolicy(durability="sync", retention="windowed", window=1)
+    return CheckpointPolicy(durability="sync", retention=retention)
 
 
 def build_two_level_graph():
@@ -475,3 +510,228 @@ class TestSyncNestedCrashResume:
         finally:
             if cp._sync_conn:
                 cp._sync_conn.close()
+
+
+class TestRetentionShadowedReExecution:
+    """F1 (review): a pruned prior completion must not look like a crash window.
+
+    Windowed retention compacts the parent GraphNode's COMPLETED step into a
+    hidden value-only baseline. On the next legitimate turn the node is absent
+    from replayed executions while the previous child run is terminal
+    COMPLETED — exactly the crash-window shape. Recovery must consult durable
+    evidence (raw step history including retention carriers) and re-execute
+    under a fresh child id instead of restoring stale outputs.
+    """
+
+    @pytest.mark.parametrize("retention", ["full", "latest", "windowed"])
+    async def test_async_multi_turn_reexecution_survives_retention(self, tmp_path, retention):
+        parent, calls = build_multi_turn_graph()
+        cp = SqliteCheckpointer(str(tmp_path / "test.db"), policy=retention_policy(retention))
+        try:
+            runner = AsyncRunner(checkpointer=cp)
+            first = await runner.run(parent, {}, workflow_id="wfm")
+            assert first.status is RunStatus.PAUSED
+
+            second = await runner.run(parent, {"answer": "one"}, workflow_id="wfm")
+            assert second.status is RunStatus.PAUSED
+            assert calls == ["one"]
+
+            third = await runner.run(parent, {"answer": "two"}, workflow_id="wfm")
+            assert third.status is RunStatus.COMPLETED
+            assert third.values["reply"] == "reply:two"
+            # The child re-executed with the new answer — no stale restore.
+            assert calls == ["one", "two"]
+
+            # The re-execution ran under a fresh suffixed child id.
+            turn2_run = await cp.get_run_async("wfm/child_wf/1")
+            assert turn2_run is not None
+            assert turn2_run.status is WorkflowStatus.COMPLETED
+            if retention != "windowed":
+                # Truthful receipt (windowed prunes the row itself later).
+                child_steps = [step for step in await cp.get_steps("wfm") if step.node_name == "child_wf" and step.status is StepStatus.COMPLETED]
+                assert child_steps
+                assert child_steps[-1].child_run_id == "wfm/child_wf/1"
+        finally:
+            await cp.close()
+
+    def test_sync_windowed_pruned_completion_reexecutes_child(self, tmp_path):
+        """Sync parity for the evidence branch.
+
+        SyncRunner does not support interrupts (validated capability boundary:
+        IncompatibleRunnerError says "Use AsyncRunner instead"), so the
+        multi-turn interrupt repro is structurally impossible on sync. This
+        variant changes the child's input across a FAILED-parent resume via an
+        impure upstream node: windowed retention prunes the prior completion,
+        and a stale restore would feed the downstream node outdated output.
+        """
+        child_inputs: list[int] = []
+        run_counter = {"n": 0}
+        flaky_armed = [True]
+
+        @node(output_name="prepared")
+        def prepare(x: int = 5) -> int:
+            run_counter["n"] += 1
+            return x + 100 * run_counter["n"]
+
+        @node(output_name="doubled")
+        def double(prepared: int) -> int:
+            child_inputs.append(prepared)
+            return prepared * 2
+
+        @node(output_name="final")
+        def flaky(doubled: int) -> int:
+            if flaky_armed[0]:
+                raise RuntimeError("flaky failure")
+            return doubled + 1
+
+        child = Graph(nodes=[double], name="child")
+        parent = Graph(nodes=[prepare, child.as_node(name="child_wf"), flaky], name="parent")
+
+        cp = SqliteCheckpointer(str(tmp_path / "test.db"), policy=retention_policy("windowed"))
+        cp._sync_db()
+        try:
+            runner = SyncRunner(checkpointer=cp)
+            with pytest.raises(RuntimeError, match="flaky failure"):
+                runner.run(parent, {}, workflow_id="wfw")
+            assert child_inputs == [105]
+            assert cp.get_run("wfw/child_wf").status is WorkflowStatus.COMPLETED
+            # windowed retention pruned the parent's completed rows.
+            assert "child_wf" not in {step.node_name for step in cp.steps("wfw")}
+
+            flaky_armed[0] = False
+            result = runner.run(parent, workflow_id="wfw")
+
+            # prepare re-ran (its row was pruned) and produced a NEW value, so
+            # the child must re-execute — restoring doubled=210 would be stale.
+            assert child_inputs == [105, 205]
+            assert result.values["final"] == 411
+            turn2_run = cp.get_run("wfw/child_wf/1")
+            assert turn2_run is not None
+            assert turn2_run.status is WorkflowStatus.COMPLETED
+        finally:
+            if cp._sync_conn:
+                cp._sync_conn.close()
+
+
+class TestDelegatedRunnerCrashResume:
+    """F2 (review): a delegated runner owns the child's persistence boundary.
+
+    The child's terminal COMPLETED state lives in the runner_override's
+    checkpointer, not the parent's. Crash-window recovery must read child
+    status and state from the effective runner's persistence.
+    """
+
+    async def test_async_delegated_child_checkpointer_crash_resume(self, tmp_path):
+        child_cp = SqliteCheckpointer(str(tmp_path / "child.db"), durability="sync")
+        parent, counters = build_nested_graph(child_runner=AsyncRunner(checkpointer=child_cp))
+        parent_cp = CrashingStepCheckpointer(str(tmp_path / "parent.db"), {("wf", "child_wf")})
+        try:
+            runner = AsyncRunner(checkpointer=parent_cp)
+            with pytest.raises(RuntimeError, match=CRASH_MESSAGE):
+                await runner.run(parent, {"x": 5}, workflow_id="wf")
+
+            # The witness lives across two stores: the child completed in the
+            # delegated checkpointer; the parent has no child row at all.
+            child_run = await child_cp.get_run_async("wf/child_wf")
+            assert child_run is not None
+            assert child_run.status is WorkflowStatus.COMPLETED
+            assert await parent_cp.get_run_async("wf/child_wf") is None
+            assert "child_wf" not in {step.node_name for step in await parent_cp.get_steps("wf")}
+            assert counters == {"prepare": 1, "double": 1, "consume": 0}
+
+            parent_cp.armed = False
+            result = await runner.run(parent, workflow_id="wf")
+
+            assert result.values["doubled"] == 210
+            assert result.values["final"] == 211
+            assert counters["double"] == 1
+            assert counters["consume"] == 1
+
+            steps = {step.node_name: step for step in await parent_cp.get_steps("wf")}
+            child_step = steps["child_wf"]
+            assert child_step.status is StepStatus.COMPLETED
+            assert child_step.values == {"doubled": 210}
+            assert child_step.child_run_id == "wf/child_wf"
+        finally:
+            await parent_cp.close()
+            await child_cp.close()
+
+    def test_sync_delegated_child_checkpointer_crash_resume(self, tmp_path):
+        child_cp = SqliteCheckpointer(str(tmp_path / "child.db"), durability="sync")
+        child_cp._sync_db()
+        parent, counters = build_nested_graph(child_runner=SyncRunner(checkpointer=child_cp))
+        parent_cp = CrashingStepCheckpointer(str(tmp_path / "parent.db"), {("wf", "child_wf")})
+        parent_cp._sync_db()
+        try:
+            runner = SyncRunner(checkpointer=parent_cp)
+            with pytest.raises(RuntimeError, match=CRASH_MESSAGE):
+                runner.run(parent, {"x": 5}, workflow_id="wf")
+
+            child_run = child_cp.get_run("wf/child_wf")
+            assert child_run is not None
+            assert child_run.status is WorkflowStatus.COMPLETED
+            assert parent_cp.get_run("wf/child_wf") is None
+            assert counters == {"prepare": 1, "double": 1, "consume": 0}
+
+            parent_cp.armed = False
+            result = runner.run(parent, workflow_id="wf")
+
+            assert result.values["doubled"] == 210
+            assert result.values["final"] == 211
+            assert counters["double"] == 1
+            assert counters["consume"] == 1
+
+            steps = {step.node_name: step for step in parent_cp.steps("wf")}
+            child_step = steps["child_wf"]
+            assert child_step.status is StepStatus.COMPLETED
+            assert child_step.values == {"doubled": 210}
+            assert child_step.child_run_id == "wf/child_wf"
+        finally:
+            if child_cp._sync_conn:
+                child_cp._sync_conn.close()
+            if parent_cp._sync_conn:
+                parent_cp._sync_conn.close()
+
+
+class TestCrashRestoreTupleOutputs:
+    """F3 (review): restored outputs must mirror real execution for tuples.
+
+    JSON persistence turns tuples into lists; the restore path (like ordinary
+    checkpoint resume) must coerce annotated tuple outputs back.
+    """
+
+    async def test_restored_tuple_output_reaches_downstream_as_tuple(self, tmp_path):
+        received: list[object] = []
+
+        @node(output_name="prepared")
+        def prepare(x: int) -> int:
+            return x + 100
+
+        @node(output_name="pair")
+        def make_pair(prepared: int) -> tuple[int, int]:
+            return (prepared, prepared + 1)
+
+        @node(output_name="total")
+        def consume(pair: tuple[int, int]) -> int:
+            received.append(pair)
+            return pair[0] + pair[1]
+
+        child = Graph(nodes=[make_pair], name="child")
+        parent = Graph(nodes=[prepare, child.as_node(name="child_wf"), consume], name="parent")
+
+        cp = CrashingStepCheckpointer(str(tmp_path / "test.db"), {("wf", "child_wf")})
+        try:
+            runner = AsyncRunner(checkpointer=cp)
+            with pytest.raises(RuntimeError, match=CRASH_MESSAGE):
+                await runner.run(parent, {"x": 5}, workflow_id="wf")
+            cp.armed = False
+
+            result = await runner.run(parent, workflow_id="wf")
+
+            assert result.values["total"] == 211
+            assert received == [(105, 106)]
+            assert isinstance(received[0], tuple)
+            assert result.values["pair"] == (105, 106)
+            assert isinstance(result.values["pair"], tuple)
+        finally:
+            await cp.close()

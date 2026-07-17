@@ -242,3 +242,44 @@ class TestDataclassRestore:
         graph2 = Graph(nodes=[format_metric])
         result2 = await runner.run(graph2, checkpoint=checkpoint, workflow_id="fork-dc")
         assert result2["report"] == "accuracy=0.95"
+
+
+class TestTupleOutputRestore:
+    """JSON round-trip turns tuples into lists; restore must coerce them back.
+
+    Systemic companion to the nested crash-window restore tests: ordinary
+    checkpoint resume flows through the same coerce_checkpoint_values.
+    """
+
+    async def test_ordinary_resume_restores_annotated_tuple_output(self, tmp_path):
+        received: list[object] = []
+        fail = [True]
+
+        @node(output_name="pair")
+        def make_pair(x: int) -> tuple[int, int]:
+            return (x, x + 1)
+
+        @node(output_name="total")
+        def consume(pair: tuple[int, int]) -> int:
+            if fail[0]:
+                raise RuntimeError("boom on first run")
+            received.append(pair)
+            return pair[0] + pair[1]
+
+        graph = Graph(nodes=[make_pair, consume], name="g")
+        cp = SqliteCheckpointer(str(tmp_path / "test.db"), durability="sync")
+        try:
+            runner = AsyncRunner(checkpointer=cp)
+            with pytest.raises(RuntimeError, match="boom on first run"):
+                await runner.run(graph, {"x": 4}, workflow_id="wf")
+
+            fail[0] = False
+            result = await runner.run(graph, workflow_id="wf")
+
+            assert result.values["total"] == 9
+            assert received == [(4, 5)]
+            assert isinstance(received[0], tuple)
+            assert result.values["pair"] == (4, 5)
+            assert isinstance(result.values["pair"], tuple)
+        finally:
+            await cp.close()
