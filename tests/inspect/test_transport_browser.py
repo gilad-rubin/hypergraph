@@ -309,7 +309,7 @@ def _defer_child_ready(shell: str) -> str:
 
 
 def _append_notebook_shell(page: Page, shell: str) -> None:
-    scripts = re.findall(r"<script(?: [^>]*)?>(.*?)</script>", shell, flags=re.DOTALL)
+    scripts = re.findall(r"<script\b[^>]*>(.*?)</script\b[^>]*>", shell, flags=re.DOTALL | re.IGNORECASE)
     assert len(scripts) == 2
     page.evaluate(
         """markup => {
