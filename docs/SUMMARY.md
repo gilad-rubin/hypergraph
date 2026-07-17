@@ -57,6 +57,7 @@
 * [Events](06-api-reference/events.md)
 * [InputSpec](06-api-reference/inputspec.md)
 * [Checkpointers](06-api-reference/checkpointers.md)
+* [Errors](06-api-reference/errors.md)
 
 ## HyperTable (Incremental Tables)
 

@@ -162,6 +162,7 @@ def __init__(
     emit: str | tuple[str, ...] | None = None,
     wait_for: str | tuple[str, ...] | None = None,
     retry: RetryPolicy | None = None,
+    timeout: float | None = None,
 ) -> None: ...
 ```
 
@@ -179,12 +180,14 @@ def __init__(
 - `emit`: Ordering-only local output name(s). Auto-produced when the node runs
 - `wait_for`: Ordering-only graph-scope output/emit address(es). Node waits until these values exist and are fresh
 - `retry`: Optional [RetryPolicy](#retrypolicy). Node-owned only — there is no runner, graph, or per-call retry default, and no `retry=True` shorthand. Direct calls stay raw single-shot invocations
+- `timeout`: Optional positive, finite seconds for cooperative cancellation of async functions/generators under `AsyncRunner`. Unsupported runner/callable combinations are rejected before execution. Direct calls stay raw
 
 **Returns:** FunctionNode instance
 
 **Raises:**
 - `ValueError` - If function source cannot be retrieved (for definition_hash)
 - `TypeError` - If the signature contains a positional-only, `*args`, or `**kwargs` parameter (see [Supported Parameter Kinds](#supported-parameter-kinds))
+- `TypeError` / `ValueError` - If `timeout` is not a positive finite number or `None`
 - `UserWarning` - If function has return annotation but no output_name provided
 
 ### Supported Parameter Kinds
@@ -501,6 +504,7 @@ def node(
     emit: str | tuple[str, ...] | None = None,
     wait_for: str | tuple[str, ...] | None = None,
     retry: RetryPolicy | None = None,
+    timeout: float | None = None,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]: ...
 ```
 
@@ -513,6 +517,7 @@ def node(
 - `emit`: Ordering-only local output name(s). Auto-produced when the node runs. Used with `wait_for` to enforce execution order without data dependency. See [Ordering](../03-patterns/03-agentic-loops.md#ordering-with-emitwait_for)
 - `wait_for`: Ordering-only graph-scope output/emit address(es). Node won't run until these values exist and are fresh. Must reference an `emit` or `output_name` of another node at the current graph scope
 - `retry`: Optional [RetryPolicy](#retrypolicy) declaring which failures are safe to repeat and with what budget/backoff. See [How to Retry Transient Failures](../05-how-to/retry-transient-failures.md)
+- `timeout`: Optional positive, finite seconds for cooperative per-attempt cancellation of async functions/generators under `AsyncRunner`. See [Bound one async attempt with timeout](../05-how-to/retry-transient-failures.md#bound-one-async-attempt-with-timeout)
 
 **Returns:**
 - FunctionNode if source provided (decorator without parens)
@@ -637,7 +642,7 @@ After failed one-based attempt `n`, the nominal delay is `min(max_delay, initial
 ### Semantics
 
 - **Node-owned only.** Only the node declaration can make its callable repeat. Runners, graphs, and `run()`/`map()` calls have no retry defaults or overrides.
-- **One logical step.** A retrying node stays a single graph step: downstream scheduling, state application, and the cache write happen once, after the final success. Intermediate attempts never fold state or emit node events.
+- **One logical step.** A retrying or timed node stays a single graph step: downstream scheduling, state application, and the cache write happen once, after the final success. Intermediate attempts never fold state or emit node events.
 - **Exact exception, no wrapper.** After exhaustion or an ineligible failure, the exact final underlying exception is re-raised — never a generic retry-exhausted wrapper.
 - **Durable budget.** With a persistent checkpointer (e.g. `SqliteCheckpointer`) and a `workflow_id`, every attempt is reserved write-through in the durable attempt ledger before user code runs: `max_attempts` is a hard cap across crash and resume, and the sampled backoff plus its absolute wake time are persisted so a restart neither redraws jitter nor restarts the wait. With `MemoryCheckpointer` the budget survives in-process resume only; without a checkpointer it is process-local.
 - **Cache first.** A cache hit invokes nothing, consumes zero attempts, and opens no series. Changing a retry policy does not invalidate cached results.

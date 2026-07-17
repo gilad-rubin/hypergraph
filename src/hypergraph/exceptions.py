@@ -106,6 +106,41 @@ class IncompatibleRunnerError(Exception):
         super().__init__(message)
 
 
+class AttemptTimeoutError(TimeoutError):
+    """An async attempt settled cancelled after its deadline elapsed.
+
+    The deadline is cooperative: Hypergraph requested cancellation and waited
+    for the callable to settle before raising this exception. The exception is
+    therefore evidence of a cancelled settlement, not a claim that arbitrary
+    external work or side effects stopped at the deadline.
+    """
+
+    def __init__(self, node_name: str, timeout_seconds: float) -> None:
+        self.node_name = node_name
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            f"Node {node_name!r} exceeded its {timeout_seconds:g}s attempt timeout; "
+            "Hypergraph requested cancellation and the async callable settled cancelled."
+        )
+
+
+class RetryWindowExpiredError(TimeoutError):
+    """A retry-series window elapsed during active async work.
+
+    Hypergraph requested cooperative cancellation and waited for settlement.
+    A late real value or a cancellation-cleanup exception takes precedence and
+    this exception is not raised in those cases.
+    """
+
+    def __init__(self, node_name: str, retry_window_seconds: float) -> None:
+        self.node_name = node_name
+        self.retry_window_seconds = retry_window_seconds
+        super().__init__(
+            f"Node {node_name!r} exceeded its {retry_window_seconds:g}s retry window during active work; "
+            "Hypergraph requested cancellation and the async callable settled cancelled."
+        )
+
+
 class ExecutionError(Exception):
     """Wraps an exception that occurred during graph execution.
 

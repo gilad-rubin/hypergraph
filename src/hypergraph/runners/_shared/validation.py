@@ -306,6 +306,25 @@ def validate_runner_compatibility(
     Raises:
         IncompatibleRunnerError: If runner can't handle graph features
     """
+    # Timeout is a narrower capability than general async-node support. Check
+    # it first so SyncRunner/DaftRunner and sync callables under AsyncRunner
+    # all receive the locked actionable did-not-run error.
+    from hypergraph.nodes.function import FunctionNode
+
+    for node in graph._nodes.values():
+        if not isinstance(node, FunctionNode) or node.timeout is None:
+            continue
+        if not capabilities.supports_cooperative_timeout or not node.is_async:
+            raise IncompatibleRunnerError(
+                f"Node {node.name!r} declares timeout={node.timeout:g}, but this runner/callable "
+                "cannot provide cooperative async timeout. Hypergraph did not run the node.\n\n"
+                "How to fix:\n"
+                "  - make the node async and await cancellation-aware I/O, or\n"
+                "  - use the client library's own timeout.",
+                node_name=node.name,
+                capability="supports_cooperative_timeout",
+            )
+
     # Check async nodes
     if graph.has_async_nodes and not capabilities.supports_async_nodes:
         # Find the async node(s) for a helpful error message

@@ -199,6 +199,7 @@ class TestRunnerCapabilities:
         assert caps.supports_async_nodes is False
         assert caps.supports_streaming is False
         assert caps.returns_coroutine is False
+        assert caps.supports_cooperative_timeout is False
 
     def test_supports_cycles_default_true(self):
         caps = RunnerCapabilities()
@@ -218,11 +219,13 @@ class TestRunnerCapabilities:
             supports_async_nodes=True,
             supports_streaming=True,
             returns_coroutine=True,
+            supports_cooperative_timeout=True,
         )
         assert caps.supports_cycles is False
         assert caps.supports_async_nodes is True
         assert caps.supports_streaming is True
         assert caps.returns_coroutine is True
+        assert caps.supports_cooperative_timeout is True
 
 
 class TestNodeExecution:

@@ -7,8 +7,10 @@ Assertion map (ticket red-green items + locked #187 precedence):
        test_timeout_retry_starts_only_after_prior_attempt_settles
     3  unsupported work is rejected before execution
        test_sync_runner_rejects_timeout_before_execution
+       test_sync_runner_rejects_async_timeout_before_execution
        test_async_runner_rejects_sync_callable_timeout_before_execution
        test_async_runner_rejects_sync_generator_timeout_before_execution
+       test_delegated_runner_rejects_timeout_before_execution
        test_daft_runner_rejects_timeout_before_execution
     4  suppressed cancellation returns a witnessed value
        test_suppressed_cancellation_accepts_late_success_with_evidence
@@ -179,6 +181,21 @@ def test_sync_runner_rejects_timeout_before_execution() -> None:
     assert calls == []
 
 
+def test_sync_runner_rejects_async_timeout_before_execution() -> None:
+    calls: list[str] = []
+
+    @node(output_name="response", timeout=1)
+    async def call_model(prompt: str) -> str:
+        calls.append(prompt)
+        return "ok"
+
+    with pytest.raises(IncompatibleRunnerError) as exc_info:
+        SyncRunner().run(Graph([call_model]), {"prompt": "hello"})
+
+    _assert_actionable_timeout_rejection(exc_info.value, "call_model")
+    assert calls == []
+
+
 async def test_async_runner_rejects_sync_callable_timeout_before_execution() -> None:
     calls: list[str] = []
 
@@ -206,6 +223,22 @@ async def test_async_runner_rejects_sync_generator_timeout_before_execution() ->
         await AsyncRunner().run(Graph([stream_chunks]), {"prompt": "hello"})
 
     _assert_actionable_timeout_rejection(exc_info.value, "stream_chunks")
+    assert calls == []
+
+
+async def test_delegated_runner_rejects_timeout_before_execution() -> None:
+    calls: list[str] = []
+
+    @node(output_name="response", timeout=1)
+    async def call_model(prompt: str) -> str:
+        calls.append(prompt)
+        return "ok"
+
+    delegated = Graph([call_model], name="delegated").as_node().with_runner(SyncRunner())
+    with pytest.raises(IncompatibleRunnerError) as exc_info:
+        await AsyncRunner().run(Graph([delegated]), {"prompt": "hello"})
+
+    _assert_actionable_timeout_rejection(exc_info.value, "call_model")
     assert calls == []
 
 

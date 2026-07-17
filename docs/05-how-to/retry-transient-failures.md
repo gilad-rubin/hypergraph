@@ -115,6 +115,64 @@ RetryPolicy(
 )
 ```
 
+## Bound one async attempt with `timeout`
+
+Before, a framework deadline around synchronous Python could return while the
+function kept running and producing side effects. Hypergraph rejects that
+configuration instead of calling it a timeout.
+
+After, `timeout=` is a cooperative deadline for an async function or async
+generator under `AsyncRunner`:
+
+```python
+from hypergraph import AsyncRunner, AttemptTimeoutError, Graph, RetryPolicy, node
+
+@node(
+    output_name="response",
+    timeout=10,
+    retry=RetryPolicy(
+        max_attempts=3,
+        retry_on=(AttemptTimeoutError,),  # timeout retries only when listed
+    ),
+)
+async def call_model(prompt: str) -> str:
+    return await client.generate(prompt)  # cancellation-aware async I/O
+
+result = await AsyncRunner().run(Graph([call_model]), {"prompt": "hello"})
+```
+
+When the ten-second deadline wins, Hypergraph requests cancellation and waits
+for the callable to settle. Only then does that attempt finish or the next
+attempt start. Cleanup may make the surfaced result arrive after ten seconds.
+
+Keep these four facts separate:
+
+| Fact | What Hypergraph can say |
+|---|---|
+| **Deadline elapsed** | Recorded as `deadline_elapsed=True` on the attempt. |
+| **Cancellation requested** | Recorded as `cancellation_requested=True`. |
+| **Work stopped** | Never claimed as a field. A settled coroutine does not prove that an external side effect was stopped. |
+| **Cleanup completed** | Hypergraph waits for settlement. A cleanup exception is preserved exactly; cleanup that suppresses cancellation may return a late value. |
+
+Settlement decides the outcome:
+
+- settled cancelled → `AttemptTimeoutError` and `TIMED_OUT` attempt evidence;
+- cancellation suppressed and a real value returned → accept the late success;
+- cancellation cleanup raised another exception → preserve that exact
+  exception, and judge retry eligibility by its type.
+
+The series-level `retry_window` uses the same cooperative settlement rule when
+it expires during active async work, but raises
+`RetryWindowExpiredError`. See [Errors](../06-api-reference/errors.md#attempttimeouterror)
+for both public exceptions.
+
+Framework `timeout=` is rejected before execution for `SyncRunner`, for sync
+functions/generators under `AsyncRunner`, and for delegated backends without a
+native cooperative capability. Make the node async and await
+cancellation-aware I/O, or use the client library's own request timeout. A
+direct `call_model(...)` / `call_model.func(...)` call stays raw and does not
+apply runner timeout or retry behavior.
+
 ## Honor a server's Retry-After
 
 When a response tells you exactly how long to wait, raise `RetryAfterError` around the real failure instead of sleeping inside your node:
@@ -157,7 +215,7 @@ With persistence, every attempt is durably reserved **before** your code runs, a
 
 This is an at-most-N-invocations guarantee, not exactly-once side effects: a crash mid-attempt cannot know whether the external call landed (the attempt is recorded as outcome-unknown). Payment-style APIs still need idempotency keys.
 
-Retry evidence deliberately overrides `CheckpointPolicy` durability timing: a retrying node's attempt records AND its series-closing StepRecord write through immediately under every durability mode (including `"async"` and `"exit"`), because the final outcome, its linked step, and the series closure must commit atomically. Non-retrying nodes buffer according to the configured durability as usual.
+Retry/timeout evidence deliberately overrides `CheckpointPolicy` durability timing: an attempt-managed node's records AND its series-closing StepRecord write through immediately under every durability mode (including `"async"` and `"exit"`), because the final outcome, its linked step, and the series closure must commit atomically. Nodes without retry or timeout buffer according to the configured durability as usual.
 
 ## What retry does NOT change
 
@@ -169,4 +227,4 @@ Retry evidence deliberately overrides `CheckpointPolicy` durability timing: a re
 
 ## API reference
 
-See [RetryPolicy](../06-api-reference/nodes.md#retrypolicy) and [RetryAfterError](../06-api-reference/nodes.md#retryaftererror).
+See [RetryPolicy](../06-api-reference/nodes.md#retrypolicy), [RetryAfterError](../06-api-reference/nodes.md#retryaftererror), and [Errors](../06-api-reference/errors.md#retry-and-timeout-errors).

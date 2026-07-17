@@ -1,4 +1,4 @@
-"""Shared retry attempt coordinator for the FunctionNode executor path (#230).
+"""Shared retry/timeout attempt coordinator for FunctionNode execution.
 
 The runner execution layer owns retry orchestration: the coordinator sits
 inside the sync/async FunctionNode executors — below the superstep's cache
@@ -41,10 +41,10 @@ import asyncio
 import random
 import time
 from collections.abc import Awaitable, Callable
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from hypergraph.checkpointers.types import (
     AttemptError,
@@ -54,6 +54,7 @@ from hypergraph.checkpointers.types import (
     AttemptStatus,
     StepStatus,
 )
+from hypergraph.exceptions import AttemptTimeoutError, RetryWindowExpiredError
 from hypergraph.nodes.retry import RetryAfterError, RetryPolicy
 
 if TYPE_CHECKING:
@@ -75,6 +76,12 @@ def _sleep_sync(seconds: float) -> None:
 async def _sleep_async(seconds: float) -> None:
     """Async backoff wait (module-level seam for deterministic tests)."""
     await asyncio.sleep(seconds)
+
+
+_TIMEOUT_ONLY_POLICY = RetryPolicy(
+    max_attempts=1,
+    retry_on=(AttemptTimeoutError,),
+)
 
 
 # === Pure decision helpers (single source of truth for both drivers) ===
@@ -199,6 +206,98 @@ def _series_deadline(policy: RetryPolicy, now: datetime) -> datetime | None:
     if policy.retry_window is None:
         return None
     return now + timedelta(seconds=policy.retry_window)
+
+
+@dataclass(frozen=True)
+class _ActiveDeadline:
+    """The next cooperative deadline for one in-flight invocation."""
+
+    seconds: float
+    scope: Literal["attempt", "retry_window"]
+    configured_seconds: float
+
+
+def _active_deadline(
+    timeout: float | None,
+    policy: RetryPolicy,
+    deadline_at: datetime | None,
+    *,
+    now: datetime,
+) -> _ActiveDeadline | None:
+    """Choose the earlier of the per-attempt and retry-window deadlines."""
+    window_remaining = None if deadline_at is None else max(0.0, (deadline_at - now).total_seconds())
+    if window_remaining is not None and (timeout is None or window_remaining <= timeout):
+        assert policy.retry_window is not None
+        return _ActiveDeadline(
+            seconds=window_remaining,
+            scope="retry_window",
+            configured_seconds=policy.retry_window,
+        )
+    if timeout is not None:
+        return _ActiveDeadline(
+            seconds=timeout,
+            scope="attempt",
+            configured_seconds=timeout,
+        )
+    return None
+
+
+async def _invoke_with_deadline(
+    invoke: Callable[[], Awaitable[Any]],
+    *,
+    node_name: str,
+    deadline: _ActiveDeadline | None,
+    record_deadline: Callable[[], Awaitable[None]] | None,
+) -> Any:
+    """Invoke once, requesting cancellation at a cooperative deadline.
+
+    ``asyncio.wait`` supplies the Python-3.10-compatible wait-for shape while
+    leaving cancellation and settlement explicit: after the deadline wins we
+    call ``Task.cancel()`` and await the task before deciding which terminal
+    condition was actually witnessed.
+    """
+    if deadline is None:
+        return await invoke()
+
+    task = asyncio.create_task(invoke())
+    try:
+        done, _ = await asyncio.wait((task,), timeout=deadline.seconds)
+    except BaseException:
+        # External cancellation/control flow remains the terminal cause, but
+        # do not leak the child invocation. This mirrors direct-await cleanup.
+        if not task.done():
+            task.cancel()
+        with suppress(BaseException):
+            await task
+        raise
+
+    if task in done:
+        return await task
+
+    # Deadline elapsed. Cancellation is only a request; the task may settle
+    # cancelled, raise during cleanup, or suppress cancellation and return.
+    task.cancel()
+
+    async def persist_deadline_evidence() -> None:
+        if record_deadline is not None:
+            await record_deadline()
+
+    try:
+        result = await task
+    except asyncio.CancelledError:
+        await persist_deadline_evidence()
+        if deadline.scope == "retry_window":
+            raise RetryWindowExpiredError(node_name, deadline.configured_seconds) from None
+        raise AttemptTimeoutError(node_name, deadline.configured_seconds) from None
+    except BaseException:
+        # A cleanup exception is the exact terminal cause. Record that the
+        # deadline/cancellation happened, then preserve the object and trace.
+        await persist_deadline_evidence()
+        raise
+    else:
+        # Suppressed cancellation produced a real witnessed value. Keep it.
+        await persist_deadline_evidence()
+        return result
 
 
 @dataclass(frozen=True)
@@ -442,7 +541,8 @@ async def run_attempts_async(
     invoke: Callable[[], Awaitable[Any]],
     *,
     node_name: str,
-    policy: RetryPolicy,
+    policy: RetryPolicy | None,
+    timeout: float | None = None,
     checkpointer: Any | None,
     run_id: str | None,
     scheduled_superstep: int,
@@ -454,6 +554,7 @@ async def run_attempts_async(
     permit, per #218): it is entered before and exited after each attempt,
     so backoff sleeps never hold a permit.
     """
+    policy = policy or _TIMEOUT_ONLY_POLICY
     now = _utcnow()
     if checkpointer is not None and run_id:
         ledger: Checkpointer | None = checkpointer
@@ -476,21 +577,47 @@ async def run_attempts_async(
             attempt_number = record.attempt_number
         else:
             attempt_number += 1
+
+        deadline = _active_deadline(
+            timeout,
+            policy,
+            deadline_at,
+            now=_utcnow(),
+        )
+
+        async def record_deadline(
+            current_attempt_number: int = attempt_number,
+        ) -> None:
+            if ledger is not None:
+                assert series_id is not None
+                await ledger.record_attempt_deadline(series_id, current_attempt_number)
+
+        async def invoke_attempt(
+            current_deadline: _ActiveDeadline | None = deadline,
+        ) -> Any:
+            return await _invoke_with_deadline(
+                invoke,
+                node_name=node_name,
+                deadline=current_deadline,
+                record_deadline=record_deadline if ledger is not None else None,
+            )
+
         try:
             if attempt_scope is None:
-                return await invoke()
+                return await invoke_attempt()
             async with attempt_scope():
-                return await invoke()
+                return await invoke_attempt()
         except Exception as error:
             # Terminal paths raise the exact underlying exception from here.
             # The reservation intentionally stays STARTED: the step-save site
             # settles it atomically with the linked StepRecord.
             step = plan_after_failure(error, policy, attempt_number, deadline_at, now=_utcnow())
             if ledger is not None:
+                status = AttemptStatus.TIMED_OUT if isinstance(error, (AttemptTimeoutError, RetryWindowExpiredError)) else AttemptStatus.FAILED
                 await ledger.record_attempt_outcome(
                     series_id,
                     attempt_number,
-                    AttemptStatus.FAILED,
+                    status,
                     error=AttemptError.from_exception(step.underlying),
                     retry_not_before=step.decision.retry_not_before,
                     sampled_delay=step.decision.sampled_delay,
@@ -514,14 +641,20 @@ _CLOSE_STATUS: dict[StepStatus, AttemptStatus] = {
 }
 
 
-def _retrying_function_node(graph: Graph, node_name: str) -> bool:
+def _attempt_managed_function_node(graph: Graph, node_name: str) -> bool:
     from hypergraph.nodes.function import FunctionNode
 
     node = graph._nodes.get(node_name)
-    return isinstance(node, FunctionNode) and node.retry is not None
+    return isinstance(node, FunctionNode) and (node.retry is not None or node.timeout is not None)
 
 
-_LINKABLE_TERMINAL = frozenset({AttemptStatus.FAILED, AttemptStatus.OUTCOME_UNKNOWN})
+_LINKABLE_TERMINAL = frozenset(
+    {
+        AttemptStatus.FAILED,
+        AttemptStatus.TIMED_OUT,
+        AttemptStatus.OUTCOME_UNKNOWN,
+    }
+)
 
 
 def _close_args(
@@ -539,10 +672,14 @@ def _close_args(
     if last.status is AttemptStatus.STARTED:
         # Ordinary close: settle the live reservation with this step's outcome.
         error = None
-        if status is AttemptStatus.FAILED:
-            raw = (node_errors or {}).get(record.node_name)
-            if isinstance(raw, Exception):
-                error = AttemptError.from_exception(raw)
+        raw = (node_errors or {}).get(record.node_name)
+        if status is AttemptStatus.FAILED and isinstance(
+            raw,
+            (AttemptTimeoutError, RetryWindowExpiredError),
+        ):
+            status = AttemptStatus.TIMED_OUT
+        if status in (AttemptStatus.FAILED, AttemptStatus.TIMED_OUT) and isinstance(raw, Exception):
+            error = AttemptError.from_exception(raw)
         return last.attempt_number, status, error, linked
     if status is AttemptStatus.FAILED and last.status in _LINKABLE_TERMINAL:
         # Resume dead end (budget exhausted, window expired, OUTCOME_UNKNOWN
@@ -564,7 +701,7 @@ def maybe_close_attempt_series_sync(
     not save it again); False when the record is not series-linked and should
     follow the ordinary durability dispatch.
     """
-    if not _retrying_function_node(graph, record.node_name):
+    if not _attempt_managed_function_node(graph, record.node_name):
         return False
     if not isinstance(checkpointer, SyncAttemptLedger):
         return False
@@ -587,7 +724,7 @@ async def maybe_close_attempt_series_async(
     node_errors: dict[str, BaseException] | None = None,
 ) -> bool:
     """Async twin of :func:`maybe_close_attempt_series_sync`."""
-    if not _retrying_function_node(graph, record.node_name):
+    if not _attempt_managed_function_node(graph, record.node_name):
         return False
     series = await checkpointer.get_open_attempt_series(record.run_id, record.node_name)
     if series is None:

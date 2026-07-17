@@ -107,7 +107,13 @@ def _require_started(record: AttemptRecord | None, series_id: str, attempt_numbe
 #: Settled statuses over which a close may still link its StepRecord (resume
 #: dead ends). SUCCEEDED is deliberately absent: a success must be witnessed
 #: by a live reservation, never reconstructed over settled evidence.
-_LINK_CLOSABLE_STATUSES = frozenset({AttemptStatus.FAILED, AttemptStatus.OUTCOME_UNKNOWN})
+_LINK_CLOSABLE_STATUSES = frozenset(
+    {
+        AttemptStatus.FAILED,
+        AttemptStatus.TIMED_OUT,
+        AttemptStatus.OUTCOME_UNKNOWN,
+    }
+)
 
 
 def _check_closable(
@@ -196,12 +202,12 @@ class CheckpointPolicy:
         ttl: Auto-expire completed runs after this duration.
 
     Note:
-        Retry evidence overrides durability timing: for a node with a
-        ``RetryPolicy``, attempt reservations/outcomes AND the series-closing
-        StepRecord write through immediately under every durability mode —
-        the final attempt outcome, its linked StepRecord, and series closure
-        must commit atomically, and that invariant takes precedence over
-        "async"/"exit" buffering. Non-retrying nodes buffer normally.
+        Retry/timeout evidence overrides durability timing: attempt
+        reservations/outcomes AND the series-closing StepRecord write through
+        immediately under every durability mode. The final attempt outcome,
+        its linked StepRecord, and series closure must commit atomically, and
+        that invariant takes precedence over "async"/"exit" buffering. Nodes
+        without retry or timeout buffer normally.
     """
 
     durability: Literal["sync", "async", "exit"] = "async"
@@ -405,7 +411,7 @@ class Checkpointer(ABC):
     #
     # Durable retry/timeout persistence (#229). Backends that support the
     # ledger override every method below; the defaults fail loudly so an
-    # unsupported backend can never silently drop retry evidence.
+    # unsupported backend can never silently drop attempt evidence.
 
     def _attempt_ledger_unsupported(self) -> NotImplementedError:
         return NotImplementedError(
@@ -492,6 +498,20 @@ class Checkpointer(ABC):
         """
         raise self._attempt_ledger_unsupported()
 
+    async def record_attempt_deadline(
+        self,
+        series_id: str,
+        attempt_number: int,
+    ) -> AttemptRecord:
+        """Record that a live attempt crossed a deadline and was cancelled.
+
+        This updates evidence on the still-``STARTED`` reservation without
+        settling it. Hypergraph then waits for the callable to settle: a late
+        value can still close as ``SUCCEEDED`` and a cleanup exception can
+        still close as ``FAILED``.
+        """
+        raise self._attempt_ledger_unsupported()
+
     async def close_attempt_series(
         self,
         series_id: str,
@@ -509,7 +529,8 @@ class Checkpointer(ABC):
 
         Two accepted shapes: the ordinary close settles a live ``STARTED``
         reservation with ``status``; a resume dead end may instead close over
-        a LAST record that is already terminal ``FAILED``/``OUTCOME_UNKNOWN``
+        a LAST record that is already terminal
+        ``FAILED``/``TIMED_OUT``/``OUTCOME_UNKNOWN``
         — ``status`` must then equal the settled status (evidence is never
         rewritten) and only the StepRecord link, closure, and retention
         commit. ``SUCCEEDED`` always requires a live reservation.
