@@ -41,6 +41,7 @@
 * [Nodes from Component Methods](05-how-to/nodes-from-component-methods.md)
 * [Rename and Adapt](05-how-to/rename-and-adapt.md)
 * [Integrate with LLMs](05-how-to/integrate-with-llms.md)
+* [Retry Transient Failures](05-how-to/retry-transient-failures.md)
 * [Use Hypergraph with Daft](05-how-to/daft-workflows.md)
 * [Test Without Framework](05-how-to/test-without-framework.md)
 * [Debug Workflows](05-how-to/debug-workflows.md)
