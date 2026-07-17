@@ -115,6 +115,31 @@ class HyperNode(ABC):
         return hashlib.sha256(content.encode()).hexdigest()
 
     @property
+    def structural_signature(self) -> str:
+        """Code-insensitive identity string used by ``Graph.structural_hash``.
+
+        Joined from :meth:`_structural_signature_parts`. These bytes feed
+        checkpoint resume-compatibility checks, so the layout is frozen:
+        subclasses append parts via ``super()``, never reorder or reformat
+        existing entries.
+        """
+        return "|".join(self._structural_signature_parts())
+
+    def _structural_signature_parts(self) -> list[str]:
+        """Ordered structural-signature fields every node contributes.
+
+        Subclasses with extra declared interface (gate targets, nested-graph
+        boundaries) extend the list returned by ``super()``.
+        """
+        return [
+            type(self).__name__,
+            self.name,
+            ",".join(self.inputs),
+            ",".join(self.outputs),
+            ",".join(self.wait_for),
+        ]
+
+    @property
     def is_async(self) -> bool:
         """Does this node require async execution?
 

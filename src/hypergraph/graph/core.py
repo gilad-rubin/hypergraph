@@ -1329,64 +1329,11 @@ class Graph:
         """Compute hash for resume compatibility checks.
 
         Includes node identity/topology and declared interfaces, but excludes
-        function source code so bug-fix edits do not force forking.
+        function source code so bug-fix edits do not force forking. Each node
+        reports its own ``structural_signature``; this method only composes
+        those with the edge topology.
         """
-        from hypergraph.nodes.gate import END, GateNode
-        from hypergraph.nodes.graph_node import GraphNode
-
-        node_signatures: list[str] = []
-        for node in sorted(self._nodes.values(), key=lambda n: n.name):
-            parts = [
-                node.__class__.__name__,
-                node.name,
-                ",".join(node.inputs),
-                ",".join(node.outputs),
-                ",".join(getattr(node, "wait_for", ())),
-            ]
-            if isinstance(node, GateNode):
-                targets = [t if t is not END else "END" for t in node.targets]
-                parts.extend(
-                    [
-                        "targets=" + ",".join(targets),
-                        f"default_open={getattr(node, 'default_open', True)}",
-                    ]
-                )
-                if hasattr(node, "multi_target"):
-                    parts.append(f"multi_target={node.multi_target}")
-                if hasattr(node, "fallback"):
-                    fb = node.fallback
-                    fb_str = "None" if fb is None else "END" if fb is END else fb
-                    parts.append(f"fallback={fb_str}")
-                if hasattr(node, "when_true") and hasattr(node, "when_false"):
-                    wt = node.when_true
-                    wf = node.when_false
-                    parts.append(f"when_true={wt if wt is not END else 'END'}")
-                    parts.append(f"when_false={wf if wf is not END else 'END'}")
-            if isinstance(node, GraphNode):
-                parts.append(f"nested_struct={node.graph.structural_hash}")
-                parts.append(f"namespaced={node.namespaced}")
-                parts.append("local_inputs=" + ",".join(node.local_inputs))
-                parts.append("local_outputs=" + ",".join(node.local_outputs))
-                parts.append("data_outputs=" + ",".join(node.data_outputs))
-                exposed = getattr(node, "_exposed", {})
-                if exposed:
-                    exposed_str = ",".join(f"{local}->{address}" for local, address in sorted(exposed.items()))
-                    parts.append(f"exposed={exposed_str}")
-                if getattr(node, "_complete_on_stop", False):
-                    parts.append("complete_on_stop=True")
-                map_config = node.map_config
-                if map_config is not None:
-                    map_params, map_mode, error_handling = map_config
-                    parts.append("map_over=" + ",".join(map_params))
-                    parts.append(f"map_mode={map_mode}")
-                    parts.append(f"map_error_handling={error_handling}")
-                    clone_cfg = getattr(node, "_clone", False)
-                    if isinstance(clone_cfg, list):
-                        parts.append("map_clone=" + ",".join(clone_cfg))
-                    else:
-                        parts.append(f"map_clone={clone_cfg}")
-            node_signatures.append("|".join(parts))
-
+        node_signatures = [node.structural_signature for node in sorted(self._nodes.values(), key=lambda n: n.name)]
         edges = sorted((u, v, ",".join(data.get("value_names", []))) for u, v, data in self._nx_graph.edges(data=True))
         edge_str = str(edges)
         return hashlib.sha256(("|".join(node_signatures) + "|" + edge_str).encode()).hexdigest()

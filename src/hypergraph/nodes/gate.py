@@ -111,6 +111,53 @@ class GateNode(CallableMixin, HyperNode):
     _emit: tuple[str, ...]
     default_open: bool
 
+    def __init__(
+        self,
+        func: Callable,
+        *,
+        cache: bool,
+        hide: bool,
+        default_open: bool,
+        name: str | None,
+        rename_inputs: dict[str, str] | None,
+        emit: str | tuple[str, ...] | None,
+        wait_for: str | tuple[str, ...] | None,
+    ) -> None:
+        """Shared gate initialization tail.
+
+        Subclasses validate and assign their routing-specific attributes
+        (targets/fallback vs when_true/when_false) BEFORE delegating here,
+        so construction error ordering matches the historical per-subclass
+        constructors.
+        """
+        self.name = name or func.__name__
+        self.func = func
+        self._cache = cache
+        self._hide = hide
+        self._emit = ensure_tuple(emit) if emit else ()
+        self._wait_for = ensure_tuple(wait_for) if wait_for else ()
+        self.default_open = default_open
+        self._definition_hash = hash_definition(func)
+
+        # `outputs` is a derived property on GateNode — no stored copy here.
+        inputs, self._context_param = extract_inputs(func)
+        self.inputs, self._rename_history = _apply_renames(inputs, rename_inputs, "inputs")
+
+        _validate_emit_wait_for(
+            self.name,
+            self._emit,
+            self._wait_for,
+            (),
+            self.inputs,
+        )
+
+    def _structural_signature_parts(self) -> list[str]:
+        """Add the routing interface every gate declares."""
+        parts = super()._structural_signature_parts()
+        parts.append("targets=" + ",".join(t if t is not END else "END" for t in self.targets))
+        parts.append(f"default_open={self.default_open}")
+        return parts
+
     @property
     def cache(self) -> bool:
         """Whether routing function results should be cached."""
@@ -301,31 +348,28 @@ class RouteNode(GateNode):
             if fallback not in target_list:
                 target_list.append(fallback)
 
-        resolved_name = name or func.__name__
-        self.name = resolved_name
-        self.func = func
         self.targets = target_list
         self.descriptions = descriptions  # type: ignore[assignment]
         self.fallback = fallback
         self.multi_target = multi_target
-        self._cache = cache
-        self._hide = hide
-        self._emit = ensure_tuple(emit) if emit else ()
-        self._wait_for = ensure_tuple(wait_for) if wait_for else ()
-        self.default_open = default_open
-        self._definition_hash = hash_definition(func)
-
-        # `outputs` is a derived property on GateNode — no stored copy here.
-        inputs, self._context_param = extract_inputs(func)
-        self.inputs, self._rename_history = _apply_renames(inputs, rename_inputs, "inputs")
-
-        _validate_emit_wait_for(
-            self.name,
-            self._emit,
-            self._wait_for,
-            (),
-            self.inputs,
+        super().__init__(
+            func,
+            cache=cache,
+            hide=hide,
+            default_open=default_open,
+            name=name,
+            rename_inputs=rename_inputs,
+            emit=emit,
+            wait_for=wait_for,
         )
+
+    def _structural_signature_parts(self) -> list[str]:
+        """Add multi-target and fallback routing configuration."""
+        parts = super()._structural_signature_parts()
+        parts.append(f"multi_target={self.multi_target}")
+        fallback = self.fallback
+        parts.append(f"fallback={'None' if fallback is None else 'END' if fallback is END else fallback}")
+        return parts
 
     def __call__(self, *args: Any, **kwargs: Any) -> str | list | None:
         """Call the routing function directly."""
@@ -512,31 +556,27 @@ class IfElseNode(GateNode):
                 f"or use a regular FunctionNode if no branching is needed"
             )
 
-        resolved_name = name or func.__name__
-        self.name = resolved_name
-        self.func = func
         self.when_true = when_true
         self.when_false = when_false
         self.targets = [when_true, when_false]
         self.descriptions = {True: "True", False: "False"}
-        self._cache = cache
-        self._hide = hide
-        self._emit = ensure_tuple(emit) if emit else ()
-        self._wait_for = ensure_tuple(wait_for) if wait_for else ()
-        self.default_open = default_open
-        self._definition_hash = hash_definition(func)
-
-        # `outputs` is a derived property on GateNode — no stored copy here.
-        inputs, self._context_param = extract_inputs(func)
-        self.inputs, self._rename_history = _apply_renames(inputs, rename_inputs, "inputs")
-
-        _validate_emit_wait_for(
-            self.name,
-            self._emit,
-            self._wait_for,
-            (),
-            self.inputs,
+        super().__init__(
+            func,
+            cache=cache,
+            hide=hide,
+            default_open=default_open,
+            name=name,
+            rename_inputs=rename_inputs,
+            emit=emit,
+            wait_for=wait_for,
         )
+
+    def _structural_signature_parts(self) -> list[str]:
+        """Add the binary branch targets."""
+        parts = super()._structural_signature_parts()
+        parts.append(f"when_true={self.when_true if self.when_true is not END else 'END'}")
+        parts.append(f"when_false={self.when_false if self.when_false is not END else 'END'}")
+        return parts
 
     def __call__(self, *args: Any, **kwargs: Any) -> bool:
         """Call the routing function directly."""

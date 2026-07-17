@@ -147,6 +147,30 @@ class GraphNode(HyperNode):
         )
         return hashlib.sha256(content.encode()).hexdigest()
 
+    def _structural_signature_parts(self) -> list[str]:
+        """Add the nested-graph boundary: nested hash, projection, map config."""
+        parts = super()._structural_signature_parts()
+        parts.append(f"nested_struct={self._graph.structural_hash}")
+        parts.append(f"namespaced={self._namespaced}")
+        parts.append("local_inputs=" + ",".join(self._local_inputs))
+        parts.append("local_outputs=" + ",".join(self._local_outputs))
+        parts.append("data_outputs=" + ",".join(self.data_outputs))
+        if self._exposed:
+            parts.append("exposed=" + ",".join(f"{local}->{address}" for local, address in sorted(self._exposed.items())))
+        if self._complete_on_stop:
+            parts.append("complete_on_stop=True")
+        map_config = self.map_config
+        if map_config is not None:
+            map_params, map_mode, error_handling = map_config
+            parts.append("map_over=" + ",".join(map_params))
+            parts.append(f"map_mode={map_mode}")
+            parts.append(f"map_error_handling={error_handling}")
+            if isinstance(self._clone, list):
+                parts.append("map_clone=" + ",".join(self._clone))
+            else:
+                parts.append(f"map_clone={self._clone}")
+        return parts
+
     @property
     def is_async(self) -> bool:
         """Does this nested graph contain any async nodes?
