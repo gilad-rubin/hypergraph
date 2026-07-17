@@ -14,7 +14,6 @@ import asyncio
 import contextlib
 import html
 import importlib.metadata
-import json
 import secrets
 import threading
 import time
@@ -41,6 +40,7 @@ from hypergraph.runners._shared._inspect_serialization import (
     serialize_value,
     serialized_value_to_wire,
 )
+from hypergraph.runners._shared._wire import sandboxed_child_document, script_safe_json
 
 INSPECTION_PROTOCOL_VERSION = 1
 _UPDATE_MESSAGE = "hypergraph.inspect.update"
@@ -121,27 +121,9 @@ def inspection_envelope_to_wire(envelope: InspectionEnvelope) -> dict[str, objec
     }
 
 
-def _script_safe_json(value: object) -> str:
-    """Encode inert inline JSON, including closing tags and JS separators."""
-    encoded = json.dumps(
-        value,
-        ensure_ascii=True,
-        allow_nan=False,
-        separators=(",", ":"),
-    )
-    return encoded.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-
-
 @lru_cache(maxsize=1)
 def _bridge_asset() -> str:
     return files("hypergraph.runners._shared.assets").joinpath("inspect_transport.js").read_text(encoding="utf-8")
-
-
-_CHILD_CSP = (
-    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-    "img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; "
-    "object-src 'none'; base-uri 'none'; form-action 'none'"
-)
 
 
 def _dom_id(widget_id: str, suffix: str) -> str:
@@ -174,32 +156,28 @@ def render_notebook_shell(
     wire = inspection_envelope_to_wire(shell_envelope)
     payload = cast(dict[str, object], wire["payload"])
     renderer = render_inspection_payload(payload)
-    child_config = _script_safe_json(
+    child_config = script_safe_json(
         {
             "widgetId": envelope.widget_id,
             "nonce": envelope.nonce,
         }
     )
     bridge = _bridge_asset()
-    child_document = (
-        '<!doctype html><html><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<meta http-equiv="Content-Security-Policy" '
-        f'content="{_CHILD_CSP}">'
+    child_document = sandboxed_child_document(
         "<style>html,body{margin:0;min-width:0;background:transparent}"
-        "body{overflow-x:hidden}</style></head><body>"
+        "body{overflow-x:hidden}</style>"
         f"{renderer}"
         f"<script>{bridge}</script>"
         "<script data-hg-inspect-child-bootstrap>"
         f"window.__hypergraphInspectTransport.installChild({child_config});"
-        "</script></body></html>"
+        "</script>"
     )
 
     frame_id = _dom_id(envelope.widget_id, "frame")
     host_id = _dom_id(envelope.widget_id, "host")
     status_id = _dom_id(envelope.widget_id, "host-status")
     display_id = _dom_id(envelope.widget_id, "payload")
-    parent_config = _script_safe_json(
+    parent_config = script_safe_json(
         {
             "widgetId": envelope.widget_id,
             "nonce": envelope.nonce,
@@ -764,15 +742,8 @@ def _portable_fallback_markup(
     message: dict[str, object],
 ) -> str:
     renderer = render_inspection_payload(payload)
-    child_document = (
-        '<!doctype html><html><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<meta http-equiv="Content-Security-Policy" '
-        f'content="{_CHILD_CSP}">'
-        "<style>html,body{margin:0;min-width:0;background:transparent}"
-        "body{overflow-x:hidden}</style></head><body>"
-        f"{renderer}"
-        "</body></html>"
+    child_document = sandboxed_child_document(
+        f"<style>html,body{{margin:0;min-width:0;background:transparent}}body{{overflow-x:hidden}}</style>{renderer}"
     )
     frame_name = _dom_id(
         envelope.widget_id,
@@ -809,9 +780,9 @@ def render_payload_channel(envelope: InspectionEnvelope) -> str:
     wire = inspection_envelope_to_wire(envelope)
     payload = cast(dict[str, object], wire["payload"])
     message = _wire_dict(wire.get("message"))
-    encoded = _script_safe_json(wire)
+    encoded = script_safe_json(wire)
     channel_dom_id = _dom_id(envelope.widget_id, f"payload-output-s{envelope.sequence}")
-    key = _script_safe_json(f"{envelope.widget_id}::{envelope.nonce}")
+    key = script_safe_json(f"{envelope.widget_id}::{envelope.nonce}")
     fallback_state = "waiting" if envelope.delivery.state == "live" else envelope.delivery.state
     portable = envelope.artifact.terminal or envelope.delivery.state == "stale"
     fallback = (
