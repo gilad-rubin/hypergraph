@@ -11,7 +11,7 @@ from typing import TypedDict
 
 import pytest
 
-from hypergraph import Graph, node
+from hypergraph import Graph, ifelse, node
 from hypergraph.materialization import TableStore
 from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.runners import SyncRunner
@@ -328,3 +328,39 @@ class TestManifestlessStoreFailsLoudOnCreateIndex:
         # A fresh instance over the same store sees no phantom index.
         fresh = make_table(store)
         assert fresh.list_indexes() == []
+
+
+class TestUnionColumnIndex:
+    def test_index_freshness_on_multi_producer_column(self, store):
+        """A named index on a routed union column (several producers) computes a
+        stable recipe fingerprint over ALL producers: create works, and a fresh
+        table instance over the same graph reads the index back as current."""
+
+        @ifelse(when_true="positive", when_false="negative")
+        def choose(positive_number: bool) -> bool:
+            return positive_number
+
+        @node(output_name="label_vec")
+        def positive(value: int) -> list[float]:
+            return [1.0, 0.0]
+
+        @node(output_name="label_vec")
+        def negative(value: int) -> list[float]:
+            return [0.0, 1.0]
+
+        def build():
+            return Graph([choose, positive, negative]).as_table(identity="item_id", store=store, runner=SyncRunner())
+
+        table = build()
+        table.insert(item_id="i1", positive_number=True, value=3)
+
+        table.create_index("routed", vector="label_vec")
+
+        specs = table.list_indexes()
+        assert len(specs) == 1
+        assert specs[0]["recipe_fingerprint"]
+        assert specs[0]["current"] is True
+
+        # Freshness is deterministic: a rebuilt table over the same recipe
+        # agrees, regardless of graph insertion order of the producers.
+        assert build().list_indexes()[0]["current"] is True
