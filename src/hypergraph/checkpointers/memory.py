@@ -281,6 +281,22 @@ class MemoryCheckpointer(Checkpointer):
         records[attempt_number] = updated
         return updated
 
+    async def record_attempt_deadline(
+        self,
+        series_id: str,
+        attempt_number: int,
+    ) -> AttemptRecord:
+        _require_series(self._attempt_series.get(series_id), series_id)
+        records = self._attempt_records[series_id]
+        record = _require_started(records.get(attempt_number), series_id, attempt_number)
+        updated = replace(
+            record,
+            deadline_elapsed=True,
+            cancellation_requested=True,
+        )
+        records[attempt_number] = updated
+        return updated
+
     async def close_attempt_series(
         self,
         series_id: str,

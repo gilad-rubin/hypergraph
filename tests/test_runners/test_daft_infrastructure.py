@@ -86,6 +86,7 @@ class TestRunnerCapabilitiesNewFields:
         assert cap.returns_coroutine is False
         assert cap.supports_interrupts is False
         assert cap.supports_checkpointing is False
+        assert cap.supports_cooperative_timeout is False
 
     def test_all_fields_overridable(self):
         cap = RunnerCapabilities(

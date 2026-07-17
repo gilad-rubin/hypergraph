@@ -800,19 +800,23 @@ def test_inspect_docs_pin_exception_labels_and_recovery_runner_truth() -> None:
 def test_retry_docs_pin_public_contract() -> None:
     import dataclasses
 
-    from hypergraph import RetryPolicy
+    from hypergraph import AttemptTimeoutError, RetryPolicy, RetryWindowExpiredError
     from hypergraph import node as node_decorator
 
     nodes_api = _read("docs/06-api-reference/nodes.md")
     how_to = _read("docs/05-how-to/retry-transient-failures.md")
+    errors_api = _read("docs/06-api-reference/errors.md")
     summary = _read("docs/SUMMARY.md")
 
     assert "05-how-to/retry-transient-failures.md" in summary
+    assert "06-api-reference/errors.md" in summary
 
-    # The decorator surface exposes retry= and the docs track it.
+    # The decorator surface exposes retry=/timeout= and the docs track both.
     assert "retry" in inspect.signature(node_decorator).parameters
+    assert "timeout" in inspect.signature(node_decorator).parameters
     node_section = _scoped_section(nodes_api, "## @node Decorator")
     assert "retry: RetryPolicy | None = None" in node_section
+    assert "timeout: float | None = None" in node_section
 
     # RetryPolicy fields match the documented signature block, in order.
     policy_fields = tuple(field.name for field in dataclasses.fields(RetryPolicy))
@@ -855,3 +859,12 @@ def test_retry_docs_pin_public_contract() -> None:
     exec(example, namespace)  # noqa: S102
     assert namespace["result"]["done"] == 41
     assert len(namespace["attempts"]) == 2
+
+    timeout_section = _scoped_section(how_to, "## Bound one async attempt with `timeout`")
+    for fact in ("Deadline elapsed", "Cancellation requested", "Work stopped", "Cleanup completed"):
+        assert fact in timeout_section
+    assert "there is deliberately no `work_stopped` field" in _read("docs/06-api-reference/checkpointers.md")
+    assert "AttemptTimeoutError" in errors_api
+    assert "RetryWindowExpiredError" in errors_api
+    assert issubclass(AttemptTimeoutError, TimeoutError)
+    assert issubclass(RetryWindowExpiredError, TimeoutError)

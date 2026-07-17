@@ -65,6 +65,8 @@ class RunnerCapabilities:
         supports_events: Supports event processors (default: True)
         supports_distributed: Can distribute across workers (default: False)
         returns_coroutine: run() returns a coroutine (default: False)
+        supports_cooperative_timeout: Can request cancellation of async
+            callables and await settlement (default: False)
     """
 
     supports_cycles: bool = True
@@ -76,6 +78,7 @@ class RunnerCapabilities:
     returns_coroutine: bool = False
     supports_interrupts: bool = False
     supports_checkpointing: bool = False
+    supports_cooperative_timeout: bool = False
 
 
 @dataclass(frozen=True, slots=True)

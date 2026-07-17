@@ -29,6 +29,7 @@ from hypergraph.events import (
 )
 from hypergraph.events.rich_progress import RichProgressProcessor
 from hypergraph.exceptions import (
+    AttemptTimeoutError,
     CompactedRetentionError,
     ExecutionError,
     GraphChangedError,
@@ -36,6 +37,7 @@ from hypergraph.exceptions import (
     InfiniteLoopError,
     InputOverrideRequiresForkError,
     MissingInputError,
+    RetryWindowExpiredError,
     WorkflowAlreadyCompletedError,
     WorkflowAlreadyRunningError,
     WorkflowForkError,
@@ -120,6 +122,8 @@ __all__ = [
     # Errors
     "RenameError",
     "GraphConfigError",
+    "AttemptTimeoutError",
+    "RetryWindowExpiredError",
     "CompactedRetentionError",
     "MissingInputError",
     "InfiniteLoopError",

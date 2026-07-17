@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 import warnings
 from collections.abc import Callable
 from typing import Any, get_type_hints
@@ -103,6 +104,7 @@ class FunctionNode(CallableMixin, HyperNode):
     _wait_for: tuple[str, ...]
     _emit: tuple[str, ...]
     _retry: RetryPolicy | None
+    _timeout: float | None
 
     def __init__(
         self,
@@ -116,6 +118,7 @@ class FunctionNode(CallableMixin, HyperNode):
         emit: str | tuple[str, ...] | None = None,
         wait_for: str | tuple[str, ...] | None = None,
         retry: RetryPolicy | None = None,
+        timeout: float | None = None,
     ) -> None:
         """Wrap a function as a node.
 
@@ -134,6 +137,8 @@ class FunctionNode(CallableMixin, HyperNode):
             retry: Optional :class:`RetryPolicy`. Only a node declaration can
                    make its callable repeat; runners execute the attempt loop.
                    Direct calls stay raw single-shot invocations.
+            timeout: Optional positive number of seconds for cooperative
+                     cancellation of an async callable under AsyncRunner.
         Warning:
             If the function has a return type annotation but no output_name
             is provided, a warning is emitted. This helps catch cases where
@@ -156,10 +161,21 @@ class FunctionNode(CallableMixin, HyperNode):
                 "  are safe to repeat: retry=RetryPolicy(max_attempts=3, retry_on=(TimeoutError,))."
             )
 
+        if isinstance(timeout, bool):
+            raise TypeError(f"timeout must be a positive finite number of seconds (or None), got {timeout!r}.")
+        if timeout is not None:
+            try:
+                timeout = float(timeout)
+            except (TypeError, ValueError):
+                raise TypeError(f"timeout must be a positive finite number of seconds (or None), got {timeout!r}.") from None
+            if not math.isfinite(timeout) or timeout <= 0:
+                raise ValueError(f"timeout must be a positive finite number of seconds, got {timeout!r}.")
+
         self.func = func
         self._cache = cache
         self._hide = hide
         self._retry = retry
+        self._timeout = timeout
         self._definition_hash = hash_definition(func)
         self._emit = ensure_tuple(emit) if emit else ()
         self._wait_for = ensure_tuple(wait_for) if wait_for else ()
@@ -203,6 +219,11 @@ class FunctionNode(CallableMixin, HyperNode):
     def retry(self) -> RetryPolicy | None:
         """The node-owned retry declaration, or None (no retry)."""
         return self._retry
+
+    @property
+    def timeout(self) -> float | None:
+        """Cooperative per-attempt timeout in seconds, or None."""
+        return self._timeout
 
     @property
     def hide(self) -> bool:
@@ -318,6 +339,7 @@ def node(
     emit: str | tuple[str, ...] | None = None,
     wait_for: str | tuple[str, ...] | None = None,
     retry: RetryPolicy | None = None,
+    timeout: float | None = None,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]:
     """Decorator to wrap a function as a FunctionNode.
 
@@ -344,6 +366,9 @@ def node(
                repeat and with what budget/backoff. Node-owned only: there is
                no runner, graph, or per-call retry default, and no retry=True
                shorthand. Direct calls stay raw single-shot invocations.
+        timeout: Optional positive number of seconds for cooperative
+                 cancellation of async callables under AsyncRunner. Direct
+                 calls stay raw and do not apply the timeout.
     Returns:
         FunctionNode if source provided, else decorator function.
 
@@ -368,6 +393,7 @@ def node(
             emit=emit,
             wait_for=wait_for,
             retry=retry,
+            timeout=timeout,
         )
         fn_node.__wrapped__ = func
         return fn_node

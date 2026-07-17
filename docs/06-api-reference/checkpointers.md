@@ -199,7 +199,7 @@ CheckpointPolicy()
 | `window` | `int \| None` | Required when `retention="windowed"`. |
 | `ttl` | `timedelta \| None` | Auto-expire completed runs after this duration. |
 
-**Retry evidence writes through under every durability mode.** For a node with a [RetryPolicy](nodes.md#retrypolicy), attempt reservations/outcomes and the series-closing StepRecord are persisted immediately even under `durability="async"` or `"exit"`: the final attempt outcome, its linked StepRecord, and the series closure must commit atomically, and that invariant takes precedence over buffering. Non-retrying nodes buffer normally.
+**Retry/timeout evidence writes through under every durability mode.** For a node with a [RetryPolicy](nodes.md#retrypolicy) or `timeout=`, attempt reservations/outcomes and the series-closing StepRecord are persisted immediately even under `durability="async"` or `"exit"`: the final attempt outcome, its linked StepRecord, and the series closure must commit atomically, and that invariant takes precedence over buffering. Nodes without retry or timeout buffer normally.
 
 **Async durability is best-effort.** With `durability="async"` (the default), step writes happen in background tasks: a failed write does not fail the run — the run still returns `COMPLETED`, and the failure is reported on the result instead. Check `result.checkpoint_ok` (and `result.checkpoint_errors`, a tuple of error strings) to detect gaps in the persisted history:
 
@@ -326,10 +326,10 @@ run.status == WorkflowStatus.COMPLETED  # True
 ## Attempt Ledger (Internal)
 
 {% hint style="warning" %}
-Internal attempt-ledger persistence. These records back the retry/timeout contract; the runtime that writes them (retry loops, `@node` retry parameters) ships separately. The shapes below are stable for inspection but the write seam is not a public API.
+Internal attempt-ledger persistence. These records back retry and cooperative `@node(timeout=...)`. The shapes below are stable for inspection but the write seam is not a public API.
 {% endhint %}
 
-A retrying node stays **one logical graph step**; each callable invocation is a separately durable attempt. The evidence lives next to the steps:
+An attempt-managed node stays **one logical graph step**; each callable invocation is a separately durable attempt. The evidence lives next to the steps:
 
 ```text
 step 4 = call_model                       # one StepRecord, one state application
@@ -339,7 +339,7 @@ attempts = #1 failed, #2 timed out, #3 succeeded   # the attempt ledger
 | Type | Fields | Notes |
 |---|---|---|
 | `AttemptSeries` | `id`, `run_id`, `node_name`, `policy_fingerprint`, `max_attempts`, `opened_at`, `deadline_at`, `committed_superstep`, `closed_at` | One durable retry budget per logical node execution. The id stays stable across superstep drift; open (`closed_at is None`) series are never pruned. |
-| `AttemptRecord` | `series_id`, `attempt_number`, `scheduled_superstep`, `status`, `started_at`, `completed_at`, `error`, `retry_not_before`, `sampled_delay` | One-based `attempt_number`. Backoff is sampled once and persisted as data. |
+| `AttemptRecord` | `series_id`, `attempt_number`, `scheduled_superstep`, `status`, `started_at`, `completed_at`, `error`, `retry_not_before`, `sampled_delay`, `deadline_elapsed`, `cancellation_requested` | One-based `attempt_number`. Backoff is sampled once and persisted as data. Deadline and cancellation are independent facts; there is deliberately no `work_stopped` field. |
 | `AttemptStatus` | `STARTED`, `FAILED`, `TIMED_OUT`, `SUCCEEDED`, `CANCELLED`, `OUTCOME_UNKNOWN` | Enum. `STARTED` is a durable reservation that consumes budget; crash-stranded reservations settle as `OUTCOME_UNKNOWN` on resume. |
 | `AttemptError` | `type_name`, `message` | Bounded error projection (type name + capped message text). No args, no stack traces, no `repr` of user values — but the capped message is stored verbatim; message-content redaction is #233's diagnostics scope. |
 

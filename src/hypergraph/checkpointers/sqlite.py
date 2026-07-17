@@ -93,10 +93,11 @@ _STEP_UPSERT_SQL = """
 # === Attempt-ledger SQL (shared by async and sync paths) ===
 _ATTEMPT_SERIES_COLS = "id, run_id, node_name, policy_fingerprint, max_attempts, opened_at, deadline_at, committed_superstep, closed_at"
 _ATTEMPT_RECORD_COLS = (
-    "series_id, attempt_number, scheduled_superstep, status, started_at, completed_at, error_type, error_message, retry_not_before, sampled_delay"
+    "series_id, attempt_number, scheduled_superstep, status, started_at, completed_at, error_type, error_message, "
+    "retry_not_before, sampled_delay, deadline_elapsed, cancellation_requested"
 )
 _ATTEMPT_SERIES_INSERT_SQL = f"INSERT INTO attempt_series ({_ATTEMPT_SERIES_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-_ATTEMPT_RECORD_INSERT_SQL = f"INSERT INTO attempt_records ({_ATTEMPT_RECORD_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+_ATTEMPT_RECORD_INSERT_SQL = f"INSERT INTO attempt_records ({_ATTEMPT_RECORD_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 _ATTEMPT_SERIES_BY_ID_SQL = f"SELECT {_ATTEMPT_SERIES_COLS} FROM attempt_series WHERE id = ?"
 _ATTEMPT_SERIES_OPEN_SQL = f"SELECT {_ATTEMPT_SERIES_COLS} FROM attempt_series WHERE run_id = ? AND node_name = ? AND closed_at IS NULL"
 _ATTEMPT_RECORDS_SQL = f"SELECT {_ATTEMPT_RECORD_COLS} FROM attempt_records WHERE series_id = ? ORDER BY attempt_number"
@@ -109,6 +110,9 @@ _ATTEMPT_SETTLE_STRANDED_SQL = "UPDATE attempt_records SET status = ?, completed
 _ATTEMPT_OUTCOME_SQL = (
     "UPDATE attempt_records SET status = ?, completed_at = ?, error_type = ?, error_message = ?, "
     "retry_not_before = ?, sampled_delay = ? WHERE series_id = ? AND attempt_number = ? AND status = 'started'"
+)
+_ATTEMPT_DEADLINE_SQL = (
+    "UPDATE attempt_records SET deadline_elapsed = 1, cancellation_requested = 1 WHERE series_id = ? AND attempt_number = ? AND status = 'started'"
 )
 _ATTEMPT_FINAL_SQL = (
     "UPDATE attempt_records SET status = ?, completed_at = ?, error_type = ?, error_message = ? "
@@ -184,6 +188,8 @@ def _row_to_attempt_record(row: tuple[Any, ...]) -> AttemptRecord:
         error=error,
         retry_not_before=_parse_dt(row[8]),
         sampled_delay=row[9],
+        deadline_elapsed=bool(row[10]),
+        cancellation_requested=bool(row[11]),
     )
 
 
@@ -203,6 +209,8 @@ def _attempt_record_insert_params(record: AttemptRecord) -> tuple[Any, ...]:
         record.error.message if record.error else None,
         _iso_or_none(record.retry_not_before),
         record.sampled_delay,
+        int(record.deadline_elapsed),
+        int(record.cancellation_requested),
     )
 
 
@@ -1010,6 +1018,39 @@ class SqliteCheckpointer(Checkpointer):
                     error=error,
                     retry_not_before=retry_not_before,
                     sampled_delay=sampled_delay,
+                )
+            except BaseException:
+                await self._rollback_async()
+                raise
+
+    async def record_attempt_deadline(
+        self,
+        series_id: str,
+        attempt_number: int,
+    ) -> AttemptRecord:
+        await self._ensure_db()
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                _require_series(await self._fetch_attempt_series(series_id), series_id)
+                record = _require_started(
+                    await self._fetch_attempt_record(series_id, attempt_number),
+                    series_id,
+                    attempt_number,
+                )
+                cursor = await self._db.execute(
+                    _ATTEMPT_DEADLINE_SQL,
+                    (series_id, attempt_number),
+                )
+                self._check_settled_exactly_one(
+                    cursor.rowcount,
+                    f"Attempt #{attempt_number} in series {series_id!r}",
+                )
+                await self._db.commit()
+                return replace(
+                    record,
+                    deadline_elapsed=True,
+                    cancellation_requested=True,
                 )
             except BaseException:
                 await self._rollback_async()

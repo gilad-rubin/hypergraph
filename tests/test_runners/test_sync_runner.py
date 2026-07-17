@@ -84,6 +84,10 @@ class TestSyncRunnerCapabilities:
         runner = SyncRunner()
         assert runner.capabilities.returns_coroutine is False
 
+    def test_supports_cooperative_timeout_false(self):
+        runner = SyncRunner()
+        assert runner.capabilities.supports_cooperative_timeout is False
+
 
 class TestSyncRunnerRun:
     """Tests for SyncRunner.run()."""

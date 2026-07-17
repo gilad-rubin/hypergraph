@@ -363,6 +363,7 @@ caps.supports_async_nodes  # False
 caps.supports_streaming    # True (map_iter + ctx.stream chunks)
 caps.returns_coroutine     # False
 caps.supports_interrupts   # False
+caps.supports_cooperative_timeout  # False
 ```
 
 ---
@@ -631,6 +632,7 @@ caps.supports_interrupts      # False
 caps.supports_events          # False
 caps.supports_distributed     # True
 caps.supports_checkpointing   # False
+caps.supports_cooperative_timeout  # False
 ```
 
 `DaftRunner` does not implement `start_run()` or `start_map()`. It translates
@@ -1019,6 +1021,7 @@ caps.supports_async_nodes  # True
 caps.supports_streaming    # True (map_iter + ctx.stream chunks)
 caps.returns_coroutine     # True
 caps.supports_interrupts   # True
+caps.supports_cooperative_timeout  # True
 ```
 
 ---

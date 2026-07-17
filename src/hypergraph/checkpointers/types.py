@@ -128,6 +128,10 @@ class AttemptRecord:
     ``attempt_number`` is one-based. ``retry_not_before`` and
     ``sampled_delay`` persist a once-sampled backoff decision as data so a
     restart neither redraws jitter nor restarts the full delay.
+
+    ``deadline_elapsed`` and ``cancellation_requested`` are independent,
+    witnessed facts. The settled ``status`` supplies the third fact; no field
+    claims that arbitrary user work or external side effects stopped.
     """
 
     series_id: str
@@ -139,6 +143,8 @@ class AttemptRecord:
     error: AttemptError | None = None
     retry_not_before: datetime | None = None
     sampled_delay: float | None = None
+    deadline_elapsed: bool = False
+    cancellation_requested: bool = False
 
     def __repr__(self) -> str:
         parts = [f"Attempt #{self.attempt_number}", self.status.value, f"superstep {self.scheduled_superstep}"]

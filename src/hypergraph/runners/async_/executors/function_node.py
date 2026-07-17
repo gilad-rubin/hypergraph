@@ -56,11 +56,11 @@ class AsyncFunctionNodeExecutor:
         Returns:
             Dict mapping output names to their values
         """
-        if node.retry is not None:
+        if node.retry is not None or node.timeout is not None:
             # Per-attempt permits (#218): the concurrency budget covers
-            # in-flight callable invocations only, so backoff sleeps must not
-            # hold a permit. The attempt coordinator acquires the limiter
-            # around each attempt via _attempt_concurrency_scope.
+            # in-flight callable invocation through timeout settlement, while
+            # backoff sleeps hold no permit. The attempt coordinator acquires
+            # the limiter around each attempt via _attempt_concurrency_scope.
             return await self._execute(node, inputs, ctx)
 
         semaphore = get_concurrency_limiter()
@@ -120,18 +120,20 @@ class AsyncFunctionNodeExecutor:
                     return list(result)
                 return result
 
-            if node.retry is None:
+            if node.retry is None and node.timeout is None:
                 result = await invoke()
             else:
                 # The attempt coordinator sits here: below the superstep's
-                # cache lookup, above state application. The ledger keys off
-                # the workflow_id (StepRecords use it as run_id).
+                # cache lookup, above state application. Timeout wraps only
+                # the callable invocation inside an attempt. The ledger keys
+                # off workflow_id (StepRecords use it as run_id).
                 from hypergraph.runners._shared.attempts import run_attempts_async
 
                 result = await run_attempts_async(
                     invoke,
                     node_name=node.name,
                     policy=node.retry,
+                    timeout=node.timeout,
                     checkpointer=ctx.checkpointer,
                     run_id=ctx.workflow_id,
                     scheduled_superstep=ctx.superstep_offset + ctx.superstep,

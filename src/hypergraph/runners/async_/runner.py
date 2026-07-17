@@ -355,6 +355,7 @@ class AsyncRunner(AsyncRunnerTemplate):
             returns_coroutine=True,
             supports_interrupts=True,
             supports_checkpointing=self._checkpointer_instance is not None,
+            supports_cooperative_timeout=True,
         )
 
     @property

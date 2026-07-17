@@ -81,6 +81,10 @@ class TestAsyncRunnerCapabilities:
         runner = AsyncRunner()
         assert runner.capabilities.returns_coroutine is True
 
+    def test_supports_cooperative_timeout_true(self):
+        runner = AsyncRunner()
+        assert runner.capabilities.supports_cooperative_timeout is True
+
 
 class TestAsyncRunnerRun:
     """Tests for AsyncRunner.run()."""

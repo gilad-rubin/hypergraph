@@ -45,6 +45,8 @@ ROOT_EXPORTS = (
     "RunStatus",
     "RenameError",
     "GraphConfigError",
+    "AttemptTimeoutError",
+    "RetryWindowExpiredError",
     "CompactedRetentionError",
     "MissingInputError",
     "InfiniteLoopError",

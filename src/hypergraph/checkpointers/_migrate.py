@@ -131,6 +131,8 @@ CREATE TABLE IF NOT EXISTS attempt_records (
     error_message TEXT,
     retry_not_before TEXT,
     sampled_delay REAL,
+    deadline_elapsed INTEGER NOT NULL DEFAULT 0,
+    cancellation_requested INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (series_id, attempt_number)
 )
 """
@@ -192,6 +194,12 @@ def _ensure_v4_objects(conn: Any) -> None:
     existing_steps = {row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()}
     if "attempt_series_id" not in existing_steps:
         conn.execute("ALTER TABLE steps ADD COLUMN attempt_series_id TEXT REFERENCES attempt_series(id)")
+
+    existing_attempt_records = {row[1] for row in conn.execute("PRAGMA table_info(attempt_records)").fetchall()}
+    if "deadline_elapsed" not in existing_attempt_records:
+        conn.execute("ALTER TABLE attempt_records ADD COLUMN deadline_elapsed INTEGER NOT NULL DEFAULT 0")
+    if "cancellation_requested" not in existing_attempt_records:
+        conn.execute("ALTER TABLE attempt_records ADD COLUMN cancellation_requested INTEGER NOT NULL DEFAULT 0")
 
     _create_attempt_indexes(conn)
     conn.commit()
