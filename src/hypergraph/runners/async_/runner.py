@@ -106,7 +106,9 @@ class AsyncRunner(AsyncRunnerTemplate):
                 Enables save/resume, crash recovery, and cross-process queries.
                 Pass a workflow_id to run() to activate persistence.
             show_progress: If True, automatically add a RichProgressProcessor
-                to every run() and map() call. Can be overridden per-call.
+                to every run() and map() call — unless one is already carried
+                by the graph or passed via event_processors. Can be
+                overridden per-call.
         """
         self._cache = cache
         self._checkpointer_instance = checkpointer
