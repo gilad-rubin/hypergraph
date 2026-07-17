@@ -44,8 +44,40 @@ _Avoid_: Shared input, shared output
 A node where execution is configured to start, excluding upstream nodes from the active graph.
 _Avoid_: Start node, root node
 
+## Retry execution
+
+**Node attempt**:
+One actual invocation of a FunctionNode callable within one logical node execution. A cache hit is not a Node attempt.
+_Avoid_: Retry step, graph step
+
+**Attempt series**:
+The Node attempts that belong to one logical node execution and share one Retry budget.
+_Avoid_: Retry run, workflow retry
+
+**Retry budget**:
+The total number of Node attempts permitted for one Attempt series, including the initial invocation.
+_Avoid_: Retry count, retries
+
+**Retry window**:
+An optional elapsed-time boundary for one Attempt series. It includes Node attempts, backoff, cancellation settlement, and process downtime. It stops new attempts but is not proof that active work stopped or a hard cap on return time.
+_Avoid_: Total timeout, hard timeout
+
+**Attempt timeout**:
+An optional elapsed-time boundary for one Node attempt executing cooperative asynchronous work. When it elapses, cancellation is requested and Hypergraph waits for settlement; it is not proof that the work stopped at the deadline.
+_Avoid_: Hard timeout, sync timeout
+
+**Unknown attempt outcome**:
+The durable state of a committed Node attempt that started but whose settlement was not witnessed before process loss. Its external side effects may have completed.
+_Avoid_: Failed attempt, crashed attempt
+
 ## Relationships
 
+- A **Node attempt** belongs to an **Attempt series**; another retry creates another Node attempt, not another graph step.
+- A **Retry budget** limits the total Node attempts in one Attempt series and counts the initial invocation.
+- A **Retry window** and Retry budget independently limit one Attempt series; whichever prevents the next attempt first ends retry scheduling.
+- An **Attempt timeout** applies separately to each Node attempt; a Retry window applies to the whole Attempt series.
+- An **Unknown attempt outcome** consumes Retry budget because the committed invocation may have run, but it does not claim success or failure.
+- A cache hit creates no **Node attempt**, consumes none of the Retry budget, and opens no Retry window.
 - A **Port** is either a **Flat port** or a **Namespaced port** from the parent graph's point of view.
 - Renaming changes a **Local port name** and is agnostic to boundary addressing.
 - A **Port address** may contain `.` only as a namespace separator inserted by Hypergraph, not inside a user-authored port name.
