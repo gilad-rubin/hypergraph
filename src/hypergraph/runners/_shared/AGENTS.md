@@ -32,7 +32,7 @@ After collecting ready nodes, two filters apply:
 | Never executed | Never executed | False | Any | **Blocked** |
 | Executed, live decision=this node | Any | Any | Any | **Activated** |
 | Executed, orphaned decision (gate cut off upstream) | Any | Any | Any | **Blocked** (non-END decision dropped) |
-| Executed, pending decision but a controller upstream is re-firing | Any | Any | Any | **Blocked** this superstep (suspended, decision kept) |
+| Executed, pending decision but a controller upstream is re-firing | Any | Any | Any | **Blocked** this superstep; if suspension alone empties the frontier, retry unsuspended (decision kept) |
 | Executed, decision=other | Any | Any | Any | **Blocked** |
 | Executed, decision cleared (stale) | Any | Any | Any | **Blocked** |
 

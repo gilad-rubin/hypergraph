@@ -31,6 +31,11 @@ def get_ready_nodes(
 ) -> list[HyperNode]:
     """Find nodes whose inputs are all satisfied and not stale.
 
+    Suspension is a same-superstep ordering rule, never a reachability rule.
+    If suspension alone empties the ready frontier, activation is recomputed
+    once without it. The controller was not in the empty frontier and cannot
+    fire, so gate-first ordering is vacuous and master reachability applies.
+
     A node is ready when:
     1. All its inputs have values in state (or have defaults/bounds)
     2. The node hasn't been executed yet, OR
@@ -53,49 +58,57 @@ def get_ready_nodes(
     Returns:
         List of nodes ready to execute
     """
-    # First, identify which nodes are activated by gates
-    activated_nodes = _get_activated_nodes(graph, state)
     if startup_predecessors is None:
         startup_predecessors = compute_startup_predecessors(graph, active_nodes=active_nodes)
 
     candidate_set = set(candidate_nodes) if candidate_nodes is not None else None
     ordered_names = tuple(execution_order) if execution_order is not None else tuple(graph._nodes)
 
-    ready = []
-    for node_name in ordered_names:
-        node = graph._nodes[node_name]
-        if active_nodes is not None and node.name not in active_nodes:
-            continue
-        if candidate_set is not None and node.name not in candidate_set:
-            continue
-        if _is_node_ready(node, graph, state, activated_nodes, startup_predecessors=startup_predecessors):
-            ready.append(node)
-
-    # If a gate is ready, its routing decision should apply before targets run.
-    # Block targets of ready gates for this superstep so decisions take effect
-    # on the next iteration.
     from hypergraph.nodes.gate import END, GateNode
 
-    ready_gate_names = {n.name for n in ready if isinstance(n, GateNode)}
-    if ready_gate_names:
-        blocked_targets: set[str] = set()
-        for gate_name in ready_gate_names:
-            gate = graph._nodes.get(gate_name)
-            if gate is None:
+    activated_nodes = _get_activated_nodes(graph, state)
+    suspension_lifted = False
+    while True:
+        ready = []
+        for node_name in ordered_names:
+            node = graph._nodes[node_name]
+            if active_nodes is not None and node.name not in active_nodes:
                 continue
-            for target in gate.targets:
-                if target is END:
-                    continue
-                if target == gate_name:
-                    continue
-                blocked_targets.add(target)
-        if blocked_targets:
-            ready = [n for n in ready if n.name not in blocked_targets]
+            if candidate_set is not None and node.name not in candidate_set:
+                continue
+            if _is_node_ready(node, graph, state, activated_nodes, startup_predecessors=startup_predecessors):
+                ready.append(node)
 
-    # Defer wait_for consumers whose producers are also ready this superstep
-    ready = _defer_wait_for_nodes(ready, graph, state)
+        # If a gate is ready, its routing decision should apply before targets
+        # run. Block targets of ready gates for this superstep so decisions
+        # take effect on the next iteration.
+        ready_gate_names = {n.name for n in ready if isinstance(n, GateNode)}
+        if ready_gate_names:
+            blocked_targets: set[str] = set()
+            for gate_name in ready_gate_names:
+                gate = graph._nodes.get(gate_name)
+                if gate is None:
+                    continue
+                for target in gate.targets:
+                    if target is END:
+                        continue
+                    if target == gate_name:
+                        continue
+                    blocked_targets.add(target)
+            if blocked_targets:
+                ready = [n for n in ready if n.name not in blocked_targets]
 
-    return ready
+        # Defer wait_for consumers whose producers are also ready this
+        # superstep.
+        ready = _defer_wait_for_nodes(ready, graph, state)
+        if ready or suspension_lifted:
+            return ready
+
+        unsuspended_nodes = _get_activated_nodes(graph, state, suspend_pending_decisions=False)
+        if not unsuspended_nodes - activated_nodes:
+            return ready
+        activated_nodes = unsuspended_nodes
+        suspension_lifted = True
 
 
 def get_ready_nodes_in_component(
@@ -210,7 +223,12 @@ def gate_permits_startup(
     return gate_activated
 
 
-def _get_activated_nodes(graph: Graph, state: GraphState) -> set[str]:
+def _get_activated_nodes(
+    graph: Graph,
+    state: GraphState,
+    *,
+    suspend_pending_decisions: bool = True,
+) -> set[str]:
     """Get all nodes activated by gate routing or first-pass startup.
 
     Computed as a shrinking fixpoint so blocking propagates through chained
@@ -236,7 +254,7 @@ def _get_activated_nodes(graph: Graph, state: GraphState) -> set[str]:
     controls = _build_controls_map(graph)
     cut_gates = _compute_cut_gates(graph, state, controls)
     _drop_orphaned_decisions(state, cut_gates)
-    suspended_gates = _compute_suspended_gates(graph, state, controls)
+    suspended_gates = _compute_suspended_gates(graph, state, controls) if suspend_pending_decisions else set()
 
     activated = set(graph._nodes)
     gated_names = [name for name in graph._nodes if graph.controlled_by.get(name)]
