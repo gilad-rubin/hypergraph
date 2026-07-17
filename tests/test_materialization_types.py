@@ -17,7 +17,7 @@ from hypergraph.materialization import (
     TableReceipt,
     WriteOutcome,
 )
-from hypergraph.materialization._fingerprint import compute_definition_hash
+from hypergraph.materialization._fingerprint import compute_definition_hash, compute_payload_hash
 
 # ---------------------------------------------------------------------------
 # Definition hash
@@ -135,6 +135,17 @@ class TestDefinitionHash:
         bare_source_hash = hashlib.sha256(inspect.getsource(bound).encode()).hexdigest()
 
         assert compute_definition_hash(bound) != bare_source_hash
+
+
+class TestPayloadHash:
+    def test_payload_hash_is_content_hash(self):
+        """A recipe payload string (config repr, bound-value text) keys the journal
+        by its content, not by any function-identity scheme."""
+        payload = "str:'sentence'"
+
+        assert compute_payload_hash(payload) == hashlib.sha256(payload.encode()).hexdigest()
+        assert compute_payload_hash(payload) == compute_payload_hash(payload)
+        assert compute_payload_hash(payload) != compute_payload_hash("str:'paragraph'")
 
 
 # ---------------------------------------------------------------------------

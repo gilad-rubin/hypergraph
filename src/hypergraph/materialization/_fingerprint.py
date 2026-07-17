@@ -11,28 +11,38 @@ re-derives on the next insert/sync; otherwise it is skipped.
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 from typing import Any
 
+from hypergraph._utils import hash_definition
+
 
 def compute_definition_hash(fn: Any) -> str:
-    """Hash the definition of a derive node: function source, or a node's own hash.
+    """Hash the definition of a derive node: a node's own hash, or ``hash_definition``.
 
     A column producer may be a subgraph (a GraphNode — e.g. a validation cycle
     wrapped as one node): it has no single source function, but its
     ``definition_hash`` already covers the inner graph's node code plus the
-    boundary projection, so that is the code-sensitive basis here. Plain
-    functions hash their source (falls back to repr).
+    boundary projection, so that is the code-sensitive basis here. Everything
+    else delegates to :func:`hypergraph._utils.hash_definition`, the repo's one
+    definition-identity function: a bound method of a configured instance mixes
+    the instance's state into the hash (two differently-configured components
+    are different recipes), and a dynamically-created function with no
+    retrievable source hashes its bytecode instead of a per-process repr.
     """
     node_hash = getattr(fn, "definition_hash", None)
     if isinstance(node_hash, str) and node_hash:
         return node_hash
-    try:
-        source = inspect.getsource(fn)
-    except (OSError, TypeError):
-        source = repr(fn)
-    return hashlib.sha256(source.encode()).hexdigest()
+    return hash_definition(fn)
+
+
+def compute_payload_hash(payload: str) -> str:
+    """Content hash of a recipe payload string (a config repr or bound-value text).
+
+    Journal keys for non-callable recipe text: a payload is data, not a
+    function definition, so it hashes by content.
+    """
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _node_definition_hashes(graph: Any) -> list[str]:

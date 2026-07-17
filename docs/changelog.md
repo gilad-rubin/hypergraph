@@ -50,6 +50,25 @@
 
 ### Fixed
 
+- **HyperTable definition fingerprints harden to `hash_definition`** — before,
+  a derive node that was a bound method of a configured object
+  (`summarizer.summarize` with `model="gpt-4"` vs `model="o3"`) produced the
+  SAME recipe fingerprint, so changing the configuration silently skipped the
+  re-derive; and a dynamically-created function (exec/eval, no retrievable
+  source) hashed its `repr` — a per-process memory address — so its rows
+  re-derived on every run. Now `compute_definition_hash` delegates to the
+  repo's single definition-identity function `hash_definition`: bound methods
+  mix in the instance's state, dynamic functions hash their bytecode, and
+  builtins hash their qualified name. One-time migration consequence: rows
+  whose recipes involve bound methods, dynamically-created functions,
+  builtins, partials, or callable objects carry a changed fingerprint and
+  re-derive once on the next `insert`/`update`/`sync`; component-config and
+  bound-value journal entries re-journal under content hashes. Rows derived
+  from ordinary module-level functions keep their exact previous fingerprint
+  (both schemes hash the function's source text) and are not re-derived.
+  Callable objects whose state cannot be fingerprinted now fail loudly with
+  guidance to define `cache_key()` instead of drifting forever.
+
 - **Truthful notebook scheduler availability** — before, an
   `add_callback`-only kernel could look cross-thread capable while lacking the
   delayed owner-thread call needed for the 250 ms live-inspection update. Now

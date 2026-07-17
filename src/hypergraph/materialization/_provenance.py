@@ -20,6 +20,7 @@ from hypergraph.materialization._fingerprint import (
     compute_child_fingerprint,
     compute_column_provenance,
     compute_definition_hash,
+    compute_payload_hash,
     compute_recipe_fingerprint,
     compute_row_fingerprint,
     compute_table_recipe_fingerprint,
@@ -284,7 +285,7 @@ class Provenance:
                 continue
             payload, kind = self.component_payload(component)
             if payload is not None:
-                entries.append(RecipeEntry(compute_definition_hash(payload), kind, payload))
+                entries.append(RecipeEntry(compute_payload_hash(payload), kind, payload))
         return tuple(entries)
 
     @staticmethod
