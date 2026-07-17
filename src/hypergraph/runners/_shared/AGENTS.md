@@ -31,7 +31,8 @@ After collecting ready nodes, two filters apply:
 | Never executed | Never executed | True | Yes, node NOT entrypoint | **Blocked** (wait for gate) |
 | Never executed | Never executed | False | Any | **Blocked** |
 | Executed, live decision=this node | Any | Any | Any | **Activated** |
-| Executed, orphaned decision (gate cut off upstream) | Any | Any | Any | **Blocked** (decision dropped) |
+| Executed, orphaned decision (gate cut off upstream) | Any | Any | Any | **Blocked** (non-END decision dropped) |
+| Executed, pending decision but a controller upstream is re-firing | Any | Any | Any | **Blocked** this superstep (suspended, decision kept) |
 | Executed, decision=other | Any | Any | Any | **Blocked** |
 | Executed, decision cleared (stale) | Any | Any | Any | **Blocked** |
 
@@ -59,6 +60,21 @@ it may re-fire and route to them again. Deletion (not suppression) prevents an
 orphaned decision from resurrecting after the upstream exclusion is consumed.
 END decisions are never deleted: they activate nothing and stay as terminal
 markers.
+
+**Gate-first re-evaluation** (issue #220, review round 2): when a controlling
+gate is scheduled to re-execute — the same `_needs_execution` signal that
+clears the gate's own stale decision — gates below it in the control chain
+are transiently *suspended* (`_compute_suspended_gates`): their pending
+decisions do not activate targets this superstep. The re-firing gate delivers
+its verdict first; consequences propagate on the next evaluation (a
+re-selection re-runs the mid-gate and refreshes its decision; an exclusion
+orphans it). Suspension is recomputed from state every evaluation — nothing
+is persisted, decisions are kept, and it lifts the moment the controller has
+re-fired. It distinguishes "controller decision None because harmlessly
+consumed" (downstream decisions stay live) from "controller decision None and
+controller is stale" (verdict pending). Independent nodes outside the
+re-firing gate's chain — including ungated nodes co-batched in the same
+superstep — are unaffected.
 
 ## Staleness (`_is_stale`)
 

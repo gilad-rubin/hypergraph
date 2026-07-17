@@ -230,11 +230,13 @@ def _get_activated_nodes(graph: Graph, state: GraphState) -> set[str]:
     from collections import deque
 
     # Stale decisions must be cleared before any activation is evaluated,
-    # then orphaned decisions of cut-off gates dropped (issue #220).
+    # then orphaned decisions of cut-off gates dropped, then gates downstream
+    # of a re-firing controller transiently suspended (issue #220).
     _clear_stale_gate_decisions(graph, state)
     controls = _build_controls_map(graph)
     cut_gates = _compute_cut_gates(graph, state, controls)
     _drop_orphaned_decisions(state, cut_gates)
+    suspended_gates = _compute_suspended_gates(graph, state, controls)
 
     activated = set(graph._nodes)
     gated_names = [name for name in graph._nodes if graph.controlled_by.get(name)]
@@ -245,7 +247,7 @@ def _get_activated_nodes(graph: Graph, state: GraphState) -> set[str]:
         queued.discard(node_name)
         if node_name not in activated:
             continue
-        if _any_gate_permits_startup(node_name, graph, state, activated, cut_gates):
+        if _any_gate_permits_startup(node_name, graph, state, activated, cut_gates, suspended_gates):
             continue
         activated.discard(node_name)
         for dependent in controls.get(node_name, ()):
@@ -262,6 +264,7 @@ def _any_gate_permits_startup(
     state: GraphState,
     activated: set[str],
     cut_gates: set[str],
+    suspended_gates: set[str],
 ) -> bool:
     """Whether at least one controlling gate permits this node to start."""
     for gate_name in graph.controlled_by.get(node_name, []):
@@ -270,9 +273,10 @@ def _any_gate_permits_startup(
             continue
         decision = state.routing_decisions.get(gate_name)
         # The liveness signal matches the branch the predicate will take:
-        # a pending decision is live while its gate is not cut off; first-pass
-        # default_open permission is live while the gate is still activated.
-        alive = gate_name not in cut_gates if decision is not None else gate_name in activated
+        # a pending decision is live while its gate is neither cut off nor
+        # suspended behind a re-firing controller; first-pass default_open
+        # permission is live while the gate is still activated.
+        alive = (gate_name not in cut_gates and gate_name not in suspended_gates) if decision is not None else gate_name in activated
         if gate_permits_startup(
             node_name,
             decision=decision,
@@ -349,6 +353,47 @@ def _any_controller_keeps_alive(
         if decision is None or _is_node_activated_by_decision(gate_name, decision):
             return True
     return False
+
+
+def _compute_suspended_gates(
+    graph: Graph,
+    state: GraphState,
+    controls: dict[str, list[str]],
+) -> set[str]:
+    """Gates whose pending decisions must wait for an upstream re-fire.
+
+    When a controlling gate is scheduled to re-execute — the exact signal
+    that already clears the gate's own stale decision — its verdict is
+    pending, and chains below it must not act on previously-pending
+    downstream decisions in the same superstep: the gate fires first, then
+    its consequences propagate. Suspension spreads transitively down control
+    edges (gates only) and is recomputed from current state on every
+    evaluation, so nothing is persisted: it lifts as soon as the controller
+    has re-fired. This is what distinguishes 'controller decision None
+    because harmlessly consumed' (downstream decisions stay live) from
+    'controller decision None and controller is stale' (verdict pending —
+    wait one superstep). Independent nodes outside the re-firing gate's
+    chain are unaffected.
+    """
+    from collections import deque
+
+    from hypergraph.nodes.gate import GateNode
+
+    refiring = [
+        name
+        for name, gate in graph._nodes.items()
+        if isinstance(gate, GateNode) and name in state.node_executions and _needs_execution(gate, graph, state)
+    ]
+    suspended: set[str] = set()
+    queue = deque(refiring)
+    while queue:
+        gate_name = queue.popleft()
+        for dependent in controls.get(gate_name, ()):
+            if isinstance(graph._nodes.get(dependent), GateNode) and dependent not in suspended:
+                suspended.add(dependent)
+                queue.append(dependent)
+
+    return suspended
 
 
 def _drop_orphaned_decisions(state: GraphState, cut_gates: set[str]) -> None:

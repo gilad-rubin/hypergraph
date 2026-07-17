@@ -503,6 +503,11 @@ cancels in-flight selections; a gate whose earlier selection was simply
 consumed by its target keeps downstream selections live, which is what lets
 loops route through chained gates across iterations.
 
+Gates fire before their consequences: when a loop makes an upstream gate
+re-evaluate, in-flight selections further down the chain wait for its verdict
+instead of racing it in the same superstep. Unrelated nodes are not held up —
+independent work still runs in parallel with the re-evaluating gate.
+
 ## Next Steps
 
 - [API Reference: Gates](../06-api-reference/gates.md) - Complete IfElseNode, RouteNode, and @ifelse/@route documentation

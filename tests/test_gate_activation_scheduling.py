@@ -361,6 +361,58 @@ class TestOrphanedDecisionClearing:
         assert state.routing_decisions.get("gate_b") is END, "END activates nothing and is kept"
 
 
+class TestSuspendedPendingDecisions:
+    """C12: a pending decision waits while an upstream controller re-fires."""
+
+    @staticmethod
+    def _refire_graph():
+        @node(output_name="result")
+        def target(x: int) -> int:
+            return x
+
+        @route(targets=["target", END])
+        def gate_b(x: int) -> str:
+            return "target"
+
+        @route(targets=["gate_b", END])
+        def gate_a(x: int, y: int) -> str:
+            return "gate_b"
+
+        return Graph([gate_a, gate_b, target])
+
+    @staticmethod
+    def _state(*, gate_a_stale: bool) -> GraphState:
+        # y changed after gate_a executed iff gate_a_stale; gate_b's own
+        # inputs (x only) are unchanged either way.
+        return GraphState(
+            values={"x": 1, "y": 2},
+            versions={"x": 1, "y": 2 if gate_a_stale else 1},
+            node_executions={
+                "gate_a": NodeExecution(node_name="gate_a", input_versions={"x": 1, "y": 1}, outputs={}),
+                "gate_b": NodeExecution(node_name="gate_b", input_versions={"x": 1}, outputs={}),
+            },
+            routing_decisions={"gate_b": "target"},
+        )
+
+    def test_pending_decision_suspended_while_controller_refires(self):
+        graph = self._refire_graph()
+        state = self._state(gate_a_stale=True)
+
+        activated = readiness_module._get_activated_nodes(graph, state)
+
+        assert "target" not in activated, "verdict pending: decision must wait for gate_a's re-fire"
+        assert state.routing_decisions.get("gate_b") == "target", "suspension is transient — decision is kept, not dropped"
+        assert "gate_a" in activated
+
+    def test_pending_decision_live_when_controller_quiescent(self):
+        graph = self._refire_graph()
+        state = self._state(gate_a_stale=False)
+
+        activated = readiness_module._get_activated_nodes(graph, state)
+
+        assert "target" in activated, "quiescent consumed controller keeps the decision live"
+
+
 class TestActivationCostLinear:
     """C10: activation is a worklist — linear predicate calls on long chains."""
 
