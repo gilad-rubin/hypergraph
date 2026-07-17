@@ -254,6 +254,56 @@ class TestAsyncNestedCrashResume:
         finally:
             await cp.close()
 
+    async def test_resume_restores_namespaced_child_boundary(self, tmp_path):
+        """Restored outputs project through a namespaced GraphNode boundary."""
+        counters = {"double": 0}
+
+        @node(output_name="prepared")
+        def prepare(x: int) -> int:
+            return x + 100
+
+        @node(output_name="doubled")
+        def double(prepared: int) -> int:
+            counters["double"] += 1
+            return prepared * 2
+
+        @node(output_name="final")
+        def consume(doubled: int) -> int:
+            return doubled + 1
+
+        child = Graph(nodes=[double], name="child")
+        child_node = child.as_node(name="child_wf", namespaced=True).expose("prepared")
+        parent = Graph(
+            nodes=[
+                prepare,
+                child_node,
+                consume.with_inputs(doubled="child_wf.doubled"),
+            ],
+            name="parent",
+        )
+
+        cp = CrashingStepCheckpointer(str(tmp_path / "test.db"), {("wf", "child_wf")})
+        try:
+            runner = AsyncRunner(checkpointer=cp)
+            with pytest.raises(RuntimeError, match=CRASH_MESSAGE):
+                await runner.run(parent, {"x": 5}, workflow_id="wf")
+            child_run = await cp.get_run_async("wf/child_wf")
+            assert child_run is not None
+            assert child_run.status is WorkflowStatus.COMPLETED
+            assert counters["double"] == 1
+
+            cp.armed = False
+            result = await runner.run(parent, workflow_id="wf")
+
+            assert result.values["child_wf.doubled"] == 210
+            assert result.values["final"] == 211
+            assert counters["double"] == 1
+            steps = {step.node_name: step for step in await cp.get_steps("wf")}
+            assert steps["child_wf"].status is StepStatus.COMPLETED
+            assert steps["child_wf"].values == {"child_wf.doubled": 210}
+        finally:
+            await cp.close()
+
     @pytest.mark.parametrize("error_handling", ["raise", "continue"])
     async def test_resume_does_not_mask_failed_child(self, tmp_path, error_handling):
         """B6: a FAILED terminal child surfaces its failure — no restore-as-success."""
