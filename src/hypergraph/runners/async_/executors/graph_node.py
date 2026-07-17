@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.checkpointers.types import WorkflowStatus
+from hypergraph.checkpointers.types import StepStatus, WorkflowStatus
 from hypergraph.exceptions import IncompatibleRunnerError
 from hypergraph.runners._shared._inspect import current_inspection
 from hypergraph.runners._shared.outputs import collect_as_lists
@@ -72,6 +72,7 @@ class AsyncGraphNodeExecutor:
         runner = node.runner_override or self.runner
         parent_cp = self.runner._checkpointer
         child_cp = getattr(runner, "_checkpointer", None)
+        child_resume_seed_values: dict[str, Any] | None = None
 
         # Route interrupt resume values into the inner graph. The parent sees
         # the GraphNode's resolved output address ("decision", "review.verdict",
@@ -142,10 +143,20 @@ class AsyncGraphNodeExecutor:
                                 # In-flight iteration (paused/failed/stopped):
                                 # resume it from its own checkpoint.
                                 child_workflow_id = candidate
+                                child_steps = await child_cp.get_steps(candidate, show_internal=True)
+                                if not any(step.status is StepStatus.COMPLETED for step in child_steps):
+                                    child_resume_seed_values = inner_inputs
                                 inner_inputs = {}
                                 break
                             index += 1
                     else:
+                        child_steps = await child_cp.get_steps(child_workflow_id, show_internal=True)
+                        if not any(step.status is StepStatus.COMPLETED for step in child_steps):
+                            # A child that failed or paused before its first
+                            # completed step has no folded checkpoint values.
+                            # Carry its parent-owned seeds in the in-memory
+                            # checkpoint, not as runtime overrides.
+                            child_resume_seed_values = inner_inputs
                         inner_inputs = {}
                 elif resume_values:
                     current_parent_run = await parent_cp.get_run_async(ctx.workflow_id) if ctx.workflow_id else None
@@ -244,6 +255,8 @@ class AsyncGraphNodeExecutor:
         if runner.capabilities.supports_checkpointing:
             run_kwargs["fork_from"] = child_fork_from
             run_kwargs["retry_from"] = child_retry_from
+        if child_resume_seed_values is not None:
+            run_kwargs["_resume_seed_values"] = child_resume_seed_values
         if getattr(node, "_complete_on_stop", False):
             run_kwargs["_complete_on_stop"] = True
         if ctx.checkpoint_error_sink is not None and accepts_checkpoint_error_sink:
