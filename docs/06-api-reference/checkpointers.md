@@ -273,6 +273,88 @@ run = checkpointer.get_run("wf-1")
 run.status == WorkflowStatus.COMPLETED  # True
 ```
 
+## Attempt Ledger (Internal)
+
+{% hint style="warning" %}
+Internal attempt-ledger persistence. These records back the retry/timeout contract; the runtime that writes them (retry loops, `@node` retry parameters) ships separately. The shapes below are stable for inspection but the write seam is not a public API.
+{% endhint %}
+
+A retrying node stays **one logical graph step**; each callable invocation is a separately durable attempt. The evidence lives next to the steps:
+
+```text
+step 4 = call_model                       # one StepRecord, one state application
+attempts = #1 failed, #2 timed out, #3 succeeded   # the attempt ledger
+```
+
+| Type | Fields | Notes |
+|---|---|---|
+| `AttemptSeries` | `id`, `run_id`, `node_name`, `policy_fingerprint`, `max_attempts`, `opened_at`, `deadline_at`, `committed_superstep`, `closed_at` | One durable retry budget per logical node execution. The id stays stable across superstep drift; open (`closed_at is None`) series are never pruned. |
+| `AttemptRecord` | `series_id`, `attempt_number`, `scheduled_superstep`, `status`, `started_at`, `completed_at`, `error`, `retry_not_before`, `sampled_delay` | One-based `attempt_number`. Backoff is sampled once and persisted as data. |
+| `AttemptStatus` | `STARTED`, `FAILED`, `TIMED_OUT`, `SUCCEEDED`, `CANCELLED`, `OUTCOME_UNKNOWN` | Enum. `STARTED` is a durable reservation that consumes budget; crash-stranded reservations settle as `OUTCOME_UNKNOWN` on resume. |
+| `AttemptError` | `type_name`, `message` | Bounded, privacy-safe projection — exception type plus a truncated message. No args, no stack traces, no `repr` of user values. |
+
+Attempt rows never participate in state folding, step counts, baselines, or staleness — `get_state()` and `get_steps()` are byte-identical with or without retry history. A closed series links its final `StepRecord` via `StepRecord.attempt_series_id` and follows that step's retention fate.
+
+Runnable inspection example:
+
+```python
+import asyncio
+from hypergraph.checkpointers import AttemptError, AttemptStatus, SqliteCheckpointer, StepRecord, StepStatus
+
+
+async def main() -> None:
+    checkpointer = SqliteCheckpointer("./attempts-demo.db")
+    await checkpointer.create_run("wf-1", graph_name="demo")
+
+    # What the retry runtime will do internally: reserve, fail, reserve, close.
+    series = await checkpointer.open_attempt_series(
+        "wf-1", "call_model", policy_fingerprint="demo-fp", max_attempts=3
+    )
+    first = await checkpointer.begin_attempt(
+        series.id, policy_fingerprint="demo-fp", scheduled_superstep=0
+    )
+    await checkpointer.record_attempt_outcome(
+        series.id, first.attempt_number, AttemptStatus.FAILED,
+        error=AttemptError.from_exception(TimeoutError("slow upstream")),
+    )
+    second = await checkpointer.begin_attempt(
+        series.id, policy_fingerprint="demo-fp", scheduled_superstep=0
+    )
+    await checkpointer.close_attempt_series(
+        series.id, second.attempt_number, AttemptStatus.SUCCEEDED,
+        step_record=StepRecord(
+            run_id="wf-1", superstep=0, node_name="call_model", index=0,
+            status=StepStatus.COMPLETED, input_versions={},
+            values={"answer": 42}, attempt_series_id=series.id,
+        ),
+    )
+
+    # Inspection: the step is one logical execution; the ledger holds the truth.
+    closed = await checkpointer.get_attempt_series(series.id)
+    print(closed)  # AttemptSeries series-... | wf-1/call_model | closed | max_attempts=3
+    for record in await checkpointer.get_attempt_records(series.id):
+        print(record)
+    # Attempt #1 | failed | superstep 0 | error: TimeoutError
+    # Attempt #2 | succeeded | superstep 0
+    print(await checkpointer.remaining_attempts(series.id))  # 1
+
+    await checkpointer.close()
+
+
+asyncio.run(main())
+```
+
+Crash-recovery queries used on resume:
+
+```python
+open_series = await checkpointer.get_open_attempt_series("wf-1", "call_model")
+if open_series is not None:
+    records = await checkpointer.resolve_stranded_attempts(open_series.id)
+    remaining = await checkpointer.remaining_attempts(open_series.id)
+    # A reservation that never settled is now OUTCOME_UNKNOWN and stays consumed:
+    # max_attempts=3 with one stranded attempt leaves remaining == 2.
+```
+
 ## Backend Comparison
 
 | | `SqliteCheckpointer` | `MemoryCheckpointer` |
