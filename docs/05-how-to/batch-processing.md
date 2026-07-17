@@ -515,6 +515,8 @@ assert results[0].log.steps[0].status == "restored"
 
 Restored items remain included in completed counts, but are also reported as a separate subset in `MapResult`, `MapLog`, parent events, and telemetry. Average item duration uses only freshly executed completed items with real logs, so a fully restored batch omits the average instead of displaying fake `0ms` work. This makes it safe to retry large batches — you only pay for the items that actually need re-processing, and the result shows which items were skipped.
 
+**Compatibility.** Each completed item is matched by a persisted signature of its inputs, and that signature is authoritative: an item is restored only when its current inputs match, even if the item sits at the same position as before — changed or unmatched inputs re-execute fresh (never an error, never a stale result). Children persisted by pre-signature versions of hypergraph carry no signature, and only those legacy children keep the old position-based fallback: they are restored by their numeric index. Each stored child is restored at most once per resume, so duplicate inputs claim their matching runs one-for-one (in stable run-id order) and any extra duplicates execute fresh.
+
 ## When to Use Map vs Loop
 
 | Use `runner.map()` or `map_over` | Use a Python loop |

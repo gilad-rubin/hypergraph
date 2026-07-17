@@ -48,27 +48,39 @@ def index_completed_child_runs(
     child_runs: list[Run],
     workflow_id: str | None,
 ) -> tuple[dict[str, list[str]], dict[int, list[str]]]:
-    """Index completed child runs by signature and by legacy index suffix."""
+    """Index completed child runs into disjoint signed and legacy pools.
+
+    Persisted signatures are authoritative (#199): a child with a valid
+    signature enters ONLY the signature pool, so a signed child whose inputs
+    changed can never be restored through the numeric index fallback. A child
+    whose config lacks the signature key entirely (persisted before signatures
+    existed) enters ONLY the legacy index pool. A child with
+    present-but-invalid signature metadata enters neither pool and is
+    therefore re-executed fresh rather than restored or erroring.
+    """
     by_signature: dict[str, list[str]] = defaultdict(list)
-    by_index: dict[int, list[str]] = defaultdict(list)
+    legacy_by_index: dict[int, list[str]] = defaultdict(list)
 
     for run in child_runs:
-        if isinstance(run.config, dict):
-            signature = run.config.get(MAP_SIGNATURE_CONFIG_KEY)
-            if isinstance(signature, str):
+        config = run.config if isinstance(run.config, dict) else {}
+        if MAP_SIGNATURE_CONFIG_KEY in config:
+            signature = config[MAP_SIGNATURE_CONFIG_KEY]
+            if isinstance(signature, str) and signature:
                 by_signature[signature].append(run.id)
+            # Present-but-invalid metadata: neither pool -> fresh execution.
+            continue
 
         if workflow_id is None:
             continue
         suffix = run.id.removeprefix(f"{workflow_id}/")
         if suffix.isdigit():
-            by_index[int(suffix)].append(run.id)
+            legacy_by_index[int(suffix)].append(run.id)
 
     for ids in by_signature.values():
         ids.sort()
-    for ids in by_index.values():
+    for ids in legacy_by_index.values():
         ids.sort()
-    return by_signature, by_index
+    return by_signature, legacy_by_index
 
 
 def claim_completed_child_run_id(
@@ -76,15 +88,23 @@ def claim_completed_child_run_id(
     idx: int,
     signature: str,
     by_signature: dict[str, list[str]],
-    by_index: dict[int, list[str]],
+    legacy_by_index: dict[int, list[str]],
 ) -> str | None:
-    """Claim a completed child run id, preferring input identity."""
-    by_sig = by_signature.get(signature)
-    if by_sig:
-        return by_sig.pop(0)
+    """Claim a completed child run id for one map item, or None for fresh.
 
-    by_idx = by_index.get(idx)
-    if by_idx:
-        return by_idx.pop(0)
+    Signed evidence is authoritative: a signature match claims the
+    lexicographically smallest unclaimed matching run id, so duplicate
+    signatures are claimed deterministically in ascending run-id order, one
+    child per claim. The numeric index fallback consults only legacy children
+    (signature key absent); signed children are never claimable by index.
+    Pools are disjoint and claims pop, so each child is claimed at most once.
+    """
+    signed = by_signature.get(signature)
+    if signed:
+        return signed.pop(0)
+
+    legacy = legacy_by_index.get(idx)
+    if legacy:
+        return legacy.pop(0)
 
     return None

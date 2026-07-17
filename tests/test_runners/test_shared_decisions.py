@@ -40,25 +40,84 @@ def test_map_signatures_normalize_mapping_and_set_order() -> None:
     assert len(first_signature) == 16
 
 
+def _signed_run(run_id: str, signature: object) -> Run:
+    return Run(id=run_id, status=WorkflowStatus.COMPLETED, config={MAP_SIGNATURE_CONFIG_KEY: signature})
+
+
+def _claim(pools: tuple[dict[str, list[str]], dict[int, list[str]]], *, idx: int, signature: str) -> str | None:
+    by_signature, legacy_by_index = pools
+    return claim_completed_child_run_id(idx=idx, signature=signature, by_signature=by_signature, legacy_by_index=legacy_by_index)
+
+
 def test_map_resume_claims_distinct_sorted_signatures_before_legacy_index() -> None:
     child_runs = [
-        Run(
-            id="batch/b",
-            status=WorkflowStatus.COMPLETED,
-            config={MAP_SIGNATURE_CONFIG_KEY: "same"},
-        ),
-        Run(
-            id="batch/a",
-            status=WorkflowStatus.COMPLETED,
-            config={MAP_SIGNATURE_CONFIG_KEY: "same"},
-        ),
+        _signed_run("batch/b", "same"),
+        _signed_run("batch/a", "same"),
         Run(id="batch/3", status=WorkflowStatus.COMPLETED),
     ]
-    by_signature, by_index = index_completed_child_runs(child_runs, "batch")
+    pools = index_completed_child_runs(child_runs, "batch")
 
-    assert claim_completed_child_run_id(idx=3, signature="same", by_signature=by_signature, by_index=by_index) == "batch/a"
-    assert claim_completed_child_run_id(idx=3, signature="same", by_signature=by_signature, by_index=by_index) == "batch/b"
-    assert claim_completed_child_run_id(idx=3, signature="missing", by_signature=by_signature, by_index=by_index) == "batch/3"
+    assert _claim(pools, idx=3, signature="same") == "batch/a"
+    assert _claim(pools, idx=3, signature="same") == "batch/b"
+    assert _claim(pools, idx=3, signature="missing") == "batch/3"
+
+
+def test_map_resume_signed_mismatch_is_fresh_execution_not_index_restore() -> None:
+    """Matrix #1: a signed child with a stale signature is never restored by index."""
+    pools = index_completed_child_runs([_signed_run("batch/0", "old-sig")], "batch")
+
+    assert _claim(pools, idx=0, signature="new-sig") is None
+
+
+def test_map_resume_legacy_children_without_signature_key_restore_by_index() -> None:
+    """Matrix #2: pre-signature children (key absent, config None or partial) keep the index fallback."""
+    child_runs = [
+        Run(id="batch/0", status=WorkflowStatus.COMPLETED, config=None),
+        Run(id="batch/1", status=WorkflowStatus.COMPLETED, config={"graph_struct_hash": "h"}),
+    ]
+    pools = index_completed_child_runs(child_runs, "batch")
+
+    assert _claim(pools, idx=0, signature="sig-0") == "batch/0"
+    assert _claim(pools, idx=1, signature="sig-1") == "batch/1"
+
+
+def test_map_resume_signed_children_restore_by_signature_regardless_of_index() -> None:
+    """Matrix #3: reordered signed inputs restore by signature, not position."""
+    child_runs = [_signed_run("batch/0", "sig-first"), _signed_run("batch/1", "sig-second")]
+    pools = index_completed_child_runs(child_runs, "batch")
+
+    assert _claim(pools, idx=0, signature="sig-second") == "batch/1"
+    assert _claim(pools, idx=1, signature="sig-first") == "batch/0"
+
+
+def test_map_resume_duplicate_signatures_claim_once_in_run_id_order() -> None:
+    """Matrix #4: duplicate signatures claim ascending run ids; exhaustion means fresh."""
+    child_runs = [_signed_run("batch/1", "same"), _signed_run("batch/0", "same")]
+    pools = index_completed_child_runs(child_runs, "batch")
+
+    assert _claim(pools, idx=0, signature="same") == "batch/0"
+    assert _claim(pools, idx=1, signature="same") == "batch/1"
+    # A third identical item finds the pool exhausted and must execute fresh —
+    # never re-claim a signed child through the numeric index fallback.
+    assert _claim(pools, idx=0, signature="same") is None
+
+
+def test_map_resume_signed_child_claimed_once_across_pools() -> None:
+    """Matrix #5: a child claimed by signature is not claimable by index later."""
+    pools = index_completed_child_runs([_signed_run("batch/0", "sig-a")], "batch")
+
+    assert _claim(pools, idx=5, signature="sig-a") == "batch/0"
+    assert _claim(pools, idx=0, signature="other") is None
+
+
+@pytest.mark.parametrize("invalid", [None, 123, ["sig"], {"sig": "x"}, ""])
+def test_map_resume_invalid_signature_metadata_is_fresh_execution(invalid: object) -> None:
+    """Matrix #6: present-but-invalid signature metadata joins neither pool."""
+    pools = index_completed_child_runs([_signed_run("batch/0", invalid)], "batch")
+
+    assert pools[0] == {}
+    assert pools[1] == {}
+    assert _claim(pools, idx=0, signature="any") is None
 
 
 @pytest.mark.parametrize(
