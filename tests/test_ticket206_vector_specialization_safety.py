@@ -10,7 +10,6 @@ still reads the committed table completely (row counts + blob byte equality).
 
 from __future__ import annotations
 
-import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -52,18 +51,53 @@ def _row(cid: str, *, vec: list[float] | None, content: bytes, write_gen: int = 
     }
 
 
-def _seed_committed_rows(path: str, rows: list[dict[str, Any]]) -> None:
-    """Commit rows through their own handle, leaving the vector column un-specialized.
+def _vec2_spec() -> TableSpec:
+    """Two independent vector columns — exercises multi-column alterations."""
+    return TableSpec(
+        name="t",
+        identity="cid",
+        columns=[
+            ColumnSpec("cid", role="identity", arrow_type=pa.utf8()),
+            ColumnSpec("content", role="source", content_key=True, arrow_type=pa.large_binary()),
+            ColumnSpec("vec_a", role="derived", arrow_type=pa.list_(pa.float64())),
+            ColumnSpec("vec_b", role="derived", arrow_type=pa.list_(pa.float64())),
+            ColumnSpec("_row_fingerprint", role="internal", arrow_type=pa.utf8()),
+            ColumnSpec("_write_gen", role="internal", arrow_type=pa.int64()),
+            ColumnSpec("_status", role="internal", arrow_type=pa.utf8()),
+            ColumnSpec("_error", role="internal", arrow_type=pa.utf8()),
+        ],
+    )
 
-    The first row must carry ``vec=None`` so dimension detection (which samples
-    the first row of the first write) finds nothing to specialize — the exact
-    state of a real store whose rows were written before any embedding existed.
+
+def _row2(cid: str, *, vec_a: list[float] | None, vec_b: list[float] | None, content: bytes, write_gen: int = 1) -> dict[str, Any]:
+    return {
+        "cid": cid,
+        "content": content,
+        "vec_a": vec_a,
+        "vec_b": vec_b,
+        "_row_fingerprint": f"fp-{cid}",
+        "_write_gen": write_gen,
+        "_status": "complete",
+        "_error": None,
+    }
+
+
+def _seed_committed_rows(path: str, rows: list[dict[str, Any]], spec: TableSpec | None = None) -> LanceDBStore:
+    """Commit rows through their own handle, leaving vector columns un-specialized.
+
+    The first row must carry ``None`` for every vector column so dimension
+    detection (which samples the first row of the first write) finds nothing to
+    specialize — the exact state of a real store whose rows were written before
+    any embedding existed. Returns the seeding handle so a test can commit a
+    further batch (a second physical fragment) through it.
     """
-    assert rows[0]["vec"] is None
+    assert not any(isinstance(v, list) for v in rows[0].values())
     store = LanceDBStore(path)
-    store.open(_vec_spec(), [])
+    store.open(spec or _vec_spec(), [])
     store.write_rows("t", rows)
-    assert store._tables["t"].schema.field("vec").type == pa.list_(pa.float64())
+    for field in store._tables["t"].schema:
+        assert not pa.types.is_fixed_size_list(field.type)
+    return store
 
 
 def _fresh_committed_state(path: str) -> tuple[LanceDBStore, list[dict[str, Any]], pa.DataType]:
@@ -75,30 +109,17 @@ def _fresh_committed_state(path: str) -> tuple[LanceDBStore, list[dict[str, Any]
     return fresh, rows, vec_type
 
 
-def _assert_rows_preserved(path: str, expected: list[dict[str, Any]]) -> None:
+def _assert_rows_preserved(path: str, expected: list[dict[str, Any]], spec: TableSpec | None = None) -> None:
     """A fresh handle must read exactly the committed rows, blob bytes included."""
-    _fresh, rows, _vec_type = _fresh_committed_state(path)
-    got = [(r["cid"], r["content"], r["vec"], r["_write_gen"]) for r in rows]
-    want = [(r["cid"], r["content"], r["vec"], r["_write_gen"]) for r in sorted(expected, key=lambda r: r["cid"])]
+    fresh = LanceDBStore(path)
+    fresh.open(spec or _vec_spec(), [])
+    rows = sorted(fresh.read_rows("t"), key=lambda r: r["cid"])
+    keys = sorted(expected[0].keys())
+    got = [tuple(r.get(k) for k in keys) for r in rows]
+    want = [tuple(r.get(k) for k in keys) for r in sorted(expected, key=lambda r: r["cid"])]
     assert got == want, (
-        f"committed rows were destroyed or hidden: got {[(c, v) for c, _, v, _ in got]!r}, expected {[(c, v) for c, _, v, _ in want]!r}"
+        f"committed rows were destroyed, hidden, or altered: got cids {[r['cid'] for r in rows]!r}, expected {[r['cid'] for r in expected]!r}"
     )
-
-
-def _assert_seed_rows_readable(path: str, expected: list[dict[str, Any]]) -> None:
-    """Every previously committed row must still be readable byte-identically.
-
-    Subset semantics: rows written AFTER the seed (a trigger row whose write
-    succeeded) are allowed — what may never happen is a seed row going missing
-    or changing bytes.
-    """
-    _fresh, rows, _vec_type = _fresh_committed_state(path)
-    by_cid = {r["cid"]: r for r in rows}
-    for exp in expected:
-        got = by_cid.get(exp["cid"])
-        assert got is not None, f"previously committed row {exp['cid']!r} was destroyed or hidden; readable rows: {sorted(by_cid)!r}"
-        assert got["content"] == exp["content"], f"blob bytes of committed row {exp['cid']!r} changed"
-        assert got["_write_gen"] == exp["_write_gen"], f"_write_gen of committed row {exp['cid']!r} changed"
 
 
 _SEED = [
@@ -134,36 +155,53 @@ def test_failure_before_specialization_work_preserves_committed_rows(tmp_path, m
     assert vec_type == pa.list_(pa.float64()), "a failed specialization must leave the schema untouched"
 
 
-# --- H1 failpoint (b) + H4: crash mid-rewrite, replacement staged but never published ---
+# --- H1 failpoint (b) + H4: REAL mid-rewrite crash, replacement staged but never published ---
 
 
-def test_crash_mid_rewrite_before_publish_preserves_committed_rows(tmp_path, monkeypatch) -> None:
-    """Replacement column files physically staged in the dataset dir, crash before
-    the manifest commit: the staged artifact is on disk yet a fresh handle reads
-    only committed data — publication is Lance's atomic manifest commit, so an
-    incomplete replacement is never readable under the live table name."""
-    path = str(tmp_path / "failpoint-midswap")
-    _seed_committed_rows(path, _SEED)
+def test_real_mid_rewrite_failure_stages_files_but_never_publishes(tmp_path) -> None:
+    """H4 mid-swap proof on Lance's REAL rewrite path, no mocks: a two-column
+    alteration where the second altered column's cast fails on a committed
+    wrong-length row AFTER earlier column fragments were already rewritten.
+    Real staged data files appear in the dataset directory, yet nothing is
+    published: the version and both column schemas are unchanged and every
+    committed row is byte-identical through a fresh handle. Publication is
+    Lance's single atomic manifest commit — staged files without a manifest
+    reference are unreachable, so preservation is at the TABLE level (the
+    physical directory legitimately retains the aborted rewrite's files)."""
+    path = str(tmp_path / "real-midswap")
+    spec = _vec2_spec()
+    batch_one = [
+        _row2("a", vec_a=None, vec_b=None, content=_BLOB_A),
+        _row2("b", vec_a=[1.0, 2.0, 3.0], vec_b=[1.0, 2.0, 3.0], content=_BLOB_B, write_gen=2),
+    ]
+    seeder = _seed_committed_rows(path, batch_one, spec)
+    # A second physical fragment holding the row that breaks the SECOND altered
+    # column (sorted alteration order: vec_a rewrites first, vec_b then fails).
+    batch_two = [_row2("bad", vec_a=[4.0, 5.0, 6.0], vec_b=[0.1, 0.2], content=b"short", write_gen=3)]
+    seeder.write_rows("t", batch_two)
+    seed = [*batch_one, *batch_two]
+
+    data_dir = Path(path) / "t.lance" / "data"
+    files_before = {p.name for p in data_dir.iterdir()}
+    probe = LanceDBStore(path)
+    probe.open(spec, [])
+    version_before = probe._tables["t"].version
 
     store = LanceDBStore(path)
-    store.open(_vec_spec(), [])
-    table_type = type(store._tables["t"])
-    staged = Path(path) / "t.lance" / "data" / "zz-staged-replacement-not-committed.lance"
+    store.open(spec, [])
+    with pytest.raises(RuntimeError, match=r"(?s)'t'.*vec_a.*vec_b.*preserved"):
+        store.write_rows("t", [_row2("c", vec_a=[7.0, 8.0, 9.0], vec_b=[7.0, 8.0, 9.0], content=b"new", write_gen=4)])
 
-    def crash_mid_rewrite(table, *alterations, **kwargs):
-        staged.parent.mkdir(parents=True, exist_ok=True)
-        staged.write_bytes(b"\x00partial-replacement-column-data\xff")
-        raise RuntimeError("simulated crash mid-rewrite, before manifest commit")
+    staged = {p.name for p in data_dir.iterdir()} - files_before
+    assert staged, "Lance must have physically staged rewritten column files before the failure — the failpoint fired mid-rewrite"
 
-    monkeypatch.setattr(table_type, "alter_columns", crash_mid_rewrite)
-
-    with pytest.raises(RuntimeError, match="preserved"):
-        store.write_rows("t", [_row("c", vec=[0.1, 0.2, 0.3], content=b"new")])
-
-    assert staged.exists(), "the staged replacement artifact must physically exist for this proof"
-    _assert_rows_preserved(path, _SEED)
-    _fresh, _rows, vec_type = _fresh_committed_state(path)
-    assert vec_type == pa.list_(pa.float64()), "an unpublished replacement must not change the live schema"
+    fresh = LanceDBStore(path)
+    fresh.open(spec, [])
+    tbl = fresh._tables["t"]
+    assert tbl.version == version_before, "a failed alteration must not publish a new version"
+    assert tbl.schema.field("vec_a").type == pa.list_(pa.float64()), "no column of a failed multi-column alteration may be published"
+    assert tbl.schema.field("vec_b").type == pa.list_(pa.float64())
+    _assert_rows_preserved(path, seed, spec)  # exact set: the trigger row is absent
 
 
 # --- H1 failpoint (c): a REAL conversion failure during replacement, no mocks ---
@@ -301,48 +339,90 @@ def test_fresh_world_first_write_specializes_and_searches(tmp_path) -> None:
     assert [h["cid"] for h in hits] == ["a"]
 
 
-# --- Historical drop/recreate seams (the #206 RED proofs) ----------------------
-# These two inject at the physical seams where the pre-#206 implementation lost
-# data: ``create_table`` (fired after the destructive drop — rows destroyed) and
-# ``Table.add`` (fired while re-adding data to the replacement — rows hidden).
-# Against that implementation both FAILED with "readable rows: []". They stay in
-# the suite as trip-wires: any regression toward a drop/recreate window loses
-# committed rows again and trips the subset-preservation assertion.
+# --- Crash AFTER publish: the trigger-row append fails post-specialization ------
+# Historical note: at this ``Table.add`` seam the pre-#206 implementation
+# re-added ALL data to a freshly recreated table and an injected crash hid every
+# row (RED proof for gate H1(c): "readable rows: []"). Its sibling seam,
+# create_table-after-drop, cannot fire at all under the failure-safe
+# implementation and is pinned shut by the drop/recreate sentinel above. Today
+# ``Table.add`` fires only for the ordinary trigger-row append, AFTER the
+# alteration commit — so this test pins two guarantees at once: a crashed append
+# hides nothing, and the specialization commit is already durable.
 
 
-def test_crash_at_historical_create_table_seam_leaves_rows_readable(tmp_path, monkeypatch) -> None:
-    path = str(tmp_path / "red-after-drop")
-    _seed_committed_rows(path, _SEED)
-
-    store = LanceDBStore(path)
-    store.open(_vec_spec(), [])
-    connection_type = type(store._db)
-
-    def crash_create(connection, *args, **kwargs):
-        raise RuntimeError("simulated crash during replacement construction")
-
-    monkeypatch.setattr(connection_type, "create_table", crash_create)
-    with contextlib.suppress(RuntimeError):
-        store.write_rows("t", [_row("c", vec=[0.1, 0.2, 0.3], content=b"new")])
-    monkeypatch.undo()
-
-    _assert_seed_rows_readable(path, _SEED)
-
-
-def test_crash_at_historical_readd_seam_leaves_rows_readable(tmp_path, monkeypatch) -> None:
-    path = str(tmp_path / "red-during-readd")
+def test_crash_during_trigger_row_append_keeps_specialization_and_rows(tmp_path, monkeypatch) -> None:
+    path = str(tmp_path / "append-crash")
     _seed_committed_rows(path, _SEED)
 
     store = LanceDBStore(path)
     store.open(_vec_spec(), [])
     table_type = type(store._tables["t"])
+    fired = {"count": 0}
 
     def crash_add(table, *args, **kwargs):
-        raise RuntimeError("simulated crash while re-adding data to the replacement")
+        fired["count"] += 1
+        raise RuntimeError("simulated crash while appending the trigger row")
 
     monkeypatch.setattr(table_type, "add", crash_add)
-    with contextlib.suppress(RuntimeError):
+    with pytest.raises(RuntimeError, match="appending the trigger row"):
         store.write_rows("t", [_row("c", vec=[0.1, 0.2, 0.3], content=b"new")])
     monkeypatch.undo()
 
-    _assert_seed_rows_readable(path, _SEED)
+    assert fired["count"] == 1, "the failpoint must actually fire for this proof to mean anything"
+    _fresh, rows, vec_type = _fresh_committed_state(path)
+    assert [r["cid"] for r in rows] == ["a", "b"], "a crashed append must neither hide committed rows nor publish a partial trigger row"
+    assert rows[0]["content"] == _BLOB_A and rows[1]["content"] == _BLOB_B
+    assert vec_type == pa.list_(pa.float32(), 3), "the specialization commit is durable even when the following append crashes"
+
+
+# --- Cached-handle coherence: no reopen needed after specialization -------------
+
+
+def test_cached_handle_serves_new_schema_and_next_write_without_reopen(tmp_path) -> None:
+    path = str(tmp_path / "cached-handle")
+    _seed_committed_rows(path, _SEED)
+
+    store = LanceDBStore(path)
+    store.open(_vec_spec(), [])
+    handle_before = store._tables["t"]
+
+    store.write_rows("t", [_row("c", vec=[0.1, 0.2, 0.3], content=b"new", write_gen=3)])
+
+    assert store._tables["t"] is handle_before, "specialization must advance the cached handle in place, never swap it"
+    assert handle_before.schema.field("vec").type == pa.list_(pa.float32(), 3), "the cached handle must serve the specialized schema immediately"
+
+    store.write_rows("t", [_row("d", vec=[0.4, 0.5, 0.6], content=b"newer", write_gen=4)])
+
+    _fresh, rows, vec_type = _fresh_committed_state(path)
+    assert [r["cid"] for r in rows] == ["a", "b", "c", "d"], "a write through the cached handle after specialization must land without a reopen"
+    assert vec_type == pa.list_(pa.float32(), 3)
+
+
+# --- Multi-column success: both columns publish in ONE atomic version -----------
+
+
+def test_multi_column_specialization_publishes_one_atomic_version(tmp_path) -> None:
+    path = str(tmp_path / "multi-col")
+    spec = _vec2_spec()
+    seed = [
+        _row2("a", vec_a=None, vec_b=None, content=_BLOB_A),
+        _row2("b", vec_a=[1.0, 2.0, 3.0], vec_b=[1.0, 2.0, 3.0, 4.0], content=_BLOB_B, write_gen=2),
+    ]
+    _seed_committed_rows(path, seed, spec)
+
+    probe = LanceDBStore(path)
+    probe.open(spec, [])
+    version_before = probe._tables["t"].version
+
+    writer = LanceDBStore(path)
+    writer.open(spec, [])
+    trigger = _row2("c", vec_a=[7.0, 8.0, 9.0], vec_b=[6.0, 7.0, 8.0, 9.0], content=b"new", write_gen=3)
+    writer.write_rows("t", [trigger])
+
+    fresh = LanceDBStore(path)
+    fresh.open(spec, [])
+    tbl = fresh._tables["t"]
+    assert tbl.schema.field("vec_a").type == pa.list_(pa.float32(), 3)
+    assert tbl.schema.field("vec_b").type == pa.list_(pa.float32(), 4), "each column keeps its own detected dimension"
+    assert tbl.version == version_before + 2, "both column alterations must share ONE version commit (the second bump is the row append)"
+    _assert_rows_preserved(path, [*seed, trigger], spec)

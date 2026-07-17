@@ -371,6 +371,9 @@ class LanceDBStore(TableStore):
             # no drop/recreate window. A failure at ANY point before that commit
             # leaves the previous version live, so every committed row stays
             # readable (mirrors the drop-free additive path in ``evolve_schema``).
+            # Preservation is at the TABLE level: the directory may retain
+            # unreachable staged data files from an aborted rewrite, invisible
+            # to readers because no manifest references them.
             alterations = [{"path": name, "data_type": pa.list_(pa.float32(), dim)} for name, dim in sorted(upgrades.items())]
             try:
                 tbl.alter_columns(*alterations)
