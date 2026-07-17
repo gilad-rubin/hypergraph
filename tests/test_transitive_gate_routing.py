@@ -327,6 +327,105 @@ async def test_multi_target_gate_behind_terminated_gate(runner_kind, head_end):
 
 
 # ---------------------------------------------------------------------------
+# C9 — an unconsumed mid-chain decision dies when upstream explicitly ENDs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("runner_kind", RUNNER_KINDS)
+async def test_orphaned_mid_chain_decision_does_not_fire_target(runner_kind):
+    """Reviewer repro: start -> gate_a -> gate_b(selects [advance, target]) ->
+    advance runs -> advance's output re-fires gate_a with END -> target must
+    NOT run off gate_b's leftover pending decision.
+
+    ``target`` sits outside the cycle SCC, so the frontier defers it until the
+    cycle quiesces — by which time gate_a has explicitly terminated the chain.
+    gate_b's half-consumed ["target"] selection is causally dead and must not
+    activate anything.
+    """
+
+    @node(output_name="n")
+    def start(x: int) -> int:
+        return x
+
+    @route(targets=["gate_b", END])
+    def gate_a(n: int, bump: int = 0):
+        return "gate_b" if bump == 0 else END
+
+    @route(targets=["advance", "target"], multi_target=True)
+    def gate_b(n: int) -> list[str]:
+        return ["advance", "target"]
+
+    @node(output_name="bump")
+    def advance(n: int) -> int:
+        return 1
+
+    @node(output_name="target_out")
+    def target(n: int) -> int:
+        return n * 420
+
+    graph = Graph(
+        [start, gate_a, gate_b, advance, target],
+        name="orphaned_decision",
+        entrypoint="start",
+    )
+    listener = ListProcessor()
+
+    result = await run_graph(
+        runner_kind,
+        graph,
+        {"x": 1},
+        event_processors=[listener],
+    )
+
+    assert result.completed
+    assert result["bump"] == 1, "advance legitimately ran off gate_b's selection"
+    assert "target_out" not in result.values, "orphaned pending decision must not fire target"
+    executed = listener.node_names()
+    assert "target" not in executed
+    assert {"start", "gate_a", "gate_b", "advance"} <= executed
+
+
+@pytest.mark.parametrize("runner_kind", RUNNER_KINDS)
+async def test_pending_decision_survives_consumed_upstream_selection(runner_kind):
+    """The falsifier for orphaning: when upstream merely CONSUMED its decision
+    (None) rather than explicitly excluding the mid-gate, the mid-gate's
+    pending selection stays live and its target runs."""
+
+    @node(output_name="n")
+    def start(x: int) -> int:
+        return x
+
+    @route(targets=["gate_b", END])
+    def gate_a(n: int, bump: int = 0):
+        return "gate_b" if bump == 0 else END
+
+    @route(targets=["advance", "target"], multi_target=True)
+    def gate_b(n: int) -> list[str]:
+        return ["advance", "target"]
+
+    @node(output_name="bump")
+    def advance(n: int) -> int:
+        # bump stays 0: no version change, gate_a never re-fires, and its
+        # already-consumed selection (None) never excludes gate_b.
+        return 0
+
+    @node(output_name="target_out")
+    def target(n: int) -> int:
+        return n * 420
+
+    graph = Graph(
+        [start, gate_a, gate_b, advance, target],
+        name="live_decision",
+        entrypoint="start",
+    )
+
+    result = await run_graph(runner_kind, graph, {"x": 1})
+
+    assert result.completed
+    assert result["target_out"] == 420, "live pending decision must still fire target"
+
+
+# ---------------------------------------------------------------------------
 # C7 — chained gates in a cycle: gate-driven re-activation still re-executes
 # ---------------------------------------------------------------------------
 
