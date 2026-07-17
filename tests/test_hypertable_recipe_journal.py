@@ -170,7 +170,12 @@ def test_explain_labels_every_producer_of_a_union_column(store):
 
     explained = table.explain("i1")["label"]
 
-    assert set(explained["producers"]) == {"positive", "negative"}
-    for entry in explained["producers"].values():
+    producers = explained["producers"]
+    assert set(producers) == {"positive", "negative"}
+    for producer_name, entry in producers.items():
         assert entry["provenance"]
-        assert "source" in entry
+        assert entry["source"] is not None
+        assert f"def {producer_name}" in entry["source"]
+
+    journal_keys = {entry["hash"] for entry in table.journal_rows()}
+    assert {entry["provenance"] for entry in producers.values()} <= journal_keys

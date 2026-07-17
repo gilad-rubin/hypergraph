@@ -250,6 +250,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         _parent_run_id: str | None = None,
         _validation_ctx: _InputValidationContext | None = None,
         _run_config: dict[str, Any] | None = None,
+        _resume_seed_values: dict[str, Any] | None = None,
         _complete_on_stop: bool = False,
         _item_index: int | None = None,
         _checkpoint_error_sink: CheckpointErrorSink | None = None,
@@ -380,6 +381,12 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             if inspection_transport is not None:
                 inspection_transport.fail_to_start(error)
             raise
+
+        if resume_checkpoint is not None and _resume_seed_values:
+            # GraphNode may recover parent-owned seeds when a child paused or
+            # failed before producing any durable value. Keep them out of the
+            # runtime payload so strict resume/interrupt lineage stays intact.
+            resume_checkpoint.values = {**_resume_seed_values, **resume_checkpoint.values}
 
         has_checkpointer = checkpointer is not None and workflow_id is not None
         run_context = RunContext(workflow_id=workflow_id, item_index=_item_index)
@@ -1403,6 +1410,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         graph,
                         start_time,
                         _parent_span_id,
+                        context=RunContext(workflow_id=workflow_id, item_index=_item_index),
                         error=e,
                     )
                 # Mark parent batch run as failed

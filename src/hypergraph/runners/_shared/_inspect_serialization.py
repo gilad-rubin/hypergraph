@@ -28,6 +28,8 @@ from types import (
 )
 from typing import Any, Literal, TypeAlias
 
+from hypergraph.runners._shared._wire import script_safe_json
+
 SerializedKind: TypeAlias = Literal[
     "null",
     "boolean",
@@ -2136,11 +2138,4 @@ def serialized_value_to_wire(value: SerializedValue) -> dict[str, JSONValue]:
 
 def dump_serialized_value(value: SerializedValue) -> str:
     """Encode one typed value as script-safe strict JSON."""
-
-    encoded = json.dumps(
-        serialized_value_to_wire(value),
-        ensure_ascii=True,
-        allow_nan=False,
-        separators=(",", ":"),
-    )
-    return encoded.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    return script_safe_json(serialized_value_to_wire(value))

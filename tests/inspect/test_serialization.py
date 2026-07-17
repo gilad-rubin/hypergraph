@@ -2100,9 +2100,25 @@ def test_js_unsafe_size_metadata_crosses_the_wire_as_exact_decimal_strings() -> 
 
 
 def test_serializer_module_imports_without_optional_data_packages() -> None:
-    module_path = Path(__file__).parents[2] / "src/hypergraph/runners/_shared/_inspect_serialization.py"
+    source_root = Path(__file__).parents[2] / "src"
+    import_script = """
+import sys
+import types
+
+source_root = sys.argv[1]
+for name, path in (
+    ("hypergraph", f"{source_root}/hypergraph"),
+    ("hypergraph.runners", f"{source_root}/hypergraph/runners"),
+    ("hypergraph.runners._shared", f"{source_root}/hypergraph/runners/_shared"),
+):
+    package = types.ModuleType(name)
+    package.__path__ = [path]
+    sys.modules[name] = package
+
+import hypergraph.runners._shared._inspect_serialization
+"""
     completed = subprocess.run(
-        [sys.executable, "-S", "-c", "import runpy, sys; runpy.run_path(sys.argv[1])", str(module_path)],
+        [sys.executable, "-S", "-c", import_script, str(source_root)],
         check=False,
         capture_output=True,
         text=True,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from hypergraph import END, Graph, SyncRunner, node, route
 from hypergraph.events import EventProcessor, TypedEventProcessor
 from hypergraph.events.types import (
@@ -187,6 +189,18 @@ class TestErrorEvents:
         assert run_end.status == RunStatus.FAILED
         assert "boom" in run_end.error
 
+    def test_keyboard_interrupt_does_not_emit_node_error(self):
+        @node(output_name="out")
+        def interrupted(x: int) -> int:
+            raise KeyboardInterrupt
+
+        lp = ListProcessor()
+
+        with pytest.raises(KeyboardInterrupt):
+            SyncRunner().run(Graph([interrupted]), {"x": 1}, event_processors=[lp])
+
+        assert lp.of_type(NodeErrorEvent) == []
+
     def test_processor_failure_does_not_break_execution(self):
         class BadProcessor(EventProcessor):
             def on_event(self, event):
@@ -365,6 +379,28 @@ class TestMapEvents:
         run_ends = lp.of_type(RunEndEvent)
         # 1 map-level RunEnd + 2 individual RunEnds
         assert len(run_ends) == 3
+
+    def test_failed_map_run_end_preserves_workflow_context(self):
+        @node(output_name="out")
+        def failing(x: int) -> int:
+            raise ValueError(f"boom: {x}")
+
+        runner = SyncRunner()
+        lp = ListProcessor()
+
+        with pytest.raises(ValueError, match="boom: 1"):
+            runner.map(
+                Graph([failing]),
+                {"x": [1]},
+                map_over="x",
+                workflow_id="failed-sync-map",
+                event_processors=[lp],
+            )
+
+        map_start = next(event for event in lp.of_type(RunStartEvent) if event.is_map)
+        map_end = next(event for event in lp.of_type(RunEndEvent) if event.run_id == map_start.run_id)
+        assert map_end.workflow_id == "failed-sync-map"
+        assert map_end.item_index is None
 
 
 # ---------------------------------------------------------------------------
