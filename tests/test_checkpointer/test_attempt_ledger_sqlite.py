@@ -13,11 +13,14 @@ Review probes (wave-A FIX-FIRST verdict):
     FA1b reservation race               test_async_sync_reservation_race_reserves_exactly_once
     FA1c orphan/foreign keys            test_foreign_keys_enforced_on_both_connections,
                                         test_retention_prune_not_observed_half_applied
+    FA2a lazy initialization race       test_lazy_initialization_is_not_cross_committed_by_save_step
+    FA2b rollback visibility            test_get_steps_does_not_observe_rolled_back_atomic_close
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sqlite3
 import threading
@@ -111,14 +114,14 @@ async def test_reservation_writes_through_while_step_record_is_buffered(tmp_path
     # After the exit flush the buffered steps landed; the reservation persists.
     second = sqlite3.connect(path)
     try:
-        (steps_after,) = second.execute("SELECT COUNT(*) FROM steps WHERE run_id = 'wf-exit'").fetchone()
+        (produce_steps_after,) = second.execute("SELECT COUNT(*) FROM steps WHERE run_id = 'wf-exit' AND node_name = 'produce'").fetchone()
         (reserved_after,) = second.execute(
             "SELECT COUNT(*) FROM attempt_records WHERE series_id = ? AND status = 'started'",
             (probe["series_id"],),
         ).fetchone()
     finally:
         second.close()
-    assert steps_after >= 1
+    assert produce_steps_after == 1
     assert reserved_after == 1
 
 
@@ -347,6 +350,96 @@ def _pause_on_sql(cp, fragment: str, monkeypatch) -> tuple[asyncio.Event, asynci
 
     monkeypatch.setattr(cp._db, "execute", wrapper)
     return entered, hold
+
+
+async def test_lazy_initialization_is_not_cross_committed_by_save_step(tmp_path, monkeypatch):
+    """Review probe: a write cannot use the connection before init commits."""
+    cp = SqliteCheckpointer(str(tmp_path / "init-race.db"))
+    cp.create_run_sync(RUN, graph_name="g")
+    entered = asyncio.Event()
+    hold = asyncio.Event()
+    real_connect = cp._aiosqlite.connect
+
+    async def connect_with_paused_first_commit(*args, **kwargs):
+        db = await real_connect(*args, **kwargs)
+        real_commit = db.commit
+        commit_count = 0
+
+        async def commit() -> None:
+            nonlocal commit_count
+            commit_count += 1
+            if commit_count == 1:
+                entered.set()
+                await hold.wait()
+            await real_commit()
+
+        monkeypatch.setattr(db, "commit", commit)
+        return db
+
+    monkeypatch.setattr(cp._aiosqlite, "connect", connect_with_paused_first_commit)
+    initialize_task = asyncio.create_task(cp.initialize())
+    save_task = None
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        save_task = asyncio.create_task(cp.save_step(_step()))
+        await asyncio.sleep(0.3)
+        save_finished_before_initialization = save_task.done()
+
+        hold.set()
+        await initialize_task
+        await save_task
+
+        assert not save_finished_before_initialization, "save_step cross-committed the initializer's transaction"
+    finally:
+        hold.set()
+        if not initialize_task.done():
+            await initialize_task
+        if save_task is not None and not save_task.done():
+            await save_task
+        await cp.close()
+
+
+async def test_get_steps_does_not_observe_rolled_back_atomic_close(tmp_path, monkeypatch):
+    """Review probe: shared-connection reads cannot see a step later rolled back."""
+    cp = SqliteCheckpointer(str(tmp_path / "read-rollback-race.db"))
+    close_task = None
+    read_task = None
+    try:
+        await cp.create_run(RUN, graph_name="g")
+        series = await cp.open_attempt_series(RUN, NODE, policy_fingerprint=FP, max_attempts=3)
+        first = await cp.begin_attempt(series.id, policy_fingerprint=FP, scheduled_superstep=0)
+
+        # Pause after the StepRecord insert but before the series close. Cancelling
+        # the close at this seam forces its whole transaction to roll back.
+        entered, hold = _pause_on_sql(cp, "UPDATE attempt_series SET closed_at", monkeypatch)
+        close_task = asyncio.create_task(
+            cp.close_attempt_series(
+                series.id,
+                first.attempt_number,
+                AttemptStatus.SUCCEEDED,
+                step_record=_step(attempt_series_id=series.id),
+            )
+        )
+        await asyncio.wait_for(entered.wait(), timeout=10)
+
+        read_task = asyncio.create_task(cp.get_steps(RUN))
+        await asyncio.sleep(0.3)
+        close_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await close_task
+
+        observed_steps = await asyncio.wait_for(read_task, timeout=10)
+        assert all(step.attempt_series_id != series.id for step in observed_steps), "get_steps returned a StepRecord that was rolled back"
+        assert await cp.get_steps(RUN) == []
+    finally:
+        if "hold" in locals():
+            hold.set()
+        for task in (close_task, read_task):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        await cp.close()
 
 
 async def test_competing_settle_cannot_overwrite_settled_attempt(tmp_path, monkeypatch):

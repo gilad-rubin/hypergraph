@@ -434,19 +434,19 @@ class TestLazyInit:
         finally:
             await cp.close()
 
-    async def test_concurrent_lazy_initialize_runs_once(self, tmp_path):
+    async def test_concurrent_lazy_initialize_runs_once(self, tmp_path, monkeypatch):
         """Concurrent first-use calls should serialize initialization."""
         cp = SqliteCheckpointer(str(tmp_path / "lazy-race.db"))
-        init_calls = 0
-        original_initialize = cp.initialize
+        connect_calls = 0
+        original_connect = cp._aiosqlite.connect
 
-        async def counted_initialize():
-            nonlocal init_calls
-            init_calls += 1
+        async def counted_connect(*args, **kwargs):
+            nonlocal connect_calls
+            connect_calls += 1
             await asyncio.sleep(0)
-            await original_initialize()
+            return await original_connect(*args, **kwargs)
 
-        cp.initialize = counted_initialize  # type: ignore[method-assign]
+        monkeypatch.setattr(cp._aiosqlite, "connect", counted_connect)
 
         try:
             await asyncio.gather(
@@ -454,7 +454,7 @@ class TestLazyInit:
                 cp.create_run("wf-b"),
                 cp.create_run("wf-c"),
             )
-            assert init_calls == 1
+            assert connect_calls == 1
         finally:
             await cp.close()
 

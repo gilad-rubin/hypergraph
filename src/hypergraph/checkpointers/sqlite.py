@@ -451,19 +451,33 @@ class SqliteCheckpointer(Checkpointer):
 
     async def initialize(self) -> None:
         """Create database and tables if they don't exist."""
-        # For file-backed DBs, create/migrate schema before async connect to avoid
-        # opening a second connection while async holds a write lock.
-        if not self._is_memory:
-            self._ensure_sync_schema()
+        if self._db is not None:
+            return
+        if self._init_lock is None:
+            self._init_lock = asyncio.Lock()
+        async with self._init_lock:
+            if self._db is not None:
+                return
 
-        self._db = await self._aiosqlite.connect(self._connect_path, uri=self._connect_uri)
-        await self._db.execute("PRAGMA journal_mode=WAL")
-        await self._db.execute("PRAGMA foreign_keys=ON")
-        # For in-memory DBs, schema must be created after async connect so the
-        # shared-cache database stays alive across connections.
-        if self._is_memory:
-            self._ensure_sync_schema()
-        await self._db.commit()
+            # For file-backed DBs, create/migrate schema before async connect to
+            # avoid opening a second connection while async holds a write lock.
+            if not self._is_memory:
+                self._ensure_sync_schema()
+
+            db = await self._aiosqlite.connect(self._connect_path, uri=self._connect_uri)
+            try:
+                await db.execute("PRAGMA journal_mode=WAL")
+                await db.execute("PRAGMA foreign_keys=ON")
+                # For in-memory DBs, schema must be created after async connect
+                # so the shared-cache database stays alive across connections.
+                if self._is_memory:
+                    self._ensure_sync_schema()
+                await db.commit()
+            except BaseException:
+                with contextlib.suppress(Exception):
+                    await db.close()
+                raise
+            self._db = db
 
     def _ensure_sync_schema(self) -> None:
         """Set up schema using sync connection (migration logic is sync)."""
@@ -490,13 +504,7 @@ class SqliteCheckpointer(Checkpointer):
 
     async def _ensure_db(self) -> None:
         """Lazy-initialize on first use."""
-        if self._db is not None:
-            return
-        if self._init_lock is None:
-            self._init_lock = asyncio.Lock()
-        async with self._init_lock:
-            if self._db is None:
-                await self.initialize()
+        await self.initialize()
 
     def _txn_lock(self) -> asyncio.Lock:
         """Serialize multi-statement work on the shared async connection.
@@ -504,7 +512,7 @@ class SqliteCheckpointer(Checkpointer):
         aiosqlite shares ONE connection between coroutines, so without this
         lock an interleaved coroutine observes uncommitted half-state and its
         ``commit()`` can commit another coroutine's half-open transaction.
-        Every async write path and every attempt-ledger operation must hold it.
+        Every async operation on the shared connection must hold it.
         """
         if self._async_txn_lock is None:
             self._async_txn_lock = asyncio.Lock()
@@ -645,25 +653,25 @@ class SqliteCheckpointer(Checkpointer):
     async def get_state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:
         """Compute state by folding step values in timestamp execution order."""
         await self._ensure_db()
+        async with self._txn_lock():
+            if superstep is not None:
+                cursor = await self._db.execute(
+                    f"SELECT values_data FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY {_STEP_TIME_ORDER}",
+                    (run_id, superstep),
+                )
+            else:
+                cursor = await self._db.execute(
+                    f"SELECT values_data FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
+                    (run_id,),
+                )
 
-        if superstep is not None:
-            cursor = await self._db.execute(
-                f"SELECT values_data FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY {_STEP_TIME_ORDER}",
-                (run_id, superstep),
-            )
-        else:
-            cursor = await self._db.execute(
-                f"SELECT values_data FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
-                (run_id,),
-            )
-
-        state: dict[str, Any] = {}
-        async for (values_blob,) in cursor:
-            if values_blob is not None:
-                values = self._serializer.deserialize(values_blob)
-                if values:
-                    state.update(values)
-        return state
+            state: dict[str, Any] = {}
+            async for (values_blob,) in cursor:
+                if values_blob is not None:
+                    values = self._serializer.deserialize(values_blob)
+                    if values:
+                        state.update(values)
+            return state
 
     async def get_steps(
         self,
@@ -683,12 +691,13 @@ class SqliteCheckpointer(Checkpointer):
         if not show_internal:
             conditions.append(_PUBLIC_STEP_FILTER)
 
-        cursor = await self._db.execute(
-            f"SELECT {_STEPS_COLS} FROM steps WHERE {' AND '.join(conditions)} ORDER BY {_STEP_TIME_ORDER}",
-            params,
-        )
-        rows = await cursor.fetchall()
-        return StepTable(self._row_to_step(row) for row in rows)
+        async with self._txn_lock():
+            cursor = await self._db.execute(
+                f"SELECT {_STEPS_COLS} FROM steps WHERE {' AND '.join(conditions)} ORDER BY {_STEP_TIME_ORDER}",
+                params,
+            )
+            rows = await cursor.fetchall()
+            return StepTable(self._row_to_step(row) for row in rows)
 
     async def retry_workflow_async(
         self,
@@ -702,8 +711,9 @@ class SqliteCheckpointer(Checkpointer):
         source = await self.get_run_async(source_run_id)
         if source is None:
             raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
-        cursor = await self._db.execute("SELECT COUNT(*) FROM runs WHERE retry_of = ?", (source_run_id,))
-        (retry_count,) = await cursor.fetchone()
+        async with self._txn_lock():
+            cursor = await self._db.execute("SELECT COUNT(*) FROM runs WHERE retry_of = ?", (source_run_id,))
+            (retry_count,) = await cursor.fetchone()
         retry_index = int(retry_count or 0) + 1
         checkpoint = await self.get_checkpoint(source_run_id, superstep=superstep)
         checkpoint.retry_of = source_run_id
@@ -714,14 +724,15 @@ class SqliteCheckpointer(Checkpointer):
     async def get_run_async(self, run_id: str) -> Run | None:
         """Get run metadata."""
         await self._ensure_db()
-        cursor = await self._db.execute(
-            f"SELECT {_RUNS_COLS} FROM runs WHERE id = ?",
-            (run_id,),
-        )
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        return self._row_to_run(row)
+        async with self._txn_lock():
+            cursor = await self._db.execute(
+                f"SELECT {_RUNS_COLS} FROM runs WHERE id = ?",
+                (run_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return self._row_to_run(row)
 
     async def list_runs(
         self,
@@ -760,9 +771,10 @@ class SqliteCheckpointer(Checkpointer):
             query += " LIMIT ?"
             params.append(limit)
 
-        cursor = await self._db.execute(query, params)
-        rows = await cursor.fetchall()
-        return RunTable(self._row_to_run(row) for row in rows)
+        async with self._txn_lock():
+            cursor = await self._db.execute(query, params)
+            rows = await cursor.fetchall()
+            return RunTable(self._row_to_run(row) for row in rows)
 
     async def count_runs(
         self,
@@ -790,9 +802,10 @@ class SqliteCheckpointer(Checkpointer):
             params.append(retry_of)
 
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-        cursor = await self._db.execute(f"SELECT COUNT(*) FROM runs{where}", params)
-        (count,) = await cursor.fetchone()
-        return int(count or 0)
+        async with self._txn_lock():
+            cursor = await self._db.execute(f"SELECT COUNT(*) FROM runs{where}", params)
+            (count,) = await cursor.fetchone()
+            return int(count or 0)
 
     _FTS_FIELDS = frozenset({"node_name", "error"})
 
@@ -805,18 +818,19 @@ class SqliteCheckpointer(Checkpointer):
         fts_query = f"{field}:{query}" if field else query
 
         cols = ", ".join(f"s.{c.strip()}" for c in _STEPS_COLS.split(","))
-        cursor = await self._db.execute(
-            f"""
-            SELECT {cols} FROM steps s
-            JOIN steps_fts fts ON s.id = fts.rowid
-            WHERE steps_fts MATCH ? AND {_PUBLIC_STEP_FILTER_WITH_ALIAS}
-            ORDER BY {_STEP_TIME_ORDER_DESC_WITH_ALIAS}
-            LIMIT ?
-            """,
-            (fts_query, limit),
-        )
-        rows = await cursor.fetchall()
-        return StepTable(self._row_to_step(row) for row in rows)
+        async with self._txn_lock():
+            cursor = await self._db.execute(
+                f"""
+                SELECT {cols} FROM steps s
+                JOIN steps_fts fts ON s.id = fts.rowid
+                WHERE steps_fts MATCH ? AND {_PUBLIC_STEP_FILTER_WITH_ALIAS}
+                ORDER BY {_STEP_TIME_ORDER_DESC_WITH_ALIAS}
+                LIMIT ?
+                """,
+                (fts_query, limit),
+            )
+            rows = await cursor.fetchall()
+            return StepTable(self._row_to_step(row) for row in rows)
 
     # === Attempt Ledger (async) ===
     #
