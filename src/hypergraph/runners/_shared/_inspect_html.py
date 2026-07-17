@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html
-import json
 from functools import lru_cache
 from importlib.resources import files
 from typing import Literal
@@ -13,6 +12,7 @@ from hypergraph.runners._shared._inspect_serialization import (
     serialize_value,
     serialized_value_to_wire,
 )
+from hypergraph.runners._shared._wire import sandboxed_child_document, script_safe_json
 from hypergraph.runners._shared.results import FailureEvidence
 from hypergraph.runners.inspection import InspectionDisplay as InspectionDisplay
 
@@ -289,16 +289,6 @@ def _map_wire(artifact: MapInspection) -> dict[str, object]:
     }
 
 
-def _script_safe_json(payload: dict[str, object]) -> str:
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=True,
-        allow_nan=False,
-        separators=(",", ":"),
-    )
-    return encoded.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-
-
 @lru_cache(maxsize=2)
 def _read_asset(name: str) -> str:
     """Read one packaged renderer asset without a network or runtime dependency."""
@@ -376,7 +366,7 @@ def render_inspection_payload(payload: dict[str, object]) -> str:
         "<noscript>JavaScript is required for local drill-down; the semantic "
         "payload remains embedded in this saved output.</noscript>"
         f'<script type="application/json" data-hg-inspect-payload>'
-        f"{_script_safe_json(payload)}</script>"
+        f"{script_safe_json(payload)}</script>"
         f"<script data-hg-inspect-runtime>{_read_asset('inspect.js')}</script>"
         "</section>"
     )
@@ -428,13 +418,7 @@ def render_map_inspection(artifact: MapInspection) -> str:
 
 def render_inspection_frame(child_html: str) -> str:
     """Isolate one saved inspection renderer from its notebook host."""
-    child_document = (
-        '<!doctype html><html><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        '</head><body style="margin:0">'
-        f"{child_html}"
-        "</body></html>"
-    )
+    child_document = sandboxed_child_document(child_html)
     return (
         '<iframe title="Hypergraph execution inspection" sandbox="allow-scripts" '
         'style="display:block;box-sizing:border-box;width:100%;min-width:0;'
