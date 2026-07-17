@@ -299,7 +299,9 @@ async def test_kill_resume_honors_persisted_backoff(family, make_sqlite, monkeyp
 
     # Resume in a "new process": later clock, recording sleep. The wait must be
     # derived from the PERSISTED wake time — never redrawn, never restarted.
-    resumed_now = frozen_now + timedelta(seconds=1)
+    # The offset derives from the persisted sample (full jitter can draw
+    # arbitrarily small delays, so a fixed offset could overshoot the wake).
+    resumed_now = frozen_now + timedelta(seconds=first.sampled_delay / 2)
     monkeypatch.setattr(attempts_module, "_utcnow", lambda: resumed_now)
     resumed_sleeps: list[float] = []
 
@@ -317,7 +319,8 @@ async def test_kill_resume_honors_persisted_backoff(family, make_sqlite, monkeyp
 
     assert result["fetched"] == 10
     assert calls == [1, 1], "resume continues the same budget with attempt 2"
-    assert resumed_sleeps == [(persisted_wake - resumed_now).total_seconds()]
+    remaining = (persisted_wake - resumed_now).total_seconds()
+    assert resumed_sleeps == ([remaining] if remaining > 0 else []), "the resumed wait derives from the persisted wake time"
 
     records_after = await cp.get_attempt_records(series.id)
     assert records_after[0].retry_not_before == persisted_wake, "persisted wake time must not be redrawn"
@@ -776,6 +779,213 @@ async def test_cycle_reexecution_gets_fresh_series(make_sqlite, recorded_sleeps)
         assert [r.status for r in records] == [AttemptStatus.FAILED, AttemptStatus.SUCCEEDED]
 
 
+# === F1: resume dead ends terminalize the series (link + close) ===
+
+
+async def test_resume_dead_end_over_outcome_unknown_links_and_closes(family, make_sqlite):
+    """Reviewer repro: max_attempts=1, crash-stranded STARTED, resume.
+
+    The dead end must emit a FAILED StepRecord that carries the series id and
+    must close the series — never leave it open with an unlinked step.
+    """
+    cp = make_sqlite()
+    policy = _policy(max_attempts=1)
+    calls: list[int] = []
+
+    @node(output_name="fetched", retry=policy)
+    def flaky(x: int = 1) -> int:
+        calls.append(x)
+        return x
+
+    # Seed the crash: a durably reserved attempt whose process died.
+    await cp.create_run("wf-deadend", graph_name="g")
+    series = await cp.open_attempt_series(
+        "wf-deadend",
+        "flaky",
+        policy_fingerprint=policy.fingerprint,
+        max_attempts=policy.max_attempts,
+    )
+    await cp.begin_attempt(series.id, policy_fingerprint=policy.fingerprint, scheduled_superstep=0)
+
+    from hypergraph.checkpointers import AttemptLedgerError
+
+    runner = _make_runner(family, checkpointer=cp)
+    with pytest.raises(AttemptLedgerError, match="budget exhausted"):
+        await _run(runner, Graph([flaky]), workflow_id="wf-deadend")
+
+    assert calls == [], "no budget remains: user code must not run"
+    closed = await cp.get_attempt_series(series.id)
+    assert closed is not None and not closed.is_open, "the dead end must close the series"
+    records = await cp.get_attempt_records(series.id)
+    assert [r.status for r in records] == [AttemptStatus.OUTCOME_UNKNOWN], "evidence is never rewritten"
+    steps = [s for s in await cp.get_steps("wf-deadend") if s.node_name == "flaky"]
+    assert len(steps) == 1
+    assert steps[0].status is StepStatus.FAILED
+    assert steps[0].attempt_series_id == series.id, "the failed step must link the series"
+    assert await cp.get_open_attempt_series("wf-deadend", "flaky") is None
+
+
+async def test_resume_dead_end_over_expired_window_links_and_closes(family, make_sqlite):
+    """Persisted wake at/beyond deadline_at: end from evidence, link, close."""
+    cp = make_sqlite()
+    policy = _policy(max_attempts=5, retry_window=10.0)
+    calls: list[int] = []
+
+    @node(output_name="fetched", retry=policy)
+    def flaky(x: int = 1) -> int:
+        calls.append(x)
+        return x
+
+    now = datetime.now(timezone.utc)
+    await cp.create_run("wf-window-dead", graph_name="g")
+    series = await cp.open_attempt_series(
+        "wf-window-dead",
+        "flaky",
+        policy_fingerprint=policy.fingerprint,
+        max_attempts=policy.max_attempts,
+        deadline_at=now + timedelta(seconds=10),
+    )
+    reserved = await cp.begin_attempt(series.id, policy_fingerprint=policy.fingerprint, scheduled_superstep=0)
+    from hypergraph.checkpointers import AttemptError, AttemptLedgerError
+
+    await cp.record_attempt_outcome(
+        series.id,
+        reserved.attempt_number,
+        AttemptStatus.FAILED,
+        error=AttemptError.from_exception(ConnectionError("rate limited")),
+        retry_not_before=now + timedelta(seconds=30),  # beyond the deadline
+        sampled_delay=30.0,
+    )
+
+    runner = _make_runner(family, checkpointer=cp)
+    with pytest.raises(AttemptLedgerError, match="deadline"):
+        await _run(runner, Graph([flaky]), workflow_id="wf-window-dead")
+
+    assert calls == [], "the expired window must not admit another invocation"
+    closed = await cp.get_attempt_series(series.id)
+    assert closed is not None and not closed.is_open
+    records = await cp.get_attempt_records(series.id)
+    assert [r.status for r in records] == [AttemptStatus.FAILED]
+    assert records[0].error is not None and records[0].error.type_name == "ConnectionError"
+    steps = [s for s in await cp.get_steps("wf-window-dead") if s.node_name == "flaky"]
+    assert len(steps) == 1 and steps[0].attempt_series_id == series.id
+
+
+# === F3b: the retry window is re-checked AFTER sleeping ===
+
+
+async def test_window_rechecked_after_sleep_before_invoking(family, monkeypatch):
+    """Process-local parity with the persistent path's atomic reservation check."""
+    start = datetime(2026, 7, 17, 12, 0, 0, tzinfo=timezone.utc)
+    clock = {"now": start}
+    monkeypatch.setattr(attempts_module, "_utcnow", lambda: clock["now"])
+
+    def sleeping_advances_past_deadline(seconds: float) -> None:
+        clock["now"] = start + timedelta(seconds=60)
+
+    async def sleeping_advances_past_deadline_async(seconds: float) -> None:
+        clock["now"] = start + timedelta(seconds=60)
+
+    monkeypatch.setattr(attempts_module, "_sleep_sync", sleeping_advances_past_deadline)
+    monkeypatch.setattr(attempts_module, "_sleep_async", sleeping_advances_past_deadline_async)
+
+    calls: list[int] = []
+    underlying = ConnectionError("transient")
+
+    @node(output_name="fetched", retry=_policy(max_attempts=5, retry_window=30.0))
+    def flaky(x: int) -> int:
+        calls.append(x)
+        raise underlying
+
+    runner = _make_runner(family)
+    with pytest.raises(ConnectionError) as exc_info:
+        await _run(runner, Graph([flaky]), {"x": 1})
+
+    assert exc_info.value is underlying
+    assert calls == [1], "a wait that outlived the window must not invoke again"
+
+
+# === F4: the concurrency permit covers in-flight invocations, not backoff ===
+
+
+async def test_attempt_scope_wraps_each_invocation_not_backoff(monkeypatch):
+    """The injected per-attempt scope enters/exits around each invocation;
+    backoff sleeps happen outside it (#218: budget covers in-flight callables)."""
+    from contextlib import asynccontextmanager
+
+    events: list[str] = []
+
+    async def recording_sleep(seconds: float) -> None:
+        events.append("sleep")
+
+    monkeypatch.setattr(attempts_module, "_sleep_async", recording_sleep)
+
+    @asynccontextmanager
+    async def scope():
+        events.append("enter")
+        try:
+            yield
+        finally:
+            events.append("exit")
+
+    calls: list[int] = []
+
+    async def invoke():
+        calls.append(1)
+        if len(calls) == 1:
+            raise ConnectionError("transient")
+        return {"fetched": 1}
+
+    result = await attempts_module.run_attempts_async(
+        invoke,
+        node_name="flaky",
+        policy=_policy(),
+        checkpointer=None,
+        run_id=None,
+        scheduled_superstep=0,
+        attempt_scope=scope,
+    )
+
+    assert result == {"fetched": 1}
+    assert events == ["enter", "exit", "sleep", "enter", "exit"], "backoff must not hold the permit"
+
+
+async def test_backoff_releases_concurrency_permit(monkeypatch):
+    """With max_concurrency=1, node B must run while node A sleeps in backoff."""
+    b_ran = asyncio.Event()
+
+    async def blocking_sleep(seconds: float) -> None:
+        # A's backoff completes only once B has run — impossible if the
+        # permit is held across the sleep.
+        await asyncio.wait_for(b_ran.wait(), timeout=5)
+
+    monkeypatch.setattr(attempts_module, "_sleep_async", blocking_sleep)
+
+    a_calls: list[int] = []
+    b_calls: list[int] = []
+
+    @node(output_name="a_out", retry=_policy())
+    async def worker_a(x: int) -> int:
+        a_calls.append(x)
+        if len(a_calls) == 1:
+            raise ConnectionError("transient")
+        return x + 1
+
+    @node(output_name="b_out")
+    async def worker_b(x: int) -> int:
+        b_calls.append(x)
+        b_ran.set()
+        return x + 2
+
+    runner = AsyncRunner()
+    result = await runner.run(Graph([worker_a, worker_b]), {"x": 1}, max_concurrency=1)
+
+    assert result["a_out"] == 2
+    assert result["b_out"] == 3
+    assert a_calls == [1, 1]
+    assert b_calls == [1]
+
+
 # === Backoff math (pure helpers) ===
 
 
@@ -815,3 +1025,22 @@ class TestBackoffMath:
         assert decision.sampled_delay == 30.0
         assert decision.effective_delay == 30.0
         assert decision.retry_not_before == now + timedelta(seconds=30.0)
+
+    @pytest.mark.parametrize(
+        ("multiplier", "initial", "attempt"),
+        [
+            (1e308, 1.0, 2),  # exponential base overflow
+            (2.0, 1.0, 1100),  # deep-attempt exponent overflow
+            (10.0, 1e308, 5),  # product overflow
+            (1e308, 1e308, 1099),  # both extremes
+        ],
+    )
+    def test_extreme_policies_cap_at_max_delay_without_overflow(self, multiplier, initial, attempt):
+        # F3a: valid extreme policies must yield max_delay, never OverflowError.
+        policy = _policy(initial_delay=initial, backoff_multiplier=multiplier, max_delay=60.0)
+        assert attempts_module.nominal_delay(policy, attempt) == 60.0
+        now = datetime.now(timezone.utc)
+        decision = attempts_module.draw_backoff(
+            _policy(initial_delay=initial, backoff_multiplier=multiplier, max_delay=60.0, jitter="none"), attempt, now=now
+        )
+        assert decision.sampled_delay == 60.0
