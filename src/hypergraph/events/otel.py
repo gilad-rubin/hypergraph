@@ -377,7 +377,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         )
 
     def on_route_decision(self, event: RouteDecisionEvent) -> None:
-        target_span = self._spans.get(event.node_span_id) or (self._spans.get(event.parent_span_id) if event.parent_span_id else None)
+        target_span = self._spans.get(event.node_span_id) or (self._spans.get(event.parent_span_id) if event.parent_span_id else None)  # type: ignore[arg-type]
         if target_span is None:
             return
         decision = event.decision if isinstance(event.decision, str) else ",".join(event.decision)

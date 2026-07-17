@@ -130,7 +130,7 @@ def interrupt(
             wait_for=wait_for,
             hide=hide,
         )
-        int_node.__wrapped__ = func
+        int_node.__wrapped__ = func  # type: ignore[attr-defined]
         return int_node
 
     return decorator

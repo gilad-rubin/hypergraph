@@ -21,7 +21,7 @@ InspectionDeliveryState = Literal["live", "stale", "saved"]
 
 
 def _serialized(value: object) -> dict[str, object]:
-    return serialized_value_to_wire(serialize_value(value))
+    return serialized_value_to_wire(serialize_value(value))  # type: ignore[return-value]
 
 
 def _failure_wire(

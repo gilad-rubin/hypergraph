@@ -114,7 +114,7 @@ class RichProgressProcessor(TypedEventProcessor, AsyncEventProcessor):
 
     async def on_event_async(self, event: object) -> None:
         """Dispatch synchronously, yielding only after structural notebook work."""
-        self.on_event(event)
+        self.on_event(event)  # type: ignore[arg-type]
         if self._renderer.take_async_flush():
             import asyncio
 

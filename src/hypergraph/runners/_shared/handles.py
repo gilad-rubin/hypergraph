@@ -19,7 +19,7 @@ def _raise_result_failure(result: object) -> None:
     if isinstance(result, RunResult):
         run_results = (result,)
     elif isinstance(result, MapResult):
-        run_results = result.results
+        run_results = result.results  # type: ignore[assignment]
     else:
         return
 

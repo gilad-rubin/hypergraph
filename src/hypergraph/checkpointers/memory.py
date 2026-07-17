@@ -49,7 +49,7 @@ class MemoryCheckpointer(Checkpointer):
     process — the ledger survives in-process resume, not process exit.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self._runs: dict[str, Run] = {}
         self._steps: dict[str, dict[tuple[int, str], StepRecord]] = {}
@@ -319,7 +319,7 @@ class MemoryCheckpointer(Checkpointer):
         run_steps = self._steps.setdefault(step_record.run_id, {})
         run_steps[(step_record.superstep, step_record.node_name)] = step_record
         if settle:
-            records[attempt_number] = replace(record, status=status, completed_at=now, error=error)
+            records[attempt_number] = replace(record, status=status, completed_at=now, error=error)  # type: ignore[assignment,type-var]
         self._attempt_series[series_id] = replace(series, closed_at=now, committed_superstep=step_record.superstep)
         self._apply_retention_policy(step_record.run_id)
 

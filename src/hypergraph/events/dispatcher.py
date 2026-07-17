@@ -85,7 +85,7 @@ class EventDispatcher:
                         exc_info=True,
                     )
         if first_error is not None:
-            raise first_error[1].with_traceback(first_error[2])
+            raise first_error[1].with_traceback(first_error[2])  # type: ignore[union-attr]
 
     async def shutdown_async(self) -> None:
         """Shut down all processors, using async when available. Best-effort unless strict."""

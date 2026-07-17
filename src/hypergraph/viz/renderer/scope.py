@@ -104,7 +104,7 @@ def get_ancestor_chain(node_id: str, flat_graph: nx.DiGraph) -> list[str]:
         parent = get_parent(current, flat_graph)
         if parent is not None:
             ancestors.append(parent)
-        current = parent
+        current = parent  # type: ignore[assignment]
     return ancestors
 
 
@@ -156,7 +156,7 @@ def is_output_externally_consumed(
     source_container = source_node if source_attrs.get("node_type") == "GRAPH" else source_parent
 
     for node_id, attrs in flat_graph.nodes(data=True):
-        if output_param in attrs.get("inputs", ()) and not is_descendant_of(node_id, source_container, flat_graph):
+        if output_param in attrs.get("inputs", ()) and not is_descendant_of(node_id, source_container, flat_graph):  # type: ignore[arg-type]
             return True
 
     return False

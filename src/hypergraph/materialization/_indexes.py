@@ -109,12 +109,12 @@ class IndexPolicy:
 
     def search(
         self,
-        query_vector: list[float],
+        query_vector: list[float],  # type: ignore[valid-type]
         *,
         index: str,
         limit: int,
         where: Any,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]]:  # type: ignore[valid-type]
         indexes = self._load()
         if index not in indexes:
             raise KeyError(f"no index named {index!r}; known indexes: {sorted(indexes)}")

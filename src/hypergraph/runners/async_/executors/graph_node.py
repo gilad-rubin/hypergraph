@@ -112,7 +112,7 @@ class AsyncGraphNodeExecutor:
                 existing_child_run = await child_cp.get_run_async(child_workflow_id)
                 if existing_child_run is not None:
                     if existing_child_run.status is WorkflowStatus.COMPLETED:
-                        parent_steps = await parent_cp.get_steps(ctx.workflow_id, show_internal=True)
+                        parent_steps = await parent_cp.get_steps(ctx.workflow_id, show_internal=True)  # type: ignore[arg-type]
                         if not has_prior_completion_evidence(parent_steps, node):
                             # Crash-window recovery: the child committed COMPLETED
                             # but this parent step was never persisted. Restore the
@@ -235,7 +235,7 @@ class AsyncGraphNodeExecutor:
                 for result in results:
                     if result.log is not None:
                         ctx.on_inner_log(result.log)
-            return collect_as_lists(results, node, error_handling)
+            return collect_as_lists(results, node, error_handling)  # type: ignore[arg-type]
 
         # Only pass checkpoint kwargs if the delegated runner supports checkpointing
         run_kwargs: dict[str, Any] = {

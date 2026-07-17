@@ -29,7 +29,7 @@ def build_expansion_state(flat_graph: nx.DiGraph, depth: int) -> dict[str, bool]
         if attrs.get("node_type") == "GRAPH":
             parent_id = attrs.get("parent")
             expansion_state[node_id] = is_node_expanded(node_id, parent_id, depth, flat_graph)
-    return expansion_state
+    return expansion_state  # type: ignore[return-value]
 
 
 def is_node_expanded(
@@ -122,7 +122,7 @@ def is_descendant_of(node_id: str, ancestor_id: str, flat_graph: nx.DiGraph) -> 
         parent = get_parent(current, flat_graph)
         if parent == ancestor_id:
             return True
-        current = parent
+        current = parent  # type: ignore[assignment]
     return False
 
 

@@ -113,7 +113,7 @@ def _plain_value_payload(value: Any) -> str | None:
             if part is None:
                 return None
             parts.append(f"{key!s}={part}")
-        return f"dict:{{{','.join(parts)}}}"
+        return f"dict:{{{','.join(parts)}}}"  # type: ignore[arg-type]
     return None
 
 

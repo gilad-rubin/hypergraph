@@ -161,7 +161,7 @@ def build_initial_scene(
                 # the container-level DATA node disconnected. Hide it so it
                 # doesn't render as an orphan duplicate.
                 self_expanded = ir_node.node_type == "GRAPH" and bool(expansion_state.get(ir_node.id))
-                scene_node: dict[str, Any] = {
+                scene_node: dict[str, Any] = {  # type: ignore[no-redef]
                     "id": data_node_id,
                     "type": "custom",
                     "position": {"x": 0, "y": 0},
@@ -210,7 +210,7 @@ def build_initial_scene(
                 if separate_outputs and ir_edge.edge_type == "data" and ir_edge.value_names:
                     edges_to_emit = [(value_name, base_source) for value_name in ir_edge.value_names]
                 else:
-                    edges_to_emit = [(None, base_source)]
+                    edges_to_emit = [(None, base_source)]  # type: ignore[list-item]
 
                 for value_name, source in edges_to_emit:
                     if separate_outputs and ir_edge.edge_type == "data" and value_name is not None:
@@ -264,7 +264,7 @@ def build_initial_scene(
         input_node_id = ext.synthetic_id
         seen_targets: set[str] = set()
         for consumer in ext.consumers:
-            target = _resolve_to_visible(consumer, parent_map, expansion_state, visible_ids)
+            target = _resolve_to_visible(consumer, parent_map, expansion_state, visible_ids)  # type: ignore[assignment]
             if target is None or target in seen_targets:
                 continue
             seen_targets.add(target)

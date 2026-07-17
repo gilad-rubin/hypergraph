@@ -469,7 +469,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                             parent_span_id=run_span_id,
                             workflow_id=workflow_id,
                             item_index=ctx_base.item_index,
-                            graph_name=graph.name,
+                            graph_name=graph.name,  # type: ignore[arg-type]
                             superstep=superstep_idx,
                         )
                     )
@@ -513,8 +513,8 @@ class AsyncRunner(AsyncRunnerTemplate):
                     # The interrupt node gets a "paused" status record.
                     if has_checkpointer:
                         step_counter = await self._save_superstep_records(
-                            checkpointer,
-                            workflow_id,
+                            checkpointer,  # type: ignore[arg-type]
+                            workflow_id,  # type: ignore[arg-type]
                             superstep_idx + superstep_offset,
                             state,
                             ready_node_names,
@@ -543,8 +543,8 @@ class AsyncRunner(AsyncRunnerTemplate):
                 # Save step records for executed nodes (even on failure)
                 if has_checkpointer:
                     step_counter = await self._save_superstep_records(
-                        checkpointer,
-                        workflow_id,
+                        checkpointer,  # type: ignore[arg-type]
+                        workflow_id,  # type: ignore[arg-type]
                         superstep_idx + superstep_offset,
                         state,
                         ready_node_names,

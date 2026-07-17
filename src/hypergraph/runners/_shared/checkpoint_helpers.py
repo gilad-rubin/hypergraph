@@ -60,9 +60,9 @@ def build_superstep_records(
         if recorded_child_run_id is not None:
             child_run_id = recorded_child_run_id
         elif child_run_ids is not None and name in child_run_ids:
-            child_run_id = child_run_ids[name]
+            child_run_id = child_run_ids[name]  # type: ignore[assignment]
         else:
-            child_run_id = _compute_child_run_id(
+            child_run_id = _compute_child_run_id(  # type: ignore[assignment]
                 workflow_id,
                 name,
                 graph,

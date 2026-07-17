@@ -214,7 +214,7 @@ def render_run_result_html(result: RunResult) -> str:
             state_key="checkpoint-errors",
         )
     if result.log:
-        body += html_detail("Run Log", result.log._repr_html_(), state_key="run-log")
+        body += html_detail("Run Log", result.log._repr_html_(), state_key="run-log")  # type: ignore[arg-type]
     return theme_wrap(
         html_panel(f"RunResult: {result.run_id}", body),
         state_key=widget_state_key("run-result", result.workflow_id or "", result.run_id),
@@ -354,7 +354,7 @@ def _map_items_drilldown(
         duration = duration_html(result.log.total_duration_ms) if result.log and not result.restored else "—"
         error_label = f' — <span style="color:{ERROR_COLOR}">{type(result.error).__name__}</span>' if result.error else ""
         summary = f"Item {item_index}: {status_badge(display_status)} {duration}{error_label}"
-        item_html = html_detail(summary, result._repr_html_(), state_key=f"item-{item_index}")
+        item_html = html_detail(summary, result._repr_html_(), state_key=f"item-{item_index}")  # type: ignore[arg-type]
         parts.append(f'<div data-hg-map-item="1" data-status="{filter_status}" style="display:block">{item_html}</div>')
 
     controls = html_filter_paginate_controls(
@@ -586,7 +586,7 @@ def render_map_log_html(log: MapLog) -> str:
         row_attrs.append({"data-hg-map-log-item": "1", "data-status": filter_status})
 
         summary = f'Item {i}: {status_badge(status)} {duration} <span style="color:{MUTED_COLOR}">({plural(n_nodes, "node")})</span>'
-        trace_detail = html_detail(summary, item._repr_html_(), state_key=f"map-log-item-{i}")
+        trace_detail = html_detail(summary, item._repr_html_(), state_key=f"map-log-item-{i}")  # type: ignore[arg-type]
         trace_items.append(
             '<div data-hg-map-log-item="1" '
             f'data-status="{filter_status}" '

@@ -55,19 +55,19 @@ def flatten_subgraph_addressing(values: dict[str, Any], graph: Graph) -> dict[st
     flat: dict[str, Any] = {}
     for key, value in values.items():
         child = graph._nodes.get(key) if isinstance(graph._nodes.get(key), GraphNode) else None
-        if isinstance(value, dict) and child is not None and child.namespaced:
+        if isinstance(value, dict) and child is not None and child.namespaced:  # type: ignore[attr-defined]
             if key in flat_input_names:
                 raise ValueError(
                     f"Ambiguous addressing: {key!r} is both a flat input of this graph and the "
                     f"name of a child GraphNode. Pass a flat dict value via the resolved address "
                     f"(e.g., {{{key + '.<inner>'!r}: ...}}) to disambiguate."
                 )
-            for sub_key, sub_value in flatten_subgraph_addressing(value, child.graph).items():
+            for sub_key, sub_value in flatten_subgraph_addressing(value, child.graph).items():  # type: ignore[attr-defined]
                 candidate = f"{key}.{sub_key}"
                 if candidate in child.inputs:
                     full_key = candidate
                 else:
-                    replacement = child.replacement_for_stale_input_address(candidate)
+                    replacement = child.replacement_for_stale_input_address(candidate)  # type: ignore[attr-defined]
                     if replacement is not None:
                         raise ValueError(f"Input address {candidate!r} is no longer valid. Use {replacement!r}.")
                     valid_namespaced = sorted(address for address in child.inputs if address.startswith(f"{key}."))

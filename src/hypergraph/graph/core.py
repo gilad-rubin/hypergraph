@@ -217,7 +217,7 @@ class Graph:
         if isinstance(entrypoint, (str, HyperNode)):
             node_names = (entrypoint.name,) if isinstance(entrypoint, HyperNode) else (entrypoint,)
         elif isinstance(entrypoint, (list, tuple)):
-            node_names = tuple(name.name if isinstance(name, HyperNode) else name for name in entrypoint)
+            node_names = tuple(name.name if isinstance(name, HyperNode) else name for name in entrypoint)  # type: ignore[assignment]
         else:
             raise GraphConfigError("entrypoint must be a node name (str), node object, or a list/tuple of node names/objects")
 
@@ -235,7 +235,7 @@ class Graph:
         if isinstance(shared, str):
             names = (shared,)
         elif isinstance(shared, (list, tuple)):
-            names = tuple(shared)
+            names = tuple(shared)  # type: ignore[assignment]
         else:
             raise GraphConfigError("shared must be a parameter name (str) or a list/tuple of parameter names")
 
@@ -714,9 +714,9 @@ class Graph:
         # Group value names by (source, target) pair because DiGraph supports
         # one edge per pair.
         edge_values: dict[tuple[str, str], list[str]] = defaultdict(list)
-        for (consumer, param), producers in by_input.items():
+        for (consumer, param), producers in by_input.items():  # type: ignore[assignment]
             for producer in producers:
-                edge_values[(producer, consumer)].append(param)
+                edge_values[(producer, consumer)].append(param)  # type: ignore[index]
 
         G.add_edges_from(
             (

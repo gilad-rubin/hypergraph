@@ -305,7 +305,7 @@ class RouteNode(GateNode):
         self.name = resolved_name
         self.func = func
         self.targets = target_list
-        self.descriptions = descriptions
+        self.descriptions = descriptions  # type: ignore[assignment]
         self.fallback = fallback
         self.multi_target = multi_target
         self._cache = cache
