@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import inspect
+import os
+import subprocess
+import sys
+import textwrap
 from dataclasses import dataclass
 
+import pytest
+
+from hypergraph import Graph
 from hypergraph.materialization import (
     ErroredRow,
     RowReceipt,
@@ -11,7 +20,16 @@ from hypergraph.materialization import (
     TableReceipt,
     WriteOutcome,
 )
-from hypergraph.materialization._fingerprint import compute_definition_hash
+from hypergraph.materialization._fingerprint import (
+    compute_definition_hash,
+    compute_node_definition_hash,
+    compute_payload_hash,
+    compute_table_recipe_fingerprint,
+)
+from hypergraph.materialization._provenance import Provenance
+from hypergraph.materialization._recipe_journal import KIND_NODE_SOURCE
+from hypergraph.materialization._schema import TableSpec
+from hypergraph.nodes import FunctionNode
 
 # ---------------------------------------------------------------------------
 # Definition hash
@@ -35,6 +53,16 @@ def sample_derive(utt: Utterance) -> EmbeddedUtterance:
     return EmbeddedUtterance(utt_id=utt.utt_id, text=utt.text, vector=[0.0])
 
 
+class Summarizer:
+    """A configured object whose bound method serves as a derive node."""
+
+    def __init__(self, model: str):
+        self.model = model
+
+    def summarize(self, text: str) -> str:
+        return f"{self.model}:{text}"
+
+
 class TestDefinitionHash:
     def test_deterministic(self):
         h1 = compute_definition_hash(sample_derive)
@@ -46,6 +74,162 @@ class TestDefinitionHash:
             return EmbeddedUtterance(utt_id=utt.utt_id, text=utt.text, vector=[1.0])
 
         assert compute_definition_hash(sample_derive) != compute_definition_hash(other)
+
+    def test_node_definition_hash_attribute_short_circuits(self):
+        """An object exposing ``definition_hash`` (a GraphNode) is its own basis."""
+
+        class FakeGraphNode:
+            definition_hash = "f" * 64
+
+        assert compute_definition_hash(FakeGraphNode()) == "f" * 64
+
+    def test_configured_instances_hash_differently(self):
+        """Bound methods of differently-configured instances are different recipes.
+
+        ``summarizer.summarize`` with ``model="gpt-4"`` derives different content
+        than with ``model="o3"`` — sharing a fingerprint would silently skip the
+        re-derive when the configuration changes.
+        """
+        gpt4 = Summarizer(model="gpt-4")
+        o3 = Summarizer(model="o3")
+
+        assert compute_definition_hash(gpt4.summarize) != compute_definition_hash(o3.summarize)
+
+    def test_same_config_instances_hash_identically(self):
+        """Equal configuration means equal recipe — no spurious re-derives."""
+        assert compute_definition_hash(Summarizer(model="gpt-4").summarize) == compute_definition_hash(Summarizer(model="gpt-4").summarize)
+
+    def test_dynamic_function_hash_is_stable_across_processes(self, tmp_path):
+        """An exec-created function (no retrievable source) fingerprints identically
+        in two separate interpreter processes — a per-process basis (repr address)
+        would mark every such row as drifted on every run."""
+        script = tmp_path / "dynamic_fingerprint.py"
+        script.write_text(
+            textwrap.dedent(
+                """
+                from hypergraph.materialization._fingerprint import compute_definition_hash
+
+                namespace = {}
+                exec("def derive(text): return text.upper()", namespace)
+                print(compute_definition_hash(namespace["derive"]))
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        outputs = []
+        for seed in ("1", "2"):
+            result = subprocess.run(
+                [sys.executable, str(script)],
+                check=True,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PYTHONHASHSEED": seed},
+            )
+            outputs.append(result.stdout.strip())
+
+        assert len(set(outputs)) == 1
+        assert len(outputs[0]) == 64
+
+    def test_ordinary_function_keeps_source_hash_basis(self):
+        """A module-level function's fingerprint is the sha256 of its source text —
+        the same value the pre-hardening scheme produced, so existing rows derived
+        from plain functions do NOT re-derive."""
+        expected = hashlib.sha256(inspect.getsource(sample_derive).encode()).hexdigest()
+
+        assert compute_definition_hash(sample_derive) == expected
+
+    def test_bound_method_hash_departs_from_bare_source_hash(self):
+        """A configured instance's bound method no longer hashes to bare source:
+        instance state joins the fingerprint. Rows previously derived from such
+        nodes re-derive once after this change (see changelog)."""
+        bound = Summarizer(model="gpt-4").summarize
+        bare_source_hash = hashlib.sha256(inspect.getsource(bound).encode()).hexdigest()
+
+        assert compute_definition_hash(bound) != bare_source_hash
+
+
+class MutatingSummarizer:
+    """A component whose execution mutates its own state (a call counter)."""
+
+    def __init__(self, model: str):
+        self.model = model
+        self.calls = 0
+
+    def summarize(self, text: str) -> str:
+        self.calls += 1
+        return f"{self.model}:{text}"
+
+
+class TestNodeIdentity:
+    def test_recipe_fingerprint_stable_across_instance_mutation(self):
+        """Recipe identity is captured at NODE CONSTRUCTION: executing a
+        bound-method node that mutates its instance (a counter, a cache, a
+        client) must not change the table's recipe fingerprint run over run."""
+        summarizer = MutatingSummarizer(model="gpt-4")
+        n = FunctionNode(summarizer.summarize, output_name="summary")
+        graph = Graph([n])
+
+        before = compute_table_recipe_fingerprint(graph, {})
+        summarizer.summarize("hello")  # execution mutates self.calls
+        after = compute_table_recipe_fingerprint(graph, {})
+
+        assert before == after
+        assert before == compute_table_recipe_fingerprint(graph, {})
+
+    def test_recipe_entries_use_node_hash_for_functionless_nodes(self):
+        """A functionless producer (a GraphNode) journals under ITS definition
+        hash — never under a hash of None."""
+
+        class SubgraphNode:
+            definition_hash = "a" * 64
+            inputs = ()
+            name = "child"
+
+        provenance = Provenance(
+            graph=None,
+            spec=TableSpec(name="t", identity="id", columns=[]),
+            components={},
+            column_graphs={},
+        )
+
+        entries = provenance.recipe_entries(SubgraphNode())
+
+        assert entries[0].kind == KIND_NODE_SOURCE
+        assert entries[0].hash == "a" * 64
+
+    def test_non_callable_without_definition_hash_is_rejected(self):
+        """A non-callable that is neither a node nor a definition fails loudly —
+        a silent repr-based hash would differ in every process."""
+        with pytest.raises(TypeError, match="definition_hash"):
+            compute_definition_hash(object())
+
+    def test_node_identity_is_construction_time_definition_hash(self):
+        """The identity used for recipes IS the node's captured hash, frozen at
+        construction — not a re-capture of the live instance."""
+        summarizer = MutatingSummarizer(model="gpt-4")
+        n = FunctionNode(summarizer.summarize, output_name="summary")
+        captured = n.definition_hash
+
+        summarizer.summarize("x")
+
+        assert compute_node_definition_hash(n) == captured
+
+    def test_raw_callable_falls_back_to_definition_hash(self):
+        """A raw callable that never passed through node construction hashes as
+        its own definition."""
+        assert compute_node_definition_hash(sample_derive) == compute_definition_hash(sample_derive)
+
+
+class TestPayloadHash:
+    def test_payload_hash_is_content_hash(self):
+        """A recipe payload string (config repr, bound-value text) keys the journal
+        by its content, not by any function-identity scheme."""
+        payload = "str:'sentence'"
+
+        assert compute_payload_hash(payload) == hashlib.sha256(payload.encode()).hexdigest()
+        assert compute_payload_hash(payload) == compute_payload_hash(payload)
+        assert compute_payload_hash(payload) != compute_payload_hash("str:'paragraph'")
 
 
 # ---------------------------------------------------------------------------
