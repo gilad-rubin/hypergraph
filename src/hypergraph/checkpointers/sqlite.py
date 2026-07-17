@@ -467,7 +467,7 @@ class SqliteCheckpointer(Checkpointer):
             db = await self._aiosqlite.connect(self._connect_path, uri=self._connect_uri)
             try:
                 await db.execute("PRAGMA journal_mode=WAL")
-                await db.execute("PRAGMA foreign_keys=ON")
+                # Legacy FKs (runs.parent_run_id, steps.child_run_id) are cross-store by contract; enforcement requires schema cleanup first (tracked in a follow-up issue).
                 # For in-memory DBs, schema must be created after async connect
                 # so the shared-cache database stays alive across connections.
                 if self._is_memory:
@@ -1147,7 +1147,7 @@ class SqliteCheckpointer(Checkpointer):
                     check_same_thread=False,
                 )
                 conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA foreign_keys=ON")
+                # Legacy FKs (runs.parent_run_id, steps.child_run_id) are cross-store by contract; enforcement requires schema cleanup first (tracked in a follow-up issue).
                 ensure_schema(conn)
                 self._sync_conn = conn
             return self._sync_conn

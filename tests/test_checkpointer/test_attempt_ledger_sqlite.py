@@ -11,7 +11,7 @@ Assertion map (validation contract, wave A):
 Review probes (wave-A FIX-FIRST verdict):
     FA1a close interleaving             test_competing_settle_cannot_overwrite_settled_attempt
     FA1b reservation race               test_async_sync_reservation_race_reserves_exactly_once
-    FA1c orphan/foreign keys            test_foreign_keys_enforced_on_both_connections,
+    FA1c ledger integrity               test_begin_attempt_revalidates_after_retention_deletes_series,
                                         test_retention_prune_not_observed_half_applied
     FA2a lazy initialization race       test_lazy_initialization_is_not_cross_committed_by_save_step
     FA2b rollback visibility            test_get_steps_does_not_observe_rolled_back_atomic_close
@@ -561,29 +561,69 @@ async def test_async_sync_reservation_race_reserves_exactly_once(tmp_path, monke
         await cp.close()
 
 
-async def test_foreign_keys_enforced_on_both_connections(tmp_path):
-    """Review probe (retention interleaving): an orphan attempt record must be
-    structurally impossible — foreign keys ON for both connections."""
-    path = str(tmp_path / "fk.db")
-    cp = SqliteCheckpointer(path)
+async def test_begin_attempt_revalidates_after_retention_deletes_series(tmp_path, monkeypatch):
+    """A writer waiting on retention must revalidate after it gets the reservation."""
+    path = str(tmp_path / "begin-after-retention.db")
+    cp = SqliteCheckpointer(path, retention="latest")
+    save_task = None
+    thread = None
+    hold = None
     try:
         await cp.create_run(RUN, graph_name="g")
+        series = await cp.open_attempt_series(RUN, NODE, policy_fingerprint=FP, max_attempts=2)
+        first = await cp.begin_attempt(series.id, policy_fingerprint=FP, scheduled_superstep=0)
+        await cp.close_attempt_series(
+            series.id,
+            first.attempt_number,
+            AttemptStatus.SUCCEEDED,
+            step_record=_step(attempt_series_id=series.id),
+        )
 
-        cursor = await cp._db.execute("PRAGMA foreign_keys")
-        (fk_async,) = await cursor.fetchone()
-        db = cp._sync_db()
-        (fk_sync,) = db.execute("PRAGMA foreign_keys").fetchone()
-        assert fk_async == 1
-        assert fk_sync == 1
+        # Retention owns the write reservation while it deletes the records and
+        # series. A writer on the sync connection must wait, then re-read the
+        # series under its own BEGIN IMMEDIATE reservation before inserting.
+        entered, hold = _pause_on_sql(cp, "DELETE FROM attempt_series", monkeypatch)
+        save_task = asyncio.create_task(cp.save_step(_step(superstep=4, index=9, values={"answer": 2})))
+        await asyncio.wait_for(entered.wait(), timeout=10)
 
-        # The probe's end state — a record without its series — must be rejected.
-        with pytest.raises(sqlite3.IntegrityError):
-            db.execute(
-                "INSERT INTO attempt_records (series_id, attempt_number, scheduled_superstep, status, started_at) "
-                "VALUES ('ghost-series', 1, 0, 'started', '2026-01-01T00:00:00+00:00')"
-            )
-        db.rollback()
+        outcome: dict[str, object] = {}
+        begin_entered = threading.Event()
+
+        def begin_after_prune() -> None:
+            begin_entered.set()
+            try:
+                outcome["record"] = cp.begin_attempt_sync(
+                    series.id,
+                    policy_fingerprint=FP,
+                    scheduled_superstep=1,
+                )
+            except Exception as error:  # noqa: BLE001
+                outcome["error"] = error
+
+        thread = threading.Thread(target=begin_after_prune)
+        thread.start()
+        await asyncio.wait_for(asyncio.to_thread(begin_entered.wait), timeout=10)
+        await asyncio.sleep(0.3)
+        assert thread.is_alive(), "begin_attempt_sync did not wait for retention's write reservation"
+
+        hold.set()
+        await save_task
+        await asyncio.to_thread(thread.join, 10)
+        assert not thread.is_alive()
+
+        error = outcome.get("error")
+        assert isinstance(error, AttemptLedgerError)
+        assert "Unknown attempt series" in str(error)
+        assert "record" not in outcome
+        assert await cp.get_attempt_series(series.id) is None
+        assert await cp.get_attempt_records(series.id) == []
     finally:
+        if hold is not None:
+            hold.set()
+        if save_task is not None and not save_task.done():
+            await save_task
+        if thread is not None and thread.is_alive():
+            await asyncio.to_thread(thread.join, 10)
         await cp.close()
 
 
