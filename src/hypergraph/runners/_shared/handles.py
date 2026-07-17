@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from concurrent.futures import Future
 from typing import Any, Generic, TypeVar
 
@@ -72,7 +72,7 @@ class AsyncRunEventHandle(AsyncEventProcessor):
 
     def __init__(
         self,
-        operation: Callable[[], Awaitable[RunResult]],
+        operation: Callable[[], Coroutine[Any, Any, RunResult]],
         live_tasks: set[asyncio.Task[Any]],
         *,
         buffer_size: int,
