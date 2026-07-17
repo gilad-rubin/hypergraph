@@ -18,7 +18,7 @@ from hypergraph.runners._shared.event_metadata import (
     RunContext,
     RunLineage,
 )
-from hypergraph.runners._shared.handles import AsyncHandle, _launch_async_execution
+from hypergraph.runners._shared.handles import AsyncHandle, AsyncRunEventHandle, _launch_async_execution
 from hypergraph.runners._shared.input_normalization import runner_option_names
 from hypergraph.runners._shared.outputs import SELECT_UNSET
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
@@ -133,6 +133,74 @@ class AsyncRunner(AsyncRunnerTemplate):
                   Accessible via ``StopRequestedEvent.info``.
         """
         self._active_workflows.stop(workflow_id, info=info)
+
+    def iter(
+        self,
+        graph: Graph,
+        values: dict[str, Any] | None = None,
+        *,
+        select: str | list[str] = SELECT_UNSET,
+        on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        entrypoint: str | None = None,
+        max_iterations: int | None = None,
+        max_concurrency: int | None = None,
+        inspect: bool = False,
+        event_processors: list[EventProcessor] | None = None,
+        show_progress: bool | None = None,
+        checkpoint: Checkpoint | None = None,
+        workflow_id: str | None = None,
+        override_workflow: bool = False,
+        fork_from: str | None = None,
+        retry_from: str | None = None,
+        buffer_size: int = 128,
+        **input_values: Any,
+    ) -> AsyncRunEventHandle:
+        """Return a context-managed iterator over one live run's events.
+
+        The returned handle must be used with ``async with``. Lifecycle events
+        are retained; ``StreamingChunkEvent`` is a lossy preview channel when
+        its bounded buffer fills. ``handle.result()`` returns the normal
+        ``RunResult`` after iteration settles.
+        """
+        reject_background_runner_options(
+            input_values,
+            start_method="AsyncRunner.iter",
+            reserved_option_names=runner_option_names(
+                self.run,
+                include_private=True,
+            )
+            | runner_option_names(self.map, include_private=True),
+        )
+
+        handle: AsyncRunEventHandle
+
+        async def execute() -> RunResult:
+            return await self.run(
+                graph,
+                values,
+                select=select,
+                on_missing=on_missing,
+                entrypoint=entrypoint,
+                max_iterations=max_iterations,
+                max_concurrency=max_concurrency,
+                inspect=inspect,
+                error_handling="continue",
+                event_processors=[handle, *(event_processors or [])],
+                show_progress=show_progress,
+                checkpoint=checkpoint,
+                workflow_id=workflow_id,
+                override_workflow=override_workflow,
+                fork_from=fork_from,
+                retry_from=retry_from,
+                **input_values,
+            )
+
+        handle = AsyncRunEventHandle(
+            execute,
+            self._background_tasks,
+            buffer_size=buffer_size,
+        )
+        return handle
 
     def start_run(
         self,

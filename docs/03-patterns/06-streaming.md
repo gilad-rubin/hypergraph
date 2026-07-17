@@ -122,7 +122,7 @@ result = await runner.run(rag_pipeline, {"query": "How do I use hypergraph?"})
 
 ## Consuming Streaming Events
 
-`ctx.stream()` emits `StreamingChunkEvent`s through the event system. Consume them with an event processor:
+`ctx.stream()` emits `StreamingChunkEvent`s through the event system. Event processors remain useful for a host-owned sink:
 
 ```python
 from hypergraph import TypedEventProcessor, StreamingChunkEvent
@@ -134,7 +134,24 @@ class StreamToWebSocket(TypedEventProcessor):
 result = await runner.run(graph, values, event_processors=[StreamToWebSocket()])
 ```
 
-> **Planned, not implemented:** a `runner.iter()` API that exposes a run's events as an async iterator is a design decision, not a shipped feature — no runner has an `.iter()` method today. See [ADR 0002](../adr/0002-stream-materialization-through-runner-with-sinks.md) for the decision record. Until it ships, event processors are the way to consume streaming chunks.
+For hosts that need to pull a run's existing typed event stream, `AsyncRunner.iter()` returns a context-managed handle. It yields lifecycle events and delivered preview chunks in their execution order; after the stream ends, `result()` returns the normal `RunResult` (and raises the run failure by default):
+
+```python
+from hypergraph import AsyncRunner, NodeEndEvent, StreamingChunkEvent
+
+runner = AsyncRunner()
+
+async with runner.iter(graph, values) as handle:
+    async for event in handle:
+        if isinstance(event, StreamingChunkEvent):
+            await websocket.send_text(event.chunk)
+        elif isinstance(event, NodeEndEvent):
+            logger.info("%s finished", event.node_name)
+
+result = await handle.result()
+```
+
+The context manager is required. Leaving it early cancels the live run and waits for processors to settle. The handle retains at most **128 events** by default (`buffer_size=` changes that limit). Lifecycle events are never dropped; if a slow consumer fills the buffer, the oldest queued `StreamingChunkEvent` is discarded first. `handle.dropped_chunks` reports the total discarded preview chunks. Preview delivery therefore never backpressures graph execution; hosts that require every chunk should use their own event processor and transport policy.
 
 ## Streaming Batch Results with map_iter()
 
@@ -184,9 +201,11 @@ Choose by what the caller needs:
 - `start_map()` returns a process-local control handle immediately, accumulates
   the settled `MapResult`, and supports cooperative `handle.stop()`.
 
-Handles do not expose an item iterator. If a UI needs both live progress and a
-final background result, attach an event processor to `start_map()` and
-retrieve the result from the handle after settlement.
+`map_iter()` streams completed map items; `AsyncRunner.iter()` streams events
+from one graph run. Background handles returned by `start_map()` do not expose
+an item iterator. If a UI needs both live progress and a final background map
+result, attach an event processor to `start_map()` and retrieve the result
+after settlement.
 
 ## Multi-Turn Streaming with Stop
 
