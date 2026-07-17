@@ -351,30 +351,39 @@ class LanceDBStore(TableStore):
 
     def _detect_and_fix_vectors(self, table_name: str, row: dict[str, Any]) -> None:
         tbl = self._tables[table_name]
-        schema = tbl.schema
+        # Advance to the latest committed version first: another connection on
+        # the same folder may already have specialized the column. Detecting on
+        # a stale schema would re-run the cast over superseded data (mirrors
+        # ``evolve_schema`` / the read path).
+        tbl.checkout_latest()
         upgrades: dict[str, int] = {}
 
-        for field_obj in schema:
+        for field_obj in tbl.schema:
             if pa.types.is_list(field_obj.type) and not pa.types.is_fixed_size_list(field_obj.type):
                 val = row.get(field_obj.name)
                 if isinstance(val, list) and len(val) > 0 and isinstance(val[0], (int, float)):
                     upgrades[field_obj.name] = len(val)
 
         if upgrades:
-            existing_data = tbl.to_arrow()
-            new_fields = []
-            for field_obj in schema:
-                if field_obj.name in upgrades:
-                    dim = upgrades[field_obj.name]
-                    new_fields.append(pa.field(field_obj.name, pa.list_(pa.float32(), dim)))
-                else:
-                    new_fields.append(field_obj)
-
-            new_schema = pa.schema(new_fields)
-            self._db.drop_table(table_name)
-            tbl = self._db.create_table(table_name, schema=new_schema)
-            if len(existing_data) > 0:
-                tbl.add(existing_data)
-            self._tables[table_name] = tbl
+            # Specialize IN PLACE via LanceDB's native column cast. Lance stages
+            # the rewritten column as new data files and publishes them with a
+            # single atomic manifest commit (a new dataset version) — there is
+            # no drop/recreate window. A failure at ANY point before that commit
+            # leaves the previous version live, so every committed row stays
+            # readable (mirrors the drop-free additive path in ``evolve_schema``).
+            # Preservation is at the TABLE level: the directory may retain
+            # unreachable staged data files from an aborted rewrite, invisible
+            # to readers because no manifest references them.
+            alterations = [{"path": name, "data_type": pa.list_(pa.float32(), dim)} for name, dim in sorted(upgrades.items())]
+            try:
+                tbl.alter_columns(*alterations)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"vector-schema specialization of table {table_name!r} failed while casting "
+                    f"column(s) {sorted(upgrades)} to fixed_size_list<float32> with dims {upgrades}; "
+                    f"the table is preserved unchanged at its last committed version and every "
+                    f"committed row remains readable"
+                ) from exc
+            tbl.checkout_latest()
 
         self._vector_dims[table_name] = upgrades
