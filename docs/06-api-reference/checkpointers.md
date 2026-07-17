@@ -142,6 +142,19 @@ child is never restored as success — resume follows the ordinary failure path,
 re-executing the failed child nodes and resurfacing their error under the
 run's `error_handling` mode.
 
+Recovery is evidence-gated so it never shadows a legitimate re-execution.
+Under `retention="windowed"`, a prior completion of the same GraphNode may
+survive only as folded values in the hidden retention carrier; resume checks
+the raw step history for that evidence. When it exists (for example the next
+turn of a multi-turn conversation), the child re-executes under a fresh
+suffixed child id (`order-100/enrich/1`) with its current inputs — restore
+only happens when no trace of a prior completion exists anywhere.
+
+With a delegated runner (`as_node(runner=...)`), the child workflow persists
+in the delegated runner's checkpointer. Crash recovery reads the child's
+status and outputs from that store, while the parent's own step receipts stay
+in the parent runner's checkpointer.
+
 ## Checkpointer ABC
 
 Every checkpointer implements the same contract, so runners don't need to know which backend is behind `checkpointer=`:
