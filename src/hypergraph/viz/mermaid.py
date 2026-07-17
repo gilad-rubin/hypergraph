@@ -372,7 +372,7 @@ def _render_separate_edges(
 
         elif edge_type == "ordering":
             value_name = value_names[0] if value_names else ""
-            edge_key = (id_allocator.get(source), id_allocator.get(target), f"ord_{value_name}")
+            edge_key = (id_allocator.get(source), id_allocator.get(target), f"ord_{value_name}")  # type: ignore[assignment]
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
                 out.append((_format_ordering_edge(source, target, value_name, id_allocator), "ordering"))
@@ -387,7 +387,7 @@ def _render_separate_edges(
             if actual_target is None:
                 continue
             label = _get_control_label(source, target, flat_graph)
-            edge_key = (id_allocator.get(source), id_allocator.get(actual_target), label or "")
+            edge_key = (id_allocator.get(source), id_allocator.get(actual_target), label or "")  # type: ignore[assignment]
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
                 out.append((_format_control_edge(source, actual_target, label, id_allocator), "control"))

@@ -121,6 +121,7 @@ dev = [
     "hypercache>=0.2.2",
     "ipykernel>=6.31.0",
     "lancedb>=0.33.0",
+    "mypy>=2.3",
     "nbdime>=4.0.0",
     "nbstripout>=0.9.0",
     "openai>=2.43.0",
@@ -193,6 +194,83 @@ filterwarnings = [
     # Ignore numpy.linalg deprecation warning from daft's cloudpickle
     "ignore:The numpy.linalg.linalg has been made private:DeprecationWarning:daft.pickle.cloudpickle",
 ]
+
+[tool.mypy]
+# Typecheck gate for the PEP 561 promise (py.typed ships with this gate; issue #254).
+# Run with: uv run mypy  (CI runs the same command on Python 3.10, the floor).
+python_version = "3.10"
+files = ["src/hypergraph"]
+ignore_missing_imports = true
+
+# --- Burn-down baseline (issue #254) ---
+# Noisy internal modules with pre-existing errors are baselined below so the
+# public surface stays enforced. One block per module, with its error count at
+# baseline time (mypy 2.3.0, 2026-07-17). Remove a block once its module is
+# clean; never add new modules here.
+
+[[tool.mypy.overrides]]
+module = "hypergraph.materialization._conformance" # 3 errors
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "hypergraph.materialization._hypertable" # 26 errors
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "hypergraph.materialization._provenance" # 3 errors
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "hypergraph.materialization._writes" # 5 errors
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "hypergraph.runners._shared._inspect" # 4 errors
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "hypergraph.runners._shared._inspect_serialization" # 73 errors
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "hypergraph.runners._shared._inspect_transport" # 4 errors
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "hypergraph.runners._shared.attempts" # 7 errors
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "hypergraph.runners._shared.event_helpers" # 7 errors
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "hypergraph.runners._shared.readiness" # 3 errors
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "hypergraph.runners._shared.scheduling" # 3 errors
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "hypergraph.runners._shared.template_async" # 27 errors
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "hypergraph.runners._shared.template_sync" # 23 errors
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "hypergraph.runners.async_.superstep" # 14 errors
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "hypergraph.runners.daft.operations" # 11 errors
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "hypergraph.runners.sync.superstep" # 11 errors
+ignore_errors = true
 
 [tool.ruff]
 target-version = "py310"

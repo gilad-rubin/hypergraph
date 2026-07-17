@@ -131,7 +131,7 @@ class Table:
         return {name: normalize_value(value) for name, value in row.items() if not is_internal_column(name)}
 
     def rows(self, where: Any = None, *, limit: int | None = None) -> list[dict[str, Any]]:
-        rows = self._store.read_rows(self.table_name, _predicate(where), limit=limit)
+        rows = self._store.read_rows(self.table_name, _predicate(where), limit=limit)  # type: ignore[arg-type]
         return [{name: normalize_value(value) for name, value in row.items() if not is_internal_column(name)} for row in rows]
 
     def count(self) -> int:

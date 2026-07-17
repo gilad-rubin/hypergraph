@@ -346,7 +346,7 @@ def _hash_code(func: Callable) -> str:
                 try:
                     closure_state.append(("value", cell.cell_contents))
                 except ValueError:
-                    closure_state.append(("empty",))
+                    closure_state.append(("empty",))  # type: ignore[arg-type]
 
         payload = {
             "code": code,

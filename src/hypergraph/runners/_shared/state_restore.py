@@ -80,7 +80,7 @@ def _extract_model_type(hint: Any) -> type | None:
 
     # Optional[Model] / Union[Model, None] / Model | None (PEP 604)
     if origin is Union or isinstance(hint, _types.UnionType):
-        args = [a for a in get_args(hint) if a is not type(None)]
+        args = [a for a in get_args(hint) if a is not type(None)]  # type: ignore[assignment]
         if len(args) == 1 and isinstance(args[0], type) and _is_model_class(args[0]):
             return args[0]
         return None

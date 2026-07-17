@@ -202,7 +202,7 @@ class SyncGraphNodeExecutor:
                 for result in results:
                     if result.log is not None:
                         ctx.on_inner_log(result.log)
-            return collect_as_lists(results, node, error_handling)
+            return collect_as_lists(results, node, error_handling)  # type: ignore[arg-type]
 
         run_kwargs: dict[str, Any] = {
             "event_processors": ctx.event_processors,

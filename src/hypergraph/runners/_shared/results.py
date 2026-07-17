@@ -427,7 +427,7 @@ class MapResult:
 
     # Equality is list-like and RunResult items are mutable, so hashing would
     # either violate the equality contract or work only for empty batches.
-    __hash__ = None
+    __hash__ = None  # type: ignore[assignment]
 
     # --- Aggregate properties ---
 
@@ -812,7 +812,7 @@ class RunLog:
                     "error": s.error,
                     "cached": s.cached,
                     "decision": s.decision,
-                    "inner_log": s.log.to_dict() if s._inner_logs else None,
+                    "inner_log": s.log.to_dict() if s._inner_logs else None,  # type: ignore[union-attr]
                 }
                 for s in self.steps
             ],

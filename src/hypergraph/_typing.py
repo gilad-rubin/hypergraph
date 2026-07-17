@@ -32,7 +32,7 @@ from typing import (
 )
 
 try:
-    from typing import evaluate_forward_ref as _evaluate_forward_ref_public
+    from typing import evaluate_forward_ref as _evaluate_forward_ref_public  # type: ignore[attr-defined]
 except ImportError:
     _evaluate_forward_ref_public = None  # type: ignore[misc,assignment]
 

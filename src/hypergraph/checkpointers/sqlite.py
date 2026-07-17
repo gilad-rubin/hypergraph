@@ -169,7 +169,7 @@ def _row_to_attempt_series(row: tuple[Any, ...]) -> AttemptSeries:
         node_name=row[2],
         policy_fingerprint=row[3],
         max_attempts=int(row[4]),
-        opened_at=_parse_dt(row[5]),
+        opened_at=_parse_dt(row[5]),  # type: ignore[arg-type]
         deadline_at=_parse_dt(row[6]),
         committed_superstep=row[7],
         closed_at=_parse_dt(row[8]),
@@ -183,7 +183,7 @@ def _row_to_attempt_record(row: tuple[Any, ...]) -> AttemptRecord:
         attempt_number=int(row[1]),
         scheduled_superstep=int(row[2]),
         status=AttemptStatus(row[3]),
-        started_at=_parse_dt(row[4]),
+        started_at=_parse_dt(row[4]),  # type: ignore[arg-type]
         completed_at=_parse_dt(row[5]),
         error=error,
         retry_not_before=_parse_dt(row[8]),
@@ -1144,7 +1144,7 @@ class SqliteCheckpointer(Checkpointer):
             decision=decision,
             error=row[9],
             node_type=row[5],
-            created_at=_parse_dt(row[14]),
+            created_at=_parse_dt(row[14]),  # type: ignore[arg-type]
             completed_at=_parse_dt(row[15]),
             child_run_id=row[13],
             partial=bool(row[16]) if len(row) > 16 and row[16] is not None else False,
@@ -1163,7 +1163,7 @@ class SqliteCheckpointer(Checkpointer):
             duration_ms=row[3],
             node_count=row[4] or 0,
             error_count=row[5] or 0,
-            created_at=_parse_dt(row[6]),
+            created_at=_parse_dt(row[6]),  # type: ignore[arg-type]
             completed_at=_parse_dt(row[7]),
             parent_run_id=row[8],
             forked_from=row[9] if len(row) > 9 else None,
@@ -1376,7 +1376,7 @@ class SqliteCheckpointer(Checkpointer):
 
             steps_by_run: dict[str, StepTable] | None = None
             if include_steps:
-                steps_by_run = {row.run.id: self.steps(row.run.id) for row in rows}
+                steps_by_run = {row.run.id: self.steps(row.run.id) for row in rows}  # type: ignore[misc]
 
             return LineageView(
                 rows,

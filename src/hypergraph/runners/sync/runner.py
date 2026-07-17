@@ -412,7 +412,7 @@ class SyncRunner(SyncRunnerTemplate):
                             parent_span_id=run_span_id,
                             workflow_id=workflow_id,
                             item_index=ctx_base.item_index,
-                            graph_name=graph.name,
+                            graph_name=graph.name,  # type: ignore[arg-type]
                             superstep=superstep_idx,
                         )
                     )
@@ -460,7 +460,7 @@ class SyncRunner(SyncRunnerTemplate):
                 if sync_cp:
                     step_counter = _save_superstep_sync(
                         sync_cp,
-                        workflow_id,
+                        workflow_id,  # type: ignore[arg-type]
                         superstep_idx + superstep_offset,
                         state,
                         ready_node_names,

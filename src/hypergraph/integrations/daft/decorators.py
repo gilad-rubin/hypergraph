@@ -62,7 +62,7 @@ def node(
             emit=emit,
             wait_for=wait_for,
         )
-        fn_node.__wrapped__ = func
+        fn_node.__wrapped__ = func  # type: ignore[attr-defined]
         set_node_options(fn_node, daft_options)
         return fn_node
 

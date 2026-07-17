@@ -387,7 +387,7 @@ class GraphNode(HyperNode):
             return inner_type
         if inner_type is None:
             return list
-        return list[inner_type]
+        return list[inner_type]  # type: ignore[valid-type]
 
     def get_output_type(self, output: str) -> type | None:
         """Get type annotation for an output from the inner graph.
@@ -851,13 +851,13 @@ class GraphNode(HyperNode):
         new._error_handling = error_handling
         new._clone = list(normalized_clone) if isinstance(normalized_clone, list) else normalized_clone
         if not hasattr(new, "_map_config"):
-            new._map_config = {}
+            new._map_config = {}  # type: ignore[attr-defined]
         else:
             new._map_config = dict(new._map_config) if new._map_config else {}
         if identity:
-            new._map_config["identity"] = identity
+            new._map_config["identity"] = identity  # type: ignore[attr-defined]
         if schema:
-            new._map_config["schema"] = schema
+            new._map_config["schema"] = schema  # type: ignore[attr-defined]
         return new
 
     def _normalize_map_input_param(self, param: str) -> str:

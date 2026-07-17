@@ -395,7 +395,7 @@ def node(
             retry=retry,
             timeout=timeout,
         )
-        fn_node.__wrapped__ = func
+        fn_node.__wrapped__ = func  # type: ignore[attr-defined]
         return fn_node
 
     if source is not None:

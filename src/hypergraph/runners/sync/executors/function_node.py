@@ -45,7 +45,7 @@ class SyncFunctionNodeExecutor:
         if getattr(node, "_context_param", None) is not None:
             from hypergraph.runners._shared.node_context import build_node_context
 
-            func_inputs[node._context_param] = build_node_context(
+            func_inputs[node._context_param] = build_node_context(  # type: ignore[index]
                 node.name,
                 ctx.emit_fn,
                 run_id=ctx.run_id,

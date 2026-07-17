@@ -242,7 +242,7 @@ def _build_input_group(
     # deepest_owner is then the inner container, but the map_fields live on the
     # outer mapped container). Multi-param INPUT_GROUPs never arise for a single
     # mapped item's fields, so only single-param inputs are considered.
-    leaf = external_input_display_name(raw_params[0]) if raw_params else None
+    leaf = external_input_display_name(raw_params[0]) if raw_params else None  # type: ignore[assignment]
     map_fed = len(raw_params) == 1 and _owner_maps_field(deepest_owner, leaf, map_fed_fields or {}, flat_graph)
     return IRExternalInput(
         params=display_params,
@@ -284,9 +284,9 @@ def _build_ir_edge(
     tgt_attrs = flat_graph.nodes.get(tgt, {})
     if tgt_attrs.get("node_type") == "GRAPH":
         for value_name in value_names:
-            internal = _find_deepest_internal_consumer(tgt, value_name, flat_graph)
+            internal = _find_deepest_internal_consumer(tgt, value_name, flat_graph)  # type: ignore[assignment]
             if internal is not None:
-                target_when_expanded = internal
+                target_when_expanded = internal  # type: ignore[assignment]
                 break
         # Any edge into a container still unresolved here must re-route to the
         # container's entrypoint when the container is expanded, or the scene
