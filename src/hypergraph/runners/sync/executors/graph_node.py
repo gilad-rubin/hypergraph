@@ -9,6 +9,7 @@ from hypergraph.runners._shared._inspect import current_inspection
 from hypergraph.runners._shared.outputs import collect_as_lists
 from hypergraph.runners._shared.state_restore import (
     graphnode_child_workflow_id,
+    has_prior_completion_evidence,
     restore_completed_child_outputs,
 )
 
@@ -100,14 +101,41 @@ class SyncGraphNodeExecutor:
                 existing_child_run = child_cp.get_run(child_workflow_id)
                 if existing_child_run is not None:
                     if existing_child_run.status is WorkflowStatus.COMPLETED:
-                        # Crash-window recovery: the child committed COMPLETED but
-                        # this parent step was never persisted. Restore the child's
-                        # outputs instead of re-invoking the terminal child (which
-                        # would raise WorkflowAlreadyCompletedError). Terminal
-                        # FAILED children fall through to the resume path below so
-                        # their failure resurfaces — never restored-as-success.
-                        return restore_completed_child_outputs(node, child_cp.state(child_workflow_id))
-                    inner_inputs = {}
+                        parent_steps = parent_cp.steps(ctx.workflow_id, show_internal=True)
+                        if not has_prior_completion_evidence(parent_steps, node):
+                            # Crash-window recovery: the child committed COMPLETED
+                            # but this parent step was never persisted. Restore the
+                            # child's outputs instead of re-invoking the terminal
+                            # child (which would raise
+                            # WorkflowAlreadyCompletedError). Terminal FAILED
+                            # children fall through to the resume path below so
+                            # their failure resurfaces — never restored-as-success.
+                            state.graphnode_child_run_ids[node.name] = child_workflow_id
+                            return restore_completed_child_outputs(node, child_cp.state(child_workflow_id))
+                        # A prior completion exists but its execution row was
+                        # compacted away (e.g. windowed retention), so replay
+                        # could not derive the next iteration's suffix. This is
+                        # a legitimate re-execution: advance past completed
+                        # iterations to the in-flight or first free child id.
+                        index = 1
+                        while True:
+                            candidate = f"{child_workflow_id}/{index}"
+                            candidate_run = child_cp.get_run(candidate)
+                            if candidate_run is None:
+                                # Fresh iteration: mirror the already-executed
+                                # path — current inputs, no resume injection.
+                                child_workflow_id = candidate
+                                resume_values = {}
+                                break
+                            if candidate_run.status is not WorkflowStatus.COMPLETED:
+                                # In-flight iteration (paused/failed/stopped):
+                                # resume it from its own checkpoint.
+                                child_workflow_id = candidate
+                                inner_inputs = {}
+                                break
+                            index += 1
+                    else:
+                        inner_inputs = {}
                 elif resume_values:
                     current_parent_run = parent_cp.get_run(ctx.workflow_id) if ctx.workflow_id else None
                     source_parent_run_id = None
@@ -127,6 +155,12 @@ class SyncGraphNodeExecutor:
         else:
             child_fork_from = None
             child_retry_from = None
+
+        # Record the id this execution actually uses so StepRecord receipts
+        # stay truthful even when resolution diverged from the precomputed
+        # candidate (crash-window restore records inside its branch above).
+        if child_workflow_id is not None:
+            state.graphnode_child_run_ids[node.name] = child_workflow_id
 
         if map_config:
             _, mode, error_handling = map_config

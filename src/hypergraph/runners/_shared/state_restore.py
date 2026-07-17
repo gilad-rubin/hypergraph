@@ -384,6 +384,41 @@ def graphnode_child_workflow_id(
     return f"{base}/{iteration}"
 
 
+# Mirrors the private retention-carrier constants in
+# checkpointers/sqlite.py and checkpointers/memory.py.
+_RETENTION_BASELINE_NODE_NAME = "__retained_state__"
+_RETENTION_BASELINE_NODE_TYPE = "RetentionBaseline"
+
+
+def has_prior_completion_evidence(
+    steps: list[StepRecord],
+    node: GraphNode,
+) -> bool:
+    """Durable proof that this parent run already completed this GraphNode.
+
+    Callers must pass raw step history queried with ``show_internal=True``:
+    retention compaction hides its carrier rows from public step reads, and
+    the compacted carrier is exactly where the evidence survives. Two forms:
+
+    - a COMPLETED StepRecord for the node itself (normally consumed by
+      checkpoint replay before the executor runs; kept as belt-and-suspenders),
+    - a retention-baseline carrier whose folded values contain any of the
+      node's outputs — compaction drops the node's own row but keeps its
+      produced values, which proves a prior completion.
+
+    PAUSED/FAILED rows for the node are attempt evidence, not completion
+    evidence: the crash window legitimately contains them.
+    """
+    output_names = set(node.outputs)
+    for step in steps:
+        if step.node_name == node.name and step.status is StepStatus.COMPLETED:
+            return True
+        is_baseline = step.node_name == _RETENTION_BASELINE_NODE_NAME or step.node_type == _RETENTION_BASELINE_NODE_TYPE
+        if is_baseline and step.values and output_names.intersection(step.values):
+            return True
+    return False
+
+
 def restore_completed_child_outputs(
     node: GraphNode,
     child_values: dict[str, Any],
