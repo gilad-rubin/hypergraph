@@ -117,6 +117,69 @@ def test_two_sync_background_runs_share_one_sqlite_checkpointer(tmp_path) -> Non
         asyncio.run(checkpointer.close())
 
 
+async def test_two_async_background_runs_share_one_sqlite_checkpointer(tmp_path) -> None:
+    """Overlapping async handles persist separate truthful rows via one checkpointer."""
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+
+    @node(output_name="doubled")
+    async def gated_double(value: int) -> int:
+        if value == 1:
+            first_entered.set()
+            await asyncio.wait_for(release_first.wait(), timeout=5)
+        return value * 2
+
+    checkpointer = SqliteCheckpointer(
+        str(tmp_path / "two-async-background-runs.db"),
+        policy=CheckpointPolicy(durability="sync"),
+    )
+    runner = AsyncRunner(checkpointer=checkpointer)
+    handles = []
+
+    try:
+        handles.append(
+            runner.start_run(
+                Graph([gated_double]),
+                value=1,
+                workflow_id="async-background-1",
+            )
+        )
+        await asyncio.wait_for(first_entered.wait(), timeout=5)
+        handles.append(
+            runner.start_run(
+                Graph([gated_double]),
+                value=2,
+                workflow_id="async-background-2",
+            )
+        )
+        second_result = await asyncio.wait_for(handles[1].result(), timeout=5)
+
+        # Overlap proof: the second run settled while the first, sharing the
+        # same checkpointer instance, was still gated inside its node.
+        assert not handles[0].done
+
+        release_first.set()
+        first_result = await asyncio.wait_for(handles[0].result(), timeout=5)
+
+        assert [first_result["doubled"], second_result["doubled"]] == [2, 4]
+        assert [
+            checkpointer.get_run("async-background-1").status,
+            checkpointer.get_run("async-background-2").status,
+        ] == [WorkflowStatus.COMPLETED, WorkflowStatus.COMPLETED]
+        assert [(step.run_id, step.node_name, step.values) for step in checkpointer.steps("async-background-1")] == [
+            ("async-background-1", "gated_double", {"doubled": 2})
+        ]
+        assert [(step.run_id, step.node_name, step.values) for step in checkpointer.steps("async-background-2")] == [
+            ("async-background-2", "gated_double", {"doubled": 4})
+        ]
+    finally:
+        release_first.set()
+        for handle in handles:
+            with contextlib.suppress(Exception):
+                await handle.result(raise_on_failure=False)
+        await checkpointer.close()
+
+
 class _EvictionRaceOrderedDict(OrderedDict[str, Any]):
     """Pause one hit between membership and LRU movement."""
 
@@ -175,6 +238,57 @@ def test_overlapping_sync_handles_keep_in_memory_lru_operations_atomic() -> None
 
     assert cached.result()["doubled"] == 2
     assert uncached.result()["doubled"] == 4
+
+
+async def test_overlapping_async_handles_keep_shared_in_memory_cache_truthful() -> None:
+    """Interleaved miss/store/evict traffic from two live handles stays correct."""
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    executions: list[int] = []
+
+    @node(output_name="doubled", cache=True)
+    async def gated_double(value: int) -> int:
+        executions.append(value)
+        if value == 1:
+            first_entered.set()
+            await asyncio.wait_for(release_first.wait(), timeout=5)
+        return value * 2
+
+    cache = InMemoryCache(max_size=1)
+    graph = Graph([gated_double])
+    runner = AsyncRunner(cache=cache)
+
+    slow = runner.start_run(graph, value=1, workflow_id="slow")
+    try:
+        await asyncio.wait_for(first_entered.wait(), timeout=5)
+        fast = runner.start_run(graph, value=2, workflow_id="fast")
+        fast_result = await asyncio.wait_for(fast.result(), timeout=5)
+
+        # Overlap proof: fast ran its cache miss, execution, and store to
+        # completion while slow was still gated between its own miss and store.
+        assert not slow.done
+
+        release_first.set()
+        slow_result = await asyncio.wait_for(slow.result(), timeout=5)
+    finally:
+        release_first.set()
+        with contextlib.suppress(Exception):
+            await slow.result(raise_on_failure=False)
+
+    assert fast_result["doubled"] == 4
+    assert slow_result["doubled"] == 2
+    assert executions == [1, 2]
+
+    # slow's post-overlap store is the newest LRU entry: value=1 replays from
+    # cache without recomputation...
+    replay = await runner.run(graph, value=1)
+    assert replay["doubled"] == 2
+    assert executions == [1, 2]
+
+    # ...and value=2 was evicted by that store (max_size=1), so it recomputes.
+    recompute = await runner.run(graph, value=2)
+    assert recompute["doubled"] == 4
+    assert executions == [1, 2, 2]
 
 
 class _RunEndRecorder(EventProcessor):
