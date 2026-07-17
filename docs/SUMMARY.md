@@ -74,4 +74,5 @@
 * [Philosophy](07-design/philosophy.md)
 * [Inspiration](07-design/inspiration.md)
 * [Roadmap](07-design/roadmap.md)
+* [Release Contract](release.md)
 * [Changelog](changelog.md)

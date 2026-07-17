@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Beta distribution and human-gated release path** — the distribution is now
+  `hypergraph-ai` at `0.2.0b1` with a Beta classifier while the import remains
+  `hypergraph`. A GitHub Release is the only production trigger; separate
+  Trusted Publishing jobs upload prebuilt artifacts to PyPI or, after an
+  explicit manual dry-run input, TestPyPI. A distribution verifier checks the
+  wheel and source distribution package trees, viz/inspect assets, changelog,
+  and forbidden development directories before publication.
+
 - **Native execution inspect mode** — before, users correlated result status,
   logs, map indexes, values, and failures by hand. Now `SyncRunner` and
   `AsyncRunner` accept `inspect=True` on `run()`, `map()`, `start_run()`, and

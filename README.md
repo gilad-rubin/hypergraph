@@ -34,15 +34,16 @@ A unified framework for Python workflow orchestration. DAG pipelines, agentic wo
 </picture>
 
 ## Installation
-(Working on claiming the `hypergraph` name on PyPI from a dormant project.)
+
+The first beta publish is pending. Once it is available:
 
 ```bash
-uv add git+https://github.com/gilad-rubin/hypergraph.git
-# or
-pip install git+https://github.com/gilad-rubin/hypergraph.git
+pip install hypergraph-ai
 ```
 
-> **Alpha**: API may change between releases. Core features are stable — nodes, graphs, runners, routing, and cyclic graphs.
+The distribution is named `hypergraph-ai`; the Python import remains `hypergraph`.
+
+> **Beta**: Stable-beta APIs receive a deprecation warning and at least one minor release of grace before removal. Experimental surfaces are identified in the documentation and may change with changelog notes.
 
 ## Quick Start
 

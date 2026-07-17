@@ -54,7 +54,7 @@ class TestImportGuard:
 
         from hypergraph.events.otel import _require_opentelemetry
 
-        with pytest.raises(ImportError, match="pip install 'hypergraph\\[otel\\]'"):
+        with pytest.raises(ImportError, match="pip install 'hypergraph-ai\\[otel\\]'"):
             _require_opentelemetry()
 
 

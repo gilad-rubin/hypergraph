@@ -5,10 +5,11 @@ Get up and running with hypergraph in 5 minutes.
 ## Installation
 
 ```bash
-uv add git+https://github.com/gilad-rubin/hypergraph.git
-# or
-pip install git+https://github.com/gilad-rubin/hypergraph.git
+pip install hypergraph-ai
 ```
+
+The first beta publish is pending. The distribution name is `hypergraph-ai`;
+the Python import remains `hypergraph`.
 
 ## Your First Graph
 

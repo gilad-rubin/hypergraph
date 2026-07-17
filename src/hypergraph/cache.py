@@ -143,7 +143,7 @@ def _compute_hmac_bytes(hmac_key: bytes, cache_key: str, raw_bytes: bytes) -> st
 class DiskCache:
     """Persistent disk-based cache using diskcache.
 
-    Requires ``pip install hypergraph[cache]``.
+    Requires ``pip install hypergraph-ai[cache]``.
 
     The ``cache`` extra installs both ``diskcache`` for Hypergraph's node-result
     cache backend and ``hypercache`` for optional nested cache observability.
@@ -171,7 +171,7 @@ class DiskCache:
         try:
             import diskcache
         except ImportError:
-            raise ImportError("diskcache is required for DiskCache. Install it with: pip install 'hypergraph[cache]'") from None
+            raise ImportError("diskcache is required for DiskCache. Install it with: pip install 'hypergraph-ai[cache]'") from None
 
         expanded = os.path.expanduser(cache_dir)
         self._cache = diskcache.Cache(expanded, **kwargs)

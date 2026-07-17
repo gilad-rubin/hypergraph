@@ -2,7 +2,7 @@
 
 What's implemented, what's coming, and the vision for hypergraph.
 
-## Current Status: Alpha
+## Current Status: Beta
 
 Core features are working and stable. API may still change before 1.0.
 
