@@ -2106,7 +2106,7 @@ async def test_direct_lineage_and_progress_setup_failures_settle_exact_shells(
 
     error = RuntimeError("PROGRESS-SETUP-BOOM")
 
-    def fail_progress(_processors: object) -> None:
+    def fail_progress(_processors: object, *, carried: object = ()) -> None:
         raise error
 
     monkeypatch.setattr(

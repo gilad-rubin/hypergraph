@@ -444,12 +444,14 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             if effective_show_progress:
                 from hypergraph.runners._shared.scheduling import ensure_progress_processor
 
-                event_processors = ensure_progress_processor(event_processors)
+                # The auto default inspects the merged carried + call-site view:
+                # an explicit Rich processor anywhere suppresses it (issue #207).
+                event_processors = ensure_progress_processor(event_processors, carried=graph.default_event_processors)
             if graph.default_event_processors:
                 # Graph-carried processors merge in front of call-site ones — never
-                # replace, never dedup. Reassigning event_processors also forwards
-                # them into nested GraphNode sub-runs, exactly like call-site
-                # processors.
+                # replace, and user-declared processors are never deduped.
+                # Reassigning event_processors also forwards them into nested
+                # GraphNode sub-runs, exactly like call-site processors.
                 event_processors = [*graph.default_event_processors, *(event_processors or [])]
         except BaseException as error:
             if owns_inspection and inspection_session is not None:
@@ -933,7 +935,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             if effective_show_progress:
                 from hypergraph.runners._shared.scheduling import ensure_progress_processor
 
-                event_processors = ensure_progress_processor(event_processors)
+                # Inspect the merged carried + call-site view before synthesizing
+                # a default; only the call-site list is returned — the map
+                # dispatcher below merges carried processors itself (issue #207).
+                event_processors = ensure_progress_processor(event_processors, carried=graph.default_event_processors)
 
             # One-time graph-structural validation
             validate_runner_compatibility(graph, self.capabilities)
