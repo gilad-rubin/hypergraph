@@ -1,0 +1,35 @@
+flowchart TD
+    %% Start
+    __start__(("Start"))
+    %% Inputs
+    input_raw(["raw: str"])
+    input_request(["request: str"])
+    input_seed(["seed: str"])
+    %% Nodes
+    intake["intake<br/>-----------<br/>signal: str"]
+    dispatch{{"dispatch<br/>---------<br/>_dispatch"}}
+    subgraph worker ["worker"]
+        worker__accumulate["accumulate<br/>------------<br/>history: str"]
+        worker__kickoff["kickoff<br/>-----------<br/>status: str"]
+    end
+    __end__(["End"])
+    %% Edges
+    __start__ --> intake
+    input_raw --> worker__accumulate
+    input_request --> intake
+    input_seed --> worker__kickoff
+    intake --> dispatch
+    dispatch -.-> worker__kickoff
+    dispatch -.-> __end__
+
+    %% Styling
+    classDef function fill:#E8F5E8,stroke:#388E3C,stroke-width:2px,color:#1B5E20
+    classDef branch fill:#FFF8E1,stroke:#FBC02D,stroke-width:2px,color:#F57F17
+    classDef input fill:#E3F2FD,stroke:#1976D2,stroke-width:2px,color:#0D47A1
+    classDef end fill:#ECEFF1,stroke:#546E7A,stroke-width:2px,color:#263238
+    classDef start fill:#ECFDF5,stroke:#10B981,stroke-width:2px,color:#065F46
+    class dispatch branch
+    class __end__ end
+    class intake,worker__accumulate,worker__kickoff function
+    class input_raw,input_request,input_seed input
+    class __start__ start
