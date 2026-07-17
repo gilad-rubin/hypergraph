@@ -13,6 +13,7 @@ from hypergraph.runners._shared.state import GraphState, NodeExecution
 if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Checkpoint
     from hypergraph.graph import Graph
+    from hypergraph.nodes.graph_node import GraphNode
 
 
 def initialize_state(
@@ -353,6 +354,28 @@ def graphnode_child_workflow_id(
     # so advance one step beyond the highest seen value.
     iteration = max(execution.output_versions.values()) if execution.output_versions else max(execution.input_versions.values(), default=0) + 1
     return f"{base}/{iteration}"
+
+
+def restore_completed_child_outputs(
+    node: GraphNode,
+    child_values: dict[str, Any],
+) -> dict[str, Any]:
+    """Project a terminal COMPLETED child workflow's persisted state onto the parent.
+
+    Crash-window recovery: the child workflow committed COMPLETED, but the
+    parent crashed before writing its GraphNode StepRecord. On resume the
+    parent must not re-invoke the terminal child (that raises
+    ``WorkflowAlreadyCompletedError``); instead it restores the child's
+    persisted outputs so the missing parent step commits with truthful values.
+
+    Mirrors the normal execution path: values are coerced with the child
+    graph's type map (as a real child resume would), filtered to the child
+    graph's outputs, and projected through the GraphNode boundary map.
+    """
+    from hypergraph.runners._shared.outputs import filter_outputs
+
+    restored = GraphState(values=coerce_checkpoint_values(node.graph, child_values))
+    return node.map_outputs_from_original(filter_outputs(restored, node.graph))
 
 
 def validate_workflow_id(workflow_id: str | None, parent_run_id: str | None) -> None:

@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from hypergraph.checkpointers.types import WorkflowStatus
 from hypergraph.runners._shared._inspect import current_inspection
 from hypergraph.runners._shared.outputs import collect_as_lists
-from hypergraph.runners._shared.state_restore import graphnode_child_workflow_id
+from hypergraph.runners._shared.state_restore import (
+    graphnode_child_workflow_id,
+    restore_completed_child_outputs,
+)
 
 if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
@@ -88,6 +92,14 @@ class SyncGraphNodeExecutor:
             if map_config is None and sync_cp is not None:
                 existing_child_run = sync_cp.get_run(child_workflow_id)
                 if existing_child_run is not None:
+                    if existing_child_run.status is WorkflowStatus.COMPLETED:
+                        # Crash-window recovery: the child committed COMPLETED but
+                        # this parent step was never persisted. Restore the child's
+                        # outputs instead of re-invoking the terminal child (which
+                        # would raise WorkflowAlreadyCompletedError). Terminal
+                        # FAILED children fall through to the resume path below so
+                        # their failure resurfaces — never restored-as-success.
+                        return restore_completed_child_outputs(node, sync_cp.state(child_workflow_id))
                     inner_inputs = {}
                 elif resume_values:
                     current_parent_run = sync_cp.get_run(ctx.workflow_id) if ctx.workflow_id else None
