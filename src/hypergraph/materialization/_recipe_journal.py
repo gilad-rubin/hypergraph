@@ -1,10 +1,11 @@
 """The recipe journal: a per-store table resolving a provenance stamp to readable text.
 
-Fingerprints hash the recipe — node source (``inspect.getsource``), component
-config reprs, bound plain-value payloads — and then discard the text (see
-``_fingerprint.py``). A stamp on a stored row can therefore detect that a row
-was "built under something else" but can never NAME what that was: an
-uncommitted node edit that derived rows is unrecoverable from the hash alone.
+Fingerprints hash the recipe — node definitions (``hash_definition``: source
+or bytecode, plus bound-instance state), component config reprs, bound
+plain-value payloads — and then discard the text (see ``_fingerprint.py``).
+A stamp on a stored row can therefore detect that a row was "built under
+something else" but can never NAME what that was: an uncommitted node edit
+that derived rows is unrecoverable from the hash alone.
 
 The journal closes that gap. At the moment a stamp is written onto a row the
 payload behind it is still in hand, so it is persisted — keyed by its own hash —

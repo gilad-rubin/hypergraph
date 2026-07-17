@@ -11,43 +11,88 @@ re-derives on the next insert/sync; otherwise it is skipped.
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
+from collections.abc import Iterable
 from typing import Any
+
+from hypergraph._utils import hash_definition
+from hypergraph.materialization._schema import node_func
 
 
 def compute_definition_hash(fn: Any) -> str:
-    """Hash the definition of a derive node: function source, or a node's own hash.
+    """Hash the definition of a derive node: a node's own hash, or ``hash_definition``.
 
     A column producer may be a subgraph (a GraphNode — e.g. a validation cycle
     wrapped as one node): it has no single source function, but its
     ``definition_hash`` already covers the inner graph's node code plus the
-    boundary projection, so that is the code-sensitive basis here. Plain
-    functions hash their source (falls back to repr).
+    boundary projection, so that is the code-sensitive basis here. Everything
+    else delegates to :func:`hypergraph._utils.hash_definition`, the repo's one
+    definition-identity function: a bound method of a configured instance mixes
+    the instance's state into the hash (two differently-configured components
+    are different recipes), and a dynamically-created function with no
+    retrievable source hashes its bytecode instead of a per-process repr.
+
+    A non-callable that carries no ``definition_hash`` has no definition to
+    hash — silently hashing its repr would differ in every process, so it is
+    rejected loudly instead.
     """
     node_hash = getattr(fn, "definition_hash", None)
     if isinstance(node_hash, str) and node_hash:
         return node_hash
-    try:
-        source = inspect.getsource(fn)
-    except (OSError, TypeError):
-        source = repr(fn)
-    return hashlib.sha256(source.encode()).hexdigest()
+    if not callable(fn):
+        raise TypeError(
+            f"Cannot fingerprint {type(fn).__name__}: expected a node exposing "
+            "definition_hash or a callable definition (recipe payload strings "
+            "hash via compute_payload_hash)"
+        )
+    return hash_definition(fn)
+
+
+def compute_node_definition_hash(node: Any) -> str:
+    """Recipe identity of a producing node: its construction-time ``definition_hash``.
+
+    Every function-carrying node captures ``hash_definition(func)`` when it is
+    built (``FunctionNode``, gates, interrupts; a ``GraphNode``'s hash covers
+    its inner graph), so the node's own hash is the stable identity. Hashing
+    the LIVE callable instead would re-capture mutable instance state — a
+    counter, a cache, a client — on every computation and drift the recipe run
+    over run. A node exposing only a raw callable falls back to that callable;
+    anything else must be a definition in its own right or is rejected by
+    ``compute_definition_hash``.
+    """
+    node_hash = getattr(node, "definition_hash", None)
+    if isinstance(node_hash, str) and node_hash:
+        return node_hash
+    func = node_func(node)
+    if func is not None:
+        return compute_definition_hash(func)
+    return compute_definition_hash(node)
+
+
+def compute_payload_hash(payload: str) -> str:
+    """Content hash of a recipe payload string (a config repr or bound-value text).
+
+    Journal keys for non-callable recipe text: a payload is data, not a
+    function definition, so it hashes by content.
+    """
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def combine_recipe_fingerprints(fingerprints: Iterable[str]) -> str:
+    """One recipe identity for a column with several producers (a routed union).
+
+    The hash of the SORTED per-producer recipe fingerprints — order-free, so
+    graph insertion order does not matter, and a code or config change in ANY
+    branch flips the combined recipe.
+    """
+    payload = json.dumps(sorted(fingerprints))
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _node_definition_hashes(graph: Any) -> list[str]:
     if graph is None:
         return []
-    hashes: list[str] = []
-    for n in graph.iter_nodes():
-        func = getattr(n, "func", None)
-        if func is not None:
-            hashes.append(compute_definition_hash(func))
-        elif getattr(n, "definition_hash", None):
-            # A function-less producer (GraphNode) participates through its own
-            # code-sensitive hash, so an inner-node edit flips the table recipe.
-            hashes.append(compute_definition_hash(n))
-    return hashes
+    return [compute_node_definition_hash(n) for n in graph.iter_nodes()]
 
 
 def _plain_value_payload(value: Any) -> str | None:
@@ -125,7 +170,7 @@ def compute_recipe_fingerprint(node_fn: Any, component_hashes: dict[str, str]) -
     """
     payload = json.dumps(
         {
-            "node": compute_definition_hash(node_fn),
+            "node": compute_node_definition_hash(node_fn),
             "components": component_hashes,
         },
         sort_keys=True,
@@ -156,7 +201,7 @@ def compute_column_provenance(node_fn: Any, inputs: dict[str, Any], component_ha
     """
     payload = json.dumps(
         {
-            "node": compute_definition_hash(node_fn),
+            "node": compute_node_definition_hash(node_fn),
             "inputs": {k: f"{type(v).__name__}:{v}" for k, v in sorted(inputs.items())},
             "components": component_hashes,
         },

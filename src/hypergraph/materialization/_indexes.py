@@ -36,7 +36,7 @@ class IndexPolicy:
     def _recipe_fingerprint(self, spec: TableSpec, vector: str) -> str | None:
         for column in self._provenance.derived_columns(spec):
             if column.name == vector and column.produced_by is not None:
-                return self._provenance.node_recipe(column.produced_by)
+                return self._provenance.column_recipe(column)
         return None
 
     def _queryable_columns(self, spec: TableSpec) -> set[str]:
