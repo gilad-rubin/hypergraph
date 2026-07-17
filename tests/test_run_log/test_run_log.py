@@ -101,7 +101,10 @@ class TestErrorInspection:
         failed = result.log.errors[0]
         assert failed.node_name == "mock_failing_llm"
         assert failed.status == "failed"
-        assert "504 Gateway Timeout" in failed.error
+        # #233 privacy graduation: RunLog is serializable/durable content, so
+        # it carries the safe projection, never the raw exception message.
+        assert "504 Gateway Timeout" not in failed.error
+        assert "ConnectionError" in failed.error
 
     def test_runlog_each_map_item_has_own_log(self):
         """UC2: Each map item gets its own RunLog."""

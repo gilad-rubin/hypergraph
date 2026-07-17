@@ -138,10 +138,26 @@ def build_node_error_event(
     item_index: int | None = None,
     superstep: int | None = None,
 ) -> Any:
-    """Build a NodeErrorEvent from the current exception context."""
+    """Build a NodeErrorEvent from the current exception context.
+
+    ``error`` carries the privacy-safe projection — never ``str(exception)``.
+    Events feed durable surfaces (RunLog, checkpoints, OTel export); the exact
+    exception object stays on local surfaces only.
+    """
+    from hypergraph.diagnostics import derive_diagnostic, safe_error_text
     from hypergraph.events.types import NodeErrorEvent
 
     exc_type, exc_val, _ = sys.exc_info()
+    diagnostic = None
+    if exc_val is not None:
+        diagnostic = derive_diagnostic(
+            exc_val,
+            node_name=node.name,
+            graph_name=graph.name or None,
+            superstep=superstep,
+            item_index=item_index,
+            workflow_id=workflow_id,
+        )
     return NodeErrorEvent(
         run_id=run_id,
         span_id=node_span_id,
@@ -150,9 +166,10 @@ def build_node_error_event(
         item_index=item_index,
         node_name=node.name,
         graph_name=graph.name,
-        error=str(exc_val) if exc_val else "",
+        error=safe_error_text(exc_val, node_name=node.name) if exc_val else "",
         error_type=f"{exc_type.__module__}.{exc_type.__qualname__}" if exc_type else "",
         superstep=superstep,
+        diagnostic=diagnostic,
     )
 
 
@@ -245,7 +262,11 @@ def build_run_end_event(
     error: BaseException | None = None,
     batch_summary: BatchSummary | None = None,
 ) -> Any:
-    """Build a RunEndEvent."""
+    """Build a RunEndEvent.
+
+    ``error`` carries the privacy-safe projection — never ``str(exception)``.
+    """
+    from hypergraph.diagnostics import safe_error_text
     from hypergraph.events.types import RunEndEvent, RunStatus
 
     duration_ms = (time.time() - start_time) * 1000
@@ -257,7 +278,7 @@ def build_run_end_event(
         item_index=context.item_index,
         graph_name=graph.name,
         status=RunStatus(status) if status is not None else (RunStatus.FAILED if error else RunStatus.COMPLETED),
-        error=str(error) if error else None,
+        error=safe_error_text(error) if error else None,
         duration_ms=duration_ms,
         batch_total_items=batch_summary.total_items if batch_summary is not None else None,
         batch_completed_items=batch_summary.completed_items if batch_summary is not None else None,

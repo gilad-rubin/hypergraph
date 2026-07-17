@@ -390,6 +390,9 @@ class OpenTelemetryProcessor(TypedEventProcessor):
     def on_node_error(self, event: NodeErrorEvent) -> None:
         # Only the terminal escaping failure reaches this handler and marks
         # the logical node span as error; intermediate attempts never do.
+        # ``event.error`` is the privacy-safe projection, so the exported
+        # status description and exception.message carry no raw message text
+        # (per the OTel exception.message sensitivity warning).
         self._detach_ambient(event.span_id)
         span = self._spans.pop(event.span_id, None)
         self._contexts.pop(event.span_id, None)
@@ -400,6 +403,8 @@ class OpenTelemetryProcessor(TypedEventProcessor):
             {
                 "hypergraph.error_type": event.error_type,
                 "hypergraph.superstep": event.superstep,
+                "hypergraph.diagnostic.code": (event.diagnostic.code if event.diagnostic is not None else None),
+                "hypergraph.diagnostic.docs_ref": (event.diagnostic.docs_ref if event.diagnostic is not None else None),
             },
         )
         span.set_status(self._Status(self._StatusCode.ERROR, event.error))

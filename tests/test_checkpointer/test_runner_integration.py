@@ -193,7 +193,9 @@ class TestRunnerCheckpointIntegration:
         assert len(steps) == 1
         assert steps[0].node_name == "explode"
         assert steps[0].status == StepStatus.FAILED
-        assert "kaboom" in steps[0].error
+        # #233 privacy graduation: StepRecords carry the safe projection.
+        assert "kaboom" not in steps[0].error
+        assert "ValueError" in steps[0].error
 
     async def test_partial_failure_persists_siblings(self, checkpointer):
         """When one of several parallel nodes fails, completed siblings get COMPLETED records."""
@@ -239,8 +241,11 @@ class TestRunnerCheckpointIntegration:
 
         steps = checkpointer.steps("wf-parallel-failures")
         errors = {s.node_name: s.error for s in steps}
-        assert "a failed" in errors["fail_a"]
-        assert "b failed" in errors["fail_b"]
+        # #233: per-node attribution survives the safe projection — each step
+        # names ITS OWN failing node, not the sibling's.
+        assert "fail_a" in errors["fail_a"] and "fail_b" not in errors["fail_a"]
+        assert "fail_b" in errors["fail_b"] and "fail_a" not in errors["fail_b"]
+        assert all("RuntimeError" in text for text in errors.values())
 
     def test_sync_unattempted_ready_sibling_not_recorded_as_failed(self, checkpointer):
         """Sync failure should not invent a failed step for an unattempted sibling."""
@@ -262,7 +267,7 @@ class TestRunnerCheckpointIntegration:
 
         steps = checkpointer.steps("wf-sync-unattempted")
         assert [(s.node_name, s.status) for s in steps] == [("fail_first", StepStatus.FAILED)]
-        assert "first failed" in steps[0].error
+        assert "RuntimeError" in steps[0].error  # #233: safe projection
 
     def test_sync_pre_executor_error_does_not_mark_ready_siblings_failed(self, checkpointer, monkeypatch):
         """Input-collection failures should preserve the actual attempted-node boundary."""
@@ -293,7 +298,7 @@ class TestRunnerCheckpointIntegration:
         assert result.status.value == "failed"
         steps = checkpointer.steps("wf-sync-pre-exec")
         assert [(s.node_name, s.status) for s in steps] == [("first", StepStatus.FAILED)]
-        assert "synthetic missing input" in steps[0].error
+        assert "KeyError" in steps[0].error  # #233: safe projection
 
     def test_sync_unattributed_superstep_error_does_not_mark_ready_nodes_failed(self, checkpointer, monkeypatch):
         """Unexpected scheduler failures should not invent per-node failures."""

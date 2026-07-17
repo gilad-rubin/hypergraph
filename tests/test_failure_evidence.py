@@ -599,18 +599,33 @@ def test_to_dict_serializes_metadata_but_not_raw_inputs() -> None:
     )
 
     serialized = result.to_dict()
-    assert serialized["error"] == "EvidenceError: failed:13"
-    assert serialized["node_failures"] == [
-        {
-            "node_name": "fail_with_x",
-            "error": "EvidenceError: failed:13",
-            "superstep": result.failure.superstep,
-            "duration_ms": result.failure.duration_ms,
-            "graph_name": "serialized-evidence",
-            "workflow_id": "serialized-run",
-            "item_index": None,
-        }
-    ]
+    # #233 privacy graduation: serialization carries the safe projection
+    # (type name, stable code, static wording) — never str(exception), whose
+    # raw message ("failed:13") could embed sensitive values.
+    assert "failed:13" not in serialized["error"]
+    assert "EvidenceError" in serialized["error"]
+    assert "[HG_NODE_FAILED]" in serialized["error"]
+    assert len(serialized["node_failures"]) == 1
+    failure_entry = serialized["node_failures"][0]
+    assert "failed:13" not in failure_entry["error"]
+    assert "EvidenceError" in failure_entry["error"]
+    assert failure_entry["diagnostic"]["schema"] == "hypergraph.diagnostic/v1"
+    assert failure_entry["diagnostic"]["code"] == "HG_NODE_FAILED"
+    assert {
+        "node_name": failure_entry["node_name"],
+        "superstep": failure_entry["superstep"],
+        "duration_ms": failure_entry["duration_ms"],
+        "graph_name": failure_entry["graph_name"],
+        "workflow_id": failure_entry["workflow_id"],
+        "item_index": failure_entry["item_index"],
+    } == {
+        "node_name": "fail_with_x",
+        "superstep": result.failure.superstep,
+        "duration_ms": result.failure.duration_ms,
+        "graph_name": "serialized-evidence",
+        "workflow_id": "serialized-run",
+        "item_index": None,
+    }
 
 
 def test_public_exports_are_available_from_runners_namespace() -> None:

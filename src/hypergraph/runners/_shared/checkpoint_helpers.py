@@ -112,7 +112,7 @@ def build_superstep_records(
                     index=step_counter,
                     status=StepStatus.FAILED,
                     input_versions=execution.input_versions,
-                    error=_extract_error_message(_error_for_node(name, node_errors, superstep_error)),
+                    error=_extract_error_message(_error_for_node(name, node_errors, superstep_error), node_name=name),
                     node_type=node_type,
                     created_at=now,
                     child_run_id=child_run_id,
@@ -127,7 +127,7 @@ def build_superstep_records(
                 index=step_counter,
                 status=StepStatus.FAILED,
                 input_versions={},
-                error=_extract_error_message(_error_for_node(name, node_errors, superstep_error)),
+                error=_extract_error_message(_error_for_node(name, node_errors, superstep_error), node_name=name),
                 node_type=node_type,
                 created_at=now,
                 child_run_id=child_run_id,
@@ -165,10 +165,17 @@ def _compute_child_run_id(
     return None
 
 
-def _extract_error_message(error: BaseException) -> str:
-    """Extract a human-readable error message from a (possibly wrapped) exception."""
+def _extract_error_message(error: BaseException, node_name: str | None = None) -> str:
+    """Privacy-safe error projection for the durable StepRecord.
+
+    StepRecords are durable content: they carry the stable diagnostic code and
+    exception type name, never ``str(exception)`` (raw messages can embed
+    secrets). The exact exception object stays on local surfaces.
+    """
+    from hypergraph.diagnostics import safe_error_text
+
     cause = error.__cause__ if error.__cause__ is not None else error
-    return str(cause)
+    return safe_error_text(cause, node_name=node_name)
 
 
 def _error_for_node(

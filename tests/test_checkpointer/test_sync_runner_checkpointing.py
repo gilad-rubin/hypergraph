@@ -120,7 +120,9 @@ class TestSyncRunnerCheckpointing:
         step = db.execute("SELECT node_name, status, error FROM steps WHERE run_id = ?", ("wf-fail",)).fetchone()
         assert step[0] == "explode"
         assert step[1] == "failed"
-        assert "kaboom" in step[2]
+        # #233 privacy graduation: the durable row stores the safe projection.
+        assert "kaboom" not in step[2]
+        assert "ValueError" in step[2]
 
     def test_exit_durability_flushes_on_failure(self, checkpointer):
         """With durability='exit', buffered steps are flushed even when run fails."""

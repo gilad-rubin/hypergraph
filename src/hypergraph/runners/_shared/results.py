@@ -211,8 +211,12 @@ class RunResult:
         """JSON-serializable dict with status, run_id, and log.
 
         Does NOT include raw values or error objects — only metadata.
-        Use result.values directly for output access.
+        Use result.values directly for output access. Error entries are
+        privacy-safe projections (type name, stable code, static wording),
+        never ``str(exception)``; the exact object stays on ``self.error``.
         """
+        from hypergraph.diagnostics import safe_error_text
+
         d: dict[str, Any] = {
             "status": self.status.value,
             "run_id": self.run_id,
@@ -224,12 +228,14 @@ class RunResult:
         if self.log:
             d["log"] = self.log.to_dict()
         if self.error:
-            d["error"] = f"{type(self.error).__name__}: {self.error}"
+            failure_node = self.node_failures[0].node_name if self.node_failures else None
+            d["error"] = safe_error_text(self.error, node_name=failure_node)
         if self.status == RunStatus.FAILED:
             d["node_failures"] = [
                 {
                     "node_name": failure.node_name,
-                    "error": f"{type(failure.error).__name__}: {failure.error}",
+                    "error": safe_error_text(failure.error, node_name=failure.node_name),
+                    "diagnostic": failure.diagnostic.to_wire(),
                     "superstep": failure.superstep,
                     "duration_ms": failure.duration_ms,
                     "graph_name": failure.graph_name,

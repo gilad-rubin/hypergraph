@@ -171,7 +171,9 @@ class TestErrorEvents:
         errors = lp.of_type(NodeErrorEvent)
         assert len(errors) == 1
         assert errors[0].node_name == "failing"
-        assert "boom" in errors[0].error
+        assert "boom" not in errors[0].error, "#233: events carry the safe projection, never str(e)"
+        assert "ValueError" in errors[0].error
+        assert errors[0].diagnostic is not None and errors[0].diagnostic.code == "HG_NODE_FAILED"
         assert "ValueError" in errors[0].error_type
 
     def test_run_end_failed_on_error(self):
@@ -187,7 +189,8 @@ class TestErrorEvents:
 
         run_end = lp.of_type(RunEndEvent)[0]
         assert run_end.status == RunStatus.FAILED
-        assert "boom" in run_end.error
+        assert "boom" not in run_end.error, "#233: safe projection only"
+        assert "ValueError" in run_end.error
 
     def test_keyboard_interrupt_does_not_emit_node_error(self):
         @node(output_name="out")
@@ -607,7 +610,8 @@ class TestMapWithNestedError:
         # Error events should be emitted
         errors = lp.of_type(NodeErrorEvent)
         assert len(errors) >= 1
-        assert "boom" in errors[0].error
+        assert "boom" not in errors[0].error, "#233: safe projection only"
+        assert "ValueError" in errors[0].error
 
         # Failed runs should have status="failed" in RunEndEvent
         failed_ends = [e for e in lp.of_type(RunEndEvent) if e.status == RunStatus.FAILED]

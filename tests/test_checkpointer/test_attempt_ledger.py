@@ -212,7 +212,11 @@ async def test_fresh_world_roundtrip(backend):
     assert records[0].status is AttemptStatus.FAILED
     assert records[0].error is not None
     assert records[0].error.type_name == "ValueError"
-    assert "boom" in records[0].error.message
+    # #233 privacy graduation: durable attempt rows keep the exception type
+    # identity only — str(exception) message text (which can embed secrets)
+    # never enters the ledger.
+    assert "boom" not in records[0].error.message
+    assert records[0].error.message == ""
     assert records[0].retry_not_before == not_before
     assert records[0].sampled_delay == 0.25
     assert records[0].completed_at is not None

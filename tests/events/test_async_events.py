@@ -194,7 +194,9 @@ class TestErrorEvents:
         errors = lp.of_type(NodeErrorEvent)
         assert len(errors) == 1
         assert errors[0].node_name == "failing"
-        assert "boom" in errors[0].error
+        assert "boom" not in errors[0].error, "#233: events carry the safe projection, never str(e)"
+        assert "ValueError" in errors[0].error
+        assert errors[0].diagnostic is not None and errors[0].diagnostic.code == "HG_NODE_FAILED"
         assert "ValueError" in errors[0].error_type
 
     @pytest.mark.asyncio
@@ -211,7 +213,8 @@ class TestErrorEvents:
 
         run_end = lp.of_type(RunEndEvent)[0]
         assert run_end.status == RunStatus.FAILED
-        assert "boom" in run_end.error
+        assert "boom" not in run_end.error, "#233: safe projection only"
+        assert "ValueError" in run_end.error
 
     @pytest.mark.asyncio
     async def test_processor_failure_does_not_break_execution(self):

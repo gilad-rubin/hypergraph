@@ -2,7 +2,41 @@
 
 ## Unreleased
 
+### Changed
+
+- **BREAKING (durable record content): raw exception text no longer enters
+  durable or telemetry surfaces.** Previously `str(exception)` flowed
+  verbatim through `NodeErrorEvent.error` → `RunLog` / checkpoint
+  `StepRecord.error` → `RunResult.to_dict()` → OpenTelemetry
+  `exception.message`, and (capped) into attempt-ledger rows — so a secret
+  embedded in an exception message was persisted and exported. These surfaces
+  now store a privacy-safe projection: the exception type name, a stable
+  diagnostic code such as `[HG_NODE_FAILED]`, and static wording (for
+  example `"ValueError [HG_NODE_FAILED]: Node 'charge' raised ValueError."`).
+  Attempt-ledger rows keep the type name with an empty message. **Local
+  object surfaces are unchanged**: the raised exception, `RunResult.error`,
+  and `FailureEvidence.error` still carry the exact exception object with its
+  full message. Code that parsed raw messages out of durable records must
+  switch to the exact local objects or the new typed
+  `FailureEvidence.diagnostic`.
+
 ### Added
+
+- **Attempt events, typed diagnostics, and the durable privacy boundary** —
+  attempt-managed nodes (declared `retry=` and/or `timeout=`) now emit
+  `NodeAttemptStartEvent` / `NodeAttemptEndEvent` per callable invocation
+  between one logical `NodeStartEvent` and one terminal
+  `NodeEndEvent`/`NodeErrorEvent`; cache hits emit zero attempt events, and
+  intermediate failures never bump logical error counts, finish progress
+  rows, or close the node span. OpenTelemetry projects attempts as
+  `hypergraph.attempt.start`/`.end` span events on the single logical node
+  span. Terminal failures carry a frozen, privacy-safe `Diagnostic`
+  (`failure.diagnostic`, wire schema `hypergraph.diagnostic/v1`) with ten
+  stable `HG_*` codes documented in the errors reference registry. Resuming a
+  workflow whose last consumed durable attempt is `OUTCOME_UNKNOWN` now
+  raises `AttemptOutcomeUnknownError` with reconcile-then-retry/fork guidance
+  instead of silently re-running a node whose external side effects may have
+  completed.
 
 - **Beta distribution and human-gated release path** — the distribution is now
   `hypergraph-ai` at `0.2.0b1` with a Beta classifier while the import remains
