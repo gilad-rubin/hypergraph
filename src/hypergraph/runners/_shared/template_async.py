@@ -1148,7 +1148,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
             # Resume: find completed child runs to skip by stable input signature.
             completed_runs = await _get_completed_child_runs(checkpointer, workflow_id)
-            completed_by_signature, completed_by_index = index_completed_child_runs(completed_runs, workflow_id)
+            completed_by_signature, completed_legacy_by_index = index_completed_child_runs(completed_runs, workflow_id)
 
             existing_limiter = self._get_concurrency_limiter()
             token = self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
@@ -1210,7 +1210,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     idx=idx,
                     signature=item_signature,
                     by_signature=completed_by_signature,
-                    by_index=completed_by_index,
+                    legacy_by_index=completed_legacy_by_index,
                 )
                 if item_signature is not None
                 else None

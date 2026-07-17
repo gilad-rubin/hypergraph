@@ -13,6 +13,7 @@ from hypergraph.exceptions import (
     MissingInputError,
     WorkflowAlreadyCompletedError,
 )
+from hypergraph.runners._shared.map_resume import MAP_SIGNATURE_CONFIG_KEY
 from hypergraph.runners._shared.results import RunStatus
 
 aiosqlite = pytest.importorskip("aiosqlite")
@@ -465,6 +466,93 @@ class TestAsyncMapResume:
         assert call_count == 0
         assert [r["doubled"] for r in result.results] == [60, 20, 40]
 
+    async def test_map_resume_changed_same_index_inputs_execute_fresh(self, checkpointer):
+        """Changed inputs at a completed index re-execute; the stale result is not restored."""
+        calls: list[int] = []
+
+        @node(output_name="doubled")
+        def counting_double(x: int) -> int:
+            calls.append(x)
+            return x * 2
+
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([counting_double])
+
+        await runner.map(graph, {"x": [10, 20]}, map_over="x", workflow_id="changed-batch")
+        assert sorted(calls) == [10, 20]
+
+        calls.clear()
+        result = await runner.map(graph, {"x": [99, 20]}, map_over="x", workflow_id="changed-batch")
+
+        assert calls == [99]
+        assert [r["doubled"] for r in result.results] == [198, 40]
+        assert [r.restored for r in result.results] == [False, True]
+
+    async def test_map_resume_restores_unsigned_legacy_children_by_index(self, checkpointer):
+        """Pre-signature children (signature key absent from config) still restore by index."""
+        calls: list[int] = []
+
+        @node(output_name="doubled")
+        def counting_double(x: int) -> int:
+            calls.append(x)
+            return x * 2
+
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([counting_double])
+
+        await runner.map(graph, {"x": [10, 20]}, map_over="x", workflow_id="legacy-batch")
+        assert sorted(calls) == [10, 20]
+
+        # Rewrite child rows as pre-signature legacy runs: no signature key at all.
+        for idx in (0, 1):
+            child_id = f"legacy-batch/{idx}"
+            await checkpointer.create_run(
+                child_id,
+                graph_name=graph.name,
+                parent_run_id="legacy-batch",
+                config={"graph_struct_hash": graph.structural_hash},
+            )
+            await checkpointer.update_run_status(child_id, WorkflowStatus.COMPLETED)
+
+        calls.clear()
+        result = await runner.map(graph, {"x": [10, 20]}, map_over="x", workflow_id="legacy-batch")
+
+        assert calls == []
+        assert [r["doubled"] for r in result.results] == [20, 40]
+        assert all(r.restored for r in result.results)
+
+    async def test_map_resume_invalid_signature_metadata_executes_fresh(self, checkpointer):
+        """Present-but-invalid signature metadata re-executes: no error, no restore."""
+        calls: list[int] = []
+
+        @node(output_name="doubled")
+        def counting_double(x: int) -> int:
+            calls.append(x)
+            return x * 2
+
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([counting_double])
+
+        await runner.map(graph, {"x": [10, 20]}, map_over="x", workflow_id="invalid-sig-batch")
+        assert sorted(calls) == [10, 20]
+
+        for idx in (0, 1):
+            child_id = f"invalid-sig-batch/{idx}"
+            await checkpointer.create_run(
+                child_id,
+                graph_name=graph.name,
+                parent_run_id="invalid-sig-batch",
+                config={"graph_struct_hash": graph.structural_hash, MAP_SIGNATURE_CONFIG_KEY: 123},
+            )
+            await checkpointer.update_run_status(child_id, WorkflowStatus.COMPLETED)
+
+        calls.clear()
+        result = await runner.map(graph, {"x": [10, 20]}, map_over="x", workflow_id="invalid-sig-batch")
+
+        assert sorted(calls) == [10, 20]
+        assert [r["doubled"] for r in result.results] == [20, 40]
+        assert not any(r.restored for r in result.results)
+
     async def test_map_resume_reapplies_select_filter_when_restoring(self, checkpointer):
         """Restored map items should respect select filtering just like fresh runs."""
         runner = AsyncRunner(checkpointer=checkpointer)
@@ -742,6 +830,93 @@ class TestSyncMapResume:
         result = runner.map(graph, {"x": [30, 10, 20]}, map_over="x", workflow_id="sync-identity")
         assert call_count == 0
         assert [r["doubled"] for r in result.results] == [60, 20, 40]
+
+    def test_map_resume_changed_same_index_inputs_execute_fresh(self, sync_checkpointer):
+        """Sync mirror: changed inputs at a completed index re-execute, not restore stale."""
+        calls: list[int] = []
+
+        @node(output_name="doubled")
+        def counting_double(x: int) -> int:
+            calls.append(x)
+            return x * 2
+
+        runner = SyncRunner(checkpointer=sync_checkpointer)
+        graph = Graph([counting_double])
+
+        runner.map(graph, {"x": [10, 20]}, map_over="x", workflow_id="sync-changed-batch")
+        assert calls == [10, 20]
+
+        calls.clear()
+        result = runner.map(graph, {"x": [99, 20]}, map_over="x", workflow_id="sync-changed-batch")
+
+        assert calls == [99]
+        assert [r["doubled"] for r in result.results] == [198, 40]
+        assert [r.restored for r in result.results] == [False, True]
+
+    def test_map_resume_restores_unsigned_legacy_children_by_index(self, sync_checkpointer):
+        """Sync mirror: pre-signature children still restore by numeric index."""
+        calls: list[int] = []
+
+        @node(output_name="doubled")
+        def counting_double(x: int) -> int:
+            calls.append(x)
+            return x * 2
+
+        runner = SyncRunner(checkpointer=sync_checkpointer)
+        graph = Graph([counting_double])
+
+        runner.map(graph, {"x": [10, 20]}, map_over="x", workflow_id="sync-legacy-batch")
+        assert calls == [10, 20]
+
+        # Rewrite child rows as pre-signature legacy runs: no signature key at all.
+        for idx in (0, 1):
+            child_id = f"sync-legacy-batch/{idx}"
+            sync_checkpointer.create_run_sync(
+                child_id,
+                graph_name=graph.name,
+                parent_run_id="sync-legacy-batch",
+                config={"graph_struct_hash": graph.structural_hash},
+            )
+            sync_checkpointer.update_run_status_sync(child_id, WorkflowStatus.COMPLETED)
+
+        calls.clear()
+        result = runner.map(graph, {"x": [10, 20]}, map_over="x", workflow_id="sync-legacy-batch")
+
+        assert calls == []
+        assert [r["doubled"] for r in result.results] == [20, 40]
+        assert all(r.restored for r in result.results)
+
+    def test_map_resume_invalid_signature_metadata_executes_fresh(self, sync_checkpointer):
+        """Sync mirror: present-but-invalid signature metadata re-executes without error."""
+        calls: list[int] = []
+
+        @node(output_name="doubled")
+        def counting_double(x: int) -> int:
+            calls.append(x)
+            return x * 2
+
+        runner = SyncRunner(checkpointer=sync_checkpointer)
+        graph = Graph([counting_double])
+
+        runner.map(graph, {"x": [10, 20]}, map_over="x", workflow_id="sync-invalid-sig-batch")
+        assert calls == [10, 20]
+
+        for idx in (0, 1):
+            child_id = f"sync-invalid-sig-batch/{idx}"
+            sync_checkpointer.create_run_sync(
+                child_id,
+                graph_name=graph.name,
+                parent_run_id="sync-invalid-sig-batch",
+                config={"graph_struct_hash": graph.structural_hash, MAP_SIGNATURE_CONFIG_KEY: 123},
+            )
+            sync_checkpointer.update_run_status_sync(child_id, WorkflowStatus.COMPLETED)
+
+        calls.clear()
+        result = runner.map(graph, {"x": [10, 20]}, map_over="x", workflow_id="sync-invalid-sig-batch")
+
+        assert calls == [10, 20]
+        assert [r["doubled"] for r in result.results] == [20, 40]
+        assert not any(r.restored for r in result.results)
 
     def test_map_resume_reapplies_select_filter_when_restoring(self, sync_checkpointer):
         """Sync mirror: restored map items should preserve select filtering."""
