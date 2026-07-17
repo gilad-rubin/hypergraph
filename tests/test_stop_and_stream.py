@@ -1028,30 +1028,29 @@ class TestSyncRunnerStop:
         assert len(result["result"]) > 0
 
     def test_sync_stop_status(self):
-        import time as _time
+        node_started = threading.Event()
+        stop_sent = threading.Event()
 
         @node(output_name="result")
         def slow_node(ctx: NodeContext) -> str:
-            for _ in range(1000):
-                if ctx.stop_requested:
-                    return "stopped"
-                _time.sleep(0.0001)  # slow down so stop signal arrives
-            return "done"
+            node_started.set()
+            assert stop_sent.wait(timeout=15)
+            return "stopped" if ctx.stop_requested else "done"
 
         runner = SyncRunner()
 
         def stop_from_thread():
-            import time
-
-            time.sleep(0.02)
+            assert node_started.wait(timeout=15)
             runner.stop("wf")
+            stop_sent.set()
 
         t = threading.Thread(target=stop_from_thread)
         t.start()
 
         result = runner.run(Graph([slow_node]), workflow_id="wf")
-        t.join()
+        t.join(timeout=15)
 
+        assert not t.is_alive()
         assert result.stopped is True
         assert result.status == RunStatus.STOPPED
 
