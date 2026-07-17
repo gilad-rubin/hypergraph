@@ -23,6 +23,128 @@ class StepStatus(Enum):
     PAUSED = "paused"
 
 
+class AttemptStatus(Enum):
+    """Status of one callable invocation inside an attempt series.
+
+    ``STARTED`` is a durable reservation, not an outcome. A crash-stranded
+    ``STARTED`` row is settled to ``OUTCOME_UNKNOWN`` on resume — never
+    invented as cancelled or never-run, because external side effects may
+    have completed.
+    """
+
+    STARTED = "started"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    SUCCEEDED = "succeeded"
+    CANCELLED = "cancelled"
+    OUTCOME_UNKNOWN = "outcome_unknown"
+
+
+#: Attempt statuses that settle an attempt (everything except the reservation).
+TERMINAL_ATTEMPT_STATUSES = frozenset(
+    {
+        AttemptStatus.FAILED,
+        AttemptStatus.TIMED_OUT,
+        AttemptStatus.SUCCEEDED,
+        AttemptStatus.CANCELLED,
+        AttemptStatus.OUTCOME_UNKNOWN,
+    }
+)
+
+#: Upper bound for the persisted attempt error message projection.
+ATTEMPT_ERROR_MESSAGE_LIMIT = 500
+
+
+class AttemptLedgerError(RuntimeError):
+    """A durable attempt-ledger invariant was violated.
+
+    Raised for fingerprint mismatches, exhausted budgets, elapsed deadlines,
+    double-open series, and invalid close linkage. Reservation/outcome
+    persistence failures propagate as their original exception instead.
+    """
+
+
+@dataclass(frozen=True)
+class AttemptError:
+    """Bounded, privacy-safe projection of an attempt's exception.
+
+    Stores only the exception type name and a truncated message — no args
+    tuple, no stack trace, no ``repr`` of user values.
+    """
+
+    type_name: str
+    message: str
+
+    @classmethod
+    def from_exception(cls, error: BaseException) -> AttemptError:
+        """Project an exception into its bounded durable form."""
+        error_type = type(error)
+        if error_type.__module__ in ("builtins", "__main__"):
+            type_name = error_type.__qualname__
+        else:
+            type_name = f"{error_type.__module__}.{error_type.__qualname__}"
+        message = str(error)
+        if len(message) > ATTEMPT_ERROR_MESSAGE_LIMIT:
+            message = message[: ATTEMPT_ERROR_MESSAGE_LIMIT - 1] + "…"
+        return cls(type_name=type_name, message=message)
+
+
+@dataclass(frozen=True)
+class AttemptSeries:
+    """Durable retry budget for one logical node execution.
+
+    The series id is stable across scheduler/superstep drift: a resumed node
+    that lands on a different superstep continues the SAME series. A series
+    is open while ``closed_at`` is None; open series are never pruned.
+    ``committed_superstep`` is set when the series closes with its linked
+    :class:`StepRecord`.
+    """
+
+    id: str
+    run_id: str
+    node_name: str
+    policy_fingerprint: str
+    max_attempts: int
+    opened_at: datetime
+    deadline_at: datetime | None = None
+    committed_superstep: int | None = None
+    closed_at: datetime | None = None
+
+    @property
+    def is_open(self) -> bool:
+        return self.closed_at is None
+
+    def __repr__(self) -> str:
+        state = "open" if self.is_open else "closed"
+        return f"AttemptSeries {self.id} | {self.run_id}/{self.node_name} | {state} | max_attempts={self.max_attempts}"
+
+
+@dataclass(frozen=True)
+class AttemptRecord:
+    """One durable callable invocation (or reservation) within a series.
+
+    ``attempt_number`` is one-based. ``retry_not_before`` and
+    ``sampled_delay`` persist a once-sampled backoff decision as data so a
+    restart neither redraws jitter nor restarts the full delay.
+    """
+
+    series_id: str
+    attempt_number: int
+    scheduled_superstep: int
+    status: AttemptStatus
+    started_at: datetime
+    completed_at: datetime | None = None
+    error: AttemptError | None = None
+    retry_not_before: datetime | None = None
+    sampled_delay: float | None = None
+
+    def __repr__(self) -> str:
+        parts = [f"Attempt #{self.attempt_number}", self.status.value, f"superstep {self.scheduled_superstep}"]
+        if self.error is not None:
+            parts.append(f"error: {self.error.type_name}")
+        return " | ".join(parts)
+
+
 class WorkflowStatus(Enum):
     """Status of a run (kept as WorkflowStatus to avoid collision with runners.RunStatus)."""
 
@@ -59,6 +181,7 @@ class StepRecord:
     completed_at: datetime | None = None
     child_run_id: str | None = None
     partial: bool = False
+    attempt_series_id: str | None = None
 
     def __repr__(self) -> str:
         status = "cached" if self.cached else self.status.value
@@ -97,6 +220,7 @@ class StepRecord:
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "child_run_id": self.child_run_id,
             "partial": self.partial,
+            "attempt_series_id": self.attempt_series_id,
         }
 
 

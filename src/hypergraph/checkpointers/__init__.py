@@ -11,6 +11,11 @@ from hypergraph.checkpointers.protocols import SyncCheckpointerProtocol
 from hypergraph.checkpointers.serializers import JsonSerializer, PickleSerializer, Serializer
 from hypergraph.checkpointers.sqlite import SqliteCheckpointer
 from hypergraph.checkpointers.types import (
+    AttemptError,
+    AttemptLedgerError,
+    AttemptRecord,
+    AttemptSeries,
+    AttemptStatus,
     Checkpoint,
     LineageRow,
     LineageView,
@@ -23,6 +28,11 @@ from hypergraph.checkpointers.types import (
 )
 
 __all__ = [
+    "AttemptError",
+    "AttemptLedgerError",
+    "AttemptRecord",
+    "AttemptSeries",
+    "AttemptStatus",
     "Checkpointer",
     "CheckpointPolicy",
     "Checkpoint",

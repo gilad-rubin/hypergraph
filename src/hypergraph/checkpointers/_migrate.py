@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def detect_schema_version(conn: Any) -> int:
@@ -12,7 +12,8 @@ def detect_schema_version(conn: Any) -> int:
 
     Returns:
         0 — empty database (no tables)
-        3 — current v3 schema (_schema_version table with version=3)
+        3 — v3 schema (pre attempt ledger)
+        4 — current v4 schema (attempt ledger tables present)
     """
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
@@ -23,11 +24,14 @@ def detect_schema_version(conn: Any) -> int:
     return 0
 
 
-def create_v3_schema(conn: Any) -> None:
-    """Create a fresh v3 schema on an empty database."""
+def create_v4_schema(conn: Any) -> None:
+    """Create a fresh v4 schema on an empty database."""
     conn.execute(_CREATE_RUNS)
     conn.execute(_CREATE_STEPS)
+    conn.execute(_CREATE_ATTEMPT_SERIES)
+    conn.execute(_CREATE_ATTEMPT_RECORDS)
     _create_indexes(conn)
+    _create_attempt_indexes(conn)
     _create_fts(conn)
 
     conn.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
@@ -36,17 +40,22 @@ def create_v3_schema(conn: Any) -> None:
 
 
 def ensure_schema(conn: Any) -> None:
-    """Detect schema version and create schema if the database is empty."""
+    """Detect schema version and create/migrate schema as needed."""
     version = detect_schema_version(conn)
 
     if version == SCHEMA_VERSION:
         _ensure_v3_columns(conn)
+        _ensure_v4_objects(conn)
         return
     if version == 0:
-        create_v3_schema(conn)
+        create_v4_schema(conn)
         return
     if version == 2:
         _migrate_v2_to_v3(conn)
+        _migrate_v3_to_v4(conn)
+        return
+    if version == 3:
+        _migrate_v3_to_v4(conn)
         return
     raise ValueError(f"Unsupported database schema version {version} (current: {SCHEMA_VERSION}). Please upgrade hypergraph.")
 
@@ -91,7 +100,38 @@ CREATE TABLE IF NOT EXISTS steps (
     partial INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     completed_at TEXT,
+    attempt_series_id TEXT REFERENCES attempt_series(id),
     UNIQUE(run_id, superstep, node_name)
+)
+"""
+
+_CREATE_ATTEMPT_SERIES = """
+CREATE TABLE IF NOT EXISTS attempt_series (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    node_name TEXT NOT NULL,
+    policy_fingerprint TEXT NOT NULL,
+    max_attempts INTEGER NOT NULL,
+    opened_at TEXT NOT NULL,
+    deadline_at TEXT,
+    committed_superstep INTEGER,
+    closed_at TEXT
+)
+"""
+
+_CREATE_ATTEMPT_RECORDS = """
+CREATE TABLE IF NOT EXISTS attempt_records (
+    series_id TEXT NOT NULL REFERENCES attempt_series(id),
+    attempt_number INTEGER NOT NULL,
+    scheduled_superstep INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    error_type TEXT,
+    error_message TEXT,
+    retry_not_before TEXT,
+    sampled_delay REAL,
+    PRIMARY KEY (series_id, attempt_number)
 )
 """
 
@@ -109,6 +149,15 @@ def _create_indexes(conn: Any) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_steps_node ON steps(node_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_steps_status ON steps(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_parent ON runs(parent_run_id)")
+
+
+def _create_attempt_indexes(conn: Any) -> None:
+    """Create attempt-ledger indexes.
+
+    The partial unique index enforces at most one OPEN series per
+    (run_id, node_name); closed history may accumulate.
+    """
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_attempt_series_open ON attempt_series(run_id, node_name) WHERE closed_at IS NULL")
 
 
 def _ensure_v3_columns(conn: Any) -> None:
@@ -131,10 +180,35 @@ def _ensure_v3_columns(conn: Any) -> None:
     conn.commit()
 
 
+def _ensure_v4_objects(conn: Any) -> None:
+    """Ensure attempt-ledger tables/column exist (safe idempotent guard).
+
+    Existing tables are only extended additively: the new steps column is a
+    nullable append, so pre-ledger rows keep their exact byte layout.
+    """
+    conn.execute(_CREATE_ATTEMPT_SERIES)
+    conn.execute(_CREATE_ATTEMPT_RECORDS)
+
+    existing_steps = {row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()}
+    if "attempt_series_id" not in existing_steps:
+        conn.execute("ALTER TABLE steps ADD COLUMN attempt_series_id TEXT REFERENCES attempt_series(id)")
+
+    _create_attempt_indexes(conn)
+    conn.commit()
+
+
 def _migrate_v2_to_v3(conn: Any) -> None:
     """In-place migration from schema v2 to v3."""
     _ensure_v3_columns(conn)
-    conn.execute("UPDATE _schema_version SET version = ?", (SCHEMA_VERSION,))
+    conn.execute("UPDATE _schema_version SET version = 3")
+    conn.commit()
+
+
+def _migrate_v3_to_v4(conn: Any) -> None:
+    """In-place migration from schema v3 to v4 (adds the attempt ledger)."""
+    _ensure_v3_columns(conn)
+    _ensure_v4_objects(conn)
+    conn.execute("UPDATE _schema_version SET version = 4")
     conn.commit()
 
 

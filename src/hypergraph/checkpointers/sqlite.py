@@ -8,16 +8,34 @@ import json
 import threading
 import uuid
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 from hypergraph.checkpointers._migrate import ensure_schema
-from hypergraph.checkpointers.base import _UNSET, Checkpointer, CheckpointPolicy, _normalize_since, _resolve_fork_workflow_id
+from hypergraph.checkpointers.base import (
+    _UNSET,
+    Checkpointer,
+    CheckpointPolicy,
+    _check_close_request,
+    _check_no_open_series,
+    _check_recordable_outcome,
+    _check_reservation,
+    _check_run_exists,
+    _new_attempt_series_id,
+    _normalize_since,
+    _require_series,
+    _require_started,
+    _resolve_fork_workflow_id,
+)
 from hypergraph.checkpointers.presenters import render_checkpointer_explorer_html
 from hypergraph.checkpointers.serializers import JsonSerializer, Serializer
 from hypergraph.checkpointers.types import (
+    AttemptError,
+    AttemptRecord,
+    AttemptSeries,
+    AttemptStatus,
     Checkpoint,
     LineageRow,
     LineageView,
@@ -34,7 +52,10 @@ _RUNS_COLS = (
     "id, graph_name, status, duration_ms, node_count, error_count, "
     "created_at, completed_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config"
 )
-_STEPS_COLS = "id, run_id, step_index, superstep, node_name, node_type, status, duration_ms, cached, error, decision, input_versions, values_data, child_run_id, created_at, completed_at, partial"
+_STEPS_COLS = (
+    "id, run_id, step_index, superstep, node_name, node_type, status, duration_ms, cached, error, decision, "
+    "input_versions, values_data, child_run_id, created_at, completed_at, partial, attempt_series_id"
+)
 _STEP_TIME_ORDER = "COALESCE(completed_at, created_at), created_at, id"
 _STEP_TIME_ORDER_DESC = "COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC"
 _STEP_TIME_ORDER_DESC_WITH_ALIAS = "COALESCE(s.completed_at, s.created_at) DESC, s.created_at DESC, s.id DESC"
@@ -44,14 +65,15 @@ _PUBLIC_STEP_FILTER = f"node_name != '{_RETENTION_BASELINE_NODE_NAME}' AND (node
 _PUBLIC_STEP_FILTER_WITH_ALIAS = (
     f"s.node_name != '{_RETENTION_BASELINE_NODE_NAME}' AND (s.node_type IS NULL OR s.node_type != '{_RETENTION_BASELINE_NODE_TYPE}')"
 )
-_RETENTION_ROW_COLS = "id, step_index, superstep, node_name, values_data, created_at, completed_at"
+_RETENTION_ROW_COLS = "id, step_index, superstep, node_name, values_data, created_at, completed_at, attempt_series_id"
 _DELETE_BATCH_SIZE = 500
 _STEP_UPSERT_SQL = """
     INSERT INTO steps (
         run_id, superstep, node_name, step_index, status,
         input_versions, values_data, duration_ms, cached,
-        decision, error, node_type, created_at, completed_at, child_run_id, partial
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        decision, error, node_type, created_at, completed_at, child_run_id, partial,
+        attempt_series_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(run_id, superstep, node_name) DO UPDATE SET
         status = excluded.status,
         values_data = excluded.values_data,
@@ -61,8 +83,33 @@ _STEP_UPSERT_SQL = """
         error = excluded.error,
         node_type = excluded.node_type,
         completed_at = excluded.completed_at,
-        partial = excluded.partial
+        partial = excluded.partial,
+        attempt_series_id = excluded.attempt_series_id
 """
+
+# === Attempt-ledger SQL (shared by async and sync paths) ===
+_ATTEMPT_SERIES_COLS = "id, run_id, node_name, policy_fingerprint, max_attempts, opened_at, deadline_at, committed_superstep, closed_at"
+_ATTEMPT_RECORD_COLS = (
+    "series_id, attempt_number, scheduled_superstep, status, started_at, completed_at, error_type, error_message, retry_not_before, sampled_delay"
+)
+_ATTEMPT_SERIES_INSERT_SQL = f"INSERT INTO attempt_series ({_ATTEMPT_SERIES_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+_ATTEMPT_RECORD_INSERT_SQL = f"INSERT INTO attempt_records ({_ATTEMPT_RECORD_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+_ATTEMPT_SERIES_BY_ID_SQL = f"SELECT {_ATTEMPT_SERIES_COLS} FROM attempt_series WHERE id = ?"
+_ATTEMPT_SERIES_OPEN_SQL = f"SELECT {_ATTEMPT_SERIES_COLS} FROM attempt_series WHERE run_id = ? AND node_name = ? AND closed_at IS NULL"
+_ATTEMPT_RECORDS_SQL = f"SELECT {_ATTEMPT_RECORD_COLS} FROM attempt_records WHERE series_id = ? ORDER BY attempt_number"
+_ATTEMPT_RECORD_SQL = f"SELECT {_ATTEMPT_RECORD_COLS} FROM attempt_records WHERE series_id = ? AND attempt_number = ?"
+_ATTEMPT_COUNT_SQL = "SELECT COUNT(*) FROM attempt_records WHERE series_id = ?"
+_ATTEMPT_SETTLE_STRANDED_SQL = "UPDATE attempt_records SET status = ?, completed_at = ? WHERE series_id = ? AND status = ?"
+_ATTEMPT_OUTCOME_SQL = (
+    "UPDATE attempt_records SET status = ?, completed_at = ?, error_type = ?, error_message = ?, "
+    "retry_not_before = ?, sampled_delay = ? WHERE series_id = ? AND attempt_number = ?"
+)
+_ATTEMPT_FINAL_SQL = (
+    "UPDATE attempt_records SET status = ?, completed_at = ?, error_type = ?, error_message = ? WHERE series_id = ? AND attempt_number = ?"
+)
+_ATTEMPT_SERIES_CLOSE_SQL = "UPDATE attempt_series SET closed_at = ?, committed_superstep = ? WHERE id = ?"
+_ATTEMPT_MAX_NUMBER_SQL = "SELECT COALESCE(MAX(attempt_number), 0) FROM attempt_records WHERE series_id = ?"
+_RUN_EXISTS_SQL = "SELECT 1 FROM runs WHERE id = ?"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +121,7 @@ class _RetentionRow:
     values_data: bytes | None
     created_at: str | None
     completed_at: str | None
+    attempt_series_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +134,7 @@ class _RetentionPlan:
 def _decode_retention_rows(rows: Sequence[tuple[Any, ...]]) -> tuple[_RetentionRow, ...]:
     decoded: list[_RetentionRow] = []
     for row in rows:
-        row_id, step_index, superstep, node_name, values_data, created_at, completed_at = row
+        row_id, step_index, superstep, node_name, values_data, created_at, completed_at, attempt_series_id = row
         decoded.append(
             _RetentionRow(
                 id=int(row_id),
@@ -96,9 +144,72 @@ def _decode_retention_rows(rows: Sequence[tuple[Any, ...]]) -> tuple[_RetentionR
                 values_data=values_data,
                 created_at=created_at,
                 completed_at=completed_at,
+                attempt_series_id=attempt_series_id,
             )
         )
     return tuple(decoded)
+
+
+def _row_to_attempt_series(row: tuple[Any, ...]) -> AttemptSeries:
+    return AttemptSeries(
+        id=row[0],
+        run_id=row[1],
+        node_name=row[2],
+        policy_fingerprint=row[3],
+        max_attempts=int(row[4]),
+        opened_at=_parse_dt(row[5]),
+        deadline_at=_parse_dt(row[6]),
+        committed_superstep=row[7],
+        closed_at=_parse_dt(row[8]),
+    )
+
+
+def _row_to_attempt_record(row: tuple[Any, ...]) -> AttemptRecord:
+    error = AttemptError(type_name=row[6], message=row[7] or "") if row[6] is not None else None
+    return AttemptRecord(
+        series_id=row[0],
+        attempt_number=int(row[1]),
+        scheduled_superstep=int(row[2]),
+        status=AttemptStatus(row[3]),
+        started_at=_parse_dt(row[4]),
+        completed_at=_parse_dt(row[5]),
+        error=error,
+        retry_not_before=_parse_dt(row[8]),
+        sampled_delay=row[9],
+    )
+
+
+def _iso_or_none(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _attempt_record_insert_params(record: AttemptRecord) -> tuple[Any, ...]:
+    return (
+        record.series_id,
+        record.attempt_number,
+        record.scheduled_superstep,
+        record.status.value,
+        record.started_at.isoformat(),
+        _iso_or_none(record.completed_at),
+        record.error.type_name if record.error else None,
+        record.error.message if record.error else None,
+        _iso_or_none(record.retry_not_before),
+        record.sampled_delay,
+    )
+
+
+def _attempt_series_insert_params(series: AttemptSeries) -> tuple[Any, ...]:
+    return (
+        series.id,
+        series.run_id,
+        series.node_name,
+        series.policy_fingerprint,
+        series.max_attempts,
+        series.opened_at.isoformat(),
+        _iso_or_none(series.deadline_at),
+        series.committed_superstep,
+        _iso_or_none(series.closed_at),
+    )
 
 
 def _plan_retention(
@@ -379,35 +490,33 @@ class SqliteCheckpointer(Checkpointer):
 
     # === Write ===
 
+    def _step_upsert_params(self, record: StepRecord) -> tuple[Any, ...]:
+        """Build the parameter tuple for ``_STEP_UPSERT_SQL``."""
+        values_blob = self._serializer.serialize(record.values) if record.values is not None else None
+        return (
+            record.run_id,
+            record.superstep,
+            record.node_name,
+            record.index,
+            record.status.value,
+            json.dumps(record.input_versions),
+            values_blob,
+            record.duration_ms,
+            int(record.cached),
+            json.dumps(record.decision) if record.decision is not None else None,
+            record.error,
+            record.node_type,
+            record.created_at.isoformat(),
+            record.completed_at.isoformat() if record.completed_at else None,
+            record.child_run_id,
+            int(record.partial),
+            record.attempt_series_id,
+        )
+
     async def save_step(self, record: StepRecord) -> None:
         """Save a step with upsert semantics."""
         await self._ensure_db()
-
-        values_blob = self._serializer.serialize(record.values) if record.values is not None else None
-        input_versions_json = json.dumps(record.input_versions)
-        decision_json = json.dumps(record.decision) if record.decision is not None else None
-
-        await self._db.execute(
-            _STEP_UPSERT_SQL,
-            (
-                record.run_id,
-                record.superstep,
-                record.node_name,
-                record.index,
-                record.status.value,
-                input_versions_json,
-                values_blob,
-                record.duration_ms,
-                int(record.cached),
-                decision_json,
-                record.error,
-                record.node_type,
-                record.created_at.isoformat(),
-                record.completed_at.isoformat() if record.completed_at else None,
-                record.child_run_id,
-                int(record.partial),
-            ),
-        )
+        await self._db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
         await self._apply_retention_policy_async(record.run_id)
         await self._db.commit()
 
@@ -684,15 +793,215 @@ class SqliteCheckpointer(Checkpointer):
         rows = await cursor.fetchall()
         return StepTable(self._row_to_step(row) for row in rows)
 
+    # === Attempt Ledger (async) ===
+    #
+    # Reservations and outcomes write through immediately: every method
+    # commits before returning, independent of the CheckpointPolicy
+    # durability timing the runner applies to StepRecords. On any failure the
+    # open transaction is rolled back so nothing partial can commit later.
+
+    async def _rollback_async(self) -> None:
+        with contextlib.suppress(Exception):
+            await self._db.rollback()
+
+    async def _fetch_attempt_series(self, series_id: str) -> AttemptSeries | None:
+        cursor = await self._db.execute(_ATTEMPT_SERIES_BY_ID_SQL, (series_id,))
+        row = await cursor.fetchone()
+        return _row_to_attempt_series(row) if row is not None else None
+
+    async def _fetch_attempt_record(self, series_id: str, attempt_number: int) -> AttemptRecord | None:
+        cursor = await self._db.execute(_ATTEMPT_RECORD_SQL, (series_id, attempt_number))
+        row = await cursor.fetchone()
+        return _row_to_attempt_record(row) if row is not None else None
+
+    async def open_attempt_series(
+        self,
+        run_id: str,
+        node_name: str,
+        *,
+        policy_fingerprint: str,
+        max_attempts: int,
+        deadline_at: datetime | None = None,
+    ) -> AttemptSeries:
+        await self._ensure_db()
+        try:
+            cursor = await self._db.execute(_RUN_EXISTS_SQL, (run_id,))
+            _check_run_exists(await cursor.fetchone() is not None, run_id)
+            _check_no_open_series(await self.get_open_attempt_series(run_id, node_name), run_id, node_name)
+            series = AttemptSeries(
+                id=_new_attempt_series_id(),
+                run_id=run_id,
+                node_name=node_name,
+                policy_fingerprint=policy_fingerprint,
+                max_attempts=max_attempts,
+                opened_at=datetime.now(timezone.utc),
+                deadline_at=deadline_at,
+            )
+            await self._db.execute(_ATTEMPT_SERIES_INSERT_SQL, _attempt_series_insert_params(series))
+            await self._db.commit()
+            return series
+        except BaseException:
+            await self._rollback_async()
+            raise
+
+    async def get_attempt_series(self, series_id: str) -> AttemptSeries | None:
+        await self._ensure_db()
+        return await self._fetch_attempt_series(series_id)
+
+    async def get_open_attempt_series(self, run_id: str, node_name: str) -> AttemptSeries | None:
+        await self._ensure_db()
+        cursor = await self._db.execute(_ATTEMPT_SERIES_OPEN_SQL, (run_id, node_name))
+        row = await cursor.fetchone()
+        return _row_to_attempt_series(row) if row is not None else None
+
+    async def get_attempt_records(self, series_id: str) -> list[AttemptRecord]:
+        await self._ensure_db()
+        cursor = await self._db.execute(_ATTEMPT_RECORDS_SQL, (series_id,))
+        rows = await cursor.fetchall()
+        return [_row_to_attempt_record(row) for row in rows]
+
+    async def remaining_attempts(self, series_id: str) -> int:
+        await self._ensure_db()
+        series = _require_series(await self._fetch_attempt_series(series_id), series_id)
+        cursor = await self._db.execute(_ATTEMPT_COUNT_SQL, (series_id,))
+        (consumed,) = await cursor.fetchone()
+        return series.max_attempts - int(consumed)
+
+    async def begin_attempt(
+        self,
+        series_id: str,
+        *,
+        policy_fingerprint: str,
+        scheduled_superstep: int,
+    ) -> AttemptRecord:
+        await self._ensure_db()
+        now = datetime.now(timezone.utc)
+        try:
+            series = _require_series(await self._fetch_attempt_series(series_id), series_id)
+            cursor = await self._db.execute(_ATTEMPT_COUNT_SQL, (series_id,))
+            (consumed,) = await cursor.fetchone()
+            _check_reservation(series, policy_fingerprint=policy_fingerprint, consumed=int(consumed), now=now)
+            # A new reservation is proof any prior STARTED row can no longer resolve.
+            await self._db.execute(
+                _ATTEMPT_SETTLE_STRANDED_SQL,
+                (AttemptStatus.OUTCOME_UNKNOWN.value, now.isoformat(), series_id, AttemptStatus.STARTED.value),
+            )
+            cursor = await self._db.execute(_ATTEMPT_MAX_NUMBER_SQL, (series_id,))
+            (max_number,) = await cursor.fetchone()
+            record = AttemptRecord(
+                series_id=series_id,
+                attempt_number=int(max_number) + 1,
+                scheduled_superstep=scheduled_superstep,
+                status=AttemptStatus.STARTED,
+                started_at=now,
+            )
+            await self._db.execute(_ATTEMPT_RECORD_INSERT_SQL, _attempt_record_insert_params(record))
+            await self._db.commit()
+            return record
+        except BaseException:
+            await self._rollback_async()
+            raise
+
+    async def record_attempt_outcome(
+        self,
+        series_id: str,
+        attempt_number: int,
+        status: AttemptStatus,
+        *,
+        error: AttemptError | None = None,
+        retry_not_before: datetime | None = None,
+        sampled_delay: float | None = None,
+    ) -> AttemptRecord:
+        await self._ensure_db()
+        _check_recordable_outcome(status)
+        now = datetime.now(timezone.utc)
+        try:
+            _require_series(await self._fetch_attempt_series(series_id), series_id)
+            record = _require_started(await self._fetch_attempt_record(series_id, attempt_number), series_id, attempt_number)
+            await self._db.execute(
+                _ATTEMPT_OUTCOME_SQL,
+                (
+                    status.value,
+                    now.isoformat(),
+                    error.type_name if error else None,
+                    error.message if error else None,
+                    _iso_or_none(retry_not_before),
+                    sampled_delay,
+                    series_id,
+                    attempt_number,
+                ),
+            )
+            await self._db.commit()
+            return replace(
+                record,
+                status=status,
+                completed_at=now,
+                error=error,
+                retry_not_before=retry_not_before,
+                sampled_delay=sampled_delay,
+            )
+        except BaseException:
+            await self._rollback_async()
+            raise
+
+    async def close_attempt_series(
+        self,
+        series_id: str,
+        attempt_number: int,
+        status: AttemptStatus,
+        *,
+        step_record: StepRecord,
+        error: AttemptError | None = None,
+    ) -> None:
+        await self._ensure_db()
+        now = datetime.now(timezone.utc)
+        try:
+            series = _require_series(await self._fetch_attempt_series(series_id), series_id)
+            _check_close_request(series, status, step_record)
+            _require_started(await self._fetch_attempt_record(series_id, attempt_number), series_id, attempt_number)
+            await self._db.execute(
+                _ATTEMPT_FINAL_SQL,
+                (
+                    status.value,
+                    now.isoformat(),
+                    error.type_name if error else None,
+                    error.message if error else None,
+                    series_id,
+                    attempt_number,
+                ),
+            )
+            await self._db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(step_record))
+            await self._db.execute(_ATTEMPT_SERIES_CLOSE_SQL, (now.isoformat(), step_record.superstep, series_id))
+            await self._apply_retention_policy_async(step_record.run_id)
+            await self._db.commit()
+        except BaseException:
+            await self._rollback_async()
+            raise
+
+    async def resolve_stranded_attempts(self, series_id: str) -> list[AttemptRecord]:
+        await self._ensure_db()
+        now = datetime.now(timezone.utc)
+        try:
+            _require_series(await self._fetch_attempt_series(series_id), series_id)
+            await self._db.execute(
+                _ATTEMPT_SETTLE_STRANDED_SQL,
+                (AttemptStatus.OUTCOME_UNKNOWN.value, now.isoformat(), series_id, AttemptStatus.STARTED.value),
+            )
+            await self._db.commit()
+        except BaseException:
+            await self._rollback_async()
+            raise
+        return await self.get_attempt_records(series_id)
+
     # === Internal ===
 
     def _row_to_step(self, row: tuple[Any, ...]) -> StepRecord:
-        """Convert a v2 database row to StepRecord.
+        """Convert a database row (``_STEPS_COLS`` order) to StepRecord.
 
-        v2 columns: id, run_id, step_index, superstep, node_name, node_type,
-                     status, duration_ms, cached, error, decision,
-                     input_versions, values_data, child_run_id,
-                     created_at, completed_at
+        Columns: id, run_id, step_index, superstep, node_name, node_type,
+                 status, duration_ms, cached, error, decision, input_versions,
+                 values_data, child_run_id, created_at, completed_at, partial,
+                 attempt_series_id (trailing columns len-guarded for old rows).
         """
         values_blob = row[12]
         values = self._serializer.deserialize(values_blob) if values_blob is not None else None
@@ -717,6 +1026,7 @@ class SqliteCheckpointer(Checkpointer):
             completed_at=_parse_dt(row[15]),
             child_run_id=row[13],
             partial=bool(row[16]) if len(row) > 16 and row[16] is not None else False,
+            attempt_series_id=row[17] if len(row) > 17 else None,
         )
 
     def _row_to_run(self, row: tuple[Any, ...]) -> Run:
@@ -1124,31 +1434,7 @@ class SqliteCheckpointer(Checkpointer):
         """Save a step with upsert semantics synchronously."""
         with self._sync_lock:
             db = self._sync_db()
-            values_blob = self._serializer.serialize(record.values) if record.values is not None else None
-            input_versions_json = json.dumps(record.input_versions)
-            decision_json = json.dumps(record.decision) if record.decision is not None else None
-
-            db.execute(
-                _STEP_UPSERT_SQL,
-                (
-                    record.run_id,
-                    record.superstep,
-                    record.node_name,
-                    record.index,
-                    record.status.value,
-                    input_versions_json,
-                    values_blob,
-                    record.duration_ms,
-                    int(record.cached),
-                    decision_json,
-                    record.error,
-                    record.node_type,
-                    record.created_at.isoformat(),
-                    record.completed_at.isoformat() if record.completed_at else None,
-                    record.child_run_id,
-                    int(record.partial),
-                ),
-            )
+            db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
             self._apply_retention_policy_sync(record.run_id)
             db.commit()
 
@@ -1209,6 +1495,7 @@ class SqliteCheckpointer(Checkpointer):
             baseline_at,
             None,
             0,
+            None,
         )
 
     @staticmethod
@@ -1217,9 +1504,28 @@ class SqliteCheckpointer(Checkpointer):
         return f"DELETE FROM steps WHERE id IN ({placeholders})"
 
     @staticmethod
-    def _delete_step_id_batches(ids: list[int]) -> Iterator[list[int]]:
+    def _delete_step_id_batches(ids: Sequence[Any]) -> Iterator[list[Any]]:
         for start in range(0, len(ids), _DELETE_BATCH_SIZE):
-            yield ids[start : start + _DELETE_BATCH_SIZE]
+            yield list(ids[start : start + _DELETE_BATCH_SIZE])
+
+    @staticmethod
+    def _dropped_series_ids(dropped_rows: Sequence[_RetentionRow]) -> list[str]:
+        return sorted({row.attempt_series_id for row in dropped_rows if row.attempt_series_id is not None})
+
+    @staticmethod
+    def _delete_closed_series_sql(ids: list[str]) -> tuple[str, str]:
+        """SQL pair deleting closed series (+records) whose linked step was dropped.
+
+        Open series are never pruned — the ``closed_at IS NOT NULL`` guard is
+        the enforcement point.
+        """
+        placeholders = ", ".join("?" for _ in ids)
+        records_sql = (
+            f"DELETE FROM attempt_records WHERE series_id IN ({placeholders}) "
+            "AND series_id IN (SELECT id FROM attempt_series WHERE closed_at IS NOT NULL)"
+        )
+        series_sql = f"DELETE FROM attempt_series WHERE id IN ({placeholders}) AND closed_at IS NOT NULL"
+        return records_sql, series_sql
 
     async def _retention_rows_async(self, run_id: str) -> tuple[_RetentionRow, ...]:
         cursor = await self._db.execute(
@@ -1257,6 +1563,10 @@ class SqliteCheckpointer(Checkpointer):
         ids = [row.id for row in dropped_rows]
         for batch in self._delete_step_id_batches(ids):
             await self._db.execute(self._delete_steps_sql(batch), batch)
+        for series_batch in self._delete_step_id_batches(self._dropped_series_ids(dropped_rows)):
+            records_sql, series_sql = self._delete_closed_series_sql(series_batch)
+            await self._db.execute(records_sql, series_batch)
+            await self._db.execute(series_sql, series_batch)
         if baseline_params is not None:
             await self._db.execute(_STEP_UPSERT_SQL, baseline_params)
 
@@ -1282,6 +1592,10 @@ class SqliteCheckpointer(Checkpointer):
             db = self._sync_db()
             for batch in self._delete_step_id_batches(ids):
                 db.execute(self._delete_steps_sql(batch), batch)
+            for series_batch in self._delete_step_id_batches(self._dropped_series_ids(dropped_rows)):
+                records_sql, series_sql = self._delete_closed_series_sql(series_batch)
+                db.execute(records_sql, series_batch)
+                db.execute(series_sql, series_batch)
             if baseline_params is not None:
                 db.execute(_STEP_UPSERT_SQL, baseline_params)
 
@@ -1355,3 +1669,200 @@ class SqliteCheckpointer(Checkpointer):
                 params,
             )
             db.commit()
+
+    # === Attempt Ledger (sync mirrors) ===
+    #
+    # Same write-through and rollback contract as the async methods, over the
+    # cached sync connection used by SyncRunner.
+
+    @staticmethod
+    def _rollback_sync(db: Any) -> None:
+        with contextlib.suppress(Exception):
+            db.rollback()
+
+    def _fetch_attempt_series_sync(self, db: Any, series_id: str) -> AttemptSeries | None:
+        row = db.execute(_ATTEMPT_SERIES_BY_ID_SQL, (series_id,)).fetchone()
+        return _row_to_attempt_series(row) if row is not None else None
+
+    def _fetch_attempt_record_sync(self, db: Any, series_id: str, attempt_number: int) -> AttemptRecord | None:
+        row = db.execute(_ATTEMPT_RECORD_SQL, (series_id, attempt_number)).fetchone()
+        return _row_to_attempt_record(row) if row is not None else None
+
+    def open_attempt_series_sync(
+        self,
+        run_id: str,
+        node_name: str,
+        *,
+        policy_fingerprint: str,
+        max_attempts: int,
+        deadline_at: datetime | None = None,
+    ) -> AttemptSeries:
+        with self._sync_lock:
+            db = self._sync_db()
+            try:
+                _check_run_exists(db.execute(_RUN_EXISTS_SQL, (run_id,)).fetchone() is not None, run_id)
+                _check_no_open_series(self.get_open_attempt_series_sync(run_id, node_name), run_id, node_name)
+                series = AttemptSeries(
+                    id=_new_attempt_series_id(),
+                    run_id=run_id,
+                    node_name=node_name,
+                    policy_fingerprint=policy_fingerprint,
+                    max_attempts=max_attempts,
+                    opened_at=datetime.now(timezone.utc),
+                    deadline_at=deadline_at,
+                )
+                db.execute(_ATTEMPT_SERIES_INSERT_SQL, _attempt_series_insert_params(series))
+                db.commit()
+                return series
+            except BaseException:
+                self._rollback_sync(db)
+                raise
+
+    def get_attempt_series_sync(self, series_id: str) -> AttemptSeries | None:
+        with self._sync_lock:
+            return self._fetch_attempt_series_sync(self._sync_db(), series_id)
+
+    def get_open_attempt_series_sync(self, run_id: str, node_name: str) -> AttemptSeries | None:
+        with self._sync_lock:
+            row = self._sync_db().execute(_ATTEMPT_SERIES_OPEN_SQL, (run_id, node_name)).fetchone()
+            return _row_to_attempt_series(row) if row is not None else None
+
+    def get_attempt_records_sync(self, series_id: str) -> list[AttemptRecord]:
+        with self._sync_lock:
+            rows = self._sync_db().execute(_ATTEMPT_RECORDS_SQL, (series_id,)).fetchall()
+            return [_row_to_attempt_record(row) for row in rows]
+
+    def remaining_attempts_sync(self, series_id: str) -> int:
+        with self._sync_lock:
+            db = self._sync_db()
+            series = _require_series(self._fetch_attempt_series_sync(db, series_id), series_id)
+            (consumed,) = db.execute(_ATTEMPT_COUNT_SQL, (series_id,)).fetchone()
+            return series.max_attempts - int(consumed)
+
+    def begin_attempt_sync(
+        self,
+        series_id: str,
+        *,
+        policy_fingerprint: str,
+        scheduled_superstep: int,
+    ) -> AttemptRecord:
+        with self._sync_lock:
+            db = self._sync_db()
+            now = datetime.now(timezone.utc)
+            try:
+                series = _require_series(self._fetch_attempt_series_sync(db, series_id), series_id)
+                (consumed,) = db.execute(_ATTEMPT_COUNT_SQL, (series_id,)).fetchone()
+                _check_reservation(series, policy_fingerprint=policy_fingerprint, consumed=int(consumed), now=now)
+                # A new reservation is proof any prior STARTED row can no longer resolve.
+                db.execute(
+                    _ATTEMPT_SETTLE_STRANDED_SQL,
+                    (AttemptStatus.OUTCOME_UNKNOWN.value, now.isoformat(), series_id, AttemptStatus.STARTED.value),
+                )
+                (max_number,) = db.execute(_ATTEMPT_MAX_NUMBER_SQL, (series_id,)).fetchone()
+                record = AttemptRecord(
+                    series_id=series_id,
+                    attempt_number=int(max_number) + 1,
+                    scheduled_superstep=scheduled_superstep,
+                    status=AttemptStatus.STARTED,
+                    started_at=now,
+                )
+                db.execute(_ATTEMPT_RECORD_INSERT_SQL, _attempt_record_insert_params(record))
+                db.commit()
+                return record
+            except BaseException:
+                self._rollback_sync(db)
+                raise
+
+    def record_attempt_outcome_sync(
+        self,
+        series_id: str,
+        attempt_number: int,
+        status: AttemptStatus,
+        *,
+        error: AttemptError | None = None,
+        retry_not_before: datetime | None = None,
+        sampled_delay: float | None = None,
+    ) -> AttemptRecord:
+        _check_recordable_outcome(status)
+        with self._sync_lock:
+            db = self._sync_db()
+            now = datetime.now(timezone.utc)
+            try:
+                _require_series(self._fetch_attempt_series_sync(db, series_id), series_id)
+                record = _require_started(self._fetch_attempt_record_sync(db, series_id, attempt_number), series_id, attempt_number)
+                db.execute(
+                    _ATTEMPT_OUTCOME_SQL,
+                    (
+                        status.value,
+                        now.isoformat(),
+                        error.type_name if error else None,
+                        error.message if error else None,
+                        _iso_or_none(retry_not_before),
+                        sampled_delay,
+                        series_id,
+                        attempt_number,
+                    ),
+                )
+                db.commit()
+                return replace(
+                    record,
+                    status=status,
+                    completed_at=now,
+                    error=error,
+                    retry_not_before=retry_not_before,
+                    sampled_delay=sampled_delay,
+                )
+            except BaseException:
+                self._rollback_sync(db)
+                raise
+
+    def close_attempt_series_sync(
+        self,
+        series_id: str,
+        attempt_number: int,
+        status: AttemptStatus,
+        *,
+        step_record: StepRecord,
+        error: AttemptError | None = None,
+    ) -> None:
+        with self._sync_lock:
+            db = self._sync_db()
+            now = datetime.now(timezone.utc)
+            try:
+                series = _require_series(self._fetch_attempt_series_sync(db, series_id), series_id)
+                _check_close_request(series, status, step_record)
+                _require_started(self._fetch_attempt_record_sync(db, series_id, attempt_number), series_id, attempt_number)
+                db.execute(
+                    _ATTEMPT_FINAL_SQL,
+                    (
+                        status.value,
+                        now.isoformat(),
+                        error.type_name if error else None,
+                        error.message if error else None,
+                        series_id,
+                        attempt_number,
+                    ),
+                )
+                db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(step_record))
+                db.execute(_ATTEMPT_SERIES_CLOSE_SQL, (now.isoformat(), step_record.superstep, series_id))
+                self._apply_retention_policy_sync(step_record.run_id)
+                db.commit()
+            except BaseException:
+                self._rollback_sync(db)
+                raise
+
+    def resolve_stranded_attempts_sync(self, series_id: str) -> list[AttemptRecord]:
+        with self._sync_lock:
+            db = self._sync_db()
+            now = datetime.now(timezone.utc)
+            try:
+                _require_series(self._fetch_attempt_series_sync(db, series_id), series_id)
+                db.execute(
+                    _ATTEMPT_SETTLE_STRANDED_SQL,
+                    (AttemptStatus.OUTCOME_UNKNOWN.value, now.isoformat(), series_id, AttemptStatus.STARTED.value),
+                )
+                db.commit()
+            except BaseException:
+                self._rollback_sync(db)
+                raise
+            return self.get_attempt_records_sync(series_id)
