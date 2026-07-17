@@ -41,6 +41,7 @@ import asyncio
 import random
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -80,11 +81,16 @@ async def _sleep_async(seconds: float) -> None:
 
 
 def nominal_delay(policy: RetryPolicy, failed_attempt_number: int) -> float:
-    """Nominal backoff cap after failed one-based attempt ``n``."""
-    return min(
-        policy.max_delay,
-        policy.initial_delay * policy.backoff_multiplier ** (failed_attempt_number - 1),
-    )
+    """Nominal backoff cap after failed one-based attempt ``n``.
+
+    Valid extreme policies (huge multipliers, deep attempt numbers) overflow
+    float exponentiation; the nominal delay is then simply the cap.
+    """
+    try:
+        grown = policy.initial_delay * policy.backoff_multiplier ** (failed_attempt_number - 1)
+    except OverflowError:
+        return policy.max_delay
+    return min(policy.max_delay, grown)
 
 
 @dataclass(frozen=True)
@@ -424,6 +430,12 @@ def run_attempts_sync(
             _sleep_sync(step.decision.sampled_delay)
         # BaseException control flow is deliberately not caught: it passes
         # through untouched and the reservation stays for resume semantics.
+        if deadline_at is not None and _utcnow() >= deadline_at:
+            # Post-sleep freshness: the wait itself may have outlived the
+            # window. In-process the exact last underlying exception is
+            # re-raised; the ledger's begin_attempt re-verifies atomically as
+            # the durable backstop.
+            raise step.underlying
 
 
 async def run_attempts_async(
@@ -434,8 +446,14 @@ async def run_attempts_async(
     checkpointer: Any | None,
     run_id: str | None,
     scheduled_superstep: int,
+    attempt_scope: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
 ) -> Any:
-    """Drive one logical node execution as a series of attempts (async)."""
+    """Drive one logical node execution as a series of attempts (async).
+
+    ``attempt_scope`` scopes ONE in-flight invocation (the concurrency
+    permit, per #218): it is entered before and exited after each attempt,
+    so backoff sleeps never hold a permit.
+    """
     now = _utcnow()
     if checkpointer is not None and run_id:
         ledger: Checkpointer | None = checkpointer
@@ -459,7 +477,10 @@ async def run_attempts_async(
         else:
             attempt_number += 1
         try:
-            return await invoke()
+            if attempt_scope is None:
+                return await invoke()
+            async with attempt_scope():
+                return await invoke()
         except Exception as error:
             # Terminal paths raise the exact underlying exception from here.
             # The reservation intentionally stays STARTED: the step-save site
@@ -477,6 +498,12 @@ async def run_attempts_async(
             await _sleep_async(step.decision.sampled_delay)
         # BaseException control flow is deliberately not caught: it passes
         # through untouched and the reservation stays for resume semantics.
+        if deadline_at is not None and _utcnow() >= deadline_at:
+            # Post-sleep freshness: the wait itself may have outlived the
+            # window. In-process the exact last underlying exception is
+            # re-raised; the ledger's begin_attempt re-verifies atomically as
+            # the durable backstop.
+            raise step.underlying
 
 
 # === Atomic close at the step-save boundary ===
@@ -494,6 +521,9 @@ def _retrying_function_node(graph: Graph, node_name: str) -> bool:
     return isinstance(node, FunctionNode) and node.retry is not None
 
 
+_LINKABLE_TERMINAL = frozenset({AttemptStatus.FAILED, AttemptStatus.OUTCOME_UNKNOWN})
+
+
 def _close_args(
     record: StepRecord,
     series: AttemptSeries,
@@ -502,18 +532,24 @@ def _close_args(
 ) -> tuple[int, AttemptStatus, AttemptError | None, StepRecord] | None:
     """Pure close decision: (attempt_number, status, error, linked record)."""
     status = _CLOSE_STATUS.get(record.status)
-    if status is None:
+    if status is None or not records:
         return None
-    if not records or records[-1].status is not AttemptStatus.STARTED:
-        # No live reservation to settle (crash edges resolve on resume).
-        return None
-    error = None
-    if status is AttemptStatus.FAILED:
-        raw = (node_errors or {}).get(record.node_name)
-        if isinstance(raw, Exception):
-            error = AttemptError.from_exception(raw)
+    last = records[-1]
     linked = replace(record, attempt_series_id=series.id)
-    return records[-1].attempt_number, status, error, linked
+    if last.status is AttemptStatus.STARTED:
+        # Ordinary close: settle the live reservation with this step's outcome.
+        error = None
+        if status is AttemptStatus.FAILED:
+            raw = (node_errors or {}).get(record.node_name)
+            if isinstance(raw, Exception):
+                error = AttemptError.from_exception(raw)
+        return last.attempt_number, status, error, linked
+    if status is AttemptStatus.FAILED and last.status in _LINKABLE_TERMINAL:
+        # Resume dead end (budget exhausted, window expired, OUTCOME_UNKNOWN
+        # evidence): the logical step failed FROM already-terminal durable
+        # evidence — link it and close without rewriting that evidence.
+        return last.attempt_number, last.status, None, linked
+    return None
 
 
 def maybe_close_attempt_series_sync(

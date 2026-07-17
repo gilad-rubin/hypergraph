@@ -157,6 +157,8 @@ With persistence, every attempt is durably reserved **before** your code runs, a
 
 This is an at-most-N-invocations guarantee, not exactly-once side effects: a crash mid-attempt cannot know whether the external call landed (the attempt is recorded as outcome-unknown). Payment-style APIs still need idempotency keys.
 
+Retry evidence deliberately overrides `CheckpointPolicy` durability timing: a retrying node's attempt records AND its series-closing StepRecord write through immediately under every durability mode (including `"async"` and `"exit"`), because the final outcome, its linked step, and the series closure must commit atomically. Non-retrying nodes buffer according to the configured durability as usual.
+
 ## What retry does NOT change
 
 - **Cache**: one lookup before any attempt; a hit invokes nothing and consumes no budget; one write after final success. Changing the policy never invalidates cached results.

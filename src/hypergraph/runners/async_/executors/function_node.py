@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.cache_observer import node_cache_observer
@@ -12,6 +13,12 @@ from hypergraph.runners.async_.superstep import get_concurrency_limiter
 if TYPE_CHECKING:
     from hypergraph.nodes.function import FunctionNode
     from hypergraph.runners._shared.state import ExecutionContext, GraphState
+
+
+def _attempt_concurrency_scope() -> AbstractAsyncContextManager[Any]:
+    """One in-flight-invocation permit (#218); no limiter means no gate."""
+    semaphore = get_concurrency_limiter()
+    return semaphore if semaphore is not None else nullcontext()
 
 
 class AsyncFunctionNodeExecutor:
@@ -49,6 +56,13 @@ class AsyncFunctionNodeExecutor:
         Returns:
             Dict mapping output names to their values
         """
+        if node.retry is not None:
+            # Per-attempt permits (#218): the concurrency budget covers
+            # in-flight callable invocations only, so backoff sleeps must not
+            # hold a permit. The attempt coordinator acquires the limiter
+            # around each attempt via _attempt_concurrency_scope.
+            return await self._execute(node, inputs, ctx)
+
         semaphore = get_concurrency_limiter()
 
         if semaphore:
@@ -121,6 +135,7 @@ class AsyncFunctionNodeExecutor:
                     checkpointer=ctx.checkpointer,
                     run_id=ctx.workflow_id,
                     scheduled_superstep=ctx.superstep_offset + ctx.superstep,
+                    attempt_scope=_attempt_concurrency_scope,
                 )
 
         return wrap_outputs(node, result)

@@ -104,6 +104,44 @@ def _require_started(record: AttemptRecord | None, series_id: str, attempt_numbe
     return record
 
 
+#: Settled statuses over which a close may still link its StepRecord (resume
+#: dead ends). SUCCEEDED is deliberately absent: a success must be witnessed
+#: by a live reservation, never reconstructed over settled evidence.
+_LINK_CLOSABLE_STATUSES = frozenset({AttemptStatus.FAILED, AttemptStatus.OUTCOME_UNKNOWN})
+
+
+def _check_closable(
+    record: AttemptRecord | None,
+    series_id: str,
+    attempt_number: int,
+    status: AttemptStatus,
+    last_attempt_number: int,
+) -> bool:
+    """Validate a close target. True → settle the STARTED row; False → link only.
+
+    The ordinary close settles a live ``STARTED`` reservation with any
+    terminal status. A resume dead end (budget exhausted, window expired,
+    ``OUTCOME_UNKNOWN`` evidence) has no live reservation left, yet the
+    atomic outcome/link/close invariant still requires the failed logical
+    StepRecord to link its series and the series to close — so a close is
+    also accepted when the LAST record is already terminal ``FAILED`` /
+    ``OUTCOME_UNKNOWN``. In that link-only mode the requested status must
+    equal the record's settled status: evidence is never rewritten.
+    """
+    if record is None:
+        raise AttemptLedgerError(f"Unknown attempt #{attempt_number} in series {series_id!r}")
+    if record.status is AttemptStatus.STARTED:
+        return True
+    if record.status in _LINK_CLOSABLE_STATUSES and attempt_number == last_attempt_number:
+        if status is not record.status:
+            raise AttemptLedgerError(
+                f"Attempt #{attempt_number} in series {series_id!r} is already settled as "
+                f"{record.status.value!r}; a terminal close must carry that same status, got {status.value!r}."
+            )
+        return False
+    raise AttemptLedgerError(f"Attempt #{attempt_number} in series {series_id!r} is already settled as {record.status.value!r}.")
+
+
 def _check_close_request(series: AttemptSeries, status: AttemptStatus, step_record: StepRecord) -> None:
     if not series.is_open:
         raise AttemptLedgerError(f"Attempt series {series.id!r} is already closed.")
@@ -156,6 +194,14 @@ class CheckpointPolicy:
             "windowed" — keep last N supersteps.
         window: Supersteps to keep (required if retention="windowed").
         ttl: Auto-expire completed runs after this duration.
+
+    Note:
+        Retry evidence overrides durability timing: for a node with a
+        ``RetryPolicy``, attempt reservations/outcomes AND the series-closing
+        StepRecord write through immediately under every durability mode —
+        the final attempt outcome, its linked StepRecord, and series closure
+        must commit atomically, and that invariant takes precedence over
+        "async"/"exit" buffering. Non-retrying nodes buffer normally.
     """
 
     durability: Literal["sync", "async", "exit"] = "async"
@@ -460,6 +506,13 @@ class Checkpointer(ABC):
         The final outcome, the linked StepRecord (which must carry
         ``attempt_series_id``), series closure, and retention effects commit
         as one unit — either all are durable or none are.
+
+        Two accepted shapes: the ordinary close settles a live ``STARTED``
+        reservation with ``status``; a resume dead end may instead close over
+        a LAST record that is already terminal ``FAILED``/``OUTCOME_UNKNOWN``
+        — ``status`` must then equal the settled status (evidence is never
+        rewritten) and only the StepRecord link, closure, and retention
+        commit. ``SUCCEEDED`` always requires a live reservation.
         """
         raise self._attempt_ledger_unsupported()
 

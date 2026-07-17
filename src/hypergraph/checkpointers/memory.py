@@ -9,6 +9,7 @@ from typing import Any
 from hypergraph.checkpointers.base import (
     _UNSET,
     Checkpointer,
+    _check_closable,
     _check_close_request,
     _check_no_live_reservation,
     _check_no_open_series,
@@ -292,7 +293,8 @@ class MemoryCheckpointer(Checkpointer):
         series = _require_series(self._attempt_series.get(series_id), series_id)
         _check_close_request(series, status, step_record)
         records = self._attempt_records[series_id]
-        record = _require_started(records.get(attempt_number), series_id, attempt_number)
+        record = records.get(attempt_number)
+        settle = _check_closable(record, series_id, attempt_number, status, max(records, default=0))
         now = datetime.now(timezone.utc)
         # The step store happens first: it is the only in-principle fallible
         # write here. The attempt settle and series close below are pure dict
@@ -300,7 +302,8 @@ class MemoryCheckpointer(Checkpointer):
         # attempt unsettled — the atomic-close outcome.
         run_steps = self._steps.setdefault(step_record.run_id, {})
         run_steps[(step_record.superstep, step_record.node_name)] = step_record
-        records[attempt_number] = replace(record, status=status, completed_at=now, error=error)
+        if settle:
+            records[attempt_number] = replace(record, status=status, completed_at=now, error=error)
         self._attempt_series[series_id] = replace(series, closed_at=now, committed_superstep=step_record.superstep)
         self._apply_retention_policy(step_record.run_id)
 
