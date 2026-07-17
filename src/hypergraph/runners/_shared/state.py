@@ -154,6 +154,12 @@ class GraphState:
     resume_values: frozenset[str] = frozenset()
     stopped: bool = False
     stop_info: Any = None
+    # Actual child workflow id used by each GraphNode's latest execution,
+    # recorded by the executors so StepRecord receipts report the id that
+    # really ran (crash-window restore and retention-pruned re-executions can
+    # diverge from the loop's precomputed candidate). Runtime-only: checkpoint
+    # restores start fresh.
+    graphnode_child_run_ids: dict[str, str] = field(default_factory=dict)
 
     def update_value(self, name: str, value: Any) -> None:
         """Update a value and increment its version if value changed.
@@ -218,4 +224,5 @@ class GraphState:
             resume_values=frozenset(self.resume_values),
             stopped=self.stopped,
             stop_info=self.stop_info,
+            graphnode_child_run_ids=dict(self.graphnode_child_run_ids),
         )

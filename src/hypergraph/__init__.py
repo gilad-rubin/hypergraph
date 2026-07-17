@@ -29,6 +29,7 @@ from hypergraph.events import (
 )
 from hypergraph.events.rich_progress import RichProgressProcessor
 from hypergraph.exceptions import (
+    CompactedRetentionError,
     ExecutionError,
     GraphChangedError,
     IncompatibleRunnerError,
@@ -115,6 +116,7 @@ __all__ = [
     # Errors
     "RenameError",
     "GraphConfigError",
+    "CompactedRetentionError",
     "MissingInputError",
     "InfiniteLoopError",
     "IncompatibleRunnerError",

@@ -43,6 +43,7 @@ ROOT_EXPORTS = (
     "RunStatus",
     "RenameError",
     "GraphConfigError",
+    "CompactedRetentionError",
     "MissingInputError",
     "InfiniteLoopError",
     "IncompatibleRunnerError",
