@@ -186,15 +186,15 @@ class WritePlanner:
             self._journal.record(entry.hash, entry.kind, entry.payload)
         return entries[0].hash
 
-    def _provenance_node(self, name: str) -> Any:
+    def _provenance_nodes(self, name: str) -> tuple[Any, ...]:
         for column in self._spec.columns:
             if column.role in ("derived", "answer") and column.name == name:
-                producer = column.produced_by
-                return producer[0] if isinstance(producer, tuple) else producer
+                return self._provenance.column_producers(column)
         for child_spec in self._spec.children:
             if child_spec.map_input == name:
-                return self._provenance.boundary_node(child_spec)
-        return None
+                boundary = self._provenance.boundary_node(child_spec)
+                return (boundary,) if boundary is not None else ()
+        return ()
 
     def _build_parent_row(
         self,
@@ -243,8 +243,7 @@ class WritePlanner:
                         )
             for name, provenance in provenances.items():
                 row[f"_provenance_{name}"] = provenance
-                node = self._provenance_node(name)
-                if node is not None:
+                for node in self._provenance_nodes(name):
                     self._record_node_recipe(node)
 
         row["_status"] = mode
@@ -287,7 +286,8 @@ class WritePlanner:
             row[f"_provenance_{name}"] = provenance
             for column in spec.columns:
                 if column.role == "derived" and column.name == name:
-                    self._record_node_recipe(column.produced_by)
+                    for node in self._provenance.column_producers(column):
+                        self._record_node_recipe(node)
                     break
         return row
 

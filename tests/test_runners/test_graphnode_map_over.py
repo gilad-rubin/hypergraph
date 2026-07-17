@@ -409,7 +409,7 @@ class TestMapOverExecution:
         runner = AsyncRunner()
 
         # x is owned by inner GraphNode → addressed by its parent-facing key
-        result = await runner.run(outer, {"x": [1, 2, 3]})
+        result = await runner.run(outer, {"x": [1, 2, 3]}, max_concurrency=1)
 
         assert result.status == RunStatus.COMPLETED
         assert result["doubled"] == [2, 4, 6]
@@ -467,12 +467,20 @@ class TestConcurrentNestedMaps:
         """Nested map_over executions with AsyncRunner."""
         import asyncio
 
+        total_items = 5
+        arrived = 0
+        all_arrived = asyncio.Event()
+
         @node(output_name="value")
-        async def slow_transform(x: int) -> int:
-            await asyncio.sleep(0.01)
+        async def concurrent_transform(x: int) -> int:
+            nonlocal arrived
+            arrived += 1
+            if arrived == total_items:
+                all_arrived.set()
+            await asyncio.wait_for(all_arrived.wait(), timeout=15)
             return x * 2
 
-        inner = Graph([slow_transform], name="inner")
+        inner = Graph([concurrent_transform], name="inner")
         outer = Graph([inner.as_node().map_over("x")])
 
         runner = AsyncRunner()
@@ -483,59 +491,70 @@ class TestConcurrentNestedMaps:
 
         assert result.status == RunStatus.COMPLETED
         assert result["value"] == [2, 4, 6, 8, 10]
+        assert arrived == total_items
 
     async def test_nested_map_no_deadlock_with_max_concurrency(self):
         """map_over doesn't deadlock when outer run has max_concurrency."""
         import asyncio
-        import time
+
+        execution_order: list[tuple[int, str]] = []
 
         @node(output_name="value")
-        async def slow_transform(x: int) -> int:
-            await asyncio.sleep(0.01)
+        async def tracked_transform(x: int) -> int:
+            execution_order.append((x, "start"))
+            resume = asyncio.Event()
+            asyncio.get_running_loop().call_soon(resume.set)
+            await resume.wait()
+            execution_order.append((x, "end"))
             return x * 2
 
-        inner = Graph([slow_transform], name="inner")
+        inner = Graph([tracked_transform], name="inner")
         outer = Graph([inner.as_node().map_over("x")])
 
         runner = AsyncRunner()
 
-        # With max_concurrency=1 on outer, nested map should still work (no deadlock)
-        # Nested executions don't inherit outer concurrency limits
+        # The global limit serializes nested items, which must still make progress.
         # x is owned by inner GraphNode → addressed by its parent-facing key
-        start = time.time()
         result = await runner.run(outer, {"x": [1, 2, 3]}, max_concurrency=1)
-        elapsed = time.time() - start
 
         assert result.status == RunStatus.COMPLETED
         assert result["value"] == [2, 4, 6]
-        # Should complete reasonably fast (nested runs concurrently)
-        assert elapsed < 1.0, f"Expected fast completion, got {elapsed:.3f}s (possible deadlock)"
+        assert all(
+            execution_order[index][0] == execution_order[index + 1][0]
+            and execution_order[index][1:] == ("start",)
+            and execution_order[index + 1][1:] == ("end",)
+            for index in range(0, len(execution_order), 2)
+        )
 
     async def test_nested_map_runs_concurrently(self):
         """map_over executes iterations concurrently by default."""
         import asyncio
-        import time
+
+        total_items = 5
+        arrived = 0
+        all_arrived = asyncio.Event()
 
         @node(output_name="value")
-        async def slow_transform(x: int) -> int:
-            await asyncio.sleep(0.05)
+        async def concurrent_transform(x: int) -> int:
+            nonlocal arrived
+            arrived += 1
+            if arrived == total_items:
+                all_arrived.set()
+            await asyncio.wait_for(all_arrived.wait(), timeout=15)
             return x * 2
 
-        inner = Graph([slow_transform], name="inner")
+        inner = Graph([concurrent_transform], name="inner")
         outer = Graph([inner.as_node().map_over("x")])
 
         runner = AsyncRunner()
 
         # With default concurrency (unlimited), should run in parallel
         # x is owned by inner GraphNode → addressed by its parent-facing key
-        start = time.time()
         result = await runner.run(outer, {"x": [1, 2, 3, 4, 5]})
-        elapsed = time.time() - start
 
         assert result.status == RunStatus.COMPLETED
         assert result["value"] == [2, 4, 6, 8, 10]
-        # Concurrent: should be ~0.05s (all run in parallel), not 0.25s (sequential)
-        assert elapsed < 0.2, f"Expected concurrent execution (<0.2s), got {elapsed:.3f}s"
+        assert arrived == total_items
 
     async def test_nested_map_with_async_inner(self):
         """map_over works with async nodes in inner graph."""
@@ -696,104 +715,127 @@ class TestMaxConcurrency:
     async def test_runner_map_with_max_concurrency(self):
         """runner.map() respects max_concurrency parameter."""
         import asyncio
-        import time
+
+        execution_order: list[tuple[int, str]] = []
 
         @node(output_name="value")
-        async def slow_double(x: int) -> int:
-            await asyncio.sleep(0.05)
+        async def tracked_double(x: int) -> int:
+            execution_order.append((x, "start"))
+            resume = asyncio.Event()
+            asyncio.get_running_loop().call_soon(resume.set)
+            await resume.wait()
+            execution_order.append((x, "end"))
             return x * 2
 
-        graph = Graph([slow_double])
+        graph = Graph([tracked_double])
         runner = AsyncRunner()
 
         # Sequential with max_concurrency=1
-        start = time.time()
         results = await runner.map(
             graph,
             {"x": [1, 2, 3]},
             map_over="x",
             max_concurrency=1,
         )
-        elapsed = time.time() - start
 
         values = [r["value"] for r in results]
         assert values == [2, 4, 6]
-        # Sequential: 3 * 0.05s = ~0.15s
-        assert elapsed >= 0.14, f"Expected sequential (~0.15s), got {elapsed:.3f}s"
+        assert all(
+            execution_order[index][0] == execution_order[index + 1][0]
+            and execution_order[index][1:] == ("start",)
+            and execution_order[index + 1][1:] == ("end",)
+            for index in range(0, len(execution_order), 2)
+        )
 
     async def test_runner_map_with_max_concurrency_2(self):
         """runner.map() with max_concurrency=2 limits to 2 parallel."""
         import asyncio
-        import time
+
+        total_items = 4
+        arrived = 0
+        wave_ready = (asyncio.Event(), asyncio.Event())
 
         @node(output_name="value")
-        async def slow_double(x: int) -> int:
-            await asyncio.sleep(0.05)
+        async def paired_double(x: int) -> int:
+            nonlocal arrived
+            wave_index = arrived // 2
+            arrived += 1
+            if arrived % 2 == 0:
+                wave_ready[wave_index].set()
+            await asyncio.wait_for(wave_ready[wave_index].wait(), timeout=15)
             return x * 2
 
-        graph = Graph([slow_double])
+        graph = Graph([paired_double])
         runner = AsyncRunner()
 
-        # With max_concurrency=2, 4 items should take 2 batches
-        start = time.time()
+        # With max_concurrency=2, each pair must overlap before either completes.
         results = await runner.map(
             graph,
             {"x": [1, 2, 3, 4]},
             map_over="x",
             max_concurrency=2,
         )
-        elapsed = time.time() - start
 
         values = [r["value"] for r in results]
         assert values == [2, 4, 6, 8]
-        # 2 batches of 2: ~0.10s
-        assert elapsed >= 0.09, f"Expected 2 batches (~0.10s), got {elapsed:.3f}s"
-        assert elapsed < 0.18, f"Expected parallel within batches, got {elapsed:.3f}s"
+        assert arrived == total_items
 
     async def test_runner_map_unlimited_concurrency(self):
         """runner.map() without max_concurrency runs all in parallel."""
         import asyncio
-        import time
+
+        total_items = 5
+        arrived = 0
+        all_arrived = asyncio.Event()
 
         @node(output_name="value")
-        async def slow_double(x: int) -> int:
-            await asyncio.sleep(0.05)
+        async def concurrent_double(x: int) -> int:
+            nonlocal arrived
+            arrived += 1
+            if arrived == total_items:
+                all_arrived.set()
+            await asyncio.wait_for(all_arrived.wait(), timeout=15)
             return x * 2
 
-        graph = Graph([slow_double])
+        graph = Graph([concurrent_double])
         runner = AsyncRunner()
 
         # Without limit, all should run in parallel
-        start = time.time()
         results = await runner.map(
             graph,
             {"x": [1, 2, 3, 4, 5]},
             map_over="x",
         )
-        elapsed = time.time() - start
 
         values = [r["value"] for r in results]
         assert values == [2, 4, 6, 8, 10]
-        # All parallel: ~0.05s
-        assert elapsed < 0.15, f"Expected parallel (~0.05s), got {elapsed:.3f}s"
+        assert arrived == total_items
 
     async def test_multiple_graphnodes_with_outer_max_concurrency(self):
         """Multiple GraphNodes respect outer max_concurrency."""
         import asyncio
-        import time
+
+        execution_order: list[tuple[str, int, str]] = []
+
+        async def track(family: str, value: int) -> None:
+            execution_order.append((family, value, "start"))
+            resume = asyncio.Event()
+            asyncio.get_running_loop().call_soon(resume.set)
+            await resume.wait()
+            execution_order.append((family, value, "end"))
 
         @node(output_name="a")
-        async def slow_a(x: int) -> int:
-            await asyncio.sleep(0.03)
+        async def tracked_a(x: int) -> int:
+            await track("a", x)
             return x * 2
 
         @node(output_name="b")
-        async def slow_b(y: int) -> int:
-            await asyncio.sleep(0.03)
+        async def tracked_b(y: int) -> int:
+            await track("b", y)
             return y * 3
 
-        inner_a = Graph([slow_a], name="inner_a")
-        inner_b = Graph([slow_b], name="inner_b")
+        inner_a = Graph([tracked_a], name="inner_a")
+        inner_b = Graph([tracked_b], name="inner_b")
 
         # Two independent mapped GraphNodes
         outer = Graph(
@@ -805,23 +847,24 @@ class TestMaxConcurrency:
 
         runner = AsyncRunner()
 
-        # With max_concurrency=1 on outer, the two GraphNodes run sequentially
-        # But their inner maps run concurrently (nested execution is independent)
+        # The global max_concurrency=1 limit serializes both GraphNodes and items.
         # x and y are parent-facing input addresses on their GraphNodes.
-        start = time.time()
         result = await runner.run(
             outer,
             {"x": [1, 2], "y": [10, 20]},
             max_concurrency=1,
         )
-        elapsed = time.time() - start
 
         assert result.status == RunStatus.COMPLETED
         assert result["a"] == [2, 4]
         assert result["b"] == [30, 60]
-        # Each GraphNode's map runs concurrently (~0.03s each)
-        # But they run sequentially: ~0.06s total
-        assert elapsed >= 0.05, f"Expected sequential GraphNodes, got {elapsed:.3f}s"
+        assert all(
+            execution_order[index][:2] == execution_order[index + 1][:2]
+            and execution_order[index][2] == "start"
+            and execution_order[index + 1][2] == "end"
+            for index in range(0, len(execution_order), 2)
+        )
+        assert [event[0] for event in execution_order[::2]] in (["a", "a", "b", "b"], ["b", "b", "a", "a"])
 
     async def test_deeply_nested_with_max_concurrency(self):
         """Deeply nested graphs work with max_concurrency."""

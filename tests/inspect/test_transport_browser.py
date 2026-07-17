@@ -1875,6 +1875,8 @@ def test_missing_ready_handshake_marks_live_fallback_stale_without_refresh(
     )
     requests: list[str] = []
     page = browser.new_page()
+    page.clock.install(time=0)
+    page.clock.pause_at(1_000)
     page.on("request", lambda request: requests.append(request.url))
     page.set_content(broken_shell + render_payload_channel(running), wait_until="load")
     page.evaluate(
@@ -1896,6 +1898,7 @@ def test_missing_ready_handshake_marks_live_fallback_stale_without_refresh(
     assert "customer_enrichment is running" in fallback.inner_text()
     assert "2 captured nodes" in fallback.inner_text()
 
+    page.clock.fast_forward(500)
     page.wait_for_function("document.querySelector('[data-hg-inspect-host-status=\"widget-live-stale\"]').dataset.state === 'stale'")
 
     assert "saved snapshot" in status.inner_text().lower()
@@ -1925,7 +1928,7 @@ def test_missing_ready_handshake_exposes_stale_saved_fallback(browser: Browser) 
         sequence=1,
         state="saved",
     )
-    shell = render_notebook_shell(terminal, handshake_timeout_ms=25)
+    shell = render_notebook_shell(terminal, handshake_timeout_ms=500)
     broken_shell = re.sub(
         r'srcdoc="[^"]*"',
         'srcdoc="&lt;!doctype html&gt;&lt;html&gt;&lt;body&gt;no bridge&lt;/body&gt;&lt;/html&gt;"',
@@ -1933,10 +1936,13 @@ def test_missing_ready_handshake_exposes_stale_saved_fallback(browser: Browser) 
         count=1,
     )
     page = browser.new_page()
+    page.clock.install(time=0)
+    page.clock.pause_at(1_000)
     page.set_content(broken_shell + render_payload_channel(terminal), wait_until="load")
 
     status = page.locator('[data-hg-inspect-host-status="widget-stale"]')
     status.wait_for(state="visible")
+    page.clock.fast_forward(500)
     page.wait_for_function("document.querySelector('[data-hg-inspect-host-status=\"widget-stale\"]').dataset.state === 'stale'")
     assert "interactive inspector did not connect" in status.inner_text().lower()
     fallback = page.locator('[data-hg-inspect-channel-fallback="widget-stale"]')

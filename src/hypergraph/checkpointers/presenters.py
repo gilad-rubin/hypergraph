@@ -3,18 +3,14 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Iterable
 from importlib.resources import files
 from typing import TYPE_CHECKING, Any
 
+from hypergraph.runners._shared._wire import script_safe_json
+
 if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Run, StepRecord, WorkflowStatus
-
-
-def _safe_json_payload(payload: dict[str, Any]) -> str:
-    """Serialize JSON safely for embedding inside a script tag."""
-    return json.dumps(payload).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 
 
 _EXPLORER_ASSET_SHA256 = "9909428d38a1ec32738c16eb54d8a72f1f4bb6a38b03858709b86286c35b413d"
@@ -137,8 +133,8 @@ def render_checkpointer_explorer_html(
         f'<div data-hg-explorer-body style="{panel_style}"></div>'
         f"</section>"
         f"</div>"
-        f'<script type="application/json" data-hg-explorer-data>{_safe_json_payload(payload)}</script>'
-        f'<script type="application/json" data-hg-explorer-config>{_safe_json_payload(config)}</script>'
+        f'<script type="application/json" data-hg-explorer-data>{script_safe_json(payload)}</script>'
+        f'<script type="application/json" data-hg-explorer-config>{script_safe_json(config)}</script>'
         f"<script>{_read_explorer_asset()}</script>"
         f"</div>"
     )

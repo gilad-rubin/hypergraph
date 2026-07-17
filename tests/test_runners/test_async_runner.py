@@ -1,7 +1,6 @@
 """Tests for AsyncRunner."""
 
 import asyncio
-import time
 
 import pytest
 
@@ -55,12 +54,6 @@ async def async_add(a: int, b: int) -> int:
 async def async_gen_items(n: int):
     for i in range(n):
         yield i
-
-
-@node(output_name="result")
-async def slow_node(x: int, delay: float = 0.05) -> int:
-    await asyncio.sleep(delay)
-    return x
 
 
 # === Tests ===
@@ -289,62 +282,87 @@ class TestAsyncRunnerRun:
 
     async def test_parallel_nodes_run_concurrently(self):
         """Independent nodes run concurrently."""
-        timestamps = {}
+        arrived = 0
+        both_arrived = asyncio.Event()
+
+        async def wait_for_both() -> None:
+            nonlocal arrived
+            arrived += 1
+            if arrived == 2:
+                both_arrived.set()
+            await asyncio.wait_for(both_arrived.wait(), timeout=15)
 
         @node(output_name="r1")
-        async def timed1(x: int) -> int:
-            timestamps["s1_start"] = time.monotonic()
-            await asyncio.sleep(0.05)
-            timestamps["s1_end"] = time.monotonic()
+        async def wait1(x: int) -> int:
+            await wait_for_both()
             return x
 
         @node(output_name="r2")
-        async def timed2(x: int) -> int:
-            timestamps["s2_start"] = time.monotonic()
-            await asyncio.sleep(0.05)
-            timestamps["s2_end"] = time.monotonic()
+        async def wait2(x: int) -> int:
+            await wait_for_both()
             return x
 
-        graph = Graph([timed1, timed2])
+        graph = Graph([wait1, wait2])
         runner = AsyncRunner()
         result = await runner.run(graph, {"x": 5})
 
-        # Verify execution windows overlap (concurrent, not sequential)
-        assert timestamps["s1_start"] < timestamps["s2_end"]
-        assert timestamps["s2_start"] < timestamps["s1_end"]
+        assert arrived == 2
         assert result["r1"] == 5
         assert result["r2"] == 5
 
     async def test_max_concurrency_limits_parallelism(self):
         """max_concurrency limits parallel execution."""
-        slow1 = slow_node.with_name("slow1").rename_outputs(result="r1")
-        slow2 = slow_node.with_name("slow2").rename_outputs(result="r2")
+        execution_order: list[str] = []
 
-        graph = Graph([slow1, slow2])
+        async def yield_to_ready_tasks() -> None:
+            resume = asyncio.Event()
+            asyncio.get_running_loop().call_soon(resume.set)
+            await resume.wait()
+
+        @node(output_name="r1")
+        async def track1(x: int) -> int:
+            execution_order.append("r1_start")
+            await yield_to_ready_tasks()
+            execution_order.append("r1_end")
+            return x
+
+        @node(output_name="r2")
+        async def track2(x: int) -> int:
+            execution_order.append("r2_start")
+            await yield_to_ready_tasks()
+            execution_order.append("r2_end")
+            return x
+
+        graph = Graph([track1, track2])
         runner = AsyncRunner()
 
-        start = time.time()
-        await runner.run(graph, {"x": 5, "delay": 0.05}, max_concurrency=1)
-        elapsed = time.time() - start
+        await runner.run(graph, {"x": 5}, max_concurrency=1)
 
-        # With max_concurrency=1, should be sequential (~0.1s)
-        assert elapsed >= 0.09
+        assert execution_order in (
+            ["r1_start", "r1_end", "r2_start", "r2_end"],
+            ["r2_start", "r2_end", "r1_start", "r1_end"],
+        )
 
     async def test_concurrency_one_is_sequential(self):
         """max_concurrency=1 forces sequential execution."""
         execution_order = []
 
+        async def yield_to_ready_tasks() -> None:
+            resume = asyncio.Event()
+            asyncio.get_running_loop().call_soon(resume.set)
+            await resume.wait()
+
         @node(output_name="a")
         async def track_a(x: int) -> int:
             execution_order.append("a_start")
-            await asyncio.sleep(0.02)
+            await yield_to_ready_tasks()
             execution_order.append("a_end")
             return x
 
         @node(output_name="b")
         async def track_b(x: int) -> int:
             execution_order.append("b_start")
-            await asyncio.sleep(0.02)
+            await yield_to_ready_tasks()
             execution_order.append("b_end")
             return x
 
@@ -353,10 +371,10 @@ class TestAsyncRunnerRun:
 
         await runner.run(graph, {"x": 5}, max_concurrency=1)
 
-        # With sequential execution, one should complete before other starts
-        # The exact order depends on iteration, but we should see
-        # start/end pairs not interleaved
-        assert execution_order[1] in ("a_end", "b_end")
+        assert execution_order in (
+            ["a_start", "a_end", "b_start", "b_end"],
+            ["b_start", "b_end", "a_start", "a_end"],
+        )
 
     # Input/output
 
@@ -626,39 +644,61 @@ class TestAsyncRunnerMap:
 
     async def test_map_runs_concurrently(self):
         """Map executions run concurrently."""
-        graph = Graph([slow_node])
+        total_items = 3
+        arrived = 0
+        all_arrived = asyncio.Event()
+
+        @node(output_name="result")
+        async def wait_for_all(x: int) -> int:
+            nonlocal arrived
+            arrived += 1
+            if arrived == total_items:
+                all_arrived.set()
+            await asyncio.wait_for(all_arrived.wait(), timeout=15)
+            return x
+
+        graph = Graph([wait_for_all])
         runner = AsyncRunner()
 
-        start = time.time()
         results = await runner.map(
             graph,
-            {"x": [1, 2, 3], "delay": 0.05},
+            {"x": [1, 2, 3]},
             map_over="x",
         )
-        elapsed = time.time() - start
 
-        # 3 executions, each 0.05s, should be ~0.05s concurrent, not ~0.15s
-        # Allow generous overhead for xdist parallel execution
-        assert elapsed < 0.14
         assert len(results) == 3
+        assert arrived == total_items
 
     async def test_map_respects_max_concurrency(self):
         """Map respects max_concurrency."""
-        graph = Graph([slow_node])
+        execution_order: list[tuple[int, str]] = []
+
+        @node(output_name="result")
+        async def track(x: int) -> int:
+            execution_order.append((x, "start"))
+            resume = asyncio.Event()
+            asyncio.get_running_loop().call_soon(resume.set)
+            await resume.wait()
+            execution_order.append((x, "end"))
+            return x
+
+        graph = Graph([track])
         runner = AsyncRunner()
 
-        start = time.time()
         results = await runner.map(
             graph,
-            {"x": [1, 2, 3], "delay": 0.05},
+            {"x": [1, 2, 3]},
             map_over="x",
             max_concurrency=1,
         )
-        elapsed = time.time() - start
 
-        # Sequential: ~0.15s
-        assert elapsed >= 0.14
         assert len(results) == 3
+        assert all(
+            execution_order[index][0] == execution_order[index + 1][0]
+            and execution_order[index][1:] == ("start",)
+            and execution_order[index + 1][1:] == ("end",)
+            for index in range(0, len(execution_order), 2)
+        )
 
     async def test_map_with_async_nodes(self):
         """Map works with async nodes."""
@@ -738,24 +778,28 @@ class TestDisconnectedSubgraphs:
 
     async def test_disconnected_subgraphs_run_concurrently(self):
         """Independent subgraphs execute in parallel with AsyncRunner."""
-        timestamps: dict[str, float] = {}
+        arrived = 0
+        both_arrived = asyncio.Event()
+
+        async def wait_for_both() -> None:
+            nonlocal arrived
+            arrived += 1
+            if arrived == 2:
+                both_arrived.set()
+            await asyncio.wait_for(both_arrived.wait(), timeout=15)
 
         @node(output_name="a")
-        async def slow_a(x: int) -> int:
-            timestamps["a_start"] = time.monotonic()
-            await asyncio.sleep(0.03)
-            timestamps["a_end"] = time.monotonic()
+        async def wait_a(x: int) -> int:
+            await wait_for_both()
             return x * 2
 
         @node(output_name="b")
-        async def slow_b(y: int) -> int:
-            timestamps["b_start"] = time.monotonic()
-            await asyncio.sleep(0.03)
-            timestamps["b_end"] = time.monotonic()
+        async def wait_b(y: int) -> int:
+            await wait_for_both()
             return y * 3
 
         # Two disconnected subgraphs - no edges between them
-        graph = Graph([slow_a, slow_b])
+        graph = Graph([wait_a, wait_b])
         runner = AsyncRunner()
 
         result = await runner.run(graph, {"x": 5, "y": 10})
@@ -763,8 +807,7 @@ class TestDisconnectedSubgraphs:
         assert result.status == RunStatus.COMPLETED
         assert result["a"] == 10
         assert result["b"] == 30
-        assert timestamps["a_start"] < timestamps["b_end"]
-        assert timestamps["b_start"] < timestamps["a_end"]
+        assert arrived == 2
 
     async def test_select_from_disconnected_subgraph(self):
         """Graph-level select works with disconnected graphs."""
@@ -950,15 +993,24 @@ class TestDeeplyNestedAsync:
 
     async def test_nested_with_parallel_inner_nodes(self):
         """Nested graph with parallel nodes inside."""
+        arrived = 0
+        both_arrived = asyncio.Event()
+
+        async def wait_for_both() -> None:
+            nonlocal arrived
+            arrived += 1
+            if arrived == 2:
+                both_arrived.set()
+            await asyncio.wait_for(both_arrived.wait(), timeout=15)
 
         @node(output_name="a")
         async def inner_a(x: int) -> int:
-            await asyncio.sleep(0.01)
+            await wait_for_both()
             return x * 2
 
         @node(output_name="b")
         async def inner_b(x: int) -> int:
-            await asyncio.sleep(0.01)
+            await wait_for_both()
             return x * 3
 
         @node(output_name="sum")
@@ -976,6 +1028,7 @@ class TestDeeplyNestedAsync:
         assert result["a"] == 10
         assert result["b"] == 15
         assert result["sum"] == 25
+        assert arrived == 2
 
 
 class TestGlobalConcurrencyLimit:
