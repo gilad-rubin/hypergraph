@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from hypergraph import Graph, node
+from hypergraph import Graph, ifelse, node
 from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.runners import SyncRunner
 
@@ -139,3 +139,38 @@ def test_fresh_table_resolves_old_stamps(tmp_path):
     resolved = table2.resolve_provenance(stamp)
     assert resolved is not None
     assert "text.strip().lower()" in resolved
+
+
+# ---------------------------------------------------------------------------
+# explain() on a routed union column: every producer, labeled — no fabricated
+# single attribution.
+# ---------------------------------------------------------------------------
+
+
+def test_explain_labels_every_producer_of_a_union_column(store):
+    """explain() on a multi-producer (routed union) column reports ALL
+    producers' recipes labeled by node name. The row was derived by the FALSE
+    branch — a single producers[0] attribution would report the wrong node."""
+
+    @ifelse(when_true="positive", when_false="negative")
+    def choose(positive_number: bool) -> bool:
+        return positive_number
+
+    @node(output_name="label")
+    def positive(value: int) -> str:
+        return f"positive:{value}"
+
+    @node(output_name="label")
+    def negative(value: int) -> str:
+        return f"negative:{value}"
+
+    table = Graph([choose, positive, negative]).as_table(identity="item_id", store=store, runner=SyncRunner())
+    table.insert(item_id="i1", positive_number=False, value=3)  # executes `negative`
+    assert table.get("i1")["label"] == "negative:3"
+
+    explained = table.explain("i1")["label"]
+
+    assert set(explained["producers"]) == {"positive", "negative"}
+    for entry in explained["producers"].values():
+        assert entry["provenance"]
+        assert "source" in entry

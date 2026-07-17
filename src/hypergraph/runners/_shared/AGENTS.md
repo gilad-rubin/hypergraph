@@ -25,15 +25,56 @@ After collecting ready nodes, two filters apply:
 
 | Gate state | Node state | `default_open` | Entrypoints set | Result |
 |-----------|-----------|----------------|-----------------|--------|
-| Never executed | Never executed | True | No | **Activated** (first-pass startup) |
+| Never executed, gate itself activated | Never executed | True | No | **Activated** (first-pass startup) |
+| Never executed, gate itself blocked | Never executed | True | No | **Blocked** (transitive chain termination) |
 | Never executed | Never executed | True | Yes, node IS entrypoint | **Activated** |
 | Never executed | Never executed | True | Yes, node NOT entrypoint | **Blocked** (wait for gate) |
 | Never executed | Never executed | False | Any | **Blocked** |
-| Executed, decision=this node | Any | Any | Any | **Activated** |
+| Executed, live decision=this node | Any | Any | Any | **Activated** |
+| Executed, orphaned decision (gate cut off upstream) | Any | Any | Any | **Blocked** (non-END decision dropped) |
+| Executed, pending decision but a controller upstream is re-firing | Any | Any | Any | **Blocked** this superstep; if suspension alone empties the frontier, retry unsuspended (decision kept) |
 | Executed, decision=other | Any | Any | Any | **Blocked** |
 | Executed, decision cleared (stale) | Any | Any | Any | **Blocked** |
 
 **Key insight**: the entrypoint restriction prevents inputless gate targets (like interrupt nodes) from firing before the gate on first pass.
+
+**Transitive chain termination** (issue #220): activation is a shrinking
+fixpoint (worklist — linear predicate calls regardless of declaration order).
+First-pass `default_open` permission requires the controlling gate itself to
+still be activated, so `gate_a -> gate_b -> target` blocks `target` when
+`gate_a` decides END or routes elsewhere — data readiness cannot bypass a dead
+control path. Explicit entrypoint targets are exempt from the transitive
+requirement: the user asked to start there, and the controlling gate may be
+outside the active scope.
+
+**Orphaned pending decisions** (issue #220, review finding): a pending
+decision is causally live only while its deciding gate is not *cut off* — a
+gate is cut off when every controlling gate either currently holds an explicit
+decision that excludes it (END or routed elsewhere) or is itself cut off.
+Cut-off gates' pending non-END decisions are DELETED before activation
+(`_drop_orphaned_decisions`), so a half-consumed multi-target selection cannot
+fire targets after the chain was explicitly terminated upstream. The
+distinguishing signal that keeps cycles working: a controller whose selection
+was merely CONSUMED (decision None) keeps its targets' pending decisions live —
+it may re-fire and route to them again. Deletion (not suppression) prevents an
+orphaned decision from resurrecting after the upstream exclusion is consumed.
+END decisions are never deleted: they activate nothing and stay as terminal
+markers.
+
+**Gate-first re-evaluation** (issue #220, review round 2): when a controlling
+gate is scheduled to re-execute — the same `_needs_execution` signal that
+clears the gate's own stale decision — gates below it in the control chain
+are transiently *suspended* (`_compute_suspended_gates`): their pending
+decisions do not activate targets this superstep. The re-firing gate delivers
+its verdict first; consequences propagate on the next evaluation (a
+re-selection re-runs the mid-gate and refreshes its decision; an exclusion
+orphans it). Suspension is recomputed from state every evaluation — nothing
+is persisted, decisions are kept, and it lifts the moment the controller has
+re-fired. It distinguishes "controller decision None because harmlessly
+consumed" (downstream decisions stay live) from "controller decision None and
+controller is stale" (verdict pending). Independent nodes outside the
+re-firing gate's chain — including ungated nodes co-batched in the same
+superstep — are unaffected.
 
 ## Staleness (`_is_stale`)
 
