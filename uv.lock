@@ -1398,8 +1398,8 @@ wheels = [
 ]
 
 [[package]]
-name = "hypergraph"
-version = "0.1.0"
+name = "hypergraph-ai"
+version = "0.2.0b1"
 source = { editable = "." }
 dependencies = [
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },

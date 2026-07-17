@@ -44,7 +44,7 @@ def _require_rich() -> None:
         import rich  # noqa: F401
     except ImportError:
         raise ImportError(
-            "The 'rich' package is required for RichProgressProcessor. Install it with: pip install 'hypergraph[progress]' or pip install rich"
+            "The 'rich' package is required for RichProgressProcessor. Install it with: pip install 'hypergraph-ai[progress]' or pip install rich"
         ) from None
 
 

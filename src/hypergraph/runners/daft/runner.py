@@ -76,7 +76,7 @@ class DaftRunner(BaseRunner):
         try:
             import daft
         except ImportError:
-            raise ImportError("DaftRunner requires daft. Install it with: pip install 'hypergraph[daft]'") from None
+            raise ImportError("DaftRunner requires daft. Install it with: pip install 'hypergraph-ai[daft]'") from None
         return daft
 
     @property

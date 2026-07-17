@@ -108,7 +108,7 @@ def generate_widget_html(graph_data: dict[str, Any]) -> str:
         raise RuntimeError(
             f"Missing bundled visualization library assets: {missing}. "
             "The hypergraph package may be incorrectly installed. "
-            "Try reinstalling with: pip install --force-reinstall hypergraph"
+            "Try reinstalling with: pip install --force-reinstall hypergraph-ai"
         )
 
     missing_first_party = [name for name, asset in first_party_assets if not asset]
@@ -116,7 +116,7 @@ def generate_widget_html(graph_data: dict[str, Any]) -> str:
         raise RuntimeError(
             f"Missing bundled visualization module(s): {missing_first_party}. "
             "The hypergraph package may be incorrectly installed. "
-            "Try reinstalling with: pip install --force-reinstall hypergraph"
+            "Try reinstalling with: pip install --force-reinstall hypergraph-ai"
         )
     first_party_scripts = "\n    ".join(asset for _, asset in first_party_assets if asset)
 
