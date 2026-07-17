@@ -24,6 +24,12 @@ class WriteOutcome(Enum):
     INSERTED = "inserted"
     UPDATED = "updated"
     SKIPPED = "skipped"
+    HEALED = "healed"
+    """An unchanged parent whose physically missing child rows were rebuilt.
+
+    ``sync()`` reports the repair distinctly: a receipt is never ``SKIPPED``
+    on a path that wrote rows (#204).
+    """
 
 
 @dataclass(frozen=True)
@@ -67,6 +73,10 @@ class TableReceipt:
     @property
     def skipped(self) -> int:
         return sum(receipt.outcome is WriteOutcome.SKIPPED for receipt in self.receipts)
+
+    @property
+    def healed(self) -> int:
+        return sum(receipt.outcome is WriteOutcome.HEALED for receipt in self.receipts)
 
     @property
     def waiting(self) -> tuple[RowReceipt, ...]:

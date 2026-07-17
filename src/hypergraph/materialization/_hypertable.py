@@ -789,7 +789,14 @@ class HyperTable:
         self._write_planner.delete(identity_value)
 
     def sync(self, items: list[dict[str, Any]]) -> TableReceipt | Awaitable[TableReceipt]:
-        """Reconcile: insert new, update changed, delete missing, skip unchanged."""
+        """Reconcile: insert new, update changed, delete missing, skip unchanged.
+
+        Unchanged parents self-repair child loss (#204): sync() inspects each
+        child table once per unchanged parent row — recorded fan-out count vs
+        physically present deduplicated child rows — and rebuilds only the
+        missing children, reporting the row as ``HEALED``. All children
+        present stays a zero-execution, zero-write ``SKIPPED``.
+        """
         self._ensure_analyzed()
         operation = self._write_planner.sync(items)
         if self._is_async_runner():

@@ -58,6 +58,19 @@
 
 ### Fixed
 
+- **Unchanged-parent `sync()` heals physically missing child rows** — before,
+  the unchanged-parent fast path never inspected child tables, so a deleted
+  or lost child row stayed missing forever behind a `skipped` receipt. Now
+  `sync()` compares each child table's recorded fan-out count against the
+  physically present deduplicated child rows (one read-only child-table probe
+  per unchanged parent) and rebuilds only the missing children: the fan-out
+  boundary re-runs once to regenerate the item list, present children and
+  parent derived columns are not re-derived, and healed child writes allocate
+  generations strictly above every physical child row. The repair is reported
+  by the new `WriteOutcome.HEALED` / `TableReceipt.healed` — a receipt is
+  never `skipped` on a path that wrote rows. All children present remains a
+  zero-execution, zero-write skip.
+
 - **HyperTable definition fingerprints harden to construction-time
   `hash_definition`** — before, a derive node that was a bound method of a
   configured object (`summarizer.summarize` with `model="gpt-4"` vs
