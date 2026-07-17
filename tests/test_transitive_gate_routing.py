@@ -426,6 +426,110 @@ async def test_pending_decision_survives_consumed_upstream_selection(runner_kind
 
 
 # ---------------------------------------------------------------------------
+# C12 — same-SCC escape: a pending decision must wait for an upstream re-fire
+# ---------------------------------------------------------------------------
+
+
+def build_same_scc_graph():
+    """Reviewer's same-SCC falsifier: target feeds back into gate_a
+    (target_out), so the whole chain shares one execution component and the
+    frontier defers nothing. ``fuel`` (produced by advance) makes target ready
+    in exactly the superstep where gate_a goes stale and re-fires."""
+
+    @node(output_name="n")
+    def start(x: int) -> int:
+        return x
+
+    @route(targets=["gate_b", END])
+    def gate_a(n: int, bump: int = 0, target_out: int = 0):
+        return "gate_b" if bump == 0 else END
+
+    @route(targets=["advance", "target"], multi_target=True)
+    def gate_b(n: int) -> list[str]:
+        return ["advance", "target"]
+
+    @node(output_name=("bump", "fuel"))
+    def advance(n: int) -> tuple[int, int]:
+        return 1, 1
+
+    @node(output_name="target_out")
+    def target(n: int, fuel: int) -> int:
+        return n * 420
+
+    return Graph(
+        [start, gate_a, gate_b, advance, target],
+        name="same_scc_orphan",
+        entrypoint="start",
+    )
+
+
+@pytest.mark.parametrize("runner_kind", RUNNER_KINDS)
+async def test_same_scc_pending_decision_waits_for_upstream_refire(runner_kind):
+    """target sits INSIDE the cycle SCC, so it becomes ready in exactly the
+    superstep where gate_a re-fires with END. gate_b's leftover ["target"]
+    selection must not start target in that superstep: the re-firing gate's
+    verdict comes first, then its consequences propagate."""
+
+    graph = build_same_scc_graph()
+    listener = ListProcessor()
+
+    result = await run_graph(
+        runner_kind,
+        graph,
+        {"x": 1},
+        event_processors=[listener],
+    )
+
+    assert result.completed
+    assert result["bump"] == 1, "advance legitimately ran off gate_b's selection"
+    assert "target_out" not in result.values, "pending decision must wait for the upstream re-fire verdict"
+    assert "target" not in listener.node_names()
+    assert {"start", "gate_a", "gate_b", "advance"} <= listener.node_names()
+
+
+@pytest.mark.parametrize("runner_kind", RUNNER_KINDS)
+async def test_ungated_sibling_runs_in_the_refire_superstep(runner_kind):
+    """The parallelism falsifier for C12: suppression is scoped to the
+    re-firing gate's chain. An ungated sibling inside the same SCC that goes
+    stale on the loop counter still runs — co-batched with the very
+    supersteps in which the gate re-fires."""
+
+    @node(output_name="count")
+    def increment(count: int) -> int:
+        return count + 1
+
+    @route(targets=["gate_inner", END])
+    def gate_outer(count: int, side_out: int = 0):
+        return "gate_inner" if count < 3 else END
+
+    @route(targets=["increment"])
+    def gate_inner(count: int) -> str:
+        return "increment"
+
+    @node(output_name="side_out")
+    def side(count: int) -> int:
+        return count * 10
+
+    graph = Graph(
+        [increment, gate_outer, gate_inner, side],
+        name="cycle_with_sibling",
+        entrypoint="increment",
+    )
+
+    result = await run_graph(runner_kind, graph, {"count": 0})
+
+    assert result.completed
+    assert result["count"] == 3
+    assert result["side_out"] == 30, "ungated sibling must keep re-running with the loop"
+
+    gate_supersteps = [record.superstep for record in result.log.steps if record.node_name == "gate_outer"]
+    side_supersteps = [record.superstep for record in result.log.steps if record.node_name == "side"]
+    refire_supersteps = set(gate_supersteps[1:])
+    assert refire_supersteps, "gate_outer must have re-fired"
+    assert set(side_supersteps) & refire_supersteps, "side must co-batch with a gate_outer re-fire superstep"
+
+
+# ---------------------------------------------------------------------------
 # C7 — chained gates in a cycle: gate-driven re-activation still re-executes
 # ---------------------------------------------------------------------------
 
