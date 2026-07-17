@@ -55,6 +55,7 @@ ROOT_EXPORTS = (
     "get_failure_evidence",
     "WorkflowAlreadyCompletedError",
     "GraphChangedError",
+    "RetryPolicyChangedError",
     "WorkflowForkError",
     "InputOverrideRequiresForkError",
     "WorkflowAlreadyRunningError",

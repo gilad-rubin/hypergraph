@@ -303,6 +303,54 @@ except WorkflowForkError as e:
 
 See also `GraphChangedError`, `WorkflowAlreadyCompletedError`, and `InputOverrideRequiresForkError`, covered in [Batch Processing — Run Lineage](../05-how-to/batch-processing.md#run-lineage-resume-vs-fork).
 
+## Policy Compatibility on Resume
+
+Every persisted run records the effective retry/timeout policy of each
+declaring node (a typed manifest, stored with the run configuration alongside
+the graph hashes). Resuming the same `workflow_id` validates that manifest
+BEFORE checkpoint state is restored and before the stored configuration can
+be overwritten — a changed policy is rejected without invoking any user code:
+
+```python
+@node(retry=RetryPolicy(max_attempts=3, retry_on=(httpx.ReadTimeout,)))
+async def call_model(prompt: str) -> str: ...
+
+await runner.run(graph, {"prompt": p}, workflow_id="report-7")  # crashes mid-series
+
+# Edit the node to max_attempts=5, then resume the SAME workflow_id:
+await runner.run(graph, workflow_id="report-7")
+# RetryPolicyChangedError: Retry/timeout policy changed for workflow 'report-7'
+# [HG_RETRY_POLICY_CHANGED].
+#
+# Field-level changes against the stored policy manifest:
+#   call_model.max_attempts: stored 3 -> current 5
+```
+
+Why: same-workflow resume continues the open attempt series and its
+remaining durable budget. Letting the budget grow or shrink mid-series would
+rewrite the promise the earlier attempts were reserved under.
+
+A deliberate new lineage adopts the new policy freely — with a fresh series
+and a fresh budget:
+
+```python
+forked = await runner.run(graph, fork_from="report-7")   # new policy applies
+```
+
+`override_workflow=True` and a brand-new `workflow_id` behave the same way.
+
+Two identities stay deliberately separate:
+
+| Identity | Carries | Changed policy? |
+|---|---|---|
+| `graph_struct_hash` / cache keys | Graph structure and successful outputs | Unaffected — cache hits still occur |
+| Policy manifest + series fingerprint | Resume compatibility and retry budget | Same-workflow resume rejected |
+
+Runs recorded by versions without the manifest skip this validation; the
+attempt ledger's `begin_attempt()` still verifies the series
+`policy_fingerprint` before any durable reservation, so a mismatched policy
+can never silently consume budget.
+
 ## Types
 
 `checkpointer.steps(run_id)` and `checkpointer.get_run(run_id)` (used throughout this page) return these dataclasses:

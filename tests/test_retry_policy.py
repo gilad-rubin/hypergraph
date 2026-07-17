@@ -184,6 +184,45 @@ class TestPolicyFingerprint:
         b = RetryPolicy(max_attempts=3, retry_on=(TimeoutError, ConnectionError))
         assert a.fingerprint == b.fingerprint
 
+    def test_fingerprint_carries_the_algorithm_tag(self):
+        # #232: the canonical identity names its algorithm/schema so a future
+        # second formula can never collide with capped-exponential policies.
+        policy = RetryPolicy(max_attempts=3, retry_on=(ConnectionError,))
+        assert "capped_exponential_v1" in policy.fingerprint
+
+    def test_exception_types_use_module_qualname(self):
+        import hypergraph.exceptions
+
+        policy = RetryPolicy(
+            max_attempts=3,
+            retry_on=(hypergraph.exceptions.AttemptTimeoutError,),
+        )
+        assert "hypergraph.exceptions.AttemptTimeoutError" in policy.fingerprint
+
+    def test_equivalent_construction_forms_share_fingerprint(self):
+        # int vs float timing fields and single-type vs tuple retry_on are
+        # the same policy; normalization owns the identity.
+        a = RetryPolicy(max_attempts=3, retry_on=ConnectionError, initial_delay=1, max_delay=60, retry_window=30)
+        b = RetryPolicy(max_attempts=3, retry_on=(ConnectionError,), initial_delay=1.0, max_delay=60.0, retry_window=30.0)
+        assert a.fingerprint == b.fingerprint
+
+    def test_jitter_draws_are_attempt_state_never_identity(self):
+        # Red-green item 4 (#232): drawing backoff (which samples jitter)
+        # must not perturb the fingerprint, and two policies whose draws
+        # differ still share one identity.
+        from datetime import datetime, timezone
+
+        from hypergraph.runners._shared.attempts import draw_backoff
+
+        policy = RetryPolicy(max_attempts=5, retry_on=(ConnectionError,), jitter="full")
+        before = policy.fingerprint
+        now = datetime(2026, 7, 17, tzinfo=timezone.utc)
+        samples = {draw_backoff(policy, 3, now=now).sampled_delay for _ in range(64)}
+        assert len(samples) > 1, "full jitter draws vary between attempts"
+        assert policy.fingerprint == before
+        twin = RetryPolicy(max_attempts=5, retry_on=(ConnectionError,), jitter="full")
+        assert twin.fingerprint == before
+
     @pytest.mark.parametrize(
         "changed",
         [

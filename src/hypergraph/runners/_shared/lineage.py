@@ -9,11 +9,13 @@ from hypergraph.checkpointers.types import Checkpoint, Run
 from hypergraph.exceptions import (
     GraphChangedError,
     InputOverrideRequiresForkError,
+    RetryPolicyChangedError,
     WorkflowAlreadyCompletedError,
     WorkflowForkError,
     WorkflowStoppedError,
 )
 from hypergraph.runners._shared.event_metadata import RunLineage
+from hypergraph.runners._shared.policy_manifest import RetryPolicyManifest, diff_policy_manifests
 from hypergraph.runners._shared.state_restore import is_interrupt_resume_payload
 
 if TYPE_CHECKING:
@@ -67,6 +69,15 @@ def resolve_existing_run(
     previous_hash = (existing_run.config or {}).get("graph_struct_hash")
     if previous_hash is not None and previous_hash != graph_hash:
         raise GraphChangedError(workflow_id)
+    # Policy compatibility (#232): validated here — before checkpoint
+    # restoration and before create_run() can overwrite the stored config.
+    # A missing manifest is a legacy config; the attempt ledger's
+    # begin_attempt() fingerprint check remains its durable backstop.
+    stored_manifest = RetryPolicyManifest.from_config(existing_run.config)
+    if stored_manifest is not None:
+        changes = diff_policy_manifests(stored_manifest, RetryPolicyManifest.from_graph(graph))
+        if changes:
+            raise RetryPolicyChangedError(workflow_id, changes)
     if existing_run.status.value == "stopped":
         if not resume_values:
             raise WorkflowStoppedError(workflow_id)

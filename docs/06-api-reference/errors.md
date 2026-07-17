@@ -52,6 +52,48 @@ The same late-value and cleanup-exception precedence as
 attempt execution, backoff, persistence overhead, cancellation settlement,
 and process downtime all consume it.
 
+### RetryPolicyChangedError (HG_RETRY_POLICY_CHANGED)
+
+```python
+from hypergraph import RetryPolicyChangedError
+```
+
+Raised when a run resumes an existing `workflow_id` whose stored per-node
+retry/timeout policy manifest no longer matches the graph. The rejection
+happens before checkpoint restoration, before the stored run configuration
+can be overwritten, and before any user code runs.
+
+```python
+class RetryPolicyChangedError(Exception):
+    workflow_id: str
+    changes: tuple[PolicyFieldChange, ...]  # node_name, field, stored, current
+    code = "HG_RETRY_POLICY_CHANGED"
+```
+
+```python
+try:
+    runner.run(graph, workflow_id="onboard-u-42")
+except RetryPolicyChangedError as error:
+    print(error)
+# Retry/timeout policy changed for workflow 'onboard-u-42' [HG_RETRY_POLICY_CHANGED].
+#
+# Field-level changes against the stored policy manifest:
+#   charge_card.max_attempts: stored 3 -> current 5
+# ...
+```
+
+Same-workflow resume continues the persisted attempt series and its
+remaining budget, so the effective policy must stay identical. A deliberate
+new lineage is free to change it: `fork_from=...`, `override_workflow=True`,
+or a new `workflow_id`.
+
+Policy identity is separate from graph and cache identity: a policy change
+never triggers `GraphChangedError` and never invalidates cached successful
+outputs. Runs recorded before the manifest existed skip this validation; the
+attempt ledger still rejects a mismatched fingerprint at the next durable
+attempt reservation. See
+[Checkpointers — Policy Compatibility on Resume](checkpointers.md#policy-compatibility-on-resume).
+
 ### IncompatibleRunnerError for timeout
 
 Framework `timeout=` is rejected before execution when Hypergraph cannot make
