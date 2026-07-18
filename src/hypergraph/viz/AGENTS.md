@@ -16,7 +16,7 @@ scene client-side without a kernel round-trip.
 1. `Graph` → `to_flat_graph()`
 2. `renderer/ir_builder.py:build_graph_ir(flat_graph)` → `GraphIR`
    (pure facts: nodes, edges, expandable_nodes, external_inputs,
-   configured_entrypoints, graph_output_visibility)
+   configured_entrypoints, graph_output_visibility, container_entrypoints)
 3. `widget.py:render_flat_graph` embeds the IR + initial expansion/options in
    HTML with empty top-level `nodes`/`edges`; the browser derives the scene.
 4. `scene_builder.py:build_initial_scene(ir, expansion_state, ...)` is the
@@ -42,10 +42,14 @@ pipelines differ.
 - Scene derivation changes usually have Python and JavaScript twins. Update
   `scene_builder.py`, `assets/scene_builder.js`, and derivation helpers
   together unless the difference is intentionally documented in a test.
-- Container entrypoint detection must compare a child only with outputs owned
-  by other children. A child's own output name must not make it depend on
-  itself, and multiple valid entrypoints should be preserved when the IR says
-  they are independent.
+- Container entrypoints have ONE derivation authority (locked decision D14,
+  #211): `renderer/scope.py:compute_container_entrypoints`, stamped on
+  `GraphIR.container_entrypoints` by the IR builder. Semantics are
+  self-EXCLUSIVE — a child is compared only with outputs owned by *other*
+  children, so a self-loop never disqualifies it, and multiple independent
+  entrypoints are preserved (cyclic containers fall back to the first child).
+  Scene builders (Python and JS) and the Mermaid exporter consume it; never
+  re-derive entrypoints from node inputs/outputs.
 - Treat unordered semantic fields as unordered in parity tests. Sort or
   normalize fields such as target sets before comparing Python and JS output.
 
@@ -68,8 +72,9 @@ side-effect in the order defined by `FIRST_PARTY_ASSET_NAMES`
 (`HypergraphDerivation`, `HypergraphSceneBuilder`, `HypergraphViz*`):
 
 1. `derivation.js` — pure graph-walk primitives over GraphIR + expansion
-   state (visibility, expansion-aware routing, container entrypoints); no
-   React Flow, layout, or styling knowledge
+   state (visibility, expansion-aware routing, container-entrypoint lookup
+   from the canonical `ir.container_entrypoints` field); no React Flow,
+   layout, or styling knowledge
 2. `scene_builder.js` — JS twin of `scene_builder.py`; consumes `derivation.js`
 3. `viz_runtime.js` — shared constants + helpers: `NODE_TYPE_OFFSETS`,
    `NODE_TYPE_TOP_INSETS`, `EDGE_ENDPOINT_PADDING`, node-type resolution,

@@ -192,26 +192,28 @@ def build_multi_output() -> Graph:
 
 
 # ---------------------------------------------------------------------------
-# container entrypoint (the #211 divergence case)
+# container entrypoint (the #211 divergence case, now unified)
 # ---------------------------------------------------------------------------
 #
-# The inner "worker" container is deliberately shaped so today's
-# self-INCLUSIVE container-entrypoint derivation (viz/renderer/scope.py,
-# used by the Mermaid exporter for edges entering an expanded container)
-# picks a DIFFERENT entrypoint than the corrected self-EXCLUSIVE derivation
-# in viz/scene_builder.py:
+# The inner "worker" container is deliberately shaped so the historical
+# self-INCLUSIVE container-entrypoint derivation (pre-#211 Mermaid path)
+# picked a DIFFERENT entrypoint than the canonical self-EXCLUSIVE derivation
+# that #211 made authoritative (``compute_container_entrypoints`` in
+# viz/renderer/scope.py, stamped on ``GraphIR.container_entrypoints``):
 #
-# - ``accumulate`` consumes its own output (self-loop on ``history``), so the
-#   self-inclusive rule disqualifies it and picks ``kickoff``.
-# - The self-exclusive rule ignores a node's own outputs, so it would pick
-#   ``accumulate`` (declared first).
+# - ``accumulate`` consumes its own output (self-loop on ``history``). The
+#   old self-inclusive rule disqualified it and picked ``kickoff``.
+# - The canonical self-exclusive rule ignores a node's own outputs, so it
+#   picks ``accumulate`` (declared first) — and keeps ``kickoff`` as a
+#   second independent entrypoint.
 #
 # The self-loop makes the inner graph cyclic, so it declares both children
 # as execution entrypoints (required at construction; keeps both active).
 #
-# When #211 unifies the derivations, the frozen Mermaid baseline for this
-# case MUST change — that diff is the deliberate, visible before/after
-# evidence #211's PR carries.
+# #211 landed that unification: the frozen Mermaid baseline flipped exactly
+# one edge (``dispatch -.-> worker__kickoff`` → ``dispatch -.->
+# worker__accumulate``) as the deliberate, visible before/after evidence.
+# This case now pins the canonical behavior against future drift.
 
 
 @node(output_name="history")

@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from hypergraph.viz.ir_schema import CURRENT_SCHEMA_VERSION, GraphIR, IRSchemaError
+from hypergraph.viz.renderer.scope import resolve_expanded_entrypoints
 
 
 def build_initial_scene(
@@ -182,7 +183,6 @@ def build_initial_scene(
                 scene_nodes.append(scene_node)
 
     visible_ids = {n["id"] for n in scene_nodes if not n["hidden"]}
-
     scene_edges: list[dict[str, Any]] = []
 
     for ir_edge in ir.edges:
@@ -197,9 +197,11 @@ def build_initial_scene(
         # -field INPUT pills, so target_when_expanded can be a tuple; emit one
         # edge per target (mirrors the multi-source fan-out below).
         targets = [ir_edge.target]
-        if expansion_state.get(ir_edge.target) and ir_edge.target_when_expanded:
-            expanded_targets = ir_edge.target_when_expanded
-            targets = list(expanded_targets) if isinstance(expanded_targets, tuple) else [expanded_targets]
+        if expansion_state.get(ir_edge.target):
+            if ir_edge.target_when_expanded:
+                expanded_targets = ir_edge.target_when_expanded
+                targets = list(expanded_targets) if isinstance(expanded_targets, tuple) else [expanded_targets]
+            targets = list(resolve_expanded_entrypoints(targets, ir.container_entrypoints, expansion_state))
 
         # A data edge can carry multiple value_names (one NetworkX edge per
         # (src,tgt) merges them). Merged-output mode should still render one
@@ -298,12 +300,10 @@ def _add_start_end_nodes_and_edges(
     # When an entrypoint is itself a GRAPH and currently expanded, the
     # START edge should attach to its real inner entrypoint(s) so it
     # visually connects to executable code instead of the container chrome.
-    entrypoint_overrides = _expanded_container_entrypoints(ir, expansion_state)
-
     start_targets: list[str] = []
     seen_start: set[str] = set()
     for entry in ir.configured_entrypoints:
-        for target in _resolve_expanded_entrypoints(entry, entrypoint_overrides):
+        for target in resolve_expanded_entrypoints((entry,), ir.container_entrypoints, expansion_state):
             resolved = _resolve_to_visible(target, parent_map, expansion_state, visible_ids)
             if resolved is None or resolved in seen_start:
                 continue
@@ -393,76 +393,6 @@ def _resolve_to_visible(
     while current is not None and current not in visible_ids:
         current = parent_map.get(current)
     return current
-
-
-def _expanded_container_entrypoints(
-    ir: GraphIR,
-    expansion_state: dict[str, bool],
-) -> dict[str, list[str]]:
-    """For each GRAPH currently expanded, find inner child(ren) to receive
-    edges that would otherwise attach to the container hull.
-
-    Entrypoints are direct children whose inputs are not produced by a
-    sibling. Cyclic containers have no pure source, so they fall back to
-    the first declared child for stable rendering.
-    """
-    children_by_parent: dict[str, list[str]] = {}
-    node_by_id = {ir_node.id: ir_node for ir_node in ir.nodes}
-    for ir_node in ir.nodes:
-        if ir_node.parent is not None:
-            children_by_parent.setdefault(ir_node.parent, []).append(ir_node.id)
-
-    overrides: dict[str, list[str]] = {}
-    for ir_node in ir.nodes:
-        if ir_node.node_type != "GRAPH":
-            continue
-        if not expansion_state.get(ir_node.id):
-            continue
-        children = children_by_parent.get(ir_node.id, [])
-        if children:
-            overrides[ir_node.id] = _container_entrypoints(children, node_by_id)
-    return overrides
-
-
-def _container_entrypoints(
-    children: list[str],
-    node_by_id: dict[str, Any],
-) -> list[str]:
-    entrypoints = []
-    for child_id in children:
-        sibling_outputs = {
-            output["name"] for other_id in children if other_id != child_id for output in node_by_id[other_id].outputs if "name" in output
-        }
-        child_inputs = {input_["name"] for input_ in node_by_id[child_id].inputs if "name" in input_}
-        if not child_inputs & sibling_outputs:
-            entrypoints.append(child_id)
-
-    return entrypoints or [children[0]]
-
-
-def _resolve_expanded_entrypoints(
-    entry: str,
-    entrypoint_overrides: dict[str, list[str]],
-) -> list[str]:
-    targets = [entry]
-    seen: set[str] = set()
-
-    while True:
-        next_targets: list[str] = []
-        changed = False
-        for target in targets:
-            if target in seen:
-                continue
-            seen.add(target)
-            overrides = entrypoint_overrides.get(target)
-            if overrides:
-                next_targets.extend(overrides)
-                changed = True
-            else:
-                next_targets.append(target)
-        if not changed:
-            return next_targets
-        targets = next_targets
 
 
 def _synthetic_node(node_id: str, node_type: str, label: str) -> dict[str, Any]:

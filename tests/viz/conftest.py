@@ -51,6 +51,142 @@ def scene_for_state(
     )
 
 
+def make_nested_container_entrypoint_graph() -> Graph:
+    """A routed container whose first entrypoint is another container."""
+    from hypergraph import END, route
+
+    @node(output_name="history")
+    def acc_step(history: list, raw: str) -> list:
+        return [*history, raw]
+
+    @node(output_name="ready")
+    def starter(seed: str) -> str:
+        return seed
+
+    @node(output_name="signal")
+    def intake(request: str) -> str:
+        return request
+
+    @route(targets=["mid", END])
+    def dispatch(signal: str) -> str:
+        return "mid"
+
+    accumulator = Graph([acc_step], name="accum", entrypoint="acc_step")
+    middle = Graph(
+        [accumulator.as_node(), starter],
+        name="mid",
+        entrypoint=["accum", "starter"],
+    )
+    return Graph(
+        [intake, dispatch, middle.as_node()],
+        name="outer",
+        entrypoint="intake",
+    )
+
+
+def make_hidden_only_container_graph() -> Graph:
+    """A routed container whose only child is absent from the scene."""
+    from hypergraph import END, route
+
+    @node(output_name="inner_out", hide=True)
+    def only_child(signal: str) -> str:
+        return signal
+
+    @node(output_name="signal")
+    def intake(request: str) -> str:
+        return request
+
+    @route(targets=["box", END])
+    def dispatch(signal: str) -> str:
+        return "box"
+
+    box = Graph([only_child], name="box", entrypoint="only_child")
+    return Graph([intake, dispatch, box.as_node()], entrypoint="intake")
+
+
+def make_hidden_sibling_dependency_graph() -> Graph:
+    """A hidden producer feeds one visible child beside a true entrypoint."""
+    from hypergraph import END, route
+
+    @node(output_name="hidden_value", hide=True)
+    def hidden_source(seed: str) -> str:
+        return seed
+
+    @node(output_name="derived")
+    def dependent(hidden_value: str) -> str:
+        return hidden_value
+
+    @node(output_name="ready")
+    def independent(external: str) -> str:
+        return external
+
+    @node(output_name="signal")
+    def intake(request: str) -> str:
+        return request
+
+    @route(targets=["box", END])
+    def dispatch(signal: str) -> str:
+        return "box"
+
+    box = Graph(
+        [hidden_source, dependent, independent],
+        name="box",
+        entrypoint=["hidden_source", "independent"],
+    )
+    return Graph([intake, dispatch, box.as_node()], entrypoint="intake")
+
+
+def make_hidden_source_only_dependency_graph() -> Graph:
+    """A hidden source is the sole true entrypoint for a visible dependent."""
+    from hypergraph import END, route
+
+    @node(output_name="hidden_value", hide=True)
+    def hidden_source(seed: str) -> str:
+        return seed
+
+    @node(output_name="derived")
+    def dependent(hidden_value: str) -> str:
+        return hidden_value
+
+    @node(output_name="signal")
+    def intake(request: str) -> str:
+        return request
+
+    @route(targets=["box", END])
+    def dispatch(signal: str) -> str:
+        return "box"
+
+    box = Graph(
+        [hidden_source, dependent],
+        name="box",
+        entrypoint="hidden_source",
+    )
+    return Graph([intake, dispatch, box.as_node()], entrypoint="intake")
+
+
+def make_hidden_source_data_dependency_graph() -> Graph:
+    """A data edge enters a container whose only true source is hidden."""
+
+    @node(output_name="seed")
+    def produce(request: str) -> str:
+        return request
+
+    @node(output_name="hidden_value", hide=True)
+    def hidden_source(seed: str) -> str:
+        return seed
+
+    @node(output_name="derived")
+    def dependent(hidden_value: str) -> str:
+        return hidden_value
+
+    box = Graph(
+        [hidden_source, dependent],
+        name="box",
+        entrypoint="hidden_source",
+    )
+    return Graph([produce, box.as_node()], entrypoint="produce")
+
+
 def _check_playwright_available() -> bool:
     """Check if playwright is installed AND browser binaries are available.
 

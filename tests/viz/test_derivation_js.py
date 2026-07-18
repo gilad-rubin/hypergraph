@@ -45,6 +45,7 @@ def test_module_attaches_to_globalthis():
             "buildParentMap",
             "expandedContainerEntrypoints",
             "inputHidden",
+            "resolveExpandedEntrypoints",
             "resolveToVisible",
             "routesToEnd",
             "sceneNodeType",
@@ -129,17 +130,67 @@ def test_visible_owner_picks_first_expanded_ancestor():
     }
 
 
-def test_expanded_container_entrypoints_picks_dependency_entrypoint():
+def test_expanded_container_entrypoints_consumes_canonical_field_for_expanded_only():
+    """The JS side consumes ``ir.container_entrypoints`` (D14, #211) filtered
+    to currently-expanded containers — collapsed containers get no override."""
+    result = _run("""
+        const ir = {
+            nodes: [
+                {id: 'outer', node_type: 'GRAPH', parent: null},
+                {id: 'outer/upstream', node_type: 'FUNCTION', parent: 'outer'},
+                {id: 'collapsed', node_type: 'GRAPH', parent: null},
+                {id: 'collapsed/x', node_type: 'FUNCTION', parent: 'collapsed'},
+            ],
+            container_entrypoints: {
+                outer: ['outer/upstream'],
+                collapsed: ['collapsed/x'],
+            },
+        };
+        return D.expandedContainerEntrypoints(ir, {outer: true});
+    """)
+    assert result == {"outer": ["outer/upstream"]}
+
+
+def test_expanded_container_entrypoints_never_rederives_from_node_shapes():
+    """The canonical field wins VERBATIM. The IR below is shaped so any
+    hidden re-derivation from inputs/outputs would pick 'outer/upstream'
+    (the dependency source); the field deliberately says 'outer/downstream'.
+    If this test fails with 'outer/upstream', a duplicate derivation crept
+    back into the JS side — delete it and consume the field (#211)."""
+    result = _run("""
+        const ir = {
+            nodes: [
+                {id: 'outer', node_type: 'GRAPH', parent: null},
+                {
+                    id: 'outer/downstream',
+                    node_type: 'FUNCTION',
+                    parent: 'outer',
+                    inputs: [{name: 'started'}],
+                    outputs: [{name: 'done'}],
+                },
+                {
+                    id: 'outer/upstream',
+                    node_type: 'FUNCTION',
+                    parent: 'outer',
+                    inputs: [{name: 'x'}],
+                    outputs: [{name: 'started'}],
+                },
+            ],
+            container_entrypoints: {outer: ['outer/downstream']},
+        };
+        return D.expandedContainerEntrypoints(ir, {outer: true});
+    """)
+    assert result == {"outer": ["outer/downstream"]}
+
+
+def test_expanded_container_entrypoints_missing_field_yields_no_overrides():
+    """A payload without ``container_entrypoints`` produces NO overrides —
+    the JS side must not fall back to a local derivation. (In production a
+    v3 payload never reaches this code: the scene builder banners on the
+    schema-version mismatch first.)"""
     result = _run("""
         const ir = {nodes: [
             {id: 'outer', node_type: 'GRAPH', parent: null},
-            {
-                id: 'outer/downstream',
-                node_type: 'FUNCTION',
-                parent: 'outer',
-                inputs: [{name: 'started'}],
-                outputs: [{name: 'done'}],
-            },
             {
                 id: 'outer/upstream',
                 node_type: 'FUNCTION',
@@ -147,43 +198,30 @@ def test_expanded_container_entrypoints_picks_dependency_entrypoint():
                 inputs: [{name: 'x'}],
                 outputs: [{name: 'started'}],
             },
-            {id: 'collapsed', node_type: 'GRAPH', parent: null},
-            {id: 'collapsed/x', node_type: 'FUNCTION', parent: 'collapsed'},
         ]};
         return D.expandedContainerEntrypoints(ir, {outer: true});
     """)
-    assert result == {"outer": ["outer/upstream"]}
+    assert result == {}
 
 
-def test_expanded_container_entrypoints_ignore_self_outputs_and_keep_multiple_entrypoints():
+def test_resolve_expanded_entrypoints_preserves_plain_siblings():
+    """Nested resolution expands containers without dropping other targets."""
     result = _run("""
-        const ir = {nodes: [
-            {id: 'outer', node_type: 'GRAPH', parent: null},
-            {
-                id: 'outer/selfish',
-                node_type: 'FUNCTION',
-                parent: 'outer',
-                inputs: [{name: 'loop'}],
-                outputs: [{name: 'loop'}],
-            },
-            {
-                id: 'outer/independent',
-                node_type: 'FUNCTION',
-                parent: 'outer',
-                inputs: [{name: 'x'}],
-                outputs: [{name: 'y'}],
-            },
-            {
-                id: 'outer/downstream',
-                node_type: 'FUNCTION',
-                parent: 'outer',
-                inputs: [{name: 'y'}],
-                outputs: [{name: 'z'}],
-            },
-        ]};
-        return D.expandedContainerEntrypoints(ir, {outer: true});
+        const overrides = {
+            mid: ['mid/accum', 'mid/starter'],
+            'mid/accum': ['mid/accum/step'],
+        };
+        return D.resolveExpandedEntrypoints('mid', overrides);
     """)
-    assert result == {"outer": ["outer/selfish", "outer/independent"]}
+    assert result == ["mid/accum/step", "mid/starter"]
+
+
+def test_resolve_expanded_entrypoints_suppresses_empty_override():
+    """An expanded container with no visible entrypoint has no edge target."""
+    result = _run("""
+        return D.resolveExpandedEntrypoints('box', {box: []});
+    """)
+    assert result == []
 
 
 def test_routes_to_end_handles_all_branch_shapes():

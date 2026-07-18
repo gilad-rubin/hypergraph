@@ -4,6 +4,12 @@ import pytest
 
 from hypergraph import END, Graph, ifelse, node, route
 from hypergraph.viz.mermaid import to_mermaid
+from tests.viz.conftest import (
+    make_hidden_sibling_dependency_graph,
+    make_hidden_source_data_dependency_graph,
+    make_hidden_source_only_dependency_graph,
+    make_nested_container_entrypoint_graph,
+)
 
 # =============================================================================
 # Test Nodes
@@ -474,6 +480,47 @@ class TestSubgraphs:
         assert "end" in mermaid
         assert "step1" in mermaid
         assert "step2" in mermaid
+
+    def test_hidden_sibling_output_still_disqualifies_dependent_entrypoint(self):
+        """Control routing must enter at a true visible dependency source."""
+        graph = make_hidden_sibling_dependency_graph()
+
+        mermaid = graph.to_mermaid(depth=1)
+
+        assert "dispatch -.-> box__independent" in mermaid
+
+    def test_nested_expanded_entrypoint_routes_to_leaf(self):
+        """Mermaid must not attach an edge to an expanded subgraph id."""
+        graph = make_nested_container_entrypoint_graph()
+
+        mermaid = graph.to_mermaid(depth=2)
+
+        assert "dispatch -.-> mid__accum__acc_step" in mermaid
+
+    @pytest.mark.parametrize("separate_outputs", [False, True])
+    def test_container_without_visible_entrypoint_has_no_hull_edges(
+        self,
+        separate_outputs: bool,
+    ):
+        """An empty canonical tuple suppresses every expanded-hull edge."""
+        graph = make_hidden_source_only_dependency_graph()
+
+        mermaid = graph.to_mermaid(
+            depth=1,
+            separate_outputs=separate_outputs,
+        ).source
+        edge_lines = [line.strip() for line in mermaid.splitlines() if " --> " in line or " -.-> " in line]
+        box_edges = [line for line in edge_lines if line.split()[0] == "box" or line.split()[-1] == "box"]
+
+        assert box_edges == []
+
+    def test_separate_data_edge_does_not_target_empty_entrypoint_container(self):
+        """Separate DATA edges obey the same expanded-hull invariant."""
+        graph = make_hidden_source_data_dependency_graph()
+
+        mermaid = graph.to_mermaid(depth=1, separate_outputs=True).source
+
+        assert "data_produce_seed -->|seed| box" not in mermaid
 
 
 # =============================================================================

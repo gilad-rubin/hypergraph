@@ -29,8 +29,11 @@ NODE = shutil.which("node")
 
 def test_current_schema_version_pinned() -> None:
     """A bump must be deliberate — pin both ends so the hard-coded JS
-    constant in scene_builder.js stays in lockstep with Python."""
-    assert CURRENT_SCHEMA_VERSION == "3"
+    constant in scene_builder.js stays in lockstep with Python.
+
+    v4 (#211): ``GraphIR.container_entrypoints`` became the canonical
+    entrypoint authority and both scene builders stopped re-deriving it."""
+    assert CURRENT_SCHEMA_VERSION == "4"
 
 
 def test_build_graph_ir_emits_current_schema_version() -> None:
@@ -69,12 +72,75 @@ def test_js_scene_builder_returns_mismatch_sentinel_for_future_version() -> None
     )
     assert proc.returncode == 0, proc.stderr
     scene = json.loads(proc.stdout)
-    assert scene.get("schemaVersionMismatch") == {"got": "999", "supported": "3"}
+    assert scene.get("schemaVersionMismatch") == {"got": "999", "supported": "4"}
     # The mismatch-sentinel must short-circuit derivation entirely so the
     # frontend can render the static fallback without dragging in any
     # potentially-stale interpretation of the IR.
     assert scene["nodes"] == []
     assert scene["edges"] == []
+
+
+def test_python_scene_builder_degrades_loudly_on_v3_payload_without_container_entrypoints() -> None:
+    """Wire-format consequence of #211: a v3 IR has no
+    ``container_entrypoints`` field, and the v4 scene builder no longer
+    re-derives entrypoints — so a saved v3 payload must fail LOUDLY on the
+    version pin, never render with silently mis-routed START/control edges."""
+    flat = make_simple_graph().to_flat_graph()
+    ir = build_graph_ir(flat)
+    v3_ir = replace(ir, schema_version="3", container_entrypoints={})
+    with pytest.raises(IRSchemaError, match="schema_version"):
+        build_initial_scene(v3_ir)
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js not installed")
+def test_js_scene_builder_degrades_loudly_on_v3_payload_without_container_entrypoints() -> None:
+    """JS twin of the wire-format consequence: an old saved notebook output
+    (v3 payload, no ``container_entrypoints``) hits the static-fallback
+    banner — degrade loudly, not silent entrypoint drift."""
+    flat = make_simple_graph().to_flat_graph()
+    ir = build_graph_ir(flat)
+    ir_dict = asdict(ir)
+    del ir_dict["container_entrypoints"]
+    ir_dict["schema_version"] = "3"
+    payload = json.dumps({"ir": ir_dict, "opts": {}})
+    proc = subprocess.run(
+        [NODE, str(RUNNER), str(REPO_ROOT)],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    scene = json.loads(proc.stdout)
+    assert scene.get("schemaVersionMismatch") == {"got": "3", "supported": "4"}
+    assert scene["nodes"] == []
+    assert scene["edges"] == []
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js not installed")
+def test_js_scene_builder_degrades_loudly_when_schema_version_is_missing() -> None:
+    """A version-less payload must not bypass the v4 field contract."""
+    flat = make_simple_graph().to_flat_graph()
+    ir_dict = asdict(build_graph_ir(flat))
+    del ir_dict["schema_version"]
+    del ir_dict["container_entrypoints"]
+    payload = json.dumps({"ir": ir_dict, "opts": {}})
+
+    proc = subprocess.run(
+        [NODE, str(RUNNER), str(REPO_ROOT)],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    scene = json.loads(proc.stdout)
+    assert scene == {
+        "nodes": [],
+        "edges": [],
+        "schemaVersionMismatch": {"got": None, "supported": "4"},
+    }
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js not installed")

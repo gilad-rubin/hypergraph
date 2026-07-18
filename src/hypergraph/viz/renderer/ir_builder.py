@@ -26,6 +26,7 @@ from hypergraph.viz.renderer._format import format_type
 from hypergraph.viz.renderer.nodes import build_input_groups, get_param_type
 from hypergraph.viz.renderer.scope import (
     build_graph_output_visibility,
+    compute_container_entrypoints,
     compute_deepest_input_scope,
     get_deepest_consumers,
     is_output_externally_consumed,
@@ -49,8 +50,12 @@ def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
     exclusive_edges = compute_exclusive_data_edges(flat_graph)
     mutex_groups = _compute_mutex_groups(flat_graph)
     back_edges = _find_back_edges(flat_graph)
+    # The ONE canonical container-entrypoint derivation (D14, #211): stamped
+    # on the IR below and reused for the entrypoint fallback of edges that
+    # enter an expanded container.
+    container_entrypoints = compute_container_entrypoints(flat_graph)
     edges = [
-        _build_ir_edge(src, tgt, attrs, flat_graph, exclusive_edges, mutex_groups, back_edges)
+        _build_ir_edge(src, tgt, attrs, flat_graph, exclusive_edges, mutex_groups, back_edges, container_entrypoints)
         for src, tgt, attrs in flat_graph.edges(data=True)
         if src not in hidden_nodes and tgt not in hidden_nodes
     ]
@@ -91,6 +96,7 @@ def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
         external_inputs=external_inputs,
         configured_entrypoints=configured_entrypoints,
         graph_output_visibility=graph_output_visibility,
+        container_entrypoints=container_entrypoints,
     )
 
 
@@ -263,6 +269,7 @@ def _build_ir_edge(
     exclusive_edges: set[tuple[str, str, str]],
     mutex_groups: list[list[set[str]]],
     back_edges: set[tuple[str, str]],
+    container_entrypoints: dict[str, tuple[str, ...]],
 ) -> IREdge:
     """Pre-compute the source-when-expanded / target-when-expanded rewrites
     so the JS scene_builder can re-route edges on container expansion
@@ -294,8 +301,10 @@ def _build_ir_edge(
         # here: control edges (value_names is empty, so the consumer search is
         # a no-op) and identity-mode fan-out edges (the value names a parent
         # column — e.g. "pages" — that no inner node consumes by name).
+        # First entry of the canonical container_entrypoints map (D14, #211).
         if target_when_expanded is None:
-            target_when_expanded = _first_container_entrypoint(tgt, flat_graph)
+            entrypoints = container_entrypoints.get(tgt)
+            target_when_expanded = entrypoints[0] if entrypoints else None
 
     label = _branch_label_for_edge(src_attrs, tgt) if edge_type == "control" else None
 
@@ -385,28 +394,6 @@ def _find_back_edges(flat_graph: nx.DiGraph) -> set[tuple[str, str]]:
         if color.get(node, WHITE) == WHITE:
             dfs(node)
     return back
-
-
-def _first_container_entrypoint(container_id: str, flat_graph: nx.DiGraph) -> str | None:
-    """State-independent first entrypoint of a container — the first
-    direct child whose inputs are not produced by any sibling. Used to
-    re-route control edges when the container is expanded."""
-    direct_children = [node_id for node_id, attrs in flat_graph.nodes(data=True) if attrs.get("parent") == container_id]
-    if not direct_children:
-        return None
-
-    sibling_outputs: set[str] = set()
-    for child_id in direct_children:
-        sibling_outputs.update(flat_graph.nodes.get(child_id, {}).get("outputs", ()))
-
-    for child_id in direct_children:
-        child_inputs = set(flat_graph.nodes.get(child_id, {}).get("inputs", ()))
-        if not child_inputs & sibling_outputs:
-            return child_id
-
-    # Cyclic container — no pure-external child exists; fall back to the
-    # first declared child so callers get a stable target.
-    return direct_children[0]
 
 
 def _inner_output_name(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> str:

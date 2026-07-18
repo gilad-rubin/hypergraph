@@ -36,8 +36,9 @@ from hypergraph.viz.renderer.nodes import (
     is_internal_gate_output,
 )
 from hypergraph.viz.renderer.scope import (
-    find_container_entrypoints,
+    compute_container_entrypoints,
     find_internal_producer_for_output,
+    resolve_expanded_entrypoints,
 )
 
 __all__ = ["MermaidDiagram", "to_mermaid", "_MermaidIdAllocator", "_sanitize_id"]
@@ -216,6 +217,7 @@ def _format_node(safe_id: str, label: str, node_type: str) -> str:
 def _render_merged_edges(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
+    container_entrypoints: dict[str, tuple[str, ...]],
     exclusive_data_edges: set[tuple[str, str, str]],
     id_allocator: _MermaidIdAllocator,
 ) -> list[tuple[str, str]]:
@@ -249,6 +251,7 @@ def _render_merged_edges(
                 target,
                 flat_graph,
                 expansion_state,
+                container_entrypoints,
             )
             if actual_target is None:
                 continue
@@ -287,6 +290,7 @@ def _render_merged_edges(
                 flat_graph,
                 expansion_state,
                 param_to_consumers,
+                container_entrypoints,
             )
             if actual_source is None or actual_target is None:
                 continue
@@ -305,6 +309,7 @@ def _render_merged_edges(
 def _render_separate_edges(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
+    container_entrypoints: dict[str, tuple[str, ...]],
     exclusive_data_edges: set[tuple[str, str, str]],
     id_allocator: _MermaidIdAllocator,
 ) -> list[tuple[str, str]]:
@@ -318,6 +323,10 @@ def _render_separate_edges(
         flat_graph,
         expansion_state,
         use_deepest=True,
+    )
+    param_to_consumers = build_param_to_consumer_map(
+        flat_graph,
+        expansion_state,
     )
     seen_edges: set[tuple[str, ...]] = set()
 
@@ -360,15 +369,25 @@ def _render_separate_edges(
                 )
                 if actual_source is None:
                     continue
+                actual_target = _resolve_data_target(
+                    target,
+                    value_name,
+                    flat_graph,
+                    expansion_state,
+                    param_to_consumers,
+                    container_entrypoints,
+                )
+                if actual_target is None:
+                    continue
                 source_attrs = flat_graph.nodes.get(actual_source, {})
                 if is_internal_gate_output(actual_source, value_name, source_attrs):
                     continue
                 data_id = f"data_{actual_source}_{value_name}"
-                edge_key = (id_allocator.get(data_id), id_allocator.get(target))
+                edge_key = (id_allocator.get(data_id), id_allocator.get(actual_target))
                 if edge_key not in seen_edges:
                     seen_edges.add(edge_key)
                     is_exclusive = (source, target, value_name) in exclusive_data_edges
-                    out.append((_format_edge(data_id, target, value_name, exclusive=is_exclusive, id_allocator=id_allocator), "data"))
+                    out.append((_format_edge(data_id, actual_target, value_name, exclusive=is_exclusive, id_allocator=id_allocator), "data"))
 
         elif edge_type == "ordering":
             value_name = value_names[0] if value_names else ""
@@ -383,6 +402,7 @@ def _render_separate_edges(
                 target,
                 flat_graph,
                 expansion_state,
+                container_entrypoints,
             )
             if actual_target is None:
                 continue
@@ -447,14 +467,22 @@ def _resolve_control_target(
     target: str,
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
+    container_entrypoints: dict[str, tuple[str, ...]],
 ) -> str | None:
-    """Resolve the actual target for a control edge, entering containers."""
-    actual_target = target
-    target_attrs = flat_graph.nodes.get(target, {})
-    if target_attrs.get("node_type") == "GRAPH" and expansion_state.get(target, False):
-        entrypoints = find_container_entrypoints(target, flat_graph, expansion_state)
-        if entrypoints:
-            actual_target = entrypoints[0]
+    """Resolve the actual target for a control edge, entering containers.
+
+    Uses the canonical container-entrypoint derivation (D14, #211) shared
+    with the IR builder; Mermaid renders its first entry, matching the
+    interactive renderer's ``IREdge.target_when_expanded`` fallback.
+    """
+    entrypoints = resolve_expanded_entrypoints(
+        (target,),
+        container_entrypoints,
+        expansion_state,
+    )
+    if not entrypoints:
+        return None
+    actual_target = entrypoints[0]
     if not is_node_visible(actual_target, flat_graph, expansion_state):
         return None
     return actual_target
@@ -494,6 +522,7 @@ def _resolve_data_target(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
     param_to_consumers: dict[str, list[str]],
+    container_entrypoints: dict[str, tuple[str, ...]],
 ) -> str | None:
     """Resolve actual target for a data edge, entering expanded containers."""
     actual_target = target
@@ -504,9 +533,14 @@ def _resolve_data_target(
         if internal:
             actual_target = internal[0]
         else:
-            entry = find_container_entrypoints(target, flat_graph, expansion_state)
-            if entry:
-                actual_target = entry[0]
+            entrypoints = resolve_expanded_entrypoints(
+                (target,),
+                container_entrypoints,
+                expansion_state,
+            )
+            if not entrypoints:
+                return None
+            actual_target = entrypoints[0]
     if not is_node_visible(actual_target, flat_graph, expansion_state):
         return None
     return actual_target
@@ -692,6 +726,7 @@ def to_mermaid(
         raise ValueError(msg)
 
     expansion_state = build_expansion_state(flat_graph, depth)
+    container_entrypoints = compute_container_entrypoints(flat_graph)
     input_spec = flat_graph.graph.get("input_spec", {})
     bound_params = set(input_spec.get("bound", {}).keys())
     param_to_consumers = build_param_to_consumer_map(flat_graph, expansion_state)
@@ -705,7 +740,11 @@ def to_mermaid(
     if shared_params:
         lines.append(f"    %% shared state: {', '.join(shared_params)}")
 
-    start_targets = get_start_targets(flat_graph, expansion_state)
+    start_targets = get_start_targets(
+        flat_graph,
+        expansion_state,
+        container_entrypoints,
+    )
 
     # --- START node (emit early so layout keeps START visually above flow) ---
     if start_targets:
@@ -823,15 +862,37 @@ def to_mermaid(
             id_segs = [id_for_param.get(p, external_input_display_name(p)) for p in params]
             input_node_id = f"input_group_{'_'.join(id_segs)}"
 
-        targets = _get_input_targets(params, flat_graph, param_to_consumers, expansion_state)
+        targets = _get_input_targets(
+            params,
+            flat_graph,
+            param_to_consumers,
+            expansion_state,
+            container_entrypoints,
+        )
         for tgt in targets:
             edge_pairs.append((_format_edge(input_node_id, tgt, None, id_allocator=id_allocator), "input"))
 
     exclusive_data_edges = compute_exclusive_data_edges(flat_graph)
     if separate_outputs:
-        edge_pairs.extend(_render_separate_edges(flat_graph, expansion_state, exclusive_data_edges, id_allocator))
+        edge_pairs.extend(
+            _render_separate_edges(
+                flat_graph,
+                expansion_state,
+                container_entrypoints,
+                exclusive_data_edges,
+                id_allocator,
+            )
+        )
     else:
-        edge_pairs.extend(_render_merged_edges(flat_graph, expansion_state, exclusive_data_edges, id_allocator))
+        edge_pairs.extend(
+            _render_merged_edges(
+                flat_graph,
+                expansion_state,
+                container_entrypoints,
+                exclusive_data_edges,
+                id_allocator,
+            )
+        )
 
     edge_pairs.extend((line, "end") for line in _render_end_edges(flat_graph, expansion_state, id_allocator))
 
@@ -878,6 +939,7 @@ def _get_input_targets(
     flat_graph: nx.DiGraph,
     param_to_consumers: dict[str, list[str]],
     expansion_state: dict[str, bool],
+    container_entrypoints: dict[str, tuple[str, ...]],
 ) -> list[str]:
     """Get unique target nodes for input parameters.
 
@@ -892,6 +954,8 @@ def _get_input_targets(
     for param in params:
         for target in param_to_consumers.get(param, []):
             if target in seen:
+                continue
+            if expansion_state.get(target) and target in container_entrypoints and not container_entrypoints[target]:
                 continue
             # Skip only if the specific gate controlling this target
             # also consumes this same param

@@ -23,6 +23,10 @@ from hypergraph.viz.renderer.ir_builder import build_graph_ir
 from hypergraph.viz.scene_builder import build_initial_scene
 from tests.viz.conftest import (
     make_chain_graph,
+    make_hidden_only_container_graph,
+    make_hidden_sibling_dependency_graph,
+    make_hidden_source_only_dependency_graph,
+    make_nested_container_entrypoint_graph,
     make_outer,
     make_simple_graph,
     make_workflow,
@@ -178,6 +182,88 @@ def make_unordered_nested_entrypoint_graph():
     return Graph(nodes=[inner.as_node()], entrypoint="inner")
 
 
+def make_multi_entrypoint_self_loop_graph():
+    """Container with a self-loop child + an independent child (#211).
+
+    Exercises the canonical self-EXCLUSIVE ``container_entrypoints``: the
+    self-looping ``selfish`` stays an entrypoint and both entrypoints get
+    START edges when the container is expanded — Python and JS must agree."""
+    from hypergraph import Graph, node
+
+    @node(output_name="loop")
+    def selfish(loop: str) -> str:
+        return loop
+
+    @node(output_name="y")
+    def independent(x: str) -> str:
+        return x
+
+    @node(output_name="z")
+    def downstream(y: str) -> str:
+        return y
+
+    inner = Graph(
+        nodes=[selfish, independent, downstream],
+        name="inner",
+        entrypoint=["selfish", "independent"],
+    )
+    return Graph(nodes=[inner.as_node()], entrypoint="inner")
+
+
+def make_nested_multi_entrypoint_start_graph():
+    """A nested entrypoint plus a plain sibling must both reach START."""
+    return make_nested_container_entrypoint_graph().with_entrypoint("mid")
+
+
+def make_renamed_boundary_entrypoint_graph():
+    """Container entrypoint behind boundary renames (aliases, #211).
+
+    ``with_inputs``/``with_outputs`` change the parent-facing port names;
+    the canonical entrypoint derivation compares inner sibling names and
+    must be unaffected — in both scene builders."""
+    from hypergraph import Graph, node
+
+    @node(output_name="prepared")
+    def prepare(text: str) -> str:
+        return text
+
+    @node(output_name="final")
+    def finish(prepared: str) -> str:
+        return prepared
+
+    inner = Graph(nodes=[prepare, finish], name="inner")
+    renamed = inner.as_node().with_inputs(text="document").with_outputs(final="result")
+    return Graph(nodes=[renamed], entrypoint="inner")
+
+
+def make_selected_subgraph_entrypoint_graph():
+    """``with_entrypoint`` selecting mid-graph (#211 selected-subgraph case).
+
+    The configured entrypoint is a container in the middle of a chain, so
+    START routing must resolve through ``container_entrypoints`` while
+    upstream producers still render."""
+    from hypergraph import Graph, node
+
+    @node(output_name="raw")
+    def fetch(source: str) -> str:
+        return source
+
+    @node(output_name="cleaned")
+    def clean(raw: str) -> str:
+        return raw
+
+    @node(output_name="summary")
+    def summarize(cleaned: str) -> str:
+        return cleaned
+
+    @node(output_name="report")
+    def publish(summary: str) -> str:
+        return summary
+
+    inner = Graph(nodes=[clean, summarize], name="middle")
+    return Graph(nodes=[fetch, inner.as_node(), publish]).with_entrypoint("middle")
+
+
 FIXTURES = {
     "simple": make_simple_graph,
     "chain": make_chain_graph,
@@ -185,6 +271,14 @@ FIXTURES = {
     "outer": make_outer,
     "bound": make_bound_graph,
     "unordered_entrypoint": make_unordered_nested_entrypoint_graph,
+    "multi_entrypoint_self_loop": make_multi_entrypoint_self_loop_graph,
+    "nested_container_entrypoint": make_nested_container_entrypoint_graph,
+    "nested_multi_entrypoint_start": make_nested_multi_entrypoint_start_graph,
+    "hidden_only_container": make_hidden_only_container_graph,
+    "hidden_source_only_dependency": make_hidden_source_only_dependency_graph,
+    "hidden_sibling_dependency": make_hidden_sibling_dependency_graph,
+    "renamed_boundary_entrypoint": make_renamed_boundary_entrypoint_graph,
+    "selected_subgraph_entrypoint": make_selected_subgraph_entrypoint_graph,
 }
 
 

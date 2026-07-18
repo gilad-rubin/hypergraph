@@ -5,11 +5,13 @@ Each case freezes the FULL Mermaid source emitted today into a checked-in
 This is the before/after baseline for the Mermaid-on-GraphIR migration
 (#212) and the container-entrypoint unification (#211).
 
-KNOWN DELIBERATE CHANGE AHEAD: ``container_entrypoint_expanded.mmd`` freezes
-today's self-INCLUSIVE container-entrypoint derivation (viz/renderer/scope.py).
-When #211 switches the Mermaid path to the corrected self-EXCLUSIVE
-derivation (as in viz/scene_builder.py), that fixture MUST be updated in the
-same PR -- the fixture diff IS the visible evidence of the behavior change.
+DELIBERATE CHANGE LANDED (#211): ``container_entrypoint_expanded.mmd`` now
+freezes the canonical self-EXCLUSIVE container-entrypoint derivation
+(``compute_container_entrypoints`` in viz/renderer/scope.py, stamped on
+``GraphIR.container_entrypoints``). The one-line flip
+``dispatch -.-> worker__kickoff`` → ``dispatch -.-> worker__accumulate`` was
+the visible evidence of that unification; any NEW drift in this fixture is a
+regression against the canonical derivation.
 
 To regenerate after an INTENTIONAL change:
 

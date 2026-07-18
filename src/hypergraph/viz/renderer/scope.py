@@ -7,6 +7,7 @@ and which outputs are externally consumed (visible outside their container).
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING
 
 from hypergraph.viz._common import (
@@ -178,38 +179,67 @@ def build_graph_output_visibility(flat_graph: nx.DiGraph) -> dict[str, set[str]]
     return visibility
 
 
-def find_container_entrypoints(
-    container_id: str,
-    flat_graph: nx.DiGraph,
-    expansion_state: dict[str, bool],
-) -> list[str]:
-    """Find entry point nodes inside a container for control edge routing."""
-    direct_children = [node_id for node_id, attrs in flat_graph.nodes(data=True) if attrs.get("parent") == container_id]
+def compute_container_entrypoints(flat_graph: nx.DiGraph) -> dict[str, tuple[str, ...]]:
+    """Canonical container-entrypoint map (locked decision D14, #211).
 
-    internal_outputs = set()
-    for node_id in direct_children:
-        attrs = flat_graph.nodes.get(node_id, {})
-        for output in attrs.get("outputs", ()):
-            internal_outputs.add(output)
+    ``GRAPH-id -> ordered entrypoint children``: direct children whose inputs
+    are not produced by any *sibling*. Only visible entrypoints become edge
+    targets; an empty tuple tells consumers to suppress an edge when every
+    structural entrypoint is hidden.
+    Self-EXCLUSIVE:
+    a child's own outputs never disqualify it — a self-loop accumulator is
+    still an entrypoint. Cyclic containers where every child consumes a
+    sibling output fall back to the first declared child so consumers get a
+    stable target. State-independent: consumers filter by expansion state.
 
-    entrypoints = []
-    for node_id in direct_children:
-        attrs = flat_graph.nodes.get(node_id, {})
-        inputs = set(attrs.get("inputs", ()))
+    This is the single derivation authority. The IR builder stamps it on
+    ``GraphIR.container_entrypoints``; scene builders (Python and JS) and the
+    Mermaid exporter consume it. Do not re-derive entrypoints elsewhere.
+    """
+    entrypoint_map: dict[str, tuple[str, ...]] = {}
+    for container_id, attrs in flat_graph.nodes(data=True):
+        if attrs.get("node_type") != "GRAPH" or attrs.get("hide", False):
+            continue
+        all_children = [(child_id, child_attrs) for child_id, child_attrs in flat_graph.nodes(data=True) if child_attrs.get("parent") == container_id]
+        if not all_children:
+            continue
+        structural_entrypoints = []
+        for child_id, child_attrs in all_children:
+            sibling_outputs = {output for other_id, other_attrs in all_children if other_id != child_id for output in other_attrs.get("outputs", ())}
+            if not set(child_attrs.get("inputs", ())) & sibling_outputs:
+                structural_entrypoints.append(child_id)
 
-        consumes_internal = bool(inputs & internal_outputs)
+        visible_entrypoints = [child_id for child_id in structural_entrypoints if not flat_graph.nodes[child_id].get("hide", False)]
+        if visible_entrypoints:
+            entrypoint_map[container_id] = tuple(visible_entrypoints)
+        elif structural_entrypoints:
+            entrypoint_map[container_id] = ()
+        else:
+            visible_children = [child_id for child_id, child_attrs in all_children if not child_attrs.get("hide", False)]
+            entrypoint_map[container_id] = (visible_children[0],) if visible_children else ()
+    return entrypoint_map
 
-        if not consumes_internal and is_node_visible(node_id, flat_graph, expansion_state):
-            entrypoints.append(node_id)
 
-    if entrypoints:
-        return entrypoints
+def resolve_expanded_entrypoints(
+    entries: Iterable[str],
+    container_entrypoints: Mapping[str, tuple[str, ...]],
+    expansion_state: Mapping[str, bool],
+) -> tuple[str, ...]:
+    """Resolve expanded entrypoint containers to descendant targets."""
+    resolved: list[str] = []
+    pending = list(reversed(tuple(entries)))
 
-    # Cyclic containers can have no "pure external" child by this heuristic.
-    # Fall back to visible direct children so expanded containers are not used
-    # as edge endpoints in the visualization.
-    fallback = [node_id for node_id in direct_children if is_node_visible(node_id, flat_graph, expansion_state)]
-    return fallback
+    while pending:
+        target = pending.pop()
+        if expansion_state.get(target) and target in container_entrypoints:
+            overrides = container_entrypoints[target]
+            if overrides:
+                pending.extend(reversed(overrides))
+            continue
+        if target not in resolved:
+            resolved.append(target)
+
+    return tuple(resolved)
 
 
 def find_internal_producer_for_output(

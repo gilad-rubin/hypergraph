@@ -112,7 +112,13 @@ class IRExternalInput:
 # v3: ``IREdge.target_when_expanded`` may be a tuple (multi field-pill fan-out
 # re-route) and ``IRExternalInput`` gained ``map_fed`` — an old v2 scene builder
 # would mis-render both, so it must hit the mismatch banner instead.
-CURRENT_SCHEMA_VERSION = "3"
+# v4: ``GraphIR.container_entrypoints`` is the canonical expanded-container
+# entrypoint authority (locked decision D14, #211). Scene builders no longer
+# derive entrypoints from node inputs/outputs, so a v3 payload (field absent)
+# read by a v4 scene builder — or a v4 payload read by a v3 scene builder that
+# still re-derives with the old self-inclusive rule — must hit the mismatch
+# banner instead of silently mis-routing START/control edges.
+CURRENT_SCHEMA_VERSION = "4"
 
 
 class IRSchemaError(ValueError):
@@ -134,4 +140,12 @@ class GraphIR:
     # (consumed exclusively by descendants) are absent so they don't leak
     # to the container surface.
     graph_output_visibility: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Canonical per-container entrypoints (locked decision D14, #211):
+    # GRAPH-id -> ordered direct children whose inputs are not produced by
+    # any *sibling*. Self-EXCLUSIVE: a child's own outputs never disqualify
+    # it (a self-loop accumulator is still an entrypoint). Cyclic containers
+    # where every child consumes a sibling output fall back to the first
+    # declared child. Computed once by the IR builder; scene builders and
+    # frontends must consume this field, never re-derive it.
+    container_entrypoints: dict[str, tuple[str, ...]] = field(default_factory=dict)
     schema_version: str = CURRENT_SCHEMA_VERSION
