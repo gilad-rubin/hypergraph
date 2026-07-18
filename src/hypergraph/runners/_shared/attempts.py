@@ -46,6 +46,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
+from hypergraph.checkpointers.base import _new_attempt_series_id
 from hypergraph.checkpointers.types import (
     AttemptError,
     AttemptLedgerError,
@@ -54,7 +55,17 @@ from hypergraph.checkpointers.types import (
     AttemptStatus,
     StepStatus,
 )
-from hypergraph.exceptions import AttemptTimeoutError, RetryWindowExpiredError
+from hypergraph.diagnostics import (
+    AttemptDiagnosticHint,
+    attach_attempt_diagnostic,
+    merge_deadline_evidence,
+    qualified_type_name,
+)
+from hypergraph.exceptions import (
+    AttemptOutcomeUnknownError,
+    AttemptTimeoutError,
+    RetryWindowExpiredError,
+)
 from hypergraph.nodes.retry import RetryAfterError, RetryPolicy
 
 if TYPE_CHECKING:
@@ -176,6 +187,20 @@ class RetryStep:
     decision: BackoffDecision
 
 
+def _terminal_hint(
+    code: str,
+    policy: RetryPolicy,
+    attempt_number: int,
+    limit: Literal["max_attempts", "retry_window"] | None = None,
+) -> AttemptDiagnosticHint:
+    return AttemptDiagnosticHint(
+        code=code,
+        attempt_count=attempt_number,
+        max_attempts=policy.max_attempts,
+        limit=limit,
+    )
+
+
 def plan_after_failure(
     error: Exception,
     policy: RetryPolicy,
@@ -190,15 +215,147 @@ def plan_after_failure(
     Raises the exact underlying exception (never a wrapper, never the
     RetryAfterError carrier) when the failure is ineligible, the budget is
     exhausted, or the wait cannot end before the series deadline — the
-    deadline case deliberately skips the pointless sleep.
+    deadline case deliberately skips the pointless sleep. Terminal raises
+    carry an attached :class:`AttemptDiagnosticHint`; a framework exception's
+    own stable code always outranks the hint at derivation time.
     """
     disposition = classify_failure(error, policy)
-    if not disposition.eligible or attempt_number >= policy.max_attempts:
+    if not disposition.eligible:
+        attach_attempt_diagnostic(
+            disposition.underlying,
+            _terminal_hint("HG_NODE_FAILED", policy, attempt_number),
+        )
+        raise disposition.underlying
+    if attempt_number >= policy.max_attempts:
+        attach_attempt_diagnostic(
+            disposition.underlying,
+            _terminal_hint("HG_RETRY_EXHAUSTED", policy, attempt_number, limit="max_attempts"),
+        )
         raise disposition.underlying
     decision = draw_backoff(policy, attempt_number, now=now, retry_after=disposition.retry_after)
     if deadline_at is not None and decision.retry_not_before >= deadline_at:
+        attach_attempt_diagnostic(
+            disposition.underlying,
+            _terminal_hint("HG_RETRY_EXHAUSTED", policy, attempt_number, limit="retry_window"),
+        )
         raise disposition.underlying
     return RetryStep(underlying=disposition.underlying, decision=decision)
+
+
+# === Attempt events (locked #233 shape) ===
+
+
+@dataclass(frozen=True)
+class AttemptEventSink:
+    """Builds and emits attempt events with run/node identity pre-bound.
+
+    ``emit`` is the dispatcher's synchronous emit (the same seam streaming
+    and inner-cache events use from inside executors), so sync and async
+    drivers share one sink. Events parent onto the single logical node span.
+    """
+
+    emit: Callable[[Any], None]
+    run_id: str
+    node_span_id: str | None
+    workflow_id: str | None
+    item_index: int | None
+    node_name: str
+    graph_name: str
+    superstep: int | None
+
+    def attempt_start(
+        self,
+        *,
+        series_id: str,
+        attempt_number: int,
+        max_attempts: int,
+        timeout_seconds: float | None,
+        attempt_deadline_at: datetime | None,
+        series_deadline_at: datetime | None,
+    ) -> None:
+        from hypergraph.events.types import NodeAttemptStartEvent
+
+        self.emit(
+            NodeAttemptStartEvent(
+                run_id=self.run_id,
+                parent_span_id=self.node_span_id,
+                workflow_id=self.workflow_id,
+                item_index=self.item_index,
+                node_name=self.node_name,
+                graph_name=self.graph_name,
+                superstep=self.superstep,
+                attempt_series_id=series_id,
+                attempt_number=attempt_number,
+                max_attempts=max_attempts,
+                timeout_seconds=timeout_seconds,
+                attempt_deadline_at=attempt_deadline_at,
+                series_deadline_at=series_deadline_at,
+            )
+        )
+
+    def attempt_end(
+        self,
+        *,
+        series_id: str,
+        attempt_number: int,
+        outcome: Literal["succeeded", "failed", "timed_out", "cancelled"],
+        settlement: Literal["returned", "raised", "cancelled"],
+        duration_ms: float,
+        deadline_scope: Literal["attempt", "series"] | None = None,
+        deadline_elapsed: bool = False,
+        cancellation_requested: bool = False,
+        error: BaseException | None = None,
+        retry_scheduled: bool = False,
+        retry_not_before: datetime | None = None,
+    ) -> None:
+        from hypergraph.events.types import NodeAttemptEndEvent
+
+        self.emit(
+            NodeAttemptEndEvent(
+                run_id=self.run_id,
+                parent_span_id=self.node_span_id,
+                workflow_id=self.workflow_id,
+                item_index=self.item_index,
+                node_name=self.node_name,
+                graph_name=self.graph_name,
+                superstep=self.superstep,
+                attempt_series_id=series_id,
+                attempt_number=attempt_number,
+                outcome=outcome,
+                settlement=settlement,
+                deadline_scope=deadline_scope,
+                deadline_elapsed=deadline_elapsed,
+                cancellation_requested=cancellation_requested,
+                duration_ms=duration_ms,
+                error_type=qualified_type_name(type(error)) if error is not None else None,
+                retry_scheduled=retry_scheduled,
+                retry_not_before=retry_not_before,
+            )
+        )
+
+
+def _failure_outcome(
+    error: Exception,
+) -> tuple[Literal["failed", "timed_out"], Literal["raised", "cancelled"]]:
+    """(outcome, settlement) for a failed attempt, per the locked vocabulary."""
+    if isinstance(error, (AttemptTimeoutError, RetryWindowExpiredError)):
+        return "timed_out", "cancelled"
+    return "failed", "raised"
+
+
+@dataclass
+class _DeadlineWitness:
+    """Independently witnessed deadline facts for one in-flight invocation."""
+
+    deadline_elapsed: bool = False
+    cancellation_requested: bool = False
+    scope: Literal["attempt", "retry_window"] | None = None
+
+    @property
+    def event_scope(self) -> Literal["attempt", "series"] | None:
+        if not self.deadline_elapsed or self.scope is None:
+            return None
+        return "attempt" if self.scope == "attempt" else "series"
 
 
 def _series_deadline(policy: RetryPolicy, now: datetime) -> datetime | None:
@@ -248,13 +405,15 @@ async def _invoke_with_deadline(
     node_name: str,
     deadline: _ActiveDeadline | None,
     record_deadline: Callable[[], Awaitable[None]] | None,
+    witness: _DeadlineWitness | None = None,
 ) -> Any:
     """Invoke once, requesting cancellation at a cooperative deadline.
 
     ``asyncio.wait`` supplies the Python-3.10-compatible wait-for shape while
     leaving cancellation and settlement explicit: after the deadline wins we
     call ``Task.cancel()`` and await the task before deciding which terminal
-    condition was actually witnessed.
+    condition was actually witnessed. ``witness`` records the two independent
+    facts (deadline elapsed, cancellation requested) for attempt events.
     """
     if deadline is None:
         return await invoke()
@@ -277,6 +436,10 @@ async def _invoke_with_deadline(
     # Deadline elapsed. Cancellation is only a request; the task may settle
     # cancelled, raise during cleanup, or suppress cancellation and return.
     task.cancel()
+    if witness is not None:
+        witness.deadline_elapsed = True
+        witness.cancellation_requested = True
+        witness.scope = deadline.scope
 
     async def persist_deadline_evidence() -> None:
         if record_deadline is not None:
@@ -305,10 +468,12 @@ class _SeriesPlan:
     """A ledger series ready to continue: consumed budget and pending wake."""
 
     series_id: str
+    node_name: str
     deadline_at: datetime | None
     consumed: int
     pending_wake_at: datetime | None
     last_evidence: AttemptError | None
+    last_status: AttemptStatus | None
 
 
 def _plan_resumed_series(series: AttemptSeries, records: list[AttemptRecord]) -> _SeriesPlan:
@@ -316,16 +481,20 @@ def _plan_resumed_series(series: AttemptSeries, records: list[AttemptRecord]) ->
     last = records[-1] if records else None
     return _SeriesPlan(
         series_id=series.id,
+        node_name=series.node_name,
         deadline_at=series.deadline_at,
         consumed=len(records),
         pending_wake_at=last.retry_not_before if last is not None else None,
         last_evidence=last.error if last is not None else None,
+        last_status=last.status if last is not None else None,
     )
 
 
 def _evidence_suffix(evidence: AttemptError | None) -> str:
     if evidence is None:
         return ""
+    if not evidence.message:
+        return f" Last recorded failure: {evidence.type_name}"
     return f" Last recorded failure: {evidence.type_name}: {evidence.message}"
 
 
@@ -333,29 +502,44 @@ def _pre_loop_wait(plan: _SeriesPlan, policy: RetryPolicy, now: datetime) -> flo
     """Seconds to wait before the next resumed reservation, honoring evidence.
 
     Raises from durable evidence — without sleeping — when no retry may start:
-    the persisted budget is exhausted, or the persisted wake time lies at or
-    beyond the immutable series deadline. In a fresh process there is no live
-    exception object to re-raise, so the typed ledger error carries the
-    evidence instead.
+    the last consumed attempt has an unknown outcome, the persisted budget is
+    exhausted, or the persisted wake time lies at or beyond the immutable
+    series deadline. In a fresh process there is no live exception object to
+    re-raise, so a typed evidence error carries the facts instead.
     """
+    if plan.last_status is AttemptStatus.OUTCOME_UNKNOWN:
+        # There is no witnessed user exception to preserve: the reservation
+        # was durable but its process died before the outcome. Never silently
+        # re-run — external side effects may have completed.
+        raise AttemptOutcomeUnknownError(plan.node_name, plan.series_id, plan.consumed)
     if plan.consumed >= policy.max_attempts:
-        raise AttemptLedgerError(
+        exhausted = AttemptLedgerError(
             f"Attempt budget exhausted for series {plan.series_id!r}: "
             f"{plan.consumed} of max_attempts={policy.max_attempts} consumed across resume."
             f"{_evidence_suffix(plan.last_evidence)}\n\n"
             "How to fix:\n"
             "  Fork or start a new workflow to grant a fresh retry budget."
         )
+        attach_attempt_diagnostic(
+            exhausted,
+            _terminal_hint("HG_RETRY_EXHAUSTED", policy, plan.consumed, limit="max_attempts"),
+        )
+        raise exhausted
     if plan.pending_wake_at is None:
         return None
     if plan.deadline_at is not None and plan.pending_wake_at >= plan.deadline_at:
-        raise AttemptLedgerError(
+        expired = AttemptLedgerError(
             f"Persisted retry_not_before {plan.pending_wake_at.isoformat()} lies at or beyond "
             f"deadline_at {plan.deadline_at.isoformat()} for series {plan.series_id!r}; "
             f"no further attempt may start.{_evidence_suffix(plan.last_evidence)}\n\n"
             "How to fix:\n"
             "  Fork or start a new workflow to grant a fresh retry window."
         )
+        attach_attempt_diagnostic(
+            expired,
+            _terminal_hint("HG_RETRY_EXHAUSTED", policy, plan.consumed, limit="retry_window"),
+        )
+        raise expired
     remaining = (plan.pending_wake_at - now).total_seconds()
     return remaining if remaining > 0 else None
 
@@ -429,6 +613,17 @@ def _require_sync_ledger(checkpointer: Any) -> SyncAttemptLedger:
     )
 
 
+def _tag_persistence_failure(error: Exception) -> None:
+    """Mark a raw ledger persistence failure with its stable diagnostic code.
+
+    ``AttemptLedgerError`` invariants (budget, deadline, fingerprint) keep
+    their own evidence; only genuine persistence failures — which propagate
+    as their original exception — get ``HG_ATTEMPT_PERSISTENCE_FAILED``.
+    """
+    if not isinstance(error, AttemptLedgerError):
+        attach_attempt_diagnostic(error, AttemptDiagnosticHint(code="HG_ATTEMPT_PERSISTENCE_FAILED"))
+
+
 def _open_or_resume_sync(
     ledger: SyncAttemptLedger,
     run_id: str,
@@ -436,20 +631,24 @@ def _open_or_resume_sync(
     policy: RetryPolicy,
     now: datetime,
 ) -> _SeriesPlan:
-    series = ledger.get_open_attempt_series_sync(run_id, node_name)
-    if series is None:
-        series = ledger.open_attempt_series_sync(
-            run_id,
-            node_name,
-            policy_fingerprint=policy.fingerprint,
-            max_attempts=policy.max_attempts,
-            deadline_at=_series_deadline(policy, now),
-        )
-        return _SeriesPlan(series.id, series.deadline_at, 0, None, None)
-    # Resume: under the workflow reservation no other process can still be
-    # running these attempts, so stranded STARTED rows are settled explicitly
-    # BEFORE any new reservation.
-    records = ledger.resolve_stranded_attempts_sync(series.id)
+    try:
+        series = ledger.get_open_attempt_series_sync(run_id, node_name)
+        if series is None:
+            series = ledger.open_attempt_series_sync(
+                run_id,
+                node_name,
+                policy_fingerprint=policy.fingerprint,
+                max_attempts=policy.max_attempts,
+                deadline_at=_series_deadline(policy, now),
+            )
+            return _SeriesPlan(series.id, node_name, series.deadline_at, 0, None, None, None)
+        # Resume: under the workflow reservation no other process can still be
+        # running these attempts, so stranded STARTED rows are settled explicitly
+        # BEFORE any new reservation.
+        records = ledger.resolve_stranded_attempts_sync(series.id)
+    except Exception as error:
+        _tag_persistence_failure(error)
+        raise
     return _plan_resumed_series(series, records)
 
 
@@ -460,18 +659,22 @@ async def _open_or_resume_async(
     policy: RetryPolicy,
     now: datetime,
 ) -> _SeriesPlan:
-    series = await ledger.get_open_attempt_series(run_id, node_name)
-    if series is None:
-        series = await ledger.open_attempt_series(
-            run_id,
-            node_name,
-            policy_fingerprint=policy.fingerprint,
-            max_attempts=policy.max_attempts,
-            deadline_at=_series_deadline(policy, now),
-        )
-        return _SeriesPlan(series.id, series.deadline_at, 0, None, None)
-    # Resume: settle stranded rows explicitly before any new reservation.
-    records = await ledger.resolve_stranded_attempts(series.id)
+    try:
+        series = await ledger.get_open_attempt_series(run_id, node_name)
+        if series is None:
+            series = await ledger.open_attempt_series(
+                run_id,
+                node_name,
+                policy_fingerprint=policy.fingerprint,
+                max_attempts=policy.max_attempts,
+                deadline_at=_series_deadline(policy, now),
+            )
+            return _SeriesPlan(series.id, node_name, series.deadline_at, 0, None, None, None)
+        # Resume: settle stranded rows explicitly before any new reservation.
+        records = await ledger.resolve_stranded_attempts(series.id)
+    except Exception as error:
+        _tag_persistence_failure(error)
+        raise
     return _plan_resumed_series(series, records)
 
 
@@ -486,6 +689,7 @@ def run_attempts_sync(
     checkpointer: Any | None,
     run_id: str | None,
     scheduled_superstep: int,
+    events: AttemptEventSink | None = None,
 ) -> Any:
     """Drive one logical node execution as a series of attempts (sync)."""
     now = _utcnow()
@@ -497,43 +701,110 @@ def run_attempts_sync(
             _sleep_sync(wait)
         series_id, deadline_at, attempt_number = plan.series_id, plan.deadline_at, plan.consumed
     else:
-        ledger, series_id = None, None
+        ledger, series_id = None, _new_attempt_series_id()
         deadline_at, attempt_number = _series_deadline(policy, now), 0
 
     while True:
         if ledger is not None:
-            record = ledger.begin_attempt_sync(
-                series_id,
-                policy_fingerprint=policy.fingerprint,
-                scheduled_superstep=scheduled_superstep,
-            )
+            try:
+                record = ledger.begin_attempt_sync(
+                    series_id,
+                    policy_fingerprint=policy.fingerprint,
+                    scheduled_superstep=scheduled_superstep,
+                )
+            except AttemptLedgerError as backstop:
+                # The atomic durable backstop refused the reservation
+                # (budget/deadline re-verification lost a race).
+                attach_attempt_diagnostic(
+                    backstop,
+                    _terminal_hint("HG_RETRY_EXHAUSTED", policy, attempt_number),
+                )
+                raise
+            except Exception as persistence_error:
+                _tag_persistence_failure(persistence_error)
+                raise
             attempt_number = record.attempt_number
         else:
             attempt_number += 1
+        if events is not None:
+            events.attempt_start(
+                series_id=series_id,
+                attempt_number=attempt_number,
+                max_attempts=policy.max_attempts,
+                timeout_seconds=None,
+                attempt_deadline_at=None,
+                series_deadline_at=deadline_at,
+            )
+        attempt_started = time.perf_counter()
         try:
-            return invoke()
+            result = invoke()
         except Exception as error:
+            duration_ms = (time.perf_counter() - attempt_started) * 1000
+            outcome, settlement = _failure_outcome(error)
             # Terminal paths raise the exact underlying exception from here.
             # The reservation intentionally stays STARTED: the step-save site
             # settles it atomically with the linked StepRecord.
-            step = plan_after_failure(error, policy, attempt_number, deadline_at, now=_utcnow())
+            try:
+                step = plan_after_failure(error, policy, attempt_number, deadline_at, now=_utcnow())
+            except Exception as terminal:
+                if events is not None:
+                    events.attempt_end(
+                        series_id=series_id,
+                        attempt_number=attempt_number,
+                        outcome=outcome,
+                        settlement=settlement,
+                        duration_ms=duration_ms,
+                        error=terminal,
+                        retry_scheduled=False,
+                    )
+                raise
             if ledger is not None:
-                ledger.record_attempt_outcome_sync(
-                    series_id,
-                    attempt_number,
-                    AttemptStatus.FAILED,
-                    error=AttemptError.from_exception(step.underlying),
+                try:
+                    ledger.record_attempt_outcome_sync(
+                        series_id,
+                        attempt_number,
+                        AttemptStatus.FAILED,
+                        error=AttemptError.from_exception(step.underlying),
+                        retry_not_before=step.decision.retry_not_before,
+                        sampled_delay=step.decision.sampled_delay,
+                    )
+                except Exception as persistence_error:
+                    _tag_persistence_failure(persistence_error)
+                    raise
+            if events is not None:
+                events.attempt_end(
+                    series_id=series_id,
+                    attempt_number=attempt_number,
+                    outcome=outcome,
+                    settlement=settlement,
+                    duration_ms=duration_ms,
+                    error=step.underlying,
+                    retry_scheduled=True,
                     retry_not_before=step.decision.retry_not_before,
-                    sampled_delay=step.decision.sampled_delay,
                 )
             _sleep_sync(step.decision.sampled_delay)
+        else:
+            if events is not None:
+                events.attempt_end(
+                    series_id=series_id,
+                    attempt_number=attempt_number,
+                    outcome="succeeded",
+                    settlement="returned",
+                    duration_ms=(time.perf_counter() - attempt_started) * 1000,
+                )
+            return result
         # BaseException control flow is deliberately not caught: it passes
-        # through untouched and the reservation stays for resume semantics.
+        # through untouched (no fabricated end event) and the reservation
+        # stays for resume semantics.
         if deadline_at is not None and _utcnow() >= deadline_at:
             # Post-sleep freshness: the wait itself may have outlived the
             # window. In-process the exact last underlying exception is
             # re-raised; the ledger's begin_attempt re-verifies atomically as
             # the durable backstop.
+            attach_attempt_diagnostic(
+                step.underlying,
+                _terminal_hint("HG_RETRY_EXHAUSTED", policy, attempt_number, limit="retry_window"),
+            )
             raise step.underlying
 
 
@@ -547,6 +818,7 @@ async def run_attempts_async(
     run_id: str | None,
     scheduled_superstep: int,
     attempt_scope: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
+    events: AttemptEventSink | None = None,
 ) -> Any:
     """Drive one logical node execution as a series of attempts (async).
 
@@ -564,26 +836,49 @@ async def run_attempts_async(
             await _sleep_async(wait)
         series_id, deadline_at, attempt_number = plan.series_id, plan.deadline_at, plan.consumed
     else:
-        ledger, series_id = None, None
+        ledger, series_id = None, _new_attempt_series_id()
         deadline_at, attempt_number = _series_deadline(policy, now), 0
 
     while True:
         if ledger is not None:
-            record = await ledger.begin_attempt(
-                series_id,
-                policy_fingerprint=policy.fingerprint,
-                scheduled_superstep=scheduled_superstep,
-            )
+            try:
+                record = await ledger.begin_attempt(
+                    series_id,
+                    policy_fingerprint=policy.fingerprint,
+                    scheduled_superstep=scheduled_superstep,
+                )
+            except AttemptLedgerError as backstop:
+                # The atomic durable backstop refused the reservation
+                # (budget/deadline re-verification lost a race).
+                attach_attempt_diagnostic(
+                    backstop,
+                    _terminal_hint("HG_RETRY_EXHAUSTED", policy, attempt_number),
+                )
+                raise
+            except Exception as persistence_error:
+                _tag_persistence_failure(persistence_error)
+                raise
             attempt_number = record.attempt_number
         else:
             attempt_number += 1
 
+        attempt_now = _utcnow()
         deadline = _active_deadline(
             timeout,
             policy,
             deadline_at,
-            now=_utcnow(),
+            now=attempt_now,
         )
+        witness = _DeadlineWitness()
+        if events is not None:
+            events.attempt_start(
+                series_id=series_id,
+                attempt_number=attempt_number,
+                max_attempts=policy.max_attempts,
+                timeout_seconds=timeout,
+                attempt_deadline_at=(attempt_now + timedelta(seconds=timeout) if timeout is not None else None),
+                series_deadline_at=deadline_at,
+            )
 
         async def record_deadline(
             current_attempt_number: int = attempt_number,
@@ -594,42 +889,110 @@ async def run_attempts_async(
 
         async def invoke_attempt(
             current_deadline: _ActiveDeadline | None = deadline,
+            current_witness: _DeadlineWitness = witness,
         ) -> Any:
             return await _invoke_with_deadline(
                 invoke,
                 node_name=node_name,
                 deadline=current_deadline,
                 record_deadline=record_deadline if ledger is not None else None,
+                witness=current_witness,
             )
 
+        attempt_started = time.perf_counter()
         try:
             if attempt_scope is None:
-                return await invoke_attempt()
-            async with attempt_scope():
-                return await invoke_attempt()
+                result = await invoke_attempt()
+            else:
+                async with attempt_scope():
+                    result = await invoke_attempt()
         except Exception as error:
+            duration_ms = (time.perf_counter() - attempt_started) * 1000
+            outcome, settlement = _failure_outcome(error)
             # Terminal paths raise the exact underlying exception from here.
             # The reservation intentionally stays STARTED: the step-save site
             # settles it atomically with the linked StepRecord.
-            step = plan_after_failure(error, policy, attempt_number, deadline_at, now=_utcnow())
+            try:
+                step = plan_after_failure(error, policy, attempt_number, deadline_at, now=_utcnow())
+            except Exception as terminal:
+                if witness.deadline_elapsed:
+                    # Cancellation-cleanup precedence: the terminal cause keeps
+                    # its own type/code while the deadline flags survive.
+                    merge_deadline_evidence(
+                        terminal,
+                        deadline_elapsed=witness.deadline_elapsed,
+                        cancellation_requested=witness.cancellation_requested,
+                    )
+                if events is not None:
+                    events.attempt_end(
+                        series_id=series_id,
+                        attempt_number=attempt_number,
+                        outcome=outcome,
+                        settlement=settlement,
+                        duration_ms=duration_ms,
+                        deadline_scope=witness.event_scope,
+                        deadline_elapsed=witness.deadline_elapsed,
+                        cancellation_requested=witness.cancellation_requested,
+                        error=terminal,
+                        retry_scheduled=False,
+                    )
+                raise
             if ledger is not None:
                 status = AttemptStatus.TIMED_OUT if isinstance(error, (AttemptTimeoutError, RetryWindowExpiredError)) else AttemptStatus.FAILED
-                await ledger.record_attempt_outcome(
-                    series_id,
-                    attempt_number,
-                    status,
-                    error=AttemptError.from_exception(step.underlying),
+                try:
+                    await ledger.record_attempt_outcome(
+                        series_id,
+                        attempt_number,
+                        status,
+                        error=AttemptError.from_exception(step.underlying),
+                        retry_not_before=step.decision.retry_not_before,
+                        sampled_delay=step.decision.sampled_delay,
+                    )
+                except Exception as persistence_error:
+                    _tag_persistence_failure(persistence_error)
+                    raise
+            if events is not None:
+                events.attempt_end(
+                    series_id=series_id,
+                    attempt_number=attempt_number,
+                    outcome=outcome,
+                    settlement=settlement,
+                    duration_ms=duration_ms,
+                    deadline_scope=witness.event_scope,
+                    deadline_elapsed=witness.deadline_elapsed,
+                    cancellation_requested=witness.cancellation_requested,
+                    error=step.underlying,
+                    retry_scheduled=True,
                     retry_not_before=step.decision.retry_not_before,
-                    sampled_delay=step.decision.sampled_delay,
                 )
             await _sleep_async(step.decision.sampled_delay)
+        else:
+            if events is not None:
+                # A suppressed cancellation that returned a real value is a
+                # success recorded WITH its deadline evidence, never discarded.
+                events.attempt_end(
+                    series_id=series_id,
+                    attempt_number=attempt_number,
+                    outcome="succeeded",
+                    settlement="returned",
+                    duration_ms=(time.perf_counter() - attempt_started) * 1000,
+                    deadline_scope=witness.event_scope,
+                    deadline_elapsed=witness.deadline_elapsed,
+                    cancellation_requested=witness.cancellation_requested,
+                )
+            return result
         # BaseException control flow is deliberately not caught: it passes
-        # through untouched and the reservation stays for resume semantics.
+        # through untouched (no fabricated end event) and the reservation
+        # stays for resume semantics.
         if deadline_at is not None and _utcnow() >= deadline_at:
             # Post-sleep freshness: the wait itself may have outlived the
             # window. In-process the exact last underlying exception is
             # re-raised; the ledger's begin_attempt re-verifies atomically as
             # the durable backstop.
+            attach_attempt_diagnostic(
+                step.underlying,
+                _terminal_hint("HG_RETRY_EXHAUSTED", policy, attempt_number, limit="retry_window"),
+            )
             raise step.underlying
 
 

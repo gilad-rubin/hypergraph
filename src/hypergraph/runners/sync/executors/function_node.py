@@ -81,8 +81,20 @@ class SyncFunctionNodeExecutor:
                 # The attempt coordinator sits here: below the superstep's
                 # cache lookup, above state application. The ledger keys off
                 # the workflow_id (StepRecords use it as run_id).
-                from hypergraph.runners._shared.attempts import run_attempts_sync
+                from hypergraph.runners._shared.attempts import AttemptEventSink, run_attempts_sync
 
+                events = None
+                if ctx.emit_fn is not None:
+                    events = AttemptEventSink(
+                        emit=ctx.emit_fn,
+                        run_id=ctx.run_id,
+                        node_span_id=ctx.parent_span_id,
+                        workflow_id=ctx.workflow_id,
+                        item_index=ctx.item_index,
+                        node_name=node.name,
+                        graph_name=ctx.graph_name,
+                        superstep=ctx.superstep,
+                    )
                 result = run_attempts_sync(
                     invoke,
                     node_name=node.name,
@@ -90,6 +102,7 @@ class SyncFunctionNodeExecutor:
                     checkpointer=ctx.checkpointer,
                     run_id=ctx.workflow_id,
                     scheduled_superstep=ctx.superstep_offset + ctx.superstep,
+                    events=events,
                 )
 
         return wrap_outputs(node, result)

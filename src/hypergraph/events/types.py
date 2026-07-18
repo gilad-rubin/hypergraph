@@ -5,7 +5,11 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
+from typing import Literal
+
+from hypergraph.diagnostics import Diagnostic
 
 
 class RunStatus(Enum):
@@ -167,15 +171,101 @@ class CacheHitEvent(BaseEvent):
 
 
 @dataclass(frozen=True)
-class NodeErrorEvent(BaseEvent):
-    """Emitted when a node fails with an exception.
+class NodeAttemptStartEvent(BaseEvent):
+    """Emitted when one callable invocation (attempt) begins.
+
+    Attempt events exist only for attempt-managed nodes (a declared retry
+    policy and/or timeout); a cache hit emits zero attempt events. They hang
+    off the single logical node span via ``parent_span_id``.
 
     Attributes:
         node_name: Name of the node.
         graph_name: Name of the graph containing the node.
-        error: Error message.
+        superstep: Zero-indexed superstep number, if known.
+        attempt_series_id: Stable id of the attempt series (durable when a
+            checkpointer backs the run, ephemeral otherwise).
+        attempt_number: One-based attempt number within the series.
+        max_attempts: The series budget (counts the initial invocation).
+        timeout_seconds: Configured per-attempt timeout, if any.
+        attempt_deadline_at: Absolute cooperative deadline for this attempt,
+            if a per-attempt timeout is active.
+        series_deadline_at: Immutable absolute retry-window deadline, if any.
+    """
+
+    node_name: str = ""
+    graph_name: str = ""
+    superstep: int | None = None
+    attempt_series_id: str = ""
+    attempt_number: int = 0
+    max_attempts: int = 0
+    timeout_seconds: float | None = None
+    attempt_deadline_at: datetime | None = None
+    series_deadline_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class NodeAttemptEndEvent(BaseEvent):
+    """Emitted when one callable invocation settles.
+
+    An intermediate failed attempt emits this event and nothing else: it never
+    emits ``NodeErrorEvent``, never bumps logical error counts, and never
+    closes the logical node span. No end event is fabricated after process
+    death — the durable attempt record alone transitions to OUTCOME_UNKNOWN.
+
+    ``deadline_elapsed`` and ``cancellation_requested`` are independent
+    witnessed facts; together with the settled ``outcome`` they never claim
+    that arbitrary user work or external side effects stopped.
+
+    Attributes:
+        node_name: Name of the node.
+        graph_name: Name of the graph containing the node.
+        superstep: Zero-indexed superstep number, if known.
+        attempt_series_id: Stable id of the attempt series.
+        attempt_number: One-based attempt number within the series.
+        outcome: How the attempt settled.
+        settlement: How control returned from the callable.
+        deadline_scope: Which deadline elapsed, if one did.
+        deadline_elapsed: True when a cooperative deadline elapsed.
+        cancellation_requested: True when cancellation was requested.
+        duration_ms: Wall-clock duration of this attempt in milliseconds.
+        error_type: Qualified exception type name for failed attempts.
+        retry_scheduled: True when another attempt was granted.
+        retry_not_before: Absolute persisted wake time for a granted retry.
+    """
+
+    node_name: str = ""
+    graph_name: str = ""
+    superstep: int | None = None
+    attempt_series_id: str = ""
+    attempt_number: int = 0
+    outcome: Literal["succeeded", "failed", "timed_out", "cancelled"] = "succeeded"
+    settlement: Literal["returned", "raised", "cancelled"] = "returned"
+    deadline_scope: Literal["attempt", "series"] | None = None
+    deadline_elapsed: bool = False
+    cancellation_requested: bool = False
+    duration_ms: float = 0.0
+    error_type: str | None = None
+    retry_scheduled: bool = False
+    retry_not_before: datetime | None = None
+
+
+@dataclass(frozen=True)
+class NodeErrorEvent(BaseEvent):
+    """Emitted when a node fails with an exception.
+
+    Emitted once per logical failure — never for intermediate retry attempts.
+    ``error`` carries the privacy-safe projection (type name, stable code,
+    static problem wording), never raw exception message text; the exact
+    exception object stays on local surfaces (``RunResult.error``,
+    ``get_failure_evidence``).
+
+    Attributes:
+        node_name: Name of the node.
+        graph_name: Name of the graph containing the node.
+        error: Privacy-safe error projection text.
         error_type: Fully qualified exception type name.
         superstep: Zero-indexed superstep number, if known.
+        diagnostic: Typed privacy-safe diagnostic, when derivable.
     """
 
     node_name: str = ""
@@ -183,6 +273,7 @@ class NodeErrorEvent(BaseEvent):
     error: str = ""
     error_type: str = ""
     superstep: int | None = None
+    diagnostic: Diagnostic | None = None
 
 
 @dataclass(frozen=True)
@@ -307,6 +398,8 @@ Event = (
     RunStartEvent
     | RunEndEvent
     | NodeStartEvent
+    | NodeAttemptStartEvent
+    | NodeAttemptEndEvent
     | NodeEndEvent
     | CacheHitEvent
     | NodeErrorEvent

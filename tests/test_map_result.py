@@ -130,7 +130,11 @@ class TestRunResultToDict:
             error=ValueError("oops"),
         )
         d = r.to_dict()
-        assert d["error"] == "ValueError: oops"
+        # #233 privacy graduation: to_dict() carries the safe projection —
+        # type name + stable code — never the raw exception message.
+        assert "oops" not in d["error"]
+        assert "ValueError" in d["error"]
+        assert "[HG_NODE_FAILED]" in d["error"]
 
     def test_no_log_key_when_none(self):
         r = _make_result()

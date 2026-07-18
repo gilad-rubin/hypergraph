@@ -680,7 +680,13 @@ async def test_intermediate_attempts_do_not_disturb_event_shape(family, recorded
         assert len(ends) == 1 and len(errors) == 0
     else:
         assert len(ends) == 0 and len(errors) == 1, "intermediate failures emit no NodeErrorEvent"
-    assert not any(type(e).__name__.startswith("NodeAttempt") for e in recorder.events), "attempt events belong to a later ticket"
+    # The #233 attempt events sit BETWEEN the logical start and end: N per
+    # callable invocation, without multiplying logical node events.
+    attempt_starts = [e for e in recorder.events if type(e).__name__ == "NodeAttemptStartEvent"]
+    attempt_ends = [e for e in recorder.events if type(e).__name__ == "NodeAttemptEndEvent"]
+    expected_invocations = 2 if outcome == "success" else 3
+    assert len(attempt_starts) == expected_invocations
+    assert len(attempt_ends) == expected_invocations
 
 
 # === Composition: map items and nested graphs ===
@@ -807,13 +813,15 @@ async def test_resume_dead_end_over_outcome_unknown_links_and_closes(family, mak
     )
     await cp.begin_attempt(series.id, policy_fingerprint=policy.fingerprint, scheduled_superstep=0)
 
-    from hypergraph.checkpointers import AttemptLedgerError
+    from hypergraph import AttemptOutcomeUnknownError
 
+    # #233: an OUTCOME_UNKNOWN last attempt outranks the budget dead end —
+    # the operator must reconcile external side effects before retry/fork.
     runner = _make_runner(family, checkpointer=cp)
-    with pytest.raises(AttemptLedgerError, match="budget exhausted"):
+    with pytest.raises(AttemptOutcomeUnknownError):
         await _run(runner, Graph([flaky]), workflow_id="wf-deadend")
 
-    assert calls == [], "no budget remains: user code must not run"
+    assert calls == [], "unknown outcome: user code must not silently re-run"
     closed = await cp.get_attempt_series(series.id)
     assert closed is not None and not closed.is_open, "the dead end must close the series"
     records = await cp.get_attempt_records(series.id)

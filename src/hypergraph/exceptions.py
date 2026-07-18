@@ -92,6 +92,7 @@ class IncompatibleRunnerError(Exception):
         message: Human-readable error message describing the incompatibility
         node_name: Optional name of the incompatible node
         capability: Optional name of the missing capability
+        code: Optional stable diagnostic code (e.g. ``"HG_TIMEOUT_UNSUPPORTED"``)
     """
 
     def __init__(
@@ -100,10 +101,12 @@ class IncompatibleRunnerError(Exception):
         *,
         node_name: str | None = None,
         capability: str | None = None,
+        code: str | None = None,
     ) -> None:
         self.message = message
         self.node_name = node_name
         self.capability = capability
+        self.code = code
         super().__init__(message)
 
 
@@ -114,7 +117,12 @@ class AttemptTimeoutError(TimeoutError):
     for the callable to settle before raising this exception. The exception is
     therefore evidence of a cancelled settlement, not a claim that arbitrary
     external work or side effects stopped at the deadline.
+
+    Attributes:
+        code: Stable diagnostic code ``"HG_ATTEMPT_TIMEOUT"``.
     """
+
+    code = "HG_ATTEMPT_TIMEOUT"
 
     def __init__(self, node_name: str, timeout_seconds: float) -> None:
         self.node_name = node_name
@@ -131,7 +139,12 @@ class RetryWindowExpiredError(TimeoutError):
     Hypergraph requested cooperative cancellation and waited for settlement.
     A late real value or a cancellation-cleanup exception takes precedence and
     this exception is not raised in those cases.
+
+    Attributes:
+        code: Stable diagnostic code ``"HG_RETRY_WINDOW_EXPIRED"``.
     """
+
+    code = "HG_RETRY_WINDOW_EXPIRED"
 
     def __init__(self, node_name: str, retry_window_seconds: float) -> None:
         self.node_name = node_name
@@ -377,6 +390,42 @@ class RetryPolicyChangedError(Exception):
             "  Resume with the original policy, or adopt the new policy on a fresh\n"
             "  lineage: fork_from=..., override_workflow=True, or a new workflow_id.\n"
             "  Cached successful outputs remain valid either way."
+        )
+
+
+class AttemptOutcomeUnknownError(Exception):
+    """A resumed node's last durable attempt has an unknown outcome.
+
+    Raised on same-workflow resume when the last consumed durable attempt is
+    ``OUTCOME_UNKNOWN``: the previous process durably reserved the attempt but
+    was lost before its outcome was witnessed, so external side effects may
+    have completed. There is no witnessed user exception to preserve — this
+    focused error instructs the operator to reconcile external state before
+    retrying or forking.
+
+    Attributes:
+        node_name: The node whose attempt outcome is unknown.
+        series_id: The durable attempt series carrying the evidence.
+        attempt_number: One-based number of the unknown-outcome attempt.
+        code: Stable diagnostic code ``"HG_ATTEMPT_OUTCOME_UNKNOWN"``.
+    """
+
+    code = "HG_ATTEMPT_OUTCOME_UNKNOWN"
+
+    def __init__(self, node_name: str, series_id: str, attempt_number: int) -> None:
+        self.node_name = node_name
+        self.series_id = series_id
+        self.attempt_number = attempt_number
+        super().__init__(
+            f"Attempt #{attempt_number} of node {node_name!r} (series {series_id!r}) was durably "
+            "reserved, but its process was lost before the outcome was witnessed "
+            f"[{self.code}].\n\n"
+            "External side effects of that attempt may have completed, so Hypergraph "
+            "refuses to silently re-run the node.\n\n"
+            "How to fix:\n"
+            "  1. Reconcile external side effects of the unknown attempt first.\n"
+            "  2. Then resume this workflow again to retry, or fork / start a new\n"
+            "     workflow for a fresh attempt series."
         )
 
 

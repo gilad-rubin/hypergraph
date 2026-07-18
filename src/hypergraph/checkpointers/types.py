@@ -51,9 +51,6 @@ TERMINAL_ATTEMPT_STATUSES = frozenset(
     }
 )
 
-#: Upper bound for the persisted attempt error message projection.
-ATTEMPT_ERROR_MESSAGE_LIMIT = 500
-
 
 class AttemptLedgerError(RuntimeError):
     """A durable attempt-ledger invariant was violated.
@@ -66,29 +63,28 @@ class AttemptLedgerError(RuntimeError):
 
 @dataclass(frozen=True)
 class AttemptError:
-    """Bounded error projection: exception type name + capped message text.
+    """Privacy-safe durable error projection: type name, no message text.
 
-    Stores no args tuple, no stack trace, no ``repr`` of user values — but the
-    capped ``str(exc)`` message is persisted verbatim, so secrets embedded in
-    an exception message survive the cap. Message-content redaction is #233's
-    diagnostics scope.
+    Attempt records are durable content, so the projection follows the #233
+    privacy boundary: exception type identity only — no args tuple, no stack
+    trace, no ``repr`` of user values, and no ``str(exc)`` message text
+    (raw messages can embed secrets). The ``message`` field is retained for
+    schema stability and stays empty for framework-created records; the exact
+    exception object remains available on local surfaces at failure time.
     """
 
     type_name: str
-    message: str
+    message: str = ""
 
     @classmethod
     def from_exception(cls, error: BaseException) -> AttemptError:
-        """Project an exception into its bounded durable form."""
+        """Project an exception into its privacy-safe durable form."""
         error_type = type(error)
         if error_type.__module__ in ("builtins", "__main__"):
             type_name = error_type.__qualname__
         else:
             type_name = f"{error_type.__module__}.{error_type.__qualname__}"
-        message = str(error)
-        if len(message) > ATTEMPT_ERROR_MESSAGE_LIMIT:
-            message = message[: ATTEMPT_ERROR_MESSAGE_LIMIT - 1] + "…"
-        return cls(type_name=type_name, message=message)
+        return cls(type_name=type_name, message="")
 
 
 @dataclass(frozen=True)
