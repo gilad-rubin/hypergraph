@@ -161,12 +161,12 @@ def get_value_source(
     if bound_addr in graph.inputs.bound:
         return (ValueSource.BOUND, graph.inputs.bound[bound_addr])
 
-    # 3b. For GraphNode: check if inner graph has it bound
+    # 3b. For GraphNode: check if inner graph has it bound. The boundary
+    # projection translates the parent-facing address to original inner names.
     if isinstance(node, GraphNode):
-        for local_param in node._local_inputs_for_address(param):
-            original_param = node._resolve_original_input_name(local_param)
-            if original_param in node._graph.inputs.bound:
-                return (ValueSource.BOUND, node._graph.inputs.bound[original_param])
+        for original_param in node._projection.original_inputs_for_address(param):
+            if original_param in node.graph.inputs.bound:
+                return (ValueSource.BOUND, node.graph.inputs.bound[original_param])
 
     # 4. Function default (from signature)
     if node.has_signature_default_for(param):
