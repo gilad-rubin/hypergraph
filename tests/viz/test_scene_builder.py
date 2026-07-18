@@ -10,7 +10,14 @@ from hypergraph.viz.ir_schema import GraphIR, IRNode
 from hypergraph.viz.renderer import render_graph
 from hypergraph.viz.renderer.ir_builder import build_graph_ir
 from hypergraph.viz.scene_builder import build_initial_scene
-from tests.viz.conftest import make_outer, make_simple_graph, make_workflow
+from tests.viz.conftest import (
+    make_hidden_only_container_graph,
+    make_hidden_source_only_dependency_graph,
+    make_nested_container_entrypoint_graph,
+    make_outer,
+    make_simple_graph,
+    make_workflow,
+)
 
 
 def _visible_node_sigs(scene_nodes: list[dict]) -> set[tuple[str, str]]:
@@ -256,38 +263,125 @@ def test_start_edge_to_expanded_container_targets_real_entrypoint():
 
 
 def test_expanded_container_entrypoints_ignore_self_outputs_and_keep_multiple_entrypoints():
-    ir = GraphIR(
-        nodes=[
-            IRNode(id="outer", node_type="GRAPH"),
-            IRNode(
-                id="outer/selfish",
-                node_type="FUNCTION",
-                parent="outer",
-                inputs=({"name": "loop"},),
-                outputs=({"name": "loop"},),
-            ),
-            IRNode(
-                id="outer/independent",
-                node_type="FUNCTION",
-                parent="outer",
-                inputs=({"name": "x"},),
-                outputs=({"name": "y"},),
-            ),
-            IRNode(
-                id="outer/downstream",
-                node_type="FUNCTION",
-                parent="outer",
-                inputs=({"name": "y"},),
-                outputs=({"name": "z"},),
-            ),
-        ],
-        configured_entrypoints=("outer",),
+    """End-to-end through the canonical ``GraphIR.container_entrypoints``
+    field (D14, #211): a self-loop child stays an entrypoint (self-EXCLUSIVE
+    rule) and independent entrypoints are all preserved."""
+
+    @node(output_name="loop")
+    def selfish(loop: str) -> str:
+        return loop
+
+    @node(output_name="y")
+    def independent(x: str) -> str:
+        return x
+
+    @node(output_name="z")
+    def downstream(y: str) -> str:
+        return y
+
+    # The self-loop makes the inner graph cyclic — execution entrypoints are
+    # required at construction (both kept active, mirroring the frozen
+    # container_entrypoint_expanded baseline case).
+    inner = Graph(
+        nodes=[selfish, independent, downstream],
+        name="outer",
+        entrypoint=["selfish", "independent"],
     )
+    outer = Graph(nodes=[inner.as_node()], entrypoint="outer")
+
+    ir = build_graph_ir(outer.to_flat_graph())
+    assert ir.container_entrypoints == {"outer": ("outer/selfish", "outer/independent")}
 
     scene = build_initial_scene(ir, expansion_state={"outer": True})
 
     start_targets = {edge["target"] for edge in scene["edges"] if edge["source"] == "__start__"}
     assert start_targets == {"outer/selfish", "outer/independent"}
+
+
+def test_scene_builder_consumes_container_entrypoints_field_verbatim():
+    """The scene builder must consume ``GraphIR.container_entrypoints``, not
+    re-derive it. The hand-built IR is shaped so any re-derivation from node
+    inputs/outputs would pick 'outer/upstream'; the field deliberately says
+    'outer/downstream'. If this fails with 'outer/upstream', a duplicate
+    derivation crept back into scene_builder.py — delete it (#211)."""
+    ir = GraphIR(
+        nodes=[
+            IRNode(id="outer", node_type="GRAPH"),
+            IRNode(
+                id="outer/downstream",
+                node_type="FUNCTION",
+                parent="outer",
+                inputs=({"name": "started"},),
+                outputs=({"name": "done"},),
+            ),
+            IRNode(
+                id="outer/upstream",
+                node_type="FUNCTION",
+                parent="outer",
+                inputs=({"name": "x"},),
+                outputs=({"name": "started"},),
+            ),
+        ],
+        configured_entrypoints=("outer",),
+        container_entrypoints={"outer": ("outer/downstream",)},
+    )
+
+    scene = build_initial_scene(ir, expansion_state={"outer": True})
+
+    start_targets = {edge["target"] for edge in scene["edges"] if edge["source"] == "__start__"}
+    assert start_targets == {"outer/downstream"}
+
+
+def test_edge_into_nested_expanded_container_targets_visible_leaf():
+    """An edge may never terminate on an expanded compound parent."""
+    graph = make_nested_container_entrypoint_graph()
+    ir = build_graph_ir(graph.to_flat_graph())
+
+    scene = build_initial_scene(
+        ir,
+        expansion_state={"mid": True, "mid/accum": True},
+    )
+
+    dispatch_edges = [edge for edge in scene["edges"] if edge["source"] == "dispatch" and edge["target"] != "__end__"]
+    assert [(edge["source"], edge["target"]) for edge in dispatch_edges] == [("dispatch", "mid/accum/acc_step")]
+
+
+def test_nested_expansion_preserves_every_start_entrypoint():
+    """Resolving one nested entrypoint must not drop its plain sibling."""
+    graph = make_nested_container_entrypoint_graph().with_entrypoint("mid")
+    ir = build_graph_ir(graph.to_flat_graph())
+
+    scene = build_initial_scene(
+        ir,
+        expansion_state={"mid": True, "mid/accum": True},
+    )
+
+    start_targets = {edge["target"] for edge in scene["edges"] if edge["source"] == "__start__" and edge["target"].startswith("mid/")}
+    assert start_targets == {"mid/accum/acc_step", "mid/starter"}
+
+
+def test_edge_into_all_hidden_container_is_not_attached_to_expanded_hull():
+    """An expanded container with no visible child must remain layoutable."""
+    graph = make_hidden_only_container_graph()
+    ir = build_graph_ir(graph.to_flat_graph())
+
+    scene = build_initial_scene(ir, expansion_state={"box": True})
+
+    visible_box_edges = [edge for edge in scene["edges"] if not edge["hidden"] and edge["target"] == "box"]
+    assert visible_box_edges == []
+
+
+def test_hidden_source_does_not_promote_visible_dependent_to_entrypoint():
+    """A hidden dependency source remains the structural entrypoint."""
+    graph = make_hidden_source_only_dependency_graph()
+    ir = build_graph_ir(graph.to_flat_graph())
+
+    scene = build_initial_scene(ir, expansion_state={"box": True})
+
+    visible_dispatch_targets = {
+        edge["target"] for edge in scene["edges"] if edge["source"] == "dispatch" and edge["target"] != "__end__" and not edge["hidden"]
+    }
+    assert visible_dispatch_targets == set()
 
 
 def test_expanded_graph_container_data_nodes_are_hidden_in_separate_mode():

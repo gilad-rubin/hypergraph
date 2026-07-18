@@ -15,17 +15,19 @@
   // Pinned by Python via GraphIR.schema_version. Bump in lockstep with
   // ir_schema.py:CURRENT_SCHEMA_VERSION when the IR shape changes.
   // v3: tuple target_when_expanded (multi field-pill fan-out) + map_fed inputs.
-  var SUPPORTED_SCHEMA_VERSION = '3';
+  // v4: canonical container_entrypoints field (D14, #211) — this scene
+  // builder no longer derives entrypoints, so a v3 payload without the
+  // field must banner instead of silently mis-routing START/control edges.
+  var SUPPORTED_SCHEMA_VERSION = '4';
 
   function isSchemaSupported(ir) {
-    if (!ir) return true;
-    var v = ir.schema_version;
-    return v === undefined || v === null || v === SUPPORTED_SCHEMA_VERSION;
+    return !!ir && ir.schema_version === SUPPORTED_SCHEMA_VERSION;
   }
 
   var ancestorCollapsed = D.ancestorCollapsed;
   var inputHidden = D.inputHidden;
   var resolveToVisible = D.resolveToVisible;
+  var resolveExpandedEntrypoints = D.resolveExpandedEntrypoints;
   var visibleOwner = D.visibleOwner;
   var expandedContainerEntrypoints = D.expandedContainerEntrypoints;
   var routesToEnd = D.routesToEnd;
@@ -216,6 +218,7 @@
     }
 
     var sceneEdges = [];
+    var edgeEntrypointOverrides = expandedContainerEntrypoints(ir, expansionState);
 
     for (var p = 0; p < ir.edges.length; p++) {
       var irEdge = ir.edges[p];
@@ -229,10 +232,19 @@
       // item-field INPUT pills, so target_when_expanded can be an array; emit
       // one edge per target (mirrors the multi-source fan-out below).
       var targets = [irEdge.target];
-      if (expansionState[irEdge.target] && irEdge.target_when_expanded) {
-        targets = Array.isArray(irEdge.target_when_expanded)
-          ? irEdge.target_when_expanded.slice()
-          : [irEdge.target_when_expanded];
+      if (expansionState[irEdge.target]) {
+        if (irEdge.target_when_expanded) {
+          targets = Array.isArray(irEdge.target_when_expanded)
+            ? irEdge.target_when_expanded.slice()
+            : [irEdge.target_when_expanded];
+        }
+        var resolvedTargets = [];
+        for (var rt = 0; rt < targets.length; rt++) {
+          resolvedTargets = resolvedTargets.concat(
+            resolveExpandedEntrypoints(targets[rt], edgeEntrypointOverrides)
+          );
+        }
+        targets = resolvedTargets;
       }
 
       // A data edge can carry multiple value_names (one NetworkX edge per
@@ -399,30 +411,6 @@
           hidden: false,
         });
       }
-    }
-  }
-
-  function resolveExpandedEntrypoints(entry, overrides) {
-    var targets = [entry];
-    var seen = {};
-
-    while (true) {
-      var nextTargets = [];
-      var changed = false;
-      for (var i = 0; i < targets.length; i++) {
-        var target = targets[i];
-        if (seen[target]) continue;
-        seen[target] = true;
-        var replacement = overrides[target];
-        if (replacement && replacement.length > 0) {
-          for (var r = 0; r < replacement.length; r++) nextTargets.push(replacement[r]);
-          changed = true;
-        } else {
-          nextTargets.push(target);
-        }
-      }
-      if (!changed) return nextTargets;
-      targets = nextTargets;
     }
   }
 

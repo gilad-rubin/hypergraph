@@ -72,62 +72,43 @@
 
   // For each currently-expanded GRAPH, return the inner child(ren) that
   // should receive START / control edges that would otherwise attach to
-  // the container hull. Entrypoints are direct children whose inputs are
-  // not produced by a sibling. Cyclic containers fall back to first child.
+  // the container hull. Consumes the canonical `ir.container_entrypoints`
+  // field computed once by the Python IR builder (locked decision D14,
+  // #211) — the JS side never re-derives entrypoints from node
+  // inputs/outputs.
   function expandedContainerEntrypoints(ir, expansionState) {
-    var childrenByParent = {};
-    var nodeById = {};
-    for (var i = 0; i < ir.nodes.length; i++) {
-      var n = ir.nodes[i];
-      nodeById[n.id] = n;
-      if (n.parent) {
-        if (!childrenByParent[n.parent]) childrenByParent[n.parent] = [];
-        childrenByParent[n.parent].push(n.id);
-      }
-    }
+    var canonical = (ir && ir.container_entrypoints) || {};
     var overrides = {};
-    for (var j = 0; j < ir.nodes.length; j++) {
-      var node = ir.nodes[j];
-      if (node.node_type !== 'GRAPH') continue;
-      if (!expansionState[node.id]) continue;
-      var kids = childrenByParent[node.id] || [];
-      if (kids.length > 0) overrides[node.id] = containerEntrypoints(kids, nodeById);
+    for (var containerId in canonical) {
+      if (!Object.prototype.hasOwnProperty.call(canonical, containerId)) continue;
+      if (!expansionState[containerId]) continue;
+      var entrypoints = canonical[containerId] || [];
+      overrides[containerId] = entrypoints.slice();
     }
     return overrides;
   }
 
-  function containerEntrypoints(children, nodeById) {
-    var siblingOutputs = {};
-    for (var i = 0; i < children.length; i++) {
-      var childId = children[i];
-      var outputNode = nodeById[childId] || {};
-      var outputs = outputNode.outputs || [];
-      for (var o = 0; o < outputs.length; o++) {
-        if (outputs[o] && outputs[o].name !== undefined) {
-          var name = outputs[o].name;
-          if (!siblingOutputs[name]) siblingOutputs[name] = {};
-          siblingOutputs[name][childId] = true;
+  // Recursively replace expanded containers with their canonical descendants
+  // while preserving every plain sibling in declaration order.
+  function resolveExpandedEntrypoints(entry, overrides) {
+    var resolved = [];
+    var pending = [entry];
+
+    while (pending.length > 0) {
+      var target = pending.pop();
+      if (Object.prototype.hasOwnProperty.call(overrides, target)) {
+        var replacement = overrides[target];
+        if (replacement.length > 0) {
+          for (var r = replacement.length - 1; r >= 0; r--) {
+            pending.push(replacement[r]);
+          }
         }
+      } else if (resolved.indexOf(target) === -1) {
+        resolved.push(target);
       }
     }
 
-    var entrypoints = [];
-    for (var c = 0; c < children.length; c++) {
-      var childId = children[c];
-      var inputNode = nodeById[childId] || {};
-      var inputs = inputNode.inputs || [];
-      var dependsOnSibling = false;
-      for (var p = 0; p < inputs.length; p++) {
-        var owners = inputs[p] && siblingOutputs[inputs[p].name];
-        if (owners && Object.keys(owners).some(function(ownerId) { return ownerId !== childId; })) {
-          dependsOnSibling = true;
-          break;
-        }
-      }
-      if (!dependsOnSibling) entrypoints.push(childId);
-    }
-
-    return entrypoints.length > 0 ? entrypoints : [children[0]];
+    return resolved;
   }
 
   // ── Branch / END routing ────────────────────────────────────────────────
@@ -171,6 +152,7 @@
     resolveToVisible: resolveToVisible,
     visibleOwner: visibleOwner,
     expandedContainerEntrypoints: expandedContainerEntrypoints,
+    resolveExpandedEntrypoints: resolveExpandedEntrypoints,
     routesToEnd: routesToEnd,
     buildParentMap: buildParentMap,
     sceneNodeType: sceneNodeType,

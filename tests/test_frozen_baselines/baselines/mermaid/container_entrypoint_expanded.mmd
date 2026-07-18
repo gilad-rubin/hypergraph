@@ -19,7 +19,7 @@ flowchart TD
     input_request --> intake
     input_seed --> worker__kickoff
     intake --> dispatch
-    dispatch -.-> worker__kickoff
+    dispatch -.-> worker__accumulate
     dispatch -.-> __end__
 
     %% Styling

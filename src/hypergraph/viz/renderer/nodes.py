@@ -11,7 +11,7 @@ from typing import Any
 import networkx as nx
 
 from hypergraph.viz._common import is_node_visible
-from hypergraph.viz.renderer.scope import find_container_entrypoints
+from hypergraph.viz.renderer.scope import resolve_expanded_entrypoints
 
 # =============================================================================
 # Input Grouping
@@ -108,6 +108,7 @@ def has_end_routing(
 def get_start_targets(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
+    container_entrypoints: dict[str, tuple[str, ...]],
 ) -> list[str]:
     """Get visible targets for the synthetic START node.
 
@@ -131,9 +132,19 @@ def get_start_targets(
 
         attrs = flat_graph.nodes.get(resolved, {})
         if attrs.get("node_type") == "GRAPH" and expansion_state.get(resolved, False):
-            entrypoints = find_container_entrypoints(resolved, flat_graph, expansion_state)
-            if entrypoints:
-                resolved = entrypoints[0]
+            # Canonical derivation (D14, #211). Mermaid draws a single START
+            # edge, so only the first entrypoint is used here.
+            entrypoints = resolve_expanded_entrypoints(
+                (resolved,),
+                container_entrypoints,
+                expansion_state,
+            )
+            if not entrypoints:
+                continue
+            resolved = entrypoints[0]
+
+        if not is_node_visible(resolved, flat_graph, expansion_state):
+            continue
 
         if resolved in seen:
             continue
