@@ -15,6 +15,7 @@ from hypergraph.materialization._provenance import (
     ReconcileResult,
     ReconcileUnavailable,
     normalize_value,
+    split_boundary_provenance,
 )
 from hypergraph.materialization._recipe_journal import RecipeJournal
 from hypergraph.materialization._schema import (
@@ -1202,6 +1203,53 @@ class WritePlanner:
         inputs = self._source_inputs(item)
         return existing.get("_row_fingerprint") == self._provenance.root_fingerprint(inputs)
 
+    def _children_missing(self, existing: dict[str, Any]) -> bool:
+        """Read-only completeness probe for the unchanged-parent sync fast path (#204).
+
+        Compares each child table's recorded fan-out count (the
+        ``<provenance>#<count>`` value stamped on the parent row) against the
+        physically present deduplicated child rows. One ``read_rows`` per child
+        table per parent row; never writes. Child specs whose boundary cannot
+        be reconciled column-scoped (no boundary node, or the boundary also
+        produces a stored parent column) are skipped — for them a heal could
+        not honor the "present children and parent are not re-derived"
+        contract, so the fast path is preserved unchanged.
+        """
+        identity_value = existing[self._identity]
+        for child_spec in self._spec.children:
+            if child_spec.child_graph is None or not child_spec.map_input:
+                continue
+            boundary = self._provenance.boundary_node(child_spec)
+            if boundary is None or any(boundary in self._provenance.column_producers(column) for column in self._provenance.derived_columns()):
+                continue
+            _, expected = split_boundary_provenance(existing.get(f"_provenance_{child_spec.map_input}"))
+            if expected is None:
+                continue
+            rows = self._read_rows(
+                child_spec.name,
+                (("_parent_id", "eq", identity_value),),
+                columns=(child_spec.identity, "_parent_id", "_write_gen"),
+            )
+            if len(dedup_child_rows(rows, child_spec.identity)) != expected:
+                return True
+        return False
+
+    def _heal_missing_children(self, item: dict[str, Any], write_gen: int) -> Generator[RunGraph, Any, RowReceipt]:
+        """Rebuild physically missing child rows under an unchanged parent (#204).
+
+        Delegates to the ordinary reconcile path: fresh parent columns are
+        reused, the fan-out boundary re-runs once to regenerate the item list,
+        and only children without a matching physical row run the child graph.
+        The receipt reports the repair as ``HEALED`` whenever child rows were
+        written — never ``SKIPPED`` on a path that wrote rows.
+        """
+        gens_before = {child_spec.name: self._store.max_write_gen(child_spec.name) for child_spec in self._spec.children}
+        receipt = yield from self._insert_one(item, write_gen)
+        wrote_children = any(self._store.max_write_gen(name) > gen for name, gen in gens_before.items())
+        if wrote_children and receipt.outcome is WriteOutcome.SKIPPED:
+            return replace(receipt, outcome=WriteOutcome.HEALED)
+        return receipt
+
     def sync(self, items: list[dict[str, Any]]) -> WriteOperation:
         rows = self._read_rows(self._spec.name)
         existing_by_id = {str(row[self._identity]): row for row in dedup_rows(rows, self._identity) if row.get(self._identity) is not None}
@@ -1218,7 +1266,10 @@ class WritePlanner:
             elif self._row_unchanged(item, existing) and existing.get("_status") in (None, "complete"):
                 if self._provenance.row_missing_stamp(existing, RECIPE_COLUMN):
                     self._refresh_missing_stamps(existing)
-                receipts.append(RowReceipt(identity_value, WriteOutcome.SKIPPED, RowStatus.COMPLETE))
+                if self._children_missing(existing):
+                    receipts.append((yield from self._heal_missing_children(item, write_gen)))
+                else:
+                    receipts.append(RowReceipt(identity_value, WriteOutcome.SKIPPED, RowStatus.COMPLETE))
             else:
                 if self._row_unchanged(item, existing):
                     receipts.append((yield from self._insert_one(item, write_gen)))

@@ -43,7 +43,12 @@ class WriteOutcome(Enum):
     INSERTED = "inserted"
     UPDATED = "updated"
     SKIPPED = "skipped"
+    HEALED = "healed"
 ```
+
+`HEALED` is reported by `sync()` when an unchanged parent row had physically
+missing child rows rebuilt. A receipt is never `SKIPPED` on a path that wrote
+rows.
 
 ### `RowReceipt`
 
@@ -85,6 +90,9 @@ class TableReceipt:
 
     @property
     def skipped(self) -> int: ...
+
+    @property
+    def healed(self) -> int: ...
 
     @property
     def waiting(self) -> tuple[RowReceipt, ...]: ...
@@ -134,6 +142,17 @@ provenance.
 
 Converge a complete collection: insert new identities, update changed ones,
 skip fresh ones, and delete missing ones.
+
+Unchanged parents are also self-repairing: a successful parent must not make
+child loss permanent, so `sync()` rebuilds physically missing child rows and
+reports the row as `HEALED`. To detect loss, `sync()` inspects each child
+table once per unchanged parent row — it compares the fan-out count recorded
+on the parent row against the deduplicated child rows physically present
+(one child-table read per parent; no writes). When every child row is
+present, the row is a zero-execution, zero-write `SKIPPED`; when rows are
+missing, the fan-out boundary re-runs once to regenerate the item list and
+only the missing children run the child graph — present children and parent
+derived columns are not re-derived.
 
 ### `delete(id) -> None`
 
