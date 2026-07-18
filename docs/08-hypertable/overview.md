@@ -71,6 +71,7 @@ Public row reads contain data columns only. Use receipts, `waiting()`, and
 | Need | Use |
 |---|---|
 | A graph-derived entity table | `graph.as_table(...)` |
+| Another complete recipe over the same source rows | `table.attach(...)` |
 | A durable table with no derivation | `Table(...)` and `append(...)` |
 | Resume a particular execution | a runner with a checkpointer |
 | Inspect work awaiting a human | `table.waiting()` |

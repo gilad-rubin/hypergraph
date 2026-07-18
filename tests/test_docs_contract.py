@@ -26,7 +26,10 @@ from hypergraph.checkpointers import Checkpointer, MemoryCheckpointer, SqliteChe
 from hypergraph.events import RunEndEvent
 from hypergraph.materialization import (
     ErroredRow,
+    HyperTable,
     LanceDBStore,
+    MaterializationBranch,
+    MaterializedArtifact,
     RowReceipt,
     RowStatus,
     TableReceipt,
@@ -204,6 +207,21 @@ def test_hypertable_docs_pin_graph_backed_receipt_contract() -> None:
     assert parameters["on_error"].default == "raise"
     assert parameters["name"].default is None
 
+    attach_parameters = inspect.signature(HyperTable.attach).parameters
+    assert tuple(attach_parameters) == ("self", "name", "graph", "outputs")
+    assert attach_parameters["name"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert attach_parameters["graph"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert attach_parameters["outputs"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert tuple(MaterializedArtifact.__dataclass_fields__) == ("table", "column", "lineage", "references")
+    assert {name for name in MaterializationBranch.__dict__ if not name.startswith("_")} == {
+        "name",
+        "output",
+        "artifacts",
+        "sync",
+        "status",
+        "create_index",
+    }
+
     assert tuple(RowReceipt.__dataclass_fields__) == ("id", "outcome", "status", "pause", "error")
     assert tuple(TableReceipt.__dataclass_fields__) == ("receipts", "deleted")
     assert tuple(WaitingRow.__dataclass_fields__) == ("id", "pause", "row", "provenance")
@@ -237,11 +255,16 @@ def test_hypertable_docs_pin_graph_backed_receipt_contract() -> None:
         "result.pause.value",
         "result.pause.response_key",
         "runner=AsyncRunner()",
+        "HyperTable.attach",
+        "MaterializationBranch",
+        "branch.sync()",
+        "branch.create_index",
     ):
         assert contract in api
     assert "## Interrupts in a HyperTable" in human
     assert "row convergence, not mid-run resume" in human
     assert "cold-boot.py" in pages["getting-started"]
+    assert "materialization-branches.py" in pages["getting-started"]
 
 
 def test_background_handle_docs_pin_public_contract() -> None:

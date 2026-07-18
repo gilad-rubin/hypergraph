@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph import Graph
@@ -42,6 +42,7 @@ from hypergraph.materialization._writes import (
 )
 
 if TYPE_CHECKING:
+    from hypergraph.materialization._branches import MaterializationBranch
     from hypergraph.materialization._table_store import TableStore
     from hypergraph.runners import BaseRunner
 
@@ -256,6 +257,7 @@ class HyperTable:
         self._provenance_obj: Provenance | None = None
         self._indexes_obj: IndexPolicy | None = None
         self._write_planner_obj: WritePlanner | None = None
+        self._branches_obj: Any | None = None
 
     def _ensure_analyzed(self):
         if self._analyzed:
@@ -672,6 +674,26 @@ class HyperTable:
             f"Requested: {name!r}\nAvailable: {available}\n\n"
             "How to fix: pass one of child_table_names to child()."
         )
+
+    def attach(
+        self,
+        name: str,
+        *,
+        graph: Graph,
+        outputs: Mapping[str, str],
+    ) -> MaterializationBranch:
+        """Persist or reopen a Materialization Branch rooted in this table.
+
+        ``attach`` records the branch and its lineage plan without deriving.
+        Call ``branch.sync()`` to converge its artifacts from current root rows.
+        """
+
+        self._ensure_analyzed()
+        if self._branches_obj is None:
+            from hypergraph.materialization._branches import BranchPolicy
+
+            self._branches_obj = BranchPolicy(self)
+        return self._branches_obj.attach(name, graph, outputs)
 
     # --- Named indexes (persisted query specs) ---
     #

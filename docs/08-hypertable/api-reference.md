@@ -30,6 +30,74 @@ fails on first derivation with `IncompatibleRunnerError` and names the fix.
 The returned object is a `HyperTable`. Its `graph` property exposes the graph
 artifact and `table_name` exposes the physical root name.
 
+## Materialization Branches
+
+### `HyperTable.attach(name, *, graph, outputs) -> MaterializationBranch`
+
+Persist another complete derivation recipe over this table's current root
+rows. `name` is the stable attachment id. `outputs` maps query roles to logical
+terminal columns.
+
+Before, a caller had to build one superset graph, invent output names, and feed
+the source collection through that table again:
+
+```python
+extended.sync(source_rows)
+extended.rederive("vector_v2", missing_only=True)
+extended.create_index("candidate", vector="vector_v2")
+```
+
+After, the recipe remains complete and the branch reads the existing root:
+
+```python
+branch = documents.attach(
+    "search-large",
+    graph=configured_recipe,
+    outputs={"text": "chunk_text", "vector": "vector"},
+)
+receipt = branch.sync()
+query_spec = branch.create_index("candidate")
+```
+
+`attach()` writes the branch registration and lineage plan before any
+derivation. Reopening the same name with the same recipe returns the persisted
+branch; reusing the name for a different recipe raises `GraphConfigError`.
+
+Lineage matching requires both the producing recipe and all upstream lineage.
+Matching columns and child grains share physical storage. A changed same-grain
+step gets a new column; a changed fan-out step gets a new child table. New
+physical names use the stable attachment id, not a display label.
+
+### `MaterializationBranch.sync() -> TableReceipt`
+
+Derive only missing or stale branch artifacts from all current root rows. Do
+not pass source rows. With an `AsyncRunner`, await the returned coroutine.
+
+### `MaterializationBranch.status() -> TableStatus`
+
+Project readiness and stale columns without running the graph.
+
+### `MaterializationBranch.output(name) -> MaterializedArtifact`
+
+Resolve a declared output alias to `table`, `column`, and opaque `lineage`.
+`references` and `shared` derive from every persisted branch reference plus the
+base table; no artifact stores an owner.
+
+### `MaterializationBranch.artifacts() -> tuple[MaterializedArtifact, ...]`
+
+Project every reachable column and child-table artifact for plan inspection.
+A child-table artifact has `column=None`; a column artifact names both its
+physical `table` and `column`. This read-only reachability view runs no graph
+work.
+
+### `MaterializationBranch.create_index(name, *, rows=None) -> dict`
+
+Delegate to the existing named query-spec policy using the branch's declared
+`text` and `vector` outputs. Both outputs must resolve to the same grain.
+
+Root `delete()` and collection `sync()` cascade through every registered child
+grain, including branches that have not been reopened in the current process.
+
 ## Write receipts
 
 ```python

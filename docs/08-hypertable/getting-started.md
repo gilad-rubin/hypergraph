@@ -123,6 +123,33 @@ The in-process receipt carries the original question object. A later
 The complete executable version is
 [`examples/cold-boot.py`](examples/cold-boot.py).
 
+## Attach another recipe to the same rows
+
+Use a Materialization Branch when a second complete graph should derive from
+the table's current source rows without owning a second document lifecycle.
+
+```python
+candidate = documents.attach(
+    "search-large",
+    graph=large_search_recipe,
+    outputs={"text": "chunk_text", "vector": "vector"},
+)
+
+receipt = candidate.sync()  # no source rows passed
+query_spec = candidate.create_index("large")
+
+assert candidate.status().is_fresh
+assert query_spec["vector"] == candidate.output("vector").column
+```
+
+`attach()` persists the branch before it derives work. Matching columns and
+child grains share their physical storage; the first changed grain or column
+gets a stable namespace based on the attachment name. Root deletion finds all
+registered branches from the store, even when no branch handle is open.
+
+The complete executable example is
+[`examples/materialization-branches.py`](examples/materialization-branches.py).
+
 ## Supply answers headlessly
 
 CSV and batch callers may already know an answer. Supplying the answer on

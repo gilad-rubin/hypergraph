@@ -313,6 +313,10 @@ class LanceDBStore(TableStore):
         new_fields = [pa.field(name, arrow_type, nullable=True) for name, arrow_type in new_columns.items()]
         tbl.add_columns(pa.schema(new_fields))
         tbl.checkout_latest()
+        # A later schema evolution can add another vector column after this
+        # table's first write. Re-run vector specialization on the next row so
+        # the new list<float> column becomes queryable as a fixed-size vector.
+        self._vector_dims.pop(table_name, None)
         return [f.name for f in tbl.schema]
 
     # --- Internal ---

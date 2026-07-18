@@ -22,6 +22,15 @@
 
 ### Added
 
+- **Persisted HyperTable Materialization Branches** —
+  `HyperTable.attach(name, graph=..., outputs=...)` records a complete alternate
+  recipe over one root collection. `branch.sync()` reuses matching upstream
+  lineage, derives only missing or stale columns, allocates a stable physical
+  namespace at the first changed grain, and delegates its terminal text/vector
+  columns to the existing named query-index policy. Root deletion now discovers
+  all registered branch child tables from the store, so document lifecycle has
+  one owner even when no branch handle is open.
+
 - **Attempt events, typed diagnostics, and the durable privacy boundary** —
   attempt-managed nodes (declared `retry=` and/or `timeout=`) now emit
   `NodeAttemptStartEvent` / `NodeAttemptEndEvent` per callable invocation

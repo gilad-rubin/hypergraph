@@ -218,6 +218,22 @@ _Avoid_: Refresh, merge
 A persistent, incremental table built on a Hypergraph graph. Wraps a graph + a store + an identity declaration. Each node's output is a stored column, and a content-key check decides whether to re-run. Supports child tables via `map_over` grain boundaries. Evolution of `DerivedTable` with graph-native composition.
 _Avoid_: Derived table (that's the earlier abstraction)
 
+**Grain**:
+One row-cardinality level in a HyperTable. The root has one row per root identity; each `map_over` boundary creates a child Grain with one row per mapped identity.
+_Avoid_: Stage, pipeline table
+
+**Lineage**:
+The full upstream derivation identity of a stored value: source Grain plus every producing recipe and upstream Lineage. Matching recipe fingerprints without matching upstream Lineage does not make two values the same.
+_Avoid_: Recipe fingerprint (that is only one part), history
+
+**Materialization Branch**:
+A persisted Lineage plan attached to one HyperTable root. It reuses every matching Materialized Artifact, allocates a stable physical namespace at the first changed Grain or column, and derives missing or stale work from current root rows.
+_Avoid_: Superset graph, index table, pipeline branch
+
+**Materialized Artifact**:
+One stored derived column or child table at one Grain, identified by its root collection, upstream Lineage, producing recipe, and output. It is shared when more than one registered plan can reach it; it never carries an owner stamp.
+_Avoid_: Owned table, index-owned data
+
 **Error policy (`on_error`)**:
 A HyperTable constructor parameter: `"raise"` (default, propagate exceptions) or `"store"` (write error rows, continue processing siblings). Applies to `insert()` and `sync()`, not `update()`.
 _Avoid_: Error mode, failure strategy

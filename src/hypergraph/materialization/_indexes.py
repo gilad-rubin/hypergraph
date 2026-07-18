@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
+from hypergraph.materialization._branch_registry import load_branch_records
 from hypergraph.materialization._provenance import Provenance
 from hypergraph.materialization._schema import TableSpec, is_internal_column
 
@@ -14,6 +16,14 @@ def _where_predicate(where: Any) -> list[tuple[str, str, Any]]:
     if isinstance(where, dict):
         return [(key, "eq", value) for key, value in where.items()]
     return list(where)
+
+
+@dataclass(frozen=True)
+class BranchIndexBinding:
+    branch: str
+    on: str
+    recipe_fingerprint: str | None
+    artifact_lineage: str
 
 
 class IndexPolicy:
@@ -54,6 +64,36 @@ class IndexPolicy:
         manifest["indexes"] = indexes
         self._store.save_manifest(self._spec.name, manifest)
 
+    def _require_manifests(self) -> None:
+        if not self._store.supports_manifests():
+            raise NotImplementedError(
+                f"{type(self._store).__name__} does not implement save_manifest/load_manifest, "
+                "so it cannot persist named indexes. Implement both manifest hooks to support "
+                "create_index, or use a store that does (e.g. LanceDBStore)."
+            )
+
+    @staticmethod
+    def _validate_columns(
+        table: str,
+        columns: set[str],
+        *,
+        rows: Any,
+        text: str | None,
+        vector: str,
+    ) -> None:
+        for label, column in (("vector", vector), ("text", text)):
+            if column is not None and column not in columns:
+                raise ValueError(f"{label} column {column!r} does not exist on table {table!r}; known columns: {sorted(columns)}")
+        for column, _operator, _value in _where_predicate(rows):
+            if column not in columns:
+                raise ValueError(f"rows filter column {column!r} does not exist on table {table!r}; known columns: {sorted(columns)}")
+
+    def _persist(self, name: str, index_spec: dict[str, Any]) -> dict[str, Any]:
+        indexes = self._load()
+        indexes[name] = index_spec
+        self._save(indexes)
+        return dict(index_spec)
+
     def create(
         self,
         name: str,
@@ -62,42 +102,56 @@ class IndexPolicy:
         rows: Any,
         text: str | None,
         vector: str | None,
+        _branch: BranchIndexBinding | None = None,
     ) -> dict[str, Any]:
-        if not self._store.supports_manifests():
-            raise NotImplementedError(
-                f"{type(self._store).__name__} does not implement save_manifest/load_manifest, "
-                "so it cannot persist named indexes. Implement both manifest hooks to support "
-                "create_index, or use a store that does (e.g. LanceDBStore)."
-            )
-        spec = self._resolve_table(on)
+        self._require_manifests()
         if vector is None:
             raise ValueError("create_index requires vector=<column>: v1 indexes are vector-search specs")
-        columns = self._queryable_columns(spec)
-        for label, column in (("vector", vector), ("text", text)):
-            if column is not None and column not in columns:
-                raise ValueError(f"{label} column {column!r} does not exist on table {spec.name!r}; known columns: {sorted(columns)}")
-        for column, _operator, _value in _where_predicate(rows):
-            if column not in columns:
-                raise ValueError(f"rows filter column {column!r} does not exist on table {spec.name!r}; known columns: {sorted(columns)}")
+        if _branch is None:
+            spec = self._resolve_table(on)
+            table_name = spec.name
+            columns = self._queryable_columns(spec)
+            recipe_fingerprint = self._recipe_fingerprint(spec, vector)
+        else:
+            table_name = _branch.on
+            columns = set(self._store.column_names(table_name))
+            recipe_fingerprint = _branch.recipe_fingerprint
+        self._validate_columns(table_name, columns, rows=rows, text=text, vector=vector)
         index_spec = {
             "name": name,
-            "on": spec.name,
+            "on": table_name,
             "rows": rows,
             "text": text,
             "vector": vector,
-            "recipe_fingerprint": self._recipe_fingerprint(spec, vector),
+            "recipe_fingerprint": recipe_fingerprint,
         }
-        indexes = self._load()
-        indexes[name] = index_spec
-        self._save(indexes)
-        return dict(index_spec)
+        if _branch is not None:
+            index_spec["materialization_branch"] = _branch.branch
+            index_spec["artifact_lineage"] = _branch.artifact_lineage
+        return self._persist(name, index_spec)
 
     def list(self) -> list[dict[str, Any]]:
         specs = []
         for index_spec in self._load().values():
-            spec = self._resolve_table(index_spec.get("on"))
-            current = self._recipe_fingerprint(spec, index_spec["vector"])
-            specs.append({**index_spec, "current": current == index_spec.get("recipe_fingerprint")})
+            branch = index_spec.get("materialization_branch")
+            if branch is not None:
+                record = load_branch_records(self._store, self._spec.name).get(branch)
+                branch_is_current = bool(
+                    record
+                    and any(
+                        grain.physical_table == index_spec.get("on")
+                        and any(
+                            artifact.physical == index_spec.get("vector") and artifact.lineage == index_spec.get("artifact_lineage")
+                            for artifact in grain.columns.values()
+                        )
+                        for grain in record.grains.values()
+                    )
+                )
+                specs.append({**index_spec, "current": branch_is_current})
+            else:
+                spec = self._resolve_table(index_spec.get("on"))
+                current_recipe = self._recipe_fingerprint(spec, index_spec["vector"])
+                specs.append({**index_spec, "current": current_recipe == index_spec.get("recipe_fingerprint")})
         return specs
 
     def drop(self, name: str) -> None:

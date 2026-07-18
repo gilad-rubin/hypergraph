@@ -1195,8 +1195,13 @@ class WritePlanner:
         existing = self._store.read_one(self._spec.name, self._identity, identity_value)
         if existing is None:
             return
-        for child_spec in self._spec.children:
-            self._store.delete_rows(child_spec.name, [("_parent_id", "eq", identity_value)])
+        child_tables = {child_spec.name for child_spec in self._spec.children}
+        if self._store.supports_manifests():
+            from hypergraph.materialization._branch_registry import registered_child_tables
+
+            child_tables.update(registered_child_tables(self._store, self._spec.name))
+        for child_table in sorted(child_tables):
+            self._store.delete_rows(child_table, [("_parent_id", "eq", identity_value)])
         self._store.delete_rows(self._spec.name, [(self._identity, "eq", identity_value)])
 
     def _row_unchanged(self, item: dict[str, Any], existing: dict[str, Any]) -> bool:
