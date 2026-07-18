@@ -413,3 +413,33 @@ async def test_question_payload_must_expose_every_runtime_seam_field():
 
     with pytest.raises(RuntimeError, match="options must be"):
         await AsyncRunner().run(Graph([review]), {"draft": "v4"})
+
+
+@pytest.mark.asyncio
+async def test_first_node_interrupt_resumes_when_question_inputs_were_run_provided():
+    """Issue #316: interrupt whose question inputs came from run() values, not a producer.
+
+    Checkpoint state folds step outputs only, so 'topic' is absent on resume.
+    The answer-supplied path must still fire — it never calls the handler, so
+    the question inputs are not required.
+    """
+
+    @interrupt(answer_name="decision")
+    def ask(topic: str) -> Confirm:
+        return Confirm(prompt=f"Approve {topic}?")
+
+    @node(output_name="v")
+    def after(decision: bool) -> str:
+        return f"applied:{decision}"
+
+    graph = Graph([ask, after])
+    runner = AsyncRunner(checkpointer=MemoryCheckpointer())
+
+    paused = await runner.run(graph, {"topic": "launch"}, workflow_id="wf-316")
+    assert paused.status == RunStatus.PAUSED
+
+    resumed = await runner.run(graph, {"decision": True}, workflow_id="wf-316")
+
+    assert resumed.status == RunStatus.COMPLETED
+    assert resumed["v"] == "applied:True"
+    assert "after" in resumed.log.node_stats

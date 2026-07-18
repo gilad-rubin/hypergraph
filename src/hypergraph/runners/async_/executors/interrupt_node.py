@@ -26,18 +26,12 @@ class AsyncInterruptNodeExecutor:
     ) -> dict[str, Any]:
         data_outputs = node.data_outputs
 
-        # Collect all input values with validation
-        input_values = {}
-        for name in node.inputs:
-            if name not in inputs:
-                raise KeyError(
-                    f"InterruptNode '{node.name}' requires input '{name}' but it was not provided. Available inputs: {list(inputs.keys())}"
-                )
-            input_values[name] = inputs[name]
-
         # Answer-supplied path. Checkpointer-free runs deliberately set
         # is_resuming=True so an answer supplied up front skips the question;
         # checkpointed fresh runs reserve this path for an actual resume.
+        # Checked BEFORE input validation: checkpoint state folds step outputs
+        # only, so run-provided question inputs are absent on resume — and the
+        # answer path never calls the handler, so it doesn't need them (#316).
         # After consuming, we pop the keys so a second cycle iteration
         # through this node correctly invokes the handler and pauses.
         if ctx.is_resuming:
@@ -46,6 +40,15 @@ class AsyncInterruptNodeExecutor:
             if all_outputs_provided:
                 result = {o: pv.pop(o) for o in data_outputs}
                 return _add_emit_sentinels(result, node)
+
+        # Question path requires every input for the handler call.
+        input_values = {}
+        for name in node.inputs:
+            if name not in inputs:
+                raise KeyError(
+                    f"InterruptNode '{node.name}' requires input '{name}' but it was not provided. Available inputs: {list(inputs.keys())}"
+                )
+            input_values[name] = inputs[name]
 
         # Handler path: invoke the function
         try:
