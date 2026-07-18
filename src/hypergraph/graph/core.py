@@ -627,8 +627,12 @@ class Graph:
     def _build_graph(self, nodes: list[HyperNode]) -> nx.DiGraph:
         """Build NetworkX DiGraph from nodes.
 
-        Uses explicit edges if provided, otherwise infers edges from
-        matching output/input names.
+        Construction makes two independent choices: whether to infer data
+        edges from matching output/input names, and whether to add the
+        user-declared edges. Declared edges without shared params disable
+        inference (``edges=[]`` counts as declared: it means "no edges");
+        with shared params, inference stays on for non-shared values and
+        declared edges land on top.
         """
         G = nx.DiGraph()
         self._add_nodes_to_graph(G, nodes)
@@ -637,31 +641,20 @@ class Graph:
         # Shared params allow multiple producers — exclude from conflict checks
         conflict_sources = {k: v for k, v in output_to_sources.items() if k not in self._shared} if self._shared else output_to_sources
 
-        if self._explicit_edges is not None and not self._shared:
-            # Explicit mode: user-declared data edges (no auto-inference)
+        infer_data_edges = self._explicit_edges is None or bool(self._shared)
+        add_declared_edges = self._explicit_edges is not None
+
+        if infer_data_edges:
+            self._add_data_edges(G, nodes, output_to_sources)
+        if add_declared_edges:
+            assert self._explicit_edges is not None
             self._add_explicit_data_edges(G, self._explicit_edges)
-            self._add_control_edges(G, nodes)
-            self._add_ordering_edges(G, nodes, output_to_sources)
-            validate_output_conflicts(
-                G,
-                nodes,
-                conflict_sources,
-                explicit_edges=True,
-            )
-        elif self._shared:
-            # Shared mode: auto-infer non-shared edges, add explicit as ordering
-            self._add_data_edges(G, nodes, output_to_sources)
-            if self._explicit_edges is not None:
-                self._add_explicit_data_edges(G, self._explicit_edges)
-            self._add_control_edges(G, nodes)
-            self._add_ordering_edges(G, nodes, output_to_sources)
-            validate_output_conflicts(G, nodes, conflict_sources)
-        else:
-            # Auto-inference mode (default)
-            self._add_data_edges(G, nodes, output_to_sources)
-            self._add_control_edges(G, nodes)
-            self._add_ordering_edges(G, nodes, output_to_sources)
-            validate_output_conflicts(G, nodes, conflict_sources)
+        self._add_control_edges(G, nodes)
+        self._add_ordering_edges(G, nodes, output_to_sources)
+        # Conflict validation trusts declared topology only when inference
+        # is off; with inference on, contested name-matches need auto-mode
+        # analysis even if declared edges were also added.
+        validate_output_conflicts(G, nodes, conflict_sources, explicit_edges=not infer_data_edges)
 
         if self._shared:
             self._validate_shared_connectivity(G, nodes)
