@@ -165,3 +165,66 @@ async def test_iter_drops_oldest_preview_chunks_but_retains_lifecycle_events() -
     ]
     assert handle.dropped_chunks > 0
     assert handle.dropped_chunks + len(delivered_chunks) == chunk_count
+
+
+async def test_iter_surfaces_pre_run_graph_change_error(tmp_path) -> None:
+    """A run rejected before any event must end iteration and raise via result()."""
+    from hypergraph import GraphChangedError
+    from hypergraph.checkpointers import SqliteCheckpointer
+
+    @node(output_name="a")
+    def first(value: int) -> int:
+        return value + 1
+
+    @node(output_name="a")
+    def first_changed(value: int) -> int:
+        return value + 2
+
+    checkpointer = SqliteCheckpointer(str(tmp_path / "iter.db"))
+    try:
+        runner = AsyncRunner(checkpointer=checkpointer)
+        await runner.run(Graph([first]), {"value": 1}, workflow_id="wf-iter")
+
+        async def consume() -> Exception:
+            async with runner.iter(Graph([first_changed]), {"value": 1}, workflow_id="wf-iter") as handle:
+                async for _event in handle:
+                    pass
+                with pytest.raises(GraphChangedError) as excinfo:
+                    await handle.result()
+                return excinfo.value
+
+        error = await asyncio.wait_for(consume(), timeout=10)
+        assert isinstance(error, GraphChangedError)
+    finally:
+        await checkpointer.close()
+
+
+async def test_iter_surfaces_pre_run_policy_change_error(tmp_path) -> None:
+    """RetryPolicyChangedError raised before any event must not hang the iterator."""
+    from hypergraph import RetryPolicy, RetryPolicyChangedError
+    from hypergraph.checkpointers import SqliteCheckpointer
+
+    def graph_with(max_attempts: int) -> Graph:
+        @node(output_name="a", retry=RetryPolicy(max_attempts=max_attempts, retry_on=(ConnectionError,)))
+        def flaky(value: int) -> int:
+            return value + 1
+
+        return Graph([flaky])
+
+    checkpointer = SqliteCheckpointer(str(tmp_path / "iter-policy.db"))
+    try:
+        runner = AsyncRunner(checkpointer=checkpointer)
+        await runner.run(graph_with(3), {"value": 1}, workflow_id="wf-policy")
+
+        async def consume() -> Exception:
+            async with runner.iter(graph_with(5), {"value": 1}, workflow_id="wf-policy") as handle:
+                async for _event in handle:
+                    pass
+                with pytest.raises(RetryPolicyChangedError) as excinfo:
+                    await handle.result()
+                return excinfo.value
+
+        error = await asyncio.wait_for(consume(), timeout=10)
+        assert isinstance(error, RetryPolicyChangedError)
+    finally:
+        await checkpointer.close()
