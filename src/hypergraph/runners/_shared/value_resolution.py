@@ -181,7 +181,26 @@ def has_all_inputs(node: HyperNode, graph: Graph, state: GraphState) -> bool:
     """Check if all inputs for a node are available."""
     if graphnode_has_resume_values(node, state):
         return True
+    if interrupt_has_resume_answer(node, state):
+        return True
     return all(has_input(param, node, graph, state) for param in node.inputs)
+
+
+def interrupt_has_resume_answer(node: HyperNode, state: GraphState) -> bool:
+    """Return whether state carries this interrupt's answer as a resume payload.
+
+    Checkpoint state folds step outputs only, so question inputs that were
+    run-provided in the paused run are absent on resume. The answer-supplied
+    path never calls the handler, so those inputs are not required (#316).
+    """
+    from hypergraph.nodes.interrupt import InterruptNode
+
+    if not isinstance(node, InterruptNode):
+        return False
+    resume_values = state.resume_values
+    if not resume_values:
+        return False
+    return all(output in resume_values for output in node.data_outputs)
 
 
 def graphnode_has_resume_values(node: HyperNode, state: GraphState) -> bool:
@@ -341,12 +360,12 @@ def collect_inputs_for_node(
         Dict mapping input names to their values
     """
     inputs = {}
-    graphnode_resume = graphnode_has_resume_values(node, state)
+    resume_bypass = graphnode_has_resume_values(node, state) or interrupt_has_resume_answer(node, state)
     for param in node.inputs:
         try:
             inputs[param] = _resolve_input(param, node, graph, state, provided_values)
         except KeyError:
-            if graphnode_resume:
+            if resume_bypass:
                 continue
             raise
     return inputs
