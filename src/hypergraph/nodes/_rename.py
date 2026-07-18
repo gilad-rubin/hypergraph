@@ -135,3 +135,26 @@ def build_reverse_rename_map(
         reverse_map.update(batch_updates)
 
     return reverse_map
+
+
+def build_forward_rename_map(
+    rename_history: list[RenameEntry],
+    kind: Literal["inputs", "outputs"] = "inputs",
+) -> dict[str, str]:
+    """Build a forward mapping from original names to current names.
+
+    The canonical inverse of :func:`build_reverse_rename_map` — the one place
+    that turns rename history around. For chained renames (a->x, then x->z)
+    the reverse map keeps the intermediate entry (x maps to a); inverting in
+    batch order makes the newest current name win, so the forward map reads
+    a maps to z.
+
+    Args:
+        rename_history: List of RenameEntry from node._rename_history
+        kind: Which type of renames to process ("inputs" or "outputs")
+
+    Returns:
+        Dict mapping original names to current names.
+        Names that were never renamed won't appear in the dict.
+    """
+    return {original: current for current, original in build_reverse_rename_map(rename_history, kind).items()}

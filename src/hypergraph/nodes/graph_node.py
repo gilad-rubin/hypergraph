@@ -6,8 +6,27 @@ import keyword
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
-from hypergraph.nodes._rename import RenameError, build_reverse_rename_map, get_next_batch_id
+from hypergraph.nodes._boundary import BoundaryProjection
+from hypergraph.nodes._rename import RenameError, get_next_batch_id
 from hypergraph.nodes.base import HyperNode, RenameEntry, _invalidate_cached_properties
+
+# Sentinel distinguishing "no default resolved" from a legitimate None default.
+_UNSET = object()
+
+
+@dataclass(frozen=True)
+class _DefaultResolution:
+    """Result of the single boundary default resolver.
+
+    ``found`` False always means the matching ``get_*`` raises KeyError, so
+    ``has_*`` and ``get_*`` can never disagree. ``bound_blocked`` marks a
+    signature-only lookup that failed because the parameter is bound.
+    """
+
+    found: bool
+    value: Any = None
+    bound_blocked: bool = False
+
 
 # TypeVar for self-referential return types (Python 3.10 compatible)
 _GN = TypeVar("_GN", bound="GraphNode")
@@ -225,76 +244,28 @@ class GraphNode(HyperNode):
         # Exact boundary name maps (outer address -> original inner names).
         # Renames from rename_inputs/rename_outputs are invisible in the flat
         # graph otherwise, leaving consumers (viz) to guess by substring.
-        attrs["input_name_map"] = {
-            address: tuple(self._resolve_original_input_name(local) for local in self._local_inputs_for_address(address)) for address in self.inputs
-        }
-        attrs["output_name_map"] = {address: self.resolve_original_output_name(address) for address in self.outputs}
+        attrs["input_name_map"] = self._projection.input_name_map
+        attrs["output_name_map"] = self._projection.output_name_map
         return attrs
 
     def _refresh_projected_ports(self) -> None:
-        """Recompute parent-facing addresses and boundary maps."""
-        input_address_to_local: dict[str, list[str]] = {}
-        projected_inputs: list[str] = []
-        for local in self._local_inputs:
-            address = self._project_address(local)
-            input_address_to_local.setdefault(address, []).append(local)
-            if address not in projected_inputs:
-                projected_inputs.append(address)
-
-        output_local_to_address: dict[str, str] = {}
-        projected_outputs: list[str] = []
-        for local in self._local_outputs:
-            address = self._project_address(local)
-            if address in projected_outputs:
-                raise ValueError(f"GraphNode '{self.name}' projects multiple outputs to {address!r}")
-            input_locals = input_address_to_local.get(address, ())
-            if input_locals and local not in input_locals:
-                raise ValueError(
-                    f"GraphNode '{self.name}' projects input(s) {input_locals!r} and output {local!r} "
-                    f"to the same address {address!r}. Use the same local name for cyclic seed/update "
-                    f"ports, or choose distinct aliases."
-                )
-            output_local_to_address[local] = address
-            projected_outputs.append(address)
-
-        self._input_address_to_local = {key: tuple(values) for key, values in input_address_to_local.items()}
-        self._output_local_to_address = output_local_to_address
-        self._output_address_to_local = {address: local for local, address in output_local_to_address.items()}
-        self.inputs = tuple(projected_inputs)
-        self.outputs = tuple(projected_outputs)
-        self._data_outputs = tuple(self._project_address(local) for local in self._local_data_outputs if local in output_local_to_address)
-
-    def _project_address(self, local_name: str) -> str:
-        if self._namespaced:
-            if local_name in self._exposed:
-                return self._exposed[local_name]
-            return f"{self.name}.{local_name}"
-        return local_name
-
-    def _local_inputs_for_address(self, address: str) -> tuple[str, ...]:
-        return self._input_address_to_local.get(address, (address,))
-
-    def _local_output_for_address(self, address: str) -> str:
-        return self._output_address_to_local.get(address, address)
+        """Rebuild the boundary projection and parent-facing ports from it."""
+        self._projection = BoundaryProjection.build(
+            node_name=self.name,
+            namespaced=self._namespaced,
+            exposed=self._exposed,
+            local_inputs=self._local_inputs,
+            local_outputs=self._local_outputs,
+            local_data_outputs=self._local_data_outputs,
+            rename_history=self._rename_history,
+        )
+        self.inputs = self._projection.inputs
+        self.outputs = self._projection.outputs
+        self._data_outputs = self._projection.data_outputs
 
     def replacement_for_stale_input_address(self, address: str) -> str | None:
         """Return the current parent-facing input address for a stale namespaced one."""
-        prefixes = [self.name, *(entry.old for entry in self._rename_history if entry.kind == "name")]
-        prefix = next((f"{name}." for name in prefixes if address.startswith(f"{name}.")), None)
-        if prefix is None:
-            return None
-        local_name = address[len(prefix) :]
-        if local_name not in self._local_inputs:
-            for current in self._local_inputs:
-                if self._resolve_original_input_name(current) == local_name:
-                    local_name = current
-                    break
-            else:
-                if local_name in self.inputs:
-                    return local_name
-                return None
-        current = self._project_address(local_name)
-        return current if current != address else None
+        return self._projection.replacement_for_stale_input_address(address)
 
     def _validate_local_port_name(self, name: str, *, role: str) -> None:
         for char in self._RESERVED_CHARS:
@@ -452,8 +423,7 @@ class GraphNode(HyperNode):
         Sorted by inner node name so boundary type selection is deterministic.
         """
         candidates: list[tuple[str, Any]] = []
-        for local_param in self._local_inputs_for_address(param):
-            original_param = self._resolve_original_input_name(local_param)
+        for original_param in self._projection.original_inputs_for_address(param):
             for inner_node in self.iter_active_inner_nodes():
                 if original_param in inner_node.inputs:
                     candidates.append((inner_node.name, inner_node.get_input_type(original_param)))
@@ -465,8 +435,7 @@ class GraphNode(HyperNode):
 
         Sorted by inner node name so boundary type selection is deterministic.
         """
-        local_output = self._local_output_for_address(output)
-        original_output = self.resolve_original_output_name(local_output)
+        original_output = self._projection.original_output_for_address(output)
         candidates: list[tuple[str, Any]] = []
         for inner_node in self.iter_active_inner_nodes():
             if original_output in inner_node.outputs:
@@ -492,24 +461,6 @@ class GraphNode(HyperNode):
         """
         return _conflicting_candidates(self._boundary_output_type_candidates(output))
 
-    def _resolve_original_input_name(self, param: str) -> str:
-        """Resolve a possibly-renamed input name back to the original.
-
-        Traces back through rename history to find what the input was
-        originally called in the inner graph. Batch-aware: parallel renames
-        from one ``rename_inputs`` call (e.g. ``rename_inputs(x="y", y="x")``)
-        are treated as simultaneous transforms, matching the semantics of
-        :func:`build_reverse_rename_map` used by ``map_inputs_to_params``.
-
-        Args:
-            param: Current input parameter name
-
-        Returns:
-            Original name used in the inner graph.
-        """
-        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
-        return reverse_map.get(param, param)
-
     def map_inputs_to_params(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Map renamed input names back to original inner graph parameter names.
 
@@ -523,29 +474,17 @@ class GraphNode(HyperNode):
         Returns:
             Dict with original inner graph parameter names as keys
         """
-        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
-        mapped: dict[str, Any] = {}
-        for address, value in inputs.items():
-            for local_name in self._local_inputs_for_address(address):
-                mapped[reverse_map.get(local_name, local_name)] = value
-        return mapped
+        return self._projection.translate_inputs(inputs)
 
     def _original_map_params(self) -> list[str] | None:
         """Get map_over params translated to original inner graph names.
-
-        Uses build_reverse_rename_map() to handle parallel renames correctly
-        (e.g., rename_inputs(x='y', y='x')), matching the semantics of
-        map_inputs_to_params().
 
         Returns:
             List of original param names if map_over is set, else None.
         """
         if self._map_over is None:
             return None
-        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
-        if not reverse_map:
-            return list(self._map_over)
-        return [reverse_map.get(p, p) for p in self._map_over]
+        return [self._projection.original_input(p) for p in self._map_over]
 
     def _original_clone(self) -> bool | list[str]:
         """Get clone config translated to original inner graph names.
@@ -558,10 +497,7 @@ class GraphNode(HyperNode):
         """
         if not isinstance(self._clone, list):
             return self._clone
-        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
-        if not reverse_map:
-            return list(self._clone)
-        return [reverse_map.get(p, p) for p in self._clone]
+        return [self._projection.original_input(p) for p in self._clone]
 
     def map_outputs_from_original(self, outputs: dict[str, Any]) -> dict[str, Any]:
         """Map original inner graph output names to renamed external names.
@@ -576,38 +512,19 @@ class GraphNode(HyperNode):
         Returns:
             Dict with renamed (external) output names as keys
         """
-        from hypergraph.nodes.base import _EMIT_SENTINEL
-
-        reverse_map = build_reverse_rename_map(self._rename_history, "outputs")
-        forward_map = {v: k for k, v in reverse_map.items()}
-        mapped = {self._output_local_to_address.get(forward_map.get(key, key), forward_map.get(key, key)): value for key, value in outputs.items()}
-        for local_output in self._local_outputs:
-            if local_output in self._local_data_outputs:
-                continue
-            address = self._output_local_to_address.get(local_output)
-            if address is not None and address not in mapped:
-                mapped[address] = _EMIT_SENTINEL
-        return mapped
+        return self._projection.translate_outputs(outputs)
 
     def map_output_name_from_original(self, output_name: str) -> str:
         """Map a single inner output name to its external renamed name."""
-        reverse_map = build_reverse_rename_map(self._rename_history, "outputs")
-        forward_map = {v: k for k, v in reverse_map.items()}
-        local_name = forward_map.get(output_name, output_name)
-        return self._output_local_to_address.get(local_name, local_name)
+        return self._projection.output_address_for_original(output_name)
 
     def resolve_original_output_name(self, output_name: str) -> str:
         """Resolve an external output name back to the inner graph's name."""
-        reverse_map = build_reverse_rename_map(self._rename_history, "outputs")
-        local_name = self._local_output_for_address(output_name)
-        return reverse_map.get(local_name, local_name)
+        return self._projection.original_output_for_address(output_name)
 
     def map_input_name_from_original(self, input_name: str) -> str:
         """Map a single inner input name to its external renamed name."""
-        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
-        forward_map = {v: k for k, v in reverse_map.items()}
-        local_name = forward_map.get(input_name, input_name)
-        return self._project_address(local_name)
+        return self._projection.input_address_for_original(input_name)
 
     def map_resume_key_from_original(self, resume_key: str) -> str:
         """Map a nested resume key from inner names to external names.
@@ -620,13 +537,7 @@ class GraphNode(HyperNode):
         For example, ``decision`` may become ``verdict`` while
         ``review.decision`` remains unchanged because ``review`` is internal.
         """
-        if resume_key in self._local_outputs:
-            return self.map_output_name_from_original(resume_key)
-        head, sep, tail = resume_key.partition(".")
-        mapped_head = self.map_output_name_from_original(head)
-        if not sep:
-            return mapped_head
-        return f"{mapped_head}.{tail}"
+        return self._projection.resume_key_from_original(resume_key)
 
     def iter_active_inner_nodes(self) -> tuple[HyperNode, ...]:
         """Return the inner graph nodes visible through this GraphNode boundary."""
@@ -640,40 +551,69 @@ class GraphNode(HyperNode):
         )
         return tuple(active_nodes.values())
 
+    def _resolve_boundary_default(self, param: str, *, signature_only: bool = False) -> _DefaultResolution:
+        """The one resolver behind all four public default lookup methods.
+
+        A parent address may fan into several original inner params, and each
+        original may have several inner consumers. The address has a default
+        only when EVERY original is satisfied: bound in the inner graph
+        (ordinary lookups only — bound blocks signature lookups), or defaulted
+        by ALL of its inner consumers. The resolved value comes from the first
+        original in address order, preserving the historical lookup order.
+
+        Off-surface addresses (local or original names hidden behind
+        namespacing, aliases, or renames) never resolve.
+        """
+        if param not in self.inputs:
+            return _DefaultResolution(found=False)
+
+        value: Any = _UNSET
+        for original_param in self._projection.original_inputs_for_address(param):
+            if original_param in self._graph.inputs.bound:
+                if signature_only:
+                    return _DefaultResolution(found=False, bound_blocked=True)
+                if value is _UNSET:
+                    value = self._graph.inputs.bound[original_param]
+                continue
+            consumers = [n for n in self._graph.iter_nodes() if original_param in n.inputs]
+            if not consumers:
+                return _DefaultResolution(found=False)
+            if signature_only:
+                if not all(n.has_signature_default_for(original_param) for n in consumers):
+                    return _DefaultResolution(found=False)
+                if value is _UNSET:
+                    value = consumers[0].get_signature_default_for(original_param)
+            else:
+                if not all(n.has_default_for(original_param) for n in consumers):
+                    return _DefaultResolution(found=False)
+                if value is _UNSET:
+                    value = consumers[0].get_default_for(original_param)
+        return _DefaultResolution(found=True, value=value)
+
     def has_default_for(self, param: str) -> bool:
         """Check if a parameter has a default or bound value in the inner graph.
 
-        Returns True if the parameter is bound in the inner graph, or if any
-        inner node has a default for it.
+        Returns True only when every inner fan-in consumer is satisfied —
+        bound in the inner graph or holding a default — so this always agrees
+        with :meth:`get_default_for`.
 
         Args:
-            param: Input parameter name (may be a renamed external name)
+            param: Parent-facing input address (may be a renamed external name)
 
         Returns:
-            True if param is bound or any inner node has a default.
+            True if the address is bound or fully defaulted in the inner graph.
         """
-        if param not in self.inputs:
-            return False
-
-        for local_param in self._local_inputs_for_address(param):
-            original_param = self._resolve_original_input_name(local_param)
-            if original_param in self._graph.inputs.bound:
-                continue
-            inner_nodes_with_param = [n for n in self._graph.iter_nodes() if original_param in n.inputs]
-            if not inner_nodes_with_param:
-                return False
-            if not all(inner_node.has_default_for(original_param) for inner_node in inner_nodes_with_param):
-                return False
-        return True
+        return self._resolve_boundary_default(param).found
 
     def get_default_for(self, param: str) -> Any:
         """Get the default or bound value for a parameter from the inner graph.
 
-        Returns the bound value if the parameter is bound, otherwise returns
-        the default value from an inner node.
+        Returns the bound value if the parameter is bound, otherwise the
+        default value shared by the inner consumers. Raises whenever
+        :meth:`has_default_for` is False for the same address.
 
         Args:
-            param: Input parameter name (may be a renamed external name)
+            param: Parent-facing input address (may be a renamed external name)
 
         Returns:
             The bound or default value.
@@ -681,53 +621,36 @@ class GraphNode(HyperNode):
         Raises:
             KeyError: If no default or bound value exists for this parameter.
         """
-        local_param = self._local_inputs_for_address(param)[0]
-        original_param = self._resolve_original_input_name(local_param)
-
-        # Check if bound in inner graph first
-        if original_param in self._graph.inputs.bound:
-            return self._graph.inputs.bound[original_param]
-        # Check inner nodes for defaults
-        for inner_node in self._graph.iter_nodes():
-            if original_param in inner_node.inputs and inner_node.has_default_for(original_param):
-                return inner_node.get_default_for(original_param)
-        raise KeyError(f"No default value for parameter '{param}'")
+        resolution = self._resolve_boundary_default(param)
+        if not resolution.found:
+            raise KeyError(f"No default value for parameter '{param}'")
+        return resolution.value
 
     def has_signature_default_for(self, param: str) -> bool:
         """Check if a parameter has consistent signature defaults in all inner nodes.
 
         This only checks actual function signature defaults, NOT bound values.
-        Used for validation to ensure consistent defaults across nodes.
+        Used for validation to ensure consistent defaults across nodes. Always
+        agrees with :meth:`get_signature_default_for`.
 
         Args:
-            param: Input parameter name (may be a renamed external name)
+            param: Parent-facing input address (may be a renamed external name)
 
         Returns:
             True if all inner nodes using this parameter have a signature default.
             False if parameter is bound or if any inner node lacks a signature default.
         """
-        if param not in self.inputs:
-            return False
-
-        for local_param in self._local_inputs_for_address(param):
-            original_param = self._resolve_original_input_name(local_param)
-            if original_param in self._graph.inputs.bound:
-                return False
-            inner_nodes_with_param = [n for n in self._graph.iter_nodes() if original_param in n.inputs]
-            if not inner_nodes_with_param:
-                return False
-            if not all(n.has_signature_default_for(original_param) for n in inner_nodes_with_param):
-                return False
-        return True
+        return self._resolve_boundary_default(param, signature_only=True).found
 
     def get_signature_default_for(self, param: str) -> Any:
         """Get the signature default value for a parameter.
 
         Returns ONLY signature defaults from inner nodes, NOT bound values.
-        Used for validation to compare actual default values.
+        Used for validation to compare actual default values. Raises whenever
+        :meth:`has_signature_default_for` is False for the same address.
 
         Args:
-            param: Input parameter name (may be a renamed external name)
+            param: Parent-facing input address (may be a renamed external name)
 
         Returns:
             The signature default value from an inner node.
@@ -735,19 +658,12 @@ class GraphNode(HyperNode):
         Raises:
             KeyError: If no signature default exists (bound values don't count).
         """
-        local_param = self._local_inputs_for_address(param)[0]
-        original_param = self._resolve_original_input_name(local_param)
-
-        # Bound parameters don't have signature defaults
-        if original_param in self._graph.inputs.bound:
+        resolution = self._resolve_boundary_default(param, signature_only=True)
+        if resolution.bound_blocked:
             raise KeyError(f"Parameter '{param}' is bound, not a signature default")
-
-        # Get signature default from inner nodes (not bound values)
-        for inner_node in self._graph.iter_nodes():
-            if original_param in inner_node.inputs and inner_node.has_signature_default_for(original_param):
-                return inner_node.get_signature_default_for(original_param)
-
-        raise KeyError(f"No signature default for parameter '{param}'")
+        if not resolution.found:
+            raise KeyError(f"No signature default for parameter '{param}'")
+        return resolution.value
 
     def map_over(
         self: _GN,
@@ -888,7 +804,7 @@ class GraphNode(HyperNode):
         if param in self._local_inputs:
             return param
         if param in self.inputs:
-            local_candidates = self._local_inputs_for_address(param)
+            local_candidates = self._projection.locals_for_input(param)
             if len(local_candidates) == 1 and local_candidates[0] in self._local_inputs:
                 return local_candidates[0]
         raise ValueError(
