@@ -122,6 +122,12 @@ class AsyncRunEventHandle(AsyncEventProcessor):
             self._live_tasks.discard(completed)
             if not completed.cancelled():
                 completed.exception()
+            # A run that settles without ever reaching processor shutdown —
+            # e.g. a pre-run validation failure like GraphChangedError — will
+            # never call shutdown_async(), so close the stream here or
+            # __anext__ waits forever on an event that cannot arrive.
+            self._stream_closed = True
+            self._available.set()
 
         task.add_done_callback(_observe_completion)
         return self
