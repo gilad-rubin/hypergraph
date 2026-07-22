@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from hypergraph.materialization._branches import MaterializationBranch, MaterializedArtifact
 from hypergraph.materialization._hypertable import ChildTable, HyperTable
-from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.materialization._table import Table
 from hypergraph.materialization._table_store import TableStore, validate_store
 from hypergraph.materialization._types import (
@@ -46,4 +45,11 @@ def __getattr__(name: str):
         from hypergraph.materialization._conformance import check_store_conformance
 
         return check_store_conformance
+    # Lazy: lancedb is the optional [materialization] extra. Consumers that only
+    # use HyperTable/Table with another store must not pay an import-time cost
+    # for a dependency they never installed.
+    if name == "LanceDBStore":
+        from hypergraph.materialization._lancedb_store import LanceDBStore
+
+        return LanceDBStore
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
