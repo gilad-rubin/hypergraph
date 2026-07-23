@@ -162,6 +162,80 @@ _Avoid_: Stopped result, skipped run
 - Resuming a **Checkpointed execution** creates a new live execution from persisted state; it does not reconnect to the previous **Execution handle**.
 - A persisted active status describes recorded lifecycle state. It is not proof that a worker is alive and does not grant ownership of that worker.
 
+## Durable host
+
+Vocabulary for the Durable Host V1 program ([PRD 0017](docs/prd/0017-durable-host-v1-program.md); decisions in ADRs 0005–0008 and the [2026-07-23 amendment package](docs/research/2026-07-23-durable-host-amendments.md)). Intent, not shipped behavior, until the ticket tree lands.
+
+**Definition**:
+A root graph bound to its runner and deployment identity, accepted by `serve(...)`. New submission always names a loaded Definition.
+_Avoid_: Registered workflow, catalog entry, app
+
+**Definition identity**:
+The typed tuple `DefinitionId(name, deployment_version, structural_hash)` pinned at first accepted submit. The code hash is recorded for diagnosis only and never decides claim eligibility.
+_Avoid_: Version string (that is only one part), code hash, graph hash
+
+**Host**:
+The Definition-bound object that owns new Run submission, Batch submission, explicit fork, and worker lifecycle. It exposes one RunHomeClient and never copies its verbs.
+_Avoid_: Server, control plane, orchestrator service
+
+**Run Home**:
+The existing checkpointer plus coordination facts in the same transactional store. StepRecords remain the sole execution journal.
+_Avoid_: Second journal, event store, broker state
+
+**RunHomeClient**:
+The single backend-neutral surface for existing work — get, list, watch, stop, rerun, and answer — accepting RunRef or the applicable BatchRef. Constructing one requires no Definition code; it cannot submit new work.
+_Avoid_: Operator wrapper, admin API, app client
+
+**RunRef / BatchRef**:
+Immutable, serializable addresses for one Run or Batch. They expose no liveness, status, result, or control methods, and are never called durable handles.
+_Avoid_: Durable handle (banned per ADR 0004), job token, reconnectable handle
+
+**Start fingerprint**:
+The dedup identity of a submission: complete Definition identity, normalized inputs, effective Batch configuration, and requested start time. Worker identity and submission time are excluded.
+_Avoid_: Idempotency key (callers never manage one), request hash
+
+**Durable Batch**:
+An immutable manifest of unique stable logical item keys, each mapped to one independent child Run, with keyed outcomes and explicit unstarted items. Never a durable parent MapResult array.
+_Avoid_: Persisted MapResult, batch job array
+
+**Logical item key**:
+The caller-chosen stable key naming one requested Batch item; child outcomes are keyed by it regardless of completion order.
+_Avoid_: Item index, result position
+
+**Batch tolerance**:
+Optional manifest-pinned count and percentage failure thresholds. Either trips only when failure-equivalent children strictly exceed it; the percentage denominator is always the total manifest item count.
+_Avoid_: Error rate, failure policy
+
+**Rerun**:
+Creating a new Run under a new workflow id from a source Run or Batch with its pinned Definition identity and inputs intact, recording `retry_of` lineage. A Batch rerun may narrow to named source item keys. Never accepts input overrides.
+_Avoid_: Redrive (an SQS dead-letter term), retry (node-owned), resume (continues the same Run)
+
+**Fork**:
+Explicit, compatibility-checked migration of parked work to a different Definition identity, recording `forked_from` lineage and a migration reason. Never shares the rerun operation.
+_Avoid_: Upgrade, in-place migration, redrive
+
+**Recovery-exhausted condition**:
+The coordination condition set when repeated recovery without committed graph progress reaches a Run's pinned recovery cap. It is never a WorkflowStatus, and only rerun revives the work.
+_Avoid_: Failed run, poison status, dead-letter state
+
+**Unknown effect outcome**:
+The surfaced state of a declared external effect that was dispatched but whose settlement was not witnessed. It is never re-dispatched automatically and requires an explicit operator decision.
+_Avoid_: Failed effect, lost effect, retryable error
+
+**Durable update sequence**:
+The monotonic per-Run (or per-Batch) sequence assigned to every committed fact in its own transaction. `watch(after=cursor)` resumes from it without gaps; live previews are non-durable and never advance it.
+_Avoid_: Event offset, log position (no OutputLog exists), progress counter
+
+### Relationships
+
+- The **Host** owns new work; the **RunHomeClient** owns existing work. The Host exposes the client but never duplicates its verbs.
+- A process without loaded **Definition** code may use a **RunHomeClient** but can never submit; there is no app-less submit catalog.
+- A **RunRef** or **BatchRef** is always safe to store and pass between processes; an Execution handle never is.
+- Use-existing dedup applies only to **Start fingerprint**-identical nonterminal work; terminal reuse and fingerprint mismatch are distinct typed conflicts.
+- **Rerun** repeats; **fork** migrates. Their lineage relations never merge.
+- A **recovery-exhausted condition** parks a Run without touching Retry budgets, Retry windows, or WorkflowStatus.
+- An **Unknown effect outcome** extends the Unknown attempt outcome rule to declared external effects: ambiguity is surfaced, never resolved by guessing.
+
 ## Materialization
 
 Vocabulary for `hypergraph.materialization` — incremental, declarative tables derived from a source. See [ADR 0001](docs/adr/0001-sync-and-async-derived-table-classes.md) and [ADR 0002](docs/adr/0002-stream-materialization-through-runner-with-sinks.md).

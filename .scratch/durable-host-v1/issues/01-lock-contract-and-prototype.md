@@ -9,9 +9,11 @@ implementation code.
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** awaiting-maintainer-approval — prototype published at
+`docs/prd/0017-durable-host-v1-decision-prototype.md`; ticket 02 stays
+blocked until the maintainer explicitly approves it.
 
-- [ ] The accepted ADRs, intent specs, and domain vocabulary agree on Definition identity, RunRef, BatchRef, RunHomeClient, rerun, fork, Batch, recovery exhaustion, and unknown effect
-- [ ] The prototype shows realistic before and after states for all required Run and Batch flows
-- [ ] The prototype makes the Host versus RunHomeClient ownership seam and the no-app-less-submit rule unambiguous
-- [ ] No runtime implementation begins, and the artifact is ready for explicit maintainer approval
+- [x] The accepted ADRs, intent specs, and domain vocabulary agree on Definition identity, RunRef, BatchRef, RunHomeClient, rerun, fork, Batch, recovery exhaustion, and unknown effect
+- [x] The prototype shows realistic before and after states for all required Run and Batch flows
+- [x] The prototype makes the Host versus RunHomeClient ownership seam and the no-app-less-submit rule unambiguous
+- [x] No runtime implementation begins, and the artifact is ready for explicit maintainer approval

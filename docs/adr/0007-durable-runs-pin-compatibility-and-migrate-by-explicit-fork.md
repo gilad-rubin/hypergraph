@@ -1,6 +1,11 @@
 # Durable runs pin compatibility and migrate by explicit fork
 
-**Status:** Proposed on 2026-07-21, pending maintainer review — **with one open question the maintainer must decide: the exact version identity** (see below). Grounded in the clean-room convergence and canon grill (`docs/research/2026-07-21-*.md`).
+**Status:** Accepted on 2026-07-23 at the durable-host amendment sitting,
+with the version-identity open question resolved as recorded below
+(decisions and provenance: `docs/research/2026-07-23-durable-host-amendments.md`;
+delivery contract: `docs/prd/0017-durable-host-v1-program.md`). Amendment
+A16 folded on 2026-07-24 (Durable Host V1 ticket 01). Grounded in the
+clean-room convergence and canon grill (`docs/research/2026-07-21-*.md`).
 
 ## Context
 
@@ -13,30 +18,42 @@ advertisements.
 
 ## Decision
 
-- **A durable run pins its version at first accepted submit.** Workers claim
-  only runs whose pinned version they can serve; refusal is loud and
-  queryable.
+- **A durable run pins its complete Definition identity at first accepted
+  submit.** The pinned identity is the typed tuple
+  `DefinitionId(name, deployment_version, structural_hash)`. The
+  human-set `deployment_version` (matching numbered-drop practice) is part
+  of claim identity; `structural_hash` anchors compatibility checks; the
+  code hash is recorded for diagnosis only and never decides claim
+  eligibility.
+- **Workers claim only runs whose pinned identity they can serve.** A
+  worker serves exact Definition identities. Compatibility declarations
+  (an `accepts=(...)` tuple on the serve binding) name complete prior
+  identities and still require structural compatibility, so compatible old
+  Runs can drain after a deployment.
 - **Truthful vocabulary:** a run a given worker cannot serve is
-  **version-incompatible** for that worker; the Home stores
-  `required_version` and exposes aged-unclaimed queries. The design never
-  claims fleet-wide blockedness, and never uses "stranded" (reserved for
-  crash-stranded attempts).
+  **version-incompatible** for that worker; the Home stores the pinned
+  identity and exposes aged-unclaimed queries. Incompatible work remains
+  visible and unclaimed — a worker never guesses it can resume old state.
+  The design never claims fleet-wide blockedness, and never uses "stranded"
+  (reserved for crash-stranded attempts).
+- **Repetition is `rerun()`, never migration (A16).** `rerun()` retains the
+  source's full pinned Definition identity and source inputs, records
+  `retry_of` lineage, and accepts no input override; a Batch rerun may
+  narrow only to named item keys from the source manifest.
 - **Migration is an explicit fork.** Moving a parked run to new code uses
-  the existing `fork_from` primitive through durable command intake — a new
-  workflow seeded from recorded history, authorized by a human or explicit
-  policy. No silent in-place upgrade, no history patching, ever.
-- **Open question (maintainer decision, tracked on the wayfinder map):**
-  what exactly is the pinned identity —
-  `graph.structural_hash` | `graph.code_hash` | an explicit deployment
-  version string | a typed combination? The trade-off: structural-only
-  permits silent behavior change with same shape; code-hash blocks trivial
-  refactors; explicit strings put honesty in the operator's hands.
-  Compatibility declarations (an `accepts=(...)` tuple on the serve binding)
-  are in scope once the identity is chosen.
+  an explicit, compatibility-checked `fork` seeded from recorded history,
+  recording `forked_from` lineage and a migration reason, authorized by a
+  human or explicit policy. Changed inputs use a normal new submit. Rerun
+  and fork lineage never merge. No silent in-place upgrade, no history
+  patching, ever.
 
 ## Consequences
 
 - Deploys become boring: old runs wait for compatible workers or an explicit
   fork; the failure mode is a visible queue, not corruption.
+- The full Definition identity anchors the A5 submission fingerprint:
+  identical resubmission dedupes only when name, deployment version,
+  structural hash, normalized inputs, effective Batch configuration, and
+  `start_at` all match.
 - The PRD for the shared host (0016) carries the claim-predicate SQL and the
   operator playbook for draining version-incompatible runs.

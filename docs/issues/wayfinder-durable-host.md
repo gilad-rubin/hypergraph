@@ -2,74 +2,71 @@
 
 # Wayfinder — durable host (Tier 1)
 
-Charted 2026-07-23. The ADRs referencing a "wayfinder map ticket" resolve
-here. Design authority: ADRs 0005–0008 (`docs/adr/`), PRDs 0010–0011
-(`docs/prd/`), defect history in
+Charted 2026-07-23; updated 2026-07-24 (Durable Host V1 ticket 01). The
+ADRs referencing a "wayfinder map ticket" resolve here. Design authority:
+ADRs 0004–0008 (`docs/adr/`, accepted with amendments A1–A16), PRDs
+0010–0011, 0013–0014, 0018–0019 (`docs/prd/`), defect history in
 `docs/research/2026-07-21-durable-host-canon-grill.md`. First consumer:
 panda (`../panda/docs/issues/wayfinder-api-cleanup.md`, ticket 0028) —
 constraints from that deployment: single process, retry only
 safe-to-repeat steps, consumer keeps no job machinery of its own.
 
-## Tickets
+**Delivery plan supersession.** The owner sign-off below (HG-1) is resolved,
+and the durable-host build now runs as the Durable Host V1 program:
+`docs/prd/0017-durable-host-v1-program.md` with its ticket tree in
+`.scratch/durable-host-v1/issues/` (tickets 01–15) and the inspectable
+decision prototype at `docs/prd/0017-durable-host-v1-decision-prototype.md`.
+Ticket 02 stays blocked until the maintainer explicitly approves that
+prototype. HG-2/HG-3 survive as tickets 13/02–06; HG-4 survives as
+ticket 10. Panda adoption is tickets 07 and 11; no Panda guard is deleted
+and no production claim is made before ticket 11.
+
+## Resolved decisions (2026-07-23 sitting, folded 2026-07-24)
+
+- ADRs 0005–0008 accepted with amendments A1–A16
+  (`docs/research/2026-07-23-durable-host-amendments.md`).
+- ADR 0007's open question resolved: the pinned identity is the typed tuple
+  `DefinitionId(name, deployment_version, structural_hash)`; the code hash
+  is diagnostic only and never decides claim eligibility.
+- Public repetition verb is `rerun()` (never `redrive`); migration is an
+  explicit `fork()`. New submission stays Definition-bound — no app-less
+  submit catalog. OutputLog deferred until a real product need exists.
+
+## Historical tickets (superseded by the 0017 ticket tree)
 
 ### HG-1 — Owner sign-off: accept ADRs 0005–0008; resolve version identity
 
-**What to decide:** Flip ADRs 0005/0006/0007/0008 from "proposed" to
-accepted, and answer ADR 0007's open question — what a durable run pins as
-its version. Recorded lean (2026-07-23, from the panda sitting): an
-explicit human-set version string (matching numbered-drop practice), with
-the structural hash recorded for diagnostics only — hash-as-identity would
-strand every in-flight run on any code edit.
+Resolved 2026-07-23; recorded above and in the ADR status headers.
 
-**Blocked by:** None — owner action.
-
-- [ ] Four ADR status headers flipped, acceptance dated
-- [ ] ADR 0007 amended with the chosen identity
-- [ ] PRD 0010's "blocked" status cleared
+- [x] Four ADR status headers flipped, acceptance dated
+- [x] ADR 0007 amended with the chosen identity
+- [x] PRD 0010's "blocked" status cleared
 
 ### HG-2 — Implement PRD 0010: durable pause slots + atomic settlement
 
-**What to build:** PRD 0010 as written — `pause_id`, durable question
-projection and answer port, `settle_pause` CAS with its typed errors, slot
-written in the same transaction as the paused step, Memory + SQLite
-backends.
-
-**Blocked by:** HG-1.
-
-- [ ] PRD 0010 acceptance list green on both backends
+Now Durable Host V1 ticket 13 (`13-persist-typed-pause-slots-and-answer`),
+with A8's typed answer contract folded into PRD 0010.
 
 ### HG-3 — Implement PRD 0011: local durable host + SQLite Run Home
 
-**What to build:** PRD 0011 as written — `Graph.with_runner()`, `serve(...,
-home=RunHome.open(...))`, verbs submit/answer/stop/watch,
-`work_forever()` with the exclusive worker lock, restart scan re-entering
-unfinished runs, version refusal per HG-1's identity, synchronous
-checkpoint durability for Home-bound runners.
-
-**Blocked by:** HG-2.
-
-- [ ] PRD 0011 acceptance list green; restart/double-submit/double-answer
-      proven by tests
-- [ ] Panda's adoption ticket (`../panda/docs/issues/0028`) unblocked
+Now Durable Host V1 tickets 02–06, with the A13 ownership split (Host vs
+RunHomeClient, PRD 0018) and the durable Batch contract (PRD 0019).
 
 ### HG-4 — Land the stateful-resource lifecycle branch
 
-**What to build:** Finish `codex/stateful-resource-lifecycle` (@stateful
-handles, resource scopes) and merge. Pre-merge fixes from the 2026-07-23
-panda review: recognize a coroutine `close` as async cleanup (consumers
-use `async def close()`; the branch treats `close` as sync-only), raise a
-loud config error for a lazy handle passed as a runtime input, and add
-tests that one failing cleanup does not prevent later cleanups.
+Now Durable Host V1 ticket 10 (`10-land-stateful-resource-lifecycle`).
+Pre-merge fixes from the 2026-07-23 panda review: recognize a coroutine
+`close` as async cleanup (consumers use `async def close()`; the branch
+treats `close` as sync-only), raise a loud config error for a lazy handle
+passed as a runtime input, and add tests that one failing cleanup does not
+prevent later cleanups.
 
-**Blocked by:** None — independent of HG-1..3.
-
-- [ ] Branch merged with the three fixes
-- [ ] Consumer can delete its reflective graph-closer (panda
-      `graph_lifecycle.py`)
-
-## Edges
+## Edges (0017 ticket tree)
 
 ```
-HG-1 ─→ HG-2 ─→ HG-3 ─→ panda 0028 (adoption)
-HG-4 ────────────────→ panda 0028 (resource-scope half)
+01 ─→ 02 ─→ 03 ─→ 04 ─→ 05 ─→ 06 ─→ 07 ─┐
+      02 ─→ 08 ─→ 09 ───────────────────┤
+      10 (independent) ─────────────────┴─→ 11 ─┐
+      04, 05 ─→ 12 ─→ 14 ←── 13 ←── 02          │
+      09, 11, 14 ───────────────────────────────┴─→ 15
 ```
