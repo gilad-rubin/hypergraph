@@ -1,7 +1,7 @@
 # Durable Host V1 decision prototype (Panda-shaped)
 
-status: pending explicit maintainer approval (Durable Host V1 ticket 01;
-ticket 02 stays blocked until approval lands in this session)
+status: approved by the maintainer on 2026-07-24 (Durable Host V1 ticket 01;
+eight review findings repaired in commit 5da01184)
 
 ## How to read this prototype
 

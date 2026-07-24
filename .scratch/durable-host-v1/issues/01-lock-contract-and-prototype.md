@@ -9,9 +9,10 @@ implementation code.
 
 **Blocked by:** None — can start immediately.
 
-**Status:** awaiting-maintainer-approval — prototype published at
-`docs/prd/durable-host-v1-decision-prototype.md`; ticket 02 stays
-blocked until the maintainer explicitly approves it.
+**Status:** done — maintainer approved the prototype on 2026-07-24,
+including both judgment calls (`fork()` stays on Host while `rerun()` sits on
+RunHomeClient; new specs numbered 0018 and 0019). A follow-up two-axis review
+produced eight contract issues, all repaired in commit `5da01184`.
 
 - [x] The accepted ADRs, intent specs, and domain vocabulary agree on Definition identity, RunRef, BatchRef, RunHomeClient, rerun, fork, Batch, recovery exhaustion, and unknown effect
 - [x] The prototype shows realistic before and after states for all required Run and Batch flows
