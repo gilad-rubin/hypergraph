@@ -377,6 +377,41 @@ class TestRealKillRestart:
         assert marker.read_text().splitlines() == ["first", "second"]
         assert home._get_submission_sync("wf-kill")["state"] == "finished"
 
+    async def test_restart_after_crash_before_first_step_starts_fresh(self, home):
+        """A run claimed and lost before its first committed step leaves an
+        empty active runs row that can neither resume (no seed inputs in
+        checkpoint state) nor restart (input override is forbidden). The
+        next worker deletes the history-less row and starts fresh from the
+        submission's pinned inputs instead of crash-looping on resume."""
+        calls = {"n": 0}
+
+        @node(output_name="out")
+        def compute(x: int) -> int:
+            calls["n"] += 1
+            return x * 10
+
+        graph = Graph([compute], name="freshdef").with_runner(SyncRunner())
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await host.submit("freshdef", {"x": 1}, workflow_id="wf-fresh")
+
+        # Stand-in for a worker killed after claim but before the first
+        # committed step: an empty active runs row, submission still claimed.
+        home.create_run_sync("wf-fresh", graph_name="freshdef")
+        db = home._sync_db()
+        db.execute("UPDATE host_submissions SET state = 'claimed' WHERE workflow_id = 'wf-fresh'")
+        db.commit()
+
+        async with _worker(host):
+            view = await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
+
+        assert view.status == WorkflowStatus.COMPLETED
+        assert calls["n"] == 1
+        assert not host.worker_errors
+        # The history-less row was reset with a durable fact, then re-run.
+        kinds = [u[1] for u in home._read_run_updates_sync("wf-fresh")]
+        assert "run_reset" in kinds
+        assert home._get_submission_sync("wf-fresh")["state"] == "finished"
+
 
 # === 3. Recovery brake (A6) ===
 

@@ -117,6 +117,12 @@ ROOT_EXPORTS = (
     "WorkflowIdConflictError",
     "ForkCompatibilityError",
     "RerunError",
+    "BatchRef",
+    "BatchSubmitReceipt",
+    "BatchCommandReceipt",
+    "BatchView",
+    "BatchUpdate",
+    "BatchTolerance",
     "set_display_mode",
     "get_display_mode",
 )

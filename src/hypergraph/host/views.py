@@ -13,7 +13,7 @@ from typing import Any
 
 from hypergraph.checkpointers.types import WorkflowStatus
 from hypergraph.host.definition import DefinitionId
-from hypergraph.host.refs import RunRef
+from hypergraph.host.refs import BatchRef, RunRef
 
 # Terminal run statuses (mirrors the checkpointer's completed_at semantics).
 TERMINAL_WORKFLOW_STATUSES: frozenset[WorkflowStatus] = frozenset(
@@ -52,8 +52,8 @@ class RunUpdate:
             live previews. Callers must only store cursors from durable
             updates.
         kind: Fact kind — ``submitted``, ``run_started``, ``step``,
-            ``status``, ``command``, ``recovery_exhausted`` — or an event
-            class name for previews.
+            ``status``, ``command``, ``recovery_exhausted``, ``run_reset``
+            — or an event class name for previews.
         payload: JSON-safe fact payload.
         timestamp: ISO timestamp of the fact (or of preview observation).
     """
@@ -119,6 +119,8 @@ class RunQuery:
         older_than: Restrict to work created at least this long ago
             (aged-unclaimed and backlog queries).
         limit: Maximum views returned, oldest first. Defaults to 100.
+        batch: Restrict to children of one Batch — a ``BatchRef`` or a bare
+            batch id string. Runs without Batch membership never match.
     """
 
     definition: str | None = None
@@ -126,3 +128,84 @@ class RunQuery:
     waiting: WaitingCondition | None = None
     older_than: timedelta | None = None
     limit: int = 100
+    batch: BatchRef | str | None = None
+
+
+# Closed bucket vocabulary for BatchView.counts. Every manifest item is
+# accounted in exactly one bucket; terminal buckets are WorkflowStatus
+# values so child outcomes share the Run vocabulary.
+BATCH_COUNT_KEYS: tuple[str, ...] = (
+    "completed",
+    "failed",
+    "partial",
+    "stopped",
+    "active",
+    "queued",
+    "recovery_exhausted",
+    "unstarted",
+)
+
+
+@dataclass(frozen=True)
+class BatchView:
+    """Persisted facts about one Batch, keyed by logical item key.
+
+    Attributes:
+        batch_ref: Inert address of the Batch.
+        workflow_id: The Batch's caller-chosen workflow id.
+        definition_id: The pinned Definition identity from the manifest.
+        counts: Children per state bucket over the closed
+            ``BATCH_COUNT_KEYS`` vocabulary (all keys always present):
+            terminal buckets (``completed``/``failed``/``partial``/
+            ``stopped``) from the child runs row; ``active`` for a started
+            nonterminal child; ``queued`` for a child not yet started but
+            still claimable; ``recovery_exhausted`` for a parked child;
+            ``unstarted`` for a child that finished without ever executing
+            (stop-before-start). Every manifest item is accounted exactly
+            once.
+        outcomes: Logical item key → outcome, in manifest order: the
+            terminal status string for settled children,
+            ``"recovery_exhausted"`` for parked children, None while a
+            child is in flight, and None for unstarted items (Hypergraph
+            never fabricates results for items that never ran).
+        unstarted_items: Manifest keys whose child never executed, in
+            manifest order — requested but never admitted.
+        settled: True when no child is active or queued (terminal,
+            unstarted, and recovery-exhausted children are settled). A
+            recovery-exhausted child counts as settled in v1; tolerance
+            trip semantics (PARTIAL) land with the tolerance ticket.
+    """
+
+    batch_ref: BatchRef
+    workflow_id: str
+    definition_id: DefinitionId
+    counts: dict[str, int]
+    outcomes: dict[str, str | None]
+    unstarted_items: tuple[str, ...]
+    settled: bool
+
+
+@dataclass(frozen=True)
+class BatchUpdate:
+    """One update observed through ``RunHomeClient.watch(batch_ref)``.
+
+    Attributes:
+        cursor: Reconnectable cursor string (``"bseq:N"``). Only durable
+            updates advance it; live previews repeat the last durable cursor.
+        durable: True for committed Run Home facts; False for best-effort
+            live previews fanned in from child runs (same process only).
+            Callers must only store cursors from durable updates.
+        kind: Fact kind — ``manifest`` (bseq 1, the accepted start intent),
+            ``child_settled`` (a child's terminal transition, committed in
+            the same transaction as the child fact), ``stopped`` (the
+            durable Batch stop) — or an event class name for previews.
+        payload: JSON-safe fact payload. ``child_settled`` carries
+            ``item_key``, ``workflow_id``, and ``status``.
+        timestamp: ISO timestamp of the fact (or of preview observation).
+    """
+
+    cursor: str
+    durable: bool
+    kind: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    timestamp: str = ""

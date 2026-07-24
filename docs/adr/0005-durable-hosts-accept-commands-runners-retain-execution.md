@@ -34,8 +34,8 @@ deploys happen with runs in flight. The missing layer is a durable home for
   a Run waits; `BatchView` names counts and unstarted items; `RunQuery`
   covers definition/status/age/batch/recovery/lineage/pagination. (The
   Tier-1 local host ships `RunQuery` with definition/status/waiting/age/
-  limit; the lineage, batch, and pagination query fields land with the
-  Batch tickets 05/06.) Raw SQL is
+  limit/batch — the batch field landed with ticket 05; the lineage and
+  pagination query fields land with ticket 06.) Raw SQL is
   an unsupported escape hatch; bulk-by-query mutation stays deferred. The
   client contract, inert refs, and watch sequences are specified in PRD 0018.
 - **Receipts carry inert addresses (A12).** Every Run-targeting receipt

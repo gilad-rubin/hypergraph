@@ -13,17 +13,19 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.host._bus import _BusEventProcessor, _PreviewBus, _register_bus
+from hypergraph.host.batch import BatchTolerance, validate_batch_items
 from hypergraph.host.client import RunHomeClient
 from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import ForkCompatibilityError, HostError
-from hypergraph.host.fingerprint import start_fingerprint
+from hypergraph.host.fingerprint import batch_fingerprint, start_fingerprint
 from hypergraph.host.home import RunHome
-from hypergraph.host.refs import RunRef, SubmitReceipt
+from hypergraph.host.refs import BatchRef, BatchSubmitReceipt, RunRef, SubmitReceipt
 from hypergraph.host.views import TERMINAL_WORKFLOW_STATUSES
 from hypergraph.host.worker import _drain, _WorkerLock
 
@@ -195,6 +197,139 @@ class Host:
             recovery_cap=recovery_cap,
         )
         return self._receipt(workflow_id, created)
+
+    def _prepare_batch(
+        self,
+        definition_name: str,
+        items: Mapping[str, Mapping[str, Any]],
+        *,
+        workflow_id: str,
+        tolerance: BatchTolerance | None,
+        start_at: datetime | str | None,
+    ) -> tuple[_Definition, list[tuple[str, str]], str | None, str | None, str]:
+        """Validate a Batch submission and compute its start fingerprint."""
+        if not isinstance(workflow_id, str) or not workflow_id:
+            raise ValueError(f"submit_batch() requires a non-empty workflow_id string, got {workflow_id!r}.")
+        if tolerance is not None and not isinstance(tolerance, BatchTolerance):
+            raise TypeError(f"submit_batch() tolerance must be a BatchTolerance or None, got {type(tolerance).__name__}.")
+        definition = self._require_definition(definition_name)
+        pairs = validate_batch_items(items)
+        start_at_iso = _normalize_start_at(start_at)
+        tolerance_json = json.dumps(tolerance.to_dict()) if tolerance is not None else None
+        fingerprint = batch_fingerprint(
+            definition.definition_id,
+            {key: json.loads(inputs_json) for key, inputs_json in pairs},
+            tolerance,
+            start_at_iso,
+        )
+        return definition, pairs, start_at_iso, tolerance_json, fingerprint
+
+    async def submit_batch(
+        self,
+        definition_name: str,
+        items: Mapping[str, Mapping[str, Any]],
+        *,
+        workflow_id: str,
+        tolerance: BatchTolerance | None = None,
+        start_at: datetime | str | None = None,
+        source_ref: str | None = None,
+    ) -> BatchSubmitReceipt:
+        """Accept an immutable Batch into the Run Home BEFORE any execution.
+
+        ONE transaction persists the immutable manifest (Definition
+        identity, item keys with pinned inputs, tolerance declaration,
+        start intent), one child submission per unique item key (child
+        workflow id ``<workflow_id>:<item_key>``), and the ``manifest``
+        batch update at ``bseq=1`` — a partial Batch can never appear
+        accepted. Children are ordinary submissions: they flow through the
+        existing claim/execute/stop/recovery machinery unchanged, each
+        carrying its pinned per-item inputs.
+
+        Dedup mirrors ``submit``: a fingerprint-identical (Definition
+        identity + manifest + tolerance + ``start_at``) nonterminal
+        resubmission returns the existing receipt with ``duplicate=True``
+        naming the same ``BatchRef``; a fingerprint mismatch on the same id
+        raises ``WorkflowIdConflictError``; a fully settled Batch raises
+        ``AlreadyTerminalError``. Run and Batch workflow ids share one
+        namespace: reusing an id owned by a plain Run submission is a
+        conflict too.
+
+        Args:
+            definition_name: A Definition named in ``serve()``.
+            items: Mapping of unique, non-empty logical item keys to
+                JSON-serializable per-item inputs. Duplicate keys and an
+                empty manifest are ``ValueError``; the mapping order is the
+                manifest order used for keyed outcomes.
+            workflow_id: Required explicit Batch id (dedup identity).
+            tolerance: Optional ``BatchTolerance`` pinned into the manifest
+                (part of the dedup fingerprint; trip semantics land with
+                the tolerance ticket).
+            start_at: Optional delayed start (datetime or ISO string),
+                applied to every child.
+            source_ref: Optional caller provenance marker.
+        """
+        definition, pairs, start_at_iso, tolerance_json, fingerprint = self._prepare_batch(
+            definition_name,
+            items,
+            workflow_id=workflow_id,
+            tolerance=tolerance,
+            start_at=start_at,
+        )
+        batch_id = f"b-{uuid.uuid4().hex[:12]}"
+        created, row = await self._home._submit_batch(
+            batch_id,
+            workflow_id,
+            definition.name,
+            definition.version,
+            definition.struct_hash,
+            pairs,
+            tolerance_json,
+            start_at_iso,
+            source_ref,
+            fingerprint=fingerprint,
+        )
+        return BatchSubmitReceipt(
+            batch_ref=BatchRef(home=self._home.uri, batch_id=row["batch_id"]),
+            workflow_id=workflow_id,
+            duplicate=not created,
+        )
+
+    def submit_batch_sync(
+        self,
+        definition_name: str,
+        items: Mapping[str, Mapping[str, Any]],
+        *,
+        workflow_id: str,
+        tolerance: BatchTolerance | None = None,
+        start_at: datetime | str | None = None,
+        source_ref: str | None = None,
+    ) -> BatchSubmitReceipt:
+        """Sync mirror of ``submit_batch``."""
+        definition, pairs, start_at_iso, tolerance_json, fingerprint = self._prepare_batch(
+            definition_name,
+            items,
+            workflow_id=workflow_id,
+            tolerance=tolerance,
+            start_at=start_at,
+        )
+        batch_id = f"b-{uuid.uuid4().hex[:12]}"
+        created, row = self._home._submit_batch_sync(
+            batch_id,
+            workflow_id,
+            definition.name,
+            definition.version,
+            definition.struct_hash,
+            pairs,
+            tolerance_json,
+            start_at_iso,
+            source_ref,
+            fingerprint=fingerprint,
+        )
+        return BatchSubmitReceipt(
+            batch_ref=BatchRef(home=self._home.uri, batch_id=row["batch_id"]),
+            workflow_id=workflow_id,
+            duplicate=not created,
+        )
 
     async def fork(self, ref: RunRef, *, into: str, reason: str) -> SubmitReceipt:
         """Migrate an existing run to a served Definition via explicit fork.
@@ -415,6 +550,13 @@ class Host:
             "error_handling": "continue",
         }
         existing_run = await self._home.get_run_async(workflow_id)
+        if existing_run is not None and await self._home._reset_unstarted_run(workflow_id):
+            # Killed after claim but before the first committed step: the
+            # empty runs row carried no history (and blocked both resume
+            # and fresh input delivery), so it was deleted. Start fresh
+            # from the pinned inputs; lineage, if any, is re-applied from
+            # the submission below.
+            existing_run = None
         if existing_run is not None:
             # Crash resume: the runs row already exists. Checkpoint state
             # supplies the consumed inputs — passing them again raises

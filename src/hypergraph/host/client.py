@@ -18,8 +18,8 @@ from hypergraph.host._bus import _bus_for, _PreviewBus
 from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import RerunError
 from hypergraph.host.fingerprint import start_fingerprint
-from hypergraph.host.refs import CommandReceipt, RunRef, SubmitReceipt
-from hypergraph.host.views import TERMINAL_WORKFLOW_STATUSES, RunQuery, RunUpdate, RunView, WaitingCondition
+from hypergraph.host.refs import BatchCommandReceipt, BatchRef, CommandReceipt, RunRef, SubmitReceipt
+from hypergraph.host.views import BATCH_COUNT_KEYS, TERMINAL_WORKFLOW_STATUSES, BatchUpdate, BatchView, RunQuery, RunUpdate, RunView, WaitingCondition
 
 if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Run
@@ -49,6 +49,59 @@ def _parse_cursor(after: str | int | None) -> int:
         except ValueError:
             pass
     raise ValueError(f"Invalid watch cursor {after!r}. Expected None, an int seq, or a 'seq:N' cursor string from a durable RunUpdate.")
+
+
+def _parse_batch_cursor(after: str | int | None) -> int:
+    """Normalize a Batch watch cursor to a durable bseq number."""
+    if after is None:
+        return 0
+    if isinstance(after, int):
+        return max(after, 0)  # negative bseqs clamp to the stream start
+    if isinstance(after, str) and after.startswith("bseq:"):
+        try:
+            return max(int(after[len("bseq:") :]), 0)
+        except ValueError:
+            pass
+    raise ValueError(f"Invalid batch watch cursor {after!r}. Expected None, an int bseq, or a 'bseq:N' cursor string from a durable BatchUpdate.")
+
+
+def _build_batch_view(home_uri: str, batch: dict[str, Any], child_rows: dict[str, tuple[dict[str, Any], Run | None]]) -> BatchView:
+    """Build the keyed BatchView from the manifest row and joined children.
+
+    Every manifest item lands in exactly one counts bucket; outcomes and
+    unstarted items stay keyed by logical item key in manifest order —
+    completion order never changes result identity.
+    """
+    item_keys = list(json.loads(batch["items_json"]))
+    counts = {key: 0 for key in BATCH_COUNT_KEYS}
+    outcomes: dict[str, str | None] = {}
+    unstarted: list[str] = []
+    for key in item_keys:
+        submission, run = child_rows[key]
+        if run is not None and run.status in TERMINAL_WORKFLOW_STATUSES:
+            bucket, outcome = run.status.value, run.status.value
+        elif submission["state"] == "exhausted":
+            bucket, outcome = "recovery_exhausted", "recovery_exhausted"
+        elif run is not None:
+            bucket, outcome = "active", None
+        elif submission["state"] == "finished":
+            # Finished with no runs row: stopped before first execution.
+            bucket, outcome = "unstarted", None
+            unstarted.append(key)
+        else:
+            bucket, outcome = "queued", None
+        counts[bucket] += 1
+        outcomes[key] = outcome
+    settled = counts["active"] == 0 and counts["queued"] == 0
+    return BatchView(
+        batch_ref=BatchRef(home=home_uri, batch_id=batch["batch_id"]),
+        workflow_id=batch["workflow_id"],
+        definition_id=DefinitionId(batch["definition_name"], batch["def_version"], batch["def_struct_hash"]),
+        counts=counts,
+        outcomes=outcomes,
+        unstarted_items=tuple(unstarted),
+        settled=settled,
+    )
 
 
 def _build_view(home_uri: str, run_id: str, submission: dict[str, Any] | None, run: Run | None) -> RunView | None:
@@ -105,12 +158,21 @@ def _validate_query(query: RunQuery) -> RunQuery:
         raise TypeError(f"list() expects a RunQuery, got {type(query).__name__}.")
     if isinstance(query.limit, bool) or not isinstance(query.limit, int) or query.limit < 1:
         raise ValueError(f"RunQuery.limit must be a positive int, got {query.limit!r}.")
+    if query.batch is not None and not isinstance(query.batch, (str, BatchRef)):
+        raise TypeError(f"RunQuery.batch must be a BatchRef, a batch id string, or None, got {type(query.batch).__name__}.")
     return query
+
+
+def _query_batch_id(query: RunQuery) -> str | None:
+    if query.batch is None:
+        return None
+    return query.batch.batch_id if isinstance(query.batch, BatchRef) else query.batch
 
 
 def _filter_list_rows(home_uri: str, rows: list[tuple[dict[str, Any] | None, Run | None]], query: RunQuery) -> list[RunView]:
     """Build views for joined rows and apply the RunQuery filters, oldest first."""
     cutoff = datetime.now(timezone.utc) - query.older_than if query.older_than is not None else None
+    batch_id = _query_batch_id(query)
     matched: list[tuple[datetime, RunView]] = []
     for submission, run in rows:
         run_id = submission["workflow_id"] if submission is not None else run.id  # type: ignore[union-attr]
@@ -122,6 +184,8 @@ def _filter_list_rows(home_uri: str, rows: list[tuple[dict[str, Any] | None, Run
         if query.status is not None and view.status is not query.status:
             continue
         if query.waiting is not None and view.waiting is not query.waiting:
+            continue
+        if batch_id is not None and (submission is None or submission["batch_id"] != batch_id):
             continue
         created_at = run.created_at if run is not None else _parse_iso(submission["created_at"])  # type: ignore[index]
         if cutoff is not None and created_at > cutoff:
@@ -154,41 +218,77 @@ class RunHomeClient:
         # for this Home URI when a worker lives in the same process.
         self._bus = _bus if _bus is not None else _bus_for(home.uri)
 
-    async def get(self, ref: RunRef) -> RunView | None:
-        """Return persisted facts for ``ref``, or None if unknown."""
+    async def get(self, ref: RunRef | BatchRef) -> RunView | BatchView | None:
+        """Return persisted facts for ``ref``, or None if unknown.
+
+        Accepts a ``RunRef`` (→ ``RunView``) or a ``BatchRef`` (→
+        ``BatchView`` with keyed counts, outcomes, and unstarted items).
+        """
+        if isinstance(ref, BatchRef):
+            batch = await self._home._get_batch(ref.batch_id)
+            if batch is None:
+                return None
+            child_rows = await self._home._batch_child_rows(ref.batch_id)
+            return _build_batch_view(self._home.uri, batch, child_rows)
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"get() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         submission = await self._home._get_submission(ref.run_id)
         run = await self._home.get_run_async(ref.run_id)
         return _build_view(self._home.uri, ref.run_id, submission, run)
 
-    def get_sync(self, ref: RunRef) -> RunView | None:
+    def get_sync(self, ref: RunRef | BatchRef) -> RunView | BatchView | None:
         """Sync mirror of ``get``."""
+        if isinstance(ref, BatchRef):
+            batch = self._home._get_batch_sync(ref.batch_id)
+            if batch is None:
+                return None
+            child_rows = self._home._batch_child_rows_sync(ref.batch_id)
+            return _build_batch_view(self._home.uri, batch, child_rows)
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"get() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         submission = self._home._get_submission_sync(ref.run_id)
         run = self._home.get_run(ref.run_id)
         return _build_view(self._home.uri, ref.run_id, submission, run)
 
-    async def stop(self, ref: RunRef, *, info: Any = None, source_ref: str | None = None) -> CommandReceipt:
+    async def stop(self, ref: RunRef | BatchRef, *, info: Any = None, source_ref: str | None = None) -> CommandReceipt | BatchCommandReceipt:
         """Record a durable stop command for ``ref``.
 
-        The command row and its durable ``command`` update commit in one
-        transaction before this returns — the stop survives process loss.
-        The worker applies it on its next scan: an executing run receives
+        The command facts commit before this returns — the stop survives
+        process loss. For a ``RunRef`` the command row and its durable
+        ``command`` update commit in one transaction; the worker applies it
+        on its next scan: an executing run receives
         ``runner.stop(workflow_id, info=info)``; a run that never started
         is finished without executing (no runs row is invented); a run
-        that already completed is unaffected. Returns a receipt with
-        ``duplicate=True`` when an unapplied stop already exists — the
-        first stop's ``info`` wins. ``source_ref`` is an opaque caller
-        provenance marker (ADR 0005 A11) stored on the command row; it is
-        never authentication and never affects dedup.
+        that already completed is unaffected. For a ``BatchRef`` ONE
+        transaction appends the durable ``stopped`` batch update and writes
+        a stop command for every unsettled child: pending children finish
+        without ever executing (they become explicit unstarted items) and
+        executing children settle cooperatively.
 
-        Raises ``AlreadyTerminalError`` when the run is already terminal
-        at write time and ``HostError`` when the run is unknown to this
-        Run Home.
+        Returns a receipt with ``duplicate=True`` when the stop was already
+        recorded — the first stop's ``info`` wins. ``source_ref`` is an
+        opaque caller provenance marker (ADR 0005 A11) stored on the
+        command row; it is never authentication and never affects dedup.
+
+        Raises ``AlreadyTerminalError`` when the run (or every Batch child)
+        is already settled at write time and ``HostError`` when the ref is
+        unknown to this Run Home.
         """
+        if isinstance(ref, BatchRef):
+            created = await self._home._write_batch_stop(ref.batch_id, info, source_ref)
+            return BatchCommandReceipt(batch_ref=ref, duplicate=not created)
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"stop() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         created = await self._home._write_stop_command(ref.run_id, info, source_ref)
         return CommandReceipt(run_ref=ref, duplicate=not created)
 
-    def stop_sync(self, ref: RunRef, *, info: Any = None, source_ref: str | None = None) -> CommandReceipt:
+    def stop_sync(self, ref: RunRef | BatchRef, *, info: Any = None, source_ref: str | None = None) -> CommandReceipt | BatchCommandReceipt:
         """Sync mirror of ``stop``."""
+        if isinstance(ref, BatchRef):
+            created = self._home._write_batch_stop_sync(ref.batch_id, info, source_ref)
+            return BatchCommandReceipt(batch_ref=ref, duplicate=not created)
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"stop() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         created = self._home._write_stop_command_sync(ref.run_id, info, source_ref)
         return CommandReceipt(run_ref=ref, duplicate=not created)
 
@@ -231,6 +331,8 @@ class RunHomeClient:
         code — unlike ``host.fork()``, which migrates and therefore stays
         Host-side.
         """
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"rerun() expects a RunRef, got {type(ref).__name__}.")
         submission, run = await self._require_terminal_source(ref)
         retry_count = await self._home._count_retries(ref.run_id)
         workflow_id = f"{ref.run_id}-retry-{retry_count + 1}"
@@ -251,6 +353,8 @@ class RunHomeClient:
 
     def rerun_sync(self, ref: RunRef) -> SubmitReceipt:
         """Sync mirror of ``rerun``."""
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"rerun() expects a RunRef, got {type(ref).__name__}.")
         submission = self._home._get_submission_sync(ref.run_id)
         if submission is None:
             raise RerunError(ref.run_id, f"Cannot rerun {ref.run_id!r}: no such run in this Run Home.")
@@ -297,19 +401,33 @@ class RunHomeClient:
             )
         return submission, run
 
-    async def watch(self, ref: RunRef, *, after: str | int | None = None, poll_interval: float = 0.05) -> AsyncIterator[RunUpdate]:
+    async def watch(
+        self, ref: RunRef | BatchRef, *, after: str | int | None = None, poll_interval: float = 0.05
+    ) -> AsyncIterator[RunUpdate | BatchUpdate]:
         """Replay durable facts after ``after``, then tail live previews.
 
+        Accepts a ``RunRef`` (yields ``RunUpdate`` with ``seq:N`` cursors)
+        or a ``BatchRef`` (yields ``BatchUpdate`` with ``bseq:N`` cursors).
         Durable updates carry ``durable=True`` and a cursor that advances
-        monotonically (``seq:N``); replay from a stored cursor has no gaps
-        and no repeats. Live previews (only when a worker runs in this
-        process) carry ``durable=False`` and repeat the last durable cursor
-        — they never advance it. Store cursors from durable updates only.
-        The generator ends once the run reaches a terminal status and every
-        committed fact has been delivered. A ``ref`` unknown to this Run
-        Home (neither a submission nor a runs row) terminates immediately
-        with no updates, matching ``get()``'s honest ``None``.
+        monotonically; replay from a stored cursor has no gaps and no
+        repeats. Live previews (only when a worker runs in this process)
+        carry ``durable=False`` and repeat the last durable cursor — they
+        never advance it. Store cursors from durable updates only.
+
+        For a run, the generator ends once the run reaches a terminal
+        status and every committed fact has been delivered. For a Batch, it
+        ends once every child is terminally settled (or the Batch is
+        durably stopped) and every committed Batch fact has been delivered;
+        explicit unstarted-item truth comes from ``get(batch_ref)``. A
+        ``ref`` unknown to this Run Home terminates immediately with no
+        updates, matching ``get()``'s honest ``None``.
         """
+        if isinstance(ref, BatchRef):
+            async for update in self._watch_batch(ref, after=after, poll_interval=poll_interval):
+                yield update
+            return
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"watch() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         cursor_seq = _parse_cursor(after)
         queue: asyncio.Queue | None = None
         if self._bus is not None:
@@ -360,3 +478,64 @@ class RunHomeClient:
         finally:
             if queue is not None and self._bus is not None:
                 self._bus.unsubscribe(ref.run_id, queue)
+
+    async def _watch_batch(self, ref: BatchRef, *, after: str | int | None, poll_interval: float) -> AsyncIterator[BatchUpdate]:
+        """Replay the per-Batch durable sequence, then tail child previews.
+
+        Durable facts (``manifest``, ``child_settled``, ``stopped``) come
+        from batch_updates with one gap-free ``bseq`` cursor. Live previews
+        are fanned in from every child run's preview queue (same process
+        only) and carry the child's ``run_id``/``item_key``; they never
+        advance the cursor. The generator ends once the Batch is durably
+        stopped or every child is terminally settled — and every committed
+        fact has been delivered.
+        """
+        cursor_seq = _parse_batch_cursor(after)
+        # The manifest is immutable, so the child set is read once.
+        child_rows = await self._home._batch_child_rows(ref.batch_id)
+        queues: dict[str, tuple[str | None, asyncio.Queue]] = {}
+        if self._bus is not None:
+            for item_key, (submission, _run) in child_rows.items():
+                queues[submission["workflow_id"]] = (item_key, self._bus.subscribe(submission["workflow_id"]))
+        terminal = False
+        try:
+            while True:
+                rows = await self._home._read_batch_updates(ref.batch_id, cursor_seq)
+                for bseq, kind, payload, created_at in rows:
+                    cursor_seq = bseq
+                    yield BatchUpdate(
+                        cursor=f"bseq:{bseq}",
+                        durable=True,
+                        kind=kind,
+                        payload=json.loads(payload),
+                        timestamp=created_at,
+                    )
+                for run_id, (item_key, queue) in queues.items():
+                    while True:
+                        try:
+                            kind, payload = queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                        yield BatchUpdate(
+                            cursor=f"bseq:{cursor_seq}",
+                            durable=False,
+                            kind=kind,
+                            payload={**payload, "run_id": run_id, "item_key": item_key},
+                            timestamp=datetime.now(timezone.utc).isoformat(),
+                        )
+                if rows:
+                    continue
+                if terminal:
+                    return
+                batch = await self._home._get_batch(ref.batch_id)
+                if batch is None:
+                    # Unknown ref: nothing to replay, nothing to tail.
+                    return
+                stopped, settled = await self._home._batch_settlement(ref.batch_id)
+                terminal = stopped or settled
+                if not terminal:
+                    await asyncio.sleep(poll_interval)
+        finally:
+            if self._bus is not None:
+                for run_id, (_item_key, queue) in queues.items():
+                    self._bus.unsubscribe(run_id, queue)

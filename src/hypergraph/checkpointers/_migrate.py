@@ -365,7 +365,12 @@ CREATE TABLE IF NOT EXISTS host_submissions (
     fork_reason TEXT,
     -- Retained for schema compatibility; the recovery brake no longer reads
     -- it (progress resets now happen at commit time via _after_run_mutation).
-    last_progress_step_count INTEGER NOT NULL DEFAULT 0
+    last_progress_step_count INTEGER NOT NULL DEFAULT 0,
+    -- Batch membership (ticket 05): set on child submissions only. item_key
+    -- is the logical manifest key; the child workflow id stays
+    -- "<batch_workflow_id>:<item_key>".
+    batch_id TEXT,
+    item_key TEXT
 )
 """
 
@@ -392,15 +397,51 @@ CREATE TABLE IF NOT EXISTS host_commands (
 )
 """
 
+# Batch tables (ticket 05): host_batches is the immutable manifest pinned at
+# acceptance (identity, items, tolerance, start intent, fingerprint);
+# batch_updates is the per-Batch durable sequence (bseq) that
+# RunHomeClient.watch(batch_ref) replays — same gap-free discipline as
+# run_updates. Children are ordinary host_submissions rows linked by
+# host_submissions.batch_id.
+_CREATE_HOST_BATCHES = """
+CREATE TABLE IF NOT EXISTS host_batches (
+    batch_id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL UNIQUE,
+    definition_name TEXT NOT NULL,
+    def_version TEXT NOT NULL DEFAULT '',
+    def_struct_hash TEXT NOT NULL DEFAULT '',
+    items_json TEXT NOT NULL,
+    tolerance_json TEXT,
+    start_at TEXT,
+    fingerprint TEXT NOT NULL,
+    source_ref TEXT,
+    created_at TEXT NOT NULL
+)
+"""
+
+_CREATE_BATCH_UPDATES = """
+CREATE TABLE IF NOT EXISTS batch_updates (
+    batch_id TEXT NOT NULL,
+    bseq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    item_key TEXT,
+    payload TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (batch_id, bseq)
+)
+"""
+
 
 def _create_host_indexes(conn: Any) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_host_submissions_state ON host_submissions(state)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_host_submissions_definition ON host_submissions(definition_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_host_submissions_batch ON host_submissions(batch_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_host_commands_run ON host_commands(run_id, id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_host_batches_workflow ON host_batches(workflow_id)")
 
 
 # Columns appended to host_submissions after the initial v6 cut (tickets
-# 03/04). The v6 DDL above already carries them; this guarded ALTER list
+# 03/04/05). The v6 DDL above already carries them; this guarded ALTER list
 # migrates dev databases that were created at v6 before the columns existed.
 _HOST_SUBMISSIONS_ADDED_COLUMNS = (
     ("fingerprint", "fingerprint TEXT"),
@@ -409,6 +450,8 @@ _HOST_SUBMISSIONS_ADDED_COLUMNS = (
     ("forked_from", "forked_from TEXT"),
     ("fork_reason", "fork_reason TEXT"),
     ("last_progress_step_count", "last_progress_step_count INTEGER NOT NULL DEFAULT 0"),
+    ("batch_id", "batch_id TEXT"),
+    ("item_key", "item_key TEXT"),
 )
 
 
@@ -417,6 +460,8 @@ def _ensure_v6_objects(conn: Any) -> None:
     conn.execute(_CREATE_HOST_SUBMISSIONS)
     conn.execute(_CREATE_RUN_UPDATES)
     conn.execute(_CREATE_HOST_COMMANDS)
+    conn.execute(_CREATE_HOST_BATCHES)
+    conn.execute(_CREATE_BATCH_UPDATES)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()}
     for name, ddl in _HOST_SUBMISSIONS_ADDED_COLUMNS:
         if name not in existing:

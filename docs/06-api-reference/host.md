@@ -11,7 +11,7 @@ This page covers the local Tier 1 host: `serve()`, `RunHome`, `Host`, and
 `RunHomeClient`. For direct execution semantics see [Runners](runners.md);
 for process-local background handles see
 [Control Work After It Starts](../05-how-to/control-background-execution.md).
-Durable Batch and pause answers land in later releases of this surface.
+Durable pause answers land in a later release of this surface.
 {% endhint %}
 
 ## Serving Definitions
@@ -111,6 +111,140 @@ progressless re-adoption).
 `to_dict()`/`from_dict()`. It has no status, result, or control methods and
 is never a durable handle: live control stays process-local (ADR 0004).
 
+## Submitting a Batch
+
+A durable Batch is an **immutable manifest** of unique logical item keys,
+each mapped to one independent child Run with its own pinned inputs (PRD
+0019) — never a durable parent `MapResult`:
+
+```python
+from hypergraph import BatchTolerance
+
+receipt = await host.submit_batch(
+    "ingest",
+    items={"protocol-17": {"doc": ...}, "protocol-18": {"doc": ...}},
+    workflow_id="schneider-drop-42",
+    tolerance=BatchTolerance(max_failed=2, max_failed_percent=25),  # optional
+)
+receipt.batch_ref          # BatchRef — inert, JSON-serializable address
+receipt.duplicate          # True when an identical nonterminal Batch existed
+```
+
+**One transaction** persists all of it — the manifest row (Definition
+identity, item keys with pinned inputs, the tolerance declaration, the
+start intent), one child submission per item key (child workflow id
+`<workflow_id>:<item_key>`), and the `manifest` fact at per-Batch durable
+sequence `bseq=1`. A kill anywhere inside acceptance leaves the Batch fully
+absent, never half-accepted. Duplicate or empty item keys are rejected at
+submission (`ValueError`); the mapping order of `items` is the manifest
+order used for keyed outcomes.
+
+Children are **ordinary Runs**: they flow through the same
+claim/execute/stop/recovery machinery as submitted runs — each gets a
+`RunView`, a run-level `watch`, durable stop, and crash recovery — with
+their Batch membership recorded. `host.submit_batch_sync(...)` is the
+synchronous mirror.
+
+Dedup mirrors `submit`, over a start fingerprint covering the pinned
+Definition identity, the normalized manifest, the pinned tolerance, and
+`start_at`. Resubmitting the same `workflow_id`:
+
+- **fingerprint-identical and nonterminal** → the existing receipt with
+  `duplicate=True`, naming the same `BatchRef`;
+- **fingerprint mismatch** (different identity, items, tolerance, or
+  `start_at`) → `WorkflowIdConflictError`;
+- **fully settled Batch** → `AlreadyTerminalError`, whether or not the
+  fingerprint matches.
+
+Run and Batch workflow ids share one namespace: reusing an id owned by a
+plain run submission (or a run id owned by a Batch) is a conflict too.
+
+`BatchTolerance(max_failed=…, max_failed_percent=…)` pins optional failure
+thresholds into the manifest at acceptance — never `serve()` configuration
+— and is part of the dedup fingerprint. At least one threshold must be set;
+`max_failed` is an `int >= 0`, `max_failed_percent` a whole `int` between 0
+and 100 whose denominator is the fixed manifest item count. Trip
+enforcement (strictly-exceeds evaluation, admission close, PARTIAL) lands
+with the tolerance ticket; today the declaration is persisted verbatim.
+
+`BatchSubmitReceipt` mirrors `SubmitReceipt` (inert, with `batch_ref`,
+`workflow_id`, `duplicate`). `BatchRef` mirrors `RunRef`: identity only
+(`home`, `batch_id`, plus `to_dict()`/`from_dict()`), no live methods,
+never a durable handle.
+
+## Inspecting and Watching a Batch
+
+The same client verbs accept a `BatchRef`:
+
+```python
+view = await client.get(receipt.batch_ref)   # BatchView: keyed persisted facts
+view.counts          # every manifest item in exactly one bucket:
+                     # {"completed": 1, "failed": 0, "active": 0, "queued": 1,
+                     #  "unstarted": 0, ...} — all keys always present
+view.outcomes        # item key -> terminal status ("completed" / "failed" /
+                     # ...) for settled children, None while in flight
+view.unstarted_items # item keys whose child never executed — never
+                     # invented results
+view.settled         # True when no child is active or queued
+```
+
+Counts are keyed by **logical item key**, never by completion order or
+child workflow id. The terminal buckets (`completed`, `failed`, `partial`,
+`stopped`) come from the child runs row; `active` is a started nonterminal
+child; `queued` a child not yet started but still claimable;
+`recovery_exhausted` a parked child (it counts as settled in v1 — tolerance
+trip semantics land with the tolerance ticket); `unstarted` a child that
+finished without ever executing (stop-before-start).
+
+`client.watch(batch_ref, after=cursor)` follows the whole Batch through one
+gap-free per-Batch durable sequence, yielding `BatchUpdate` values with
+`bseq:N` cursors. Every manifest or child-outcome change appends one
+`batch_updates` row — and where a child fact and a Batch fact commit
+together, they land in the same transaction.
+Batch update writes are append-only and never backpressure child execution.
+Durable facts are `manifest` (bseq 1), `child_settled` (a child's terminal
+transition, with `item_key`, `workflow_id`, and `status`), and `stopped`;
+live previews fanned in from child runs arrive with `update.durable is
+False`, repeat the last durable cursor, and never advance it:
+
+```python
+cursor = None
+async for update in client.watch(receipt.batch_ref, after=cursor):
+    if update.durable:
+        cursor = update.cursor             # "bseq:N" — store this
+```
+
+A Batch watch terminates once every child is terminally settled (or the
+Batch is durably stopped) and every committed fact has been delivered;
+explicit unstarted-item truth comes from `get(batch_ref)`. Reconnecting
+from a stored cursor replays with no gaps and no repeats, across process
+restarts, with no graph code. A `BatchRef` unknown to the Home terminates
+immediately with no updates. `client.get_sync(batch_ref)` is the
+synchronous mirror of `get()`.
+
+## Stopping a Batch
+
+`client.stop(batch_ref, info=None)` records a **durable Batch stop**: one
+transaction appends the `stopped` batch update and writes a durable stop
+command for every unsettled child:
+
+- **pending children** finish without ever executing — no runs row is
+  invented; they become explicit `unstarted_items`;
+- **executing children** receive the stop on the worker's next scan and
+  settle cooperatively as `STOPPED`;
+- **settled children** are unaffected.
+
+```python
+receipt = await client.stop(receipt.batch_ref, info={"reason": "drop recalled"})
+receipt.verb          # "stop"
+receipt.duplicate     # True when the Batch was already stopped
+```
+
+`BatchCommandReceipt` mirrors `CommandReceipt` (inert, with `batch_ref`,
+`verb`, `duplicate`). Stopping a Batch whose children all settled raises
+`AlreadyTerminalError`; an unknown `BatchRef` raises `HostError`.
+`client.stop_sync(batch_ref, ...)` is the synchronous mirror.
+
 ## Inspecting and Watching
 
 `host.client` is the one `RunHomeClient` for the Home. A client can also be
@@ -203,10 +337,11 @@ failed = await client.list(RunQuery(definition="refund", status=WorkflowStatus.F
 
 Every field is a typed value — never a free string: `definition` matches
 the Definition name, `status` matches the runs row (runs without one never
-match), `waiting` is computed exactly like `RunView.waiting`, and
-`older_than` compares creation time. Omitted fields match everything.
-`limit` must be a positive `int`. `client.list_sync(...)` is the
-synchronous mirror.
+match), `waiting` is computed exactly like `RunView.waiting`, `batch`
+accepts a `BatchRef` or a bare batch id string and restricts results to
+that Batch's children, and `older_than` compares creation time. Omitted
+fields match everything. `limit` must be a positive `int`.
+`client.list_sync(...)` is the synchronous mirror.
 
 ## Rerun: Repeat a Settled Run
 
@@ -304,8 +439,8 @@ brake counts **progressless re-adoptions**:
 | Error | Raised when |
 |---|---|
 | `WorkerLockError` | a second worker starts on the same Run Home |
-| `AlreadyTerminalError` | a terminal `workflow_id` is reused for submit or stop |
-| `WorkflowIdConflictError` | a nonterminal `workflow_id` is reused with a different start fingerprint |
+| `AlreadyTerminalError` | a terminal `workflow_id` is reused for submit, submit_batch, or stop (including a fully settled Batch) |
+| `WorkflowIdConflictError` | a nonterminal `workflow_id` is reused with a different start fingerprint (Run or Batch), or a Batch id collides with existing work |
 | `ForkCompatibilityError` | `host.fork()` targets a structurally incompatible Definition |
 | `RerunError` | `client.rerun()` names a missing or nonterminal source (recovery-exhausted sources are allowed) |
 | `HostError` | base class for host-specific errors; also raised directly for an unknown stop target |

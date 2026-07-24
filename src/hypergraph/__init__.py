@@ -57,6 +57,12 @@ from hypergraph.exceptions import (
 from hypergraph.graph import Graph, GraphConfigError, InputSpec
 from hypergraph.host import (
     AlreadyTerminalError,
+    BatchCommandReceipt,
+    BatchRef,
+    BatchSubmitReceipt,
+    BatchTolerance,
+    BatchUpdate,
+    BatchView,
     CommandReceipt,
     DefinitionId,
     ForkCompatibilityError,
@@ -232,6 +238,12 @@ __all__ = [
     "WorkflowIdConflictError",
     "ForkCompatibilityError",
     "RerunError",
+    "BatchRef",
+    "BatchSubmitReceipt",
+    "BatchCommandReceipt",
+    "BatchView",
+    "BatchUpdate",
+    "BatchTolerance",
     # Display
     "set_display_mode",
     "get_display_mode",

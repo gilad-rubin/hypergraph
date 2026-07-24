@@ -897,6 +897,12 @@ def test_durable_host_docs_pin_public_contract() -> None:
     """The Tier 1 local host surface stays in lockstep with its reference page."""
     from hypergraph import (
         BaseRunner,
+        BatchCommandReceipt,
+        BatchRef,
+        BatchSubmitReceipt,
+        BatchTolerance,
+        BatchUpdate,
+        BatchView,
         CommandReceipt,
         DefinitionId,
         Graph,
@@ -941,6 +947,18 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert "recovery_cap" in host_api
     assert "RECOVERY_EXHAUSTED" in host_api
 
+    # Ticket 05: durable Batch surface — manifest, keyed outcomes, bseq.
+    assert "submit_batch" in host_api
+    assert "submit_batch_sync" in host_api
+    assert "BatchRef" in host_api
+    assert "BatchSubmitReceipt" in host_api
+    assert "BatchCommandReceipt" in host_api
+    assert "BatchView" in host_api
+    assert "BatchUpdate" in host_api
+    assert "BatchTolerance" in host_api
+    assert "unstarted_items" in host_api
+    assert "bseq" in host_api
+
     # Definition binding and runner cloning signatures.
     assert tuple(inspect.signature(Graph.with_runner).parameters) == ("self", "runner")
     assert isinstance(Graph.bound_runner, property)
@@ -962,6 +980,16 @@ def test_durable_host_docs_pin_public_contract() -> None:
         "recovery_cap",
     )
     assert tuple(inspect.signature(Host.submit_sync).parameters) == tuple(inspect.signature(Host.submit).parameters)
+    assert tuple(inspect.signature(Host.submit_batch).parameters) == (
+        "self",
+        "definition_name",
+        "items",
+        "workflow_id",
+        "tolerance",
+        "start_at",
+        "source_ref",
+    )
+    assert tuple(inspect.signature(Host.submit_batch_sync).parameters) == tuple(inspect.signature(Host.submit_batch).parameters)
     assert tuple(inspect.signature(Host.fork).parameters) == ("self", "ref", "into", "reason")
     assert tuple(inspect.signature(Host.fork_sync).parameters) == tuple(inspect.signature(Host.fork).parameters)
     assert tuple(inspect.signature(Host.work_forever).parameters) == ("self", "worker_id", "poll_interval", "drain_timeout")
@@ -979,7 +1007,7 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert tuple(RunRef.__dataclass_fields__) == ("home", "run_id")
     assert tuple(SubmitReceipt.__dataclass_fields__) == ("run_ref", "workflow_id", "duplicate")
     assert tuple(CommandReceipt.__dataclass_fields__) == ("run_ref", "verb", "duplicate")
-    assert tuple(RunQuery.__dataclass_fields__) == ("definition", "status", "waiting", "older_than", "limit")
+    assert tuple(RunQuery.__dataclass_fields__) == ("definition", "status", "waiting", "older_than", "limit", "batch")
     assert tuple(DefinitionId.__dataclass_fields__) == ("name", "deployment_version", "structural_hash")
     assert tuple(RunView.__dataclass_fields__) == (
         "run_ref",
@@ -992,6 +1020,22 @@ def test_durable_host_docs_pin_public_contract() -> None:
         "forked_from",
     )
     assert tuple(RunUpdate.__dataclass_fields__) == ("cursor", "durable", "kind", "payload", "timestamp")
+
+    # Batch surface: inert ref, receipts, tolerance, keyed view, updates.
+    assert tuple(BatchRef.__dataclass_fields__) == ("home", "batch_id")
+    assert tuple(BatchSubmitReceipt.__dataclass_fields__) == ("batch_ref", "workflow_id", "duplicate")
+    assert tuple(BatchCommandReceipt.__dataclass_fields__) == ("batch_ref", "verb", "duplicate")
+    assert tuple(BatchTolerance.__dataclass_fields__) == ("max_failed", "max_failed_percent")
+    assert tuple(BatchView.__dataclass_fields__) == (
+        "batch_ref",
+        "workflow_id",
+        "definition_id",
+        "counts",
+        "outcomes",
+        "unstarted_items",
+        "settled",
+    )
+    assert tuple(BatchUpdate.__dataclass_fields__) == ("cursor", "durable", "kind", "payload", "timestamp")
     assert {member.name for member in WaitingCondition} == {
         "QUEUED",
         "SCHEDULED",
@@ -1002,6 +1046,7 @@ def test_durable_host_docs_pin_public_contract() -> None:
     }
     for verb in ("stop", "result", "status"):
         assert not hasattr(RunRef, verb), f"RunRef must stay inert; found {verb}"
+        assert not hasattr(BatchRef, verb), f"BatchRef must stay inert; found {verb}"
 
     # The prototype and reference page agree on the typed waiting vocabulary.
     prototype = _read("docs/prd/durable-host-v1-decision-prototype.md")

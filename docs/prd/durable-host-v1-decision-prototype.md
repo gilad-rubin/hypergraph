@@ -139,7 +139,7 @@ receipt.batch_ref          # {"home": "file:./panda-runs.db", "batch_id": "b-841
 | fact | value |
 |---|---|
 | batch manifest | id `b-841`; definition `DefinitionId("ingest", "2026.07.3", "9f3a…")`; workflow_id `schneider-drop-42`; 8 unique item keys; `max_failed=2`; `max_failed_percent=25` |
-| child identities | 8 child Run rows, one per item key, each with pinned inputs and its own `RunRef` (`schneider-drop-42:protocol-17` … `:protocol-24`) |
+| child identities | 8 child submission rows, one per item key, each with pinned inputs and its own `RunRef` (`schneider-drop-42:protocol-17` … `:protocol-24`); each child's runs row is created later, at execution |
 | start intent | accepted start command at per-Batch durable sequence `bseq=1` |
 | start fingerprint | complete Definition identity + normalized inputs + effective Batch config + `start_at` |
 
@@ -356,9 +356,9 @@ fork_receipt = await host.fork(run_ref, into="ingest",
 `DefinitionId("ingest", "2026.07.3", "9f3a…")`, with `forked_from` lineage
 and the reason stored. Compatibility is checked at fork time. `retry_of`
 and `forked_from` never merge: `RunQuery(lineage=...)` can always tell
-repetition from migration. (The lineage, batch, and pagination query
-fields land with the Batch tickets 05/06; today's `RunQuery` covers
-definition/status/waiting/age/limit.)
+repetition from migration. (The `batch` query field landed with ticket 05;
+the lineage and pagination query fields land with ticket 06. Today's
+`RunQuery` covers definition/status/waiting/age/limit/batch.)
 
 ## What this prototype deliberately never shows
 
