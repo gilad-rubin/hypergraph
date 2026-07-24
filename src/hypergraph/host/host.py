@@ -24,6 +24,7 @@ from hypergraph.host.errors import ForkCompatibilityError, HostError
 from hypergraph.host.fingerprint import start_fingerprint
 from hypergraph.host.home import RunHome
 from hypergraph.host.refs import RunRef, SubmitReceipt
+from hypergraph.host.views import TERMINAL_WORKFLOW_STATUSES
 from hypergraph.host.worker import _drain, _WorkerLock
 
 if TYPE_CHECKING:
@@ -55,6 +56,27 @@ def _normalize_start_at(start_at: datetime | str | None) -> str | None:
     if isinstance(start_at, str):
         return start_at
     raise TypeError(f"start_at must be a datetime, an ISO string, or None; got {type(start_at).__name__}.")
+
+
+def _validate_recovery_cap(recovery_cap: int) -> None:
+    if isinstance(recovery_cap, bool) or not isinstance(recovery_cap, int) or recovery_cap < 0:
+        raise ValueError(f"recovery_cap must be an int >= 0 (the progressless re-adoption budget), got {recovery_cap!r}.")
+
+
+def _runner_has_active(definition: _Definition, workflow_id: str) -> bool:
+    """True when the runner's live registry holds this workflow id.
+
+    Reads the runner's private ``_active_workflows`` registry: it is the
+    runner's own record of live workflow ids, so it is the only way to know
+    ``runner.stop()`` would land instead of no-op. Cloned runners own their
+    own registry and the worker stops through the same clone, so the
+    observation and the stop stay consistent.
+    """
+    active = getattr(definition.runner, "_active_workflows", None)
+    if active is None:
+        return False
+    with active._lock:
+        return workflow_id in active._reservations
 
 
 class Host:
@@ -101,6 +123,7 @@ class Host:
         workflow_id: str | None = None,
         start_at: datetime | str | None = None,
         source_ref: str | None = None,
+        recovery_cap: int = 3,
     ) -> SubmitReceipt:
         """Accept one run into the Run Home BEFORE any execution.
 
@@ -120,7 +143,12 @@ class Host:
             workflow_id: Optional explicit id; one is generated when omitted.
             start_at: Optional delayed start (datetime or ISO string).
             source_ref: Optional caller provenance marker.
+            recovery_cap: Recovery brake budget — how many progressless
+                crash re-adoptions park this run as recovery-exhausted
+                instead of resuming it (0 brakes on the first re-adoption).
+                Not part of the dedup fingerprint.
         """
+        _validate_recovery_cap(recovery_cap)
         definition = self._require_definition(definition_name)
         inputs_json = self._serialize_inputs(inputs)
         start_at_iso = _normalize_start_at(start_at)
@@ -134,6 +162,7 @@ class Host:
             start_at_iso,
             source_ref,
             fingerprint=start_fingerprint(definition.definition_id, inputs_json, start_at_iso),
+            recovery_cap=recovery_cap,
         )
         return self._receipt(workflow_id, created)
 
@@ -145,8 +174,10 @@ class Host:
         workflow_id: str | None = None,
         start_at: datetime | str | None = None,
         source_ref: str | None = None,
+        recovery_cap: int = 3,
     ) -> SubmitReceipt:
         """Sync mirror of ``submit``."""
+        _validate_recovery_cap(recovery_cap)
         definition = self._require_definition(definition_name)
         inputs_json = self._serialize_inputs(inputs)
         start_at_iso = _normalize_start_at(start_at)
@@ -160,6 +191,7 @@ class Host:
             start_at_iso,
             source_ref,
             fingerprint=start_fingerprint(definition.definition_id, inputs_json, start_at_iso),
+            recovery_cap=recovery_cap,
         )
         return self._receipt(workflow_id, created)
 
@@ -288,7 +320,7 @@ class Host:
             # consumed: later work_forever() runs on this Host start fresh.
             stop_event.set()
             self._shutdown_requested = False
-        tasks: set[asyncio.Task] = set()
+        tasks: dict[str, asyncio.Task] = {}
         try:
             await self._home._restart_scan()
             try:
@@ -300,11 +332,12 @@ class Host:
                     for row in claimed:
                         task = asyncio.create_task(self._execute_submission(row))
                         task.add_done_callback(self._record_task_exception)
-                        tasks.add(task)
-                    tasks = {task for task in tasks if not task.done()}
+                        tasks[row["workflow_id"]] = task
+                    tasks = {workflow_id: task for workflow_id, task in tasks.items() if not task.done()}
+                    await self._process_stop_commands(set(tasks))
                     await asyncio.sleep(0 if claimed else poll_interval)
             finally:
-                await _drain(tasks, drain_timeout)
+                await _drain(set(tasks.values()), drain_timeout)
         finally:
             self._stop_event = None
             self._worker_loop = None
@@ -322,6 +355,45 @@ class Host:
         if error is not None:
             self.worker_errors.append(error)
 
+    async def _process_stop_commands(self, executing: set[str]) -> None:
+        """Observe unapplied durable stop commands once per loop iteration.
+
+        A command is marked applied only when the observation is final:
+        terminal runs (or finished submissions) are applied with no effect,
+        and executing runs receive ``runner.stop(workflow_id, info=...)``
+        once the run is actually registered with the runner. Everything
+        else stays unapplied for a later cycle — a stop targeting a run
+        that never started is handled by the pre-run gate in
+        ``_execute_submission``; a stop targeting a crashed-but-resumable
+        run lands once its resumed execution registers.
+        """
+        commands = await self._home._unapplied_stop_commands()
+        if not commands:
+            return
+        applied: list[int] = []
+        for command_id, workflow_id, info in commands:
+            submission = await self._home._get_submission(workflow_id)
+            run = await self._home.get_run_async(workflow_id)
+            if run is not None and run.status in TERMINAL_WORKFLOW_STATUSES:
+                applied.append(command_id)
+                continue
+            if submission is not None and submission["state"] == "finished":
+                applied.append(command_id)
+                continue
+            if workflow_id not in executing or submission is None:
+                continue
+            definition = self._definitions.get(submission["definition_name"])
+            if definition is None:
+                continue
+            if not _runner_has_active(definition, workflow_id):
+                # Claimed and executing, but the runner has not registered
+                # the workflow yet — stop() would be a no-op. Retry next
+                # cycle; the pre-run gate covers the never-started case.
+                continue
+            definition.runner.stop(workflow_id, info=info)
+            applied.append(command_id)
+        await self._home._apply_stop_commands(applied)
+
     async def _execute_submission(self, row: dict[str, Any]) -> None:
         """Execute one claimed submission through its Definition's runner."""
         definition = self._definitions.get(row["definition_name"])
@@ -329,7 +401,11 @@ class Host:
             # Not served by this worker; leave claimed for the restart scan.
             return
         workflow_id = row["workflow_id"]
-        inputs = json.loads(row["inputs_json"])
+        if await self._home._apply_stop_never_started(workflow_id):
+            # A stop landed before first execution: the command is applied
+            # and the submission finished without inventing a runs row.
+            return
+        inputs: dict[str, Any] | None = json.loads(row["inputs_json"])
         processors = [_BusEventProcessor(self._bus, workflow_id)]
         run_fn = definition.runner.run
         run_kwargs: dict[str, Any] = {
@@ -337,7 +413,14 @@ class Host:
             "event_processors": processors,
             "error_handling": "continue",
         }
-        if row["retry_of"]:
+        existing_run = await self._home.get_run_async(workflow_id)
+        if existing_run is not None:
+            # Crash resume: the runs row already exists. Checkpoint state
+            # supplies the consumed inputs — passing them again raises
+            # InputOverrideRequiresForkError — and lineage was recorded by
+            # the first attempt, so retry/fork kwargs stay off too.
+            inputs = None
+        elif row["retry_of"]:
             # Rerun: explicit workflow_id + retry_from is a legal runner
             # combination (validate_lineage_request only forbids
             # fork_from+retry_from or checkpoint combos). retry_workflow

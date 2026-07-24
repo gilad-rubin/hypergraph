@@ -17,11 +17,12 @@ from hypergraph.host.errors import (
 )
 from hypergraph.host.home import RunHome
 from hypergraph.host.host import Host, SubmitReceipt, serve
-from hypergraph.host.refs import RunRef
-from hypergraph.host.views import RunUpdate, RunView, WaitingCondition
+from hypergraph.host.refs import CommandReceipt, RunRef
+from hypergraph.host.views import RunQuery, RunUpdate, RunView, WaitingCondition
 
 __all__ = [
     "AlreadyTerminalError",
+    "CommandReceipt",
     "DefinitionId",
     "ForkCompatibilityError",
     "Host",
@@ -29,6 +30,7 @@ __all__ = [
     "RerunError",
     "RunHome",
     "RunHomeClient",
+    "RunQuery",
     "RunRef",
     "RunUpdate",
     "RunView",

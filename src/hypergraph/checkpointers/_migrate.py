@@ -362,7 +362,8 @@ CREATE TABLE IF NOT EXISTS host_submissions (
     compat_state TEXT NOT NULL DEFAULT 'compatible',
     retry_of TEXT,
     forked_from TEXT,
-    fork_reason TEXT
+    fork_reason TEXT,
+    last_progress_step_count INTEGER NOT NULL DEFAULT 0
 )
 """
 
@@ -396,15 +397,16 @@ def _create_host_indexes(conn: Any) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_host_commands_run ON host_commands(run_id, id)")
 
 
-# Columns appended to host_submissions after the initial v6 cut (ticket 03).
-# The v6 DDL above already carries them; this guarded ALTER list migrates
-# dev databases that were created at v6 before the columns existed.
+# Columns appended to host_submissions after the initial v6 cut (tickets
+# 03/04). The v6 DDL above already carries them; this guarded ALTER list
+# migrates dev databases that were created at v6 before the columns existed.
 _HOST_SUBMISSIONS_ADDED_COLUMNS = (
     ("fingerprint", "fingerprint TEXT"),
     ("compat_state", "compat_state TEXT NOT NULL DEFAULT 'compatible'"),
     ("retry_of", "retry_of TEXT"),
     ("forked_from", "forked_from TEXT"),
     ("fork_reason", "fork_reason TEXT"),
+    ("last_progress_step_count", "last_progress_step_count INTEGER NOT NULL DEFAULT 0"),
 )
 
 

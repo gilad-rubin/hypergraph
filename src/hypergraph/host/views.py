@@ -7,6 +7,7 @@ condition — it is never a ``WorkflowStatus`` and never enters the run row.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import timedelta
 from enum import Enum
 from typing import Any
 
@@ -73,12 +74,13 @@ class RunView:
         definition_name: Definition the run was submitted against.
         status: The run's ``WorkflowStatus``, or None while no runs row
             exists yet (submission still pending).
-        waiting: Typed waiting condition, or None. Currently
-            ``WaitingCondition.QUEUED`` (submission accepted, execution not
-            started) and ``WaitingCondition.VERSION_INCOMPATIBLE`` (no
-            serving worker claims the pinned Definition identity) are
-            produced; later host tickets produce further conditions from the
-            same closed enum. Never a WorkflowStatus.
+        waiting: Typed waiting condition, or None. Produced today:
+            ``QUEUED`` (accepted, execution not started), ``SCHEDULED``
+            (future ``start_at``), ``PAUSED`` (runs row paused),
+            ``VERSION_INCOMPATIBLE`` (no serving worker claims the pinned
+            identity), and ``RECOVERY_EXHAUSTED`` (the pinned recovery cap
+            tripped). ``ADMISSION_LIMITED`` stays reserved for a later host
+            ticket. Never a WorkflowStatus.
         definition_id: The pinned Definition identity from the submission,
             or reconstructed from the runs row for host-less (Tier 0) runs.
             None only when neither exists.
@@ -98,3 +100,28 @@ class RunView:
     definition_id: DefinitionId | None
     retry_of: str | None
     forked_from: str | None
+
+
+@dataclass(frozen=True)
+class RunQuery:
+    """Typed filter for ``RunHomeClient.list``.
+
+    Every field is a typed value — never a free string — so queries branch
+    on the same closed vocabulary views report. Omitted fields match
+    everything.
+
+    Attributes:
+        definition: Restrict to one Definition name.
+        status: Restrict to one ``WorkflowStatus`` (runs row required).
+        waiting: Restrict to one ``WaitingCondition`` (the same typed
+            waiting computation ``RunView.waiting`` uses).
+        older_than: Restrict to work created at least this long ago
+            (aged-unclaimed and backlog queries).
+        limit: Maximum views returned, oldest first. Defaults to 100.
+    """
+
+    definition: str | None = None
+    status: WorkflowStatus | None = None
+    waiting: WaitingCondition | None = None
+    older_than: timedelta | None = None
+    limit: int = 100

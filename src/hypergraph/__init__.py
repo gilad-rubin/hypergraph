@@ -57,6 +57,7 @@ from hypergraph.exceptions import (
 from hypergraph.graph import Graph, GraphConfigError, InputSpec
 from hypergraph.host import (
     AlreadyTerminalError,
+    CommandReceipt,
     DefinitionId,
     ForkCompatibilityError,
     Host,
@@ -64,6 +65,7 @@ from hypergraph.host import (
     RerunError,
     RunHome,
     RunHomeClient,
+    RunQuery,
     RunRef,
     RunUpdate,
     RunView,
@@ -218,8 +220,10 @@ __all__ = [
     "RunHomeClient",
     "RunRef",
     "SubmitReceipt",
+    "CommandReceipt",
     "RunView",
     "RunUpdate",
+    "RunQuery",
     "WaitingCondition",
     "HostError",
     "WorkerLockError",

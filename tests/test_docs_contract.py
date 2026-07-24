@@ -897,10 +897,12 @@ def test_durable_host_docs_pin_public_contract() -> None:
     """The Tier 1 local host surface stays in lockstep with its reference page."""
     from hypergraph import (
         BaseRunner,
+        CommandReceipt,
         DefinitionId,
         Graph,
         RunHome,
         RunHomeClient,
+        RunQuery,
         RunRef,
         RunUpdate,
         RunView,
@@ -929,6 +931,16 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert "rerun_sync" in host_api
     assert "fork_sync" in host_api
 
+    # Ticket 04: durable stop, recovery brake, and client.list surface.
+    assert "client.stop" in host_api
+    assert "stop_sync" in host_api
+    assert "CommandReceipt" in host_api
+    assert "client.list" in host_api
+    assert "list_sync" in host_api
+    assert "RunQuery" in host_api
+    assert "recovery_cap" in host_api
+    assert "RECOVERY_EXHAUSTED" in host_api
+
     # Definition binding and runner cloning signatures.
     assert tuple(inspect.signature(Graph.with_runner).parameters) == ("self", "runner")
     assert tuple(inspect.signature(BaseRunner.with_checkpointer).parameters) == ("self", "checkpointer")
@@ -945,6 +957,7 @@ def test_durable_host_docs_pin_public_contract() -> None:
         "workflow_id",
         "start_at",
         "source_ref",
+        "recovery_cap",
     )
     assert tuple(inspect.signature(Host.submit_sync).parameters) == tuple(inspect.signature(Host.submit).parameters)
     assert tuple(inspect.signature(Host.fork).parameters) == ("self", "ref", "into", "reason")
@@ -955,10 +968,16 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert tuple(inspect.signature(RunHomeClient.watch).parameters) == ("self", "ref", "after", "poll_interval")
     assert tuple(inspect.signature(RunHomeClient.rerun).parameters) == ("self", "ref")
     assert tuple(inspect.signature(RunHomeClient.rerun_sync).parameters) == ("self", "ref")
+    assert tuple(inspect.signature(RunHomeClient.stop).parameters) == ("self", "ref", "info")
+    assert tuple(inspect.signature(RunHomeClient.stop_sync).parameters) == tuple(inspect.signature(RunHomeClient.stop).parameters)
+    assert tuple(inspect.signature(RunHomeClient.list).parameters) == ("self", "query")
+    assert tuple(inspect.signature(RunHomeClient.list_sync).parameters) == tuple(inspect.signature(RunHomeClient.list).parameters)
 
     # Inert refs and read models: identity only, typed waiting vocabulary.
     assert tuple(RunRef.__dataclass_fields__) == ("home", "run_id")
     assert tuple(SubmitReceipt.__dataclass_fields__) == ("run_ref", "workflow_id", "duplicate")
+    assert tuple(CommandReceipt.__dataclass_fields__) == ("run_ref", "verb", "duplicate")
+    assert tuple(RunQuery.__dataclass_fields__) == ("definition", "status", "waiting", "older_than", "limit")
     assert tuple(DefinitionId.__dataclass_fields__) == ("name", "deployment_version", "structural_hash")
     assert tuple(RunView.__dataclass_fields__) == (
         "run_ref",

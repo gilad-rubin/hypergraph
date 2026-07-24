@@ -11,8 +11,8 @@ This page covers the local Tier 1 host: `serve()`, `RunHome`, `Host`, and
 `RunHomeClient`. For direct execution semantics see [Runners](runners.md);
 for process-local background handles see
 [Control Work After It Starts](../05-how-to/control-background-execution.md).
-Durable Batch, stop, pause answers, and delayed starts land in later
-releases of this surface.
+Durable Batch, pause answers, and delayed starts land in later releases of
+this surface.
 {% endhint %}
 
 ## Serving Definitions
@@ -89,6 +89,14 @@ normalized inputs, and the requested `start_at`. Resubmitting the same
 
 `host.submit_sync(...)` is the synchronous mirror.
 
+`submit()` also accepts `recovery_cap` (default `3`): how many progressless
+crash re-adoptions park the run as recovery-exhausted instead of resuming
+it — see [Crash Recovery and the Recovery Brake](#crash-recovery-and-the-recovery-brake).
+It is a recovery budget, not an identity fact, so it is **not** part of the
+start fingerprint: an identical resubmission with a different cap dedupes and
+keeps the first cap. The cap must be an `int >= 0` (`0` brakes on the first
+progressless re-adoption).
+
 `RunRef` carries identity only — `home` and `run_id`, plus
 `to_dict()`/`from_dict()`. It has no status, result, or control methods and
 is never a durable handle: live control stays process-local (ADR 0004).
@@ -125,7 +133,60 @@ cursor, and **never advance it**; store cursors from durable updates only.
 `WaitingCondition` is a closed enum — `QUEUED`, `SCHEDULED`, `PAUSED`,
 `VERSION_INCOMPATIBLE`, `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED` — so
 waiting work never looks alike and callers branch on typed values. `waiting`
-is `None` while a Run executes or is terminal.
+is `None` while a Run executes or is terminal. All members except
+`ADMISSION_LIMITED` are produced today; that one stays reserved for the
+active-Run cap in a later release.
+
+## Stopping a Run
+
+`client.stop(ref, info=None)` records a **durable stop command**: the
+command row and its `command` update commit in one transaction before the
+call returns, so the stop survives process loss. The worker applies it on
+its next scan:
+
+- **executing run** → the runner receives `stop(workflow_id, info=info)`;
+  the run settles as `STOPPED` cooperatively (in-flight nodes finish).
+- **stop landed before first execution** → the run never executes and no
+  runs row is invented; the submission settles as finished.
+- **run completed before the stop was observed** → the command is marked
+  applied with no effect.
+
+```python
+receipt = await client.stop(receipt.run_ref, info={"reason": "user asked"})
+receipt.verb          # "stop"
+receipt.duplicate     # True when an unapplied stop already existed
+```
+
+`CommandReceipt` mirrors `SubmitReceipt`: inert, with `run_ref`, `verb`,
+and `duplicate`. A second stop while one is still unapplied dedupes with
+`duplicate=True` — **the first stop's `info` wins**. Stopping a run that is
+already terminal at write time raises `AlreadyTerminalError`; stopping an
+id unknown to the Home raises `HostError`. `client.stop_sync(...)` is the
+synchronous mirror.
+
+## Listing Runs
+
+`client.list(query)` filters joined run views through a typed `RunQuery` —
+submissions joined with their runs rows, plus bare Tier-0 runs (a runs row
+with no submission). Results come oldest first, capped at `query.limit`
+(default 100):
+
+```python
+from datetime import timedelta
+from hypergraph import RunQuery, WaitingCondition
+from hypergraph.checkpointers.types import WorkflowStatus
+
+stuck = await client.list(RunQuery(waiting=WaitingCondition.RECOVERY_EXHAUSTED))
+old = await client.list(RunQuery(older_than=timedelta(hours=1)))
+failed = await client.list(RunQuery(definition="refund", status=WorkflowStatus.FAILED))
+```
+
+Every field is a typed value — never a free string: `definition` matches
+the Definition name, `status` matches the runs row (runs without one never
+match), `waiting` is computed exactly like `RunView.waiting`, and
+`older_than` compares creation time. Omitted fields match everything.
+`limit` must be a positive `int`. `client.list_sync(...)` is the
+synchronous mirror.
 
 ## Rerun: Repeat a Settled Run
 
@@ -144,7 +205,10 @@ records `retry_of`/`retry_index`, and completed-step checkpoints from the
 source are reused. There is deliberately **no input override** — the
 signature is `rerun(ref)` and passing `inputs=` is a `TypeError`; changed
 inputs use a normal new `submit()`. The source must exist and be terminal,
-else `RerunError`. `client.rerun_sync(...)` is the synchronous mirror.
+else `RerunError` — with one exception: a **recovery-exhausted** source is
+exactly the rerun case (reviving braked work), so `rerun()` accepts it even
+without a terminal runs row. `client.rerun_sync(...)` is the synchronous
+mirror.
 
 ## Fork: Migrate to New Code
 
@@ -188,13 +252,35 @@ worker died mid-run, so unfinished work continues without resubmission.
 Process supervision (systemd, FastAPI lifespan, cron) restarts the worker —
 Hypergraph runs no control-plane server.
 
+## Crash Recovery and the Recovery Brake
+
+When a worker dies mid-run (SIGKILL, power loss), the next worker's startup
+scan re-adopts the orphaned submission and **resumes** the run: committed
+steps are skipped from their checkpoints, only unfinished work re-executes.
+A run that settled before the crash — including `STOPPED` — is finished and
+never resumed.
+
+Unbounded resume would loop a poison run forever, so every submission
+carries a recovery brake (`recovery_cap` at submit time, default `3`). Each
+re-adoption of a crashed submission checks progress since the previous
+adoption:
+
+- **new committed steps** (or the run is `PAUSED` — paused work waits on
+  purpose) → the attempt budget resets and the run is re-pended;
+- **no progress** → `recovery_attempts` increments; when it reaches the
+  cap, the submission is parked as recovery-exhausted: workers stop
+  claiming it, a durable `recovery_exhausted` update is recorded, and the
+  view reports `WaitingCondition.RECOVERY_EXHAUSTED`.
+
+`client.rerun(ref)` revives braked work under a fresh workflow id.
+
 ## Errors
 
 | Error | Raised when |
 |---|---|
 | `WorkerLockError` | a second worker starts on the same Run Home |
-| `AlreadyTerminalError` | a terminal `workflow_id` is reused |
+| `AlreadyTerminalError` | a terminal `workflow_id` is reused for submit or stop |
 | `WorkflowIdConflictError` | a nonterminal `workflow_id` is reused with a different start fingerprint |
 | `ForkCompatibilityError` | `host.fork()` targets a structurally incompatible Definition |
-| `RerunError` | `client.rerun()` names a missing or nonterminal source |
-| `HostError` | base class for host-specific errors |
+| `RerunError` | `client.rerun()` names a missing or nonterminal source (recovery-exhausted sources are allowed) |
+| `HostError` | base class for host-specific errors; also raised directly for an unknown stop target |

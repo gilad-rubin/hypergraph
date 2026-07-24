@@ -56,3 +56,20 @@ class SubmitReceipt:
     run_ref: RunRef
     workflow_id: str
     duplicate: bool
+
+
+@dataclass(frozen=True)
+class CommandReceipt:
+    """Acknowledgement of one accepted (or deduplicated) durable command.
+
+    Attributes:
+        run_ref: Inert address of the run the command targets.
+        verb: The command verb (``"stop"`` today).
+        duplicate: True when an unapplied command with the same verb already
+            existed for the run — the first accepted command owns its
+            payload and nothing new was written.
+    """
+
+    run_ref: RunRef
+    verb: str = "stop"
+    duplicate: bool = False

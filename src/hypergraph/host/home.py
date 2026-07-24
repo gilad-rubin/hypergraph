@@ -15,20 +15,25 @@ import json
 from collections.abc import Collection
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from hypergraph.checkpointers.base import CheckpointPolicy
-from hypergraph.checkpointers.sqlite import SqliteCheckpointer
+from hypergraph.checkpointers.sqlite import _RUNS_COLS, SqliteCheckpointer
 from hypergraph.host.definition import DefinitionId
-from hypergraph.host.errors import AlreadyTerminalError, WorkflowIdConflictError
+from hypergraph.host.errors import AlreadyTerminalError, HostError, WorkflowIdConflictError
 from hypergraph.host.fingerprint import fingerprint_mismatch_aspect
+
+if TYPE_CHECKING:
+    from hypergraph.checkpointers.types import Run
 
 _SUBMISSION_COLS = (
     "workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
     "start_at, state, recovery_attempts, recovery_cap, source_ref, created_at, claimed_at, finished_at, "
-    "fingerprint, compat_state, retry_of, forked_from, fork_reason"
+    "fingerprint, compat_state, retry_of, forked_from, fork_reason, last_progress_step_count"
 )
 _SUBMISSION_PLACEHOLDERS = ", ".join("?" for _ in _SUBMISSION_COLS.split(", "))
+_QUALIFIED_SUBMISSION_COLS = ", ".join(f"s.{name}" for name in _SUBMISSION_COLS.split(", "))
+_QUALIFIED_RUN_COLS = ", ".join(f"r.{name}" for name in _RUNS_COLS.split(", "))
 _TERMINAL_STATUS_VALUES = ("completed", "failed", "partial", "stopped")
 _CLAIM_BATCH = 16
 
@@ -160,6 +165,7 @@ class RunHome(SqliteCheckpointer):
         retry_of: str | None = None,
         forked_from: str | None = None,
         fork_reason: str | None = None,
+        recovery_cap: int = 3,
     ) -> tuple[bool, dict[str, Any]]:
         """Insert one submission plus its 'submitted' update, atomically.
 
@@ -204,7 +210,7 @@ class RunHome(SqliteCheckpointer):
                         start_at,
                         "pending",
                         0,
-                        3,
+                        recovery_cap,
                         source_ref,
                         now,
                         None,
@@ -214,6 +220,7 @@ class RunHome(SqliteCheckpointer):
                         retry_of,
                         forked_from,
                         fork_reason,
+                        0,
                     ),
                 )
                 self._append_run_update_sync(
@@ -244,6 +251,7 @@ class RunHome(SqliteCheckpointer):
         retry_of: str | None = None,
         forked_from: str | None = None,
         fork_reason: str | None = None,
+        recovery_cap: int = 3,
     ) -> tuple[bool, dict[str, Any]]:
         """Async mirror of ``_submit_sync``."""
         await self._ensure_db()
@@ -283,7 +291,7 @@ class RunHome(SqliteCheckpointer):
                         start_at,
                         "pending",
                         0,
-                        3,
+                        recovery_cap,
                         source_ref,
                         now,
                         None,
@@ -293,6 +301,7 @@ class RunHome(SqliteCheckpointer):
                         retry_of,
                         forked_from,
                         fork_reason,
+                        0,
                     ),
                 )
                 await self._append_run_update(
@@ -419,12 +428,17 @@ class RunHome(SqliteCheckpointer):
         """Re-adopt unfinished claimed submissions on worker startup.
 
         Claimed submissions whose run settled terminally are marked
-        finished; every other claimed submission (run absent or nonterminal)
-        returns to 'pending' so unfinished work continues without
-        resubmission. Pending submissions also reset to
-        ``compat_state='compatible'`` so a new worker/deployment
-        re-evaluates version compatibility from scratch. Full recovery
-        semantics (attempts, caps, pause handling) are a later host ticket.
+        finished. Every other claimed submission is a recovery attempt:
+        when the run made progress since the last adoption (new committed
+        steps, or the run is paused) the attempt counter resets and the
+        submission returns to 'pending'; a progressless re-adoption
+        increments ``recovery_attempts``, and reaching the submission's
+        ``recovery_cap`` parks it as 'exhausted' (a durable
+        ``recovery_exhausted`` update is appended in the same transaction)
+        so a crash-looping run is braked instead of resumed forever.
+        Pending submissions also reset to ``compat_state='compatible'`` so
+        a new worker/deployment re-evaluates version compatibility from
+        scratch.
         """
         await self._ensure_db()
         now = _now_iso()
@@ -438,9 +452,44 @@ class RunHome(SqliteCheckpointer):
                     f"(SELECT id FROM runs WHERE status IN ({terminal_placeholders}))",
                     (now, *_TERMINAL_STATUS_VALUES),
                 )
-                await self._db.execute(
-                    "UPDATE host_submissions SET state = 'pending', claimed_at = NULL WHERE state = 'claimed'",
+                cursor = await self._db.execute(
+                    f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE state = 'claimed'",
                 )
+                for row in await cursor.fetchall():
+                    submission = _row_to_submission(row)
+                    workflow_id = submission["workflow_id"]
+                    steps_cursor = await self._db.execute("SELECT COUNT(*) FROM steps WHERE run_id = ?", (workflow_id,))
+                    (step_count,) = await steps_cursor.fetchone()
+                    run_cursor = await self._db.execute("SELECT status FROM runs WHERE id = ?", (workflow_id,))
+                    run_row = await run_cursor.fetchone()
+                    made_progress = step_count > submission["last_progress_step_count"] or (run_row is not None and run_row[0] == "paused")
+                    if made_progress:
+                        # Progress resets the brake: record the new high-water
+                        # mark and re-pend with a fresh attempt budget.
+                        await self._db.execute(
+                            "UPDATE host_submissions SET state = 'pending', claimed_at = NULL, "
+                            "recovery_attempts = 0, last_progress_step_count = ? WHERE workflow_id = ?",
+                            (step_count, workflow_id),
+                        )
+                        continue
+                    attempts = submission["recovery_attempts"] + 1
+                    if attempts >= submission["recovery_cap"]:
+                        # Recovery brake: the run crashed without progress too
+                        # many times. Park it exhausted; client.rerun() revives.
+                        await self._db.execute(
+                            "UPDATE host_submissions SET state = 'exhausted', recovery_attempts = ? WHERE workflow_id = ?",
+                            (attempts, workflow_id),
+                        )
+                        await self._append_run_update(
+                            workflow_id,
+                            "recovery_exhausted",
+                            {"recovery_attempts": attempts, "recovery_cap": submission["recovery_cap"]},
+                        )
+                        continue
+                    await self._db.execute(
+                        "UPDATE host_submissions SET state = 'pending', claimed_at = NULL, recovery_attempts = ? WHERE workflow_id = ?",
+                        (attempts, workflow_id),
+                    )
                 # A new worker (possibly a new deployment) re-evaluates
                 # version compatibility from scratch.
                 await self._db.execute(
@@ -450,6 +499,193 @@ class RunHome(SqliteCheckpointer):
             except BaseException:
                 await self._rollback_async()
                 raise
+
+    # === host_commands (durable stop channel) ===
+
+    def _write_stop_command_sync(self, workflow_id: str, info: Any) -> bool:
+        """Record a durable stop command plus its 'command' update, atomically.
+
+        Returns True when a new command row was written; False when an
+        unapplied stop already exists (the first stop owns its ``info`` and
+        nothing new is written). Raises ``HostError`` for an unknown run and
+        ``AlreadyTerminalError`` when the run is already terminal (or its
+        submission already finished) at write time.
+        """
+        with self._sync_lock:
+            db = self._sync_db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                submission_row = db.execute(
+                    "SELECT state FROM host_submissions WHERE workflow_id = ?",
+                    (workflow_id,),
+                ).fetchone()
+                run_row = db.execute("SELECT status FROM runs WHERE id = ?", (workflow_id,)).fetchone()
+                if submission_row is None and run_row is None:
+                    raise HostError(f"Cannot stop {workflow_id!r}: no such run in this Run Home.")
+                if run_row is not None and run_row[0] in _TERMINAL_STATUS_VALUES:
+                    raise AlreadyTerminalError(workflow_id)
+                if submission_row is not None and submission_row[0] == "finished":
+                    raise AlreadyTerminalError(workflow_id)
+                existing = db.execute(
+                    "SELECT id FROM host_commands WHERE run_id = ? AND verb = 'stop' AND applied_at IS NULL LIMIT 1",
+                    (workflow_id,),
+                ).fetchone()
+                if existing is not None:
+                    db.rollback()
+                    return False
+                db.execute(
+                    "INSERT INTO host_commands (run_id, verb, payload, created_at) VALUES (?, 'stop', ?, ?)",
+                    (workflow_id, json.dumps({"info": info}), _now_iso()),
+                )
+                self._append_run_update_sync(db, workflow_id, "command", {"verb": "stop", "info": info})
+                db.commit()
+                return True
+            except BaseException:
+                self._rollback_sync(db)
+                raise
+
+    async def _write_stop_command(self, workflow_id: str, info: Any) -> bool:
+        """Async mirror of ``_write_stop_command_sync``."""
+        await self._ensure_db()
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                submission_cursor = await self._db.execute(
+                    "SELECT state FROM host_submissions WHERE workflow_id = ?",
+                    (workflow_id,),
+                )
+                submission_row = await submission_cursor.fetchone()
+                run_cursor = await self._db.execute("SELECT status FROM runs WHERE id = ?", (workflow_id,))
+                run_row = await run_cursor.fetchone()
+                if submission_row is None and run_row is None:
+                    raise HostError(f"Cannot stop {workflow_id!r}: no such run in this Run Home.")
+                if run_row is not None and run_row[0] in _TERMINAL_STATUS_VALUES:
+                    raise AlreadyTerminalError(workflow_id)
+                if submission_row is not None and submission_row[0] == "finished":
+                    raise AlreadyTerminalError(workflow_id)
+                existing_cursor = await self._db.execute(
+                    "SELECT id FROM host_commands WHERE run_id = ? AND verb = 'stop' AND applied_at IS NULL LIMIT 1",
+                    (workflow_id,),
+                )
+                if await existing_cursor.fetchone() is not None:
+                    await self._db.rollback()
+                    return False
+                await self._db.execute(
+                    "INSERT INTO host_commands (run_id, verb, payload, created_at) VALUES (?, 'stop', ?, ?)",
+                    (workflow_id, json.dumps({"info": info}), _now_iso()),
+                )
+                await self._append_run_update(workflow_id, "command", {"verb": "stop", "info": info})
+                await self._db.commit()
+                return True
+            except BaseException:
+                await self._rollback_async()
+                raise
+
+    async def _unapplied_stop_commands(self) -> list[tuple[int, str, Any]]:
+        """Read unapplied stop commands as (command_id, workflow_id, info)."""
+        await self._ensure_db()
+        async with self._txn_lock():
+            cursor = await self._db.execute(
+                "SELECT id, run_id, payload FROM host_commands WHERE verb = 'stop' AND applied_at IS NULL ORDER BY id",
+            )
+            rows = await cursor.fetchall()
+            return [(int(row[0]), str(row[1]), json.loads(row[2]).get("info")) for row in rows]
+
+    async def _apply_stop_commands(self, command_ids: Collection[int]) -> None:
+        """Mark stop commands applied: the worker observed and acted on them."""
+        ids = list(command_ids)
+        if not ids:
+            return
+        placeholders = ", ".join("?" for _ in ids)
+        await self._ensure_db()
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                await self._db.execute(
+                    f"UPDATE host_commands SET applied_at = ? WHERE id IN ({placeholders}) AND applied_at IS NULL",
+                    (_now_iso(), *ids),
+                )
+                await self._db.commit()
+            except BaseException:
+                await self._rollback_async()
+                raise
+
+    async def _apply_stop_never_started(self, workflow_id: str) -> bool:
+        """Pre-run gate for a stop that arrived before first execution.
+
+        Returns True when an unapplied stop exists AND no runs row exists:
+        the command is marked applied and the submission finished (the run
+        never executes and no runs row is invented). Returns False when no
+        stop is pending or a runs row already exists (a resume proceeds and
+        the periodic scan delivers the stop to the live execution).
+        """
+        await self._ensure_db()
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                stop_cursor = await self._db.execute(
+                    "SELECT id FROM host_commands WHERE run_id = ? AND verb = 'stop' AND applied_at IS NULL LIMIT 1",
+                    (workflow_id,),
+                )
+                if await stop_cursor.fetchone() is None:
+                    await self._db.commit()
+                    return False
+                run_cursor = await self._db.execute("SELECT 1 FROM runs WHERE id = ?", (workflow_id,))
+                if await run_cursor.fetchone() is not None:
+                    await self._db.commit()
+                    return False
+                now = _now_iso()
+                await self._db.execute(
+                    "UPDATE host_commands SET applied_at = ? WHERE run_id = ? AND verb = 'stop' AND applied_at IS NULL",
+                    (now, workflow_id),
+                )
+                await self._db.execute(
+                    "UPDATE host_submissions SET state = 'finished', finished_at = ? WHERE workflow_id = ? AND state IN ('pending', 'claimed')",
+                    (now, workflow_id),
+                )
+                await self._db.commit()
+                return True
+            except BaseException:
+                await self._rollback_async()
+                raise
+
+    # === listing (client.list) ===
+
+    def _list_run_rows_sync(self) -> list[tuple[dict[str, Any] | None, Run | None]]:
+        """All submissions with their runs row, plus bare Tier-0 runs."""
+        with self._sync_lock:
+            db = self._sync_db()
+            rows: list[tuple[dict[str, Any] | None, Run | None]] = []
+            cursor = db.execute(
+                f"SELECT {_QUALIFIED_SUBMISSION_COLS}, {_QUALIFIED_RUN_COLS} FROM host_submissions s LEFT JOIN runs r ON r.id = s.workflow_id"
+            )
+            sub_count = len(_SUBMISSION_COLS.split(", "))
+            for row in cursor.fetchall():
+                submission = _row_to_submission(row[:sub_count])
+                run = self._row_to_run(row[sub_count:]) if row[sub_count] is not None else None
+                rows.append((submission, run))
+            cursor = db.execute(f"SELECT {_RUNS_COLS} FROM runs WHERE id NOT IN (SELECT workflow_id FROM host_submissions)")
+            for row in cursor.fetchall():
+                rows.append((None, self._row_to_run(row)))
+            return rows
+
+    async def _list_run_rows(self) -> list[tuple[dict[str, Any] | None, Run | None]]:
+        """Async mirror of ``_list_run_rows_sync``."""
+        await self._ensure_db()
+        async with self._txn_lock():
+            rows: list[tuple[dict[str, Any] | None, Run | None]] = []
+            cursor = await self._db.execute(
+                f"SELECT {_QUALIFIED_SUBMISSION_COLS}, {_QUALIFIED_RUN_COLS} FROM host_submissions s LEFT JOIN runs r ON r.id = s.workflow_id"
+            )
+            sub_count = len(_SUBMISSION_COLS.split(", "))
+            for row in await cursor.fetchall():
+                submission = _row_to_submission(row[:sub_count])
+                run = self._row_to_run(row[sub_count:]) if row[sub_count] is not None else None
+                rows.append((submission, run))
+            cursor = await self._db.execute(f"SELECT {_RUNS_COLS} FROM runs WHERE id NOT IN (SELECT workflow_id FROM host_submissions)")
+            for row in await cursor.fetchall():
+                rows.append((None, self._row_to_run(row)))
+            return rows
 
     # === run_updates reads (watch replay) ===
 
