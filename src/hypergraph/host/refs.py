@@ -40,3 +40,19 @@ class RunRef:
         if not isinstance(home, str) or not isinstance(run_id, str):
             raise TypeError("RunRef 'home' and 'run_id' must be strings.")
         return cls(home=home, run_id=run_id)
+
+
+@dataclass(frozen=True)
+class SubmitReceipt:
+    """Acknowledgement of one accepted (or deduplicated) submission.
+
+    Attributes:
+        run_ref: Inert address of the run — safe to store in a product table.
+        workflow_id: The run's workflow id.
+        duplicate: True when this submission matched an existing nonterminal
+            workflow_id (use-existing; no new row was written).
+    """
+
+    run_ref: RunRef
+    workflow_id: str
+    duplicate: bool

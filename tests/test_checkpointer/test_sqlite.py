@@ -939,6 +939,30 @@ class TestMigration:
         assert "host_commands" in tables
         assert "_schema_version" in tables
 
+        # v6 host_submissions columns (ticket 02 coordination + ticket 03
+        # identity/fingerprint/lineage).
+        submission_cols = {row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()}
+        assert {
+            "workflow_id",
+            "definition_name",
+            "def_version",
+            "def_struct_hash",
+            "inputs_json",
+            "start_at",
+            "state",
+            "recovery_attempts",
+            "recovery_cap",
+            "source_ref",
+            "created_at",
+            "claimed_at",
+            "finished_at",
+            "fingerprint",
+            "compat_state",
+            "retry_of",
+            "forked_from",
+            "fork_reason",
+        } <= submission_cols
+
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
         assert version == 6
         conn.close()
@@ -955,6 +979,36 @@ class TestMigration:
         ensure_schema(conn)  # Second time should be a no-op
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
         assert version == 6
+        conn.close()
+
+    def test_v6_db_gains_ticket03_columns_in_place(self, tmp_path):
+        """A v6 database predating the ticket-03 columns migrates in place.
+
+        Dev databases created at v6 before fingerprint/compat/lineage columns
+        existed get them via guarded ALTERs; existing rows are preserved with
+        defaults.
+        """
+        import sqlite3
+
+        from hypergraph.checkpointers._migrate import ensure_schema
+
+        db_path = str(tmp_path / "early-v6.db")
+        conn = sqlite3.connect(db_path)
+        ensure_schema(conn)  # real v6 schema
+        # Simulate a v6 database created before the ticket-03 columns existed.
+        for column in ("fingerprint", "compat_state", "retry_of", "forked_from", "fork_reason"):
+            conn.execute(f"ALTER TABLE host_submissions DROP COLUMN {column}")
+        conn.execute(
+            "INSERT INTO host_submissions (workflow_id, definition_name, inputs_json, created_at) VALUES ('wf-legacy', 'dbl', '{}', '2026-07-24T00:00:00+00:00')"
+        )
+        conn.commit()
+
+        ensure_schema(conn)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()}
+        assert {"fingerprint", "compat_state", "retry_of", "forked_from", "fork_reason"} <= cols
+        row = conn.execute("SELECT compat_state, fingerprint, retry_of FROM host_submissions WHERE workflow_id = 'wf-legacy'").fetchone()
+        assert row == ("compatible", None, None)
+        ensure_schema(conn)  # idempotent on the migrated database
         conn.close()
 
     def test_unknown_schema_version_raises(self, tmp_path):

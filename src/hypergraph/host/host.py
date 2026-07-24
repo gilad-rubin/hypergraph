@@ -19,30 +19,16 @@ from typing import TYPE_CHECKING, Any
 
 from hypergraph.host._bus import _BusEventProcessor, _PreviewBus, _register_bus
 from hypergraph.host.client import RunHomeClient
-from hypergraph.host.errors import AlreadyTerminalError
+from hypergraph.host.definition import DefinitionId
+from hypergraph.host.errors import ForkCompatibilityError, HostError
+from hypergraph.host.fingerprint import start_fingerprint
 from hypergraph.host.home import RunHome
-from hypergraph.host.refs import RunRef
+from hypergraph.host.refs import RunRef, SubmitReceipt
 from hypergraph.host.worker import _drain, _WorkerLock
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
     from hypergraph.runners.base import BaseRunner
-
-
-@dataclass(frozen=True)
-class SubmitReceipt:
-    """Acknowledgement of one accepted (or deduplicated) submission.
-
-    Attributes:
-        run_ref: Inert address of the run — safe to store in a product table.
-        workflow_id: The run's workflow id.
-        duplicate: True when this submission matched an existing nonterminal
-            workflow_id (use-existing; no new row was written).
-    """
-
-    run_ref: RunRef
-    workflow_id: str
-    duplicate: bool
 
 
 @dataclass(frozen=True)
@@ -54,6 +40,11 @@ class _Definition:
     runner: BaseRunner
     version: str
     struct_hash: str
+
+    @property
+    def definition_id(self) -> DefinitionId:
+        """The complete pinned identity of this served Definition."""
+        return DefinitionId(self.name, self.version, self.struct_hash)
 
 
 def _normalize_start_at(start_at: datetime | str | None) -> str | None:
@@ -79,14 +70,22 @@ class Host:
         definitions: dict[str, _Definition],
         deployment_version: str,
         bus: _PreviewBus,
+        accepts: tuple[DefinitionId, ...] = (),
     ) -> None:
         self._home = home
         self._definitions = definitions
         self._deployment_version = deployment_version
+        self._accepts = accepts
+        # Served identities: each Definition's exact pinned identity plus any
+        # explicitly accepted prior identities (ADR 0007).
+        self._served_identities: frozenset[DefinitionId] = frozenset(definition.definition_id for definition in definitions.values()) | frozenset(
+            accepts
+        )
         self._bus = bus
         self._client = RunHomeClient(home, _bus=bus)
         self._stop_event: asyncio.Event | None = None
         self._worker_loop: asyncio.AbstractEventLoop | None = None
+        self._shutdown_requested = False
         self.worker_errors: list[BaseException] = []
 
     @property
@@ -107,11 +106,13 @@ class Host:
 
         The submission row and its first durable update commit in one
         transaction before this method returns — process loss afterwards
-        cannot erase durable intent. A fingerprint-identical duplicate
-        contract arrives with a later ticket; for now, resubmitting a
-        nonterminal workflow_id returns the existing receipt with
-        ``duplicate=True``, and reusing a terminal one raises
-        ``AlreadyTerminalError``.
+        cannot erase durable intent. Each submission pins the complete
+        ``DefinitionId`` and a start fingerprint (identity + normalized
+        inputs + ``start_at``): resubmitting a fingerprint-identical
+        nonterminal ``workflow_id`` returns the existing receipt with
+        ``duplicate=True``; reusing a terminal one raises
+        ``AlreadyTerminalError``; a fingerprint mismatch on the same id
+        raises ``WorkflowIdConflictError``.
 
         Args:
             definition_name: A Definition named in ``serve()``.
@@ -122,17 +123,19 @@ class Host:
         """
         definition = self._require_definition(definition_name)
         inputs_json = self._serialize_inputs(inputs)
+        start_at_iso = _normalize_start_at(start_at)
         workflow_id = workflow_id or f"{definition_name}-{uuid.uuid4().hex[:12]}"
-        created, row = await self._home._submit(
+        created, _row = await self._home._submit(
             workflow_id,
             definition.name,
             definition.version,
             definition.struct_hash,
             inputs_json,
-            _normalize_start_at(start_at),
+            start_at_iso,
             source_ref,
+            fingerprint=start_fingerprint(definition.definition_id, inputs_json, start_at_iso),
         )
-        return self._receipt(workflow_id, created, row)
+        return self._receipt(workflow_id, created)
 
     def submit_sync(
         self,
@@ -146,17 +149,87 @@ class Host:
         """Sync mirror of ``submit``."""
         definition = self._require_definition(definition_name)
         inputs_json = self._serialize_inputs(inputs)
+        start_at_iso = _normalize_start_at(start_at)
         workflow_id = workflow_id or f"{definition_name}-{uuid.uuid4().hex[:12]}"
-        created, row = self._home._submit_sync(
+        created, _row = self._home._submit_sync(
             workflow_id,
             definition.name,
             definition.version,
             definition.struct_hash,
             inputs_json,
-            _normalize_start_at(start_at),
+            start_at_iso,
             source_ref,
+            fingerprint=start_fingerprint(definition.definition_id, inputs_json, start_at_iso),
         )
-        return self._receipt(workflow_id, created, row)
+        return self._receipt(workflow_id, created)
+
+    async def fork(self, ref: RunRef, *, into: str, reason: str) -> SubmitReceipt:
+        """Migrate an existing run to a served Definition via explicit fork.
+
+        The new submission pins the TARGET Definition identity, keeps the
+        source inputs, and records ``forked_from`` lineage plus the human
+        ``reason``. Compatibility is checked at fork time: the target's
+        ``structural_hash`` must equal the source submission's pinned hash
+        (history seeding requires restorable checkpoints), else
+        ``ForkCompatibilityError``. Fork needs loaded Definition code, so it
+        lives on the Host — unlike ``client.rerun()``.
+
+        Args:
+            ref: The source run's inert address.
+            into: Name of a Definition served by this host.
+            reason: Non-empty migration reason, stored on the submission.
+        """
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError(f"fork() requires a non-empty reason string naming why the migration happens, got {reason!r}.")
+        target = self._require_definition(into)
+        submission = await self._home._get_submission(ref.run_id)
+        if submission is None:
+            raise HostError(f"Cannot fork {ref.run_id!r}: no such run in this Run Home.")
+        source_id = DefinitionId(submission["definition_name"], submission["def_version"], submission["def_struct_hash"])
+        if target.struct_hash != source_id.structural_hash:
+            raise ForkCompatibilityError(source_id, target.definition_id)
+        workflow_id = f"{ref.run_id}-fork-{uuid.uuid4().hex[:6]}"
+        inputs_json = submission["inputs_json"]
+        created, _row = await self._home._submit(
+            workflow_id,
+            target.name,
+            target.version,
+            target.struct_hash,
+            inputs_json,
+            None,
+            None,
+            fingerprint=start_fingerprint(target.definition_id, inputs_json, None),
+            forked_from=ref.run_id,
+            fork_reason=reason,
+        )
+        return self._receipt(workflow_id, created)
+
+    def fork_sync(self, ref: RunRef, *, into: str, reason: str) -> SubmitReceipt:
+        """Sync mirror of ``fork``."""
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError(f"fork() requires a non-empty reason string naming why the migration happens, got {reason!r}.")
+        target = self._require_definition(into)
+        submission = self._home._get_submission_sync(ref.run_id)
+        if submission is None:
+            raise HostError(f"Cannot fork {ref.run_id!r}: no such run in this Run Home.")
+        source_id = DefinitionId(submission["definition_name"], submission["def_version"], submission["def_struct_hash"])
+        if target.struct_hash != source_id.structural_hash:
+            raise ForkCompatibilityError(source_id, target.definition_id)
+        workflow_id = f"{ref.run_id}-fork-{uuid.uuid4().hex[:6]}"
+        inputs_json = submission["inputs_json"]
+        created, _row = self._home._submit_sync(
+            workflow_id,
+            target.name,
+            target.version,
+            target.struct_hash,
+            inputs_json,
+            None,
+            None,
+            fingerprint=start_fingerprint(target.definition_id, inputs_json, None),
+            forked_from=ref.run_id,
+            fork_reason=reason,
+        )
+        return self._receipt(workflow_id, created)
 
     def _require_definition(self, definition_name: str) -> _Definition:
         definition = self._definitions.get(definition_name)
@@ -170,9 +243,7 @@ class Host:
             raise TypeError(f"submit() inputs must be a dict, got {type(inputs).__name__}.")
         return json.dumps(inputs)
 
-    def _receipt(self, workflow_id: str, created: bool, row: dict[str, Any]) -> SubmitReceipt:
-        if not created and row["state"] == "finished":
-            raise AlreadyTerminalError(workflow_id)
+    def _receipt(self, workflow_id: str, created: bool) -> SubmitReceipt:
         return SubmitReceipt(
             run_ref=RunRef(home=self._home.uri, run_id=workflow_id),
             workflow_id=workflow_id,
@@ -180,10 +251,17 @@ class Host:
         )
 
     def shutdown(self) -> None:
-        """Signal the worker loop to stop claiming and drain (bounded)."""
+        """Signal the worker loop to stop claiming and drain (bounded).
+
+        Safe to call before the worker's first loop iteration: when no
+        worker loop is live, the request is remembered and consumed by the
+        next ``work_forever`` startup, so a shutdown racing worker startup
+        is never lost (and never leaks into a later worker run).
+        """
         stop_event = self._stop_event
         loop = self._worker_loop
         if stop_event is None or loop is None:
+            self._shutdown_requested = True
             return
         loop.call_soon_threadsafe(stop_event.set)
 
@@ -205,12 +283,20 @@ class Host:
         stop_event = asyncio.Event()
         self._stop_event = stop_event
         self._worker_loop = asyncio.get_running_loop()
+        if self._shutdown_requested:
+            # A shutdown that raced worker startup is honored here, then
+            # consumed: later work_forever() runs on this Host start fresh.
+            stop_event.set()
+            self._shutdown_requested = False
         tasks: set[asyncio.Task] = set()
         try:
             await self._home._restart_scan()
             try:
                 while not stop_event.is_set():
-                    claimed = await self._home._claim_eligible(datetime.now(timezone.utc).isoformat())
+                    claimed = await self._home._claim_eligible(
+                        datetime.now(timezone.utc).isoformat(),
+                        served=self._served_identities,
+                    )
                     for row in claimed:
                         task = asyncio.create_task(self._execute_submission(row))
                         task.add_done_callback(self._record_task_exception)
@@ -251,6 +337,23 @@ class Host:
             "event_processors": processors,
             "error_handling": "continue",
         }
+        if row["retry_of"]:
+            # Rerun: explicit workflow_id + retry_from is a legal runner
+            # combination (validate_lineage_request only forbids
+            # fork_from+retry_from or checkpoint combos). retry_workflow
+            # keeps the explicit id and derives the same retry_index the
+            # client used (both are COUNT(runs.retry_of=source)+1), and the
+            # runs row records retry_of/retry_index with completed-step
+            # checkpoint reuse. A source that never executed has no runs
+            # row — retry_workflow would raise "Unknown source", so fall
+            # back to a plain run; lineage stays recorded on the submission.
+            if await self._home.get_run_async(row["retry_of"]) is not None:
+                run_kwargs["retry_from"] = row["retry_of"]
+        elif row["forked_from"] and await self._home.get_run_async(row["forked_from"]) is not None:
+            # Fork: same legal-combination reasoning; fork_workflow keeps
+            # the explicit id and the runs row records forked_from lineage,
+            # seeded from the source's recorded history.
+            run_kwargs["fork_from"] = row["forked_from"]
         if asyncio.iscoroutinefunction(run_fn):
             await run_fn(definition.graph, inputs, **run_kwargs)
         else:
@@ -260,7 +363,7 @@ class Host:
         await self._home._finish_submission(workflow_id)
 
 
-def serve(*graphs: Graph, home: RunHome, deployment_version: str = "") -> Host:
+def serve(*graphs: Graph, home: RunHome, deployment_version: str = "", accepts: tuple[DefinitionId, ...] = ()) -> Host:
     """Bind Definitions to a Run Home and return the Host.
 
     Each graph must have a name and a runner bound via
@@ -274,6 +377,11 @@ def serve(*graphs: Graph, home: RunHome, deployment_version: str = "") -> Host:
         home: The Run Home, opened with ``RunHome.open(uri)``.
         deployment_version: Version pinned into every submission's
             Definition identity.
+        accepts: Complete prior ``DefinitionId`` identities this deployment
+            declares it can drain (ADR 0007). The worker claims a parked
+            submission only when its pinned identity matches a served
+            Definition exactly or one of these declarations; an entry that
+            matches nothing simply never drains.
     """
     from hypergraph.graph import Graph
     from hypergraph.runners.base import BaseRunner
@@ -282,6 +390,9 @@ def serve(*graphs: Graph, home: RunHome, deployment_version: str = "") -> Host:
         raise TypeError(f"serve() requires home=RunHome.open(...), got {type(home).__name__}.")
     if not graphs:
         raise ValueError("serve() requires at least one graph.")
+    for entry in accepts:
+        if not isinstance(entry, DefinitionId):
+            raise TypeError(f"serve() accepts= entries must be DefinitionId instances, got {type(entry).__name__}.")
 
     definitions: dict[str, _Definition] = {}
     for graph in graphs:
@@ -313,4 +424,4 @@ def serve(*graphs: Graph, home: RunHome, deployment_version: str = "") -> Host:
 
     bus = _PreviewBus()
     _register_bus(home.uri, bus)
-    return Host(home=home, definitions=definitions, deployment_version=deployment_version, bus=bus)
+    return Host(home=home, definitions=definitions, deployment_version=deployment_version, bus=bus, accepts=tuple(accepts))

@@ -6,7 +6,15 @@ code. Tier 0 (direct runner execution) is unchanged.
 """
 
 from hypergraph.host.client import RunHomeClient
-from hypergraph.host.errors import AlreadyTerminalError, HostError, WorkerLockError
+from hypergraph.host.definition import DefinitionId
+from hypergraph.host.errors import (
+    AlreadyTerminalError,
+    ForkCompatibilityError,
+    HostError,
+    RerunError,
+    WorkerLockError,
+    WorkflowIdConflictError,
+)
 from hypergraph.host.home import RunHome
 from hypergraph.host.host import Host, SubmitReceipt, serve
 from hypergraph.host.refs import RunRef
@@ -14,8 +22,11 @@ from hypergraph.host.views import RunUpdate, RunView, WaitingCondition
 
 __all__ = [
     "AlreadyTerminalError",
+    "DefinitionId",
+    "ForkCompatibilityError",
     "Host",
     "HostError",
+    "RerunError",
     "RunHome",
     "RunHomeClient",
     "RunRef",
@@ -24,5 +35,6 @@ __all__ = [
     "SubmitReceipt",
     "WaitingCondition",
     "WorkerLockError",
+    "WorkflowIdConflictError",
     "serve",
 ]

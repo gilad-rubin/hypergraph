@@ -111,6 +111,10 @@ ROOT_EXPORTS = (
     "HostError",
     "WorkerLockError",
     "AlreadyTerminalError",
+    "DefinitionId",
+    "WorkflowIdConflictError",
+    "ForkCompatibilityError",
+    "RerunError",
     "set_display_mode",
     "get_display_mode",
 )

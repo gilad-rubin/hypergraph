@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Any
 
 from hypergraph.checkpointers.types import WorkflowStatus
+from hypergraph.host.definition import DefinitionId
 from hypergraph.host.refs import RunRef
 
 # Terminal run statuses (mirrors the checkpointer's completed_at semantics).
@@ -72,10 +73,21 @@ class RunView:
         definition_name: Definition the run was submitted against.
         status: The run's ``WorkflowStatus``, or None while no runs row
             exists yet (submission still pending).
-        waiting: Typed waiting condition, or None. Currently only
+        waiting: Typed waiting condition, or None. Currently
             ``WaitingCondition.QUEUED`` (submission accepted, execution not
-            started) is produced; later host tickets produce further
-            conditions from the same closed enum. Never a WorkflowStatus.
+            started) and ``WaitingCondition.VERSION_INCOMPATIBLE`` (no
+            serving worker claims the pinned Definition identity) are
+            produced; later host tickets produce further conditions from the
+            same closed enum. Never a WorkflowStatus.
+        definition_id: The pinned Definition identity from the submission,
+            or reconstructed from the runs row for host-less (Tier 0) runs.
+            None only when neither exists.
+        retry_of: Source workflow id when this run is a rerun (repetition),
+            else None. Lineage never merges: when ``retry_of`` is set,
+            ``forked_from`` is None.
+        forked_from: Source workflow id when this run is a fork (migration),
+            else None. Taken from the runs row when present, else the
+            submission's recorded lineage.
     """
 
     run_ref: RunRef
@@ -83,3 +95,6 @@ class RunView:
     definition_name: str
     status: WorkflowStatus | None
     waiting: WaitingCondition | None
+    definition_id: DefinitionId | None
+    retry_of: str | None
+    forked_from: str | None

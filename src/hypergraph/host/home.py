@@ -12,17 +12,23 @@ checkpoint durability ``"sync"`` and rejects ``"exit"`` policies.
 from __future__ import annotations
 
 import json
+from collections.abc import Collection
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from hypergraph.checkpointers.base import CheckpointPolicy
 from hypergraph.checkpointers.sqlite import SqliteCheckpointer
+from hypergraph.host.definition import DefinitionId
+from hypergraph.host.errors import AlreadyTerminalError, WorkflowIdConflictError
+from hypergraph.host.fingerprint import fingerprint_mismatch_aspect
 
 _SUBMISSION_COLS = (
     "workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
-    "start_at, state, recovery_attempts, recovery_cap, source_ref, created_at, claimed_at, finished_at"
+    "start_at, state, recovery_attempts, recovery_cap, source_ref, created_at, claimed_at, finished_at, "
+    "fingerprint, compat_state, retry_of, forked_from, fork_reason"
 )
+_SUBMISSION_PLACEHOLDERS = ", ".join("?" for _ in _SUBMISSION_COLS.split(", "))
 _TERMINAL_STATUS_VALUES = ("completed", "failed", "partial", "stopped")
 _CLAIM_BATCH = 16
 
@@ -33,6 +39,39 @@ def _now_iso() -> str:
 
 def _row_to_submission(row: tuple[Any, ...]) -> dict[str, Any]:
     return dict(zip(_SUBMISSION_COLS.split(", "), row, strict=True))
+
+
+def _raise_on_conflicting_reuse(
+    existing: dict[str, Any],
+    run_status: str | None,
+    *,
+    workflow_id: str,
+    fingerprint: str,
+    definition_name: str,
+    def_version: str,
+    def_struct_hash: str,
+    inputs_json: str,
+    start_at: str | None,
+) -> None:
+    """Apply the dedup/conflict contract to an existing submission row.
+
+    Terminal reuse wins first (completed history never changes identity),
+    then fingerprint mismatch is a distinct typed conflict; an identical
+    fingerprint falls through to use-existing dedup. Caller holds the write
+    transaction and rolls back on raise.
+    """
+    if existing["state"] == "finished" and run_status is not None and run_status in _TERMINAL_STATUS_VALUES:
+        raise AlreadyTerminalError(workflow_id)
+    if existing["fingerprint"] != fingerprint:
+        aspect = fingerprint_mismatch_aspect(
+            existing,
+            definition_name=definition_name,
+            def_version=def_version,
+            def_struct_hash=def_struct_hash,
+            inputs_json=inputs_json,
+            start_at=start_at,
+        )
+        raise WorkflowIdConflictError(workflow_id, aspect)
 
 
 class RunHome(SqliteCheckpointer):
@@ -116,27 +155,66 @@ class RunHome(SqliteCheckpointer):
         inputs_json: str,
         start_at: str | None,
         source_ref: str | None,
+        *,
+        fingerprint: str,
+        retry_of: str | None = None,
+        forked_from: str | None = None,
+        fork_reason: str | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         """Insert one submission plus its 'submitted' update, atomically.
 
-        Returns ``(created, row)``: when a submission already exists for
-        ``workflow_id`` nothing is written and ``created`` is False.
+        Returns ``(created, row)``. When a submission already exists for
+        ``workflow_id`` nothing is written: a fingerprint-identical
+        nonterminal row returns ``(False, existing)`` (use-existing dedup),
+        terminal reuse raises ``AlreadyTerminalError``, and a fingerprint
+        mismatch raises ``WorkflowIdConflictError``.
         """
         with self._sync_lock:
             db = self._sync_db()
             try:
                 db.execute("BEGIN IMMEDIATE")
-                existing = db.execute(
+                existing_row = db.execute(
                     f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE workflow_id = ?",
                     (workflow_id,),
                 ).fetchone()
-                if existing is not None:
+                if existing_row is not None:
+                    status_row = db.execute("SELECT status FROM runs WHERE id = ?", (workflow_id,)).fetchone()
+                    _raise_on_conflicting_reuse(
+                        _row_to_submission(existing_row),
+                        status_row[0] if status_row is not None else None,
+                        workflow_id=workflow_id,
+                        fingerprint=fingerprint,
+                        definition_name=definition_name,
+                        def_version=def_version,
+                        def_struct_hash=def_struct_hash,
+                        inputs_json=inputs_json,
+                        start_at=start_at,
+                    )
                     db.rollback()
-                    return False, _row_to_submission(existing)
+                    return False, _row_to_submission(existing_row)
                 now = _now_iso()
                 db.execute(
-                    f"INSERT INTO host_submissions ({_SUBMISSION_COLS}) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 3, ?, ?, NULL, NULL)",
-                    (workflow_id, definition_name, def_version, def_struct_hash, inputs_json, start_at, source_ref, now),
+                    f"INSERT INTO host_submissions ({_SUBMISSION_COLS}) VALUES ({_SUBMISSION_PLACEHOLDERS})",
+                    (
+                        workflow_id,
+                        definition_name,
+                        def_version,
+                        def_struct_hash,
+                        inputs_json,
+                        start_at,
+                        "pending",
+                        0,
+                        3,
+                        source_ref,
+                        now,
+                        None,
+                        None,
+                        fingerprint,
+                        "compatible",
+                        retry_of,
+                        forked_from,
+                        fork_reason,
+                    ),
                 )
                 self._append_run_update_sync(
                     db,
@@ -161,6 +239,11 @@ class RunHome(SqliteCheckpointer):
         inputs_json: str,
         start_at: str | None,
         source_ref: str | None,
+        *,
+        fingerprint: str,
+        retry_of: str | None = None,
+        forked_from: str | None = None,
+        fork_reason: str | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         """Async mirror of ``_submit_sync``."""
         await self._ensure_db()
@@ -171,14 +254,46 @@ class RunHome(SqliteCheckpointer):
                     f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE workflow_id = ?",
                     (workflow_id,),
                 )
-                existing = await cursor.fetchone()
-                if existing is not None:
+                existing_row = await cursor.fetchone()
+                if existing_row is not None:
+                    status_cursor = await self._db.execute("SELECT status FROM runs WHERE id = ?", (workflow_id,))
+                    status_row = await status_cursor.fetchone()
+                    _raise_on_conflicting_reuse(
+                        _row_to_submission(existing_row),
+                        status_row[0] if status_row is not None else None,
+                        workflow_id=workflow_id,
+                        fingerprint=fingerprint,
+                        definition_name=definition_name,
+                        def_version=def_version,
+                        def_struct_hash=def_struct_hash,
+                        inputs_json=inputs_json,
+                        start_at=start_at,
+                    )
                     await self._db.rollback()
-                    return False, _row_to_submission(existing)
+                    return False, _row_to_submission(existing_row)
                 now = _now_iso()
                 await self._db.execute(
-                    f"INSERT INTO host_submissions ({_SUBMISSION_COLS}) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 3, ?, ?, NULL, NULL)",
-                    (workflow_id, definition_name, def_version, def_struct_hash, inputs_json, start_at, source_ref, now),
+                    f"INSERT INTO host_submissions ({_SUBMISSION_COLS}) VALUES ({_SUBMISSION_PLACEHOLDERS})",
+                    (
+                        workflow_id,
+                        definition_name,
+                        def_version,
+                        def_struct_hash,
+                        inputs_json,
+                        start_at,
+                        "pending",
+                        0,
+                        3,
+                        source_ref,
+                        now,
+                        None,
+                        None,
+                        fingerprint,
+                        "compatible",
+                        retry_of,
+                        forked_from,
+                        fork_reason,
+                    ),
                 )
                 await self._append_run_update(
                     workflow_id,
@@ -212,32 +327,73 @@ class RunHome(SqliteCheckpointer):
             row = await cursor.fetchone()
             return _row_to_submission(row) if row is not None else None
 
-    async def _claim_eligible(self, now_iso: str, limit: int = _CLAIM_BATCH) -> list[dict[str, Any]]:
+    def _count_retries_sync(self, workflow_id: str) -> int:
+        """Count runs rows with retry_of=workflow_id (rerun id derivation).
+
+        Mirrors the checkpointer's ``retry_workflow`` derivation
+        (``<source>-retry-N`` with N = count + 1) so a rerun's workflow id
+        and the runner-derived retry_index agree.
+        """
+        with self._sync_lock:
+            db = self._sync_db()
+            (count,) = db.execute("SELECT COUNT(*) FROM runs WHERE retry_of = ?", (workflow_id,)).fetchone()
+            return int(count or 0)
+
+    async def _count_retries(self, workflow_id: str) -> int:
+        """Async mirror of ``_count_retries_sync``."""
+        await self._ensure_db()
+        async with self._txn_lock():
+            cursor = await self._db.execute("SELECT COUNT(*) FROM runs WHERE retry_of = ?", (workflow_id,))
+            (count,) = await cursor.fetchone()
+            return int(count or 0)
+
+    async def _claim_eligible(self, now_iso: str, served: Collection[DefinitionId], limit: int = _CLAIM_BATCH) -> list[dict[str, Any]]:
         """CAS-claim eligible pending submissions (state -> 'claimed').
 
-        Eligible means ``state='pending'`` and ``start_at`` absent or past
-        (store-authoritative time). Simple ordering by creation; the full
-        delayed-start contract is a later host ticket.
+        Eligible means ``state='pending'``, ``compat_state='compatible'``,
+        and ``start_at`` absent or past (store-authoritative time). A
+        submission is claimed only when its pinned Definition identity is in
+        ``served`` — the exact served identities plus any ``accepts=``
+        declarations. An unserved submission is marked
+        ``compat_state='incompatible'`` (idempotent): later scans skip it so
+        incompatible rows never starve claimable ones, and clients see
+        ``WaitingCondition.VERSION_INCOMPATIBLE``.
         """
+        served_set = frozenset(served)
         await self._ensure_db()
         async with self._txn_lock():
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
                 cursor = await self._db.execute(
                     f"SELECT {_SUBMISSION_COLS} FROM host_submissions "
-                    "WHERE state = 'pending' AND (start_at IS NULL OR start_at <= ?) "
+                    "WHERE state = 'pending' AND compat_state = 'compatible' AND (start_at IS NULL OR start_at <= ?) "
                     "ORDER BY created_at LIMIT ?",
                     (now_iso, limit),
                 )
                 rows = await cursor.fetchall()
                 claimed: list[dict[str, Any]] = []
                 for row in rows:
+                    submission = _row_to_submission(row)
+                    identity = DefinitionId(
+                        submission["definition_name"],
+                        submission["def_version"],
+                        submission["def_struct_hash"],
+                    )
+                    if identity not in served_set:
+                        # Refuse loudly and durably: this worker cannot serve
+                        # the pinned identity; a new worker/version
+                        # re-evaluates via the restart scan.
+                        await self._db.execute(
+                            "UPDATE host_submissions SET compat_state = 'incompatible' WHERE workflow_id = ? AND state = 'pending'",
+                            (submission["workflow_id"],),
+                        )
+                        continue
                     result = await self._db.execute(
                         "UPDATE host_submissions SET state = 'claimed', claimed_at = ? WHERE workflow_id = ? AND state = 'pending'",
                         (now_iso, row[0]),
                     )
                     if result.rowcount == 1:
-                        claimed.append(_row_to_submission(row))
+                        claimed.append(submission)
                 await self._db.commit()
                 return claimed
             except BaseException:
@@ -265,8 +421,10 @@ class RunHome(SqliteCheckpointer):
         Claimed submissions whose run settled terminally are marked
         finished; every other claimed submission (run absent or nonterminal)
         returns to 'pending' so unfinished work continues without
-        resubmission. Full recovery semantics (attempts, caps, pause
-        handling) are a later host ticket.
+        resubmission. Pending submissions also reset to
+        ``compat_state='compatible'`` so a new worker/deployment
+        re-evaluates version compatibility from scratch. Full recovery
+        semantics (attempts, caps, pause handling) are a later host ticket.
         """
         await self._ensure_db()
         now = _now_iso()
@@ -282,6 +440,11 @@ class RunHome(SqliteCheckpointer):
                 )
                 await self._db.execute(
                     "UPDATE host_submissions SET state = 'pending', claimed_at = NULL WHERE state = 'claimed'",
+                )
+                # A new worker (possibly a new deployment) re-evaluates
+                # version compatibility from scratch.
+                await self._db.execute(
+                    "UPDATE host_submissions SET compat_state = 'compatible' WHERE state = 'pending'",
                 )
                 await self._db.commit()
             except BaseException:

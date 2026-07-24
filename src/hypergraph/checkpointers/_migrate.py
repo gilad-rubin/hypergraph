@@ -357,7 +357,12 @@ CREATE TABLE IF NOT EXISTS host_submissions (
     source_ref TEXT,
     created_at TEXT NOT NULL,
     claimed_at TEXT,
-    finished_at TEXT
+    finished_at TEXT,
+    fingerprint TEXT,
+    compat_state TEXT NOT NULL DEFAULT 'compatible',
+    retry_of TEXT,
+    forked_from TEXT,
+    fork_reason TEXT
 )
 """
 
@@ -391,11 +396,27 @@ def _create_host_indexes(conn: Any) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_host_commands_run ON host_commands(run_id, id)")
 
 
+# Columns appended to host_submissions after the initial v6 cut (ticket 03).
+# The v6 DDL above already carries them; this guarded ALTER list migrates
+# dev databases that were created at v6 before the columns existed.
+_HOST_SUBMISSIONS_ADDED_COLUMNS = (
+    ("fingerprint", "fingerprint TEXT"),
+    ("compat_state", "compat_state TEXT NOT NULL DEFAULT 'compatible'"),
+    ("retry_of", "retry_of TEXT"),
+    ("forked_from", "forked_from TEXT"),
+    ("fork_reason", "fork_reason TEXT"),
+)
+
+
 def _ensure_v6_objects(conn: Any) -> None:
     """Ensure durable-host coordination tables exist (safe idempotent guard)."""
     conn.execute(_CREATE_HOST_SUBMISSIONS)
     conn.execute(_CREATE_RUN_UPDATES)
     conn.execute(_CREATE_HOST_COMMANDS)
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()}
+    for name, ddl in _HOST_SUBMISSIONS_ADDED_COLUMNS:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE host_submissions ADD COLUMN {ddl}")
     _create_host_indexes(conn)
     conn.commit()
 

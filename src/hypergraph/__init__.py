@@ -57,8 +57,11 @@ from hypergraph.exceptions import (
 from hypergraph.graph import Graph, GraphConfigError, InputSpec
 from hypergraph.host import (
     AlreadyTerminalError,
+    DefinitionId,
+    ForkCompatibilityError,
     Host,
     HostError,
+    RerunError,
     RunHome,
     RunHomeClient,
     RunRef,
@@ -67,6 +70,7 @@ from hypergraph.host import (
     SubmitReceipt,
     WaitingCondition,
     WorkerLockError,
+    WorkflowIdConflictError,
     serve,
 )
 from hypergraph.nodes import (
@@ -220,6 +224,10 @@ __all__ = [
     "HostError",
     "WorkerLockError",
     "AlreadyTerminalError",
+    "DefinitionId",
+    "WorkflowIdConflictError",
+    "ForkCompatibilityError",
+    "RerunError",
     # Display
     "set_display_mode",
     "get_display_mode",
