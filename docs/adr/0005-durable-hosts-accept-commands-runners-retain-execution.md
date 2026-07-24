@@ -65,7 +65,10 @@ deploys happen with runs in flight. The missing layer is a durable home for
 - **Repetition is `rerun()`; migration is `fork()` (A5, A16).** Failed,
   stopped, or recovery-exhausted work starts again only through an explicit
   `rerun()` into a new Run with a new workflow id and `retry_of` lineage;
-  rerunning completed work is an ordinary new submit. Any Definition-identity
+  rerunning completed work is an ordinary new submit. A Batch rerun mints a
+  **new immutable Batch manifest** with a new `BatchRef` and explicit Batch
+  lineage, containing new child Runs only for the selected source item keys;
+  it never mutates the source Batch. Any Definition-identity
   change is an explicit compatibility-checked `fork()` recording
   `forked_from` and a migration reason. The lineage relations never merge.
   `redrive` is rejected vocabulary.
@@ -84,12 +87,19 @@ deploys happen with runs in flight. The missing layer is a durable home for
   watcher never backpressures execution.
 - **Work admission and provider-resource admission stay separate (A3).** The
   Run Home owns a runtime-tunable active-Run cap (A15): over-limit work waits
-  in claim order, and parked, future-scheduled, version-incompatible, and
-  recovery-exhausted Runs consume no slot. Injected provider limiters own
-  external capacity; waiting on a provider permit is never a failure and
-  never consumes retry policy. Overflow strategies (reject, cancel-oldest,
-  cancel-newest), expression-language keys, and keyed fairness are excluded
-  from v1.
+  in claim order; queued, future-scheduled, version-incompatible, and
+  recovery-exhausted Runs consume no slot; a claimed Run waiting on a
+  provider permit still consumes its Host slot. Provider-resource limits are
+  injected separately and may exist at graph, node, and component scope,
+  with scope names that stay honest about being process-local or
+  distributed. For an underlying provider quota the shared component is
+  often the preferred owner: several graphs and nodes reuse it, the
+  component owns admission, and it acquires at the exact scarce call.
+  Graph- and node-level limits compose as narrower work budgets; they never
+  replace the component's quota. Waiting on a provider permit is neither a
+  failure nor a retry attempt — ordinary throttling never consumes retry
+  policy. Overflow strategies (reject, cancel-oldest, cancel-newest),
+  expression-language keys, and keyed fairness are excluded from v1.
 - **One-shot delayed starts are durable (A14).** `submit(start_at=…)`
   persists and fingerprints the Run immediately; store-authoritative time
   controls claim eligibility, a past time is immediately eligible, and

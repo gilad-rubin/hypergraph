@@ -207,7 +207,7 @@ Optional manifest-pinned count and percentage failure thresholds. Either trips o
 _Avoid_: Error rate, failure policy
 
 **Rerun**:
-Creating a new Run under a new workflow id from a source Run or Batch with its pinned Definition identity and inputs intact, recording `retry_of` lineage. A Batch rerun may narrow to named source item keys. Never accepts input overrides.
+Creating a new Run under a new workflow id from a source Run or Batch with its pinned Definition identity and inputs intact, recording `retry_of` lineage. A Batch rerun mints a new immutable Batch manifest with a new BatchRef and explicit Batch lineage, containing new child Runs only for the selected source item keys; it never mutates the source Batch. Never accepts input overrides.
 _Avoid_: Redrive (an SQS dead-letter term), retry (node-owned), resume (continues the same Run)
 
 **Fork**:
@@ -222,6 +222,10 @@ _Avoid_: Failed run, poison status, dead-letter state
 The surfaced state of a declared external effect that was dispatched but whose settlement was not witnessed. It is never re-dispatched automatically and requires an explicit operator decision.
 _Avoid_: Failed effect, lost effect, retryable error
 
+**Waiting condition**:
+The closed typed vocabulary (`WaitingCondition` enum: `QUEUED`, `SCHEDULED`, `PAUSED`, `VERSION_INCOMPATIBLE`, `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED`) naming why a Run waits, exposed as `RunView.waiting: WaitingCondition | None` and accepted by `RunQuery` filters. Never a free string.
+_Avoid_: Status string, hold reason, parked state
+
 **Durable update sequence**:
 The monotonic per-Run (or per-Batch) sequence assigned to every committed fact in its own transaction. `watch(after=cursor)` resumes from it without gaps; live previews are non-durable and never advance it.
 _Avoid_: Event offset, log position (no OutputLog exists), progress counter
@@ -233,7 +237,7 @@ _Avoid_: Event offset, log position (no OutputLog exists), progress counter
 - A **RunRef** or **BatchRef** is always safe to store and pass between processes; an Execution handle never is.
 - Use-existing dedup applies only to **Start fingerprint**-identical nonterminal work; terminal reuse and fingerprint mismatch are distinct typed conflicts.
 - **Rerun** repeats; **fork** migrates. Their lineage relations never merge.
-- A **recovery-exhausted condition** parks a Run without touching Retry budgets, Retry windows, or WorkflowStatus.
+- A **recovery-exhausted condition** parks a Run without touching Retry budgets, Retry windows, or WorkflowStatus; it surfaces as `WaitingCondition.RECOVERY_EXHAUSTED`, never as an execution status.
 - An **Unknown effect outcome** extends the Unknown attempt outcome rule to declared external effects: ambiguity is surfaced, never resolved by guessing.
 
 ## Materialization

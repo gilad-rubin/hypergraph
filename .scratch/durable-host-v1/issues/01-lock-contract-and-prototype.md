@@ -10,7 +10,7 @@ implementation code.
 **Blocked by:** None — can start immediately.
 
 **Status:** awaiting-maintainer-approval — prototype published at
-`docs/prd/0017-durable-host-v1-decision-prototype.md`; ticket 02 stays
+`docs/prd/durable-host-v1-decision-prototype.md`; ticket 02 stays
 blocked until the maintainer explicitly approves it.
 
 - [x] The accepted ADRs, intent specs, and domain vocabulary agree on Definition identity, RunRef, BatchRef, RunHomeClient, rerun, fork, Batch, recovery exhaustion, and unknown effect

@@ -108,7 +108,7 @@ For native execution inspection, start with
 For the Durable Host program (intent, not shipped behavior), the delivery
 contract is [PRD 0017](prd/0017-durable-host-v1-program.md), its inspectable
 decision prototype is
-[the Panda-shaped prototype](prd/0017-durable-host-v1-decision-prototype.md),
+[the Panda-shaped prototype](prd/durable-host-v1-decision-prototype.md),
 and the ticket map is the
 [wayfinder](issues/wayfinder-durable-host.md). ADRs 0005–0008 record the
 accepted decisions with amendments A1–A16; PRDs 0010–0011, 0013–0014, and

@@ -15,7 +15,7 @@ safe-to-repeat steps, consumer keeps no job machinery of its own.
 and the durable-host build now runs as the Durable Host V1 program:
 `docs/prd/0017-durable-host-v1-program.md` with its ticket tree in
 `.scratch/durable-host-v1/issues/` (tickets 01–15) and the inspectable
-decision prototype at `docs/prd/0017-durable-host-v1-decision-prototype.md`.
+decision prototype at `docs/prd/durable-host-v1-decision-prototype.md`.
 Ticket 02 stays blocked until the maintainer explicitly approves that
 prototype. HG-2/HG-3 survive as tickets 13/02–06; HG-4 survives as
 ticket 10. Panda adoption is tickets 07 and 11; no Panda guard is deleted

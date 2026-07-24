@@ -101,20 +101,29 @@ Requirements:
   store-authoritative time passes `start_at`; a past time is immediately
   eligible; stop-before-due prevents execution.
 - **Admission (A3/A15):** the Run Home owns a runtime-tunable
-  `max_active_runs`; over-limit Runs wait in claim order and paused,
-  delayed, version-incompatible, and recovery-exhausted Runs consume no
-  slot. Provider-resource limits are injected separately; waiting on a
-  provider permit never counts as failure.
+  `max_active_runs`; over-limit Runs wait in claim order, and queued,
+  delayed, paused, version-incompatible, and recovery-exhausted Runs consume
+  no slot. A claimed Run waiting on a provider permit still consumes its
+  Host slot. Provider-resource limits are injected separately at graph,
+  node, or component scope, with honest scope names (process-local versus
+  distributed); for an underlying provider quota the shared component is
+  often the preferred owner — several graphs and nodes reuse it, the
+  component owns admission, and it acquires at the exact scarce call, while
+  graph- and node-level limits compose as narrower work budgets. Waiting on
+  a provider permit is neither a failure nor a retry attempt.
 - **Runner binding:** `Graph.with_runner()` (new, root-level) declares the
   per-graph runner; `serve()` binds each runner to the Home's checkpointer
   by cloning (`runner.with_checkpointer(...)`), never mutating the supplied
   instance. Daft (or any runner lacking checkpoint/event capability) fails
   at `serve()` construction. Checkpoint policy is forced synchronous for
   Home-bound runners; `"exit"` durability is rejected.
-- **Version refusal (ADR 0007):** each submit pins the complete
-  `DefinitionId`; the worker claims only runs it serves exactly or via an
-  explicit `accepts=(...)` declaration; version-incompatible runs are
-  queryable, never guessed at.
+- **Version refusal (ADR 0007):** each submit pins the complete typed
+  `DefinitionId(name, deployment_version, structural_hash)`; the worker
+  claims only runs it serves exactly or via an explicit
+  `accepts=(DefinitionId(...), ...)` declaration of full prior identities;
+  version-incompatible runs are queryable, never guessed at. `RunView`
+  reports why a Run waits through the closed `WaitingCondition` enum
+  vocabulary (PRD 0018), never free strings.
 - **Restart scan:** on `work_forever()` start, unfinished non-paused runs
   re-enter execution via normal checkpointer resume; paused runs wait for
   answers. Repeated recovery without committed graph progress hits the

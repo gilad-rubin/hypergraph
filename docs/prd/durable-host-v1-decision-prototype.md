@@ -1,4 +1,4 @@
-# 0017 — Durable Host V1 decision prototype (Panda-shaped)
+# Durable Host V1 decision prototype (Panda-shaped)
 
 status: pending explicit maintainer approval (Durable Host V1 ticket 01;
 ticket 02 stays blocked until approval lands in this session)
@@ -31,7 +31,7 @@ code.
 
 ```python
 from hypergraph import AsyncRunner, serve, RunHome, RunHomeClient
-from hypergraph import node, EXTERNAL, BatchTolerance
+from hypergraph import node, EXTERNAL, BatchTolerance, DefinitionId
 
 @node(output_name="text")
 def extract_text(doc: bytes) -> str: ...          # repeat-safe
@@ -48,12 +48,13 @@ host = serve(ingest, review,
 client = host.client                # the one RunHomeClient
 ```
 
-Each serve binding pins its complete **Definition identity** (ADR 0007):
+Each serve binding pins its complete **Definition identity** (ADR 0007) as a
+typed `DefinitionId(name, deployment_version, structural_hash)` value:
 
 | Definition | DefinitionId pinned at submit |
 |---|---|
-| `ingest` | `("ingest", "2026.07.3", structural_hash=9f3a…)` |
-| `review` | `("review", "2026.07.3", structural_hash=71bc…)` |
+| `ingest` | `DefinitionId("ingest", "2026.07.3", "9f3a…")` |
+| `review` | `DefinitionId("review", "2026.07.3", "71bc…")` |
 
 ## The ownership seam (A13) and the no-app-less-submit rule
 
@@ -76,6 +77,46 @@ in the Run Home (owner decision 5).
 carry identity only — no `.status`, `.result()`, `.stop()`, nothing live.
 They are never durable handles (ADR 0004 holds).
 
+## Typed waiting conditions (A13, PRD 0018)
+
+`RunView.waiting` is a closed typed vocabulary, never a free string:
+
+```python
+class WaitingCondition(Enum):
+    QUEUED = "queued"                              # eligible, awaiting claim
+    SCHEDULED = "scheduled"                        # future start_at
+    PAUSED = "paused"                              # durable pause slot open
+    VERSION_INCOMPATIBLE = "version_incompatible"  # no serving worker
+    ADMISSION_LIMITED = "admission_limited"        # over the active-Run cap
+    RECOVERY_EXHAUSTED = "recovery_exhausted"      # pinned recovery cap hit
+```
+
+`waiting is None` means the Run is executing or terminal. Every scenario
+below uses these typed values; queries filter with them
+(`RunQuery(waiting=WaitingCondition.RECOVERY_EXHAUSTED)`).
+
+## Admission semantics (A3/A15)
+
+Two distinct controls, never conflated:
+
+- **Host work admission** — the Run Home's runtime-tunable `max_active_runs`.
+  Over-limit Runs wait in claim order as `WaitingCondition.ADMISSION_LIMITED`.
+  Queued, scheduled, paused, version-incompatible, and recovery-exhausted
+  Runs consume no slot; a **claimed Run waiting on a provider permit still
+  consumes its Host slot**.
+- **Provider-resource admission** — injected limiters owning external
+  capacity, existing at **graph, node, and component scope** with honest
+  scope names (process-local versus distributed). For an underlying provider
+  quota, the **shared component is often the preferred owner**: several
+  graphs and nodes reuse it, the component owns admission, and it acquires
+  at the exact scarce call. Graph- and node-level limits compose as
+  narrower work budgets; they never replace the component's quota.
+  **Provider-permit waits are neither failures nor retry attempts** —
+  ordinary throttling never consumes retry policy.
+
+Overflow strategies (reject, cancel-oldest, cancel-newest),
+expression-language keys, and keyed fairness stay excluded from v1.
+
 ## Scenario 1 — Batch submission is atomic and pinned (A2)
 
 Schneider's drop arrives: 8 protocols, submitted as one durable Batch.
@@ -97,7 +138,7 @@ receipt.batch_ref          # {"home": "file:./panda-runs.db", "batch_id": "b-841
 
 | fact | value |
 |---|---|
-| batch manifest | id `b-841`; definition `("ingest","2026.07.3",9f3a…)`; workflow_id `schneider-drop-42`; 8 unique item keys; `max_failed=2`; `max_failed_percent=25` |
+| batch manifest | id `b-841`; definition `DefinitionId("ingest", "2026.07.3", "9f3a…")`; workflow_id `schneider-drop-42`; 8 unique item keys; `max_failed=2`; `max_failed_percent=25` |
 | child identities | 8 child Run rows, one per item key, each with pinned inputs and its own `RunRef` (`schneider-drop-42:protocol-17` … `:protocol-24`) |
 | start intent | accepted start command at per-Batch durable sequence `bseq=1` |
 | start fingerprint | complete Definition identity + normalized inputs + effective Batch config + `start_at` |
@@ -125,7 +166,7 @@ await host.submit_batch("ingest", items={...same...}, workflow_id="schneider-dro
 conflicts raise distinct typed errors and write no execution facts. Callers
 never manage idempotency keys.
 
-## Scenario 3 — Worker kill and restart (tickets 02/04/08)
+## Scenario 3 — Worker kill and restart (tickets 02/04/08/09)
 
 The worker is claimed by `work_forever(worker_id="panda-app-0")` behind the
 OS-level exclusive lock. Mid-batch:
@@ -136,7 +177,7 @@ OS-level exclusive lock. Mid-batch:
 |---|---|---|
 | protocol-17 | terminal: completed | StepRecords committed |
 | protocol-18 | terminal: completed | StepRecords committed |
-| protocol-19 | claimed, `extract_text` committed; `file_record` pending | pending-node boundary recorded (PRD 0013) |
+| protocol-19 | claimed; `extract_text` committed; `file_record` pending, **not yet dispatched — no effect reservation exists** | pending-node boundary recorded (PRD 0013) |
 | protocol-20…24 | unstarted | manifest rows only |
 
 `kill -9 panda-app-0`. systemd restarts the process; `work_forever` takes
@@ -147,21 +188,29 @@ the lock and runs the restart scan.
 | item key | what happens |
 |---|---|
 | protocol-17, 18 | untouched — completed children stay complete |
-| protocol-19 | re-adopted; `extract_text` is journal-skipped; `file_record` dispatches from its pending boundary (repeat-safe, not yet declared-effectful in this run — see Scenario 7 for the effectful case) |
+| protocol-19 | re-adopted; `extract_text` is journal-skipped; `file_record` dispatches from its pending boundary **under the effect-reservation rule: its durable effect identity is committed before the provider call** (PRD 0014) |
 | protocol-20…24 | claimed in order and executed |
+
+Because the kill happened before dispatch, protocol-19's effect is safe to
+dispatch exactly once. Had the kill landed after dispatch but before
+witnessed settlement, the child would instead surface `OUTCOME_UNKNOWN` —
+Scenario 7.
 
 The Run record for protocol-19 shows `recovery_attempts=1` against its
 pinned `recovery_cap=3`. Committed StepRecords, durable pauses, or terminal
 transitions reset that counter; recovery without committed progress
 increments it. A poison child that reaches the cap is parked:
 
-```
-RunView(protocol-23): waiting="recovery_exhausted"   # coordination condition,
-                                                     # NOT a WorkflowStatus
+```python
+view = await client.get(run_ref_23)
+assert view.waiting is WaitingCondition.RECOVERY_EXHAUSTED  # coordination
+                                                            # condition, NOT
+                                                            # a WorkflowStatus
 ```
 
 Recovery-exhausted children count as failure-equivalent for tolerance;
-`waiting=` keeps them operator-visible and queryable (`client.list(RunQuery(recovery="exhausted"))`).
+they stay operator-visible and queryable
+(`client.list(RunQuery(waiting=WaitingCondition.RECOVERY_EXHAUSTED))`).
 
 ## Scenario 4 — Cursor reconnection is gap-free (A9)
 
@@ -197,11 +246,19 @@ denominator is fixed at acceptance: 25% of **8** = 2 failures allowed; a
 trip needs failure-equivalent children to **strictly exceed** a threshold —
 so 3 failed children trips both.
 
-**Before:** completed 3, failed 2 (protocol-20, protocol-21), claimed 1
-(protocol-22), unstarted 2 (protocol-23, protocol-24). Batch is not
-tripped: 2 does not strictly exceed 2.
+**Before:** all 8 items accounted for exactly once —
 
-protocol-19's child fails → failure-equivalent count becomes 3 > 2.
+| item keys | state |
+|---|---|
+| protocol-17, 18, 19 | completed (3) |
+| protocol-20, 21 | failed (2) |
+| protocol-22 | claimed, still executing (1) |
+| protocol-23, 24 | unstarted (2) |
+
+The Batch is not tripped: 2 does not strictly exceed 2.
+
+The claimed child **protocol-22 settles as FAILED** — a shown, settled
+outcome. Failure-equivalent count becomes 3 > 2.
 
 **After — one transaction at the next `bseq`:**
 
@@ -209,9 +266,9 @@ protocol-19's child fails → failure-equivalent count becomes 3 > 2.
 |---|---|
 | batch status | **PARTIAL** — truthful, not failed, not stopped |
 | admission | closed; no new child claims |
-| protocol-22 (claimed) | left to settle normally |
+| protocol-22 | settled failed (the tripping failure, one of the eight) |
 | protocol-23, protocol-24 | recorded as **explicitly unstarted** — item keys listed, no invented results |
-| `BatchView.counts` | `{"completed": 3, "failed": 3, "unstarted": 2, ...}` after protocol-22 settles |
+| `BatchView.counts` | `{"completed": 3, "failed": 3, "unstarted": 2}` — 8 of 8 accounted |
 
 Paused, queued, delayed, and admission-limited children never count toward
 tolerance; unstarted items never become fake failures.
@@ -219,23 +276,24 @@ tolerance; unstarted items never become fake failures.
 ## Scenario 6 — Version-incompatible refusal (ADR 0007)
 
 Panda deploys `2026.07.3` while an old Run `nightly-backfill` is parked,
-pinned to `("ingest", "2026.06.1", structural_hash=44de…)`.
+pinned to `DefinitionId("ingest", "2026.06.1", "44de…")`.
 
 **Before → after the deploy:**
 
 | fact | value |
 |---|---|
 | `nightly-backfill` | remains persisted, **unclaimed**; the new worker refuses it loudly |
-| `RunView.waiting` | `"version_incompatible"` — queryable via `RunQuery`, aged-unclaimed |
+| `RunView.waiting` | `WaitingCondition.VERSION_INCOMPATIBLE` — queryable via `RunQuery`, aged-unclaimed |
 | worker log | names the pinned identity it cannot serve; no guessing, no silent resume |
 
 Two truthful ways forward, never an automatic one:
 
 ```python
-# (a) the deployment declares it can drain old work:
+# (a) the deployment declares it can drain old work — full typed prior
+# identities; structural compatibility is still checked:
 host = serve(ingest, home=..., deployment_version="2026.07.3",
-             accepts=(("ingest", "2026.06.1", "44de…"),))   # full prior identities,
-#           structural compatibility still checked → worker now claims it
+             accepts=(DefinitionId("ingest", "2026.06.1", "44de…"),))
+#           → worker now claims the parked run
 
 # (b) an operator migrates explicitly — see Scenario 8 (fork)
 ```
@@ -253,7 +311,7 @@ Three kill points, three truthful outcomes:
 
 | kill point | persisted facts | recovery behavior |
 |---|---|---|
-| before dispatch | reservation absent or undispatched | safe to dispatch once |
+| before dispatch | reservation absent or undispatched | safe to dispatch once (Scenario 3's case) |
 | after provider return, settlement witnessed | StepRecord committed | complete; never re-dispatched |
 | **after dispatch, before settlement** | reservation committed, no settlement witnessed | **`OUTCOME_UNKNOWN`** |
 
@@ -275,13 +333,17 @@ repeats just those items:
 ```python
 rerun_receipt = await client.rerun(receipt.batch_ref,
                                    item_keys=["protocol-20", "protocol-21"])
+rerun_receipt.batch_ref        # NEW BatchRef — batch "b-902"
 ```
 
-**After:** two new child Runs under **new** workflow ids
-(`schneider-drop-42-r1:protocol-20`, `…:protocol-21`), same pinned
-Definition identity, same source inputs, `retry_of` recorded against the
-source children. Input overrides are rejected; keys outside the source
-manifest are rejected. The original Batch history is untouched.
+**After:** a **new immutable Batch manifest** (`b-902`) containing exactly
+the two selected source item keys — never a mutation of `b-841`, which
+stays settled and queryable forever. `b-902` carries explicit Batch lineage
+(`retry_of="b-841"`), contains new child Runs under new workflow ids
+(`schneider-drop-42-r1:protocol-20`, `…:protocol-21`) with the source's
+pinned Definition identity and source inputs, and each child records
+`retry_of` against its source child. Input overrides are rejected; keys
+outside the source manifest are rejected.
 
 Separately, the parked `nightly-backfill` Run must move to the new code:
 
@@ -291,10 +353,10 @@ fork_receipt = await host.fork(run_ref, into="ingest",
 ```
 
 **After:** a new Run seeded from recorded history, pinned to
-`("ingest","2026.07.3",9f3a…)`, with `forked_from` lineage and the reason
-stored. Compatibility is checked at fork time. `retry_of` and `forked_from`
-never merge: `RunQuery(lineage=...)` can always tell repetition from
-migration.
+`DefinitionId("ingest", "2026.07.3", "9f3a…")`, with `forked_from` lineage
+and the reason stored. Compatibility is checked at fork time. `retry_of`
+and `forked_from` never merge: `RunQuery(lineage=...)` can always tell
+repetition from migration.
 
 ## What this prototype deliberately never shows
 
@@ -312,10 +374,10 @@ migration.
 
 - [ ] Interface shape: `serve` / Host verbs / `host.client` / inert refs as shown
 - [ ] Scenario 1–2: atomic Batch acceptance; fingerprint dedup; typed conflicts
-- [ ] Scenario 3: restart truth, pending boundaries, recovery-exhausted as condition
+- [ ] Scenario 3: restart truth, pending boundaries, recovery-exhausted as typed condition
 - [ ] Scenario 4: gap-free durable cursor; previews never advance it
-- [ ] Scenario 5: strictly-exceeds tolerance, fixed denominator, PARTIAL with explicit unstarted
-- [ ] Scenario 6: version refusal visible and unclaimed; `accepts=` drains
+- [ ] Scenario 5: strictly-exceeds tolerance, fixed denominator, PARTIAL with explicit unstarted, 8 of 8 accounted
+- [ ] Scenario 6: version refusal visible and unclaimed; `accepts=(DefinitionId(...),)` drains
 - [ ] Scenario 7: reservation before dispatch; `OUTCOME_UNKNOWN`; no auto-respend
-- [ ] Scenario 8: `rerun()` vs `fork()`; lineage never merges
-- [ ] Ownership seam and no-app-less-submit rule are unambiguous
+- [ ] Scenario 8: `rerun()` mints a new immutable Batch manifest with lineage; `fork()` migrates; lineage never merges
+- [ ] Ownership seam, typed waiting conditions, and no-app-less-submit rule are unambiguous

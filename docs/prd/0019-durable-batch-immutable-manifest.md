@@ -6,10 +6,11 @@ status: accepted-intent (folded from amendments A2 and A7 on 2026-07-24, Durable
 
 A persisted `MapResult` array would make completion order part of identity,
 hide items that never started, and couple Batch truth to one parent run's
-in-memory evidence. The twelve-framework survey found no framework with the
-full shape Hypergraph needs (manifest + stable item keys + tolerance +
-item-granular rerun), and Hypergraph's own pinned map-interrupt test already
-states it: a batch is N independent admissions.
+in-memory evidence. Panda-shaped ingestion needs every requested item to
+remain attributable across restart, partial success to be an explicit pinned
+policy, and failed items to be repeatable without touching their inputs.
+Hypergraph's own pinned map-interrupt test already states the core fact:
+a batch is N independent admissions.
 
 ## Fixed acceptance contract
 
@@ -75,11 +76,15 @@ Requirements:
   Batch truth, both records land in the same transaction. `watch(batch_ref,
   after=cursor)` follows the whole Batch gap-free and never backpressures
   execution.
-- **Item-scoped rerun (A16).** `client.rerun(batch_ref,
-  item_keys=[...])` accepts only keys present in the source manifest,
-  creates new child Runs under new workflow ids with the source's pinned
-  Definition identity and inputs, and records `retry_of` lineage. No input
-  overrides; Definition-identity changes go through `fork()`.
+- **Item-scoped rerun mints a new Batch (A16).** `client.rerun(batch_ref,
+  item_keys=[...])` accepts only keys present in the source manifest and
+  creates a **new immutable Batch manifest** with a new `BatchRef`,
+  containing new child Runs (new workflow ids, source's pinned Definition
+  identity and source inputs) only for the selected keys. The new Batch
+  records explicit Batch lineage (`retry_of` against the source Batch) and
+  each child records `retry_of` against its source child. The source Batch
+  is never mutated. No input overrides; Definition-identity changes go
+  through `fork()`.
 
 ## Test plan (red first)
 
@@ -92,8 +97,10 @@ Requirements:
   and percentage pinned together, fixed percentage denominator, paused
   children never counting, claimed children settling after trip, remaining
   items explicitly unstarted, Batch PARTIAL.
-- Subset rerun: only source item keys accepted; new workflow ids; `retry_of`
-  lineage recorded; no input override accepted.
+- Subset rerun: only source item keys accepted; a new immutable manifest
+  with a new `BatchRef` is minted; the source Batch is byte-identical
+  afterwards; Batch `retry_of` and per-child `retry_of` lineage recorded;
+  no input override accepted.
 - Watch: reconnect from a stored per-Batch cursor without gaps or repeats.
 - Sync and async parity; CI-equivalent run green.
 

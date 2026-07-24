@@ -38,8 +38,10 @@ advertisements.
   (reserved for crash-stranded attempts).
 - **Repetition is `rerun()`, never migration (A16).** `rerun()` retains the
   source's full pinned Definition identity and source inputs, records
-  `retry_of` lineage, and accepts no input override; a Batch rerun may
-  narrow only to named item keys from the source manifest.
+  `retry_of` lineage, and accepts no input override; a Batch rerun mints a
+  new immutable Batch manifest with a new `BatchRef` and Batch lineage,
+  narrowed to named item keys from the source manifest, and never mutates
+  the source Batch.
 - **Migration is an explicit fork.** Moving a parked run to new code uses
   an explicit, compatibility-checked `fork` seeded from recorded history,
   recording `forked_from` lineage and a migration reason, authorized by a

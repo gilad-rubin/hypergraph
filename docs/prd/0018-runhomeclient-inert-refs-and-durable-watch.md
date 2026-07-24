@@ -33,7 +33,7 @@ json.dumps(ref.to_dict())        # safe to store in a product table
 # A small operator process — no graph code imported:
 client = RunHomeClient(RunHome.open("file:./runs.db"))
 view = await client.get(ref)                 # RunView: persisted facts
-assert view.waiting == "admission_limited"   # named waiting condition, or None
+assert view.waiting is WaitingCondition.ADMISSION_LIMITED  # typed, or None
 
 runs = await client.list(RunQuery(definition="refund",
                                   status=WorkflowStatus.PAUSED,
@@ -57,11 +57,15 @@ Requirements:
   `host.client` and never duplicates its verbs. The client is
   backend-neutral: the same surface runs against SQLite now and Postgres
   later, and constructing one requires no Definition code.
-- **Truthful views.** `RunView` reports persisted Run facts plus a named
-  waiting condition — one of queued, scheduled (future `start_at`), paused,
-  version-incompatible, admission-limited, or recovery-exhausted — so
-  waiting work never looks alike. `BatchView` (PRD 0019) reports manifest
-  counts, keyed child outcomes, and explicit unstarted items.
+- **Truthful views.** `RunView` reports persisted Run facts plus a typed
+  waiting condition, `waiting: WaitingCondition | None` — a closed enum
+  vocabulary (`QUEUED`, `SCHEDULED`, `PAUSED`, `VERSION_INCOMPATIBLE`,
+  `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED`), never a free string, so
+  waiting work never looks alike and callers branch on typed values.
+  `RunQuery` filters accept the same typed values
+  (`RunQuery(waiting=WaitingCondition.RECOVERY_EXHAUSTED)`). `BatchView`
+  (PRD 0019) reports manifest counts, keyed child outcomes, and explicit
+  unstarted items.
 - **Gap-free durable sequences (A9).** Every Run mutation receives one
   monotonic per-Run durable sequence inside its own transaction; every
   Batch manifest or child-outcome change receives one monotonic per-Batch
@@ -84,8 +88,8 @@ Requirements:
 - Watch a Run, disconnect mid-stream, reconnect with the stored cursor:
   assert no missing and no repeated durable sequence values.
 - Force a live preview during replay: cursor unchanged afterwards.
-- `RunView.waiting` distinguishes queued, scheduled, paused,
-  version-incompatible, admission-limited, and recovery-exhausted fixtures.
+- `RunView.waiting` returns each `WaitingCondition` enum member for the
+  matching fixture and `None` for executing and terminal Runs.
 - Sync and async client paths present the same semantics; CI-equivalent
   run green.
 

@@ -142,7 +142,9 @@ effect safety pass real kill tests.
   conflicts.
 - Rerun creates a new Run with a new workflow id, retains source Definition
   identity and inputs, records retry lineage, and accepts no input override.
-  A Batch rerun may narrow to source item keys.
+  A Batch rerun mints a new immutable Batch manifest with a new BatchRef and
+  explicit Batch lineage, containing new child Runs only for the selected
+  source item keys; it never mutates the source Batch.
 - Fork performs explicit compatibility-checked migration, records fork
   lineage and a reason, and never shares the rerun operation.
 - Host recovery does not reset node Retry budgets or Retry windows. Repeated
@@ -168,8 +170,15 @@ effect safety pass real kill tests.
 - A tolerance trip closes new child admission, lets claimed children settle,
   marks all remaining items unstarted, and leaves the Batch partial.
 - Host admission and provider-resource admission are separate. The Run Home
-  owns a runtime-tunable active-Run cap; injected provider limiters own
-  external capacity.
+  owns a runtime-tunable active-Run cap; over-limit work waits in claim
+  order, and a claimed Run waiting on a provider permit still consumes its
+  Host slot. Provider-resource limits are injected at graph, node, or
+  component scope with honest scope names (process-local versus
+  distributed); for an underlying provider quota the shared component is
+  often the preferred owner — several graphs and nodes reuse it, the
+  component owns admission, and it acquires at the exact scarce call, while
+  graph- and node-level limits compose as narrower work budgets. A
+  provider-permit wait is neither a failure nor a retry attempt.
 - Admission v1 waits in claim order. Reject, cancel-oldest, cancel-newest,
   expression-language keys, and keyed fairness are excluded.
 - Future start time is persisted and fingerprinted at acceptance. Store time
