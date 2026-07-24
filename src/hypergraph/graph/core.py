@@ -194,6 +194,7 @@ class Graph:
         self._bound: dict[str, Any] = {}
         self._selected: tuple[str, ...] | None = None
         self._default_event_processors: tuple[EventProcessor, ...] = ()
+        self._bound_runner: Any = None
         self._nodes = self._build_nodes_dict(nodes)
         self._validate_shared_params()
         self._entrypoints = self._normalize_constructor_entrypoints(entrypoint)
@@ -1134,6 +1135,7 @@ class Graph:
             shared=sorted(self._shared) if self._shared else None,
         )
         new_graph._default_event_processors = self._default_event_processors
+        new_graph._bound_runner = self._bound_runner
 
         if self._bound:
             valid_names = set(new_graph.inputs.all)
@@ -1245,6 +1247,39 @@ class Graph:
     def default_event_processors(self) -> tuple[EventProcessor, ...]:
         """Event processors carried by this graph, merged into every run."""
         return self._default_event_processors
+
+    def with_runner(self, runner: BaseRunner) -> Graph:
+        """Bind a runner to this graph for durable-host serving. Returns new Graph (immutable).
+
+        The binding is metadata only: it does not change graph structure,
+        ``structural_hash``, or direct runner execution. ``serve()`` reads it
+        to decide which runner executes this Definition in the host worker,
+        and clones the runner onto the Run Home's checkpointer — the supplied
+        runner instance is never mutated.
+
+        Args:
+            runner: A runner instance (e.g., ``SyncRunner()``, ``AsyncRunner()``).
+
+        Returns:
+            New Graph carrying the runner binding.
+
+        Raises:
+            TypeError: If ``runner`` is None or not runner-like. ``serve()``
+                performs the strict ``BaseRunner`` check; the graph facade
+                deliberately does not import runners at runtime (issue #264),
+                matching ``GraphNode.with_runner``.
+
+        Example:
+            >>> triage = triage_graph.with_runner(SyncRunner())
+            >>> host = serve(triage, home=RunHome.open("file:./runs.db"))
+        """
+        if runner is None or not hasattr(runner, "run"):
+            raise TypeError(
+                f"with_runner() expects a runner instance, got {type(runner).__name__}. Pass a runner such as SyncRunner() or AsyncRunner()."
+            )
+        new_graph = self._shallow_copy()
+        new_graph._bound_runner = runner
+        return new_graph
 
     @property
     def has_cycles(self) -> bool:

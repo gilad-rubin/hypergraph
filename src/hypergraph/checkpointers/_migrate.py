@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def detect_schema_version(conn: Any) -> int:
@@ -14,7 +14,8 @@ def detect_schema_version(conn: Any) -> int:
         0 — empty database (no tables)
         3 — v3 schema (pre attempt ledger)
         4 — v4 schema (attempt ledger tables, false cross-store FKs)
-        5 — current v5 schema (cross-store lineage columns carry no FK)
+        5 — v5 schema (cross-store lineage columns carry no FK)
+        6 — current v6 schema (durable-host coordination tables)
     """
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
@@ -25,8 +26,8 @@ def detect_schema_version(conn: Any) -> int:
     return 0
 
 
-def create_v5_schema(conn: Any) -> None:
-    """Create a fresh v5 schema on an empty database."""
+def create_v6_schema(conn: Any) -> None:
+    """Create a fresh v6 schema on an empty database."""
     conn.execute(_CREATE_RUNS)
     conn.execute(_CREATE_STEPS)
     conn.execute(_CREATE_ATTEMPT_SERIES)
@@ -34,10 +35,15 @@ def create_v5_schema(conn: Any) -> None:
     _create_indexes(conn)
     _create_attempt_indexes(conn)
     _create_fts(conn)
+    _ensure_v6_objects(conn)
 
     conn.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
     conn.execute("INSERT INTO _schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
     conn.commit()
+
+
+# Backward-compatible alias: the fresh-create entry point used before v6.
+create_v5_schema = create_v6_schema
 
 
 def ensure_schema(conn: Any) -> None:
@@ -47,21 +53,28 @@ def ensure_schema(conn: Any) -> None:
     if version == SCHEMA_VERSION:
         _ensure_v3_columns(conn)
         _ensure_v4_objects(conn)
+        _ensure_v6_objects(conn)
         return
     if version == 0:
-        create_v5_schema(conn)
+        create_v6_schema(conn)
         return
     if version == 2:
         _migrate_v2_to_v3(conn)
         _migrate_v3_to_v4(conn)
         _migrate_v4_to_v5(conn)
+        _migrate_v5_to_v6(conn)
         return
     if version == 3:
         _migrate_v3_to_v4(conn)
         _migrate_v4_to_v5(conn)
+        _migrate_v5_to_v6(conn)
         return
     if version == 4:
         _migrate_v4_to_v5(conn)
+        _migrate_v5_to_v6(conn)
+        return
+    if version == 5:
+        _migrate_v5_to_v6(conn)
         return
     raise ValueError(f"Unsupported database schema version {version} (current: {SCHEMA_VERSION}). Please upgrade hypergraph.")
 
@@ -319,3 +332,76 @@ def _create_fts(conn: Any) -> None:
             VALUES ('delete', old.id, old.node_name, old.error);
         END
     """)
+
+
+# === v6: durable-host coordination tables ===
+#
+# These tables are additive and inert for plain checkpointer use: nothing
+# writes to them outside the durable host (hypergraph.host). A submission row
+# is durable intent recorded BEFORE execution; the runs row is created later
+# by the executing runner. run_updates is the per-Run durable sequence that
+# RunHomeClient.watch replays; host_commands is the durable control channel
+# (written by later host tickets).
+
+_CREATE_HOST_SUBMISSIONS = """
+CREATE TABLE IF NOT EXISTS host_submissions (
+    workflow_id TEXT PRIMARY KEY,
+    definition_name TEXT NOT NULL,
+    def_version TEXT NOT NULL DEFAULT '',
+    def_struct_hash TEXT NOT NULL DEFAULT '',
+    inputs_json TEXT NOT NULL,
+    start_at TEXT,
+    state TEXT NOT NULL DEFAULT 'pending',
+    recovery_attempts INTEGER NOT NULL DEFAULT 0,
+    recovery_cap INTEGER NOT NULL DEFAULT 3,
+    source_ref TEXT,
+    created_at TEXT NOT NULL,
+    claimed_at TEXT,
+    finished_at TEXT
+)
+"""
+
+_CREATE_RUN_UPDATES = """
+CREATE TABLE IF NOT EXISTS run_updates (
+    run_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, seq)
+)
+"""
+
+_CREATE_HOST_COMMANDS = """
+CREATE TABLE IF NOT EXISTS host_commands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    verb TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    source_ref TEXT,
+    created_at TEXT NOT NULL,
+    applied_at TEXT
+)
+"""
+
+
+def _create_host_indexes(conn: Any) -> None:
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_host_submissions_state ON host_submissions(state)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_host_submissions_definition ON host_submissions(definition_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_host_commands_run ON host_commands(run_id, id)")
+
+
+def _ensure_v6_objects(conn: Any) -> None:
+    """Ensure durable-host coordination tables exist (safe idempotent guard)."""
+    conn.execute(_CREATE_HOST_SUBMISSIONS)
+    conn.execute(_CREATE_RUN_UPDATES)
+    conn.execute(_CREATE_HOST_COMMANDS)
+    _create_host_indexes(conn)
+    conn.commit()
+
+
+def _migrate_v5_to_v6(conn: Any) -> None:
+    """In-place migration from schema v5 to v6 (adds host coordination tables)."""
+    _ensure_v6_objects(conn)
+    conn.execute("UPDATE _schema_version SET version = 6")
+    conn.commit()

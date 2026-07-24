@@ -1,0 +1,28 @@
+"""Durable host (Tier 1 local host) — submit, execute, and watch runs.
+
+One machine, zero extra infrastructure: a SQLite Run Home, one
+product-owned worker, and a backend-neutral client that needs no graph
+code. Tier 0 (direct runner execution) is unchanged.
+"""
+
+from hypergraph.host.client import RunHomeClient
+from hypergraph.host.errors import AlreadyTerminalError, HostError, WorkerLockError
+from hypergraph.host.home import RunHome
+from hypergraph.host.host import Host, SubmitReceipt, serve
+from hypergraph.host.refs import RunRef
+from hypergraph.host.views import RunUpdate, RunView, WaitingCondition
+
+__all__ = [
+    "AlreadyTerminalError",
+    "Host",
+    "HostError",
+    "RunHome",
+    "RunHomeClient",
+    "RunRef",
+    "RunUpdate",
+    "RunView",
+    "SubmitReceipt",
+    "WaitingCondition",
+    "WorkerLockError",
+    "serve",
+]

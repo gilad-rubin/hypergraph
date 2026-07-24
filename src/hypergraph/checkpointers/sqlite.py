@@ -530,6 +530,20 @@ class SqliteCheckpointer(Checkpointer):
             self._async_txn_lock = asyncio.Lock()
         return self._async_txn_lock
 
+    # === Run-mutation hooks (no-op in base) ===
+    #
+    # Called INSIDE the write transaction, before commit, on every run
+    # mutation path (create_run/save_step/update_run_status, sync and async).
+    # The base implementation is a no-op so plain-checkpointer behavior is
+    # unchanged; RunHome (hypergraph.host) overrides these to append
+    # run_updates rows in the same transaction as the run mutation.
+
+    def _after_run_mutation_sync(self, db: Any, run_id: str, kind: str, payload: dict[str, Any]) -> None:
+        """Hook after a sync run mutation (no-op in the base checkpointer)."""
+
+    async def _after_run_mutation(self, run_id: str, kind: str, payload: dict[str, Any]) -> None:
+        """Hook after an async run mutation (no-op in the base checkpointer)."""
+
     # === Write ===
 
     def _step_upsert_params(self, record: StepRecord) -> tuple[Any, ...]:
@@ -561,6 +575,11 @@ class SqliteCheckpointer(Checkpointer):
         async with self._txn_lock():
             await self._db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
             await self._apply_retention_policy_async(record.run_id)
+            await self._after_run_mutation(
+                record.run_id,
+                "step",
+                {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
+            )
             await self._db.commit()
 
     async def create_run(
@@ -607,6 +626,7 @@ class SqliteCheckpointer(Checkpointer):
                     config_json,
                 ),
             )
+            await self._after_run_mutation(run_id, "run_started", {"graph_name": graph_name or ""})
             await self._db.commit()
         return Run(
             id=run_id,
@@ -658,6 +678,7 @@ class SqliteCheckpointer(Checkpointer):
                 f"UPDATE runs SET {', '.join(sets)} WHERE id = ?",
                 params,
             )
+            await self._after_run_mutation(run_id, "status", {"status": status.value})
             await self._db.commit()
 
     # === Read ===
@@ -1545,6 +1566,7 @@ class SqliteCheckpointer(Checkpointer):
                     config_json,
                 ),
             )
+            self._after_run_mutation_sync(db, run_id, "run_started", {"graph_name": graph_name or ""})
             db.commit()
             return Run(
                 id=run_id,
@@ -1565,6 +1587,12 @@ class SqliteCheckpointer(Checkpointer):
             db = self._sync_db()
             db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
             self._apply_retention_policy_sync(record.run_id)
+            self._after_run_mutation_sync(
+                db,
+                record.run_id,
+                "step",
+                {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
+            )
             db.commit()
 
     def _merge_retained_state(self, rows: Sequence[_RetentionRow]) -> dict[str, Any]:
@@ -1797,6 +1825,7 @@ class SqliteCheckpointer(Checkpointer):
                 f"UPDATE runs SET {', '.join(sets)} WHERE id = ?",
                 params,
             )
+            self._after_run_mutation_sync(db, run_id, "status", {"status": status.value})
             db.commit()
 
     # === Attempt Ledger (sync mirrors) ===

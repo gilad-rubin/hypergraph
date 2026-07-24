@@ -157,6 +157,7 @@ accepted decisions with amendments A1–A16; PRDs 0010–0011, 0013–0014, and
 - [Nodes](06-api-reference/nodes.md) - FunctionNode, GraphNode, and HyperNode
 - [Gates](06-api-reference/gates.md) - RouteNode, IfElseNode, @route, @ifelse
 - [Runners](06-api-reference/runners.md) - SyncRunner, AsyncRunner, and execution model
+- [Durable Host](06-api-reference/host.md) - serve(), RunHome, RunHomeClient, and the local worker
 - [Events](06-api-reference/events.md) - Event types, processors, and RichProgressProcessor
 - [InputSpec](06-api-reference/inputspec.md) - Input categorization and requirements
 - [Checkpointers](06-api-reference/checkpointers.md) - Persistence, resume, fork/retry lineage, and inspection

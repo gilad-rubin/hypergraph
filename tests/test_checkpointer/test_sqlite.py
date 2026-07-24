@@ -919,8 +919,8 @@ class TestSearch:
 
 
 class TestMigration:
-    def test_fresh_db_gets_v5_schema(self, tmp_path):
-        """A new database gets v5 schema automatically."""
+    def test_fresh_db_gets_v6_schema(self, tmp_path):
+        """A new database gets v6 schema automatically."""
         cp = SqliteCheckpointer(str(tmp_path / "fresh.db"))
         # Trigger sync schema creation
         assert cp.runs() == []
@@ -933,10 +933,14 @@ class TestMigration:
         assert "steps" in tables
         assert "attempt_series" in tables
         assert "attempt_records" in tables
+        # v6 durable-host coordination tables
+        assert "host_submissions" in tables
+        assert "run_updates" in tables
+        assert "host_commands" in tables
         assert "_schema_version" in tables
 
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 5
+        assert version == 6
         conn.close()
 
     def test_migration_idempotent(self, tmp_path):
@@ -950,7 +954,7 @@ class TestMigration:
         ensure_schema(conn)
         ensure_schema(conn)  # Second time should be a no-op
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 5
+        assert version == 6
         conn.close()
 
     def test_unknown_schema_version_raises(self, tmp_path):

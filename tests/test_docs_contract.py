@@ -891,3 +891,60 @@ def test_retry_docs_pin_public_contract() -> None:
     assert "RetryWindowExpiredError" in errors_api
     assert issubclass(AttemptTimeoutError, TimeoutError)
     assert issubclass(RetryWindowExpiredError, TimeoutError)
+
+
+def test_durable_host_docs_pin_public_contract() -> None:
+    """The Tier 1 local host surface stays in lockstep with its reference page."""
+    from hypergraph import BaseRunner, Graph, RunHome, RunHomeClient, RunRef, RunUpdate, RunView, SubmitReceipt, WaitingCondition
+
+    host_api = _read("docs/06-api-reference/host.md")
+    docs_index = _read("docs/README.md")
+
+    # Reference page is indexed and documents the ownership seam.
+    assert "06-api-reference/host.md" in docs_index
+    assert "host.submit_sync" in host_api
+    assert "WorkerLockError" in host_api
+    assert "WaitingCondition" in host_api
+
+    # Definition binding and runner cloning signatures.
+    assert tuple(inspect.signature(Graph.with_runner).parameters) == ("self", "runner")
+    assert tuple(inspect.signature(BaseRunner.with_checkpointer).parameters) == ("self", "checkpointer")
+
+    # RunHome.open / submit / client verb signatures.
+    assert tuple(inspect.signature(RunHome.open).parameters) == ("uri", "policy", "serializer")
+    from hypergraph.host import Host
+
+    assert tuple(inspect.signature(Host.submit).parameters) == (
+        "self",
+        "definition_name",
+        "inputs",
+        "workflow_id",
+        "start_at",
+        "source_ref",
+    )
+    assert tuple(inspect.signature(Host.submit_sync).parameters) == tuple(inspect.signature(Host.submit).parameters)
+    assert tuple(inspect.signature(Host.work_forever).parameters) == ("self", "worker_id", "poll_interval", "drain_timeout")
+    assert tuple(inspect.signature(RunHomeClient.get).parameters) == ("self", "ref")
+    assert tuple(inspect.signature(RunHomeClient.get_sync).parameters) == ("self", "ref")
+    assert tuple(inspect.signature(RunHomeClient.watch).parameters) == ("self", "ref", "after", "poll_interval")
+
+    # Inert refs and read models: identity only, typed waiting vocabulary.
+    assert tuple(RunRef.__dataclass_fields__) == ("home", "run_id")
+    assert tuple(SubmitReceipt.__dataclass_fields__) == ("run_ref", "workflow_id", "duplicate")
+    assert "waiting" in RunView.__dataclass_fields__
+    assert tuple(RunUpdate.__dataclass_fields__) == ("cursor", "durable", "kind", "payload", "timestamp")
+    assert {member.name for member in WaitingCondition} == {
+        "QUEUED",
+        "SCHEDULED",
+        "PAUSED",
+        "VERSION_INCOMPATIBLE",
+        "ADMISSION_LIMITED",
+        "RECOVERY_EXHAUSTED",
+    }
+    for verb in ("stop", "result", "status"):
+        assert not hasattr(RunRef, verb), f"RunRef must stay inert; found {verb}"
+
+    # The prototype and reference page agree on the typed waiting vocabulary.
+    prototype = _read("docs/prd/durable-host-v1-decision-prototype.md")
+    for member in WaitingCondition:
+        assert f"WaitingCondition.{member.name}" in prototype or member.name in host_api

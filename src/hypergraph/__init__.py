@@ -55,6 +55,20 @@ from hypergraph.exceptions import (
     get_failure_evidence,
 )
 from hypergraph.graph import Graph, GraphConfigError, InputSpec
+from hypergraph.host import (
+    AlreadyTerminalError,
+    Host,
+    HostError,
+    RunHome,
+    RunHomeClient,
+    RunRef,
+    RunUpdate,
+    RunView,
+    SubmitReceipt,
+    WaitingCondition,
+    WorkerLockError,
+    serve,
+)
 from hypergraph.nodes import (
     END,
     FunctionNode,
@@ -193,6 +207,19 @@ __all__ = [
     "Checkpointer",
     "CheckpointPolicy",
     "SqliteCheckpointer",
+    # Durable host (Tier 1 local host)
+    "serve",
+    "Host",
+    "RunHome",
+    "RunHomeClient",
+    "RunRef",
+    "SubmitReceipt",
+    "RunView",
+    "RunUpdate",
+    "WaitingCondition",
+    "HostError",
+    "WorkerLockError",
+    "AlreadyTerminalError",
     # Display
     "set_display_mode",
     "get_display_mode",
