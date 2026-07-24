@@ -42,10 +42,10 @@ def _parse_cursor(after: str | int | None) -> int:
     if after is None:
         return 0
     if isinstance(after, int):
-        return after
+        return max(after, 0)  # negative seqs clamp to the stream start
     if isinstance(after, str) and after.startswith("seq:"):
         try:
-            return int(after[len("seq:") :])
+            return max(int(after[len("seq:") :]), 0)
         except ValueError:
             pass
     raise ValueError(f"Invalid watch cursor {after!r}. Expected None, an int seq, or a 'seq:N' cursor string from a durable RunUpdate.")
@@ -166,7 +166,7 @@ class RunHomeClient:
         run = self._home.get_run(ref.run_id)
         return _build_view(self._home.uri, ref.run_id, submission, run)
 
-    async def stop(self, ref: RunRef, *, info: Any = None) -> CommandReceipt:
+    async def stop(self, ref: RunRef, *, info: Any = None, source_ref: str | None = None) -> CommandReceipt:
         """Record a durable stop command for ``ref``.
 
         The command row and its durable ``command`` update commit in one
@@ -176,18 +176,20 @@ class RunHomeClient:
         is finished without executing (no runs row is invented); a run
         that already completed is unaffected. Returns a receipt with
         ``duplicate=True`` when an unapplied stop already exists — the
-        first stop's ``info`` wins.
+        first stop's ``info`` wins. ``source_ref`` is an opaque caller
+        provenance marker (ADR 0005 A11) stored on the command row; it is
+        never authentication and never affects dedup.
 
         Raises ``AlreadyTerminalError`` when the run is already terminal
         at write time and ``HostError`` when the run is unknown to this
         Run Home.
         """
-        created = await self._home._write_stop_command(ref.run_id, info)
+        created = await self._home._write_stop_command(ref.run_id, info, source_ref)
         return CommandReceipt(run_ref=ref, duplicate=not created)
 
-    def stop_sync(self, ref: RunRef, *, info: Any = None) -> CommandReceipt:
+    def stop_sync(self, ref: RunRef, *, info: Any = None, source_ref: str | None = None) -> CommandReceipt:
         """Sync mirror of ``stop``."""
-        created = self._home._write_stop_command_sync(ref.run_id, info)
+        created = self._home._write_stop_command_sync(ref.run_id, info, source_ref)
         return CommandReceipt(run_ref=ref, duplicate=not created)
 
     async def list(self, query: RunQuery) -> list[RunView]:
@@ -304,7 +306,9 @@ class RunHomeClient:
         process) carry ``durable=False`` and repeat the last durable cursor
         — they never advance it. Store cursors from durable updates only.
         The generator ends once the run reaches a terminal status and every
-        committed fact has been delivered.
+        committed fact has been delivered. A ``ref`` unknown to this Run
+        Home (neither a submission nor a runs row) terminates immediately
+        with no updates, matching ``get()``'s honest ``None``.
         """
         cursor_seq = _parse_cursor(after)
         queue: asyncio.Queue | None = None
@@ -341,12 +345,16 @@ class RunHomeClient:
                 if terminal:
                     return
                 run = await self._home.get_run_async(ref.run_id)
-                terminal = run is not None and run.status in TERMINAL_WORKFLOW_STATUSES
-                if not terminal and run is None:
+                if run is None:
+                    submission = await self._home._get_submission(ref.run_id)
+                    if submission is None:
+                        # Unknown ref: nothing to replay, nothing to tail.
+                        return
                     # Stop-before-start (or never-admitted) work is settled
                     # once its submission is finished, with no runs row.
-                    submission = await self._home._get_submission(ref.run_id)
-                    terminal = submission is not None and submission["state"] == "finished"
+                    terminal = submission["state"] == "finished"
+                else:
+                    terminal = run.status in TERMINAL_WORKFLOW_STATUSES
                 if not terminal:
                     await asyncio.sleep(poll_interval)
         finally:

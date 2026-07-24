@@ -115,7 +115,17 @@ class AsyncRunner(AsyncRunnerTemplate):
         self._show_progress = show_progress
         self._active_workflows = _ActiveWorkflows()
         self._background_tasks: set[asyncio.Task[Any]] = set()
-        self._executors: dict[type[HyperNode], AsyncNodeExecutor] = {
+        self._executors = self._build_executors()
+
+    def _build_executors(self) -> dict[type[HyperNode], AsyncNodeExecutor]:
+        """Construct node executors bound to THIS runner instance.
+
+        Extracted from ``__init__`` so ``with_checkpointer()`` can rebind a
+        clone's executors: ``AsyncGraphNodeExecutor`` captures its runner, and
+        a shallow copy would keep delegating nested GraphNode child workflows
+        to the ORIGINAL runner (wrong checkpointer, wrong live registry).
+        """
+        return {
             FunctionNode: AsyncFunctionNodeExecutor(),
             GraphNode: AsyncGraphNodeExecutor(self),
             IfElseNode: AsyncIfElseNodeExecutor(),

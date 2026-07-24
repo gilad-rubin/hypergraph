@@ -943,7 +943,9 @@ def test_durable_host_docs_pin_public_contract() -> None:
 
     # Definition binding and runner cloning signatures.
     assert tuple(inspect.signature(Graph.with_runner).parameters) == ("self", "runner")
+    assert isinstance(Graph.bound_runner, property)
     assert tuple(inspect.signature(BaseRunner.with_checkpointer).parameters) == ("self", "checkpointer")
+    assert tuple(inspect.signature(BaseRunner.has_active_run).parameters) == ("self", "workflow_id")
 
     # RunHome.open / serve / submit / fork / client verb signatures.
     assert tuple(inspect.signature(RunHome.open).parameters) == ("uri", "policy", "serializer")
@@ -968,7 +970,7 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert tuple(inspect.signature(RunHomeClient.watch).parameters) == ("self", "ref", "after", "poll_interval")
     assert tuple(inspect.signature(RunHomeClient.rerun).parameters) == ("self", "ref")
     assert tuple(inspect.signature(RunHomeClient.rerun_sync).parameters) == ("self", "ref")
-    assert tuple(inspect.signature(RunHomeClient.stop).parameters) == ("self", "ref", "info")
+    assert tuple(inspect.signature(RunHomeClient.stop).parameters) == ("self", "ref", "info", "source_ref")
     assert tuple(inspect.signature(RunHomeClient.stop_sync).parameters) == tuple(inspect.signature(RunHomeClient.stop).parameters)
     assert tuple(inspect.signature(RunHomeClient.list).parameters) == ("self", "query")
     assert tuple(inspect.signature(RunHomeClient.list_sync).parameters) == tuple(inspect.signature(RunHomeClient.list).parameters)

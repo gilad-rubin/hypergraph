@@ -356,7 +356,9 @@ fork_receipt = await host.fork(run_ref, into="ingest",
 `DefinitionId("ingest", "2026.07.3", "9f3a…")`, with `forked_from` lineage
 and the reason stored. Compatibility is checked at fork time. `retry_of`
 and `forked_from` never merge: `RunQuery(lineage=...)` can always tell
-repetition from migration.
+repetition from migration. (The lineage, batch, and pagination query
+fields land with the Batch tickets 05/06; today's `RunQuery` covers
+definition/status/waiting/age/limit.)
 
 ## What this prototype deliberately never shows
 

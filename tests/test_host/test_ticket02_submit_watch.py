@@ -23,6 +23,7 @@ from hypergraph import (
     AsyncRunner,
     BaseRunner,
     Graph,
+    GraphNode,
     RunHome,
     RunHomeClient,
     RunRef,
@@ -180,6 +181,28 @@ class TestRefsAndBinding:
         assert runner._checkpointer is None
         assert clone._checkpointer is not None
         assert clone._active_workflows is not runner._active_workflows
+
+    def test_with_checkpointer_rebinds_executors_to_the_clone(self):
+        """F1: the clone's GraphNode executor must delegate to the CLONE.
+
+        A shallow copy would share the original's executor dict, whose
+        GraphNode executor captured the original runner — nested child
+        workflows would then persist nowhere and register in the wrong
+        live registry.
+        """
+        runner = SyncRunner()
+        clone = runner.with_checkpointer(object())
+        assert clone._executors is not runner._executors
+        assert clone._executors[GraphNode].runner is clone
+        assert runner._executors[GraphNode].runner is runner
+
+    def test_has_active_run_reflects_the_live_registry(self):
+        runner = SyncRunner()
+        assert runner.has_active_run("wf-x") is False
+        reservation = runner._active_workflows.reserve("wf-x")
+        assert runner.has_active_run("wf-x") is True
+        reservation.release()
+        assert runner.has_active_run("wf-x") is False
 
 
 # === 1. Submission persists before execution ===
@@ -605,6 +628,119 @@ class TestServeValidation:
             assert home.policy.durability == "sync"
         finally:
             await home.close()
+
+
+# === 11. Nested GraphNode children persist to the Run Home (F1) ===
+
+
+def _nested_sync_graph(name: str) -> Graph:
+    @node(output_name="inner_out")
+    def inner_compute(x: int) -> int:
+        return x * 2
+
+    inner = Graph([inner_compute], name=f"{name}-inner")
+    return Graph([inner.as_node()], name=name).with_runner(SyncRunner())
+
+
+def _nested_async_graph(name: str) -> Graph:
+    @node(output_name="inner_out")
+    async def inner_compute(x: int) -> int:
+        return x * 2
+
+    inner = Graph([inner_compute], name=f"{name}-inner")
+    return Graph([inner.as_node()], name=name).with_runner(AsyncRunner())
+
+
+class TestNestedGraphNodePersistence:
+    """A host worker's runner clone must execute GraphNode children against
+    ITSELF: child workflow step state lands in the Run Home, and the child
+    registers in the clone's live registry (never the original runner's)."""
+
+    async def test_sync_nested_child_steps_land_in_run_home(self, home):
+        graph = _nested_sync_graph("nestdef")
+        host = serve(graph, home=home)
+        receipt = await host.submit("nestdef", {"x": 3}, workflow_id="wf-nest")
+
+        async with _worker(host):
+            view = await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
+
+        assert view.status == WorkflowStatus.COMPLETED
+        # The GraphNode child ran as its own persisted workflow in the Home.
+        child_id = "wf-nest/nestdef-inner"
+        child_run = home.get_run(child_id)
+        assert child_run is not None
+        assert child_run.status == WorkflowStatus.COMPLETED
+        assert home.values(child_id)["inner_out"] == 6
+        child_steps = await home.get_steps(child_id)
+        assert [step.node_name for step in child_steps] == ["inner_compute"]
+        # The ORIGINAL bound runner never saw the child: no live registry
+        # entries leaked out of the clone.
+        assert graph.bound_runner.has_active_run(child_id) is False
+        assert graph.bound_runner.has_active_run("wf-nest") is False
+
+    async def test_async_nested_child_steps_land_in_run_home(self, home):
+        graph = _nested_async_graph("anestdef")
+        host = serve(graph, home=home)
+        receipt = await host.submit("anestdef", {"x": 4}, workflow_id="wf-anest")
+
+        async with _worker(host):
+            view = await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
+
+        assert view.status == WorkflowStatus.COMPLETED
+        child_id = "wf-anest/anestdef-inner"
+        child_run = home.get_run(child_id)
+        assert child_run is not None
+        assert child_run.status == WorkflowStatus.COMPLETED
+        assert home.values(child_id)["inner_out"] == 8
+        assert host.worker_errors == []
+
+
+# === 12. watch() on an unknown ref terminates immediately (F7) ===
+
+
+class TestWatchUnknownRef:
+    async def test_watch_unknown_ref_returns_no_updates(self, home):
+        serve(_sync_graph("dbl"), home=home)
+        client = RunHomeClient(home)
+        unknown = RunRef(home=home.uri, run_id="wf-nope")
+        assert await client.get(unknown) is None
+        updates = await asyncio.wait_for(_collect_watch(client, unknown), timeout=5)
+        assert updates == []
+
+    async def test_watch_negative_cursor_clamps_to_stream_start(self, home):
+        host = serve(_sync_graph("dbl"), home=home)
+        receipt = await host.submit("dbl", {"x": 1}, workflow_id="wf-neg")
+        async with _worker(host):
+            await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
+        clamped = await _collect_watch(host.client, receipt.run_ref, after=-5)
+        full = await _collect_watch(host.client, receipt.run_ref)
+        assert [u.cursor for u in clamped] == [u.cursor for u in full]
+
+
+# === 13. start_at normalization (F10) ===
+
+
+class TestStartAtNormalization:
+    async def test_offset_and_naive_spellings_normalize_to_utc(self, home):
+        host = serve(_sync_graph("dbl"), home=home)
+        receipt = await host.submit("dbl", {"x": 1}, workflow_id="wf-tz", start_at="2030-01-01T02:00:00+02:00")
+        submission = home._get_submission_sync("wf-tz")
+        assert submission["start_at"] == "2030-01-01T00:00:00+00:00"
+        # The same instant spelled differently dedupes (same fingerprint).
+        dup = await host.submit("dbl", {"x": 1}, workflow_id="wf-tz", start_at="2030-01-01T00:00:00")
+        assert dup.duplicate is True
+        assert dup.run_ref == receipt.run_ref
+        # A naive datetime normalizes as UTC too.
+        from datetime import datetime
+
+        other = await host.submit("dbl", {"x": 1}, workflow_id="wf-tz2", start_at=datetime(2030, 6, 1, 12, 0, 0))
+        assert home._get_submission_sync("wf-tz2")["start_at"] == "2030-06-01T12:00:00+00:00"
+        assert other.duplicate is False
+
+    async def test_unparseable_start_at_rejected(self, home):
+        host = serve(_sync_graph("dbl"), home=home)
+        with pytest.raises(ValueError, match="start_at"):
+            await host.submit("dbl", {"x": 1}, workflow_id="wf-badtz", start_at="next tuesday")
 
 
 def _one_node():

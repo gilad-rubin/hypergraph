@@ -52,7 +52,8 @@ class RunUpdate:
             live previews. Callers must only store cursors from durable
             updates.
         kind: Fact kind — ``submitted``, ``run_started``, ``step``,
-            ``status``, ``command`` — or an event class name for previews.
+            ``status``, ``command``, ``recovery_exhausted`` — or an event
+            class name for previews.
         payload: JSON-safe fact payload.
         timestamp: ISO timestamp of the fact (or of preview observation).
     """

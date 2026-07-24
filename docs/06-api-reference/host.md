@@ -11,8 +11,7 @@ This page covers the local Tier 1 host: `serve()`, `RunHome`, `Host`, and
 `RunHomeClient`. For direct execution semantics see [Runners](runners.md);
 for process-local background handles see
 [Control Work After It Starts](../05-how-to/control-background-execution.md).
-Durable Batch, pause answers, and delayed starts land in later releases of
-this surface.
+Durable Batch and pause answers land in later releases of this surface.
 {% endhint %}
 
 ## Serving Definitions
@@ -33,9 +32,11 @@ host = serve(refund, triage,
 
 `serve()` clones each bound runner onto the Home's checkpointer via
 `runner.with_checkpointer(...)` — the runner instance you passed is never
-mutated. Every graph must have a `name` and a bound runner; a runner without
-checkpoint/event capability (for example `DaftRunner`) fails loudly at
-construction.
+mutated, and the clone's nested-graph executors are rebuilt against the
+clone so GraphNode child workflows persist to the same Run Home. Every
+graph must have a `name` and a bound runner (readable back via the
+read-only `graph.bound_runner` property); a runner without checkpoint/event
+capability (for example `DaftRunner`) fails loudly at construction.
 
 ## Definition Identity and `accepts=`
 
@@ -57,11 +58,14 @@ host = serve(ingest, home=RunHome.open("file:./runs.db"),
 ```
 
 Without a matching declaration the worker refuses the submission: it stays
-persisted and unclaimed, and its view reports
-`WaitingCondition.VERSION_INCOMPATIBLE`. An `accepts=` entry names a complete
-identity — one whose structural hash matches nothing simply never drains.
-Every `accepts=` entry must be a `DefinitionId` (anything else is a
-`TypeError` at `serve()`).
+persisted and unclaimed, its view reports
+`WaitingCondition.VERSION_INCOMPATIBLE`, and the worker logs a warning
+naming the pinned identity it cannot serve. Every `accepts=` entry must be
+a `DefinitionId` (anything else is a `TypeError` at `serve()`), and each
+entry is validated structurally at `serve()` time: it must name a
+Definition this host serves and its structural hash must equal the served
+Definition's hash — anything else is a `ValueError`, because an
+undrainable declaration would park submissions forever (ADR 0007).
 
 ## Submitting a Run
 
@@ -88,6 +92,12 @@ normalized inputs, and the requested `start_at`. Resubmitting the same
   `client.rerun()` to repeat a settled run.
 
 `host.submit_sync(...)` is the synchronous mirror.
+
+`submit()` also accepts `start_at` (a `datetime` or ISO string) for a
+delayed start: the submission waits as `WaitingCondition.SCHEDULED` until
+the time passes. It is normalized to a UTC ISO timestamp at submit time
+(naive inputs read as UTC; offsets converted), so equivalent spellings of
+the same instant dedupe identically.
 
 `submit()` also accepts `recovery_cap` (default `3`): how many progressless
 crash re-adoptions park the run as recovery-exhausted instead of resuming
@@ -128,7 +138,10 @@ Every committed Run fact carries a monotonic per-Run durable sequence.
 gaps, no repeats, safe across process restarts — then tails live previews.
 Previews arrive with `update.durable is False`, repeat the last durable
 cursor, and **never advance it**; store cursors from durable updates only.
-`get_sync()` is the synchronous mirror of `get()`.
+A `ref` unknown to the Home (neither a submission nor a runs row)
+terminates immediately with no updates — matching `get()`'s honest `None`
+— instead of polling forever. `get_sync()` is the synchronous mirror of
+`get()`.
 
 `WaitingCondition` is a closed enum — `QUEUED`, `SCHEDULED`, `PAUSED`,
 `VERSION_INCOMPATIBLE`, `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED` — so
@@ -163,6 +176,13 @@ and `duplicate`. A second stop while one is still unapplied dedupes with
 already terminal at write time raises `AlreadyTerminalError`; stopping an
 id unknown to the Home raises `HostError`. `client.stop_sync(...)` is the
 synchronous mirror.
+
+Like `submit()`, `stop()` accepts an optional opaque `source_ref`
+(`client.stop(ref, info=..., source_ref="ops-console")`) recorded on the
+command row for audit (ADR 0005 A11) — it is never authentication and never
+affects dedup. The worker only delivers a stop to a run the Definition's
+runner reports as live (`runner.has_active_run(workflow_id)`), so a stop
+never lands on a stale or not-yet-registered execution.
 
 ## Listing Runs
 
@@ -261,16 +281,21 @@ A run that settled before the crash — including `STOPPED` — is finished and
 never resumed.
 
 Unbounded resume would loop a poison run forever, so every submission
-carries a recovery brake (`recovery_cap` at submit time, default `3`). Each
-re-adoption of a crashed submission checks progress since the previous
-adoption:
+carries a recovery brake (`recovery_cap` at submit time, default `3`). The
+brake counts **progressless re-adoptions**:
 
-- **new committed steps** (or the run is `PAUSED` — paused work waits on
-  purpose) → the attempt budget resets and the run is re-pended;
-- **no progress** → `recovery_attempts` increments; when it reaches the
-  cap, the submission is parked as recovery-exhausted: workers stop
-  claiming it, a durable `recovery_exhausted` update is recorded, and the
-  view reports `WaitingCondition.RECOVERY_EXHAUSTED`.
+- every re-adoption of a crashed (claimed-but-unfinished) submission at
+  worker startup increments `recovery_attempts` — a run killed mid-flight
+  *with* committed steps therefore shows `recovery_attempts=1` after the
+  restart scan;
+- **new committed progress** — a saved `StepRecord`, a durable pause, or a
+  terminal transition — resets the counter to 0 at commit time (a status
+  flip back to `active` at claim/re-adoption does **not**; neither does the
+  resume itself, since journal-skipped steps are not re-saved);
+- when the incremented count reaches the cap, the submission is parked as
+  recovery-exhausted: workers stop claiming it, a durable
+  `recovery_exhausted` update is recorded, and the view reports
+  `WaitingCondition.RECOVERY_EXHAUSTED`.
 
 `client.rerun(ref)` revives braked work under a fresh workflow id.
 

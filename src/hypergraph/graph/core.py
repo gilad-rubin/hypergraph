@@ -1282,6 +1282,11 @@ class Graph:
         return new_graph
 
     @property
+    def bound_runner(self) -> BaseRunner | None:
+        """The runner bound via ``with_runner()``, or None when unbound (read-only)."""
+        return self._bound_runner
+
+    @property
     def has_cycles(self) -> bool:
         """True if graph contains cycles."""
         return not nx.is_directed_acyclic_graph(self._nx_graph)

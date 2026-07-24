@@ -49,34 +49,35 @@ class _Definition:
 
 
 def _normalize_start_at(start_at: datetime | str | None) -> str | None:
+    """Normalize start_at to a UTC ISO string safe for lexicographic comparison.
+
+    Claim eligibility compares ``start_at <= now`` lexicographically, so every
+    stored value shares one shape: UTC ``+00:00`` ISO. Naive inputs are read
+    as UTC; offset inputs are converted. Normalizing here (before the start
+    fingerprint is computed) keeps equivalent inputs deduping identically.
+    """
     if start_at is None:
         return None
     if isinstance(start_at, datetime):
-        return start_at.isoformat()
-    if isinstance(start_at, str):
-        return start_at
-    raise TypeError(f"start_at must be a datetime, an ISO string, or None; got {type(start_at).__name__}.")
+        parsed = start_at
+    elif isinstance(start_at, str):
+        text = start_at.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            raise ValueError(f"start_at must be an ISO 8601 timestamp, got {start_at!r}.") from None
+    else:
+        raise TypeError(f"start_at must be a datetime, an ISO string, or None; got {type(start_at).__name__}.")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
 
 
 def _validate_recovery_cap(recovery_cap: int) -> None:
     if isinstance(recovery_cap, bool) or not isinstance(recovery_cap, int) or recovery_cap < 0:
         raise ValueError(f"recovery_cap must be an int >= 0 (the progressless re-adoption budget), got {recovery_cap!r}.")
-
-
-def _runner_has_active(definition: _Definition, workflow_id: str) -> bool:
-    """True when the runner's live registry holds this workflow id.
-
-    Reads the runner's private ``_active_workflows`` registry: it is the
-    runner's own record of live workflow ids, so it is the only way to know
-    ``runner.stop()`` would land instead of no-op. Cloned runners own their
-    own registry and the worker stops through the same clone, so the
-    observation and the stop stay consistent.
-    """
-    active = getattr(definition.runner, "_active_workflows", None)
-    if active is None:
-        return False
-    with active._lock:
-        return workflow_id in active._reservations
 
 
 class Host:
@@ -385,7 +386,7 @@ class Host:
             definition = self._definitions.get(submission["definition_name"])
             if definition is None:
                 continue
-            if not _runner_has_active(definition, workflow_id):
+            if not definition.runner.has_active_run(workflow_id):
                 # Claimed and executing, but the runner has not registered
                 # the workflow yet — stop() would be a no-op. Retry next
                 # cycle; the pre-run gate covers the never-started case.
@@ -463,8 +464,11 @@ def serve(*graphs: Graph, home: RunHome, deployment_version: str = "", accepts: 
         accepts: Complete prior ``DefinitionId`` identities this deployment
             declares it can drain (ADR 0007). The worker claims a parked
             submission only when its pinned identity matches a served
-            Definition exactly or one of these declarations; an entry that
-            matches nothing simply never drains.
+            Definition exactly or one of these declarations. Every entry is
+            validated structurally at serve() time: it must name a Definition
+            this host serves and its ``structural_hash`` must equal the
+            served Definition's hash — anything else is a ``ValueError``
+            (an undrainable declaration would park submissions forever).
     """
     from hypergraph.graph import Graph
     from hypergraph.runners.base import BaseRunner
@@ -485,18 +489,29 @@ def serve(*graphs: Graph, home: RunHome, deployment_version: str = "", accepts: 
             raise ValueError("serve() requires every graph to have a name. Pass name=... to Graph(...) and retry.")
         if graph.name in definitions:
             raise ValueError(f"Duplicate definition name {graph.name!r} in serve().")
-        runner = getattr(graph, "_bound_runner", None)
+        runner = graph.bound_runner
         if runner is None:
             raise ValueError(f"Graph {graph.name!r} has no bound runner. Call graph.with_runner(runner) before serve().")
         if not isinstance(runner, BaseRunner):
             raise TypeError(
                 f"Graph {graph.name!r} carries {type(runner).__name__}, not a BaseRunner. Use graph.with_runner(SyncRunner()/AsyncRunner())."
             )
-        if "_checkpointer_instance" not in runner.__dict__ or not hasattr(runner, "_create_dispatcher"):
+        capabilities = runner.capabilities
+        if not capabilities.supports_checkpointing and not capabilities.supports_events:
+            # Statically incapable runners (e.g. DaftRunner) fail loudly at
+            # construction. An unbound SyncRunner/AsyncRunner also reports
+            # supports_checkpointing=False (it flips True once bound), so the
+            # capability alone is not decisive — with_checkpointer() has the
+            # final say on whether a binding seam exists at all.
             raise ValueError(
                 f"{type(runner).__name__} cannot serve durable runs: it has no checkpointer/event support. Bind a SyncRunner or AsyncRunner instead."
             )
-        bound_runner = runner.with_checkpointer(home)
+        try:
+            bound_runner = runner.with_checkpointer(home)
+        except TypeError as exc:
+            raise ValueError(
+                f"{type(runner).__name__} cannot serve durable runs: it has no checkpointer/event support. Bind a SyncRunner or AsyncRunner instead."
+            ) from exc
         definitions[graph.name] = _Definition(
             name=graph.name,
             graph=graph,
@@ -504,6 +519,19 @@ def serve(*graphs: Graph, home: RunHome, deployment_version: str = "", accepts: 
             version=deployment_version,
             struct_hash=graph.structural_hash,
         )
+
+    for entry in accepts:
+        served = definitions.get(entry.name)
+        if served is None:
+            raise ValueError(
+                f"serve() accepts= entry {entry.to_dict()!r} names Definition {entry.name!r}, which this host does not serve. "
+                "An accepts declaration must name a served Definition so its parked submissions can actually drain."
+            )
+        if entry.structural_hash != served.struct_hash:
+            raise ValueError(
+                f"serve() accepts= entry {entry.to_dict()!r} pins structural_hash {entry.structural_hash!r}, but the served "
+                f"Definition {entry.name!r} has hash {served.struct_hash!r}. accepts= requires structural compatibility (ADR 0007)."
+            )
 
     bus = _PreviewBus()
     _register_bus(home.uri, bus)

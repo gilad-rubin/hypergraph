@@ -12,12 +12,16 @@ checkpoint durability ``"sync"`` and rejects ``"exit"`` policies.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Collection
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.checkpointers.base import CheckpointPolicy
+
+# host/ is the same persistence subsystem as checkpointers/ (a RunHome IS a
+# SqliteCheckpointer), so reaching its private column list here is deliberate.
 from hypergraph.checkpointers.sqlite import _RUNS_COLS, SqliteCheckpointer
 from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import AlreadyTerminalError, HostError, WorkflowIdConflictError
@@ -25,6 +29,8 @@ from hypergraph.host.fingerprint import fingerprint_mismatch_aspect
 
 if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Run
+
+logger = logging.getLogger("hypergraph.host")
 
 _SUBMISSION_COLS = (
     "workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
@@ -35,6 +41,7 @@ _SUBMISSION_PLACEHOLDERS = ", ".join("?" for _ in _SUBMISSION_COLS.split(", "))
 _QUALIFIED_SUBMISSION_COLS = ", ".join(f"s.{name}" for name in _SUBMISSION_COLS.split(", "))
 _QUALIFIED_RUN_COLS = ", ".join(f"r.{name}" for name in _RUNS_COLS.split(", "))
 _TERMINAL_STATUS_VALUES = ("completed", "failed", "partial", "stopped")
+_PROGRESS_STATUSES = frozenset({"paused", *_TERMINAL_STATUS_VALUES})
 _CLAIM_BATCH = 16
 
 
@@ -46,9 +53,22 @@ def _row_to_submission(row: tuple[Any, ...]) -> dict[str, Any]:
     return dict(zip(_SUBMISSION_COLS.split(", "), row, strict=True))
 
 
+def _is_committed_progress(kind: str, payload: dict[str, Any]) -> bool:
+    """True when a run mutation is NEW committed progress (resets the brake).
+
+    Only step saves, durable pauses, and terminal transitions count. A status
+    flip to ``active`` at claim/re-adoption (``run_started``/``status``) is
+    recovery bookkeeping, not progress, and must NOT reset the counter.
+    Journal-skipped steps during recovery are not re-saved, so resume alone
+    never touches the counter either.
+    """
+    if kind == "step":
+        return True
+    return kind == "status" and payload.get("status") in _PROGRESS_STATUSES
+
+
 def _raise_on_conflicting_reuse(
     existing: dict[str, Any],
-    run_status: str | None,
     *,
     workflow_id: str,
     fingerprint: str,
@@ -60,12 +80,13 @@ def _raise_on_conflicting_reuse(
 ) -> None:
     """Apply the dedup/conflict contract to an existing submission row.
 
-    Terminal reuse wins first (completed history never changes identity),
-    then fingerprint mismatch is a distinct typed conflict; an identical
-    fingerprint falls through to use-existing dedup. Caller holds the write
-    transaction and rolls back on raise.
+    Terminal reuse wins first (completed history never changes identity): a
+    finished submission is terminal even when no runs row exists (stopped
+    before first execution). Then fingerprint mismatch is a distinct typed
+    conflict; an identical fingerprint falls through to use-existing dedup.
+    Caller holds the write transaction and rolls back on raise.
     """
-    if existing["state"] == "finished" and run_status is not None and run_status in _TERMINAL_STATUS_VALUES:
+    if existing["state"] == "finished":
         raise AlreadyTerminalError(workflow_id)
     if existing["fingerprint"] != fingerprint:
         aspect = fingerprint_mismatch_aspect(
@@ -127,27 +148,44 @@ class RunHome(SqliteCheckpointer):
     # === run_updates appends (same-transaction as run mutations) ===
 
     def _append_run_update_sync(self, db: Any, run_id: str, kind: str, payload: dict[str, Any]) -> None:
-        """Append one run_updates row; caller holds the write transaction."""
-        (seq,) = db.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM run_updates WHERE run_id = ?", (run_id,)).fetchone()
+        """Append one run_updates row; caller holds the write transaction.
+
+        Single INSERT...SELECT so the seq allocation and the insert are one
+        statement (no read-then-write race).
+        """
         db.execute(
-            "INSERT INTO run_updates (run_id, seq, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)",
-            (run_id, seq, kind, json.dumps(payload), _now_iso()),
+            "INSERT INTO run_updates (run_id, seq, kind, payload, created_at) "
+            "SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ? FROM run_updates WHERE run_id = ?",
+            (run_id, kind, json.dumps(payload), _now_iso(), run_id),
         )
 
     async def _append_run_update(self, run_id: str, kind: str, payload: dict[str, Any]) -> None:
         """Append one run_updates row; caller holds the write transaction."""
-        cursor = await self._db.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM run_updates WHERE run_id = ?", (run_id,))
-        (seq,) = await cursor.fetchone()
         await self._db.execute(
-            "INSERT INTO run_updates (run_id, seq, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)",
-            (run_id, seq, kind, json.dumps(payload), _now_iso()),
+            "INSERT INTO run_updates (run_id, seq, kind, payload, created_at) "
+            "SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ? FROM run_updates WHERE run_id = ?",
+            (run_id, kind, json.dumps(payload), _now_iso(), run_id),
+        )
+
+    def _reset_recovery_attempts_sync(self, db: Any, run_id: str) -> None:
+        """Reset the recovery brake on NEW committed progress (same transaction)."""
+        db.execute(
+            "UPDATE host_submissions SET recovery_attempts = 0 WHERE workflow_id = ? AND recovery_attempts > 0",
+            (run_id,),
         )
 
     def _after_run_mutation_sync(self, db: Any, run_id: str, kind: str, payload: dict[str, Any]) -> None:
         self._append_run_update_sync(db, run_id, kind, payload)
+        if _is_committed_progress(kind, payload):
+            self._reset_recovery_attempts_sync(db, run_id)
 
     async def _after_run_mutation(self, run_id: str, kind: str, payload: dict[str, Any]) -> None:
         await self._append_run_update(run_id, kind, payload)
+        if _is_committed_progress(kind, payload):
+            await self._db.execute(
+                "UPDATE host_submissions SET recovery_attempts = 0 WHERE workflow_id = ? AND recovery_attempts > 0",
+                (run_id,),
+            )
 
     # === Submissions ===
 
@@ -184,10 +222,8 @@ class RunHome(SqliteCheckpointer):
                     (workflow_id,),
                 ).fetchone()
                 if existing_row is not None:
-                    status_row = db.execute("SELECT status FROM runs WHERE id = ?", (workflow_id,)).fetchone()
                     _raise_on_conflicting_reuse(
                         _row_to_submission(existing_row),
-                        status_row[0] if status_row is not None else None,
                         workflow_id=workflow_id,
                         fingerprint=fingerprint,
                         definition_name=definition_name,
@@ -264,11 +300,8 @@ class RunHome(SqliteCheckpointer):
                 )
                 existing_row = await cursor.fetchone()
                 if existing_row is not None:
-                    status_cursor = await self._db.execute("SELECT status FROM runs WHERE id = ?", (workflow_id,))
-                    status_row = await status_cursor.fetchone()
                     _raise_on_conflicting_reuse(
                         _row_to_submission(existing_row),
-                        status_row[0] if status_row is not None else None,
                         workflow_id=workflow_id,
                         fingerprint=fingerprint,
                         definition_name=definition_name,
@@ -392,6 +425,12 @@ class RunHome(SqliteCheckpointer):
                         # Refuse loudly and durably: this worker cannot serve
                         # the pinned identity; a new worker/version
                         # re-evaluates via the restart scan.
+                        logger.warning(
+                            "Worker cannot serve submission %s: pinned identity %s is not served by this host; "
+                            "marking it version-incompatible (it stays parked until a serving worker or explicit migration).",
+                            submission["workflow_id"],
+                            identity.to_dict(),
+                        )
                         await self._db.execute(
                             "UPDATE host_submissions SET compat_state = 'incompatible' WHERE workflow_id = ? AND state = 'pending'",
                             (submission["workflow_id"],),
@@ -428,17 +467,20 @@ class RunHome(SqliteCheckpointer):
         """Re-adopt unfinished claimed submissions on worker startup.
 
         Claimed submissions whose run settled terminally are marked
-        finished. Every other claimed submission is a recovery attempt:
-        when the run made progress since the last adoption (new committed
-        steps, or the run is paused) the attempt counter resets and the
-        submission returns to 'pending'; a progressless re-adoption
-        increments ``recovery_attempts``, and reaching the submission's
-        ``recovery_cap`` parks it as 'exhausted' (a durable
-        ``recovery_exhausted`` update is appended in the same transaction)
-        so a crash-looping run is braked instead of resumed forever.
-        Pending submissions also reset to ``compat_state='compatible'`` so
-        a new worker/deployment re-evaluates version compatibility from
-        scratch.
+        finished. Every other claimed submission is a recovery attempt and
+        gets ``recovery_attempts += 1``: when the incremented count reaches
+        the submission's ``recovery_cap`` it is parked as 'exhausted' (a
+        durable ``recovery_exhausted`` update is appended in the same
+        transaction) so a crash-looping run is braked instead of resumed
+        forever; otherwise it returns to 'pending' with the incremented
+        count. The counter is NOT evaluated against step history here —
+        NEW committed progress (step saves, durable pauses, terminal
+        transitions) resets it to 0 at commit time via
+        ``_after_run_mutation``, so a run killed WITH committed steps still
+        shows the incremented attempt count after re-adoption (prototype
+        Scenario 3). Pending submissions also reset to
+        ``compat_state='compatible'`` so a new worker/deployment
+        re-evaluates version compatibility from scratch.
         """
         await self._ensure_db()
         now = _now_iso()
@@ -458,24 +500,11 @@ class RunHome(SqliteCheckpointer):
                 for row in await cursor.fetchall():
                     submission = _row_to_submission(row)
                     workflow_id = submission["workflow_id"]
-                    steps_cursor = await self._db.execute("SELECT COUNT(*) FROM steps WHERE run_id = ?", (workflow_id,))
-                    (step_count,) = await steps_cursor.fetchone()
-                    run_cursor = await self._db.execute("SELECT status FROM runs WHERE id = ?", (workflow_id,))
-                    run_row = await run_cursor.fetchone()
-                    made_progress = step_count > submission["last_progress_step_count"] or (run_row is not None and run_row[0] == "paused")
-                    if made_progress:
-                        # Progress resets the brake: record the new high-water
-                        # mark and re-pend with a fresh attempt budget.
-                        await self._db.execute(
-                            "UPDATE host_submissions SET state = 'pending', claimed_at = NULL, "
-                            "recovery_attempts = 0, last_progress_step_count = ? WHERE workflow_id = ?",
-                            (step_count, workflow_id),
-                        )
-                        continue
                     attempts = submission["recovery_attempts"] + 1
                     if attempts >= submission["recovery_cap"]:
-                        # Recovery brake: the run crashed without progress too
-                        # many times. Park it exhausted; client.rerun() revives.
+                        # Recovery brake: the run was re-adopted without new
+                        # committed progress too many times. Park it
+                        # exhausted; client.rerun() revives.
                         await self._db.execute(
                             "UPDATE host_submissions SET state = 'exhausted', recovery_attempts = ? WHERE workflow_id = ?",
                             (attempts, workflow_id),
@@ -502,14 +531,16 @@ class RunHome(SqliteCheckpointer):
 
     # === host_commands (durable stop channel) ===
 
-    def _write_stop_command_sync(self, workflow_id: str, info: Any) -> bool:
+    def _write_stop_command_sync(self, workflow_id: str, info: Any, source_ref: str | None = None) -> bool:
         """Record a durable stop command plus its 'command' update, atomically.
 
         Returns True when a new command row was written; False when an
         unapplied stop already exists (the first stop owns its ``info`` and
         nothing new is written). Raises ``HostError`` for an unknown run and
         ``AlreadyTerminalError`` when the run is already terminal (or its
-        submission already finished) at write time.
+        submission already finished) at write time. ``source_ref`` is an
+        opaque caller provenance marker (ADR 0005 A11) stored on the command
+        row; it never affects dedup.
         """
         with self._sync_lock:
             db = self._sync_db()
@@ -534,8 +565,8 @@ class RunHome(SqliteCheckpointer):
                     db.rollback()
                     return False
                 db.execute(
-                    "INSERT INTO host_commands (run_id, verb, payload, created_at) VALUES (?, 'stop', ?, ?)",
-                    (workflow_id, json.dumps({"info": info}), _now_iso()),
+                    "INSERT INTO host_commands (run_id, verb, payload, source_ref, created_at) VALUES (?, 'stop', ?, ?, ?)",
+                    (workflow_id, json.dumps({"info": info}), source_ref, _now_iso()),
                 )
                 self._append_run_update_sync(db, workflow_id, "command", {"verb": "stop", "info": info})
                 db.commit()
@@ -544,7 +575,7 @@ class RunHome(SqliteCheckpointer):
                 self._rollback_sync(db)
                 raise
 
-    async def _write_stop_command(self, workflow_id: str, info: Any) -> bool:
+    async def _write_stop_command(self, workflow_id: str, info: Any, source_ref: str | None = None) -> bool:
         """Async mirror of ``_write_stop_command_sync``."""
         await self._ensure_db()
         async with self._txn_lock():
@@ -571,8 +602,8 @@ class RunHome(SqliteCheckpointer):
                     await self._db.rollback()
                     return False
                 await self._db.execute(
-                    "INSERT INTO host_commands (run_id, verb, payload, created_at) VALUES (?, 'stop', ?, ?)",
-                    (workflow_id, json.dumps({"info": info}), _now_iso()),
+                    "INSERT INTO host_commands (run_id, verb, payload, source_ref, created_at) VALUES (?, 'stop', ?, ?, ?)",
+                    (workflow_id, json.dumps({"info": info}), source_ref, _now_iso()),
                 )
                 await self._append_run_update(workflow_id, "command", {"verb": "stop", "info": info})
                 await self._db.commit()

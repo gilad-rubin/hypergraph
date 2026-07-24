@@ -341,7 +341,7 @@ def _create_fts(conn: Any) -> None:
 # is durable intent recorded BEFORE execution; the runs row is created later
 # by the executing runner. run_updates is the per-Run durable sequence that
 # RunHomeClient.watch replays; host_commands is the durable control channel
-# (written by later host tickets).
+# (the host's stop verb writes it today).
 
 _CREATE_HOST_SUBMISSIONS = """
 CREATE TABLE IF NOT EXISTS host_submissions (
@@ -363,6 +363,8 @@ CREATE TABLE IF NOT EXISTS host_submissions (
     retry_of TEXT,
     forked_from TEXT,
     fork_reason TEXT,
+    -- Retained for schema compatibility; the recovery brake no longer reads
+    -- it (progress resets now happen at commit time via _after_run_mutation).
     last_progress_step_count INTEGER NOT NULL DEFAULT 0
 )
 """

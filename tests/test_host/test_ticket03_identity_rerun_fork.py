@@ -132,11 +132,6 @@ async def _compat_state(home, workflow_id, compat):
     return submission is not None and submission["compat_state"] == compat
 
 
-async def _worker_started(host):
-    """True once work_forever has registered its stop event (loop is live)."""
-    return host._stop_event is not None or None
-
-
 @pytest_asyncio.fixture
 async def home(tmp_path):
     h = RunHome.open(_home_uri(tmp_path))
@@ -261,7 +256,7 @@ class TestFingerprintNormalization:
 
 
 class TestVersionRefusal:
-    async def test_incompatible_refused_then_accepts_drains(self, tmp_path, home):
+    async def test_incompatible_refused_then_accepts_drains(self, tmp_path, home, caplog):
         graph = _sync_graph("dbl")
         old_id = DefinitionId("dbl", "old", graph.structural_hash)
 
@@ -270,26 +265,30 @@ class TestVersionRefusal:
         assert home._get_submission_sync("wf-parked")["def_version"] == "old"
 
         # A new deployment refuses the old pinned identity: the submission
-        # stays pending and the view names the typed waiting condition.
+        # stays parked, the view names the typed waiting condition, and the
+        # worker logs a warning naming the identity it cannot serve.
         host_new = serve(graph, home=home, deployment_version="new")
-        async with _worker(host_new, "w-new"):
-            await _wait_for(lambda: _compat_state(home, "wf-parked", "incompatible"))
-            view = await host_new.client.get(receipt.run_ref)
-            assert view.waiting is WaitingCondition.VERSION_INCOMPATIBLE
-            assert view.status is None
+        with caplog.at_level("WARNING", logger="hypergraph.host"):
+            async with _worker(host_new, "w-new"):
+                await _wait_for(lambda: _compat_state(home, "wf-parked", "incompatible"))
+                view = await host_new.client.get(receipt.run_ref)
+                assert view.waiting is WaitingCondition.VERSION_INCOMPATIBLE
+                assert view.status is None
         assert home._get_submission_sync("wf-parked")["state"] == "pending"
         assert home.get_run("wf-parked") is None
+        refusal_warnings = [r for r in caplog.records if r.name == "hypergraph.host" and r.levelname == "WARNING"]
+        assert refusal_warnings, "expected a worker warning naming the refused identity"
+        assert any("wf-parked" in r.getMessage() and "old" in r.getMessage() for r in refusal_warnings)
 
-        # An accepts entry with the WRONG structural hash never matches:
-        # the submission is refused again and does not drain.
+        # An accepts entry with the WRONG structural hash is rejected at
+        # serve() time — an undrainable declaration would park forever.
         wrong = DefinitionId("dbl", "old", "0" * 64)
-        host_wrong = serve(graph, home=home, deployment_version="new", accepts=(wrong,))
-        async with _worker(host_wrong, "w-wrong"):
-            await _wait_for(lambda: _worker_started(host_wrong))
-            await asyncio.sleep(0.4)  # several claim cycles: refusal, never a claim
-            assert home.get_run("wf-parked") is None
-            assert home._get_submission_sync("wf-parked")["state"] == "pending"
-            assert home._get_submission_sync("wf-parked")["compat_state"] == "incompatible"
+        with pytest.raises(ValueError, match="structural_hash"):
+            serve(graph, home=home, deployment_version="new", accepts=(wrong,))
+        # An accepts entry naming an unserved Definition is rejected too.
+        unserved = DefinitionId("nosuchdef", "old", graph.structural_hash)
+        with pytest.raises(ValueError, match="does not serve"):
+            serve(graph, home=home, deployment_version="new", accepts=(unserved,))
 
         # Declaring the exact prior identity drains the parked run.
         host_ok = serve(graph, home=home, deployment_version="new", accepts=(old_id,))

@@ -34,7 +34,7 @@ from hypergraph import (
     node,
     serve,
 )
-from hypergraph.checkpointers.types import WorkflowStatus
+from hypergraph.checkpointers.types import StepRecord, StepStatus, WorkflowStatus
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -260,6 +260,40 @@ class TestDurableStop:
         assert [u.kind for u in updates] == ["submitted", "command"]
         assert all(u.durable for u in updates)
 
+    async def test_resubmit_after_stop_before_start_is_already_terminal(self, home):
+        """Finished submissions are terminal even with no runs row (F6)."""
+        calls = {"n": 0}
+        host = serve(_counting_sync_graph("termdef", calls), home=home)
+        receipt = await host.submit("termdef", {"x": 1}, workflow_id="wf-term-nb")
+        await host.client.stop(receipt.run_ref)
+
+        async with _worker(host):
+            await _wait_for(lambda: _submission_state(home, "wf-term-nb", "finished"))
+        assert calls["n"] == 0
+        assert home.get_run("wf-term-nb") is None
+
+        # Fingerprint-identical reuse of the finished submission raises —
+        # completed history never changes identity, runs row or not.
+        with pytest.raises(AlreadyTerminalError):
+            await host.submit("termdef", {"x": 1}, workflow_id="wf-term-nb")
+        with pytest.raises(AlreadyTerminalError):
+            host.submit_sync("termdef", {"x": 1}, workflow_id="wf-term-nb")
+
+    async def test_stop_records_source_ref_on_command_row(self, home):
+        """ADR 0005 A11: commands may carry an opaque source_ref (F13)."""
+        host = serve(_sync_graph("dbl"), home=home)
+        receipt = await host.submit("dbl", {"x": 1}, workflow_id="wf-srcref")
+        await host.client.stop(receipt.run_ref, info="audit", source_ref="ops-console-7")
+        db = home._sync_db()
+        (stored,) = db.execute("SELECT source_ref FROM host_commands WHERE run_id = 'wf-srcref' AND verb = 'stop'").fetchone()
+        assert stored == "ops-console-7"
+
+        # Omitted source_ref stays NULL; the sync mirror accepts it too.
+        receipt2 = await host.submit("dbl", {"x": 2}, workflow_id="wf-srcref2")
+        host.client.stop_sync(receipt2.run_ref, info="plain")
+        (stored2,) = db.execute("SELECT source_ref FROM host_commands WHERE run_id = 'wf-srcref2' AND verb = 'stop'").fetchone()
+        assert stored2 is None
+
 
 # === 2. Real SIGKILL restart: resume without re-executing committed steps ===
 
@@ -391,13 +425,17 @@ class TestRecoveryBrake:
         assert retry_view.status == WorkflowStatus.COMPLETED
         assert retry_view.retry_of == "wf-poison"
 
-    async def test_progress_resets_the_brake(self, home):
+    async def test_killed_with_committed_step_shows_one_attempt_then_resets(self, home):
+        """Prototype Scenario 3 (protocol-19 shape): a run killed mid-flight
+        WITH a committed step shows recovery_attempts=1 after re-adoption —
+        re-adoption always increments; only NEW committed progress (a saved
+        StepRecord, a durable pause, a terminal transition) resets, at
+        commit time. A status flip to active at re-claim never resets."""
         host = serve(_sync_graph("progdef"), home=home, deployment_version="v1")
-        await host.submit("progdef", {"x": 2}, workflow_id="wf-prog", recovery_cap=1)
+        await host.submit("progdef", {"x": 2}, workflow_id="wf-prog", recovery_cap=3)
 
-        # A crashed run with one committed step: progress since the last
-        # adoption resets the attempt budget instead of braking (cap=1
-        # would exhaust a progressless re-adoption immediately).
+        # Killed mid-execution WITH one committed step. The raw INSERT
+        # stands in for the dead process's commit (no reset hook fired).
         home.create_run_sync("wf-prog", graph_name="progdef")
         db = home._sync_db()
         db.execute("INSERT INTO steps (run_id, step_index, superstep, node_name, status) VALUES ('wf-prog', 0, 0, 'compute', 'completed')")
@@ -406,25 +444,46 @@ class TestRecoveryBrake:
         await home._restart_scan()
         submission = home._get_submission_sync("wf-prog")
         assert submission["state"] == "pending"
-        assert submission["recovery_attempts"] == 0
-        assert submission["last_progress_step_count"] == 1
+        assert submission["recovery_attempts"] == 1
 
-        # The next cycle makes no new progress: the brake trips at cap=1.
-        db.execute("UPDATE host_submissions SET state = 'claimed' WHERE workflow_id = 'wf-prog'")
-        db.commit()
-        await home._restart_scan()
-        assert home._get_submission_sync("wf-prog")["state"] == "exhausted"
+        # Re-claim flips the run back to active — recovery bookkeeping, not
+        # progress: the counter must NOT reset.
+        home.update_run_status_sync("wf-prog", WorkflowStatus.ACTIVE)
+        assert home._get_submission_sync("wf-prog")["recovery_attempts"] == 1
 
-        # A paused run counts as progress: paused work waits on purpose.
-        await host.submit("progdef", {"x": 3}, workflow_id="wf-paused2", recovery_cap=1)
-        home.create_run_sync("wf-paused2", graph_name="progdef")
-        home.update_run_status_sync("wf-paused2", WorkflowStatus.PAUSED)
-        db.execute("UPDATE host_submissions SET state = 'claimed' WHERE workflow_id = 'wf-paused2'")
+        # The resumed run commits a NEW step: the counter resets at commit
+        # time, in the same transaction as the step save.
+        home.save_step_sync(
+            StepRecord(
+                run_id="wf-prog",
+                superstep=1,
+                node_name="downstream",
+                index=1,
+                status=StepStatus.COMPLETED,
+                input_versions={},
+            )
+        )
+        assert home._get_submission_sync("wf-prog")["recovery_attempts"] == 0
+
+    async def test_pause_and_terminal_transitions_reset_the_brake(self, home):
+        host = serve(_sync_graph("pausedef"), home=home, deployment_version="v1")
+        await host.submit("pausedef", {"x": 3}, workflow_id="wf-pause", recovery_cap=3)
+        home.create_run_sync("wf-pause", graph_name="pausedef")
+        db = home._sync_db()
+        db.execute("UPDATE host_submissions SET state = 'claimed', recovery_attempts = 2 WHERE workflow_id = 'wf-pause'")
         db.commit()
-        await home._restart_scan()
-        paused_sub = home._get_submission_sync("wf-paused2")
-        assert paused_sub["state"] == "pending"
-        assert paused_sub["recovery_attempts"] == 0
+
+        # A durable pause is committed progress: paused work waits on purpose.
+        home.update_run_status_sync("wf-pause", WorkflowStatus.PAUSED)
+        assert home._get_submission_sync("wf-pause")["recovery_attempts"] == 0
+
+        # A terminal transition also resets (the submission then finishes).
+        await host.submit("pausedef", {"x": 4}, workflow_id="wf-term2", recovery_cap=3)
+        home.create_run_sync("wf-term2", graph_name="pausedef")
+        db.execute("UPDATE host_submissions SET state = 'claimed', recovery_attempts = 1 WHERE workflow_id = 'wf-term2'")
+        db.commit()
+        home.update_run_status_sync("wf-term2", WorkflowStatus.COMPLETED)
+        assert home._get_submission_sync("wf-term2")["recovery_attempts"] == 0
 
     async def test_recovery_cap_validation_and_fingerprint_exclusion(self, home):
         host = serve(_sync_graph("dbl"), home=home)

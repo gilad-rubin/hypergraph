@@ -93,7 +93,17 @@ class SyncRunner(SyncRunnerTemplate):
         self._checkpointer_instance = checkpointer
         self._show_progress = show_progress
         self._active_workflows = _ActiveWorkflows()
-        self._executors: dict[type[HyperNode], NodeExecutor] = {
+        self._executors = self._build_executors()
+
+    def _build_executors(self) -> dict[type[HyperNode], NodeExecutor]:
+        """Construct node executors bound to THIS runner instance.
+
+        Extracted from ``__init__`` so ``with_checkpointer()`` can rebind a
+        clone's executors: ``SyncGraphNodeExecutor`` captures its runner, and
+        a shallow copy would keep delegating nested GraphNode child workflows
+        to the ORIGINAL runner (wrong checkpointer, wrong live registry).
+        """
+        return {
             FunctionNode: SyncFunctionNodeExecutor(),
             GraphNode: SyncGraphNodeExecutor(self),
             IfElseNode: SyncIfElseNodeExecutor(),

@@ -32,8 +32,11 @@ class BaseRunner(ABC):
 
         The supplied runner is never mutated: the clone gets its own
         workflow registry, so in-process duplicate-active protection stays
-        per-instance, while executor wiring is shared with the original.
-        Used by ``serve()`` to bind Definition runners to a Run Home.
+        per-instance, and its executor wiring is rebuilt against the clone
+        (GraphNode executors capture their runner — sharing the original's
+        executors would run nested child workflows against the wrong
+        checkpointer and live registry). Used by ``serve()`` to bind
+        Definition runners to a Run Home.
 
         Raises:
             TypeError: If this runner class has no checkpointer seam
@@ -49,7 +52,20 @@ class BaseRunner(ABC):
             from hypergraph.runners._shared.stop import _ActiveWorkflows
 
             new_runner._active_workflows = _ActiveWorkflows()
+        build_executors = getattr(new_runner, "_build_executors", None)
+        if build_executors is not None:
+            new_runner._executors = build_executors()
         return new_runner
+
+    def has_active_run(self, workflow_id: str) -> bool:
+        """True while a run with this workflow_id is live (``stop()`` would land).
+
+        Runners without a live registry return False.
+        """
+        active = self.__dict__.get("_active_workflows")
+        if active is None:
+            return False
+        return active.has(workflow_id)
 
     @property
     @abstractmethod
