@@ -32,7 +32,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Build wheel and source distribution
