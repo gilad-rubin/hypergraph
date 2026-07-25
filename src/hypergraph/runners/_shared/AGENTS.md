@@ -76,6 +76,20 @@ controller is stale" (verdict pending). Independent nodes outside the
 re-firing gate's chain — including ungated nodes co-batched in the same
 superstep — are unaffected.
 
+## Pending Node Boundaries (`pending_boundaries.py`)
+
+Both runners persist the superstep's runnable node boundaries BEFORE the
+first sibling dispatches — never as a side effect of a sibling finishing.
+If you move, reorder, or re-batch the ready set (interrupt planning, gate
+blocking, new filters), the boundary write must stay after the batch is
+final and before `run_superstep_*`, and it must use the same
+`superstep_idx + superstep_offset` the StepRecords will carry: a boundary
+and its step share one address.
+
+Put boundary logic in `pending_boundaries.py` and call it from both
+runners. A boundary is intent, never execution truth — never derive "this
+node ran" from it.
+
 ## Staleness (`_is_stale`)
 
 A previously-executed node is stale if any input version changed since last execution.

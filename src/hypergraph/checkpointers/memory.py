@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
@@ -26,6 +27,9 @@ from hypergraph.checkpointers.types import (
     AttemptRecord,
     AttemptSeries,
     AttemptStatus,
+    BoundaryState,
+    NodeBoundary,
+    PendingNode,
     Run,
     StepRecord,
     StepStatus,
@@ -55,11 +59,52 @@ class MemoryCheckpointer(Checkpointer):
         self._steps: dict[str, dict[tuple[int, str], StepRecord]] = {}
         self._attempt_series: dict[str, AttemptSeries] = {}
         self._attempt_records: dict[str, dict[int, AttemptRecord]] = {}
+        self._pending_nodes: dict[str, dict[tuple[int, str], PendingNode]] = {}
 
     async def save_step(self, record: StepRecord) -> None:
         run_steps = self._steps.setdefault(record.run_id, {})
         run_steps[(record.superstep, record.node_name)] = record
         self._apply_retention_policy(record.run_id)
+
+    # === Pending node boundaries (PRD 0013) ===
+
+    async def record_pending_nodes(self, boundaries: Sequence[PendingNode]) -> None:
+        """Record a superstep's runnable node boundaries as pending intent.
+
+        First record wins per address: a re-record must not rewrite when the
+        boundary first became pending, nor clear a dispatch mark.
+        """
+        for boundary in boundaries:
+            run_boundaries = self._pending_nodes.setdefault(boundary.run_id, {})
+            run_boundaries.setdefault((boundary.superstep, boundary.node_name), boundary)
+
+    async def get_node_boundaries(self, run_id: str) -> list[NodeBoundary]:
+        """Recovery view: every recorded boundary of a run, state derived."""
+        run_steps = self._steps.get(run_id, {})
+        run_boundaries = self._pending_nodes.get(run_id, {})
+        views: list[NodeBoundary] = []
+        for key in sorted(run_boundaries):
+            boundary = run_boundaries[key]
+            step = run_steps.get(key)
+            if step is not None:
+                state = BoundaryState.COMMITTED
+            elif boundary.dispatched_at is not None:
+                state = BoundaryState.UNKNOWN_EFFECT
+            else:
+                state = BoundaryState.PENDING
+            views.append(
+                NodeBoundary(
+                    run_id=boundary.run_id,
+                    superstep=boundary.superstep,
+                    node_name=boundary.node_name,
+                    state=state,
+                    node_type=boundary.node_type,
+                    created_at=boundary.created_at,
+                    dispatched_at=boundary.dispatched_at,
+                    step_status=step.status if step is not None else None,
+                )
+            )
+        return views
 
     async def create_run(
         self,
@@ -335,6 +380,18 @@ class MemoryCheckpointer(Checkpointer):
             if record.status is AttemptStatus.STARTED:
                 records[number] = replace(record, status=AttemptStatus.OUTCOME_UNKNOWN, completed_at=now)
 
+    def _prune_pending_nodes_for_dropped(self, run_id: str, dropped: list[StepRecord]) -> None:
+        """A boundary follows its StepRecord's retention fate.
+
+        COMMITTED is derived from the journal, so keeping a boundary whose
+        step was pruned would silently re-classify settled work as pending.
+        """
+        run_boundaries = self._pending_nodes.get(run_id)
+        if not run_boundaries:
+            return
+        for record in dropped:
+            run_boundaries.pop((record.superstep, record.node_name), None)
+
     def _prune_attempt_series_for_dropped(self, dropped: list[StepRecord]) -> None:
         """Closed attempt history follows its linked StepRecord's retention fate."""
         for record in dropped:
@@ -372,6 +429,7 @@ class MemoryCheckpointer(Checkpointer):
             )
             retained = [*([baseline] if baseline is not None else []), *kept]
             self._steps[run_id] = {(record.superstep, record.node_name): record for record in retained}
+            self._prune_pending_nodes_for_dropped(run_id, dropped)
             self._prune_attempt_series_for_dropped(dropped)
             return
 
@@ -389,6 +447,7 @@ class MemoryCheckpointer(Checkpointer):
             baseline = _make_baseline_record(run_id, dropped, baseline_superstep=cutoff - 1)
             retained = [*([baseline] if baseline is not None else []), *kept]
             self._steps[run_id] = {(record.superstep, record.node_name): record for record in retained}
+            self._prune_pending_nodes_for_dropped(run_id, dropped)
             self._prune_attempt_series_for_dropped(dropped)
 
 

@@ -938,6 +938,13 @@ class TestMigration:
         assert "run_updates" in tables
         assert "host_commands" in tables
         assert "_schema_version" in tables
+        # v6 pending node boundaries (ticket 08): a core checkpointer table,
+        # keyed on exactly the tuple `steps` is unique on.
+        assert "pending_nodes" in tables
+        boundary_cols = [row[1] for row in conn.execute("PRAGMA table_info(pending_nodes)").fetchall()]
+        assert boundary_cols == ["run_id", "superstep", "node_name", "node_type", "created_at", "dispatched_at"]
+        boundary_pk = [row[1] for row in conn.execute("PRAGMA table_info(pending_nodes)").fetchall() if row[5]]
+        assert boundary_pk == ["run_id", "superstep", "node_name"]
 
         # v6 host_submissions columns (ticket 02 coordination + ticket 03
         # identity/fingerprint/lineage).
@@ -980,6 +987,36 @@ class TestMigration:
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
         assert version == 6
         conn.close()
+
+    def test_v6_db_gains_pending_nodes_in_place(self, tmp_path):
+        """A v6 database predating ticket 08 gains the boundary table.
+
+        Dev databases created at the earlier v6 cut have no `pending_nodes`;
+        the guarded create runs on every ensure_schema path, so reopening is
+        enough and existing rows are untouched.
+        """
+        import sqlite3
+
+        from hypergraph.checkpointers._migrate import ensure_schema
+
+        db_path = str(tmp_path / "predating.db")
+        conn = sqlite3.connect(db_path)
+        ensure_schema(conn)
+        conn.execute("INSERT INTO runs (id, graph_name, status, created_at) VALUES ('r-1', 'g', 'active', '2026-01-01T00:00:00Z')")
+        conn.execute("DROP TABLE pending_nodes")
+        conn.commit()
+        conn.close()
+
+        conn = sqlite3.connect(db_path)
+        try:
+            ensure_schema(conn)
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            assert "pending_nodes" in tables
+            assert conn.execute("SELECT COUNT(*) FROM pending_nodes").fetchone()[0] == 0
+            assert [row[0] for row in conn.execute("SELECT id FROM runs").fetchall()] == ["r-1"]
+            assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 6
+        finally:
+            conn.close()
 
     def test_v6_db_gains_ticket03_columns_in_place(self, tmp_path):
         """A v6 database predating the ticket-03 columns migrates in place.

@@ -15,7 +15,7 @@ def detect_schema_version(conn: Any) -> int:
         3 — v3 schema (pre attempt ledger)
         4 — v4 schema (attempt ledger tables, false cross-store FKs)
         5 — v5 schema (cross-store lineage columns carry no FK)
-        6 — current v6 schema (durable-host coordination tables)
+        6 — current v6 schema (durable-host coordination + pending node boundaries)
     """
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
@@ -434,6 +434,40 @@ CREATE TABLE IF NOT EXISTS batch_updates (
 """
 
 
+# Pending node boundaries (ticket 08 / PRD 0013). This is a CORE checkpointer
+# table, not a host-only one: any checkpointed run records the superstep's
+# runnable node boundaries here before the first sibling dispatches, so a
+# process death between siblings cannot forget the unfinished ones.
+#
+# The primary key is exactly the tuple ``steps`` is unique on, so recovery
+# joins boundary intent against the execution journal with no guessing:
+# a matching steps row means committed; no steps row and no dispatched_at
+# means pending; dispatched_at without a steps row is reserved for declared
+# effects (PRD 0014) and nothing sets it yet.
+#
+# Deliberately NO foreign key to runs(id): a claimed run lost before its
+# first committed step has its history-less runs row deleted and restarts
+# fresh (see host RunHome._delete_history_less_run). Boundary intent is not
+# execution history and must never block that reset.
+_CREATE_PENDING_NODES = """
+CREATE TABLE IF NOT EXISTS pending_nodes (
+    run_id TEXT NOT NULL,
+    superstep INTEGER NOT NULL,
+    node_name TEXT NOT NULL,
+    node_type TEXT,
+    created_at TEXT NOT NULL,
+    dispatched_at TEXT,
+    PRIMARY KEY (run_id, superstep, node_name)
+)
+"""
+
+
+def _ensure_pending_node_objects(conn: Any) -> None:
+    """Ensure the pending node-boundary table exists (safe idempotent guard)."""
+    conn.execute(_CREATE_PENDING_NODES)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_nodes_run ON pending_nodes(run_id, superstep)")
+
+
 def _create_host_indexes(conn: Any) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_host_submissions_state ON host_submissions(state)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_host_submissions_definition ON host_submissions(definition_name)")
@@ -471,7 +505,12 @@ def _add_missing_columns(conn: Any, table: str, columns: tuple[tuple[str, str], 
 
 
 def _ensure_v6_objects(conn: Any) -> None:
-    """Ensure durable-host coordination tables exist (safe idempotent guard)."""
+    """Ensure v6 tables exist (safe idempotent guard).
+
+    Covers the durable-host coordination tables and the core pending
+    node-boundary table. Every ``ensure_schema`` path reaches this, so dev
+    databases created at an earlier v6 cut pick the new objects up in place.
+    """
     conn.execute(_CREATE_HOST_SUBMISSIONS)
     conn.execute(_CREATE_RUN_UPDATES)
     conn.execute(_CREATE_HOST_COMMANDS)
@@ -480,6 +519,7 @@ def _ensure_v6_objects(conn: Any) -> None:
     _add_missing_columns(conn, "host_submissions", _HOST_SUBMISSIONS_ADDED_COLUMNS)
     _add_missing_columns(conn, "host_batches", _HOST_BATCHES_ADDED_COLUMNS)
     _create_host_indexes(conn)
+    _ensure_pending_node_objects(conn)
     conn.commit()
 
 

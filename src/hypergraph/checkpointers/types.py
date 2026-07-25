@@ -23,6 +23,120 @@ class StepStatus(Enum):
     PAUSED = "paused"
 
 
+# === Durable node addressing ===
+#
+# One canonical address names one node-boundary occurrence inside one run:
+# ``<run_id>:<superstep>:<node_name>``. It is the same tuple ``steps`` is
+# unique on, so a boundary and its StepRecord always agree. Every durable
+# record that must name "this node, this occurrence" uses it — pending node
+# boundaries today, pause slots next.
+#
+# Nesting: a nested graph runs as its own child run, so its boundaries carry
+# the child ``run_id``. The parent's own boundary for the delegating
+# ``GraphNode`` keeps the parent-facing address, exactly like the parent's
+# StepRecord for that node.
+#
+# Parsing splits from the RIGHT: run ids may contain ``/`` (nested children)
+# and ``:`` (Batch children are ``<batch_workflow_id>:<item_key>``), while
+# node names are Python identifiers and the superstep is digits.
+
+NODE_ADDRESS_SEPARATOR = ":"
+
+
+def node_address(run_id: str, superstep: int, node_name: str) -> str:
+    """Canonical durable address of one node-boundary occurrence.
+
+    A loop's second visit to the same node lands on a later superstep and
+    therefore gets a different address — occurrences never collide.
+    """
+    return f"{run_id}{NODE_ADDRESS_SEPARATOR}{superstep}{NODE_ADDRESS_SEPARATOR}{node_name}"
+
+
+def parse_node_address(address: str) -> tuple[str, int, str]:
+    """Split a node address back into ``(run_id, superstep, node_name)``."""
+    parts = address.rsplit(NODE_ADDRESS_SEPARATOR, 2)
+    if len(parts) != 3 or not parts[1].isdigit():
+        raise ValueError(f"Malformed node address: {address!r}.\n\nHow to fix:\n  Use node_address(run_id, superstep, node_name) to build addresses.")
+    return parts[0], int(parts[1]), parts[2]
+
+
+class BoundaryState(Enum):
+    """Recovery classification of one node boundary — never a guess.
+
+    ``COMMITTED`` — a StepRecord exists for the address; the journal
+    witnessed the outcome (completed, failed, or paused).
+    ``PENDING`` — the boundary was recorded as runnable and no StepRecord
+    settled it. Nothing dispatched it, so it is safe to dispatch.
+    ``UNKNOWN_EFFECT`` — reserved for declared-effect nodes (PRD 0014): the
+    boundary was marked dispatched and never settled, so recovery must not
+    dispatch it again automatically.
+    """
+
+    PENDING = "pending"
+    COMMITTED = "committed"
+    UNKNOWN_EFFECT = "unknown_effect"
+
+
+@dataclass(frozen=True)
+class PendingNode:
+    """Durable *intent*: one runnable node boundary in one superstep.
+
+    Written for every runnable sibling before the first sibling of that
+    superstep dispatches, so process death between siblings cannot forget the
+    unfinished ones. A pending record never claims a node ran — StepRecords
+    remain the sole execution journal.
+
+    ``dispatched_at`` is the declared-effect seam (PRD 0014) and stays
+    ``None`` on the boundary-record write path: only effect reservation, made
+    before a provider call, may mark a boundary dispatched.
+    """
+
+    run_id: str
+    superstep: int
+    node_name: str
+    node_type: str | None = None
+    created_at: datetime = field(default_factory=_utcnow)
+    dispatched_at: datetime | None = None
+
+    @property
+    def address(self) -> str:
+        """Canonical durable address of this boundary."""
+        return node_address(self.run_id, self.superstep, self.node_name)
+
+    def __repr__(self) -> str:
+        return f"PendingNode {self.address}"
+
+
+@dataclass(frozen=True)
+class NodeBoundary:
+    """Recovery view of one node boundary: intent joined with the journal.
+
+    ``state`` is derived, never stored: a boundary is ``COMMITTED`` exactly
+    when its StepRecord exists. ``dispatched_at`` stays ``None`` until
+    declared-effect reservation (PRD 0014) sets it.
+    """
+
+    run_id: str
+    superstep: int
+    node_name: str
+    state: BoundaryState
+    node_type: str | None = None
+    created_at: datetime | None = None
+    dispatched_at: datetime | None = None
+    step_status: StepStatus | None = None
+
+    @property
+    def address(self) -> str:
+        """Canonical durable address of this boundary."""
+        return node_address(self.run_id, self.superstep, self.node_name)
+
+    def __repr__(self) -> str:
+        parts = [f"NodeBoundary {self.address}", self.state.value]
+        if self.step_status is not None:
+            parts.append(f"step: {self.step_status.value}")
+        return " | ".join(parts)
+
+
 class AttemptStatus(Enum):
     """Status of one callable invocation inside an attempt series.
 

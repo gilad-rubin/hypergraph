@@ -19,6 +19,10 @@ from hypergraph.runners._shared.event_metadata import (
 from hypergraph.runners._shared.handles import SyncHandle, _launch_sync_execution
 from hypergraph.runners._shared.input_normalization import runner_option_names
 from hypergraph.runners._shared.outputs import SELECT_UNSET
+from hypergraph.runners._shared.pending_boundaries import (
+    record_pending_nodes_sync,
+    supports_pending_boundaries,
+)
 from hypergraph.runners._shared.protocols import NodeExecutor
 from hypergraph.runners._shared.results import MapResult, RunResult
 from hypergraph.runners._shared.scheduling import ExecutionFrontier, compute_execution_scope
@@ -366,6 +370,7 @@ class SyncRunner(SyncRunnerTemplate):
         # Checkpointer setup — template already validated the protocol,
         # so we just check if checkpointing is active for this run
         sync_cp = self._checkpointer_instance if (self._checkpointer_instance and workflow_id) else None
+        persist_boundaries = supports_pending_boundaries(sync_cp, sync=True)
         # When resuming, offset counters so new steps don't overwrite prior ones
         from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
 
@@ -439,6 +444,16 @@ class SyncRunner(SyncRunnerTemplate):
                     for name in ready_node_names
                     if isinstance(graph._nodes.get(name), GraphNode)
                 }
+
+                # Durable intent BEFORE the first sibling can cause external
+                # work — never a side effect of the first one finishing.
+                if persist_boundaries:
+                    record_pending_nodes_sync(
+                        sync_cp,
+                        workflow_id,  # type: ignore[arg-type]
+                        superstep_idx + superstep_offset,
+                        ready_nodes,
+                    )
 
                 superstep_error: BaseException | None = None
                 attempted_node_names: tuple[str, ...] | None = None

@@ -22,7 +22,16 @@ from hypergraph import (
     WorkflowStoppedError,
     interrupt,
 )
-from hypergraph.checkpointers import Checkpointer, MemoryCheckpointer, SqliteCheckpointer, SqliteRunInspector
+from hypergraph.checkpointers import (
+    BoundaryState,
+    Checkpointer,
+    MemoryCheckpointer,
+    NodeBoundary,
+    PendingNode,
+    SqliteCheckpointer,
+    SqliteRunInspector,
+    node_address,
+)
 from hypergraph.events import RunEndEvent
 from hypergraph.materialization import (
     ErroredRow,
@@ -468,6 +477,21 @@ def test_checkpointer_semantics_docs_mirror_high_drift_surfaces() -> None:
     assert "generic `run-...`" in runners
     assert "job-1-fork-a1b2c3" in checkpointers
     assert "nested source" in checkpointers
+
+    # Pending node boundaries: the address format is shared durable
+    # vocabulary (the pause slot reuses it), and the three recovery states
+    # are the whole point of the record.
+    boundaries = _scoped_section(checkpointers, "## Pending Node Boundaries (Internal)")
+    assert "`<run_id>:<superstep>:<node_name>`" in boundaries
+    assert node_address("refund-c-42", 8, "approval") in boundaries
+    assert {state.name for state in BoundaryState} == {"PENDING", "COMMITTED", "UNKNOWN_EFFECT"}
+    for state in BoundaryState:
+        assert f"`{state.name}`" in boundaries
+    assert set(PendingNode.__dataclass_fields__) <= set(NodeBoundary.__dataclass_fields__) | {"state"}
+    for field_name in PendingNode.__dataclass_fields__:
+        assert f"`{field_name}`" in boundaries
+    assert PendingNode.__dataclass_fields__["dispatched_at"].default is None
+    assert "never claims a node ran" in boundaries
 
 
 def test_inspect_mode_docs_mirror_public_contract() -> None:

@@ -39,9 +39,12 @@ from hypergraph.checkpointers.types import (
     AttemptRecord,
     AttemptSeries,
     AttemptStatus,
+    BoundaryState,
     Checkpoint,
     LineageRow,
     LineageView,
+    NodeBoundary,
+    PendingNode,
     Run,
     RunTable,
     StepRecord,
@@ -70,6 +73,31 @@ _PUBLIC_STEP_FILTER_WITH_ALIAS = (
 )
 _RETENTION_ROW_COLS = "id, step_index, superstep, node_name, values_data, created_at, completed_at, attempt_series_id"
 _DELETE_BATCH_SIZE = 500
+# Two binds per row plus the run id — stays under the 999-variable floor.
+_PENDING_DELETE_BATCH_SIZE = 400
+
+# === Pending node boundaries (PRD 0013) ===
+#
+# Intent is recorded before the first sibling of a superstep dispatches;
+# the boundary's state is DERIVED by outer-joining the execution journal, so
+# the table can never claim a node ran.
+# ``DO NOTHING`` on conflict: the address IS the boundary occurrence, so a
+# re-record (a history-less run restarting fresh at superstep 0) must not
+# rewrite when it first became pending — and must never clear a
+# ``dispatched_at`` that PRD 0014 will write before a provider call.
+_PENDING_NODE_UPSERT_SQL = """
+    INSERT INTO pending_nodes (run_id, superstep, node_name, node_type, created_at, dispatched_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(run_id, superstep, node_name) DO NOTHING
+"""
+_NODE_BOUNDARY_SELECT_SQL = """
+    SELECT p.run_id, p.superstep, p.node_name, p.node_type, p.created_at, p.dispatched_at, s.status
+    FROM pending_nodes AS p
+    LEFT JOIN steps AS s
+      ON s.run_id = p.run_id AND s.superstep = p.superstep AND s.node_name = p.node_name
+    WHERE p.run_id = ?
+    ORDER BY p.superstep, p.node_name
+"""
 _STEP_UPSERT_SQL = """
     INSERT INTO steps (
         run_id, superstep, node_name, step_index, status,
@@ -280,6 +308,33 @@ def _parse_dt(value: str | None) -> datetime | None:
     if value.endswith("Z"):
         value = value[:-1] + "+00:00"
     return datetime.fromisoformat(value)
+
+
+def _row_to_node_boundary(row: Sequence[Any]) -> NodeBoundary:
+    """Build a :class:`NodeBoundary` from the intent-joined-journal row.
+
+    The state is derived here and nowhere else: a StepRecord of any status is
+    a witnessed settlement; its absence with no dispatch mark is safe pending
+    work; its absence WITH a dispatch mark is an unknown effect (PRD 0014).
+    """
+    dispatched_at = _parse_dt(row[5])
+    step_status = StepStatus(row[6]) if row[6] is not None else None
+    if step_status is not None:
+        state = BoundaryState.COMMITTED
+    elif dispatched_at is not None:
+        state = BoundaryState.UNKNOWN_EFFECT
+    else:
+        state = BoundaryState.PENDING
+    return NodeBoundary(
+        run_id=row[0],
+        superstep=row[1],
+        node_name=row[2],
+        state=state,
+        node_type=row[3],
+        created_at=_parse_dt(row[4]),
+        dispatched_at=dispatched_at,
+        step_status=step_status,
+    )
 
 
 def _lineage_parent_id(run: Run) -> str | None:
@@ -581,6 +636,59 @@ class SqliteCheckpointer(Checkpointer):
                 {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
             )
             await self._db.commit()
+
+    # === Pending node boundaries (PRD 0013) ===
+
+    @staticmethod
+    def _pending_node_params(boundary: PendingNode) -> tuple[Any, ...]:
+        return (
+            boundary.run_id,
+            boundary.superstep,
+            boundary.node_name,
+            boundary.node_type,
+            boundary.created_at.isoformat(),
+            boundary.dispatched_at.isoformat() if boundary.dispatched_at is not None else None,
+        )
+
+    async def record_pending_nodes(self, boundaries: Sequence[PendingNode]) -> None:
+        """Durably record a superstep's runnable node boundaries as pending.
+
+        Writes through immediately whatever ``CheckpointPolicy.durability``
+        says about StepRecord timing: a buffered boundary would not survive
+        the process death it exists to describe. One transaction covers the
+        whole batch, so a superstep's siblings become attributable together
+        or not at all.
+        """
+        if not boundaries:
+            return
+        await self._ensure_db()
+        async with self._txn_lock():
+            await self._db.executemany(_PENDING_NODE_UPSERT_SQL, [self._pending_node_params(b) for b in boundaries])
+            await self._db.commit()
+
+    async def get_node_boundaries(self, run_id: str) -> list[NodeBoundary]:
+        """Recovery view: every recorded boundary of a run, state derived."""
+        await self._ensure_db()
+        async with self._txn_lock():
+            cursor = await self._db.execute(_NODE_BOUNDARY_SELECT_SQL, (run_id,))
+            rows = await cursor.fetchall()
+        return [_row_to_node_boundary(row) for row in rows]
+
+    def record_pending_nodes_sync(self, boundaries: Sequence[PendingNode]) -> None:
+        """Sync mirror of :meth:`record_pending_nodes`."""
+        if not boundaries:
+            return
+        with self._sync_lock:
+            db = self._sync_db()
+            db.executemany(_PENDING_NODE_UPSERT_SQL, [self._pending_node_params(b) for b in boundaries])
+            db.commit()
+
+    def node_boundaries(self, run_id: str) -> list[NodeBoundary]:
+        """Sync mirror of :meth:`get_node_boundaries`."""
+        with self._sync_lock:
+            db = self._sync_db()
+            rows = db.execute(_NODE_BOUNDARY_SELECT_SQL, (run_id,)).fetchall()
+        return [_row_to_node_boundary(row) for row in rows]
 
     async def create_run(
         self,
@@ -1666,6 +1774,26 @@ class SqliteCheckpointer(Checkpointer):
             yield list(ids[start : start + _DELETE_BATCH_SIZE])
 
     @staticmethod
+    def _delete_pending_node_batches(
+        rows: Sequence[_RetentionRow],
+    ) -> Iterator[tuple[str, list[Any]]]:
+        """Yield (sql, params) deleting boundary rows for pruned steps.
+
+        A boundary's COMMITTED state is derived from its StepRecord, so a
+        pruned step must take its boundary with it — otherwise retention
+        would silently re-classify settled work as pending. Row-value ``IN``
+        is avoided for old-sqlite portability; the batch size keeps the bind
+        count under the 999-variable floor.
+        """
+        for start in range(0, len(rows), _PENDING_DELETE_BATCH_SIZE):
+            batch = rows[start : start + _PENDING_DELETE_BATCH_SIZE]
+            predicate = " OR ".join("(superstep = ? AND node_name = ?)" for _ in batch)
+            params: list[Any] = []
+            for row in batch:
+                params.extend((row.superstep, row.node_name))
+            yield f"DELETE FROM pending_nodes WHERE run_id = ? AND ({predicate})", params
+
+    @staticmethod
     def _dropped_series_ids(dropped_rows: Sequence[_RetentionRow]) -> list[str]:
         return sorted({row.attempt_series_id for row in dropped_rows if row.attempt_series_id is not None})
 
@@ -1720,6 +1848,8 @@ class SqliteCheckpointer(Checkpointer):
         ids = [row.id for row in dropped_rows]
         for batch in self._delete_step_id_batches(ids):
             await self._db.execute(self._delete_steps_sql(batch), batch)
+        for sql, params in self._delete_pending_node_batches(dropped_rows):
+            await self._db.execute(sql, [run_id, *params])
         for series_batch in self._delete_step_id_batches(self._dropped_series_ids(dropped_rows)):
             records_sql, series_sql = self._delete_closed_series_sql(series_batch)
             await self._db.execute(records_sql, series_batch)
@@ -1749,6 +1879,8 @@ class SqliteCheckpointer(Checkpointer):
             db = self._sync_db()
             for batch in self._delete_step_id_batches(ids):
                 db.execute(self._delete_steps_sql(batch), batch)
+            for sql, params in self._delete_pending_node_batches(dropped_rows):
+                db.execute(sql, [run_id, *params])
             for series_batch in self._delete_step_id_batches(self._dropped_series_ids(dropped_rows)):
                 records_sql, series_sql = self._delete_closed_series_sql(series_batch)
                 db.execute(records_sql, series_batch)

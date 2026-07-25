@@ -92,6 +92,7 @@ Practical mental model:
 - `cache_observer.py` — Bridge nested hypercache telemetry into Hypergraph events during node execution
 - `caching.py` — Cache key computation and lookup
 - `checkpoint_helpers.py` — Build persisted `StepRecord`s from runtime state
+- `pending_boundaries.py` — Persist a superstep's runnable node boundaries before any sibling dispatches
 - `event_helpers.py` — Emit lifecycle events
 - `gate_execution.py` — Route/ifelse decision execution
 - `input_normalization.py` — Normalize user inputs for execution

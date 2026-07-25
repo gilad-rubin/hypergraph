@@ -9,10 +9,18 @@ to stub out methods they can't provide.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from hypergraph.checkpointers.types import Checkpoint, Run, StepRecord, WorkflowStatus
+    from hypergraph.checkpointers.types import (
+        Checkpoint,
+        NodeBoundary,
+        PendingNode,
+        Run,
+        StepRecord,
+        WorkflowStatus,
+    )
 
 
 @runtime_checkable
@@ -64,3 +72,25 @@ class SyncCheckpointerProtocol(Protocol):
         workflow_id: str | None = None,
         superstep: int | None = None,
     ) -> tuple[str, Checkpoint]: ...
+
+
+@runtime_checkable
+class PendingNodeProtocol(Protocol):
+    """Async durable pending-node boundary seam (PRD 0013).
+
+    Runners probe for this before writing boundaries, so a third-party
+    checkpointer without the seam keeps working instead of hard-failing.
+    """
+
+    async def record_pending_nodes(self, boundaries: Sequence[PendingNode]) -> None: ...
+
+    async def get_node_boundaries(self, run_id: str) -> list[NodeBoundary]: ...
+
+
+@runtime_checkable
+class SyncPendingNodeProtocol(Protocol):
+    """Sync mirror of :class:`PendingNodeProtocol` for ``SyncRunner``."""
+
+    def record_pending_nodes_sync(self, boundaries: Sequence[PendingNode]) -> None: ...
+
+    def node_boundaries(self, run_id: str) -> list[NodeBoundary]: ...

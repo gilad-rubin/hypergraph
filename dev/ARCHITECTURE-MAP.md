@@ -169,6 +169,7 @@ Key files:
 - `src/hypergraph/runners/_shared/template_sync.py`
 - `src/hypergraph/runners/_shared/template_async.py`
 - `src/hypergraph/runners/_shared/checkpoint_helpers.py`
+- `src/hypergraph/runners/_shared/pending_boundaries.py`
 - `src/hypergraph/runners/_shared/validation.py`
 - `src/hypergraph/runners/_shared/input_normalization.py`
 - `src/hypergraph/runners/_shared/run_log.py`
@@ -586,6 +587,7 @@ src/hypergraph/
 │   │   ├── validation.py
 │   │   ├── input_normalization.py
 │   │   ├── checkpoint_helpers.py
+│   │   ├── pending_boundaries.py
 │   │   ├── caching.py
 │   │   ├── cache_observer.py
 │   │   ├── event_helpers.py

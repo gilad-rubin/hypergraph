@@ -457,6 +457,62 @@ if open_series is not None:
     # max_attempts=3 with one stranded attempt leaves remaining == 2.
 ```
 
+## Pending Node Boundaries (Internal)
+
+{% hint style="warning" %}
+Internal recovery persistence. The shapes below are stable for inspection but the write seam is not a public API.
+{% endhint %}
+
+A superstep's `StepRecord`s are written when the superstep finishes. A process that dies mid-superstep — after one sibling ran and before its siblings did — used to leave recovery inferring what was pending from an incomplete record. Before **any** sibling of a superstep can cause external work, the checkpointer now records every runnable sibling as a **pending node boundary**:
+
+```text
+superstep 4 = [fetch_protocol, extract_entities, notify_review]
+boundaries  = intent, written first    # who was runnable
+steps       = the execution journal    # what actually happened
+```
+
+A pending record is intent, never execution truth — it never claims a node ran. Its state is **derived** by joining the journal, so recovery distinguishes three cases without guessing:
+
+| State | Meaning |
+|---|---|
+| `COMMITTED` | A `StepRecord` exists at the same address — the outcome was witnessed (completed, failed, or paused). |
+| `PENDING` | No `StepRecord` and no dispatch mark. Nothing started it, so it is safe to dispatch. |
+| `UNKNOWN_EFFECT` | Marked dispatched with no `StepRecord`. Reserved for declared-effect nodes; recovery never re-dispatches these automatically. |
+
+### Node addressing
+
+One canonical address names one boundary occurrence: `<run_id>:<superstep>:<node_name>` — exactly the tuple `steps` is unique on, so a boundary and its `StepRecord` always agree.
+
+```python
+from hypergraph.checkpointers import node_address, parse_node_address
+
+node_address("refund-c-42", 8, "approval")        # 'refund-c-42:8:approval'
+parse_node_address("wf-1/nested:0:inner")         # ('wf-1/nested', 0, 'inner')
+```
+
+Parsing splits from the right, so nested (`wf-1/nested`) and Batch-child (`wf-b:item-7`) run ids round-trip. A loop's second visit to the same node lands on a later superstep and therefore owns a different address — an interrupted iteration never leaks into the next iteration's identity. A nested graph runs as its own child run, so the parent keeps the parent-facing address for its `GraphNode` while the child records its own boundaries under the child workflow id.
+
+| Type | Fields | Notes |
+|---|---|---|
+| `PendingNode` | `run_id`, `superstep`, `node_name`, `node_type`, `created_at`, `dispatched_at` | Durable intent for one runnable boundary. `dispatched_at` is the declared-effect seam and stays `None` on the boundary-record write path. |
+| `NodeBoundary` | `run_id`, `superstep`, `node_name`, `state`, `node_type`, `created_at`, `dispatched_at`, `step_status` | Recovery view: intent joined with the journal. `.address` renders the canonical address. |
+| `BoundaryState` | `PENDING`, `COMMITTED`, `UNKNOWN_EFFECT` | Enum. Derived on read — never stored. |
+
+Reading them back after a crash:
+
+```python
+for boundary in await checkpointer.get_node_boundaries("wf-1"):
+    print(boundary)
+# NodeBoundary wf-1:0:seed | committed | step: completed
+# NodeBoundary wf-1:1:alpha | pending
+# NodeBoundary wf-1:1:notify_review | pending
+
+# SqliteCheckpointer also exposes the sync mirror:
+checkpointer.node_boundaries("wf-1")
+```
+
+Boundaries follow their step's retention fate: a pruned `StepRecord` takes its boundary with it, so compaction can never silently re-classify settled work as pending. `durability="exit"` records no boundaries at all — that mode buffers every step to run exit and advertises no mid-run recovery, so there would be no journal to join against. Checkpointers that do not implement the seam keep working; the runners probe for it (`PendingNodeProtocol` / `SyncPendingNodeProtocol`) instead of requiring it.
+
 ## Backend Comparison
 
 | | `SqliteCheckpointer` | `MemoryCheckpointer` |

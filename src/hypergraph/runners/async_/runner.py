@@ -21,6 +21,10 @@ from hypergraph.runners._shared.event_metadata import (
 from hypergraph.runners._shared.handles import AsyncHandle, AsyncRunEventHandle, _launch_async_execution
 from hypergraph.runners._shared.input_normalization import runner_option_names
 from hypergraph.runners._shared.outputs import SELECT_UNSET
+from hypergraph.runners._shared.pending_boundaries import (
+    record_pending_nodes_async,
+    supports_pending_boundaries,
+)
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 from hypergraph.runners._shared.results import MapResult, RunResult
 from hypergraph.runners._shared.scheduling import (
@@ -487,6 +491,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         # Checkpointer setup — deterministic node ordering for index assignment
         checkpointer = self._checkpointer_instance
         has_checkpointer = checkpointer is not None and workflow_id is not None
+        persist_boundaries = has_checkpointer and supports_pending_boundaries(checkpointer, sync=False)
         # When resuming, offset counters so new steps don't overwrite prior ones
         from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
 
@@ -565,6 +570,16 @@ class AsyncRunner(AsyncRunnerTemplate):
                     for name in ready_node_names
                     if isinstance(graph._nodes.get(name), GraphNode)
                 }
+
+                # Durable intent BEFORE the first sibling can cause external
+                # work — never a side effect of the first one finishing.
+                if persist_boundaries:
+                    await record_pending_nodes_async(
+                        checkpointer,
+                        workflow_id,  # type: ignore[arg-type]
+                        superstep_idx + superstep_offset,
+                        ready_nodes,
+                    )
 
                 superstep_error: BaseException | None = None
                 attempted_node_names: tuple[str, ...] | None = None
