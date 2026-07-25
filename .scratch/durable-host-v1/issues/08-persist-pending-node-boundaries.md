@@ -6,10 +6,10 @@ infer work from an incomplete superstep record.
 
 **Blocked by:** 02 — Submit, execute, and watch one Run through the local Host.
 
-**Status:** ready-for-agent
+**Status:** done — landed in commit `9e7546e2`
 
-- [ ] Every runnable sibling remains durably attributable before any sibling can cause external work
-- [ ] A real kill between sibling boundaries preserves completed facts and leaves unfinished siblings recoverable
-- [ ] Nested graph and loop behavior retain the same parent-facing execution identity
-- [ ] Sync and async runners expose the same recovery result
-- [ ] Existing checkpoint resume behavior remains compatible
+- [x] Every runnable sibling remains durably attributable before any sibling can cause external work
+- [x] A real kill between sibling boundaries preserves completed facts and leaves unfinished siblings recoverable
+- [x] Nested graph and loop behavior retain the same parent-facing execution identity
+- [x] Sync and async runners expose the same recovery result
+- [x] Existing checkpoint resume behavior remains compatible
