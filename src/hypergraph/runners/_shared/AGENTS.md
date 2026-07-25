@@ -117,10 +117,14 @@ answer supplied up front supports headless/CSV/batch execution.
 ## Durable Pause Slots (`pause_slots.py`)
 
 Both templates commit a pause through `commit_pause_async` /
-`commit_pause_sync`: the durable slot, the buffered step records, and the
-`PAUSED` transition go to the backend as ONE call, never as separate writes.
-Keep the two templates identical here even though no shipped sync runner
-declares `supports_interrupts` yet.
+`commit_pause_sync`: the durable slot, whatever step records are still
+buffered, and the `PAUSED` transition go to the backend as ONE call, never as
+separate writes. Under `durability="sync"`/`"async"` the paused StepRecord was
+already committed by the ordinary per-superstep path, so the atomic unit is
+slot + `PAUSED`; the invariant to preserve is that the step record is never
+written AFTER the slot, so no reader sees a committed `PAUSED` run without its
+question. Keep the two templates identical here even though no shipped sync
+runner declares `supports_interrupts` yet.
 
 The slot is addressed by `PauseExecution.superstep`, which the runner sets in
 its `except PauseExecution` handler to the same `superstep_idx +

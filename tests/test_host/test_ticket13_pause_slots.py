@@ -28,8 +28,9 @@ import sqlite3
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
-from typing import ClassVar
+from dataclasses import dataclass, replace
+from enum import Enum
+from typing import ClassVar, NamedTuple, TypedDict
 
 import pytest
 import pytest_asyncio
@@ -53,13 +54,20 @@ from hypergraph.checkpointers import (
     MemoryCheckpointer,
     PauseSlot,
     Run,
+    RunTotals,
     SqliteCheckpointer,
     StepRecord,
     StepStatus,
     WorkflowStatus,
     node_address,
 )
-from hypergraph.checkpointers._answer_schema import render_answer_schema, validate_answer
+from hypergraph.checkpointers._answer_schema import (
+    UNRENDERABLE_KEY,
+    is_unconstrained,
+    render_answer_schema,
+    validate_answer,
+)
+from hypergraph.host import HostError
 from hypergraph.host.refs import BatchRef
 from hypergraph.runners._shared.pause_slots import supports_pause_slots
 
@@ -90,8 +98,24 @@ class Score:
 
 
 @dataclass(frozen=True)
+class Verdict:
+    """A declared answer type with an honest JSON form: an object."""
+
+    approved: bool
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class Opaque:
     answer_type: ClassVar[object] = Score
+    prompt: str
+    options: tuple[str, ...] | None = None
+    evidence: tuple = ()
+
+
+@dataclass(frozen=True)
+class Adjudicate:
+    answer_type: ClassVar[object] = Verdict
     prompt: str
     options: tuple[str, ...] | None = None
     evidence: tuple = ()
@@ -142,6 +166,18 @@ def _opaque_graph() -> Graph:
         return Opaque(prompt="Rate it", evidence=(draft,))
 
     return Graph([draft, rate], name="rating")
+
+
+def _verdict_graph() -> Graph:
+    @node(output_name="draft")
+    def draft(claim_id: str) -> str:
+        return f"draft-{claim_id}"
+
+    @interrupt(answer_name="verdict")
+    def adjudicate(draft: str) -> Adjudicate:
+        return Adjudicate(prompt="Adjudicate", evidence=(draft,))
+
+    return Graph([draft, adjudicate], name="verdict")
 
 
 def _loop_graph() -> Graph:
@@ -295,12 +331,19 @@ class TestSlotPersistsTheAnswerContract:
         settled = await backend.settle_pause("triage-1", pause_id=slot.pause_id, value="fraud")
         assert settled.answer == "fraud"
 
-    async def test_an_unrenderable_answer_type_constrains_nothing(self, backend):
+    async def test_an_unrenderable_answer_type_says_so_instead_of_reading_empty(self, backend):
         slot = await _pause_once(backend, _opaque_graph(), workflow_id="rating-1")
-        # The renderer cannot express `Score`, so it stores the empty schema
-        # rather than inventing a constraint it cannot check.
-        assert slot.answer_schema == {}
+        # The renderer cannot express `Score`, so it invents no constraint —
+        # but it RECORDS that it gave up, naming the type. An operator reading
+        # this slot can tell it apart from a handler that declared nothing.
+        assert slot.answer_schema == {UNRENDERABLE_KEY: f"{Score.__module__}.Score"}
+        assert is_unconstrained(slot.answer_schema)
         assert slot.question["answer_type"].endswith("Score")
+
+        # A declared `Any` stores the plain empty schema — equally
+        # unconstrained, and visibly a different thing.
+        assert render_answer_schema(None) == {}
+        assert UNRENDERABLE_KEY not in render_answer_schema(None)
 
         settled = await backend.settle_pause("rating-1", pause_id=slot.pause_id, value={"stars": 4})
         assert settled.answer == {"stars": 4}
@@ -311,6 +354,31 @@ class TestSlotPersistsTheAnswerContract:
             await backend.settle_pause("rating-2", pause_id=slot.pause_id, value=object())
         current = await backend.get_pause_slot("rating-2")
         assert current.is_open
+
+    async def test_an_unrenderable_type_tells_the_caller_what_to_send_instead(self, backend):
+        """The accepted set is the JSON *form* of the declared type.
+
+        A `Score` instance is not JSON-safe, so it can never be a durable
+        answer. The refusal has to say that out loud, naming the type the
+        renderer could not express — otherwise the caller reads
+        "not JSON-serializable" and has no idea the declared type is
+        unreachable by construction.
+        """
+        slot = await _pause_once(backend, _opaque_graph(), workflow_id="rating-3")
+        with pytest.raises(AnswerRejectedError) as caught:
+            await backend.settle_pause("rating-3", pause_id=slot.pause_id, value=Score())
+        assert "could not be rendered as JSON Schema" in str(caught.value)
+        assert "Score" in str(caught.value)
+
+    async def test_a_dataclass_answer_type_renders_as_an_object(self, backend):
+        """Dataclasses are the domain-class case, and they have an honest JSON form."""
+        slot = await _pause_once(backend, _verdict_graph(), workflow_id="verdict-1")
+        assert slot.answer_schema == {"type": "object"}
+
+        with pytest.raises(AnswerRejectedError, match="expected type 'object'"):
+            await backend.settle_pause("verdict-1", pause_id=slot.pause_id, value="approve")
+        settled = await backend.settle_pause("verdict-1", pause_id=slot.pause_id, value={"approved": True, "note": "ok"})
+        assert settled.answer == {"approved": True, "note": "ok"}
 
     async def test_question_evidence_never_carries_the_live_object(self, backend):
         class Untouchable:
@@ -403,7 +471,7 @@ class TestAtomicPauseCommit:
             assert _read_run_status(db_path, "wf-atomic") == "active"
             assert self._paused_step_names(db_path, "wf-atomic") == []
 
-            # And the same three facts land together when nothing fails.
+            # And everything handed to the call lands together when nothing fails.
             await cp.record_pause(slot, step_records=(record,))
             assert _read_run_status(db_path, "wf-atomic") == "paused"
             assert self._paused_step_names(db_path, "wf-atomic") == ["approval"]
@@ -432,6 +500,100 @@ class TestAtomicPauseCommit:
         updates = await home._read_run_updates("refund-c-42")
         statuses = [json.loads(payload) for _seq, kind, payload, _at in updates if kind == "status"]
         assert {"status": "paused", "pause_id": slot.pause_id} in statuses
+
+
+# === 2b. Re-recording one pause address: first record wins, on both backends ===
+
+
+#: Every stored field a replay must not rewrite (``settled_at``/``answer``
+#: get their own test).
+_PRESERVED_SLOT_FIELDS = (
+    "run_id",
+    "superstep",
+    "node_name",
+    "node_path",
+    "response_key",
+    "question",
+    "answer_schema",
+    "options",
+    "created_at",
+)
+
+
+def _original_slot(run_id: str) -> PauseSlot:
+    return PauseSlot(
+        run_id=run_id,
+        superstep=1,
+        node_name="approval",
+        node_path="approval",
+        response_key="approved",
+        question={"prompt": "Approve this refund?", "options": ["yes", "no"], "evidence": [], "answer_type": "builtins.bool"},
+        answer_schema={"type": "boolean"},
+        options=("yes", "no"),
+    )
+
+
+def _replayed_slot(run_id: str) -> PauseSlot:
+    """The SAME address carrying a different contract in every field."""
+    return PauseSlot(
+        run_id=run_id,
+        superstep=1,
+        node_name="approval",
+        node_path="rewritten/approval",
+        response_key="rewritten_key",
+        question={"prompt": "REWRITTEN", "options": None, "evidence": ["late"], "answer_type": "builtins.str"},
+        answer_schema={"type": "string"},
+        options=("maybe",),
+    )
+
+
+class TestReRecordingOneAddress:
+    """First record wins, field for field, identically on both backends.
+
+    ``pause_id`` IS the occurrence, so a resume that replays the pause must
+    not rewrite what was asked. SQLite enforces this with
+    ``ON CONFLICT(pause_id) DO NOTHING``; Memory has to agree, or the same
+    replay would yield a different stored question depending on which
+    backend is behind the Run Home.
+    """
+
+    async def test_a_replayed_address_leaves_every_stored_field_alone(self, backend):
+        await backend.create_run("wf-replay", graph_name="refund")
+        first = _original_slot("wf-replay")
+        await backend.record_pause(first)
+
+        await backend.record_pause(_replayed_slot("wf-replay"))
+
+        stored = await backend.get_pause_slot("wf-replay")
+        for field in _PRESERVED_SLOT_FIELDS:
+            assert getattr(stored, field) == getattr(first, field), field
+        assert stored.is_open
+
+    async def test_a_replayed_address_never_reopens_a_settled_occurrence(self, backend):
+        await backend.create_run("wf-replay-settled", graph_name="refund")
+        first = _original_slot("wf-replay-settled")
+        await backend.record_pause(first)
+        settled = await backend.settle_pause("wf-replay-settled", pause_id=first.pause_id, value=True)
+
+        await backend.record_pause(_replayed_slot("wf-replay-settled"))
+
+        stored = await backend.get_pause_slot("wf-replay-settled")
+        assert stored.settled_at == settled.settled_at
+        assert stored.answer is True
+        assert stored.answer_schema == {"type": "boolean"}
+
+    async def test_a_replay_adds_no_occurrence_but_a_later_pause_does(self, backend):
+        await backend.create_run("wf-replay-count", graph_name="refund")
+        first = _original_slot("wf-replay-count")
+        await backend.record_pause(first)
+        await backend.record_pause(_replayed_slot("wf-replay-count"))
+        assert (await backend.get_pause_slot("wf-replay-count")).pause_id == first.pause_id
+
+        # A later superstep is a DIFFERENT address, so it really does append.
+        later = replace(first, superstep=3)
+        await backend.record_pause(later)
+        assert (await backend.get_pause_slot("wf-replay-count")).pause_id == later.pause_id
+        assert await backend.get_pause_slot("wf-replay-count", pause_id=first.pause_id) is not None
 
 
 # === 3. Human answer: one typed value, then atomic settlement ===
@@ -716,13 +878,26 @@ class TestSyncAsyncParity:
                 status=StepStatus.PAUSED,
                 input_versions={},
             )
-            cp.record_pause_sync(slot, step_records=(record,), node_count=1, error_count=0)
+            cp.record_pause_sync(slot, step_records=(record,), totals=RunTotals(node_count=1, error_count=0))
         finally:
             await cp.close()
 
         assert _read_run_status(db_path, "wf-sync") == "paused"
         rows = _read_slot_rows(db_path, "wf-sync")
         assert [(row[0], row[1], row[3]) for row in rows] == [("wf-sync:2:approval", "approved", None)]
+
+    async def test_the_sync_write_path_also_lets_the_first_record_win(self, sqlite_cp):
+        """Re-record parity: the sync mirror keeps the same first-record-wins rule."""
+        sqlite_cp.create_run_sync("wf-sync-replay", graph_name="manual")
+        first = _original_slot("wf-sync-replay")
+        sqlite_cp.record_pause_sync(first)
+
+        sqlite_cp.record_pause_sync(_replayed_slot("wf-sync-replay"))
+
+        stored = sqlite_cp.get_pause_slot_sync("wf-sync-replay")
+        for field in _PRESERVED_SLOT_FIELDS:
+            assert getattr(stored, field) == getattr(first, field), field
+        assert stored == await sqlite_cp.get_pause_slot("wf-sync-replay")
 
 
 # === 7. RunHomeClient.answer ===
@@ -756,6 +931,30 @@ class TestClientSurface:
         client = RunHomeClient(home)
         with pytest.raises(TypeError, match="answer\\(\\) expects a RunRef"):
             await client.answer(BatchRef(home=home.uri, batch_id="b"), pause_id="x", value=1)
+
+    async def test_every_settlement_refusal_is_a_host_error(self, home):
+        """A caller wrapping client calls in ``except HostError`` sees these.
+
+        They are raised deep in the checkpointer but they SURFACE through
+        ``client.answer``, so they are durable-host refusals like any other.
+        ``RuntimeError`` stays in the bases for clauses that already target it.
+        """
+        slot = await _pause_once(home, workflow_id="refund-host-error")
+        client = RunHomeClient(home)
+        ref = RunRef(home=home.uri, run_id="refund-host-error")
+
+        with pytest.raises(HostError):
+            await client.answer(ref, pause_id=slot.pause_id, value="not-a-bool")
+        with pytest.raises(HostError):
+            client.answer_sync(ref, pause_id="refund-host-error:99:approval", value=True)
+
+        await client.answer(ref, pause_id=slot.pause_id, value=True)
+        with pytest.raises(HostError):
+            await client.answer(ref, pause_id=slot.pause_id, value=False)
+
+        for refusal in (AnswerRejectedError, PauseAlreadySettledError, StalePauseError):
+            assert issubclass(refusal, HostError)
+            assert issubclass(refusal, RuntimeError)
 
     async def test_watch_replays_the_pause_and_the_answer_as_durable_facts(self, home):
         slot = await _pause_once(home)
@@ -817,6 +1016,20 @@ class TestOptionalSeam:
 # === 9. The answer-schema renderer ===
 
 
+class _Ticket(TypedDict):
+    subject: str
+
+
+class _Coordinate(NamedTuple):
+    x: int
+    y: int
+
+
+class _Tier(Enum):
+    GOLD = "gold"
+    SILVER = "silver"
+
+
 class TestAnswerSchemaRendering:
     @pytest.mark.parametrize(
         ("answer_type", "expected"),
@@ -829,12 +1042,24 @@ class TestAnswerSchemaRendering:
             (dict, {"type": "object"}),
             (list[str], {"type": "array"}),
             (str | None, {"anyOf": [{"type": "string"}, {"type": "null"}]}),
-            (Score, {}),
+            # Types with an honest JSON form all render to one.
+            (Verdict, {"type": "object"}),
+            (_Ticket, {"type": "object"}),
+            (_Coordinate, {"type": "array"}),
+            (_Tier, {"enum": ["gold", "silver"]}),
+            # Only a type with no expressible JSON form falls through — and
+            # it says which type, rather than reading like a bare `Any`.
+            (Score, {UNRENDERABLE_KEY: f"{Score.__module__}.Score"}),
             (None, {}),
         ],
     )
     def test_render(self, answer_type, expected):
         assert render_answer_schema(answer_type) == expected
+
+    def test_a_union_with_an_unrenderable_member_names_the_union(self):
+        rendered = render_answer_schema(str | Score)
+        assert list(rendered) == [UNRENDERABLE_KEY]
+        assert "Score" in rendered[UNRENDERABLE_KEY]
 
     def test_integer_rejects_bool_and_number_accepts_int(self):
         assert validate_answer({"type": "integer"}, True)
@@ -844,11 +1069,16 @@ class TestAnswerSchemaRendering:
     def test_options_only_narrow_a_schema_that_accepts_them(self):
         assert render_answer_schema(str, ("a", "b")) == {"type": "string", "enum": ["a", "b"]}
         assert render_answer_schema(bool, ("yes", "no")) == {"type": "boolean"}
-        assert render_answer_schema(Score, ("a", "b")) == {}
+        # An unconstrained contract cannot know whether the declared type
+        # accepts these labels, so it never narrows on them.
+        assert render_answer_schema(Score, ("a", "b")) == {UNRENDERABLE_KEY: f"{Score.__module__}.Score"}
+        assert render_answer_schema(None, ("a", "b")) == {}
 
-    def test_the_empty_schema_accepts_anything_json_safe(self):
-        assert validate_answer({}, {"deep": [1, 2]}) == ()
-        assert validate_answer({}, object())
+    def test_an_unconstrained_schema_accepts_anything_json_safe(self):
+        for schema in ({}, {UNRENDERABLE_KEY: "pkg.Score"}):
+            assert is_unconstrained(schema)
+            assert validate_answer(schema, {"deep": [1, 2]}) == ()
+            assert validate_answer(schema, object())
 
 
 # === 10. Real process kill: a fresh process reads the slot and settles it ===

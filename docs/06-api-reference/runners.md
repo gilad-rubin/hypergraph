@@ -1163,6 +1163,13 @@ class PauseInfo:
 An interrupt has one answer slot. Multi-field questions return one structured
 answer model rather than multiple response keys.
 
+`PauseInfo` is **in-memory only** — it describes the pause this process just
+produced and is gone when the process exits. The durable counterpart is
+`run.pause_slot`, a
+[`PauseSlot`](checkpointers.md#durable-pause-slots), which any process can read
+and answer. See [Three things named "pause"](checkpointers.md#three-things-named-pause)
+for how `PauseExecution`, `PauseInfo`, and `PauseSlot` relate.
+
 ### Convenience Properties
 
 ```python

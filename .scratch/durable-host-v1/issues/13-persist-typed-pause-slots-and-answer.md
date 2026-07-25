@@ -17,7 +17,7 @@ double, and stale answers must leave execution truth intact across restart.
 Tests: `tests/test_host/test_ticket13_pause_slots.py` (58 tests, both
 backends parametrized). Suite: 4402 passed, 15 skipped (baseline 4344/15).
 
-## Reading of box 5's "sync, async"
+## Reading of box 5's "sync, async" and "Memory"
 
 `SyncRunner` declares no interrupt support (`supports_interrupts=False`), so a
 graph with an `InterruptNode` raises `IncompatibleRunnerError` before it can
@@ -29,6 +29,18 @@ counterparts (`TestSyncAsyncParity`), including the stale/double/rejected
 cascade. The sync runner template calls the same `commit_pause_sync` helper so
 the two templates cannot drift when a sync interrupt runner arrives; that
 template branch is unexercised in-tree today.
+
+**Memory's "across restart" clause is unprovable, not proven.** No test
+restarts anything for `MemoryCheckpointer`, and none can: an in-process store
+does not survive a restart, so that half of box 5 is vacuous rather than
+demonstrated. What IS proved for Memory is every rule that does not need a
+restart — the slot contract, the settlement cascade, the three refusals, loop
+supersession, and (after the two-axis review) field-for-field first-record-wins
+on re-record — all parametrized against SQLite by the `backend` fixture, so the
+two backends cannot silently disagree. Restart itself is proved on SQLite only,
+including a real `SIGKILL` in `TestRealProcessKill`. The box stays ticked
+because everything provable in it holds; this note is the honest scope of the
+"Memory ... across restart" phrase.
 
 ## Atomicity: what "one transaction" covers
 

@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
-from hypergraph.checkpointers.types import StepStatus
+from hypergraph.checkpointers.types import RunTotals, StepStatus
 from hypergraph.exceptions import (
     ExecutionError,
     MissingInputError,
@@ -722,9 +722,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                         workflow_id,
                         pause,
                         step_buffer,
-                        duration_ms=total_duration_ms,
-                        node_count=step_count,
-                        error_count=error_count,
+                        RunTotals(total_duration_ms, step_count, error_count),
                     )
                 if dispatcher is not None and _parent_span_id is None:
                     self._shutdown_dispatcher_sync(dispatcher)

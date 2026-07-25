@@ -260,8 +260,10 @@ def _check_settlement(
             f"Schema: {current.answer_schema}{options}\n"
             f"{detail}\n\n"
             "How to fix:\n"
-            "  Send a value matching the interrupt handler's declared answer_type.\n"
-            "  The pause stays open — the corrected value can answer it.",
+            "  Send the JSON form of the interrupt handler's declared answer_type — a\n"
+            "  settled answer is durable resume input, so a domain object travels as\n"
+            "  its JSON projection (dataclasses.asdict(value)), never as the live\n"
+            "  instance. The pause stays open — the corrected value can answer it.",
             pause_id=pause_id,
             issues=issues,
         )

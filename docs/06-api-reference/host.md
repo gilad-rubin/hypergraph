@@ -378,8 +378,8 @@ never lands on a stale or not-yet-registered execution.
 
 When a run pauses at an `InterruptNode`, the occurrence is persisted as a
 **durable pause slot** — question, answer port, answer schema, and a unique
-`pause_id` — in the same transaction as the paused step and the `PAUSED`
-transition. See
+`pause_id` — committed with the `PAUSED` transition and never before the
+paused step, so a committed `PAUSED` run always has its slot. See
 [Durable Pause Slots](checkpointers.md#durable-pause-slots) for the record
 itself.
 
@@ -412,6 +412,10 @@ distinguishable:
 | `AnswerRejectedError` | no `pause_id`, an unknown one, a run with no durable pause, a run that is not paused, or a value failing `answer_schema` |
 | `PauseAlreadySettledError` | this occurrence was already answered — the first caller's value wins |
 | `StalePauseError` | a later pause occurrence is current (carries `.current_pause_id`) |
+
+All three subclass `PauseSettlementError`, which is a `HostError` — so
+`except HostError` around client calls catches them like any other
+durable-host refusal.
 
 A rejected value is refused **before any write**, so the occurrence stays
 open and a corrected value can still answer it. Answer-versus-stop races
@@ -729,3 +733,5 @@ brake counts **progressless re-adoptions**:
 The three pause refusals share the base class `PauseSettlementError` and live
 with the checkpointer that raises them
 (`hypergraph.checkpointers`); they are re-exported from `hypergraph`.
+`PauseSettlementError` is itself a `HostError` (and still a `RuntimeError`),
+so the single `except HostError` in the table above covers every row.

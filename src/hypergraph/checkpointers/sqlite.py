@@ -36,6 +36,7 @@ from hypergraph.checkpointers.base import (
 from hypergraph.checkpointers.presenters import render_checkpointer_explorer_html
 from hypergraph.checkpointers.serializers import JsonSerializer, Serializer
 from hypergraph.checkpointers.types import (
+    NO_RUN_TOTALS,
     AttemptError,
     AttemptLedgerError,
     AttemptRecord,
@@ -49,6 +50,7 @@ from hypergraph.checkpointers.types import (
     PendingNode,
     Run,
     RunTable,
+    RunTotals,
     StepRecord,
     StepStatus,
     StepTable,
@@ -387,13 +389,7 @@ def _row_to_pause_slot(row: Sequence[Any]) -> PauseSlot:
     )
 
 
-def _run_status_update(
-    status: WorkflowStatus,
-    *,
-    duration_ms: float | None,
-    node_count: int | None,
-    error_count: int | None,
-) -> tuple[str, list[Any]]:
+def _run_status_update(status: WorkflowStatus, totals: RunTotals) -> tuple[str, list[Any]]:
     """Build the runs-row SET clause and params for one status transition.
 
     Shared so the plain status write and the atomic pause commit cannot drift
@@ -406,15 +402,15 @@ def _run_status_update(
     )
     sets = ["status = ?", "completed_at = ?"]
     params: list[Any] = [status.value, completed_at]
-    if duration_ms is not None:
+    if totals.duration_ms is not None:
         sets.append("duration_ms = ?")
-        params.append(duration_ms)
-    if node_count is not None:
+        params.append(totals.duration_ms)
+    if totals.node_count is not None:
         sets.append("node_count = ?")
-        params.append(node_count)
-    if error_count is not None:
+        params.append(totals.node_count)
+    if totals.error_count is not None:
         sets.append("error_count = ?")
-        params.append(error_count)
+        params.append(totals.error_count)
     return f"UPDATE runs SET {', '.join(sets)} WHERE id = ?", params
 
 
@@ -778,18 +774,30 @@ class SqliteCheckpointer(Checkpointer):
         slot: PauseSlot,
         *,
         step_records: Sequence[StepRecord] = (),
-        duration_ms: float | None = None,
-        node_count: int | None = None,
-        error_count: int | None = None,
+        totals: RunTotals = NO_RUN_TOTALS,
     ) -> None:
-        """Commit the pause slot, its step records, and the PAUSED transition.
+        """Commit the pause slot, any buffered step records, and ``PAUSED``.
 
-        ONE ``BEGIN IMMEDIATE`` transaction covers all three, so no reader
-        can ever observe a run whose status is ``PAUSED`` without the slot
-        that says what was asked. The write is immediate whatever
-        ``CheckpointPolicy.durability`` says about StepRecord timing: a
-        buffered pause slot would not survive the process death it exists to
-        describe.
+        ONE ``BEGIN IMMEDIATE`` transaction covers everything handed to this
+        call. What that buys depends on ``CheckpointPolicy.durability``, so
+        state the guarantee precisely rather than claiming three writes are
+        always one:
+
+        - ``durability="exit"`` buffers the paused StepRecord to run exit, so
+          it arrives here in ``step_records`` and genuinely commits with the
+          slot and the status.
+        - ``durability="sync"``/``"async"`` already committed the paused
+          StepRecord through the ordinary per-superstep path, so
+          ``step_records`` is empty and the atomic unit is slot + ``PAUSED``.
+
+        In both modes the step record is ``<=`` the slot and never after it,
+        which is the invariant PRD 0010 requires: **no reader can observe a
+        committed ``PAUSED`` run without its slot.** The write is immediate
+        whatever durability says about StepRecord timing — a buffered pause
+        slot would not survive the process death it exists to describe.
+
+        First record wins per address (``ON CONFLICT(pause_id) DO NOTHING``):
+        a replayed occurrence leaves the WHOLE stored row alone.
         """
         await self._ensure_db()
         async with self._txn_lock():
@@ -800,12 +808,7 @@ class SqliteCheckpointer(Checkpointer):
                 if step_records:
                     await self._apply_retention_policy_async(slot.run_id)
                 await self._db.execute(_PAUSE_SLOT_INSERT_SQL, _pause_slot_insert_params(slot))
-                sql, params = _run_status_update(
-                    WorkflowStatus.PAUSED,
-                    duration_ms=duration_ms,
-                    node_count=node_count,
-                    error_count=error_count,
-                )
+                sql, params = _run_status_update(WorkflowStatus.PAUSED, totals)
                 await self._db.execute(sql, [*params, slot.run_id])
                 for record in step_records:
                     await self._after_run_mutation(
@@ -886,9 +889,7 @@ class SqliteCheckpointer(Checkpointer):
         slot: PauseSlot,
         *,
         step_records: Sequence[StepRecord] = (),
-        duration_ms: float | None = None,
-        node_count: int | None = None,
-        error_count: int | None = None,
+        totals: RunTotals = NO_RUN_TOTALS,
     ) -> None:
         """Sync mirror of :meth:`record_pause`."""
         with self._sync_lock:
@@ -900,12 +901,7 @@ class SqliteCheckpointer(Checkpointer):
                 if step_records:
                     self._apply_retention_policy_sync(slot.run_id)
                 db.execute(_PAUSE_SLOT_INSERT_SQL, _pause_slot_insert_params(slot))
-                sql, params = _run_status_update(
-                    WorkflowStatus.PAUSED,
-                    duration_ms=duration_ms,
-                    node_count=node_count,
-                    error_count=error_count,
-                )
+                sql, params = _run_status_update(WorkflowStatus.PAUSED, totals)
                 db.execute(sql, [*params, slot.run_id])
                 for record in step_records:
                     self._after_run_mutation_sync(
@@ -1042,7 +1038,7 @@ class SqliteCheckpointer(Checkpointer):
     ) -> None:
         """Update run status with optional stats."""
         await self._ensure_db()
-        sql, params = _run_status_update(status, duration_ms=duration_ms, node_count=node_count, error_count=error_count)
+        sql, params = _run_status_update(status, RunTotals(duration_ms, node_count, error_count))
         async with self._txn_lock():
             await self._db.execute(sql, [*params, run_id])
             await self._after_run_mutation(run_id, "status", {"status": status.value})
@@ -2199,7 +2195,7 @@ class SqliteCheckpointer(Checkpointer):
         error_count: int | None = None,
     ) -> None:
         """Update run status with optional stats synchronously."""
-        sql, params = _run_status_update(status, duration_ms=duration_ms, node_count=node_count, error_count=error_count)
+        sql, params = _run_status_update(status, RunTotals(duration_ms, node_count, error_count))
         with self._sync_lock:
             db = self._sync_db()
             db.execute(sql, [*params, run_id])

@@ -8,12 +8,22 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from hypergraph.exceptions import HostError
+
 if TYPE_CHECKING:
     from hypergraph.host.definition import DefinitionId
 
-
-class HostError(Exception):
-    """Base class for durable-host errors."""
+__all__ = [
+    "AlreadyTerminalError",
+    "ForkCompatibilityError",
+    # Defined in ``hypergraph.exceptions`` so layers below the host (the
+    # checkpointers' pause-settlement refusals) can subclass it without an
+    # import cycle; this module stays its canonical import site.
+    "HostError",
+    "RerunError",
+    "WorkerLockError",
+    "WorkflowIdConflictError",
+]
 
 
 class WorkerLockError(HostError):

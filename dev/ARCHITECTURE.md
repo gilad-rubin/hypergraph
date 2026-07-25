@@ -109,7 +109,7 @@ Practical mental model:
 - `caching.py` — Cache key computation and lookup
 - `checkpoint_helpers.py` — Build persisted `StepRecord`s from runtime state
 - `pending_boundaries.py` — Persist a superstep's runnable node boundaries before any sibling dispatches
-- `pause_slots.py` — Project an interrupt occurrence into a durable pause slot and commit it atomically with the paused step and the `PAUSED` transition
+- `pause_slots.py` — Project an interrupt occurrence into a durable pause slot and commit it atomically with the `PAUSED` transition (and any still-buffered step records), never before the paused step
 - `event_helpers.py` — Emit lifecycle events
 - `gate_execution.py` — Route/ifelse decision execution
 - `input_normalization.py` — Normalize user inputs for execution

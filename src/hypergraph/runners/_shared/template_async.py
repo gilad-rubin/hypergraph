@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from hypergraph.checkpointers.types import StepStatus
+from hypergraph.checkpointers.types import RunTotals, StepStatus
 from hypergraph.exceptions import (
     ExecutionError,
     MissingInputError,
@@ -742,18 +742,18 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     _, step_offset = checkpoint_offsets(resume_checkpoint)
                     step_count = step_offset + collector.step_count
                     error_count = collector.failed_step_count
-                    # The durable pause slot, the buffered step records, and
-                    # the PAUSED transition commit as ONE unit: no reader ever
-                    # sees a paused run whose question is missing (PRD 0010).
+                    # The durable pause slot, whatever step records are still
+                    # buffered, and the PAUSED transition commit as ONE unit,
+                    # and the paused step is never written after the slot: no
+                    # reader ever sees a committed paused run whose question
+                    # is missing (PRD 0010).
                     await commit_pause_async(
                         checkpointer,
                         graph,
                         workflow_id,
                         pause,
                         step_buffer,
-                        duration_ms=total_duration_ms,
-                        node_count=step_count,
-                        error_count=error_count,
+                        RunTotals(total_duration_ms, step_count, error_count),
                     )
                 if dispatcher is not None and _parent_span_id is None:
                     await self._shutdown_dispatcher_async(dispatcher)

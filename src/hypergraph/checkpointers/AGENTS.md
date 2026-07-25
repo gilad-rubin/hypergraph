@@ -30,20 +30,33 @@ row-count shortcuts.
 
 ## Durable Pause Slots
 
-- `record_pause` is atomic by contract: the slot, the paused step's records,
-  and the run's transition to `PAUSED` commit as ONE transaction. Never split
-  them, and never add a write between them.
+- `record_pause` is atomic by contract: everything handed to it — the slot,
+  any still-buffered step records, and the run's transition to `PAUSED` —
+  commits as ONE transaction. Never split them, and never add a write between
+  them. State the guarantee as the invariant, not as a write count: the
+  paused StepRecord is always `<=` the slot and never after it, so no reader
+  observes a committed `PAUSED` run without its slot. (Only `durability="exit"`
+  still has the step record buffered at this point; `"sync"`/`"async"`
+  committed it earlier through the ordinary step path.)
+- First record wins per `pause_id`, in EVERY backend: the address IS the
+  occurrence, so a replay must leave the whole stored row alone — question,
+  schema, options, answer port, `created_at`, and any settlement.
 - Settlement is a compare-and-set on the CURRENT `pause_id`. Every refusal
   (`AnswerRejectedError` / `PauseAlreadySettledError` / `StalePauseError`)
   must be raised before any write, so a refused answer leaves the occurrence
-  open.
+  open. All three are `HostError`s: they surface through
+  `RunHomeClient.answer`, so `except HostError` must catch them.
 - The decision cascade lives once, in `base._check_settlement`. Backends
   supply the rows and perform the CAS; they must not re-derive which refusal
   applies, or Memory and SQLite would drift.
 - The answer contract is data, never a callable: render `answer_type` through
   `_answer_schema.render_answer_schema` and check values with
-  `validate_answer`. A type the renderer cannot express becomes the empty
-  schema — never a guessed constraint.
+  `validate_answer`. The schema describes the JSON *form* of the declared
+  type (a settled answer is durable resume input, so it is always JSON-safe)
+  and never claims a keyword `validate_answer` does not check. A type the
+  renderer cannot express is recorded as such (`UNRENDERABLE_KEY`) rather
+  than silently degrading to `{}` — never a guessed constraint, and never a
+  pause-time raise.
 
 ## Sync, Async, and Versions
 

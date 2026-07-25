@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Any
 
 from hypergraph._utils import format_duration_ms, plural
+from hypergraph.exceptions import HostError
 
 
 def _utcnow() -> datetime:
@@ -149,14 +150,35 @@ class NodeBoundary:
 
 
 @dataclass(frozen=True)
+class RunTotals:
+    """The three run-level counters a status transition may carry.
+
+    They always travel together — a status write that knows the duration
+    knows the node and error counts too — so they travel as one value
+    instead of as three parallel keyword arguments through every write path.
+
+    ``None`` on a field means "leave the stored value alone", exactly the
+    per-field semantics ``update_run_status`` has always had.
+    """
+
+    duration_ms: float | None = None
+    node_count: int | None = None
+    error_count: int | None = None
+
+
+#: The "record nothing new" totals — a status transition that carries no counters.
+NO_RUN_TOTALS = RunTotals()
+
+
+@dataclass(frozen=True)
 class PauseSlot:
     """Durable record of ONE interrupt occurrence (PRD 0010).
 
     Before this record existed, pause truth died with the process: the
     question and its answer port lived only on the in-memory ``RunResult``.
-    A slot is written in the SAME transaction as the paused step's records
-    and the run's transition to ``PAUSED``, so no committed pause is ever
-    missing its question.
+    The slot and the run's transition to ``PAUSED`` are one commit, and the
+    paused StepRecord is never written after them, so a committed ``PAUSED``
+    run is never missing its question (see ``record_pause``).
 
     ``pause_id`` is the node address of the occurrence
     (``<run_id>:<superstep>:<node_name>``) — a loop's second visit lands on a
@@ -169,9 +191,13 @@ class PauseSlot:
 
     ``question`` is a JSON-safe projection (prompt / options / evidence /
     answer-type name) — the live handler payload never enters the journal.
-    ``answer_schema`` is the graph-derived answer contract as JSON Schema; an
-    empty schema means the declared type could not be expressed and
-    constrains nothing (see ``checkpointers/_answer_schema.py``).
+    ``answer_schema`` is the graph-derived answer contract as JSON Schema,
+    describing the JSON *form* of the declared ``answer_type`` — a settled
+    answer is durable resume input, so it is always JSON-safe. An empty
+    schema means nothing was declared; a schema carrying
+    ``"x-hypergraph-unrenderable"`` names a declared type the renderer could
+    not express. Both constrain nothing beyond JSON-safety (see
+    ``checkpointers/_answer_schema.py``).
 
     ``answer`` is the settled value — the durable resume input for
     ``response_key``. It is meaningful only once ``settled_at`` is set.
@@ -221,12 +247,17 @@ class PauseSlot:
         }
 
 
-class PauseSettlementError(RuntimeError):
+class PauseSettlementError(HostError, RuntimeError):
     """Base class for refusals to settle a durable pause occurrence.
 
     Every subclass is raised BEFORE any write: a refused answer never
     consumes the occurrence, so the slot the caller observed stays exactly
     as it was.
+
+    These refusals reach callers through ``RunHomeClient.answer``, so they
+    are ``HostError``\\ s: one ``except HostError`` around client calls
+    catches every durable-host refusal. ``RuntimeError`` is kept in the
+    bases so existing ``except RuntimeError`` clauses still match.
     """
 
 

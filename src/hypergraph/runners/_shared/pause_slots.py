@@ -7,10 +7,18 @@ which port answers it, or which occurrence is current.
 
 This module turns one ``PauseExecution`` into a durable
 :class:`~hypergraph.checkpointers.types.PauseSlot` and hands it to the
-checkpointer as ONE atomic commit together with the paused step's records and
-the run's transition to ``PAUSED``. Sync and async templates share every
-decision here — the slot shape, the capability probe, and the write point — so
-the two paths cannot drift.
+checkpointer in ONE atomic commit together with whatever step records are
+still buffered and the run's transition to ``PAUSED``. Sync and async
+templates share every decision here — the slot shape, the capability probe,
+and the write point — so the two paths cannot drift.
+
+**What the atomicity buys, precisely.** Under ``durability="exit"`` the
+paused StepRecord is still buffered, so all three facts really are one
+transaction. Under ``"sync"``/``"async"`` the ordinary per-superstep path
+already committed it, so the atomic unit is slot + ``PAUSED``. In every mode
+the step record is ``<=`` the slot and never written after it, which is the
+invariant PRD 0010 names: **no reader can observe a committed ``PAUSED`` run
+without its slot.**
 
 Three rules the slot obeys:
 
@@ -32,9 +40,9 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.checkpointers._answer_schema import render_answer_schema
-from hypergraph.checkpointers.protocols import PauseSlotProtocol, SyncPauseSlotProtocol
-from hypergraph.checkpointers.types import PauseSlot, WorkflowStatus
+from hypergraph.checkpointers._answer_schema import render_answer_schema, type_display_name
+from hypergraph.checkpointers.protocols import PauseSlotProtocol, SyncPauseSlotProtocol, probe_seam
+from hypergraph.checkpointers.types import NO_RUN_TOTALS, PauseSlot, RunTotals, WorkflowStatus
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -44,9 +52,8 @@ if TYPE_CHECKING:
     from hypergraph.runners._shared.results import PauseInfo
     from hypergraph.runners._shared.state import PauseExecution
 
-#: Every method of each seam, not just the one the write path calls — see the
-#: same reasoning in ``pending_boundaries``: ``runtime_checkable`` matches on
-#: attribute PRESENCE only.
+#: Every method of each seam, not just the one the write path calls — see
+#: ``probe_seam``: ``runtime_checkable`` matches on attribute PRESENCE only.
 _ASYNC_PAUSE_METHODS = ("record_pause", "get_pause_slot", "settle_pause")
 _SYNC_PAUSE_METHODS = ("record_pause_sync", "get_pause_slot_sync", "settle_pause_sync")
 
@@ -61,13 +68,12 @@ def supports_pause_slots(checkpointer: object | None, *, sync: bool) -> bool:
     ``None`` (no checkpointer) answers False, so callers need no null guard.
     A checkpointer without the seam keeps working through the plain
     save-steps-then-set-status path — it simply has no durable question.
+
+    Unlike pending boundaries, pause slots have NO durability-mode exclusion:
+    a paused run's question must be durable in every mode.
     """
-    if checkpointer is None:
-        return False
     protocol, methods = (SyncPauseSlotProtocol, _SYNC_PAUSE_METHODS) if sync else (PauseSlotProtocol, _ASYNC_PAUSE_METHODS)
-    if not isinstance(checkpointer, protocol):
-        return False
-    return all(callable(getattr(checkpointer, name, None)) for name in methods)
+    return probe_seam(checkpointer, protocol, methods)
 
 
 def build_pause_slot(graph: Graph, workflow_id: str, superstep: int, pause_info: PauseInfo) -> PauseSlot:
@@ -103,7 +109,7 @@ def project_question(question_value: Any) -> dict[str, Any]:
         "prompt": str(getattr(question_value, "prompt", "")),
         "options": None if options is None else [str(option) for option in options],
         "evidence": [_json_safe(item) for item in evidence],
-        "answer_type": _stable_type_name(getattr(question_value, "answer_type", None)),
+        "answer_type": type_display_name(getattr(question_value, "answer_type", None)),
     }
 
 
@@ -113,37 +119,29 @@ async def commit_pause_async(
     workflow_id: str,
     pause: PauseExecution,
     step_records: Sequence[StepRecord],
-    *,
-    duration_ms: float | None = None,
-    node_count: int | None = None,
-    error_count: int | None = None,
+    totals: RunTotals = NO_RUN_TOTALS,
 ) -> None:
-    """Persist the pause: slot + buffered step records + PAUSED, atomically.
+    """Persist the pause: slot + still-buffered step records + PAUSED.
 
-    Falls back to the plain two-write path when the backend has no pause-slot
-    seam, or when the occurrence has no superstep to be addressed by (a
-    checkpointer-free nested delegation can raise a pause the runner never
-    scheduled). The fallback is the pre-slot behavior exactly — never a
-    half-written slot.
+    See the module docstring for what the one commit covers in each
+    durability mode. Falls back to the plain two-write path when the backend
+    has no pause-slot seam, or when the occurrence has no superstep to be
+    addressed by (a checkpointer-free nested delegation can raise a pause the
+    runner never scheduled). The fallback is the pre-slot behavior exactly —
+    never a half-written slot.
     """
     slot = _slot_for(graph, workflow_id, pause)
     if slot is not None and supports_pause_slots(checkpointer, sync=False):
-        await checkpointer.record_pause(
-            slot,
-            step_records=tuple(step_records),
-            duration_ms=duration_ms,
-            node_count=node_count,
-            error_count=error_count,
-        )
+        await checkpointer.record_pause(slot, step_records=tuple(step_records), totals=totals)
         return
     for record in step_records:
         await checkpointer.save_step(record)
     await checkpointer.update_run_status(
         workflow_id,
         WorkflowStatus.PAUSED,
-        duration_ms=duration_ms,
-        node_count=node_count,
-        error_count=error_count,
+        duration_ms=totals.duration_ms,
+        node_count=totals.node_count,
+        error_count=totals.error_count,
     )
 
 
@@ -153,30 +151,21 @@ def commit_pause_sync(
     workflow_id: str,
     pause: PauseExecution,
     step_records: Sequence[StepRecord],
-    *,
-    duration_ms: float | None = None,
-    node_count: int | None = None,
-    error_count: int | None = None,
+    totals: RunTotals = NO_RUN_TOTALS,
 ) -> None:
     """Sync mirror of :func:`commit_pause_async`."""
     slot = _slot_for(graph, workflow_id, pause)
     if slot is not None and supports_pause_slots(checkpointer, sync=True):
-        checkpointer.record_pause_sync(
-            slot,
-            step_records=tuple(step_records),
-            duration_ms=duration_ms,
-            node_count=node_count,
-            error_count=error_count,
-        )
+        checkpointer.record_pause_sync(slot, step_records=tuple(step_records), totals=totals)
         return
     for record in step_records:
         checkpointer.save_step_sync(record)
     checkpointer.update_run_status_sync(
         workflow_id,
         WorkflowStatus.PAUSED,
-        duration_ms=duration_ms,
-        node_count=node_count,
-        error_count=error_count,
+        duration_ms=totals.duration_ms,
+        node_count=totals.node_count,
+        error_count=totals.error_count,
     )
 
 
@@ -219,15 +208,6 @@ def _find_interrupt_node(graph: Graph, node_path: str) -> Any:
             return None
         current = node.graph
     return None
-
-
-def _stable_type_name(value: Any) -> str | None:
-    """Display-stable name for a declared type (mirrors the HyperTable seam)."""
-    if value is None:
-        return None
-    if isinstance(value, type):
-        return f"{value.__module__}.{value.__qualname__}"
-    return repr(value)
 
 
 def _json_safe(value: Any) -> Any:

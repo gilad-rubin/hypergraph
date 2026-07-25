@@ -24,6 +24,7 @@ from hypergraph.checkpointers.base import (
     _require_started,
 )
 from hypergraph.checkpointers.types import (
+    NO_RUN_TOTALS,
     AttemptError,
     AttemptRecord,
     AttemptSeries,
@@ -32,6 +33,7 @@ from hypergraph.checkpointers.types import (
     PauseSlot,
     PendingNode,
     Run,
+    RunTotals,
     StepRecord,
     StepStatus,
     WorkflowStatus,
@@ -116,15 +118,22 @@ class MemoryCheckpointer(Checkpointer):
         slot: PauseSlot,
         *,
         step_records: Sequence[StepRecord] = (),
-        duration_ms: float | None = None,
-        node_count: int | None = None,
-        error_count: int | None = None,
+        totals: RunTotals = NO_RUN_TOTALS,
     ) -> None:
-        """Commit the pause slot, its step records, and the PAUSED transition.
+        """Commit the pause slot, any buffered step records, and ``PAUSED``.
 
-        Memory has no transaction to open: the whole body runs without an
-        await, so no other coroutine can observe a half-written pause. The
-        status flip is last, mirroring the SQLite ordering.
+        Memory has no transaction to open, so atomicity here is structural:
+        every write below is a plain dict assignment and the body contains no
+        ``await`` — including the status flip, which goes through the same
+        non-async ``_apply_run_status`` that ``update_run_status`` uses. There
+        is therefore no suspension point at which another coroutine could
+        observe a half-written pause. Keep it that way: introducing an
+        ``await`` here reintroduces the window. The status flip is last,
+        mirroring the SQLite ordering.
+
+        First record wins per address, exactly like SQLite's
+        ``ON CONFLICT(pause_id) DO NOTHING``: a replayed occurrence leaves the
+        WHOLE stored row alone, question included.
         """
         for record in step_records:
             run_steps = self._steps.setdefault(record.run_id, {})
@@ -132,22 +141,9 @@ class MemoryCheckpointer(Checkpointer):
         if step_records:
             self._apply_retention_policy(slot.run_id)
         occurrences = self._pause_slots.setdefault(slot.run_id, [])
-        existing = next((index for index, item in enumerate(occurrences) if item.pause_id == slot.pause_id), None)
-        if existing is None:
+        if not any(item.pause_id == slot.pause_id for item in occurrences):
             occurrences.append(slot)
-        else:
-            # Same address re-recorded (a resume replaying the occurrence):
-            # the first record owns when it was asked and any settlement.
-            occurrences[existing] = replace(
-                slot, created_at=occurrences[existing].created_at, settled_at=occurrences[existing].settled_at, answer=occurrences[existing].answer
-            )
-        await self.update_run_status(
-            slot.run_id,
-            WorkflowStatus.PAUSED,
-            duration_ms=duration_ms,
-            node_count=node_count,
-            error_count=error_count,
-        )
+        self._apply_run_status(slot.run_id, WorkflowStatus.PAUSED, totals)
 
     async def get_pause_slot(self, run_id: str, *, pause_id: str | None = None) -> PauseSlot | None:
         """The run's current pause occurrence, or a named earlier one."""
@@ -218,6 +214,15 @@ class MemoryCheckpointer(Checkpointer):
         node_count: int | None = None,
         error_count: int | None = None,
     ) -> None:
+        self._apply_run_status(run_id, status, RunTotals(duration_ms, node_count, error_count))
+
+    def _apply_run_status(self, run_id: str, status: WorkflowStatus, totals: RunTotals) -> None:
+        """Write one status transition. Deliberately NOT a coroutine.
+
+        ``record_pause`` needs a status flip with no suspension point in it;
+        sharing this body is what keeps that guarantee structural without
+        duplicating the transition's column semantics.
+        """
         existing = self._runs.get(run_id)
         if existing is None:
             raise ValueError(f"Unknown run_id: {run_id!r}")
@@ -225,9 +230,9 @@ class MemoryCheckpointer(Checkpointer):
         self._runs[run_id] = replace(
             existing,
             status=status,
-            duration_ms=duration_ms if duration_ms is not None else existing.duration_ms,
-            node_count=node_count if node_count is not None else existing.node_count,
-            error_count=error_count if error_count is not None else existing.error_count,
+            duration_ms=totals.duration_ms if totals.duration_ms is not None else existing.duration_ms,
+            node_count=totals.node_count if totals.node_count is not None else existing.node_count,
+            error_count=totals.error_count if totals.error_count is not None else existing.error_count,
             completed_at=(
                 datetime.now(timezone.utc)
                 if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.PARTIAL, WorkflowStatus.STOPPED}

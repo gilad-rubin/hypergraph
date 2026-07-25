@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from hypergraph.checkpointers.protocols import PendingNodeProtocol, SyncPendingNodeProtocol
+from hypergraph.checkpointers.protocols import PendingNodeProtocol, SyncPendingNodeProtocol, probe_seam
 from hypergraph.checkpointers.types import PendingNode
 
 if TYPE_CHECKING:
@@ -36,11 +36,8 @@ if TYPE_CHECKING:
 
     from hypergraph.nodes.base import HyperNode
 
-#: Every method of each seam, not just the one the write path calls.
-#: ``runtime_checkable`` matches on attribute PRESENCE only, so a checkpointer
-#: carrying an unrelated attribute of the same name would probe true and then
-#: fail mid-run. Demanding the whole seam AND that each member is callable
-#: makes that false positive structurally hard rather than merely unlikely.
+#: Every method of each seam, not just the one the write path calls — see
+#: ``probe_seam``: ``runtime_checkable`` matches on attribute PRESENCE only.
 _ASYNC_BOUNDARY_METHODS = ("record_pending_nodes", "get_node_boundaries")
 _SYNC_BOUNDARY_METHODS = ("record_pending_nodes_sync", "get_node_boundaries_sync")
 
@@ -52,7 +49,10 @@ def supports_pending_boundaries(checkpointer: object | None, *, sync: bool) -> b
     no ``workflow_id`` to key one on) answers False, so callers do not need
     their own null guard.
 
-    ``durability="exit"`` is deliberately excluded — see the module docstring.
+    ``durability="exit"`` is deliberately excluded — see the module
+    docstring. That exclusion is specific to boundaries (it is about this
+    feature having no journal to join against), which is why it lives here
+    and not in the shared seam probe.
     """
     if checkpointer is None:
         return False
@@ -60,9 +60,7 @@ def supports_pending_boundaries(checkpointer: object | None, *, sync: bool) -> b
     if policy is not None and getattr(policy, "durability", None) == "exit":
         return False
     protocol, methods = (SyncPendingNodeProtocol, _SYNC_BOUNDARY_METHODS) if sync else (PendingNodeProtocol, _ASYNC_BOUNDARY_METHODS)
-    if not isinstance(checkpointer, protocol):
-        return False
-    return all(callable(getattr(checkpointer, name, None)) for name in methods)
+    return probe_seam(checkpointer, protocol, methods)
 
 
 def build_pending_nodes(

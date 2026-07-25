@@ -519,7 +519,19 @@ Boundaries follow their step's retention fate: a pruned `StepRecord` takes its b
 
 ## Durable Pause Slots
 
-A pause used to die with the process: the question and its answer port lived only on the in-memory `RunResult`. Now every interrupt occurrence is persisted as a **`PauseSlot`**, written in the **same transaction** as the paused step's records and the run's transition to `PAUSED` — there is no window in which a run reads paused and its question is missing.
+A pause used to die with the process: the question and its answer port lived only on the in-memory `RunResult`. Now every interrupt occurrence is persisted as a **`PauseSlot`**, committed together with the run's transition to `PAUSED` — **no reader can observe a committed `PAUSED` run without its slot.**
+
+### Three things named "pause"
+
+They are different layers, and `result.pause` vs `run.pause_slot` is the pair most easily confused:
+
+| Name | Lifetime | Where |
+|---|---|---|
+| `PauseExecution` | Control flow — the exception an `InterruptNode` raises to suspend the run | internal (`runners/_shared/state.py`) |
+| [`PauseInfo`](runners.md#pauseinfo) | In-memory — `result.pause` on the `RunResult` this process just produced; gone when the process exits | `hypergraph.PauseInfo` |
+| `PauseSlot` | **Durable** — `run.pause_slot`, readable by any process, carries the question projection, the answer contract, and the settled answer | `hypergraph.PauseSlot` (below) |
+
+One pause produces all three: the node raises `PauseExecution`, the runner reports it as `PauseInfo` on this run's result, and the checkpointer persists it as a `PauseSlot`. Only the slot survives the process, so anything a later process must know — what was asked, which port answers it, which occurrence is current — lives there.
 
 ```python
 run = await checkpointer.get_run_async("refund-c-42")
@@ -548,12 +560,26 @@ await checkpointer.settle_pause("refund-c-42", pause_id=slot.pause_id, value=Tru
 
 ### The answer contract
 
-`answer_schema` is rendered from the `InterruptNode`'s declared `answer_type` — there are **no validator callables**; validation is schema-driven at settlement time. `bool` → `{"type": "boolean"}`, `str` → `{"type": "string"}`, `Literal`/`Enum` → `{"enum": [...]}`, unions → `{"anyOf": [...]}`.
+`answer_schema` is rendered from the `InterruptNode`'s declared `answer_type` — there are **no validator callables**; validation is schema-driven at settlement time.
 
-Two rules keep the stored contract honest:
+| Declared `answer_type` | `answer_schema` |
+|---|---|
+| `bool` / `int` / `float` / `str` / `None` | `{"type": "boolean"}` / `"integer"` / `"number"` / `"string"` / `"null"` |
+| `list`, `list[str]`, `tuple`, `set` | `{"type": "array"}` |
+| `dict`, a `TypedDict`, a **dataclass** | `{"type": "object"}` |
+| a `NamedTuple` | `{"type": "array"}` |
+| `Literal[...]`, an `Enum` | `{"enum": [...]}` |
+| `X \| Y` | `{"anyOf": [...]}` |
+| nothing declared (`Any`) | `{}` |
+| anything else | `{"x-hypergraph-unrenderable": "pkg.MyType"}` |
 
-- **A type the renderer cannot express becomes the empty schema `{}`**, which constrains nothing — settlement then only requires a JSON-safe value. The slot never invents a constraint it cannot check.
-- **Occurrence options narrow the schema only when the declared type accepts them.** `answer_type=str` with `options=("billing", "fraud")` becomes `{"type": "string", "enum": ["billing", "fraud"]}`; `answer_type=bool` with display labels `("yes", "no")` keeps `{"type": "boolean"}` and leaves the labels on `slot.options`.
+**A settled answer is always the JSON form of the declared type, never the live object.** The answer is durable resume input, so it must survive the journal — `answer_type=Verdict` (a dataclass) is answered with `dataclasses.asdict(verdict)`, not with the instance. Nothing is coerced: a coercion would hand the graph's answer port a different type than it declared.
+
+Three rules keep the stored contract honest:
+
+- **Only expressible types get a constraint, and only one the slot can check.** A dataclass stops at `{"type": "object"}` and does not claim `properties`, because settlement does not check `properties`.
+- **A type the renderer cannot express says so.** Its schema carries `"x-hypergraph-unrenderable"` naming the declared type. That constrains nothing beyond JSON-safety — unknown JSON Schema keywords are ignored — but an operator reading the slot can tell "the renderer gave up on `MyType`" from "the handler declared nothing" (`{}`). An un-renderable type never raises at pause time; a graph that paused before keeps pausing. If such a value is refused, the error names the type and says to send its JSON-safe form.
+- **Occurrence options narrow the schema only when the declared type accepts them.** `answer_type=str` with `options=("billing", "fraud")` becomes `{"type": "string", "enum": ["billing", "fraud"]}`; `answer_type=bool` with display labels `("yes", "no")` keeps `{"type": "boolean"}` and leaves the labels on `slot.options`. An unconstrained contract never narrows — it cannot know whether the declared type accepts the labels.
 
 ### Settlement
 
@@ -565,7 +591,9 @@ Two rules keep the stored contract honest:
 | `PauseAlreadySettledError` | this occurrence was already answered; the first value wins |
 | `StalePauseError` | a later occurrence is current (`.current_pause_id` names it) |
 
-All three subclass `PauseSettlementError`. Reads and settlement have sync mirrors on `SqliteCheckpointer` (`get_pause_slot_sync`, `settle_pause_sync`, `record_pause_sync`); `MemoryCheckpointer` implements the async seam. Checkpointers without the seam keep working — the runners probe for `PauseSlotProtocol` / `SyncPauseSlotProtocol` and fall back to plain step saves plus a `PAUSED` status write, with no durable question.
+All three subclass `PauseSettlementError`, which is both a `RuntimeError` and a [`HostError`](host.md) — one `except HostError` around `RunHomeClient` calls catches every durable-host refusal, including these. Reads and settlement have sync mirrors on `SqliteCheckpointer` (`get_pause_slot_sync`, `settle_pause_sync`, `record_pause_sync`); `MemoryCheckpointer` implements the async seam. Checkpointers without the seam keep working — the runners probe for `PauseSlotProtocol` / `SyncPauseSlotProtocol` and fall back to plain step saves plus a `PAUSED` status write, with no durable question.
+
+`record_pause` commits everything it is handed in one transaction, and the paused `StepRecord` is never written after the slot. Under `durability="exit"` the step record is still buffered, so all three facts really are one transaction; under `"sync"`/`"async"` it was already committed by the ordinary per-superstep path, so the atomic unit is slot + `PAUSED`. Either way the invariant holds: a committed `PAUSED` run always has its slot. Re-recording the same `pause_id` is a no-op in every backend — the address *is* the occurrence, so a replay never rewrites what was asked or clears a settlement.
 
 Unlike a node boundary, a pause slot is **not** pruned by retention compaction: a boundary's state is derived from `steps`, but a slot carries the question and the human answer — truth in its own right, not a projection of the journal.
 

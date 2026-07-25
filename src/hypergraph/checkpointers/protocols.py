@@ -16,15 +16,16 @@ probe, so read the seam before adding one:
   when it is absent, so a third-party checkpointer keeps working.
 
 ``runtime_checkable`` matches on attribute PRESENCE only — never on
-signatures. Probes for optional seams therefore live in
-``runners/_shared/pending_boundaries.py``, which additionally requires every
-method of the seam to exist and be callable.
+signatures. Every optional seam is therefore probed through :func:`probe_seam`,
+which additionally requires every method of the seam to exist and be callable.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+from hypergraph.checkpointers.types import NO_RUN_TOTALS, RunTotals
 
 if TYPE_CHECKING:
     from hypergraph.checkpointers.types import (
@@ -36,6 +37,27 @@ if TYPE_CHECKING:
         StepRecord,
         WorkflowStatus,
     )
+
+
+def probe_seam(checkpointer: object | None, protocol: type, methods: Sequence[str]) -> bool:
+    """Whether ``checkpointer`` really implements one optional seam.
+
+    ``None`` (no checkpointer) answers False, so callers need no null guard.
+    Beyond the ``runtime_checkable`` isinstance check — which matches on
+    attribute PRESENCE only, so a checkpointer carrying an unrelated
+    attribute of the same name would probe true and then fail mid-run — every
+    named method must exist AND be callable. Demanding the whole seam makes
+    that false positive structurally hard rather than merely unlikely.
+
+    Seam-specific preconditions (``pending_boundaries`` excludes
+    ``durability="exit"``) belong at the call site, not here: they are facts
+    about one feature, not about whether the seam is implemented.
+    """
+    if checkpointer is None:
+        return False
+    if not isinstance(checkpointer, protocol):
+        return False
+    return all(callable(getattr(checkpointer, name, None)) for name in methods)
 
 
 @runtime_checkable
@@ -117,11 +139,12 @@ class SyncPendingNodeProtocol(Protocol):
 class PauseSlotProtocol(Protocol):
     """Async durable pause-slot seam (PRD 0010) — optional.
 
-    ``record_pause`` is atomic by contract: the slot, the paused step's
-    records, and the run's transition to ``PAUSED`` commit as one unit.
-    Runners probe for the whole seam before using it and fall back to the
-    plain save-steps-then-set-status path when it is absent, so a
-    third-party checkpointer keeps working.
+    ``record_pause`` is atomic by contract: everything it is handed — the
+    slot, any buffered step records, and the run's transition to ``PAUSED``
+    — commits as one unit, and it is never called before the paused
+    StepRecord's own write. Runners probe for the whole seam before using it
+    and fall back to the plain save-steps-then-set-status path when it is
+    absent, so a third-party checkpointer keeps working.
     """
 
     async def record_pause(
@@ -129,9 +152,7 @@ class PauseSlotProtocol(Protocol):
         slot: PauseSlot,
         *,
         step_records: Sequence[StepRecord] = (),
-        duration_ms: float | None = None,
-        node_count: int | None = None,
-        error_count: int | None = None,
+        totals: RunTotals = NO_RUN_TOTALS,
     ) -> None: ...
 
     async def get_pause_slot(self, run_id: str, *, pause_id: str | None = None) -> PauseSlot | None: ...
@@ -148,9 +169,7 @@ class SyncPauseSlotProtocol(Protocol):
         slot: PauseSlot,
         *,
         step_records: Sequence[StepRecord] = (),
-        duration_ms: float | None = None,
-        node_count: int | None = None,
-        error_count: int | None = None,
+        totals: RunTotals = NO_RUN_TOTALS,
     ) -> None: ...
 
     def get_pause_slot_sync(self, run_id: str, *, pause_id: str | None = None) -> PauseSlot | None: ...
