@@ -66,6 +66,35 @@ without its slot.**
   resume input; worker loops are out of scope for this ticket, so a settled
   run is resumed the Tier-0 way
   (`runner.run(graph, {slot.response_key: slot.answer}, workflow_id=...)`).
-  Note that today a paused run's submission is already marked `finished` by
-  the worker, so a paused run is not re-claimable at all — closing that is
-  the same worker-loop slice.
+  A paused run is still not re-claimable — closing that is the same
+  worker-loop slice — but its submission is no longer *recorded* as
+  finished; see the note below.
+
+## Note on box 5 — a parked run was recorded as settled work
+
+`Host._execute_submission` called `_finish_submission` unconditionally once
+`runner.run()` returned, PAUSED included, so a run merely parked awaiting a
+human answer had `host_submissions.state = 'finished'`. External peer review
+(Codex gpt-5.6) found, and this repo reproduced, that this made the same
+child simultaneously `active` to `BatchView`'s bucket ladder (its runs row is
+nonterminal) and settled to `views.is_child_settled` ('finished' is in
+`SETTLED_SUBMISSION_STATES`). Consequences: a Batch reported `settled=True`
+while a decision was outstanding, `watch(batch_ref)` ended early, and a
+detached `client.stop()` of the parked run was refused as
+`AlreadyTerminalError`. `test_ticket12_admission_and_delay.py::
+test_paused_run_holds_no_slot` pinned the broken state by asserting
+`'finished'`.
+
+Repaired in this commit: `views.SUBMISSION_STATE_PAUSED = "paused"`,
+deliberately NOT in `SETTLED_SUBMISSION_STATES`, and
+`RunHome._release_submission` (replacing `_finish_submission`) branches on
+the run's own committed status — `paused` with no `finished_at` for a PAUSED
+run, `finished` otherwise. The bucket ladder and the settled-child rule now
+agree, `watch()` keeps following, and a stop of a parked run is accepted and
+waits like a stop aimed at a crashed-but-resumable run.
+
+**The resume half is deliberately still not built.** A `paused` submission
+stays parked and unclaimable exactly as `finished` did: `_claim_eligible`
+and `_restart_scan` are untouched, no claim-eligibility source was added,
+and nothing asserts that an answered run resumes. This change makes the
+durable fact truthful; it does not change what the worker does.

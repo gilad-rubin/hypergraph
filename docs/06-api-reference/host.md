@@ -92,6 +92,15 @@ normalized inputs, and the requested `start_at`. Resubmitting the same
   fingerprint matches. Completed history never changes identity; use
   `client.rerun()` to repeat a settled run.
 
+Host submissions, Batches, and **host-less runs share one `workflow_id`
+namespace**. A Run Home is also an ordinary checkpointer, so a run may exist
+with no submission behind it — executed directly against the store (Tier 0).
+The host holds no pinned identity or fingerprint for such a run, so it can
+never adopt or dedupe into it: reusing that id raises `AlreadyTerminalError`
+when the host-less run is terminal and `WorkflowIdConflictError` while it is
+still running. The same check covers a Batch's `workflow_id` and every
+generated child id (`<batch workflow_id>:<item key>`).
+
 `host.submit_sync(...)` is the synchronous mirror.
 
 `submit()` also accepts `start_at` (a `datetime` or ISO string) for a
@@ -156,7 +165,9 @@ Definition identity, the normalized manifest, the pinned tolerance, and
   fingerprint matches.
 
 Run and Batch workflow ids share one namespace: reusing an id owned by a
-plain run submission (or a run id owned by a Batch) is a conflict too.
+plain run submission (or a run id owned by a Batch) is a conflict too — and
+so is one already owned by a host-less run, for the Batch id and for every
+generated child id alike.
 
 `BatchTolerance(max_failed=…, max_failed_percent=…)` pins optional failure
 thresholds into the manifest at acceptance — never `serve()` configuration
@@ -220,8 +231,11 @@ async for update in client.watch(receipt.batch_ref, after=cursor):
         cursor = update.cursor             # "bseq:N" — store this
 ```
 
-A Batch watch terminates once every child is terminally settled (or the
-Batch is durably stopped) and every committed fact has been delivered. The
+A Batch watch terminates once **every manifest child is accounted** —
+settled, unstarted, or recovery-exhausted — and every committed fact has
+been delivered. Stopping a Batch does **not** end its stream: `stopped` is a
+durable control fact appended *before* the child stop commands it writes,
+and each of those commits its own `child_unstarted` fact afterwards. The
 stream accounts **every manifest item exactly once**, so a detached watcher
 never has to read the view to learn an outcome: settled children by their
 `child_settled` fact (parked children included), items a tolerance trip
@@ -360,6 +374,9 @@ receipt.verb          # "stop"
 receipt.duplicate     # True when an unapplied stop already existed
 ```
 
+- **run parked on a durable pause** → the run is not terminal, so the stop
+  is accepted and waits, landing the next time that run executes.
+
 `CommandReceipt` mirrors `SubmitReceipt`: inert, with `run_ref`, `verb`,
 and `duplicate`. A second stop while one is still unapplied dedupes with
 `duplicate=True` — **the first stop's `info` wins**. Stopping a run that is
@@ -436,6 +453,16 @@ run. Re-delivering a settled answer to a worker is a later slice of this
 surface. Tier 0 resume — `runner.run(graph, {slot.response_key: slot.answer}, workflow_id=...)`
 — is unchanged.
 {% endhint %}
+
+**A parked run is in flight, not settled.** When a hosted run pauses, the
+worker releases its active-Run slot but the submission is recorded as
+`paused`, never `finished`: the run is nonterminal and a human decision is
+outstanding. So `watch(run_ref)` and `watch(batch_ref)` keep following it, a
+Batch containing a paused child reports `settled=False` with that child
+counted `active`, and `client.stop()` on a parked run is **accepted** rather
+than refused as terminal (the durable command lands the next time that run
+executes). A `paused` submission is still not re-claimable — parking is not
+re-admission.
 
 ## Scheduling an Answer
 
@@ -554,9 +581,16 @@ rerun_receipt = await client.rerun(receipt.run_ref)
 rerun_receipt.workflow_id      # "refund-c-42-retry-1"
 ```
 
+The id is `<source>-retry-N`, where N is the next ordinal among the reruns
+of that source **already accepted**. The ordinal is allocated inside the
+acceptance transaction and stored on the submission, so two reruns requested
+before either executes get two ids (`-retry-1`, `-retry-2`) instead of
+colliding, and concurrent callers each get their own.
+
 The worker executes the rerun with `retry_from` lineage: the new runs row
-records `retry_of`/`retry_index`, and completed-step checkpoints from the
-source are reused. There is deliberately **no input override** — the
+records `retry_of` and the **same** `retry_index` the id was minted with —
+whatever order the reruns execute in — and completed-step checkpoints from
+the source are reused. There is deliberately **no input override** — the
 signature is `rerun(ref)` and passing `inputs=` is a `TypeError`; changed
 inputs use a normal new `submit()`. The source must exist and be terminal,
 else `RerunError` — with one exception: a **recovery-exhausted** source is
@@ -584,7 +618,9 @@ rerun_receipt.workflow_id      # "schneider-drop-42-retry-1"
 - **Lineage.** The new Batch records `retry_of` against the source
   `batch_id` (readable as `BatchView.retry_of`), and each new child records
   `retry_of` against its **source child's workflow id**. The source Batch
-  stays settled and queryable forever.
+  stays settled and queryable forever. The Batch's `-retry-N` ordinal is
+  allocated inside the acceptance transaction, exactly like a Run rerun's,
+  so concurrent rerun callers never collide on one manifest.
 - **Keys.** Only keys present in the source manifest are accepted;
   anything else is a `RerunError` naming the offending keys. Selected
   children must already be settled — a child still in flight is a

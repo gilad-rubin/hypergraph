@@ -217,9 +217,12 @@ class _PlannedBatchRerun:
     the new Batch), so the sync and async mirrors submit byte-identical
     work and differ only in the call they make.
 
+    The new Batch's workflow id is deliberately NOT here: its retry ordinal
+    is allocated inside the acceptance transaction (``_submit_batch``), so
+    concurrent rerun callers cannot mint the same ``<source>-retry-N``.
+
     Attributes:
         batch_id: Freshly minted id for the new Batch.
-        workflow_id: New Batch workflow id (``<source>-retry-N``).
         definition_id: The source's pinned Definition identity, verbatim.
         items: Manifest-ordered ``(item_key, inputs_json)`` pairs for the
             selected source items.
@@ -230,7 +233,6 @@ class _PlannedBatchRerun:
     """
 
     batch_id: str
-    workflow_id: str
     definition_id: DefinitionId
     items: list[tuple[str, str]]
     tolerance_json: str | None
@@ -257,7 +259,6 @@ def _plan_batch_rerun(
     batch: dict[str, Any],
     child_rows: dict[str, tuple[dict[str, Any], Run | None]],
     item_keys: Sequence[str] | None,
-    retry_count: int,
 ) -> _PlannedBatchRerun:
     """Validate a subset rerun and derive the new Batch submission.
 
@@ -271,7 +272,6 @@ def _plan_batch_rerun(
             item key.
         item_keys: Source item keys to repeat, or None for the whole
             manifest.
-        retry_count: Batches already minted as a rerun of this source.
 
     Returns:
         The planned submission, ready to hand to ``_submit_batch``.
@@ -339,7 +339,6 @@ def _plan_batch_rerun(
     definition_id = DefinitionId(batch["definition_name"], batch["def_version"], batch["def_struct_hash"])
     return _PlannedBatchRerun(
         batch_id=f"b-{uuid.uuid4().hex[:12]}",
-        workflow_id=f"{batch['workflow_id']}-retry-{retry_count + 1}",
         definition_id=definition_id,
         items=pairs,
         tolerance_json=batch["tolerance_json"],
@@ -682,10 +681,13 @@ class RunHomeClient:
         Definition identity and inputs verbatim — repetition never migrates
         and never overrides inputs (A16); there is deliberately no
         ``inputs`` parameter. The new workflow id is ``<source>-retry-N``
-        where N = existing retries + 1, matching the checkpointer's own
-        ``retry_workflow`` derivation. The worker executes the submission
-        with ``retry_from=<source>`` so the runs row records
-        ``retry_of``/``retry_index`` lineage.
+        where N is the next ordinal among the reruns of this source ALREADY
+        ACCEPTED — allocated inside the acceptance transaction, so two
+        reruns requested before either executes get two ids instead of
+        colliding on ``-retry-1``. That ordinal is stored on the submission
+        and is the ``retry_index`` the runs row records, so the id and the
+        lineage agree whatever order the reruns execute in. The worker
+        executes the submission with ``retry_from=<source>``.
 
         For a ``BatchRef``, ``item_keys`` names source item keys to repeat
         (omit it to repeat the whole manifest) and a **new immutable Batch
@@ -716,11 +718,12 @@ class RunHomeClient:
         """
         if isinstance(ref, BatchRef):
             batch, child_rows = await self._require_batch_source(ref)
-            retry_count = await self._home._count_batch_retries(ref.batch_id)
-            plan = _plan_batch_rerun(batch, child_rows, item_keys, retry_count)
+            plan = _plan_batch_rerun(batch, child_rows, item_keys)
             created, row = await self._home._submit_batch(
                 batch_id=plan.batch_id,
-                workflow_id=plan.workflow_id,
+                # The retry ordinal — and so the id — is allocated inside
+                # the acceptance transaction, never before it.
+                workflow_id=None,
                 definition_name=plan.definition_id.name,
                 def_version=plan.definition_id.deployment_version,
                 def_struct_hash=plan.definition_id.structural_hash,
@@ -735,19 +738,19 @@ class RunHomeClient:
             )
             return BatchSubmitReceipt(
                 batch_ref=BatchRef(home=self._home.uri, batch_id=row["batch_id"]),
-                workflow_id=plan.workflow_id,
+                workflow_id=row["workflow_id"],
                 duplicate=not created,
             )
         if not isinstance(ref, RunRef):
             raise TypeError(f"rerun() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         _reject_run_item_keys(item_keys)
-        submission, run = await self._require_terminal_source(ref)
-        retry_count = await self._home._count_retries(ref.run_id)
-        workflow_id = f"{ref.run_id}-retry-{retry_count + 1}"
+        submission, _run = await self._require_terminal_source(ref)
         inputs_json = submission["inputs_json"]
         definition_id = DefinitionId(submission["definition_name"], submission["def_version"], submission["def_struct_hash"])
-        created, _row = await self._home._submit(
-            workflow_id,
+        created, row = await self._home._submit(
+            # The retry ordinal — and so the id — is allocated inside the
+            # acceptance transaction, never before it.
+            None,
             definition_id.name,
             definition_id.deployment_version,
             definition_id.structural_hash,
@@ -757,6 +760,7 @@ class RunHomeClient:
             fingerprint=start_fingerprint(definition_id, inputs_json, None),
             retry_of=ref.run_id,
         )
+        workflow_id = row["workflow_id"]
         return SubmitReceipt(run_ref=RunRef(home=self._home.uri, run_id=workflow_id), workflow_id=workflow_id, duplicate=not created)
 
     def rerun_sync(
@@ -768,11 +772,12 @@ class RunHomeClient:
             if batch is None:
                 raise RerunError(ref.batch_id, f"Cannot rerun batch {ref.batch_id!r}: no such Batch in this Run Home.")
             child_rows = self._home._batch_child_rows_sync(ref.batch_id)
-            retry_count = self._home._count_batch_retries_sync(ref.batch_id)
-            plan = _plan_batch_rerun(batch, child_rows, item_keys, retry_count)
+            plan = _plan_batch_rerun(batch, child_rows, item_keys)
             created, row = self._home._submit_batch_sync(
                 batch_id=plan.batch_id,
-                workflow_id=plan.workflow_id,
+                # The retry ordinal — and so the id — is allocated inside
+                # the acceptance transaction, never before it.
+                workflow_id=None,
                 definition_name=plan.definition_id.name,
                 def_version=plan.definition_id.deployment_version,
                 def_struct_hash=plan.definition_id.structural_hash,
@@ -787,7 +792,7 @@ class RunHomeClient:
             )
             return BatchSubmitReceipt(
                 batch_ref=BatchRef(home=self._home.uri, batch_id=row["batch_id"]),
-                workflow_id=plan.workflow_id,
+                workflow_id=row["workflow_id"],
                 duplicate=not created,
             )
         if not isinstance(ref, RunRef):
@@ -802,12 +807,12 @@ class RunHomeClient:
                 ref.run_id,
                 f"Cannot rerun {ref.run_id!r}: the source run is not terminal. Rerun repeats settled work; wait for it to settle or fork/migrate instead.",
             )
-        retry_count = self._home._count_retries_sync(ref.run_id)
-        workflow_id = f"{ref.run_id}-retry-{retry_count + 1}"
         inputs_json = submission["inputs_json"]
         definition_id = DefinitionId(submission["definition_name"], submission["def_version"], submission["def_struct_hash"])
-        created, _row = self._home._submit_sync(
-            workflow_id,
+        created, row = self._home._submit_sync(
+            # The retry ordinal — and so the id — is allocated inside the
+            # acceptance transaction, never before it.
+            None,
             definition_id.name,
             definition_id.deployment_version,
             definition_id.structural_hash,
@@ -817,6 +822,7 @@ class RunHomeClient:
             fingerprint=start_fingerprint(definition_id, inputs_json, None),
             retry_of=ref.run_id,
         )
+        workflow_id = row["workflow_id"]
         return SubmitReceipt(run_ref=RunRef(home=self._home.uri, run_id=workflow_id), workflow_id=workflow_id, duplicate=not created)
 
     async def _require_batch_source(self, ref: BatchRef) -> tuple[dict[str, Any], dict[str, tuple[dict[str, Any], Run | None]]]:
@@ -861,11 +867,12 @@ class RunHomeClient:
 
         For a run, the generator ends once the run reaches a terminal
         status and every committed fact has been delivered. For a Batch, it
-        ends once every child is terminally settled (or the Batch is
-        durably stopped) and every committed Batch fact has been delivered;
-        explicit unstarted-item truth comes from ``get(batch_ref)``. A
-        ``ref`` unknown to this Run Home terminates immediately with no
-        updates, matching ``get()``'s honest ``None``.
+        ends once every manifest child is accounted — settled, unstarted,
+        or recovery-exhausted — and every committed Batch fact has been
+        delivered. Stopping a Batch does not end its stream: the ``stopped``
+        fact names no items, and the per-item facts it causes commit after
+        it. A ``ref`` unknown to this Run Home terminates immediately with
+        no updates, matching ``get()``'s honest ``None``.
         """
         if isinstance(ref, BatchRef):
             async for update in self._watch_batch(ref, after=after, poll_interval=poll_interval):
@@ -928,13 +935,15 @@ class RunHomeClient:
         """Replay the per-Batch durable sequence, then tail child previews.
 
         Durable facts (``manifest``, ``child_settled``,
-        ``tolerance_tripped``, ``stopped``) come from batch_updates with one
-        gap-free ``bseq`` cursor. Live previews
+        ``tolerance_tripped``, ``child_unstarted``, ``stopped``) come from
+        batch_updates with one gap-free ``bseq`` cursor. Live previews
         are fanned in from every child run's preview queue (same process
         only) and carry the child's ``run_id``/``item_key``; they never
-        advance the cursor. The generator ends once the Batch is durably
-        stopped or every child is terminally settled — and every committed
-        fact has been delivered.
+        advance the cursor. The generator ends once every manifest child is
+        accounted — settled, unstarted, or recovery-exhausted — and every
+        committed fact has been delivered. A durable ``stopped`` fact is a
+        control fact, never end-of-stream: the per-item facts a stop causes
+        commit after it.
         """
         cursor_seq = _parse_batch_cursor(after)
         # The manifest is immutable, so the child set is read once.
@@ -977,8 +986,12 @@ class RunHomeClient:
                 if batch is None:
                     # Unknown ref: nothing to replay, nothing to tail.
                     return
-                stopped, settled = await self._home._batch_settlement(ref.batch_id)
-                terminal = stopped or settled
+                # A durable stop is NOT end-of-stream: `_write_batch_stop`
+                # appends `stopped` first and writes child stop commands the
+                # gate applies later, each committing its own
+                # `child_unstarted` fact. The stream ends only once every
+                # manifest child is accounted (A9).
+                terminal = await self._home._all_children_settled(ref.batch_id)
                 if not terminal:
                     await asyncio.sleep(poll_interval)
         finally:

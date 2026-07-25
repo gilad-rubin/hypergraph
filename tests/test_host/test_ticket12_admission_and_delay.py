@@ -248,7 +248,7 @@ class TestActiveRunCap:
 
         for expected in ("wf-a", "wf-b", "wf-c"):
             assert [row["workflow_id"] for row in await _claim(host, home)] == [expected]
-            await home._finish_submission(expected)
+            await home._release_submission(expected)
 
     async def test_over_limit_work_waits_pending_in_claim_order(self, home):
         """Cap=1 claims only the oldest; the rest stay pending, untouched."""
@@ -290,9 +290,9 @@ class TestActiveRunCap:
         assert await _claim(host, home) == []
         assert _states(home) == {"wf-a": "claimed", "wf-b": "claimed", "wf-c": "pending"}
         # The over-subscribed claims are never revoked; wf-c waits its turn.
-        await home._finish_submission("wf-a")
+        await home._release_submission("wf-a")
         assert await _claim(host, home) == []  # one claim still outstanding at cap 1
-        await home._finish_submission("wf-b")
+        await home._release_submission("wf-b")
         assert [row["workflow_id"] for row in await _claim(host, home)] == ["wf-c"]
 
     async def test_waiting_view_names_the_cap_and_flips_back_when_a_slot_frees(self, home):
@@ -310,7 +310,7 @@ class TestActiveRunCap:
         assert (await client.get(second.run_ref)).waiting is WaitingCondition.ADMISSION_LIMITED
         assert [view.workflow_id for view in await client.list(RunQuery(waiting=WaitingCondition.ADMISSION_LIMITED))] == ["wf-b"]
 
-        await home._finish_submission("wf-a")
+        await home._release_submission("wf-a")
 
         assert (await client.get(second.run_ref)).waiting is WaitingCondition.QUEUED
         assert await client.list(RunQuery(waiting=WaitingCondition.ADMISSION_LIMITED)) == []
@@ -408,7 +408,7 @@ class TestSlotAccounting:
         assert await home._admission_is_full() is True
 
     async def test_paused_run_holds_no_slot(self, tmp_path, home):
-        """A durable pause frees the worker: the submission settles."""
+        """A durable pause frees the worker WITHOUT finishing the submission."""
         pytest.importorskip("aiosqlite")
         from tests._interrupt_questions import StringQuestion
 
@@ -432,8 +432,14 @@ class TestSlotAccounting:
         view = await host.client.get(receipt.run_ref)
         assert view.status is WorkflowStatus.PAUSED
         assert view.waiting is WaitingCondition.PAUSED
-        assert _state(home, "wf-paused") == "finished"
+        # Parked, not finished: the worker released its slot, but a human
+        # answer is still outstanding, so the submission must not read as
+        # settled work (that made watch() end early and refused a stop).
+        assert _state(home, "wf-paused") == "paused"
+        assert home._get_submission_sync("wf-paused")["finished_at"] is None
         assert await home._admission_is_full() is False
+        # ...and it is still not re-claimable: parking is not re-admission.
+        assert await _claim(host, home) == []
 
     async def test_claimed_run_waiting_on_a_provider_permit_holds_its_slot(self, home):
         """The distinguishing case: throttled work is running work."""
@@ -677,12 +683,15 @@ class TestProviderLimiterPrimitive:
         other = ProcessLocalLimiter(max_in_flight=1)
         outer = ProcessLocalLimiter(max_in_flight=1)
         assert provider_permits((shared,), shared) == (shared,)
-        assert provider_permits((shared,), other) == (shared, other)  # graph first
         assert provider_permits((), other) == (other,)
         assert provider_permits((), None) == ()
-        # Nested graph scopes stack outermost-first and still collapse repeats.
-        assert provider_permits((outer, shared), other) == (outer, shared, other)
-        assert provider_permits((outer, shared), outer) == (outer, shared)
+        # Every unique limiter is taken in ONE global order (construction
+        # rank), not in scope order: scope order is per-path, so two legal
+        # graphs naming the same pair at opposite scopes could deadlock.
+        assert provider_permits((shared,), other) == (shared, other)
+        assert provider_permits((outer, shared), other) == (shared, other, outer)
+        # Deduplication is unchanged: one limiter at two scopes is one permit.
+        assert provider_permits((outer, shared), outer) == (shared, outer)
 
     def test_a_nested_graph_never_re_enters_a_budget_its_parent_holds(self):
         """compose_graph_limits is what keeps a shared budget from deadlocking."""

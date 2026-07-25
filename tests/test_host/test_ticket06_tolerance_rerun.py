@@ -14,6 +14,8 @@ unstarted, 8 of 8 accounted) is encoded verbatim in
 ``TestScenarioFiveTable``.
 """
 
+import asyncio
+import contextlib
 import inspect
 import json
 from datetime import datetime, timedelta, timezone
@@ -151,6 +153,16 @@ def _snapshot_batch(home, batch_id) -> dict:
 
 def _items(count: int) -> dict[str, dict]:
     return {f"p-{n}": {"x": n} for n in range(count)}
+
+
+async def _wait_until(check, timeout: float = 15.0, interval: float = 0.01):
+    """Poll a zero-arg predicate until it is truthy."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not check():
+        if loop.time() > deadline:
+            raise AssertionError("timed out waiting for condition")
+        await asyncio.sleep(interval)
 
 
 # === 1. Strictly exceeds ===
@@ -647,6 +659,27 @@ class TestSubsetRerun:
         assert second.workflow_id == "drop-42-retry-2"
         assert first.batch_ref != second.batch_ref
 
+    async def test_concurrent_batch_reruns_mint_one_id_each(self, home):
+        """The Batch ordinal is allocated inside the insertion transaction.
+
+        Counting ``host_batches`` outside it let concurrent callers all read
+        the same count and mint the same ``<source>-retry-N``, so all but
+        one silently deduped into the first Batch.
+        """
+        host, source, _state = await self._settled_source(home)
+        view = await host.client.get(source.batch_ref)
+        keys = self._failed_keys(view)[:1]
+
+        receipts = await asyncio.gather(*(host.client.rerun(source.batch_ref, item_keys=keys) for _ in range(4)))
+
+        assert sorted(r.workflow_id for r in receipts) == [f"drop-42-retry-{n}" for n in range(1, 5)]
+        assert len({r.batch_ref.batch_id for r in receipts}) == 4
+        assert not any(r.duplicate for r in receipts)
+        # Each new Batch records lineage against the one source Batch.
+        db = home._sync_db()
+        (lineage_rows,) = db.execute("SELECT COUNT(*) FROM host_batches WHERE retry_of = ?", (source.batch_ref.batch_id,)).fetchone()
+        assert lineage_rows == 4
+
     async def test_omitted_item_keys_repeat_the_whole_manifest(self, home):
         host, source, _state = await self._settled_source(home)
         rerun = await host.client.rerun(source.batch_ref)
@@ -945,6 +978,61 @@ class TestDurableStreamAccountsEveryItem:
         # The Batch stop itself never names an item — only the per-item facts do.
         stopped = next(u for u in durable if u.kind == "stopped")
         assert set(stopped.payload) == {"verb", "info", "source_ref"}
+
+    async def test_a_live_watcher_follows_a_stopped_batch_past_the_stop_fact(self, home):
+        """A9: ``stopped`` is a durable control fact, never end-of-stream.
+
+        ``_write_batch_stop`` appends ``stopped`` FIRST and writes the child
+        stop commands that the pre-run gate applies later, each committing
+        its own ``child_unstarted`` fact. A watcher that treated ``stopped``
+        as EOF returned at that instant and never delivered them, so the
+        stream under-accounted the manifest — the exact A9 invariant this
+        branch has already repaired three times.
+        """
+        graph, state = _sequenced_graph("ingest", ["ok", "fail"])
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await host.submit_batch("ingest", items=_items(6), workflow_id="drop-a9-live-stop")
+
+        observed: list = []
+
+        async def _follow():
+            async for update in host.client.watch(receipt.batch_ref):
+                observed.append(update)
+
+        watcher = asyncio.create_task(_follow())
+        try:
+            await _wait_until(lambda: any(u.kind == "manifest" for u in observed))
+            claimed = await _claim(host, home, limit=4)
+            assert len(claimed) == 4
+            for row in claimed[:2]:
+                await host._execute_submission(row)
+
+            await host.client.stop(receipt.batch_ref, info={"reason": "drop recalled"})
+            await _wait_until(lambda: any(u.kind == "stopped" for u in observed))
+            after_stop = len([u for u in observed if u.durable])
+
+            # The four children that never executed are accounted only NOW,
+            # by facts that commit strictly after the stop fact.
+            for row in claimed[2:]:
+                await host._execute_submission(row)
+            await _drive(host, home)
+            assert state["n"] == 2
+            await asyncio.wait_for(watcher, timeout=15)
+        finally:
+            if not watcher.done():
+                watcher.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watcher
+
+        durable = [u for u in observed if u.durable]
+        assert [u.kind for u in durable] == ["manifest"] + ["child_settled"] * 2 + ["stopped"] + ["child_unstarted"] * 4
+        assert [u.cursor for u in durable] == [f"bseq:{n}" for n in range(1, 9)]
+        # Everything after the stop arrived after the watcher had seen it.
+        assert after_stop == 4
+        assert all(u.kind == "child_unstarted" for u in durable[after_stop:])
+        manifest, accounted = _accounted_from_stream([(n, u.kind, u.payload) for n, u in enumerate(durable, start=1)])
+        assert len(manifest) == 6
+        assert sorted(accounted) == sorted(manifest)  # 6 of 6, live, from the stream alone
 
     async def _parked_by_the_recovery_brake(self, home):
         """4 items: 2 settle, 2 are parked exhausted by honest re-adoption.

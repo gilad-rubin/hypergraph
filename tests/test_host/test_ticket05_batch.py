@@ -37,10 +37,12 @@ from hypergraph import (
     RunRef,
     SyncRunner,
     WorkflowIdConflictError,
+    interrupt,
     node,
     serve,
 )
 from hypergraph.checkpointers.types import WorkflowStatus
+from tests._interrupt_questions import StringQuestion
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -97,6 +99,26 @@ def _mixed_async_graph(name: str, started: asyncio.Event, release: asyncio.Event
         return x * 10
 
     return Graph([compute], name=name).with_runner(AsyncRunner())
+
+
+def _pausing_async_graph(name: str) -> Graph:
+    """One-node-plus-interrupt graph: every child parks on a human answer."""
+
+    @node(output_name="seed")
+    async def seed(x: int) -> int:
+        return x
+
+    @interrupt(answer_name="ans")
+    def ask(seed: int) -> StringQuestion:
+        return StringQuestion(prompt=f"continue with {seed}?")
+
+    return Graph([seed, ask], name=name).with_runner(AsyncRunner())
+
+
+async def _claim(host, home, limit: int | None = None):
+    """Run one real admission scan through the single claim choke point."""
+    kwargs = {} if limit is None else {"limit": limit}
+    return await home._claim_eligible(served=host._served_identities, **kwargs)
 
 
 def _stop_command_rows(home, workflow_id):
@@ -587,6 +609,72 @@ class TestUnstartedItems:
             await host.client.stop(42)
 
 
+class TestPausedChildIsNotSettled:
+    """A child parked on a human answer is in flight, not settled.
+
+    The bucket ladder counts a paused child ``active`` (its runs row is
+    nonterminal). Settlement must agree: if the worker released the
+    submission as 'finished', ``is_child_settled`` would call the same
+    child settled and ``watch(batch_ref)`` would end while a human decision
+    is still outstanding.
+    """
+
+    async def _both_children_paused(self, home):
+        host = serve(_pausing_async_graph("ask"), home=home, deployment_version="v1")
+        receipt = await host.submit_batch("ask", items={"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-pause")
+        for row in await _claim(host, home):
+            await host._execute_submission(row)
+        for key in ("a", "b"):
+            assert home.get_run(f"drop-pause:{key}").status is WorkflowStatus.PAUSED
+        return host, receipt
+
+    async def test_a_paused_child_is_active_and_the_batch_is_not_settled(self, home):
+        host, receipt = await self._both_children_paused(home)
+
+        # The worker released the slot but did NOT finish the submission:
+        # parked awaiting an answer is its own durable state.
+        assert [home._get_submission_sync(f"drop-pause:{key}")["state"] for key in ("a", "b")] == ["paused", "paused"]
+        assert home._get_submission_sync("drop-pause:a")["finished_at"] is None
+
+        view = await host.client.get(receipt.batch_ref)
+        assert view.counts["active"] == 2
+        assert view.counts["completed"] == 0
+        assert view.outcomes == {"a": None, "b": None}
+        # The bucket ladder and THE settled-child rule agree.
+        assert view.settled is False
+        assert host.client.get_sync(receipt.batch_ref) == view
+
+    async def test_watch_does_not_end_while_a_child_awaits_an_answer(self, home):
+        host, receipt = await self._both_children_paused(home)
+
+        gen = host.client.watch(receipt.batch_ref)
+        try:
+            first = await asyncio.wait_for(gen.__anext__(), timeout=10)
+            assert (first.kind, first.durable, first.cursor) == ("manifest", True, "bseq:1")
+            # No child has settled, so the stream must block, not end.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(gen.__anext__(), timeout=0.4)
+        finally:
+            await gen.aclose()
+
+    async def test_a_parked_run_can_still_be_stopped(self, home):
+        """A paused run is not terminal, so a detached stop is accepted."""
+        host, receipt = await self._both_children_paused(home)
+
+        run_ref = RunRef(home=home.uri, run_id="drop-pause:a")
+        command = await host.client.stop(run_ref, info={"reason": "recalled"})
+        assert command.duplicate is False
+        # The Batch is not settled either, so a Batch-wide stop is accepted.
+        batch_stop = await host.client.stop(receipt.batch_ref, info={"reason": "recalled"})
+        assert batch_stop.duplicate is False
+        # The durable intent is recorded for both children; it lands the next
+        # time each run executes, exactly like a stop aimed at a crashed run.
+        db = home._sync_db()
+        commands = db.execute("SELECT run_id, applied_at FROM host_commands WHERE verb = 'stop' ORDER BY id").fetchall()
+        assert [row[0] for row in commands] == ["drop-pause:a", "drop-pause:b"]
+        assert all(row[1] is None for row in commands)
+
+
 # === 5. Gap-free watch ===
 
 
@@ -669,16 +757,47 @@ class TestGapFreeWatch:
         assert updates == []
         assert await host.client.get(BatchRef(home=home.uri, batch_id="b-nope")) is None
 
-    async def test_watch_terminates_on_durable_stop(self, home):
+    async def test_watch_does_not_end_at_the_stop_fact(self, home):
+        """``stopped`` is a durable control fact, not end-of-stream.
+
+        The stop names no items: each child's ``child_unstarted`` fact
+        commits later, when the pre-run gate finishes it. Ending the stream
+        at ``stopped`` dropped those facts on the floor (PRD 0019 A9).
+        """
         started = asyncio.Event()
         release = asyncio.Event()
         calls = {"seed": 0, "gated": 0}
         host = serve(_gated_async_graph("ingest", started, release, calls), home=home)
         receipt = await host.submit_batch("ingest", items={"a": {"x": 1}}, workflow_id="drop-11")
         await host.client.stop(receipt.batch_ref)
+
+        # Nothing has closed the item out yet, so the stream must stay open.
+        gen = host.client.watch(receipt.batch_ref)
+        try:
+            assert [(u.cursor, u.kind) async for u in self._take(gen, 2)] == [("bseq:1", "manifest"), ("bseq:2", "stopped")]
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(gen.__anext__(), timeout=0.4)
+        finally:
+            await gen.aclose()
+
+        # The worker's pre-run gate accounts the item; only then does the
+        # stream end, with every manifest item delivered.
+        async with _worker(host):
+            await _wait_for(lambda: _settled_view(host.client, receipt.batch_ref))
         updates = await asyncio.wait_for(self._collect(host.client, receipt.batch_ref), timeout=5)
         durable = [u for u in updates if u.durable]
-        assert [(u.cursor, u.kind) for u in durable] == [("bseq:1", "manifest"), ("bseq:2", "stopped")]
+        assert [(u.cursor, u.kind) for u in durable] == [
+            ("bseq:1", "manifest"),
+            ("bseq:2", "stopped"),
+            ("bseq:3", "child_unstarted"),
+        ]
+        assert durable[2].payload["item_key"] == "a"
+        assert calls == {"seed": 0, "gated": 0}
+
+    @staticmethod
+    async def _take(gen, count: int):
+        for _ in range(count):
+            yield await asyncio.wait_for(gen.__anext__(), timeout=10)
 
     async def test_watch_invalid_cursor_raises(self, home):
         host = serve(_sync_graph("ingest"), home=home)

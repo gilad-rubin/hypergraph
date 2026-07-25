@@ -1,15 +1,18 @@
 """Durable Host V1 — ticket 03: truthful run identity, dedup, rerun, fork.
 
 Covers: pinned DefinitionId visibility, start-fingerprint dedup with
-distinct typed conflicts, version-incompatible refusal with accepts=
-drain, client.rerun retry lineage, host.fork migration lineage with a
-recorded reason, and sync/async parity for the executing paths.
+distinct typed conflicts, the shared workflow_id namespace across host
+submissions, Batches, and host-less (Tier-0) runs, version-incompatible
+refusal with accepts= drain, client.rerun retry lineage with
+transactionally allocated retry ordinals, host.fork migration lineage with
+a recorded reason, and sync/async parity for the executing paths.
 """
 
 import asyncio
 import contextlib
 import json
 import re
+import uuid
 
 import pytest
 import pytest_asyncio
@@ -26,10 +29,13 @@ from hypergraph import (
     SyncRunner,
     WaitingCondition,
     WorkflowIdConflictError,
+    interrupt,
     node,
     serve,
 )
 from hypergraph.checkpointers.types import WorkflowStatus
+from hypergraph.host import host as host_module
+from tests._interrupt_questions import StringQuestion
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -85,6 +91,20 @@ def _flaky_async_graph(name: str, calls: dict, should_fail: dict) -> Graph:
         return seed * 10
 
     return Graph([seed, flaky], name=name).with_runner(AsyncRunner())
+
+
+def _pauser_graph(name: str = "pauser") -> Graph:
+    """Async graph that parks on a durable interrupt (a real nonterminal run)."""
+
+    @node(output_name="seed")
+    async def seed(x: int) -> int:
+        return x
+
+    @interrupt(answer_name="ans")
+    def ask(seed: int) -> StringQuestion:
+        return StringQuestion(prompt=f"continue with {seed}?")
+
+    return Graph([seed, ask], name=name).with_runner(AsyncRunner())
 
 
 def _home_uri(tmp_path, filename: str = "runs.db") -> str:
@@ -395,6 +415,73 @@ class TestRerun:
             host.client.rerun_sync(RunRef(home=home.uri, run_id="wf-rsync-retry-1"))  # not terminal yet
 
 
+class TestRerunIdAllocation:
+    """US12: a rerun mints a NEW workflow id, before anything executes.
+
+    The retry ordinal is allocated INSIDE the acceptance transaction from
+    rows that exist at acceptance time (accepted submissions with
+    ``retry_of = source``), not from runs rows that only appear once an
+    earlier rerun has executed. Counting executed work let two reruns
+    requested back-to-back both pick ``<source>-retry-1``, and the second
+    silently deduped into the first.
+    """
+
+    async def _settled_source(self, home, workflow_id: str):
+        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        receipt = await host.submit("dbl", {"x": 1}, workflow_id=workflow_id)
+        async with _worker(host):
+            await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
+        return host, receipt
+
+    async def test_two_reruns_requested_before_either_executes_are_distinct(self, home):
+        host, receipt = await self._settled_source(home, "wf-alloc")
+
+        first = await host.client.rerun(receipt.run_ref)
+        second = await host.client.rerun(receipt.run_ref)
+
+        assert (first.workflow_id, second.workflow_id) == ("wf-alloc-retry-1", "wf-alloc-retry-2")
+        assert (first.duplicate, second.duplicate) == (False, False)
+        assert first.run_ref != second.run_ref
+        rows = [home._get_submission_sync(r.workflow_id) for r in (first, second)]
+        assert [row["retry_of"] for row in rows] == ["wf-alloc", "wf-alloc"]
+        # The ordinal is persisted, so nothing can recompute it differently.
+        assert [row["retry_index"] for row in rows] == [1, 2]
+
+    async def test_sync_reruns_requested_before_either_executes_are_distinct(self, home):
+        host, receipt = await self._settled_source(home, "wf-alloc-sync")
+
+        first = host.client.rerun_sync(receipt.run_ref)
+        second = host.client.rerun_sync(receipt.run_ref)
+
+        assert (first.workflow_id, second.workflow_id) == ("wf-alloc-sync-retry-1", "wf-alloc-sync-retry-2")
+        assert (first.duplicate, second.duplicate) == (False, False)
+
+    async def test_concurrent_reruns_mint_one_id_each(self, home):
+        host, receipt = await self._settled_source(home, "wf-conc")
+
+        receipts = await asyncio.gather(*(host.client.rerun(receipt.run_ref) for _ in range(5)))
+
+        assert sorted(r.workflow_id for r in receipts) == [f"wf-conc-retry-{n}" for n in range(1, 6)]
+        assert not any(r.duplicate for r in receipts)
+        assert sorted(home._get_submission_sync(r.workflow_id)["retry_index"] for r in receipts) == [1, 2, 3, 4, 5]
+
+    async def test_retry_index_lineage_matches_the_minted_id_whatever_runs_first(self, home):
+        """The runs row records the ordinal the id was minted with."""
+        host, receipt = await self._settled_source(home, "wf-lin")
+        first = await host.client.rerun(receipt.run_ref)
+        second = await host.client.rerun(receipt.run_ref)
+
+        claimed = {row["workflow_id"]: row for row in await home._claim_eligible(served=host._served_identities)}
+        # Execute the SECOND rerun first: acceptance decides the ordinal, not
+        # "how many retries happen to have executed by now".
+        await host._execute_submission(claimed[second.workflow_id])
+        await host._execute_submission(claimed[first.workflow_id])
+
+        assert home.get_run(second.workflow_id).retry_index == 2
+        assert home.get_run(first.workflow_id).retry_index == 1
+        assert {home.get_run(r.workflow_id).retry_of for r in (first, second)} == {"wf-lin"}
+
+
 # === 5. host.fork: migration with fork lineage and recorded reason ===
 
 
@@ -532,3 +619,123 @@ class TestSyncAsyncParity:
         assert home.values(fork_receipt.workflow_id)["out"] == 50
         assert home.values("wf-a-src-retry-1")["out"] == 50
         assert host.worker_errors == []
+
+
+# === 7. The workflow_id namespace includes the execution journal ===
+
+
+class TestTier0RunIdNamespace:
+    """US11: host submissions, Batches, and host-less runs share ONE namespace.
+
+    A ``runs`` row with no ``host_submissions``/``host_batches`` row is
+    Tier-0 work — executed straight against this store as a checkpointer.
+    It already owns its id, and the host holds no pinned Definition
+    identity or start fingerprint for it, so it can never be adopted or
+    deduped against: only refused. Terminal Tier-0 history is a terminal
+    conflict; a still-running one is an id conflict.
+    """
+
+    def _terminal_tier0(self, home, workflow_id: str) -> None:
+        """Settle a REAL bare run (no submission row) under ``workflow_id``."""
+        SyncRunner(checkpointer=home).run(_sync_graph("bare"), {"x": 1}, workflow_id=workflow_id)
+        assert home.get_run(workflow_id).status is WorkflowStatus.COMPLETED
+        assert home._get_submission_sync(workflow_id) is None
+
+    async def _paused_tier0(self, home, workflow_id: str) -> None:
+        """Park a REAL bare run on a durable interrupt (nonterminal, no submission)."""
+        await AsyncRunner(checkpointer=home).run(_pauser_graph(), {"x": 1}, workflow_id=workflow_id)
+        assert home.get_run(workflow_id).status is WorkflowStatus.PAUSED
+        assert home._get_submission_sync(workflow_id) is None
+
+    async def test_submit_refuses_a_terminal_tier0_workflow_id(self, home):
+        self._terminal_tier0(home, "wf-t0-done")
+        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+
+        with pytest.raises(AlreadyTerminalError) as excinfo:
+            await host.submit("dbl", {"x": 1}, workflow_id="wf-t0-done")
+        assert excinfo.value.workflow_id == "wf-t0-done"
+        assert "How to fix:" in str(excinfo.value)
+        with pytest.raises(AlreadyTerminalError):
+            host.submit_sync("dbl", {"x": 1}, workflow_id="wf-t0-done")
+        # Nothing was accepted: the host and the journal still agree. The
+        # Tier-0 run's own updates stay untouched; no 'submitted' fact was
+        # grafted onto its sequence.
+        assert home._get_submission_sync("wf-t0-done") is None
+        assert [kind for _seq, kind, _payload, _at in home._read_run_updates_sync("wf-t0-done")] == [
+            "run_started",
+            "step",
+            "status",
+        ]
+
+    async def test_submit_refuses_a_nonterminal_tier0_workflow_id(self, home):
+        await self._paused_tier0(home, "wf-t0-live")
+        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+
+        with pytest.raises(WorkflowIdConflictError) as excinfo:
+            await host.submit("dbl", {"x": 1}, workflow_id="wf-t0-live")
+        assert excinfo.value.workflow_id == "wf-t0-live"
+        assert "How to fix:" in str(excinfo.value)
+        with pytest.raises(WorkflowIdConflictError):
+            host.submit_sync("dbl", {"x": 1}, workflow_id="wf-t0-live")
+        assert home._get_submission_sync("wf-t0-live") is None
+
+    async def test_submit_batch_refuses_a_tier0_batch_workflow_id(self, home):
+        self._terminal_tier0(home, "drop-t0")
+        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+
+        with pytest.raises(AlreadyTerminalError):
+            await host.submit_batch("dbl", items={"a": {"x": 1}}, workflow_id="drop-t0")
+        with pytest.raises(AlreadyTerminalError):
+            host.submit_batch_sync("dbl", items={"a": {"x": 1}}, workflow_id="drop-t0")
+        assert self._host_row_counts(home) == (0, 0)
+
+    async def test_submit_batch_refuses_a_tier0_child_workflow_id(self, home):
+        """A generated child id colliding with Tier-0 work is the same corruption."""
+        self._terminal_tier0(home, "drop-kid:a")
+        await self._paused_tier0(home, "drop-live:a")
+        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+
+        with pytest.raises(AlreadyTerminalError, match="item 'a'"):
+            await host.submit_batch("dbl", items={"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-kid")
+        with pytest.raises(AlreadyTerminalError, match="item 'a'"):
+            host.submit_batch_sync("dbl", items={"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-kid")
+        with pytest.raises(WorkflowIdConflictError, match="item 'a'"):
+            await host.submit_batch("dbl", items={"a": {"x": 1}}, workflow_id="drop-live")
+        with pytest.raises(WorkflowIdConflictError, match="item 'a'"):
+            host.submit_batch_sync("dbl", items={"a": {"x": 1}}, workflow_id="drop-live")
+        # Acceptance is all-or-nothing: no manifest, no sibling child rows.
+        assert self._host_row_counts(home) == (0, 0)
+
+    async def test_rerun_inherits_the_journal_check(self, home):
+        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        receipt = await host.submit("dbl", {"x": 1}, workflow_id="wf-src-t0")
+        async with _worker(host):
+            await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
+        # Tier-0 work already owns the id the first rerun would mint.
+        self._terminal_tier0(home, "wf-src-t0-retry-1")
+
+        with pytest.raises(AlreadyTerminalError):
+            await host.client.rerun(receipt.run_ref)
+        with pytest.raises(AlreadyTerminalError):
+            host.client.rerun_sync(receipt.run_ref)
+
+    async def test_fork_inherits_the_journal_check(self, home, monkeypatch):
+        monkeypatch.setattr(host_module.uuid, "uuid4", lambda: uuid.UUID(int=0))
+        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        receipt = await host.submit("dbl", {"x": 1}, workflow_id="wf-fork-t0")
+        async with _worker(host):
+            await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
+        # The fork id is derived, so Tier-0 work can already own it.
+        self._terminal_tier0(home, "wf-fork-t0-fork-000000")
+
+        with pytest.raises(AlreadyTerminalError):
+            await host.fork(receipt.run_ref, into="dbl", reason="migrate")
+        with pytest.raises(AlreadyTerminalError):
+            host.fork_sync(receipt.run_ref, into="dbl", reason="migrate")
+
+    @staticmethod
+    def _host_row_counts(home) -> tuple[int, int]:
+        db = home._sync_db()
+        (batches,) = db.execute("SELECT COUNT(*) FROM host_batches").fetchone()
+        (submissions,) = db.execute("SELECT COUNT(*) FROM host_submissions").fetchone()
+        return int(batches), int(submissions)

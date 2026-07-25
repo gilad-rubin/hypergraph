@@ -32,6 +32,13 @@ TERMINAL_STATUS_VALUES: frozenset[str] = frozenset(status.value for status in TE
 # closed admission) and 'exhausted' (parked by the recovery brake).
 SUBMISSION_STATE_FINISHED = "finished"
 SUBMISSION_STATE_EXHAUSTED = "exhausted"
+# A run the worker released because it PAUSED on a durable interrupt. The
+# worker is done with it (it holds no active-Run slot) but the run itself
+# is not: a human answer is outstanding and the runs row is nonterminal.
+# Deliberately NOT settled — writing 'finished' here would make the same
+# child 'active' to the bucket ladder and settled to `is_child_settled`,
+# ending `watch()` while a decision was still open.
+SUBMISSION_STATE_PAUSED = "paused"
 SETTLED_SUBMISSION_STATES: frozenset[str] = frozenset({SUBMISSION_STATE_FINISHED, SUBMISSION_STATE_EXHAUSTED})
 
 
@@ -43,6 +50,9 @@ def is_child_settled(submission_state: str | None, run_status: str | None) -> bo
     predicate so a child is never settled for one and in flight for another.
     Both arguments are stored row values (``host_submissions.state`` and
     ``runs.status``), not enums, because the store is what they compare.
+
+    A ``paused`` submission is deliberately NOT settled: its run parked on
+    a durable interrupt and can still change outcome once answered.
 
     Args:
         submission_state: The child's ``host_submissions.state``, or None

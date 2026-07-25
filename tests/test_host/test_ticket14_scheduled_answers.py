@@ -1026,7 +1026,7 @@ class TestSourceRefIsAuditOnly:
         assert (row["source_ref"], row["forked_from"], row["fork_reason"]) == ("console-b", "wf-src-fork", "migrate")
         assert row["fingerprint"] == home._get_submission_sync("wf-src-fork")["fingerprint"]
 
-    async def test_rerun_and_fork_dedup_identically_whatever_their_source_ref(self, home):
+    async def test_rerun_and_fork_ignore_source_ref_for_identity(self, home):
         """The new call sites obey the same audit-only rule stop already did."""
         host = serve(_plain_graph(), home=home, deployment_version="v1")
         receipt = await host.submit("dbl", {"x": 1}, workflow_id="wf-src-dedup")
@@ -1036,11 +1036,16 @@ class TestSourceRefIsAuditOnly:
         first = host.client.rerun_sync(receipt.run_ref, source_ref="console-a")
         again = host.client.rerun_sync(receipt.run_ref, source_ref="console-z")
 
-        # A different caller label is use-existing dedup, never a
+        # Each rerun is its own repetition under its own id (US12) — the
+        # label never merges two requests and never raises a
         # WorkflowIdConflictError: source_ref is not a fingerprint input.
-        assert first.workflow_id == again.workflow_id == "wf-src-dedup-retry-1"
-        assert (first.duplicate, again.duplicate) == (False, True)
-        assert home._get_submission_sync("wf-src-dedup-retry-1")["source_ref"] == "console-a"
+        assert (first.workflow_id, again.workflow_id) == ("wf-src-dedup-retry-1", "wf-src-dedup-retry-2")
+        assert (first.duplicate, again.duplicate) == (False, False)
+        rows = [home._get_submission_sync(r.workflow_id) for r in (first, again)]
+        assert [row["source_ref"] for row in rows] == ["console-a", "console-z"]
+        # ...and the label is absent from the fingerprint: the two reruns
+        # repeat identical work, so their fingerprints are identical.
+        assert rows[0]["fingerprint"] == rows[1]["fingerprint"]
         forks = [host.fork_sync(receipt.run_ref, into="dbl", reason="r", source_ref=label) for label in ("console-a", "console-b")]
         assert {home._get_submission_sync(f.workflow_id)["fingerprint"] for f in forks} == {home._get_submission_sync("wf-src-dedup")["fingerprint"]}
 

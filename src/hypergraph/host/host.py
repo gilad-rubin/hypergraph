@@ -505,7 +505,9 @@ class Host:
         else stays unapplied for a later cycle — a stop targeting a run
         that never started is handled by the pre-run gate in
         ``_execute_submission``; a stop targeting a crashed-but-resumable
-        run lands once its resumed execution registers.
+        run, or one parked on a durable pause, lands once that run executes
+        again. Neither is terminal, so the durable intent waits rather than
+        being marked applied against a run that never saw it.
         """
         commands = await self._home._unapplied_stop_commands()
         if not commands:
@@ -588,9 +590,11 @@ class Host:
             await run_fn(definition.graph, inputs, **run_kwargs)
         else:
             await asyncio.to_thread(run_fn, definition.graph, inputs, **run_kwargs)
-        # Mark finished only after the run settled: a cancelled or crashed
-        # execution leaves the submission claimed for the restart scan.
-        await self._home._finish_submission(workflow_id)
+        # Release the claim only after the run came back: a cancelled or
+        # crashed execution leaves the submission claimed for the restart
+        # scan. The Home branches on the run's own committed status — a
+        # PAUSED run is parked awaiting a human answer, not finished.
+        await self._home._release_submission(workflow_id)
 
 
 def serve(*graphs: Graph, home: RunHome, deployment_version: str = "", accepts: tuple[DefinitionId, ...] = ()) -> Host:

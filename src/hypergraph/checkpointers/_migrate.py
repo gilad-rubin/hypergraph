@@ -362,6 +362,11 @@ CREATE TABLE IF NOT EXISTS host_submissions (
     fingerprint TEXT,
     compat_state TEXT NOT NULL DEFAULT 'compatible',
     retry_of TEXT,
+    -- The rerun ordinal N in the accepted id "<retry_of>-retry-N", allocated
+    -- inside the acceptance transaction. Persisted so the id and the runs
+    -- row's retry_index can never be recomputed into disagreement (a live
+    -- COUNT of executed retries depends on execution order; this does not).
+    retry_index INTEGER,
     forked_from TEXT,
     fork_reason TEXT,
     -- Retained for schema compatibility; the recovery brake no longer reads
@@ -555,6 +560,7 @@ _HOST_SUBMISSIONS_ADDED_COLUMNS = (
     ("fingerprint", "fingerprint TEXT"),
     ("compat_state", "compat_state TEXT NOT NULL DEFAULT 'compatible'"),
     ("retry_of", "retry_of TEXT"),
+    ("retry_index", "retry_index INTEGER"),
     ("forked_from", "forked_from TEXT"),
     ("fork_reason", "fork_reason TEXT"),
     ("last_progress_step_count", "last_progress_step_count INTEGER NOT NULL DEFAULT 0"),

@@ -39,19 +39,21 @@ from hypergraph.host.fingerprint import batch_mismatch_aspect, canonical_json, f
 from hypergraph.host.views import (
     BATCH_OUTCOME_RECOVERY_EXHAUSTED,
     SUBMISSION_STATE_EXHAUSTED,
+    SUBMISSION_STATE_FINISHED,
+    SUBMISSION_STATE_PAUSED,
     TERMINAL_STATUS_VALUES,
     is_child_settled,
 )
 
 if TYPE_CHECKING:
-    from hypergraph.checkpointers.types import Run
+    from hypergraph.checkpointers.types import Checkpoint, Run
 
 logger = logging.getLogger("hypergraph.host")
 
 _SUBMISSION_COLS = (
     "workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
     "start_at, state, recovery_attempts, recovery_cap, source_ref, created_at, claimed_at, finished_at, "
-    "fingerprint, compat_state, retry_of, forked_from, fork_reason, last_progress_step_count, batch_id, item_key"
+    "fingerprint, compat_state, retry_of, retry_index, forked_from, fork_reason, last_progress_step_count, batch_id, item_key"
 )
 _SUBMISSION_PLACEHOLDERS = ", ".join("?" for _ in _SUBMISSION_COLS.split(", "))
 _QUALIFIED_SUBMISSION_COLS = ", ".join(f"s.{name}" for name in _SUBMISSION_COLS.split(", "))
@@ -94,6 +96,18 @@ _COUNT_FAILURE_EQUIVALENT = (
     f"WHERE s.batch_id = ? AND (r.status = '{WorkflowStatus.FAILED.value}' OR s.state = '{SUBMISSION_STATE_EXHAUSTED}')"
 )
 _SELECT_TRIPPED = f"SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = '{_TRIP_UPDATE_KIND}' LIMIT 1"
+
+# The execution journal's own claim on a workflow_id. Every acceptance path
+# checks it AFTER the host rows, so a runs row that answers here belongs to
+# Tier-0 work no host submission or Batch owns (see _raise_on_tier0_reuse).
+_SELECT_RUN_STATUS = "SELECT status FROM runs WHERE id = ?"
+
+# Rerun ordinal allocation. Both counts run INSIDE the transaction that
+# inserts the new submission or Batch, over rows that exist at ACCEPTANCE
+# time — never over runs rows, which only appear once an earlier rerun has
+# executed and would hand two pending reruns the same id.
+_COUNT_ACCEPTED_RETRIES = "SELECT COUNT(*) FROM host_submissions WHERE retry_of = ?"
+_COUNT_ACCEPTED_BATCH_RETRIES = "SELECT COUNT(*) FROM host_batches WHERE retry_of = ?"
 
 
 class _Unset:
@@ -324,6 +338,80 @@ def _is_committed_progress(kind: str, payload: dict[str, Any]) -> bool:
     if kind == "step":
         return True
     return kind == "status" and payload.get("status") in _PROGRESS_STATUSES
+
+
+def _retry_workflow_id(source: str, ordinal: int) -> str:
+    """THE rerun id derivation, for Runs and Batches alike: ``<source>-retry-N``.
+
+    ``ordinal`` is allocated in the acceptance transaction, so the id and
+    the ordinal persisted alongside it are one value, decided once.
+    """
+    return f"{source}-retry-{ordinal}"
+
+
+def _next_ordinal(count_row: tuple[Any, ...] | None) -> int:
+    """The next retry ordinal from an in-transaction COUNT row."""
+    return int((count_row[0] if count_row else 0) or 0) + 1
+
+
+def _require_retry_source(retry_of: str | None) -> str:
+    """Guard the "mint me an id" contract: only a rerun may omit one."""
+    if retry_of is None:
+        raise ValueError(
+            "A submission with no workflow_id must name the run it repeats.\n\n"
+            "How to fix: pass an explicit workflow_id, or pass retry_of=<source workflow_id> so the "
+            "acceptance transaction can mint '<source>-retry-N'."
+        )
+    return retry_of
+
+
+def _raise_on_tier0_reuse(status: str | None, *, workflow_id: str, item_key: str | None = None) -> None:
+    """Refuse a workflow_id the execution journal already owns (US11).
+
+    THE third owner of the workflow_id namespace. A ``runs`` row with no
+    ``host_submissions`` and no ``host_batches`` row is Tier-0 work —
+    executed straight against this store as a plain checkpointer. Callers
+    reach here only after the host-row checks, which already resolve
+    host-owned reuse (use-existing dedup, terminal conflict, fingerprint
+    conflict); this one fires when no host row exists at all.
+
+    The host cannot adopt such a run: it holds no pinned Definition
+    identity and no start fingerprint for it, so there is nothing to
+    compare and nothing to dedupe against. Both cases are conflicts, and
+    the existing typed errors already carry the distinction — terminal
+    Tier-0 history is ``AlreadyTerminalError`` (completed history never
+    changes identity), a still-running one is ``WorkflowIdConflictError``
+    (the id is taken by live work).
+
+    ``status`` is the stored ``runs.status`` value, or None when no runs
+    row exists (the accept-it case). ``item_key`` names the manifest item
+    when the refused id is a generated Batch child id.
+    """
+    if status is None:
+        return
+    subject = f"The child workflow id for item {item_key!r} ({workflow_id!r})" if item_key else f"workflow_id {workflow_id!r}"
+    pick_new = (
+        "choose a new Batch workflow_id or item key (a child id is always '<batch workflow_id>:<item key>')"
+        if item_key
+        else "choose a new workflow_id"
+    )
+    if status in TERMINAL_STATUS_VALUES:
+        raise AlreadyTerminalError(
+            workflow_id,
+            f"{subject} is already terminal in this Run Home: a run with that id settled ({status}) with no host "
+            "submission behind it — it was executed directly against this store as a checkpointer.\n\n"
+            f"How to fix: {pick_new}. Completed history never changes identity, and the host cannot take over an id "
+            "it did not submit.",
+        )
+    raise WorkflowIdConflictError(
+        workflow_id,
+        "a run this host never submitted owns this workflow_id",
+        f"{subject} is already in use in this Run Home by a {status!r} run this host never submitted — it was "
+        "executed directly against this store, so there is no pinned Definition identity or start fingerprint to "
+        "compare against and nothing to dedupe into.\n\n"
+        f"How to fix: {pick_new}, or wait for that run to settle and pick a fresh id either way. Host submissions, "
+        "Batches, and host-less runs share one workflow_id namespace.",
+    )
 
 
 def _raise_on_conflicting_reuse(
@@ -803,7 +891,7 @@ class RunHome(SqliteCheckpointer):
 
     def _submit_sync(
         self,
-        workflow_id: str,
+        workflow_id: str | None,
         definition_name: str,
         def_version: str,
         def_struct_hash: str,
@@ -821,18 +909,32 @@ class RunHome(SqliteCheckpointer):
     ) -> tuple[bool, dict[str, Any]]:
         """Insert one submission plus its 'submitted' update, atomically.
 
+        ``workflow_id=None`` means "mint the next rerun of ``retry_of``":
+        the ordinal is allocated from accepted submissions INSIDE this
+        transaction, the id is derived from it, and the ordinal is stored
+        on the row. Allocating it outside handed two reruns requested
+        before either executed the same ``<source>-retry-1``, and the
+        second silently deduped into the first.
+
         Returns ``(created, row)``. When a submission already exists for
         ``workflow_id`` nothing is written: a fingerprint-identical
         nonterminal row returns ``(False, existing)`` (use-existing dedup),
         terminal reuse raises ``AlreadyTerminalError``, and a fingerprint
         mismatch raises ``WorkflowIdConflictError``. Reusing an id owned by
         a Batch is likewise a conflict (AlreadyTerminalError once that
-        Batch is settled) — run and Batch workflow ids share one namespace.
+        Batch is settled) — run and Batch workflow ids share one namespace,
+        and so does the execution journal: an id already owned by a
+        host-less (Tier-0) runs row is refused last, once the host rows have
+        had their say (``_raise_on_tier0_reuse``).
         """
         with self._sync_lock:
             db = self._sync_db()
             try:
                 db.execute("BEGIN IMMEDIATE")
+                retry_index: int | None = None
+                if workflow_id is None:
+                    retry_index = _next_ordinal(db.execute(_COUNT_ACCEPTED_RETRIES, (_require_retry_source(retry_of),)).fetchone())
+                    workflow_id = _retry_workflow_id(str(retry_of), retry_index)
                 existing_row = db.execute(
                     f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE workflow_id = ?",
                     (workflow_id,),
@@ -863,6 +965,9 @@ class RunHome(SqliteCheckpointer):
                     ):
                         raise AlreadyTerminalError(workflow_id)
                     raise WorkflowIdConflictError(workflow_id, "an existing Batch owns this workflow_id")
+                run_row = db.execute(_SELECT_RUN_STATUS, (workflow_id,)).fetchone()
+                if run_row is not None:
+                    _raise_on_tier0_reuse(str(run_row[0]), workflow_id=workflow_id)
                 now = _now_iso()
                 db.execute(
                     f"INSERT INTO host_submissions ({_SUBMISSION_COLS}) VALUES ({_SUBMISSION_PLACEHOLDERS})",
@@ -883,6 +988,7 @@ class RunHome(SqliteCheckpointer):
                         fingerprint,
                         "compatible",
                         retry_of,
+                        retry_index,
                         forked_from,
                         fork_reason,
                         0,
@@ -906,7 +1012,7 @@ class RunHome(SqliteCheckpointer):
 
     async def _submit(
         self,
-        workflow_id: str,
+        workflow_id: str | None,
         definition_name: str,
         def_version: str,
         def_struct_hash: str,
@@ -927,6 +1033,11 @@ class RunHome(SqliteCheckpointer):
         async with self._txn_lock():
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
+                retry_index: int | None = None
+                if workflow_id is None:
+                    retry_cursor = await self._db.execute(_COUNT_ACCEPTED_RETRIES, (_require_retry_source(retry_of),))
+                    retry_index = _next_ordinal(await retry_cursor.fetchone())
+                    workflow_id = _retry_workflow_id(str(retry_of), retry_index)
                 cursor = await self._db.execute(
                     f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE workflow_id = ?",
                     (workflow_id,),
@@ -958,6 +1069,10 @@ class RunHome(SqliteCheckpointer):
                     if _children_settled_rows(await children_cursor.fetchall()):
                         raise AlreadyTerminalError(workflow_id)
                     raise WorkflowIdConflictError(workflow_id, "an existing Batch owns this workflow_id")
+                run_cursor = await self._db.execute(_SELECT_RUN_STATUS, (workflow_id,))
+                run_row = await run_cursor.fetchone()
+                if run_row is not None:
+                    _raise_on_tier0_reuse(str(run_row[0]), workflow_id=workflow_id)
                 now = _now_iso()
                 await self._db.execute(
                     f"INSERT INTO host_submissions ({_SUBMISSION_COLS}) VALUES ({_SUBMISSION_PLACEHOLDERS})",
@@ -978,6 +1093,7 @@ class RunHome(SqliteCheckpointer):
                         fingerprint,
                         "compatible",
                         retry_of,
+                        retry_index,
                         forked_from,
                         fork_reason,
                         0,
@@ -1017,51 +1133,44 @@ class RunHome(SqliteCheckpointer):
             row = await cursor.fetchone()
             return _row_to_submission(row) if row is not None else None
 
-    def _count_retries_sync(self, workflow_id: str) -> int:
-        """Count runs rows with retry_of=workflow_id (rerun id derivation).
+    # === Rerun lineage: the accepted ordinal is the runner's retry_index ===
+    #
+    # The checkpointer derives retry_index from a live COUNT of runs rows,
+    # which depends on how many earlier reruns happen to have executed. A
+    # host rerun already decided its ordinal at acceptance and put it in the
+    # workflow id, so the Home answers from the submission instead: the id
+    # and runs.retry_index are then one value, whatever order reruns run in.
 
-        Mirrors the checkpointer's ``retry_workflow`` derivation
-        (``<source>-retry-N`` with N = count + 1) so a rerun's workflow id
-        and the runner-derived retry_index agree.
-        """
+    _ACCEPTED_RETRY_INDEX_SQL = "SELECT retry_index FROM host_submissions WHERE workflow_id = ? AND retry_of = ?"
+
+    def retry_workflow(self, source_run_id: str, *, workflow_id: str | None = None, superstep: int | None = None) -> tuple[str, Checkpoint]:
+        """``SqliteCheckpointer.retry_workflow`` with the ACCEPTED ordinal."""
+        new_workflow_id, checkpoint = super().retry_workflow(source_run_id, workflow_id=workflow_id, superstep=superstep)
         with self._sync_lock:
             db = self._sync_db()
-            (count,) = db.execute("SELECT COUNT(*) FROM runs WHERE retry_of = ?", (workflow_id,)).fetchone()
-            return int(count or 0)
+            row = db.execute(self._ACCEPTED_RETRY_INDEX_SQL, (new_workflow_id, source_run_id)).fetchone()
+        if row is not None and row[0] is not None:
+            checkpoint.retry_index = int(row[0])
+        return new_workflow_id, checkpoint
 
-    async def _count_retries(self, workflow_id: str) -> int:
-        """Async mirror of ``_count_retries_sync``."""
-        await self._ensure_db()
+    async def retry_workflow_async(
+        self, source_run_id: str, *, workflow_id: str | None = None, superstep: int | None = None
+    ) -> tuple[str, Checkpoint]:
+        """Async mirror of ``retry_workflow``."""
+        new_workflow_id, checkpoint = await super().retry_workflow_async(source_run_id, workflow_id=workflow_id, superstep=superstep)
         async with self._txn_lock():
-            cursor = await self._db.execute("SELECT COUNT(*) FROM runs WHERE retry_of = ?", (workflow_id,))
-            (count,) = await cursor.fetchone()
-            return int(count or 0)
-
-    def _count_batch_retries_sync(self, batch_id: str) -> int:
-        """Count Batches minted as a rerun of ``batch_id`` (rerun id derivation).
-
-        Mirrors the Run rule (``<source>-retry-N`` with N = count + 1) so a
-        Batch rerun and a Run rerun read the same way.
-        """
-        with self._sync_lock:
-            db = self._sync_db()
-            (count,) = db.execute("SELECT COUNT(*) FROM host_batches WHERE retry_of = ?", (batch_id,)).fetchone()
-            return int(count or 0)
-
-    async def _count_batch_retries(self, batch_id: str) -> int:
-        """Async mirror of ``_count_batch_retries_sync``."""
-        await self._ensure_db()
-        async with self._txn_lock():
-            cursor = await self._db.execute("SELECT COUNT(*) FROM host_batches WHERE retry_of = ?", (batch_id,))
-            (count,) = await cursor.fetchone()
-            return int(count or 0)
+            cursor = await self._db.execute(self._ACCEPTED_RETRY_INDEX_SQL, (new_workflow_id, source_run_id))
+            row = await cursor.fetchone()
+        if row is not None and row[0] is not None:
+            checkpoint.retry_index = int(row[0])
+        return new_workflow_id, checkpoint
 
     # === Batches (ticket 05) ===
 
     def _submit_batch_sync(
         self,
         batch_id: str,
-        workflow_id: str,
+        workflow_id: str | None,
         definition_name: str,
         def_version: str,
         def_struct_hash: str,
@@ -1089,6 +1198,13 @@ class RunHome(SqliteCheckpointer):
         new child records ``retry_of`` against its source child. Both are
         None for ordinary submissions.
 
+        ``workflow_id=None`` means "mint the next rerun of
+        ``batch_retry_of``": the Batch ordinal is allocated from accepted
+        Batches INSIDE this transaction and the id derived from it, so
+        concurrent rerun callers can never mint the same
+        ``<source>-retry-N`` and dedupe into one Batch. Each rerun child
+        gets its own accepted ordinal the same way.
+
         Returns ``(created, batch_row)``. Dedup mirrors the Run rules: a
         fingerprint-identical nonterminal resubmission returns
         ``(False, existing)`` (use-existing), a settled Batch raises
@@ -1096,12 +1212,25 @@ class RunHome(SqliteCheckpointer):
         ``WorkflowIdConflictError``. Run and Batch workflow ids share one
         namespace: reusing an id owned by a plain Run submission is a
         conflict (AlreadyTerminalError once that Run is finished), and so
-        is a child workflow id owned by unrelated existing work.
+        is a child workflow id owned by unrelated existing work. The
+        execution journal owns ids too: the Batch id and every generated
+        child id are checked against host-less (Tier-0) runs rows as well
+        (``_raise_on_tier0_reuse``), so a child can never be minted onto
+        somebody else's history.
         """
         with self._sync_lock:
             db = self._sync_db()
             try:
                 db.execute("BEGIN IMMEDIATE")
+                if workflow_id is None:
+                    source_row = db.execute(
+                        "SELECT workflow_id FROM host_batches WHERE batch_id = ?",
+                        (_require_retry_source(batch_retry_of),),
+                    ).fetchone()
+                    workflow_id = _retry_workflow_id(
+                        str(source_row[0]),
+                        _next_ordinal(db.execute(_COUNT_ACCEPTED_BATCH_RETRIES, (batch_retry_of,)).fetchone()),
+                    )
                 existing_batch_row = db.execute(
                     f"SELECT {_BATCH_COLS} FROM host_batches WHERE workflow_id = ?",
                     (workflow_id,),
@@ -1137,6 +1266,9 @@ class RunHome(SqliteCheckpointer):
                     if submission_row[0] == "finished":
                         raise AlreadyTerminalError(workflow_id)
                     raise WorkflowIdConflictError(workflow_id, "an existing Run owns this workflow_id")
+                run_row = db.execute(_SELECT_RUN_STATUS, (workflow_id,)).fetchone()
+                if run_row is not None:
+                    _raise_on_tier0_reuse(str(run_row[0]), workflow_id=workflow_id)
                 child_ids = [(key, f"{workflow_id}:{key}", inputs_json) for key, inputs_json in items]
                 for key, child_workflow_id, _inputs_json in child_ids:
                     collision = db.execute(
@@ -1148,6 +1280,9 @@ class RunHome(SqliteCheckpointer):
                             child_workflow_id,
                             f"the child workflow id for item {key!r} collides with existing work in this Run Home",
                         )
+                    child_run_row = db.execute(_SELECT_RUN_STATUS, (child_workflow_id,)).fetchone()
+                    if child_run_row is not None:
+                        _raise_on_tier0_reuse(str(child_run_row[0]), workflow_id=child_workflow_id, item_key=key)
                 now = _now_iso()
                 items_json = json.dumps({key: json.loads(inputs_json) for key, inputs_json in items})
                 db.execute(
@@ -1168,6 +1303,10 @@ class RunHome(SqliteCheckpointer):
                     ),
                 )
                 for key, child_workflow_id, inputs_json in child_ids:
+                    child_source = (child_retry_of or {}).get(key)
+                    child_retry_index = (
+                        None if child_source is None else _next_ordinal(db.execute(_COUNT_ACCEPTED_RETRIES, (child_source,)).fetchone())
+                    )
                     db.execute(
                         f"INSERT INTO host_submissions ({_SUBMISSION_COLS}) VALUES ({_SUBMISSION_PLACEHOLDERS})",
                         (
@@ -1190,7 +1329,8 @@ class RunHome(SqliteCheckpointer):
                                 start_at,
                             ),
                             "compatible",
-                            (child_retry_of or {}).get(key),
+                            child_source,
+                            child_retry_index,
                             None,
                             None,
                             0,
@@ -1234,7 +1374,7 @@ class RunHome(SqliteCheckpointer):
     async def _submit_batch(
         self,
         batch_id: str,
-        workflow_id: str,
+        workflow_id: str | None,
         definition_name: str,
         def_version: str,
         def_struct_hash: str,
@@ -1253,6 +1393,14 @@ class RunHome(SqliteCheckpointer):
         async with self._txn_lock():
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
+                if workflow_id is None:
+                    source_cursor = await self._db.execute(
+                        "SELECT workflow_id FROM host_batches WHERE batch_id = ?",
+                        (_require_retry_source(batch_retry_of),),
+                    )
+                    source_row = await source_cursor.fetchone()
+                    ordinal_cursor = await self._db.execute(_COUNT_ACCEPTED_BATCH_RETRIES, (batch_retry_of,))
+                    workflow_id = _retry_workflow_id(str(source_row[0]), _next_ordinal(await ordinal_cursor.fetchone()))
                 batch_cursor = await self._db.execute(
                     f"SELECT {_BATCH_COLS} FROM host_batches WHERE workflow_id = ?",
                     (workflow_id,),
@@ -1288,6 +1436,10 @@ class RunHome(SqliteCheckpointer):
                     if submission_row[0] == "finished":
                         raise AlreadyTerminalError(workflow_id)
                     raise WorkflowIdConflictError(workflow_id, "an existing Run owns this workflow_id")
+                run_cursor = await self._db.execute(_SELECT_RUN_STATUS, (workflow_id,))
+                run_row = await run_cursor.fetchone()
+                if run_row is not None:
+                    _raise_on_tier0_reuse(str(run_row[0]), workflow_id=workflow_id)
                 child_ids = [(key, f"{workflow_id}:{key}", inputs_json) for key, inputs_json in items]
                 for key, child_workflow_id, _inputs_json in child_ids:
                     collision_cursor = await self._db.execute(
@@ -1299,6 +1451,10 @@ class RunHome(SqliteCheckpointer):
                             child_workflow_id,
                             f"the child workflow id for item {key!r} collides with existing work in this Run Home",
                         )
+                    child_run_cursor = await self._db.execute(_SELECT_RUN_STATUS, (child_workflow_id,))
+                    child_run_row = await child_run_cursor.fetchone()
+                    if child_run_row is not None:
+                        _raise_on_tier0_reuse(str(child_run_row[0]), workflow_id=child_workflow_id, item_key=key)
                 now = _now_iso()
                 items_json = json.dumps({key: json.loads(inputs_json) for key, inputs_json in items})
                 await self._db.execute(
@@ -1319,6 +1475,11 @@ class RunHome(SqliteCheckpointer):
                     ),
                 )
                 for key, child_workflow_id, inputs_json in child_ids:
+                    child_source = (child_retry_of or {}).get(key)
+                    child_retry_index = None
+                    if child_source is not None:
+                        child_ordinal_cursor = await self._db.execute(_COUNT_ACCEPTED_RETRIES, (child_source,))
+                        child_retry_index = _next_ordinal(await child_ordinal_cursor.fetchone())
                     await self._db.execute(
                         f"INSERT INTO host_submissions ({_SUBMISSION_COLS}) VALUES ({_SUBMISSION_PLACEHOLDERS})",
                         (
@@ -1341,7 +1502,8 @@ class RunHome(SqliteCheckpointer):
                                 start_at,
                             ),
                             "compatible",
-                            (child_retry_of or {}).get(key),
+                            child_source,
+                            child_retry_index,
                             None,
                             None,
                             0,
@@ -1455,21 +1617,26 @@ class RunHome(SqliteCheckpointer):
             rows = await cursor.fetchall()
             return [(int(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in rows]
 
-    async def _batch_settlement(self, batch_id: str) -> tuple[bool, bool]:
-        """Return (stopped, all_children_settled) for watch termination."""
+    async def _all_children_settled(self, batch_id: str) -> bool:
+        """True when every manifest child is accounted for good.
+
+        THE watch-termination question for a Batch, and deliberately not
+        "has this Batch been stopped": a durable ``stopped`` fact is a
+        control fact appended BEFORE the child stop commands it writes, and
+        each of those commits its own ``child_unstarted`` fact later. Ending
+        the stream on ``stopped`` dropped exactly those facts (PRD 0019 A9).
+        Settled here means terminal, unstarted (finished with no runs row),
+        or recovery-exhausted — the same rule ``BatchView.settled`` uses,
+        and every path that reaches it commits the item's Batch fact in the
+        same transaction as the state flip, so settled implies delivered.
+        """
         await self._ensure_db()
         async with self._txn_lock():
-            stopped_cursor = await self._db.execute(
-                "SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = 'stopped' LIMIT 1",
-                (batch_id,),
-            )
-            stopped = await stopped_cursor.fetchone() is not None
             children_cursor = await self._db.execute(
                 "SELECT s.state, r.status FROM host_submissions s LEFT JOIN runs r ON r.id = s.workflow_id WHERE s.batch_id = ?",
                 (batch_id,),
             )
-            settled = _children_settled_rows(await children_cursor.fetchall())
-            return stopped, settled
+            return _children_settled_rows(await children_cursor.fetchall())
 
     def _write_batch_stop_sync(self, batch_id: str, info: Any, source_ref: str | None = None) -> bool:
         """Record a durable Batch stop, atomically, in ONE transaction.
@@ -1715,15 +1882,40 @@ class RunHome(SqliteCheckpointer):
         )
         return frozenset(str(row[0]) for row in await cursor.fetchall())
 
-    async def _finish_submission(self, workflow_id: str) -> None:
-        """Mark a claimed submission finished after its run settled."""
+    async def _release_submission(self, workflow_id: str) -> None:
+        """Release a claimed submission the worker is done executing.
+
+        THE outcome branch a worker takes when ``runner.run`` returns. It
+        reads the run's own committed status rather than trusting the
+        caller, so the durable submission state can never disagree with the
+        journal:
+
+        - a run that came back ``PAUSED`` parked on a durable interrupt.
+          The worker is finished with it (it stops holding an active-Run
+          slot) but the RUN is not: a human answer is outstanding. It gets
+          ``paused`` and NO ``finished_at`` — writing 'finished' here made
+          the same child ``active`` to the bucket ladder and settled to
+          ``is_child_settled``, so ``watch(batch_ref)`` ended while a
+          decision was still open, and a detached ``stop`` of the parked
+          run was refused as terminal.
+        - every other outcome is settled work: ``finished`` with its
+          timestamp.
+
+        A ``paused`` submission stays parked and unclaimable, exactly as
+        ``finished`` did: nothing re-admits it. Making an answered pause
+        re-claimable is a separate, deliberately unbuilt slice.
+        """
         await self._ensure_db()
         async with self._txn_lock():
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
+                cursor = await self._db.execute(_SELECT_RUN_STATUS, (workflow_id,))
+                run_row = await cursor.fetchone()
+                paused = run_row is not None and str(run_row[0]) == WorkflowStatus.PAUSED.value
+                state = SUBMISSION_STATE_PAUSED if paused else SUBMISSION_STATE_FINISHED
                 await self._db.execute(
-                    "UPDATE host_submissions SET state = 'finished', finished_at = ? WHERE workflow_id = ?",
-                    (_now_iso(), workflow_id),
+                    "UPDATE host_submissions SET state = ?, finished_at = ? WHERE workflow_id = ?",
+                    (state, None if paused else _now_iso(), workflow_id),
                 )
                 await self._db.commit()
             except BaseException:
@@ -1861,9 +2053,12 @@ class RunHome(SqliteCheckpointer):
         unapplied stop already exists (the first stop owns its ``info`` and
         nothing new is written). Raises ``HostError`` for an unknown run and
         ``AlreadyTerminalError`` when the run is already terminal (or its
-        submission already finished) at write time. ``source_ref`` is an
-        opaque caller provenance marker (ADR 0005 A11) stored on the command
-        row; it never affects dedup.
+        submission already finished) at write time. A ``paused`` submission
+        is neither: the run parked on a durable interrupt and is still
+        stoppable, so the command is accepted and waits, exactly like a stop
+        aimed at a crashed-but-resumable run. ``source_ref`` is an opaque
+        caller provenance marker (ADR 0005 A11) stored on the command row;
+        it never affects dedup.
         """
         with self._sync_lock:
             db = self._sync_db()
@@ -1873,7 +2068,7 @@ class RunHome(SqliteCheckpointer):
                     "SELECT state FROM host_submissions WHERE workflow_id = ?",
                     (workflow_id,),
                 ).fetchone()
-                run_row = db.execute("SELECT status FROM runs WHERE id = ?", (workflow_id,)).fetchone()
+                run_row = db.execute(_SELECT_RUN_STATUS, (workflow_id,)).fetchone()
                 if submission_row is None and run_row is None:
                     raise HostError(f"Cannot stop {workflow_id!r}: no such run in this Run Home.")
                 if run_row is not None and run_row[0] in _TERMINAL_STATUS_VALUES:
@@ -1909,7 +2104,7 @@ class RunHome(SqliteCheckpointer):
                     (workflow_id,),
                 )
                 submission_row = await submission_cursor.fetchone()
-                run_cursor = await self._db.execute("SELECT status FROM runs WHERE id = ?", (workflow_id,))
+                run_cursor = await self._db.execute(_SELECT_RUN_STATUS, (workflow_id,))
                 run_row = await run_cursor.fetchone()
                 if submission_row is None and run_row is None:
                     raise HostError(f"Cannot stop {workflow_id!r}: no such run in this Run Home.")
