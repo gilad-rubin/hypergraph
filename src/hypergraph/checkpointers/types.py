@@ -36,9 +36,11 @@ class StepStatus(Enum):
 # ``GraphNode`` keeps the parent-facing address, exactly like the parent's
 # StepRecord for that node.
 #
-# Parsing splits from the RIGHT: run ids may contain ``/`` (nested children)
-# and ``:`` (Batch children are ``<batch_workflow_id>:<item_key>``), while
-# node names are Python identifiers and the superstep is digits.
+# The last two segments stay unambiguous: node names are Python identifiers
+# and the superstep is digits, while run ids may contain ``/`` (nested
+# children) and ``:`` (Batch children are ``<batch_workflow_id>:<item_key>``).
+# A reader therefore splits from the RIGHT — but no parser ships until
+# something under ``src/`` actually needs to read an address back.
 
 NODE_ADDRESS_SEPARATOR = ":"
 
@@ -50,14 +52,6 @@ def node_address(run_id: str, superstep: int, node_name: str) -> str:
     therefore gets a different address — occurrences never collide.
     """
     return f"{run_id}{NODE_ADDRESS_SEPARATOR}{superstep}{NODE_ADDRESS_SEPARATOR}{node_name}"
-
-
-def parse_node_address(address: str) -> tuple[str, int, str]:
-    """Split a node address back into ``(run_id, superstep, node_name)``."""
-    parts = address.rsplit(NODE_ADDRESS_SEPARATOR, 2)
-    if len(parts) != 3 or not parts[1].isdigit():
-        raise ValueError(f"Malformed node address: {address!r}.\n\nHow to fix:\n  Use node_address(run_id, superstep, node_name) to build addresses.")
-    return parts[0], int(parts[1]), parts[2]
 
 
 class BoundaryState(Enum):
@@ -75,6 +69,23 @@ class BoundaryState(Enum):
     PENDING = "pending"
     COMMITTED = "committed"
     UNKNOWN_EFFECT = "unknown_effect"
+
+
+def derive_boundary_state(step_status: StepStatus | None, dispatched_at: datetime | None) -> BoundaryState:
+    """Classify one boundary by joining recorded intent with the journal.
+
+    The single definition of the cascade — every backend calls this instead
+    of re-deriving it, so a fourth state means editing exactly one place.
+
+    A StepRecord of any status is a witnessed settlement; its absence with no
+    dispatch mark is safe pending work; its absence WITH a dispatch mark is an
+    unknown effect (PRD 0014).
+    """
+    if step_status is not None:
+        return BoundaryState.COMMITTED
+    if dispatched_at is not None:
+        return BoundaryState.UNKNOWN_EFFECT
+    return BoundaryState.PENDING
 
 
 @dataclass(frozen=True)

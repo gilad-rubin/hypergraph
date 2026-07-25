@@ -2,20 +2,22 @@
 
 Covers: every runnable sibling is durably attributable *before* any sibling
 in that superstep can cause external work; a real SIGKILL between sibling
-boundaries keeps committed facts and leaves unfinished siblings visible;
-nested-graph boundaries keep the parent-facing address across the kill; a
-loop's interrupted iteration never leaks into the next iteration's identity;
-sync and async runners (and the Memory and SQLite backends) expose the same
+boundaries leaves every unfinished sibling visible and named; nested-graph
+boundaries keep the parent-facing address across the kill; a loop's
+interrupted iteration never leaks into the next iteration's identity; sync
+and async runners (and the Memory and SQLite backends) expose the same
 recovery result; existing checkpoint resume is unaffected.
 
-Recorded-vs-committed granularity, proven by the kill tests below: a
-StepRecord is written when its superstep finishes, so a process that dies
-mid-superstep loses the whole superstep's journal entries. That is exactly
-the gap PRD 0013 names — after this ticket the *boundaries* survive, so
-recovery reads unfinished siblings instead of inferring them from silence.
-Re-dispatching a repeat-safe sibling is explicitly tolerated ("this only
-wastes effort"); PRD 0014 / ticket 09 makes the effectful case safe via the
-``dispatched_at`` seam.
+What this does NOT deliver — pinned by
+``test_sibling_completed_inside_the_killed_superstep_re_executes``: a
+StepRecord is committed per SUPERSTEP, not per node, so a sibling that ran to
+completion inside the killed superstep has no StepRecord, derives as PENDING,
+and re-executes on restart. No boundary in a killed superstep can truthfully
+read COMMITTED. Facts committed in earlier, *finished* supersteps do survive
+the kill. Re-dispatching a repeat-safe sibling is explicitly tolerated by
+PRD 0013 ("this only wastes effort"); making the effectful case safe needs a
+per-node settlement marker, which is an OPEN MAINTAINER DECISION carried by
+PRD 0014 / ticket 09 alongside the ``dispatched_at`` seam.
 """
 
 import asyncio
@@ -47,9 +49,9 @@ from hypergraph.checkpointers import (
     SqliteCheckpointer,
     WorkflowStatus,
     node_address,
-    parse_node_address,
 )
 from hypergraph.checkpointers.protocols import PendingNodeProtocol, SyncPendingNodeProtocol
+from hypergraph.runners._shared.pending_boundaries import supports_pending_boundaries
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -279,7 +281,7 @@ class TestBoundariesPrecedeSiblingEffects:
         assert all(b.state is BoundaryState.COMMITTED for b in boundaries)
         assert all(b.dispatched_at is None for b in boundaries)
         # The sync mirror reads the same rows.
-        assert _addresses(sqlite_cp.node_boundaries("wf-match")) == _addresses(boundaries)
+        assert _addresses(sqlite_cp.get_node_boundaries_sync("wf-match")) == _addresses(boundaries)
 
     async def test_exit_durability_records_no_boundaries(self, tmp_path):
         """``durability="exit"`` opted out of mid-run persistence entirely."""
@@ -349,6 +351,35 @@ class TestBoundariesPrecedeSiblingEffects:
         finally:
             asyncio.run(cp.close())
 
+    def test_probe_rejects_a_lookalike_that_only_shares_attribute_names(self):
+        """``runtime_checkable`` matches attribute PRESENCE, never signatures.
+
+        An unrelated attribute of the same name therefore satisfies
+        ``isinstance`` and would explode at the call site. The probe demands
+        every method of the seam AND that each one is callable, so the false
+        positive is structurally hard rather than merely unlikely.
+        """
+
+        class SyncLookalike:
+            get_node_boundaries_sync: dict = {}  # a mapping, not the seam
+
+            def record_pending_nodes_sync(self, boundaries):  # pragma: no cover
+                raise AssertionError("the probe must never let this be called")
+
+        class AsyncLookalike:
+            get_node_boundaries: dict = {}
+
+            async def record_pending_nodes(self, boundaries):  # pragma: no cover
+                raise AssertionError("the probe must never let this be called")
+
+        # isinstance alone says yes to both — that is the trap being closed.
+        assert isinstance(SyncLookalike(), SyncPendingNodeProtocol)
+        assert isinstance(AsyncLookalike(), PendingNodeProtocol)
+        assert not supports_pending_boundaries(SyncLookalike(), sync=True)
+        assert not supports_pending_boundaries(AsyncLookalike(), sync=False)
+        assert not supports_pending_boundaries(None, sync=True)
+        assert not supports_pending_boundaries(None, sync=False)
+
 
 # === 2. Node addressing shared with the pause slot (PRD 0010) ===
 
@@ -356,22 +387,21 @@ class TestBoundariesPrecedeSiblingEffects:
 class TestNodeAddressing:
     """``<run_id>:<superstep>:<node_name>`` — PRD 0010's pause_id shape."""
 
-    def test_round_trips_including_nested_and_batch_run_ids(self):
-        cases = [
-            ("refund-c-42", 8, "approval"),
-            ("wf-1/nested", 0, "inner"),
-            ("wf-batch:item-7", 3, "charge_card"),
-            ("wf-batch:item-7/nested", 12, "notify"),
-        ]
-        for run_id, superstep, name in cases:
-            address = node_address(run_id, superstep, name)
-            assert parse_node_address(address) == (run_id, superstep, name)
-        assert node_address("refund-c-42", 8, "approval") == "refund-c-42:8:approval"
+    def test_builds_addresses_that_keep_nested_and_batch_run_ids_intact(self):
+        """Only the last two segments are fixed-shape (digits, identifier).
 
-    def test_malformed_address_raises(self):
-        for bad in ["", "wf-1", "wf-1:node", "wf-1:notanint:node"]:
-            with pytest.raises(ValueError, match="Malformed node address"):
-                parse_node_address(bad)
+        Run ids may contain ``/`` (nested children) and ``:`` (Batch children
+        are ``<batch_workflow_id>:<item_key>``); they survive verbatim in the
+        first segment, so a reader that splits from the right recovers them.
+        No parser ships until something under ``src/`` needs to read an
+        address back.
+        """
+        assert node_address("refund-c-42", 8, "approval") == "refund-c-42:8:approval"
+        assert node_address("wf-1/nested", 0, "inner") == "wf-1/nested:0:inner"
+        assert node_address("wf-batch:item-7", 3, "charge_card") == "wf-batch:item-7:3:charge_card"
+        assert node_address("wf-batch:item-7/nested", 12, "notify") == "wf-batch:item-7/nested:12:notify"
+        # A loop's repeat visit lands on a later superstep, so it never collides.
+        assert node_address("wf-1", 0, "worker") != node_address("wf-1", 2, "worker")
 
 
 # === 3. Real SIGKILL between sibling boundaries (flat + nested) ===
@@ -497,7 +527,7 @@ class TestRealKillBetweenSiblingBoundaries:
         before_restart = marker.read_text().splitlines()
 
         # --- what a fresh process reads from the same Run Home ---
-        parent = home.node_boundaries("wf-kill")
+        parent = home.get_node_boundaries_sync("wf-kill")
         parent_states = _states(parent)
         assert parent_states == {
             "wf-kill:0:seed": BoundaryState.COMMITTED,
@@ -513,10 +543,9 @@ class TestRealKillBetweenSiblingBoundaries:
         # the parent's StepRecord for that GraphNode uses.
         (nested_boundary,) = [b for b in parent if b.node_name == "nested"]
         assert nested_boundary.address == node_address("wf-kill", 1, "nested")
-        assert parse_node_address(nested_boundary.address) == ("wf-kill", 1, "nested")
 
         # The child run keeps its own addresses under the child workflow id.
-        child = home.node_boundaries("wf-kill/nested")
+        child = home.get_node_boundaries_sync("wf-kill/nested")
         assert _states(child) == {
             "wf-kill/nested:0:inner_fast": BoundaryState.COMMITTED,
             "wf-kill/nested:1:inner_slow": BoundaryState.PENDING,
@@ -534,18 +563,79 @@ class TestRealKillBetweenSiblingBoundaries:
         assert view.status == WorkflowStatus.COMPLETED
 
         after_restart = marker.read_text().splitlines()[len(before_restart) :]
-        # The committed inner boundary is not re-executed; the pending ones
-        # dispatch exactly once.
+        # `inner_fast` committed in an EARLIER, FINISHED superstep (the child
+        # run's superstep 0), so ordinary checkpoint resume skips it. This is
+        # NOT evidence about a sibling of the superstep that was killed — see
+        # test_sibling_completed_inside_the_killed_superstep_re_executes.
         assert after_restart.count("inner_fast") == 0
+        # The sibling that never started dispatches exactly once...
         assert after_restart.count("inner_slow") == 1
+        # ...and so does `alpha`, which had already run to COMPLETION when the
+        # kill landed: its superstep never committed, so its boundary is
+        # PENDING and recovery dispatches it again.
         assert after_restart.count("alpha") == 1
 
         # Parent-facing addresses match across the kill, and every boundary
         # now settles against the journal.
-        final_parent = home.node_boundaries("wf-kill")
+        final_parent = home.get_node_boundaries_sync("wf-kill")
         assert node_address("wf-kill", 1, "nested") in _addresses(final_parent)
         assert all(b.state is BoundaryState.COMMITTED for b in final_parent if b.superstep == 0)
         assert not [b for b in final_parent if b.state is BoundaryState.UNKNOWN_EFFECT]
+
+    async def test_sibling_completed_inside_the_killed_superstep_re_executes(self, tmp_path, home, kind, runner_expr, async_kw, sleep_stmt):
+        """Documents CURRENT behavior — deliberately not a guarantee.
+
+        ``alpha`` runs to completion inside the superstep the kill lands in.
+        StepRecords are committed per superstep (``_save_superstep_records``),
+        never per node, so no StepRecord exists for it: its boundary derives
+        as PENDING and the restart dispatches it a second time. It follows
+        that NO boundary in a killed superstep can ever read COMMITTED.
+
+        Whether to add a per-node settlement marker (e.g. ``settled_at`` on
+        ``pending_nodes``), move StepRecord commit timing to per-node, or
+        amend PRD 0013's "After" block to match per-superstep reality is an
+        OPEN MAINTAINER DECISION; ticket 09 / PRD 0014 needs such a marker.
+        Until it is taken, pinning the real behavior here is worth more than
+        a test implying a stronger guarantee than the code delivers.
+        """
+        marker = tmp_path / f"resib-{kind}.txt"
+        script = _SIBLING_KILL_SCRIPT.format(
+            marker=str(marker),
+            uri=_home_uri(tmp_path),
+            runner=runner_expr,
+            async_kw=async_kw,
+            sleep_stmt=sleep_stmt,
+        )
+        _run_until_marker(script, marker, "inner_slow")
+        before_restart = marker.read_text().splitlines()
+
+        # `alpha` really did finish before the kill — this is not a node that
+        # never got to run.
+        assert before_restart.count("alpha") == 1
+
+        # Yet the journal has no record of it: the superstep never finished,
+        # so only superstep 0's StepRecord was ever committed.
+        parent_steps = await home.get_steps("wf-kill")
+        assert [s.node_name for s in parent_steps] == ["seed"]
+
+        # Its boundary is therefore PENDING, indistinguishable from the
+        # sibling that never started.
+        states = _states(home.get_node_boundaries_sync("wf-kill"))
+        assert states["wf-kill:1:alpha"] is BoundaryState.PENDING
+        assert states["wf-kill:1:nested"] is BoundaryState.PENDING
+
+        # --- restart: the completed-but-unrecorded sibling runs a SECOND time
+        runner = SyncRunner() if kind == "sync" else AsyncRunner()
+        host = serve(_parent_kill_graph(str(marker), runner), home=home, deployment_version="v1")
+        ref = RunRef(home=home.uri, run_id="wf-kill")
+        async with _worker(host, "w-parent"):
+            view = await _wait_for(lambda: _terminal_view(host.client, ref), timeout=40)
+        assert view.status == WorkflowStatus.COMPLETED
+
+        executions = marker.read_text().splitlines()
+        assert executions.count("alpha") == 2, "completed-inside-the-killed-superstep sibling re-executes"
+        # The superstep that DID finish before the kill is not replayed.
+        assert executions.count("seed") == 1
 
 
 # === 4. Loop: an interrupted iteration never leaks into the next identity ===
@@ -627,7 +717,7 @@ class TestLoopIterationIdentity:
 
         # Iteration 1 committed at superstep 0; the interrupted iteration's
         # boundary is a DIFFERENT address at superstep 2 and stays pending.
-        killed = home.node_boundaries("wf-loop")
+        killed = home.get_node_boundaries_sync("wf-loop")
         assert _states(killed) == {
             "wf-loop:0:worker": BoundaryState.COMMITTED,
             "wf-loop:1:keep_going": BoundaryState.COMMITTED,
@@ -644,7 +734,7 @@ class TestLoopIterationIdentity:
             view = await _wait_for(lambda: _terminal_view(host.client, ref), timeout=40)
         assert view.status == WorkflowStatus.COMPLETED
 
-        final = home.node_boundaries("wf-loop")
+        final = home.get_node_boundaries_sync("wf-loop")
         final_states = _states(final)
         # Recovery re-adopted the interrupted iteration AT ITS OWN ADDRESS
         # (resume offsets supersteps to the first uncommitted one), so the
@@ -703,10 +793,10 @@ class TestRunnerAndBackendParity:
             def shape(run_id: str, boundaries):
                 return sorted((b.superstep, b.node_name, b.node_type, b.state) for b in boundaries)
 
-            sync_parent = shape("wf-s", cp.node_boundaries("wf-s"))
+            sync_parent = shape("wf-s", cp.get_node_boundaries_sync("wf-s"))
             async_parent = shape("wf-a", await cp.get_node_boundaries("wf-a"))
             assert sync_parent == async_parent
-            sync_child = shape("wf-s/nested", cp.node_boundaries("wf-s/nested"))
+            sync_child = shape("wf-s/nested", cp.get_node_boundaries_sync("wf-s/nested"))
             async_child = shape("wf-a/nested", await cp.get_node_boundaries("wf-a/nested"))
             assert sync_child == async_child
             assert sync_child, "nested child boundaries must be recorded too"

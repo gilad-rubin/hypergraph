@@ -18,6 +18,9 @@ row-count shortcuts.
 - A pending node boundary is intent; its `BoundaryState` is derived by
   joining `steps` on `(run_id, superstep, node_name)`. Never store the
   derived state, and never let a boundary row assert that a node ran.
+- The state cascade itself lives once, in `types.derive_boundary_state`.
+  Backends shape rows and call it; they must not re-derive the states, or a
+  new state would have to be added in every backend.
 - Anything derived from `steps` must follow those steps through retention
   compaction. Dropping a step without its boundary would silently
   re-classify settled work as pending.

@@ -39,7 +39,6 @@ from hypergraph.checkpointers.types import (
     AttemptRecord,
     AttemptSeries,
     AttemptStatus,
-    BoundaryState,
     Checkpoint,
     LineageRow,
     LineageView,
@@ -51,6 +50,7 @@ from hypergraph.checkpointers.types import (
     StepStatus,
     StepTable,
     WorkflowStatus,
+    derive_boundary_state,
 )
 
 # Explicit column lists for SELECT queries — avoids column-order bugs after migration
@@ -313,23 +313,16 @@ def _parse_dt(value: str | None) -> datetime | None:
 def _row_to_node_boundary(row: Sequence[Any]) -> NodeBoundary:
     """Build a :class:`NodeBoundary` from the intent-joined-journal row.
 
-    The state is derived here and nowhere else: a StepRecord of any status is
-    a witnessed settlement; its absence with no dispatch mark is safe pending
-    work; its absence WITH a dispatch mark is an unknown effect (PRD 0014).
+    This backend only shapes the row; the state cascade itself lives in
+    :func:`derive_boundary_state` so both backends cannot drift.
     """
     dispatched_at = _parse_dt(row[5])
     step_status = StepStatus(row[6]) if row[6] is not None else None
-    if step_status is not None:
-        state = BoundaryState.COMMITTED
-    elif dispatched_at is not None:
-        state = BoundaryState.UNKNOWN_EFFECT
-    else:
-        state = BoundaryState.PENDING
     return NodeBoundary(
         run_id=row[0],
         superstep=row[1],
         node_name=row[2],
-        state=state,
+        state=derive_boundary_state(step_status, dispatched_at),
         node_type=row[3],
         created_at=_parse_dt(row[4]),
         dispatched_at=dispatched_at,
@@ -683,7 +676,7 @@ class SqliteCheckpointer(Checkpointer):
             db.executemany(_PENDING_NODE_UPSERT_SQL, [self._pending_node_params(b) for b in boundaries])
             db.commit()
 
-    def node_boundaries(self, run_id: str) -> list[NodeBoundary]:
+    def get_node_boundaries_sync(self, run_id: str) -> list[NodeBoundary]:
         """Sync mirror of :meth:`get_node_boundaries`."""
         with self._sync_lock:
             db = self._sync_db()

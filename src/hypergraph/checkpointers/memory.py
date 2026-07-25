@@ -27,13 +27,13 @@ from hypergraph.checkpointers.types import (
     AttemptRecord,
     AttemptSeries,
     AttemptStatus,
-    BoundaryState,
     NodeBoundary,
     PendingNode,
     Run,
     StepRecord,
     StepStatus,
     WorkflowStatus,
+    derive_boundary_state,
 )
 
 _BASELINE_NODE_NAME = "__retained_state__"
@@ -79,29 +79,28 @@ class MemoryCheckpointer(Checkpointer):
             run_boundaries.setdefault((boundary.superstep, boundary.node_name), boundary)
 
     async def get_node_boundaries(self, run_id: str) -> list[NodeBoundary]:
-        """Recovery view: every recorded boundary of a run, state derived."""
+        """Recovery view: every recorded boundary of a run, state derived.
+
+        The cascade itself lives in :func:`derive_boundary_state` so this
+        backend and SQLite cannot drift apart.
+        """
         run_steps = self._steps.get(run_id, {})
         run_boundaries = self._pending_nodes.get(run_id, {})
         views: list[NodeBoundary] = []
         for key in sorted(run_boundaries):
             boundary = run_boundaries[key]
             step = run_steps.get(key)
-            if step is not None:
-                state = BoundaryState.COMMITTED
-            elif boundary.dispatched_at is not None:
-                state = BoundaryState.UNKNOWN_EFFECT
-            else:
-                state = BoundaryState.PENDING
+            step_status = step.status if step is not None else None
             views.append(
                 NodeBoundary(
                     run_id=boundary.run_id,
                     superstep=boundary.superstep,
                     node_name=boundary.node_name,
-                    state=state,
+                    state=derive_boundary_state(step_status, boundary.dispatched_at),
                     node_type=boundary.node_type,
                     created_at=boundary.created_at,
                     dispatched_at=boundary.dispatched_at,
-                    step_status=step.status if step is not None else None,
+                    step_status=step_status,
                 )
             )
         return views

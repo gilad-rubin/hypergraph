@@ -20,7 +20,7 @@ from hypergraph.runners._shared.handles import SyncHandle, _launch_sync_executio
 from hypergraph.runners._shared.input_normalization import runner_option_names
 from hypergraph.runners._shared.outputs import SELECT_UNSET
 from hypergraph.runners._shared.pending_boundaries import (
-    record_pending_nodes_sync,
+    record_superstep_boundaries_sync,
     supports_pending_boundaries,
 )
 from hypergraph.runners._shared.protocols import NodeExecutor
@@ -448,7 +448,7 @@ class SyncRunner(SyncRunnerTemplate):
                 # Durable intent BEFORE the first sibling can cause external
                 # work — never a side effect of the first one finishing.
                 if persist_boundaries:
-                    record_pending_nodes_sync(
+                    record_superstep_boundaries_sync(
                         sync_cp,
                         workflow_id,  # type: ignore[arg-type]
                         superstep_idx + superstep_offset,

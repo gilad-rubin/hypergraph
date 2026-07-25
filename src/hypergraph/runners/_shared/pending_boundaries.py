@@ -16,11 +16,17 @@ fixed, before the first sibling dispatches.
 A pending record is never execution truth. StepRecords remain the sole
 execution journal; the boundary's state is derived by joining the two
 (:class:`hypergraph.checkpointers.types.BoundaryState`).
+
+``durability="exit"`` records NO boundaries at all. That mode buffers every
+StepRecord to run exit and advertises no mid-run recovery, so a boundary
+written mid-run would have no journal to be joined against and could never be
+classified. The durable Host forbids ``"exit"`` outright, so the durable tier
+is unaffected by the exclusion.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from hypergraph.checkpointers.protocols import PendingNodeProtocol, SyncPendingNodeProtocol
 from hypergraph.checkpointers.types import PendingNode
@@ -30,25 +36,33 @@ if TYPE_CHECKING:
 
     from hypergraph.nodes.base import HyperNode
 
+#: Every method of each seam, not just the one the write path calls.
+#: ``runtime_checkable`` matches on attribute PRESENCE only, so a checkpointer
+#: carrying an unrelated attribute of the same name would probe true and then
+#: fail mid-run. Demanding the whole seam AND that each member is callable
+#: makes that false positive structurally hard rather than merely unlikely.
+_ASYNC_BOUNDARY_METHODS = ("record_pending_nodes", "get_node_boundaries")
+_SYNC_BOUNDARY_METHODS = ("record_pending_nodes_sync", "get_node_boundaries_sync")
 
-def supports_pending_boundaries(checkpointer: Any, *, sync: bool) -> bool:
+
+def supports_pending_boundaries(checkpointer: object | None, *, sync: bool) -> bool:
     """Whether this checkpointer can and should persist node boundaries.
 
-    Resolved once per run, not per superstep.
+    Resolved once per run, not per superstep. ``None`` (no checkpointer, or
+    no ``workflow_id`` to key one on) answers False, so callers do not need
+    their own null guard.
 
-    ``durability="exit"`` is deliberately excluded: that mode buffers every
-    StepRecord to run exit and advertises no mid-run recovery, so a boundary
-    written mid-run could never be joined against a journal to classify it.
-    The durable Host forbids ``"exit"`` outright, so the durable tier is
-    unaffected.
+    ``durability="exit"`` is deliberately excluded — see the module docstring.
     """
     if checkpointer is None:
         return False
     policy = getattr(checkpointer, "policy", None)
     if policy is not None and getattr(policy, "durability", None) == "exit":
         return False
-    protocol = SyncPendingNodeProtocol if sync else PendingNodeProtocol
-    return isinstance(checkpointer, protocol)
+    protocol, methods = (SyncPendingNodeProtocol, _SYNC_BOUNDARY_METHODS) if sync else (PendingNodeProtocol, _ASYNC_BOUNDARY_METHODS)
+    if not isinstance(checkpointer, protocol):
+        return False
+    return all(callable(getattr(checkpointer, name, None)) for name in methods)
 
 
 def build_pending_nodes(
@@ -74,21 +88,26 @@ def build_pending_nodes(
     ]
 
 
-def record_pending_nodes_sync(
-    checkpointer: Any,
+def record_superstep_boundaries_sync(
+    checkpointer: SyncPendingNodeProtocol,
     workflow_id: str,
     superstep_idx: int,
     ready_nodes: Sequence[HyperNode],
 ) -> None:
-    """Persist this superstep's boundaries before any sibling dispatches."""
+    """Persist this superstep's boundaries before any sibling dispatches.
+
+    Named for the superstep it records, not for the backend method it calls:
+    ``SyncPendingNodeProtocol.record_pending_nodes_sync`` takes an already-built
+    boundary list, this takes the runnable batch.
+    """
     checkpointer.record_pending_nodes_sync(build_pending_nodes(workflow_id, superstep_idx, ready_nodes))
 
 
-async def record_pending_nodes_async(
-    checkpointer: Any,
+async def record_superstep_boundaries_async(
+    checkpointer: PendingNodeProtocol,
     workflow_id: str,
     superstep_idx: int,
     ready_nodes: Sequence[HyperNode],
 ) -> None:
-    """Async mirror of :func:`record_pending_nodes_sync`."""
+    """Async mirror of :func:`record_superstep_boundaries_sync`."""
     await checkpointer.record_pending_nodes(build_pending_nodes(workflow_id, superstep_idx, ready_nodes))

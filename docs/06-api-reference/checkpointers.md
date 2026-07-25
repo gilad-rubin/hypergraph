@@ -201,6 +201,8 @@ CheckpointPolicy()
 
 **Retry/timeout evidence writes through under every durability mode.** For a node with a [RetryPolicy](nodes.md#retrypolicy) or `timeout=`, attempt reservations/outcomes and the series-closing StepRecord are persisted immediately even under `durability="async"` or `"exit"`: the final attempt outcome, its linked StepRecord, and the series closure must commit atomically, and that invariant takes precedence over buffering. Nodes without retry or timeout buffer normally.
 
+**`durability="exit"` records no [pending node boundaries](#pending-node-boundaries-internal).** A boundary is only meaningful when it can be joined against a mid-run journal to classify it, and `exit` buffers every step to run completion — so under `exit` the boundary write is skipped entirely rather than persisting intent nothing can settle. `sync` and `async` both record boundaries, and both write them through immediately regardless of the mode's StepRecord timing (a buffered boundary would not survive the process death it exists to describe).
+
 **Async durability is best-effort.** With `durability="async"` (the default), step writes happen in background tasks: a failed write does not fail the run — the run still returns `COMPLETED`, and the failure is reported on the result instead. Check `result.checkpoint_ok` (and `result.checkpoint_errors`, a tuple of error strings) to detect gaps in the persisted history:
 
 ```python
@@ -484,13 +486,13 @@ A pending record is intent, never execution truth — it never claims a node ran
 One canonical address names one boundary occurrence: `<run_id>:<superstep>:<node_name>` — exactly the tuple `steps` is unique on, so a boundary and its `StepRecord` always agree.
 
 ```python
-from hypergraph.checkpointers import node_address, parse_node_address
+from hypergraph.checkpointers import node_address
 
 node_address("refund-c-42", 8, "approval")        # 'refund-c-42:8:approval'
-parse_node_address("wf-1/nested:0:inner")         # ('wf-1/nested', 0, 'inner')
+node_address("wf-1/nested", 0, "inner")           # 'wf-1/nested:0:inner'
 ```
 
-Parsing splits from the right, so nested (`wf-1/nested`) and Batch-child (`wf-b:item-7`) run ids round-trip. A loop's second visit to the same node lands on a later superstep and therefore owns a different address — an interrupted iteration never leaks into the next iteration's identity. A nested graph runs as its own child run, so the parent keeps the parent-facing address for its `GraphNode` while the child records its own boundaries under the child workflow id.
+Only the last two segments are fixed-shape (digits, then a Python identifier), so nested (`wf-1/nested`) and Batch-child (`wf-b:item-7`) run ids survive in the first segment unchanged. A loop's second visit to the same node lands on a later superstep and therefore owns a different address — an interrupted iteration never leaks into the next iteration's identity. A nested graph runs as its own child run, so the parent keeps the parent-facing address for its `GraphNode` while the child records its own boundaries under the child workflow id.
 
 | Type | Fields | Notes |
 |---|---|---|
@@ -508,10 +510,12 @@ for boundary in await checkpointer.get_node_boundaries("wf-1"):
 # NodeBoundary wf-1:1:notify_review | pending
 
 # SqliteCheckpointer also exposes the sync mirror:
-checkpointer.node_boundaries("wf-1")
+checkpointer.get_node_boundaries_sync("wf-1")
 ```
 
-Boundaries follow their step's retention fate: a pruned `StepRecord` takes its boundary with it, so compaction can never silently re-classify settled work as pending. `durability="exit"` records no boundaries at all — that mode buffers every step to run exit and advertises no mid-run recovery, so there would be no journal to join against. Checkpointers that do not implement the seam keep working; the runners probe for it (`PendingNodeProtocol` / `SyncPendingNodeProtocol`) instead of requiring it.
+**A boundary in an interrupted superstep never reads `COMMITTED`.** `StepRecord`s are committed per superstep, not per node, so a sibling that ran to completion inside the killed superstep has no `StepRecord` and its boundary is derived as `PENDING` — it will be dispatched again on restart. What the record buys is that unfinished siblings stay *visible and named* instead of being inferred from silence. For repeat-safe work the re-dispatch only wastes effort; effectful nodes are the subject of the `dispatched_at` seam.
+
+Boundaries follow their step's retention fate: a pruned `StepRecord` takes its boundary with it, so compaction can never silently re-classify settled work as pending. Checkpointers that do not implement the seam keep working; the runners probe for it (`PendingNodeProtocol` / `SyncPendingNodeProtocol` in `hypergraph.checkpointers.protocols`) instead of requiring it.
 
 ## Backend Comparison
 

@@ -22,7 +22,7 @@ from hypergraph.runners._shared.handles import AsyncHandle, AsyncRunEventHandle,
 from hypergraph.runners._shared.input_normalization import runner_option_names
 from hypergraph.runners._shared.outputs import SELECT_UNSET
 from hypergraph.runners._shared.pending_boundaries import (
-    record_pending_nodes_async,
+    record_superstep_boundaries_async,
     supports_pending_boundaries,
 )
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
@@ -491,7 +491,9 @@ class AsyncRunner(AsyncRunnerTemplate):
         # Checkpointer setup — deterministic node ordering for index assignment
         checkpointer = self._checkpointer_instance
         has_checkpointer = checkpointer is not None and workflow_id is not None
-        persist_boundaries = has_checkpointer and supports_pending_boundaries(checkpointer, sync=False)
+        # The probe answers None itself, so pass the active checkpointer (or
+        # None) exactly as SyncRunner does — one call, no extra null guard.
+        persist_boundaries = supports_pending_boundaries(checkpointer if has_checkpointer else None, sync=False)
         # When resuming, offset counters so new steps don't overwrite prior ones
         from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
 
@@ -574,7 +576,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                 # Durable intent BEFORE the first sibling can cause external
                 # work — never a side effect of the first one finishing.
                 if persist_boundaries:
-                    await record_pending_nodes_async(
+                    await record_superstep_boundaries_async(
                         checkpointer,
                         workflow_id,  # type: ignore[arg-type]
                         superstep_idx + superstep_offset,
