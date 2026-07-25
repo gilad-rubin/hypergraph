@@ -11,6 +11,7 @@ from hypergraph.checkpointers.protocols import SyncCheckpointerProtocol
 from hypergraph.checkpointers.serializers import JsonSerializer, PickleSerializer, Serializer
 from hypergraph.checkpointers.sqlite import SqliteCheckpointer
 from hypergraph.checkpointers.types import (
+    AnswerRejectedError,
     AttemptError,
     AttemptLedgerError,
     AttemptRecord,
@@ -21,9 +22,13 @@ from hypergraph.checkpointers.types import (
     LineageRow,
     LineageView,
     NodeBoundary,
+    PauseAlreadySettledError,
+    PauseSettlementError,
+    PauseSlot,
     PendingNode,
     Run,
     RunTable,
+    StalePauseError,
     StepRecord,
     StepStatus,
     StepTable,
@@ -32,6 +37,7 @@ from hypergraph.checkpointers.types import (
 )
 
 __all__ = [
+    "AnswerRejectedError",
     "AttemptError",
     "AttemptLedgerError",
     "AttemptRecord",
@@ -46,6 +52,9 @@ __all__ = [
     "LineageView",
     "MemoryCheckpointer",
     "NodeBoundary",
+    "PauseAlreadySettledError",
+    "PauseSettlementError",
+    "PauseSlot",
     "PendingNode",
     "PickleSerializer",
     "Run",
@@ -54,6 +63,7 @@ __all__ = [
     "Serializer",
     "SqliteCheckpointer",
     "SqliteRunInspector",
+    "StalePauseError",
     "StepRecord",
     "StepStatus",
     "StepTable",

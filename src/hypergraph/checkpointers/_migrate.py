@@ -484,6 +484,49 @@ def _ensure_pending_node_objects(conn: Any) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_nodes_run ON pending_nodes(run_id, superstep)")
 
 
+# Durable pause slots (ticket 13 / PRD 0010). Like pending_nodes this is a
+# CORE checkpointer table, not a host-only one: any checkpointed run that
+# pauses writes its occurrence here in the SAME transaction as the paused
+# step's records and the runs-row transition to 'paused'.
+#
+# The primary key is the node address `<run_id>:<superstep>:<node_name>`, so a
+# loop's repeated pauses own distinct rows and settlement can compare-and-set
+# on the exact occurrence a caller observed. `settled_at IS NULL` is the CAS
+# guard; `answer` holds the settled value as the durable resume input for
+# `response_key`.
+#
+# Deliberately NO foreign key to runs(id), for the same reason pending_nodes
+# has none: a history-less claimed run may have its runs row deleted and
+# restart fresh, and durable pause truth must never block that reset.
+#
+# Pause slots are NOT pruned by retention compaction. Unlike a node boundary
+# (whose state is DERIVED from steps), a slot carries the question and the
+# human answer — user-visible truth in its own right, not a projection of the
+# journal.
+_CREATE_PAUSE_SLOTS = """
+CREATE TABLE IF NOT EXISTS pause_slots (
+    pause_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    superstep INTEGER NOT NULL,
+    node_name TEXT NOT NULL,
+    node_path TEXT,
+    response_key TEXT NOT NULL,
+    question TEXT NOT NULL DEFAULT '{}',
+    answer_schema TEXT NOT NULL DEFAULT '{}',
+    options TEXT,
+    created_at TEXT NOT NULL,
+    settled_at TEXT,
+    answer TEXT
+)
+"""
+
+
+def _ensure_pause_slot_objects(conn: Any) -> None:
+    """Ensure the durable pause-slot table exists (safe idempotent guard)."""
+    conn.execute(_CREATE_PAUSE_SLOTS)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pause_slots_run ON pause_slots(run_id)")
+
+
 def _create_host_indexes(conn: Any) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_host_submissions_state ON host_submissions(state)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_host_submissions_definition ON host_submissions(definition_name)")
@@ -524,8 +567,9 @@ def _ensure_v6_objects(conn: Any) -> None:
     """Ensure v6 tables exist (safe idempotent guard).
 
     Covers the durable-host coordination tables and the core pending
-    node-boundary table. Every ``ensure_schema`` path reaches this, so dev
-    databases created at an earlier v6 cut pick the new objects up in place.
+    node-boundary and pause-slot tables. Every ``ensure_schema`` path reaches
+    this, so dev databases created at an earlier v6 cut pick the new objects
+    up in place.
     """
     conn.execute(_CREATE_HOST_SUBMISSIONS)
     conn.execute(_CREATE_RUN_UPDATES)
@@ -537,6 +581,7 @@ def _ensure_v6_objects(conn: Any) -> None:
     _add_missing_columns(conn, "host_batches", _HOST_BATCHES_ADDED_COLUMNS)
     _create_host_indexes(conn)
     _ensure_pending_node_objects(conn)
+    _ensure_pause_slot_objects(conn)
     conn.commit()
 
 

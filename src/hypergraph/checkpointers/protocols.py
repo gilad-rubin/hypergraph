@@ -24,12 +24,13 @@ method of the seam to exist and be callable.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from hypergraph.checkpointers.types import (
         Checkpoint,
         NodeBoundary,
+        PauseSlot,
         PendingNode,
         Run,
         StepRecord,
@@ -110,3 +111,48 @@ class SyncPendingNodeProtocol(Protocol):
     def record_pending_nodes_sync(self, boundaries: Sequence[PendingNode]) -> None: ...
 
     def get_node_boundaries_sync(self, run_id: str) -> list[NodeBoundary]: ...
+
+
+@runtime_checkable
+class PauseSlotProtocol(Protocol):
+    """Async durable pause-slot seam (PRD 0010) — optional.
+
+    ``record_pause`` is atomic by contract: the slot, the paused step's
+    records, and the run's transition to ``PAUSED`` commit as one unit.
+    Runners probe for the whole seam before using it and fall back to the
+    plain save-steps-then-set-status path when it is absent, so a
+    third-party checkpointer keeps working.
+    """
+
+    async def record_pause(
+        self,
+        slot: PauseSlot,
+        *,
+        step_records: Sequence[StepRecord] = (),
+        duration_ms: float | None = None,
+        node_count: int | None = None,
+        error_count: int | None = None,
+    ) -> None: ...
+
+    async def get_pause_slot(self, run_id: str, *, pause_id: str | None = None) -> PauseSlot | None: ...
+
+    async def settle_pause(self, run_id: str, *, pause_id: str | None = None, value: Any) -> PauseSlot: ...
+
+
+@runtime_checkable
+class SyncPauseSlotProtocol(Protocol):
+    """Sync mirror of :class:`PauseSlotProtocol`."""
+
+    def record_pause_sync(
+        self,
+        slot: PauseSlot,
+        *,
+        step_records: Sequence[StepRecord] = (),
+        duration_ms: float | None = None,
+        node_count: int | None = None,
+        error_count: int | None = None,
+    ) -> None: ...
+
+    def get_pause_slot_sync(self, run_id: str, *, pause_id: str | None = None) -> PauseSlot | None: ...
+
+    def settle_pause_sync(self, run_id: str, *, pause_id: str | None = None, value: Any) -> PauseSlot: ...

@@ -109,6 +109,7 @@ Practical mental model:
 - `caching.py` — Cache key computation and lookup
 - `checkpoint_helpers.py` — Build persisted `StepRecord`s from runtime state
 - `pending_boundaries.py` — Persist a superstep's runnable node boundaries before any sibling dispatches
+- `pause_slots.py` — Project an interrupt occurrence into a durable pause slot and commit it atomically with the paused step and the `PAUSED` transition
 - `event_helpers.py` — Emit lifecycle events
 - `gate_execution.py` — Route/ifelse decision execution
 - `input_normalization.py` — Normalize user inputs for execution
@@ -158,6 +159,7 @@ Durability, lineage, and historical inspection for persisted runs.
 | `protocols.py` | Sync write protocol for `SyncRunner` |
 | `serializers.py` | Payload serializers |
 | `_migrate.py` | SQLite schema migrations |
+| `_answer_schema.py` | Render an interrupt's declared `answer_type` as JSON Schema and check settled values against it |
 
 **Rule**: Checkpointing is not just persistence. It participates in resume,
 fork, retry, lineage, and durable-history notebook UX. It is not required for

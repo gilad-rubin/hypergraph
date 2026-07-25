@@ -11,7 +11,8 @@ This page covers the local Tier 1 host: `serve()`, `RunHome`, `Host`, and
 `RunHomeClient`. For direct execution semantics see [Runners](runners.md);
 for process-local background handles see
 [Control Work After It Starts](../05-how-to/control-background-execution.md).
-Durable pause answers land in a later release of this surface.
+`client.answer()` settles a durable pause; **scheduled** (timed) answers land
+in a later release of this surface.
 {% endhint %}
 
 ## Serving Definitions
@@ -373,6 +374,59 @@ affects dedup. The worker only delivers a stop to a run the Definition's
 runner reports as live (`runner.has_active_run(workflow_id)`), so a stop
 never lands on a stale or not-yet-registered execution.
 
+## Answering a Pause
+
+When a run pauses at an `InterruptNode`, the occurrence is persisted as a
+**durable pause slot** — question, answer port, answer schema, and a unique
+`pause_id` — in the same transaction as the paused step and the `PAUSED`
+transition. See
+[Durable Pause Slots](checkpointers.md#durable-pause-slots) for the record
+itself.
+
+Read the occurrence, then answer the one you observed:
+
+```python
+slot = await client.get_run_slot(ref)      # None when the run has no pause
+slot.pause_id                              # 'refund-c-42:8:approval'
+slot.question["prompt"]                    # 'Approve this refund?'
+slot.answer_schema                         # {'type': 'boolean'}
+
+settled = await client.answer(ref, pause_id=slot.pause_id, value=True)
+settled.answer                             # True
+settled.settled_at                         # set — the occurrence is closed
+```
+
+`answer()` returns the settled `PauseSlot` rather than a `CommandReceipt`:
+unlike `stop()` — a command a worker applies later — an answer is applied
+immediately, and the schema check, the compare-and-set on `pause_id`, the
+resume-input write, and the durable `answer` fact all commit in one
+transaction. `client.answer_sync(...)` and `client.get_run_slot_sync(...)`
+are the synchronous mirrors. `answer()` takes a `RunRef` only; a Batch is
+answered through its child runs.
+
+Every answer names the occurrence it observed, so the three refusals stay
+distinguishable:
+
+| Error | Raised when |
+|---|---|
+| `AnswerRejectedError` | no `pause_id`, an unknown one, a run with no durable pause, a run that is not paused, or a value failing `answer_schema` |
+| `PauseAlreadySettledError` | this occurrence was already answered — the first caller's value wins |
+| `StalePauseError` | a later pause occurrence is current (carries `.current_pause_id`) |
+
+A rejected value is refused **before any write**, so the occurrence stays
+open and a corrected value can still answer it. Answer-versus-stop races
+resolve by commit order: an answer that commits first stands (a later stop is
+still accepted and settles the run), while a stop whose terminal transition
+commits first makes the answer raise `AnswerRejectedError` and leaves the
+slot open.
+
+{% hint style="warning" %}
+Settlement writes durable **resume input**; it does not itself resume the
+run. Re-delivering a settled answer to a worker (and scheduled answers) is a
+later slice of this surface. Tier 0 resume — `runner.run(graph, {slot.response_key: slot.answer}, workflow_id=...)`
+— is unchanged.
+{% endhint %}
+
 ## Listing Runs
 
 `client.list(query)` filters joined run views through a typed `RunQuery` —
@@ -668,3 +722,10 @@ brake counts **progressless re-adoptions**:
 | `ForkCompatibilityError` | `host.fork()` targets a structurally incompatible Definition |
 | `RerunError` | `client.rerun()` names a missing or nonterminal source (recovery-exhausted sources are allowed) |
 | `HostError` | base class for host-specific errors; also raised directly for an unknown stop target |
+| `AnswerRejectedError` | `client.answer()` named no/unknown occurrence, a run that is not paused, or a value failing `answer_schema` |
+| `PauseAlreadySettledError` | `client.answer()` re-answered a settled occurrence |
+| `StalePauseError` | `client.answer()` named an occurrence a later pause superseded |
+
+The three pause refusals share the base class `PauseSettlementError` and live
+with the checkpointer that raises them
+(`hypergraph.checkpointers`); they are re-exported from `hypergraph`.

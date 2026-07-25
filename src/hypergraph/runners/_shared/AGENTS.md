@@ -114,6 +114,23 @@ With a checkpointer, `is_resuming` prevents fresh-run values from masquerading
 as a resume payload. Without a checkpointer it is intentionally true so an
 answer supplied up front supports headless/CSV/batch execution.
 
+## Durable Pause Slots (`pause_slots.py`)
+
+Both templates commit a pause through `commit_pause_async` /
+`commit_pause_sync`: the durable slot, the buffered step records, and the
+`PAUSED` transition go to the backend as ONE call, never as separate writes.
+Keep the two templates identical here even though no shipped sync runner
+declares `supports_interrupts` yet.
+
+The slot is addressed by `PauseExecution.superstep`, which the runner sets in
+its `except PauseExecution` handler to the same `superstep_idx +
+superstep_offset` the paused StepRecord carries — a slot and its step share
+one address. A nested pause is re-raised as a FRESH `PauseExecution` by the
+GraphNode executor, so the parent addresses it in the parent's own scope and
+the slot keeps the parent-facing node name and answer port (see "GraphNode
+Boundary Addressing"). Settlement never invents execution truth: a resumed
+run still flows through normal `is_resuming` semantics.
+
 ## Resume Payload State
 
 `GraphState.values` can contain restored checkpoint state and current-run

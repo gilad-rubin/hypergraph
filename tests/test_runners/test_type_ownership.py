@@ -124,6 +124,11 @@ ROOT_EXPORTS = (
     "BatchView",
     "BatchUpdate",
     "BatchTolerance",
+    "PauseSlot",
+    "PauseSettlementError",
+    "AnswerRejectedError",
+    "PauseAlreadySettledError",
+    "StalePauseError",
     "set_display_mode",
     "get_display_mode",
 )

@@ -34,6 +34,12 @@ class PauseExecution(BaseException):
         stopped: Whether a cooperative stop was also requested when the
             pause propagated.
         span_id: Span of the interrupt node, set by the superstep.
+        superstep: Resume-offset superstep index this pause landed on, set
+            by the runner where the paused StepRecord is built. It is what
+            addresses the durable pause slot (PRD 0010), so the slot and the
+            paused step share one address. ``None`` until the runner sets
+            it — a nested delegation re-raises a FRESH ``PauseExecution``,
+            which the parent runner then addresses in its own scope.
     """
 
     def __init__(
@@ -46,6 +52,7 @@ class PauseExecution(BaseException):
         self.partial_state = partial_state
         self.stopped = stopped
         self.span_id: str | None = None
+        self.superstep: int | None = None
         super().__init__(f"Paused at {pause_info.node_name}")
 
 

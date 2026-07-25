@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.checkpointers.types import WorkflowStatus
+from hypergraph.checkpointers.types import PauseSlot, WorkflowStatus
 from hypergraph.host._bus import _bus_for, _PreviewBus
 from hypergraph.host.batch import BatchTolerance
 from hypergraph.host.definition import DefinitionId
@@ -417,8 +417,8 @@ class RunHomeClient:
     ``rerun`` repeats a settled (or recovery-exhausted) run under a new
     workflow id with retry lineage, or mints a new immutable Batch from
     named source item keys; ``stop`` records a durable stop command;
-    ``list`` filters joined run views through a typed ``RunQuery``.
-    ``answer`` arrives with a later host ticket.
+    ``list`` filters joined run views through a typed ``RunQuery``;
+    ``answer`` settles one observed durable pause occurrence.
     """
 
     def __init__(self, home: RunHome, *, _bus: _PreviewBus | None = None) -> None:
@@ -504,6 +504,56 @@ class RunHomeClient:
             raise TypeError(f"stop() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         created = self._home._write_stop_command_sync(ref.run_id, info, source_ref)
         return CommandReceipt(run_ref=ref, duplicate=not created)
+
+    async def answer(self, ref: RunRef, *, pause_id: str | None = None, value: Any) -> PauseSlot:
+        """Settle the pause occurrence ``pause_id`` with one typed ``value``.
+
+        Unlike ``stop`` — a durable command a worker applies later — an
+        answer is applied here: the schema check, the compare-and-set on the
+        occurrence, the resume-input write, and the durable ``answer`` fact
+        commit in one transaction. So this returns the settled
+        :class:`~hypergraph.checkpointers.types.PauseSlot` (durable truth)
+        rather than a receipt for work still to come.
+
+        Read the occurrence first — ``(await client.get_run_slot(ref))`` or
+        ``run.pause_slot`` — and pass its ``pause_id``: every answer names the
+        occurrence it observed, so a stale answer can never settle a later
+        pause.
+
+        Raises:
+            AnswerRejectedError: no ``pause_id``, an unknown one, a run that
+                is not paused, or a value failing the slot's
+                ``answer_schema``. Nothing is written and the occurrence
+                stays open, so a corrected value can answer it.
+            PauseAlreadySettledError: this occurrence was already answered;
+                the first caller's value wins.
+            StalePauseError: a later pause occurrence is current.
+        """
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"answer() expects a RunRef, got {type(ref).__name__}. A Batch answers through its child runs.")
+        return await self._home.settle_pause(ref.run_id, pause_id=pause_id, value=value)
+
+    def answer_sync(self, ref: RunRef, *, pause_id: str | None = None, value: Any) -> PauseSlot:
+        """Sync mirror of ``answer``."""
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"answer() expects a RunRef, got {type(ref).__name__}. A Batch answers through its child runs.")
+        return self._home.settle_pause_sync(ref.run_id, pause_id=pause_id, value=value)
+
+    async def get_run_slot(self, ref: RunRef) -> PauseSlot | None:
+        """The run's current durable pause occurrence, or None.
+
+        ``settled_at`` says whether it was answered; the run's status says
+        whether it is still waiting.
+        """
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"get_run_slot() expects a RunRef, got {type(ref).__name__}.")
+        return await self._home.get_pause_slot(ref.run_id)
+
+    def get_run_slot_sync(self, ref: RunRef) -> PauseSlot | None:
+        """Sync mirror of ``get_run_slot``."""
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"get_run_slot() expects a RunRef, got {type(ref).__name__}.")
+        return self._home.get_pause_slot_sync(ref.run_id)
 
     async def list(self, query: RunQuery) -> list[RunView]:
         """List runs matching ``query``, oldest first.

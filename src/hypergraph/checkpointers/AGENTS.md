@@ -24,6 +24,26 @@ row-count shortcuts.
 - Anything derived from `steps` must follow those steps through retention
   compaction. Dropping a step without its boundary would silently
   re-classify settled work as pending.
+- A durable pause slot is NOT derived: it carries the question projection and
+  the human answer, so retention must not prune it with its step. Keep new
+  durable records on the right side of this line before wiring compaction.
+
+## Durable Pause Slots
+
+- `record_pause` is atomic by contract: the slot, the paused step's records,
+  and the run's transition to `PAUSED` commit as ONE transaction. Never split
+  them, and never add a write between them.
+- Settlement is a compare-and-set on the CURRENT `pause_id`. Every refusal
+  (`AnswerRejectedError` / `PauseAlreadySettledError` / `StalePauseError`)
+  must be raised before any write, so a refused answer leaves the occurrence
+  open.
+- The decision cascade lives once, in `base._check_settlement`. Backends
+  supply the rows and perform the CAS; they must not re-derive which refusal
+  applies, or Memory and SQLite would drift.
+- The answer contract is data, never a callable: render `answer_type` through
+  `_answer_schema.render_answer_schema` and check values with
+  `validate_answer`. A type the renderer cannot express becomes the empty
+  schema — never a guessed constraint.
 
 ## Sync, Async, and Versions
 

@@ -148,6 +148,132 @@ class NodeBoundary:
         return " | ".join(parts)
 
 
+@dataclass(frozen=True)
+class PauseSlot:
+    """Durable record of ONE interrupt occurrence (PRD 0010).
+
+    Before this record existed, pause truth died with the process: the
+    question and its answer port lived only on the in-memory ``RunResult``.
+    A slot is written in the SAME transaction as the paused step's records
+    and the run's transition to ``PAUSED``, so no committed pause is ever
+    missing its question.
+
+    ``pause_id`` is the node address of the occurrence
+    (``<run_id>:<superstep>:<node_name>``) — a loop's second visit lands on a
+    later superstep and therefore owns a different id.
+
+    ``node_name`` is the **parent-facing** node: for a nested interrupt it is
+    the delegating ``GraphNode`` in this run, exactly like the paused
+    StepRecord. ``node_path`` keeps the full ``graphnode/inner`` display path,
+    and the child run records its own slot under the child workflow id.
+
+    ``question`` is a JSON-safe projection (prompt / options / evidence /
+    answer-type name) — the live handler payload never enters the journal.
+    ``answer_schema`` is the graph-derived answer contract as JSON Schema; an
+    empty schema means the declared type could not be expressed and
+    constrains nothing (see ``checkpointers/_answer_schema.py``).
+
+    ``answer`` is the settled value — the durable resume input for
+    ``response_key``. It is meaningful only once ``settled_at`` is set.
+    """
+
+    run_id: str
+    superstep: int
+    node_name: str
+    response_key: str
+    question: dict[str, Any] = field(default_factory=dict)
+    answer_schema: dict[str, Any] = field(default_factory=dict)
+    options: tuple[str, ...] | None = None
+    node_path: str | None = None
+    created_at: datetime = field(default_factory=_utcnow)
+    settled_at: datetime | None = None
+    answer: Any = None
+
+    @property
+    def pause_id(self) -> str:
+        """Canonical durable id of this interrupt occurrence."""
+        return node_address(self.run_id, self.superstep, self.node_name)
+
+    @property
+    def is_open(self) -> bool:
+        """Whether this occurrence is still waiting for an answer."""
+        return self.settled_at is None
+
+    def __repr__(self) -> str:
+        state = "open" if self.is_open else "settled"
+        return f"PauseSlot {self.pause_id} | {state} | answers {self.response_key!r}"
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-serializable dict with only primitive types."""
+        return {
+            "pause_id": self.pause_id,
+            "run_id": self.run_id,
+            "superstep": self.superstep,
+            "node_name": self.node_name,
+            "node_path": self.node_path,
+            "response_key": self.response_key,
+            "question": self.question,
+            "answer_schema": self.answer_schema,
+            "options": None if self.options is None else list(self.options),
+            "created_at": self.created_at.isoformat(),
+            "settled_at": self.settled_at.isoformat() if self.settled_at else None,
+            "answer": self.answer,
+        }
+
+
+class PauseSettlementError(RuntimeError):
+    """Base class for refusals to settle a durable pause occurrence.
+
+    Every subclass is raised BEFORE any write: a refused answer never
+    consumes the occurrence, so the slot the caller observed stays exactly
+    as it was.
+    """
+
+
+class AnswerRejectedError(PauseSettlementError):
+    """The answer did not name an answerable occurrence, or failed its schema.
+
+    Raised for a missing/unknown ``pause_id``, a run with no durable pause, a
+    run that is no longer paused, and a value that fails the slot's
+    ``answer_schema``. The current slot stays open — the caller may correct
+    the value and answer the same occurrence again.
+    """
+
+    def __init__(self, run_id: str, message: str, *, pause_id: str | None = None, issues: tuple[str, ...] = ()) -> None:
+        self.run_id = run_id
+        self.pause_id = pause_id
+        self.issues = issues
+        super().__init__(message)
+
+
+class PauseAlreadySettledError(PauseSettlementError):
+    """This exact occurrence was already answered; the first value wins.
+
+    A durable pause is settled once. The second caller learns that the
+    decision is already made rather than silently overwriting it.
+    """
+
+    def __init__(self, run_id: str, pause_id: str, message: str) -> None:
+        self.run_id = run_id
+        self.pause_id = pause_id
+        super().__init__(message)
+
+
+class StalePauseError(PauseSettlementError):
+    """The named occurrence has been superseded by a later pause.
+
+    A loop that pauses twice produces two occurrences. An answer armed
+    against the first one must never settle the second — it is a different
+    question.
+    """
+
+    def __init__(self, run_id: str, pause_id: str, current_pause_id: str, message: str) -> None:
+        self.run_id = run_id
+        self.pause_id = pause_id
+        self.current_pause_id = current_pause_id
+        super().__init__(message)
+
+
 class AttemptStatus(Enum):
     """Status of one callable invocation inside an attempt series.
 
@@ -355,7 +481,13 @@ class StepRecord:
 
 @dataclass
 class Run:
-    """Run metadata record."""
+    """Run metadata record.
+
+    ``pause_slot`` carries the run's most recent durable interrupt occurrence
+    and is populated by the single-run reads (``get_run_async`` /
+    ``get_run``); list views leave it ``None`` — read a specific run's slot
+    with ``get_pause_slot(run_id)``.
+    """
 
     id: str
     status: WorkflowStatus
@@ -371,6 +503,7 @@ class Run:
     config: dict[str, Any] | None = None
     created_at: datetime = field(default_factory=_utcnow)
     completed_at: datetime | None = None
+    pause_slot: PauseSlot | None = None
 
     def __repr__(self) -> str:
         parts = [f"Run: {self.id}"]
@@ -419,6 +552,7 @@ class Run:
             "config": self.config,
             "created_at": self.created_at.isoformat(),
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "pause_slot": self.pause_slot.to_dict() if self.pause_slot is not None else None,
         }
 
 

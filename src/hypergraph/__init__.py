@@ -3,9 +3,14 @@
 from hypergraph._repr import get_display_mode, set_display_mode
 from hypergraph.cache import CacheBackend, DiskCache, InMemoryCache
 from hypergraph.checkpointers import (
+    AnswerRejectedError,
     Checkpointer,
     CheckpointPolicy,
+    PauseAlreadySettledError,
+    PauseSettlementError,
+    PauseSlot,
     SqliteCheckpointer,
+    StalePauseError,
 )
 from hypergraph.diagnostics import (
     Diagnostic,
@@ -247,6 +252,12 @@ __all__ = [
     "BatchView",
     "BatchUpdate",
     "BatchTolerance",
+    # Durable pause slots (PRD 0010)
+    "PauseSlot",
+    "PauseSettlementError",
+    "AnswerRejectedError",
+    "PauseAlreadySettledError",
+    "StalePauseError",
     # Display
     "set_display_mode",
     "get_display_mode",

@@ -17,6 +17,7 @@ from hypergraph.checkpointers.base import (
     _check_recordable_outcome,
     _check_reservation,
     _check_run_exists,
+    _check_settlement,
     _new_attempt_series_id,
     _normalize_since,
     _require_series,
@@ -28,6 +29,7 @@ from hypergraph.checkpointers.types import (
     AttemptSeries,
     AttemptStatus,
     NodeBoundary,
+    PauseSlot,
     PendingNode,
     Run,
     StepRecord,
@@ -60,6 +62,8 @@ class MemoryCheckpointer(Checkpointer):
         self._attempt_series: dict[str, AttemptSeries] = {}
         self._attempt_records: dict[str, dict[int, AttemptRecord]] = {}
         self._pending_nodes: dict[str, dict[tuple[int, str], PendingNode]] = {}
+        # Insertion-ordered per run: the LAST entry is the current occurrence.
+        self._pause_slots: dict[str, list[PauseSlot]] = {}
 
     async def save_step(self, record: StepRecord) -> None:
         run_steps = self._steps.setdefault(record.run_id, {})
@@ -104,6 +108,73 @@ class MemoryCheckpointer(Checkpointer):
                 )
             )
         return views
+
+    # === Durable pause slots (PRD 0010) ===
+
+    async def record_pause(
+        self,
+        slot: PauseSlot,
+        *,
+        step_records: Sequence[StepRecord] = (),
+        duration_ms: float | None = None,
+        node_count: int | None = None,
+        error_count: int | None = None,
+    ) -> None:
+        """Commit the pause slot, its step records, and the PAUSED transition.
+
+        Memory has no transaction to open: the whole body runs without an
+        await, so no other coroutine can observe a half-written pause. The
+        status flip is last, mirroring the SQLite ordering.
+        """
+        for record in step_records:
+            run_steps = self._steps.setdefault(record.run_id, {})
+            run_steps[(record.superstep, record.node_name)] = record
+        if step_records:
+            self._apply_retention_policy(slot.run_id)
+        occurrences = self._pause_slots.setdefault(slot.run_id, [])
+        existing = next((index for index, item in enumerate(occurrences) if item.pause_id == slot.pause_id), None)
+        if existing is None:
+            occurrences.append(slot)
+        else:
+            # Same address re-recorded (a resume replaying the occurrence):
+            # the first record owns when it was asked and any settlement.
+            occurrences[existing] = replace(
+                slot, created_at=occurrences[existing].created_at, settled_at=occurrences[existing].settled_at, answer=occurrences[existing].answer
+            )
+        await self.update_run_status(
+            slot.run_id,
+            WorkflowStatus.PAUSED,
+            duration_ms=duration_ms,
+            node_count=node_count,
+            error_count=error_count,
+        )
+
+    async def get_pause_slot(self, run_id: str, *, pause_id: str | None = None) -> PauseSlot | None:
+        """The run's current pause occurrence, or a named earlier one."""
+        occurrences = self._pause_slots.get(run_id, [])
+        if not occurrences:
+            return None
+        if pause_id is None:
+            return occurrences[-1]
+        return next((slot for slot in occurrences if slot.pause_id == pause_id), None)
+
+    async def settle_pause(self, run_id: str, *, pause_id: str | None = None, value: Any) -> PauseSlot:
+        """Validate one typed value, then settle the named occurrence."""
+        occurrences = self._pause_slots.get(run_id, [])
+        current = occurrences[-1] if occurrences else None
+        run = self._runs.get(run_id)
+        _check_settlement(
+            run_id=run_id,
+            pause_id=pause_id,
+            current=current,
+            known_pause_ids=[slot.pause_id for slot in occurrences],
+            run_status=run.status if run is not None else None,
+            value=value,
+        )
+        assert current is not None  # _check_settlement raises otherwise
+        settled = replace(current, settled_at=datetime.now(timezone.utc), answer=value)
+        occurrences[-1] = settled
+        return settled
 
     async def create_run(
         self,
@@ -190,7 +261,13 @@ class MemoryCheckpointer(Checkpointer):
         return sorted(records, key=_step_sort_key)
 
     async def get_run_async(self, run_id: str) -> Run | None:
-        return self._runs.get(run_id)
+        run = self._runs.get(run_id)
+        if run is None:
+            return None
+        occurrences = self._pause_slots.get(run_id)
+        if not occurrences:
+            return run
+        return replace(run, pause_slot=occurrences[-1])
 
     async def list_runs(
         self,

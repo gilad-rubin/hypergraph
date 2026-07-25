@@ -28,6 +28,7 @@ from hypergraph.checkpointers import (
     MemoryCheckpointer,
     NodeBoundary,
     PendingNode,
+    Run,
     SqliteCheckpointer,
     SqliteRunInspector,
     node_address,
@@ -499,6 +500,25 @@ def test_checkpointer_semantics_docs_mirror_high_drift_surfaces() -> None:
         assert f"`{field_name}`" in boundaries
     assert PendingNode.__dataclass_fields__["dispatched_at"].default is None
     assert "never claims a node ran" in boundaries
+
+    # Durable pause slots: the persisted answer contract is user-visible
+    # state, and the three refusals must stay distinguishable in the docs.
+    from hypergraph.checkpointers import PauseSlot
+    from hypergraph.checkpointers._answer_schema import render_answer_schema
+
+    slots = _scoped_section(checkpointers, "## Durable Pause Slots")
+    assert node_address("refund-c-42", 8, "approval") in slots
+    assert str(render_answer_schema(bool)) in slots
+    for field_name in PauseSlot.__dataclass_fields__:
+        assert f"`{field_name}`" in slots
+    assert "`pause_id`" in slots
+    assert isinstance(inspect.getattr_static(PauseSlot, "pause_id"), property)
+    assert isinstance(inspect.getattr_static(PauseSlot, "is_open"), property)
+    assert Run.__dataclass_fields__["pause_slot"].default is None
+    for error_name in ("AnswerRejectedError", "PauseAlreadySettledError", "StalePauseError", "PauseSettlementError"):
+        assert error_name in slots
+    assert "no validator callables" in slots
+    assert "not** pruned by retention" in slots
 
 
 def test_inspect_mode_docs_mirror_public_contract() -> None:
@@ -989,6 +1009,19 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert "BatchTolerance" in host_api
     assert "unstarted_items" in host_api
     assert "bseq" in host_api
+
+    # Ticket 13: durable pause answers — one occurrence, three refusals.
+    assert "client.answer" in host_api
+    assert "answer_sync" in host_api
+    assert "get_run_slot" in host_api
+    assert "AnswerRejectedError" in host_api
+    assert "PauseAlreadySettledError" in host_api
+    assert "StalePauseError" in host_api
+    assert "pause_id" in host_api
+    assert tuple(inspect.signature(RunHomeClient.answer).parameters) == ("self", "ref", "pause_id", "value")
+    assert tuple(inspect.signature(RunHomeClient.answer_sync).parameters) == tuple(inspect.signature(RunHomeClient.answer).parameters)
+    assert tuple(inspect.signature(RunHomeClient.get_run_slot).parameters) == ("self", "ref")
+    assert tuple(inspect.signature(RunHomeClient.get_run_slot_sync).parameters) == ("self", "ref")
 
     # Definition binding and runner cloning signatures.
     assert tuple(inspect.signature(Graph.with_runner).parameters) == ("self", "runner")

@@ -705,17 +705,23 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                         status=RunStatus.PAUSED.value,
                     )
                 if sync_cp is not None:
-                    from hypergraph.checkpointers.types import WorkflowStatus
                     from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
+                    from hypergraph.runners._shared.pause_slots import commit_pause_sync
 
-                    for record in step_buffer:
-                        sync_cp.save_step_sync(record)
                     _, step_offset = checkpoint_offsets(resume_checkpoint)
                     step_count = step_offset + collector.step_count
                     error_count = collector.failed_step_count
-                    sync_cp.update_run_status_sync(
+                    # Same atomic pause commit the async template uses — see
+                    # ``pause_slots``. No shipped sync runner declares
+                    # ``supports_interrupts`` yet, so this path stays
+                    # unexercised in-tree; keeping it identical is what stops
+                    # the two templates from drifting when one does.
+                    commit_pause_sync(
+                        sync_cp,
+                        graph,
                         workflow_id,
-                        WorkflowStatus.PAUSED,
+                        pause,
+                        step_buffer,
                         duration_ms=total_duration_ms,
                         node_count=step_count,
                         error_count=error_count,

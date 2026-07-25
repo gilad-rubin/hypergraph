@@ -25,6 +25,8 @@ from hypergraph.checkpointers.base import (
     _check_recordable_outcome,
     _check_reservation,
     _check_run_exists,
+    _check_settlement,
+    _lost_settlement_race,
     _new_attempt_series_id,
     _normalize_since,
     _require_series,
@@ -43,6 +45,7 @@ from hypergraph.checkpointers.types import (
     LineageRow,
     LineageView,
     NodeBoundary,
+    PauseSlot,
     PendingNode,
     Run,
     RunTable,
@@ -98,6 +101,22 @@ _NODE_BOUNDARY_SELECT_SQL = """
     WHERE p.run_id = ?
     ORDER BY p.superstep, p.node_name
 """
+# === Durable pause slots (PRD 0010) ===
+#
+# One row per interrupt occurrence, keyed by its node address, written in the
+# SAME transaction as the paused step's records and the runs-row transition to
+# 'paused'. ``DO NOTHING`` on conflict: the address IS the occurrence, so a
+# replayed pause must not rewrite when it was asked nor clear a settlement.
+# ``rowid DESC`` is commit order, which is occurrence order — the newest row is
+# the current pause.
+_PAUSE_SLOT_COLS = "pause_id, run_id, superstep, node_name, node_path, response_key, question, answer_schema, options, created_at, settled_at, answer"
+_PAUSE_SLOT_INSERT_SQL = f"INSERT INTO pause_slots ({_PAUSE_SLOT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(pause_id) DO NOTHING"
+_PAUSE_SLOT_CURRENT_SQL = f"SELECT {_PAUSE_SLOT_COLS} FROM pause_slots WHERE run_id = ? ORDER BY rowid DESC LIMIT 1"
+_PAUSE_SLOT_BY_ID_SQL = f"SELECT {_PAUSE_SLOT_COLS} FROM pause_slots WHERE run_id = ? AND pause_id = ?"
+_PAUSE_SLOT_IDS_SQL = "SELECT pause_id FROM pause_slots WHERE run_id = ?"
+# Compare-and-set: a competing answer that lost the race matches 0 rows, so the
+# first settlement wins and the loser gets a truthful refusal.
+_PAUSE_SLOT_SETTLE_SQL = "UPDATE pause_slots SET settled_at = ?, answer = ? WHERE pause_id = ? AND settled_at IS NULL"
 _STEP_UPSERT_SQL = """
     INSERT INTO steps (
         run_id, superstep, node_name, step_index, status,
@@ -328,6 +347,75 @@ def _row_to_node_boundary(row: Sequence[Any]) -> NodeBoundary:
         dispatched_at=dispatched_at,
         step_status=step_status,
     )
+
+
+def _pause_slot_insert_params(slot: PauseSlot) -> tuple[Any, ...]:
+    return (
+        slot.pause_id,
+        slot.run_id,
+        slot.superstep,
+        slot.node_name,
+        slot.node_path,
+        slot.response_key,
+        json.dumps(slot.question),
+        json.dumps(slot.answer_schema),
+        None if slot.options is None else json.dumps(list(slot.options)),
+        slot.created_at.isoformat(),
+        slot.settled_at.isoformat() if slot.settled_at is not None else None,
+        None if slot.settled_at is None else json.dumps(slot.answer),
+    )
+
+
+def _row_to_pause_slot(row: Sequence[Any]) -> PauseSlot:
+    options = json.loads(row[8]) if row[8] is not None else None
+    settled_at = _parse_dt(row[10])
+    created_at = _parse_dt(row[9])
+    return PauseSlot(
+        run_id=row[1],
+        superstep=int(row[2]),
+        node_name=row[3],
+        node_path=row[4],
+        response_key=row[5],
+        question=json.loads(row[6]),
+        answer_schema=json.loads(row[7]),
+        options=None if options is None else tuple(options),
+        created_at=created_at if created_at is not None else datetime.now(timezone.utc),
+        settled_at=settled_at,
+        # The answer column is only meaningful once settled; an unsettled row
+        # must never present a decoded value.
+        answer=json.loads(row[11]) if settled_at is not None and row[11] is not None else None,
+    )
+
+
+def _run_status_update(
+    status: WorkflowStatus,
+    *,
+    duration_ms: float | None,
+    node_count: int | None,
+    error_count: int | None,
+) -> tuple[str, list[Any]]:
+    """Build the runs-row SET clause and params for one status transition.
+
+    Shared so the plain status write and the atomic pause commit cannot drift
+    about which columns a transition touches.
+    """
+    completed_at = (
+        datetime.now(timezone.utc).isoformat()
+        if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.PARTIAL, WorkflowStatus.STOPPED}
+        else None
+    )
+    sets = ["status = ?", "completed_at = ?"]
+    params: list[Any] = [status.value, completed_at]
+    if duration_ms is not None:
+        sets.append("duration_ms = ?")
+        params.append(duration_ms)
+    if node_count is not None:
+        sets.append("node_count = ?")
+        params.append(node_count)
+    if error_count is not None:
+        sets.append("error_count = ?")
+        params.append(error_count)
+    return f"UPDATE runs SET {', '.join(sets)} WHERE id = ?", params
 
 
 def _lineage_parent_id(run: Run) -> str | None:
@@ -683,6 +771,207 @@ class SqliteCheckpointer(Checkpointer):
             rows = db.execute(_NODE_BOUNDARY_SELECT_SQL, (run_id,)).fetchall()
         return [_row_to_node_boundary(row) for row in rows]
 
+    # === Durable pause slots (PRD 0010) ===
+
+    async def record_pause(
+        self,
+        slot: PauseSlot,
+        *,
+        step_records: Sequence[StepRecord] = (),
+        duration_ms: float | None = None,
+        node_count: int | None = None,
+        error_count: int | None = None,
+    ) -> None:
+        """Commit the pause slot, its step records, and the PAUSED transition.
+
+        ONE ``BEGIN IMMEDIATE`` transaction covers all three, so no reader
+        can ever observe a run whose status is ``PAUSED`` without the slot
+        that says what was asked. The write is immediate whatever
+        ``CheckpointPolicy.durability`` says about StepRecord timing: a
+        buffered pause slot would not survive the process death it exists to
+        describe.
+        """
+        await self._ensure_db()
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                for record in step_records:
+                    await self._db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
+                if step_records:
+                    await self._apply_retention_policy_async(slot.run_id)
+                await self._db.execute(_PAUSE_SLOT_INSERT_SQL, _pause_slot_insert_params(slot))
+                sql, params = _run_status_update(
+                    WorkflowStatus.PAUSED,
+                    duration_ms=duration_ms,
+                    node_count=node_count,
+                    error_count=error_count,
+                )
+                await self._db.execute(sql, [*params, slot.run_id])
+                for record in step_records:
+                    await self._after_run_mutation(
+                        record.run_id,
+                        "step",
+                        {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
+                    )
+                await self._after_run_mutation(
+                    slot.run_id,
+                    "status",
+                    {"status": WorkflowStatus.PAUSED.value, "pause_id": slot.pause_id},
+                )
+                await self._db.commit()
+            except BaseException:
+                await self._rollback_async()
+                raise
+
+    async def get_pause_slot(self, run_id: str, *, pause_id: str | None = None) -> PauseSlot | None:
+        """The run's current pause occurrence, or a named earlier one."""
+        await self._ensure_db()
+        async with self._txn_lock():
+            if pause_id is None:
+                cursor = await self._db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,))
+            else:
+                cursor = await self._db.execute(_PAUSE_SLOT_BY_ID_SQL, (run_id, pause_id))
+            row = await cursor.fetchone()
+        return _row_to_pause_slot(row) if row is not None else None
+
+    async def settle_pause(self, run_id: str, *, pause_id: str | None = None, value: Any) -> PauseSlot:
+        """Validate one typed value, then atomically settle the named occurrence.
+
+        The whole cascade — read the current occurrence, check the schema,
+        compare-and-set on ``settled_at IS NULL``, write the resume input,
+        and append the durable ``answer`` fact — runs in ONE ``BEGIN
+        IMMEDIATE`` transaction. A rejected value raises before any write and
+        leaves the occurrence open; a second settle of the same occurrence
+        loses to the first.
+        """
+        await self._ensure_db()
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                cursor = await self._db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,))
+                row = await cursor.fetchone()
+                current = _row_to_pause_slot(row) if row is not None else None
+                ids_cursor = await self._db.execute(_PAUSE_SLOT_IDS_SQL, (run_id,))
+                known = [str(item[0]) for item in await ids_cursor.fetchall()]
+                run_cursor = await self._db.execute("SELECT status FROM runs WHERE id = ?", (run_id,))
+                run_row = await run_cursor.fetchone()
+                slot = _check_settlement(
+                    run_id=run_id,
+                    pause_id=pause_id,
+                    current=current,
+                    known_pause_ids=known,
+                    run_status=WorkflowStatus(run_row[0]) if run_row is not None else None,
+                    value=value,
+                )
+                settled_at = datetime.now(timezone.utc)
+                result = await self._db.execute(
+                    _PAUSE_SLOT_SETTLE_SQL,
+                    (settled_at.isoformat(), json.dumps(value), slot.pause_id),
+                )
+                if result.rowcount != 1:
+                    raise _lost_settlement_race(run_id, slot.pause_id)
+                await self._after_run_mutation(
+                    run_id,
+                    "answer",
+                    {"pause_id": slot.pause_id, "response_key": slot.response_key},
+                )
+                await self._db.commit()
+                return replace(slot, settled_at=settled_at, answer=value)
+            except BaseException:
+                await self._rollback_async()
+                raise
+
+    def record_pause_sync(
+        self,
+        slot: PauseSlot,
+        *,
+        step_records: Sequence[StepRecord] = (),
+        duration_ms: float | None = None,
+        node_count: int | None = None,
+        error_count: int | None = None,
+    ) -> None:
+        """Sync mirror of :meth:`record_pause`."""
+        with self._sync_lock:
+            db = self._sync_db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                for record in step_records:
+                    db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
+                if step_records:
+                    self._apply_retention_policy_sync(slot.run_id)
+                db.execute(_PAUSE_SLOT_INSERT_SQL, _pause_slot_insert_params(slot))
+                sql, params = _run_status_update(
+                    WorkflowStatus.PAUSED,
+                    duration_ms=duration_ms,
+                    node_count=node_count,
+                    error_count=error_count,
+                )
+                db.execute(sql, [*params, slot.run_id])
+                for record in step_records:
+                    self._after_run_mutation_sync(
+                        db,
+                        record.run_id,
+                        "step",
+                        {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
+                    )
+                self._after_run_mutation_sync(
+                    db,
+                    slot.run_id,
+                    "status",
+                    {"status": WorkflowStatus.PAUSED.value, "pause_id": slot.pause_id},
+                )
+                db.commit()
+            except BaseException:
+                self._rollback_sync(db)
+                raise
+
+    def get_pause_slot_sync(self, run_id: str, *, pause_id: str | None = None) -> PauseSlot | None:
+        """Sync mirror of :meth:`get_pause_slot`."""
+        with self._sync_lock:
+            db = self._sync_db()
+            if pause_id is None:
+                row = db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,)).fetchone()
+            else:
+                row = db.execute(_PAUSE_SLOT_BY_ID_SQL, (run_id, pause_id)).fetchone()
+        return _row_to_pause_slot(row) if row is not None else None
+
+    def settle_pause_sync(self, run_id: str, *, pause_id: str | None = None, value: Any) -> PauseSlot:
+        """Sync mirror of :meth:`settle_pause`."""
+        with self._sync_lock:
+            db = self._sync_db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,)).fetchone()
+                current = _row_to_pause_slot(row) if row is not None else None
+                known = [str(item[0]) for item in db.execute(_PAUSE_SLOT_IDS_SQL, (run_id,)).fetchall()]
+                run_row = db.execute("SELECT status FROM runs WHERE id = ?", (run_id,)).fetchone()
+                slot = _check_settlement(
+                    run_id=run_id,
+                    pause_id=pause_id,
+                    current=current,
+                    known_pause_ids=known,
+                    run_status=WorkflowStatus(run_row[0]) if run_row is not None else None,
+                    value=value,
+                )
+                settled_at = datetime.now(timezone.utc)
+                result = db.execute(
+                    _PAUSE_SLOT_SETTLE_SQL,
+                    (settled_at.isoformat(), json.dumps(value), slot.pause_id),
+                )
+                if result.rowcount != 1:
+                    raise _lost_settlement_race(run_id, slot.pause_id)
+                self._after_run_mutation_sync(
+                    db,
+                    run_id,
+                    "answer",
+                    {"pause_id": slot.pause_id, "response_key": slot.response_key},
+                )
+                db.commit()
+                return replace(slot, settled_at=settled_at, answer=value)
+            except BaseException:
+                self._rollback_sync(db)
+                raise
+
     async def create_run(
         self,
         run_id: str,
@@ -753,32 +1042,9 @@ class SqliteCheckpointer(Checkpointer):
     ) -> None:
         """Update run status with optional stats."""
         await self._ensure_db()
-        completed_at = (
-            datetime.now(timezone.utc).isoformat()
-            if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.PARTIAL, WorkflowStatus.STOPPED}
-            else None
-        )
-
-        # Build SET clause dynamically based on what's provided
-        sets = ["status = ?", "completed_at = ?"]
-        params: list[Any] = [status.value, completed_at]
-
-        if duration_ms is not None:
-            sets.append("duration_ms = ?")
-            params.append(duration_ms)
-        if node_count is not None:
-            sets.append("node_count = ?")
-            params.append(node_count)
-        if error_count is not None:
-            sets.append("error_count = ?")
-            params.append(error_count)
-
-        params.append(run_id)
+        sql, params = _run_status_update(status, duration_ms=duration_ms, node_count=node_count, error_count=error_count)
         async with self._txn_lock():
-            await self._db.execute(
-                f"UPDATE runs SET {', '.join(sets)} WHERE id = ?",
-                params,
-            )
+            await self._db.execute(sql, [*params, run_id])
             await self._after_run_mutation(run_id, "status", {"status": status.value})
             await self._db.commit()
 
@@ -856,7 +1122,7 @@ class SqliteCheckpointer(Checkpointer):
         return new_workflow_id, checkpoint
 
     async def get_run_async(self, run_id: str) -> Run | None:
-        """Get run metadata."""
+        """Get run metadata, including the run's current pause occurrence."""
         await self._ensure_db()
         async with self._txn_lock():
             cursor = await self._db.execute(
@@ -866,7 +1132,12 @@ class SqliteCheckpointer(Checkpointer):
             row = await cursor.fetchone()
             if row is None:
                 return None
-            return self._row_to_run(row)
+            run = self._row_to_run(row)
+            slot_cursor = await self._db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,))
+            slot_row = await slot_cursor.fetchone()
+        if slot_row is not None:
+            run.pause_slot = _row_to_pause_slot(slot_row)
+        return run
 
     async def list_runs(
         self,
@@ -1376,14 +1647,18 @@ class SqliteCheckpointer(Checkpointer):
             return StepTable(self._row_to_step(row) for row in cursor.fetchall())
 
     def get_run(self, run_id: str) -> Run | None:
-        """Get run metadata synchronously."""
+        """Get run metadata synchronously, including its current pause occurrence."""
         with self._sync_lock:
             db = self._sync_db()
             cursor = db.execute(f"SELECT {_RUNS_COLS} FROM runs WHERE id = ?", (run_id,))
             row = cursor.fetchone()
             if row is None:
                 return None
-            return self._row_to_run(row)
+            run = self._row_to_run(row)
+            slot_row = db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,)).fetchone()
+        if slot_row is not None:
+            run.pause_slot = _row_to_pause_slot(slot_row)
+        return run
 
     def runs(
         self,
@@ -1924,32 +2199,10 @@ class SqliteCheckpointer(Checkpointer):
         error_count: int | None = None,
     ) -> None:
         """Update run status with optional stats synchronously."""
+        sql, params = _run_status_update(status, duration_ms=duration_ms, node_count=node_count, error_count=error_count)
         with self._sync_lock:
             db = self._sync_db()
-            completed_at = (
-                datetime.now(timezone.utc).isoformat()
-                if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.PARTIAL, WorkflowStatus.STOPPED}
-                else None
-            )
-
-            sets = ["status = ?", "completed_at = ?"]
-            params: list[Any] = [status.value, completed_at]
-
-            if duration_ms is not None:
-                sets.append("duration_ms = ?")
-                params.append(duration_ms)
-            if node_count is not None:
-                sets.append("node_count = ?")
-                params.append(node_count)
-            if error_count is not None:
-                sets.append("error_count = ?")
-                params.append(error_count)
-
-            params.append(run_id)
-            db.execute(
-                f"UPDATE runs SET {', '.join(sets)} WHERE id = ?",
-                params,
-            )
+            db.execute(sql, [*params, run_id])
             self._after_run_mutation_sync(db, run_id, "status", {"status": status.value})
             db.commit()
 

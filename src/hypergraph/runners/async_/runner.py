@@ -616,6 +616,12 @@ class AsyncRunner(AsyncRunnerTemplate):
                 except PauseExecution as pause:
                     if pause.partial_state is not None:
                         state = pause.partial_state
+                    # Address the occurrence in THIS run's scope: the same
+                    # resume-offset index the paused StepRecord carries, so
+                    # the durable pause slot and its step share one address
+                    # (PRD 0010). A nested pause is re-raised fresh by the
+                    # GraphNode executor and is addressed here, parent-facing.
+                    pause.superstep = superstep_idx + superstep_offset
                     # Save step records before propagating the pause.
                     # The interrupt node gets a "paused" status record.
                     if has_checkpointer:

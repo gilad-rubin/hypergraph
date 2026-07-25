@@ -517,6 +517,64 @@ checkpointer.get_node_boundaries_sync("wf-1")
 
 Boundaries follow their step's retention fate: a pruned `StepRecord` takes its boundary with it, so compaction can never silently re-classify settled work as pending. Checkpointers that do not implement the seam keep working; the runners probe for it (`PendingNodeProtocol` / `SyncPendingNodeProtocol` in `hypergraph.checkpointers.protocols`) instead of requiring it.
 
+## Durable Pause Slots
+
+A pause used to die with the process: the question and its answer port lived only on the in-memory `RunResult`. Now every interrupt occurrence is persisted as a **`PauseSlot`**, written in the **same transaction** as the paused step's records and the run's transition to `PAUSED` — there is no window in which a run reads paused and its question is missing.
+
+```python
+run = await checkpointer.get_run_async("refund-c-42")
+slot = run.pause_slot                              # durable, or None
+
+slot.pause_id                                      # 'refund-c-42:8:approval'
+slot.response_key                                  # 'approved'
+slot.question                                      # JSON-safe projection, not the live object
+slot.answer_schema                                 # {'type': 'boolean'} — derived from answer_type
+slot.options                                       # ('yes', 'no') — this occurrence's choices
+slot.is_open                                       # True until it is answered
+
+await checkpointer.settle_pause("refund-c-42", pause_id=slot.pause_id, value=True)
+```
+
+| Field | Meaning |
+|---|---|
+| `pause_id` | Node address of the occurrence, `<run_id>:<superstep>:<node_name>` — the same address its paused `StepRecord` carries. A loop's second visit lands on a later superstep, so occurrences never collide. |
+| `run_id`, `superstep`, `node_name` | The addressed occurrence. `node_name` is **parent-facing**: a nested interrupt names the delegating `GraphNode` in this run. |
+| `node_path` | Full display path of the pausing node (`'review/inner_ask'`). |
+| `response_key` | The answer port the settled value enters dataflow through — parent-facing for nested graphs. |
+| `question` | JSON-safe projection: `prompt`, `options`, `evidence`, and a stable `answer_type` name. Evidence that cannot be serialized becomes `{"__unserializable__": "<type>"}` — the live handler payload never enters the journal. |
+| `answer_schema` | The graph-derived answer contract as JSON Schema. |
+| `options` | This occurrence's choices, kept even when they do not constrain the value. |
+| `created_at`, `settled_at`, `answer` | When it was asked, when it was answered, and the settled value (the durable resume input for `response_key`). |
+
+### The answer contract
+
+`answer_schema` is rendered from the `InterruptNode`'s declared `answer_type` — there are **no validator callables**; validation is schema-driven at settlement time. `bool` → `{"type": "boolean"}`, `str` → `{"type": "string"}`, `Literal`/`Enum` → `{"enum": [...]}`, unions → `{"anyOf": [...]}`.
+
+Two rules keep the stored contract honest:
+
+- **A type the renderer cannot express becomes the empty schema `{}`**, which constrains nothing — settlement then only requires a JSON-safe value. The slot never invents a constraint it cannot check.
+- **Occurrence options narrow the schema only when the declared type accepts them.** `answer_type=str` with `options=("billing", "fraud")` becomes `{"type": "string", "enum": ["billing", "fraud"]}`; `answer_type=bool` with display labels `("yes", "no")` keeps `{"type": "boolean"}` and leaves the labels on `slot.options`.
+
+### Settlement
+
+`settle_pause(run_id, pause_id=..., value=...)` validates one typed value and then compare-and-sets on that exact occurrence, in one transaction with the resume-input write. Three refusals, all raised **before any write** so a refused answer never consumes the occurrence:
+
+| Error | Raised when |
+|---|---|
+| `AnswerRejectedError` | no `pause_id`, an unknown one, a run with no durable pause, a run that is not paused, or a value failing `answer_schema` |
+| `PauseAlreadySettledError` | this occurrence was already answered; the first value wins |
+| `StalePauseError` | a later occurrence is current (`.current_pause_id` names it) |
+
+All three subclass `PauseSettlementError`. Reads and settlement have sync mirrors on `SqliteCheckpointer` (`get_pause_slot_sync`, `settle_pause_sync`, `record_pause_sync`); `MemoryCheckpointer` implements the async seam. Checkpointers without the seam keep working — the runners probe for `PauseSlotProtocol` / `SyncPauseSlotProtocol` and fall back to plain step saves plus a `PAUSED` status write, with no durable question.
+
+Unlike a node boundary, a pause slot is **not** pruned by retention compaction: a boundary's state is derived from `steps`, but a slot carries the question and the human answer — truth in its own right, not a projection of the journal.
+
+Settlement records durable resume input; it does not itself resume the run. Replaying it is an ordinary run call:
+
+```python
+await runner.run(graph, {slot.response_key: slot.answer}, workflow_id="refund-c-42")
+```
+
 ## Backend Comparison
 
 | | `SqliteCheckpointer` | `MemoryCheckpointer` |

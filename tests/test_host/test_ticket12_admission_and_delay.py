@@ -1257,12 +1257,17 @@ class TestExcludedOverflowStrategiesAreAbsent:
         ]
         assert WaitingCondition is _WaitingCondition
 
+    #: Answer *validation* vocabulary (ticket 13). ``AnswerRejectedError``
+    #: rejects one typed value against a pause slot's schema — it has nothing
+    #: to do with admission, which never rejects work.
+    PAUSE_SETTLEMENT_EXPORTS = frozenset({"AnswerRejectedError"})
+
     def test_no_public_export_names_an_excluded_strategy(self):
         import hypergraph
         import hypergraph.host as host_module
 
         for module in (hypergraph, host_module):
-            exported = " ".join(module.__all__).lower()
+            exported = " ".join(name for name in module.__all__ if name not in self.PAUSE_SETTLEMENT_EXPORTS).lower()
             assert not [word for word in self.FORBIDDEN if word in exported], module.__name__
 
     async def test_over_limit_work_is_delayed_never_dropped(self, home):

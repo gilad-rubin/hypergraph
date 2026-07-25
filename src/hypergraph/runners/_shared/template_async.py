@@ -736,17 +736,21 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         status=RunStatus.PAUSED.value,
                     )
                 if has_checkpointer:
-                    for record in step_buffer:
-                        await checkpointer.save_step(record)
-                    from hypergraph.checkpointers.types import WorkflowStatus
                     from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
+                    from hypergraph.runners._shared.pause_slots import commit_pause_async
 
                     _, step_offset = checkpoint_offsets(resume_checkpoint)
                     step_count = step_offset + collector.step_count
                     error_count = collector.failed_step_count
-                    await checkpointer.update_run_status(
+                    # The durable pause slot, the buffered step records, and
+                    # the PAUSED transition commit as ONE unit: no reader ever
+                    # sees a paused run whose question is missing (PRD 0010).
+                    await commit_pause_async(
+                        checkpointer,
+                        graph,
                         workflow_id,
-                        WorkflowStatus.PAUSED,
+                        pause,
+                        step_buffer,
                         duration_ms=total_duration_ms,
                         node_count=step_count,
                         error_count=error_count,

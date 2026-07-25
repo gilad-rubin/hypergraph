@@ -170,6 +170,7 @@ Key files:
 - `src/hypergraph/runners/_shared/template_async.py`
 - `src/hypergraph/runners/_shared/checkpoint_helpers.py`
 - `src/hypergraph/runners/_shared/pending_boundaries.py`
+- `src/hypergraph/runners/_shared/pause_slots.py`
 - `src/hypergraph/runners/_shared/validation.py`
 - `src/hypergraph/runners/_shared/input_normalization.py`
 - `src/hypergraph/runners/_shared/run_log.py`
@@ -310,6 +311,7 @@ Key files:
 - `src/hypergraph/checkpointers/protocols.py`
 - `src/hypergraph/checkpointers/serializers.py`
 - `src/hypergraph/checkpointers/_migrate.py`
+- `src/hypergraph/checkpointers/_answer_schema.py`
 
 ### What This Subsystem Owns
 
@@ -588,6 +590,7 @@ src/hypergraph/
 │   │   ├── input_normalization.py
 │   │   ├── checkpoint_helpers.py
 │   │   ├── pending_boundaries.py
+│   │   ├── pause_slots.py
 │   │   ├── caching.py
 │   │   ├── cache_observer.py
 │   │   ├── event_helpers.py
@@ -610,6 +613,7 @@ src/hypergraph/
 │   ├── protocols.py
 │   ├── serializers.py
 │   ├── types.py
+│   ├── _answer_schema.py
 │   └── _migrate.py
 │
 ├── events/                           observability
