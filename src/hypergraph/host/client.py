@@ -539,6 +539,103 @@ class RunHomeClient:
             raise TypeError(f"answer() expects a RunRef, got {type(ref).__name__}. A Batch answers through its child runs.")
         return self._home.settle_pause_sync(ref.run_id, pause_id=pause_id, value=value)
 
+    async def schedule_answer(
+        self,
+        ref: RunRef,
+        *,
+        pause_id: str | None = None,
+        value: Any,
+        due_at: datetime | str,
+        source_ref: str | None = None,
+    ) -> CommandReceipt:
+        """Arm ONE typed answer to apply when store time reaches ``due_at``.
+
+        This is the durable form of "if nobody answers by Friday, treat it as
+        declined" (ADR 0008). It is a pause-scoped command, not a scheduler:
+        there is no recurrence, no cron expression, no caller-chosen verb,
+        and no non-interrupting reminder — those stay product concerns.
+
+        The scheduled answer is admitted through the SAME refusal cascade
+        ``answer`` uses, so an unarmable timer is refused now rather than
+        discovered dead later, and it is applied through the same
+        compare-and-set, so a human answer and a timer racing the same
+        occurrence resolve by commit order:
+
+        ```python
+        slot = await client.get_run_slot(ref)
+        await client.schedule_answer(
+            ref,
+            pause_id=slot.pause_id,
+            value=False,                       # checked against slot.answer_schema now
+            due_at=datetime.now(timezone.utc) + timedelta(hours=72),
+            source_ref="review-console:req-91",
+        )
+        ```
+
+        A human answer voids the timer: once the occurrence is settled — or
+        replaced by a later pause in a loop — the scheduled answer can never
+        apply. It is not deleted; when it comes due it is refused and the
+        command row records the refusal, so the audit trail keeps the timer,
+        its due time, its value, and its ``source_ref``.
+
+        Args:
+            ref: The paused run's inert address.
+            pause_id: The occurrence this answer is armed against, read from
+                ``client.get_run_slot(ref)``. Omitting it is an
+                ``AnswerRejectedError`` — a timer that does not name its
+                occurrence could settle a later pause.
+            value: One typed value, validated against the slot's
+                ``answer_schema`` before anything is written.
+            due_at: When the answer becomes applicable (datetime or ISO
+                string, naive read as UTC). Required — an answer with no due
+                time is ``client.answer``.
+            source_ref: Opaque caller provenance recorded on the command row
+                for audit. Never authentication, and never part of dedup.
+
+        Returns:
+            ``CommandReceipt`` with ``verb="schedule_answer"`` and
+            ``duplicate=True`` when this occurrence already had an unapplied
+            scheduled answer — one timer per pause, the first one wins.
+
+        Raises:
+            AnswerRejectedError: no ``pause_id``, an unknown one, a run with
+                no durable pause, a run that is not paused, or a value
+                failing the slot's ``answer_schema``. Nothing is written.
+            PauseAlreadySettledError: this occurrence is already answered.
+            StalePauseError: a later pause occurrence is current.
+        """
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"schedule_answer() expects a RunRef, got {type(ref).__name__}. A Batch answers through its child runs.")
+        created = await self._home._write_scheduled_answer(
+            ref.run_id,
+            pause_id=pause_id,
+            value=value,
+            due_at=due_at,
+            source_ref=source_ref,
+        )
+        return CommandReceipt(run_ref=ref, verb="schedule_answer", duplicate=not created)
+
+    def schedule_answer_sync(
+        self,
+        ref: RunRef,
+        *,
+        pause_id: str | None = None,
+        value: Any,
+        due_at: datetime | str,
+        source_ref: str | None = None,
+    ) -> CommandReceipt:
+        """Sync mirror of ``schedule_answer``."""
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"schedule_answer() expects a RunRef, got {type(ref).__name__}. A Batch answers through its child runs.")
+        created = self._home._write_scheduled_answer_sync(
+            ref.run_id,
+            pause_id=pause_id,
+            value=value,
+            due_at=due_at,
+            source_ref=source_ref,
+        )
+        return CommandReceipt(run_ref=ref, verb="schedule_answer", duplicate=not created)
+
     async def get_run_slot(self, ref: RunRef) -> PauseSlot | None:
         """The run's current durable pause occurrence, or None.
 

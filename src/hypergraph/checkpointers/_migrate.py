@@ -341,7 +341,7 @@ def _create_fts(conn: Any) -> None:
 # is durable intent recorded BEFORE execution; the runs row is created later
 # by the executing runner. run_updates is the per-Run durable sequence that
 # RunHomeClient.watch replays; host_commands is the durable control channel
-# (the host's stop verb writes it today); host_settings holds Home-scoped
+# (the host's stop and scheduled-answer verbs write it); host_settings holds Home-scoped
 # coordination settings every process that opens the store agrees on.
 
 _CREATE_HOST_SUBMISSIONS = """
@@ -386,6 +386,12 @@ CREATE TABLE IF NOT EXISTS run_updates (
 )
 """
 
+# ``source_ref`` is opaque caller provenance for audit only (ADR 0005 A11 /
+# PRD 0017 US58-59): nothing authenticates on it and no dedup predicate reads
+# it. ``pause_id``/``due_at``/``outcome`` belong to the ONE scheduled verb
+# Hypergraph has (ticket 14 / ADR 0008): a scheduled *pause answer*. They are
+# deliberately pause-shaped rather than a generic scheduler — there is no
+# recurrence, no cron expression, and no caller-chosen verb.
 _CREATE_HOST_COMMANDS = """
 CREATE TABLE IF NOT EXISTS host_commands (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -394,7 +400,11 @@ CREATE TABLE IF NOT EXISTS host_commands (
     payload TEXT NOT NULL DEFAULT '{}',
     source_ref TEXT,
     created_at TEXT NOT NULL,
-    applied_at TEXT
+    applied_at TEXT,
+    -- Scheduled pause answers only (verb = 'schedule_answer'):
+    pause_id TEXT,
+    due_at TEXT,
+    outcome TEXT
 )
 """
 
@@ -532,6 +542,9 @@ def _create_host_indexes(conn: Any) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_host_submissions_definition ON host_submissions(definition_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_host_submissions_batch ON host_submissions(batch_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_host_commands_run ON host_commands(run_id, id)")
+    # The due-row scan (ticket 14) reads unapplied rows of one verb in id
+    # order; the same shape ``start_at`` eligibility uses for delayed starts.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_host_commands_due ON host_commands(verb, applied_at, due_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_host_batches_workflow ON host_batches(workflow_id)")
 
 
@@ -553,6 +566,14 @@ _HOST_SUBMISSIONS_ADDED_COLUMNS = (
 # DDL above already carries it; this guarded ALTER migrates dev databases
 # that were created at v6 before the column existed.
 _HOST_BATCHES_ADDED_COLUMNS = (("retry_of", "retry_of TEXT"),)
+
+# Columns appended to host_commands after its initial cut (ticket 14, the
+# scheduled pause answer). Same guarded-ALTER discipline as above.
+_HOST_COMMANDS_ADDED_COLUMNS = (
+    ("pause_id", "pause_id TEXT"),
+    ("due_at", "due_at TEXT"),
+    ("outcome", "outcome TEXT"),
+)
 
 
 def _add_missing_columns(conn: Any, table: str, columns: tuple[tuple[str, str], ...]) -> None:
@@ -579,6 +600,7 @@ def _ensure_v6_objects(conn: Any) -> None:
     conn.execute(_CREATE_HOST_SETTINGS)
     _add_missing_columns(conn, "host_submissions", _HOST_SUBMISSIONS_ADDED_COLUMNS)
     _add_missing_columns(conn, "host_batches", _HOST_BATCHES_ADDED_COLUMNS)
+    _add_missing_columns(conn, "host_commands", _HOST_COMMANDS_ADDED_COLUMNS)
     _create_host_indexes(conn)
     _ensure_pending_node_objects(conn)
     _ensure_pause_slot_objects(conn)

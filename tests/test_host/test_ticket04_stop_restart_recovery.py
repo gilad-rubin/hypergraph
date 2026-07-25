@@ -187,7 +187,9 @@ class TestDurableStop:
         # The durable update sequence carries the command fact with its info.
         command_updates = [u for u in home._read_run_updates_sync("wf-stop") if u[1] == "command"]
         assert len(command_updates) == 1
-        assert json.loads(command_updates[0][2]) == {"verb": "stop", "info": {"reason": "user asked"}}
+        # source_ref rides along as audit provenance (ticket 14): None here
+        # because this stop named no caller.
+        assert json.loads(command_updates[0][2]) == {"verb": "stop", "info": {"reason": "user asked"}, "source_ref": None}
         # STOPPED is terminal: the submission settled as finished.
         assert home._get_submission_sync("wf-stop")["state"] == "finished"
 

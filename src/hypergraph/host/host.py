@@ -24,7 +24,7 @@ from hypergraph.host.client import RunHomeClient
 from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import ForkCompatibilityError, HostError
 from hypergraph.host.fingerprint import batch_fingerprint, start_fingerprint
-from hypergraph.host.home import RunHome
+from hypergraph.host.home import RunHome, _normalize_utc_iso
 from hypergraph.host.refs import BatchRef, BatchSubmitReceipt, RunRef, SubmitReceipt
 from hypergraph.host.views import TERMINAL_WORKFLOW_STATUSES
 from hypergraph.host.worker import _drain, _WorkerLock
@@ -51,30 +51,15 @@ class _Definition:
 
 
 def _normalize_start_at(start_at: datetime | str | None) -> str | None:
-    """Normalize start_at to a UTC ISO string safe for lexicographic comparison.
+    """Normalize start_at through the Home's one store-time normalizer.
 
-    Claim eligibility compares ``start_at <= now`` lexicographically, so every
-    stored value shares one shape: UTC ``+00:00`` ISO. Naive inputs are read
-    as UTC; offset inputs are converted. Normalizing here (before the start
-    fingerprint is computed) keeps equivalent inputs deduping identically.
+    Claim eligibility compares ``start_at <= now`` lexicographically against
+    the same due predicate scheduled pause answers use, so both verbs
+    normalize identically (see ``home._normalize_utc_iso``). Normalizing here
+    — before the start fingerprint is computed — keeps equivalent inputs
+    deduping identically.
     """
-    if start_at is None:
-        return None
-    if isinstance(start_at, datetime):
-        parsed = start_at
-    elif isinstance(start_at, str):
-        text = start_at.strip()
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        try:
-            parsed = datetime.fromisoformat(text)
-        except ValueError:
-            raise ValueError(f"start_at must be an ISO 8601 timestamp, got {start_at!r}.") from None
-    else:
-        raise TypeError(f"start_at must be a datetime, an ISO string, or None; got {type(start_at).__name__}.")
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc).isoformat()
+    return _normalize_utc_iso(start_at, field="start_at")
 
 
 def _validate_recovery_cap(recovery_cap: int) -> None:
@@ -445,6 +430,11 @@ class Host:
         ``shutdown()`` or cancellation the loop stops claiming, awaits
         active runs up to ``drain_timeout``, cancels the rest, releases the
         lock, and returns (or re-raises the cancellation) cleanly.
+
+        Each pass takes one store-authoritative ``now`` and scans every due
+        row with it: submissions whose ``start_at`` has arrived, then
+        scheduled pause answers whose ``due_at`` has arrived. There is one
+        due-row scanner, not a timer per feature.
         """
         if not isinstance(worker_id, str) or not worker_id:
             raise ValueError("work_forever() requires a non-empty worker_id string.")
@@ -463,15 +453,18 @@ class Host:
             await self._home._restart_scan()
             try:
                 while not stop_event.is_set():
-                    claimed = await self._home._claim_eligible(
-                        datetime.now(timezone.utc).isoformat(),
-                        served=self._served_identities,
-                    )
+                    # ONE store-authoritative `now` per pass drives every due
+                    # row: delayed starts (`start_at`) and scheduled pause
+                    # answers (`due_at`) share this scan rather than owning
+                    # separate timers (PRD 0017 / ADR 0008).
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    claimed = await self._home._claim_eligible(now_iso, served=self._served_identities)
                     for row in claimed:
                         task = asyncio.create_task(self._execute_submission(row))
                         task.add_done_callback(self._record_task_exception)
                         tasks[row["workflow_id"]] = task
                     tasks = {workflow_id: task for workflow_id, task in tasks.items() if not task.done()}
+                    await self._home._settle_due_answers(now_iso)
                     await self._process_stop_commands(set(tasks))
                     await asyncio.sleep(0 if claimed else poll_interval)
             finally:

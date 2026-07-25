@@ -48,7 +48,15 @@ row-count shortcuts.
   `RunHomeClient.answer`, so `except HostError` must catch them.
 - The decision cascade lives once, in `base._check_settlement`. Backends
   supply the rows and perform the CAS; they must not re-derive which refusal
-  applies, or Memory and SQLite would drift.
+  applies, or Memory and SQLite would drift. Its inputs are read once too
+  (`sqlite._read_settlement_inputs`), so a caller that only wants to VALIDATE
+  a prospective answer — the durable host's scheduled answer does — asks the
+  same question about the same rows.
+- Every answer settles through `settle_pause`, human or scheduled. A timer
+  is not a second writer with its own rules: it calls the same method, wins
+  or loses the same compare-and-set, and earns the same three refusals. Never
+  add a second settlement path — an answer-versus-timer race decided by two
+  different code paths could settle one occurrence twice.
 - The answer contract is data, never a callable: render `answer_type` through
   `_answer_schema.render_answer_schema` and check values with
   `validate_answer`. The schema describes the JSON *form* of the declared

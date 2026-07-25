@@ -970,6 +970,23 @@ class TestMigration:
             "fork_reason",
         } <= submission_cols
 
+        # v6 host_commands columns: the durable control channel plus the
+        # scheduled pause answer's occurrence, due time, and fire outcome
+        # (ticket 14). source_ref is opaque audit provenance on every verb.
+        command_cols = {row[1] for row in conn.execute("PRAGMA table_info(host_commands)").fetchall()}
+        assert command_cols == {
+            "id",
+            "run_id",
+            "verb",
+            "payload",
+            "source_ref",
+            "created_at",
+            "applied_at",
+            "pause_id",
+            "due_at",
+            "outcome",
+        }
+
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
         assert version == 6
         conn.close()
@@ -1045,6 +1062,40 @@ class TestMigration:
         assert {"fingerprint", "compat_state", "retry_of", "forked_from", "fork_reason"} <= cols
         row = conn.execute("SELECT compat_state, fingerprint, retry_of FROM host_submissions WHERE workflow_id = 'wf-legacy'").fetchone()
         assert row == ("compatible", None, None)
+        ensure_schema(conn)  # idempotent on the migrated database
+        conn.close()
+
+    def test_v6_db_gains_ticket14_command_columns_in_place(self, tmp_path):
+        """A v6 database predating scheduled answers migrates in place.
+
+        Dev databases created at v6 before pause_id/due_at/outcome existed get
+        them via guarded ALTERs; existing command rows keep their values and
+        read back NULL for the new columns.
+        """
+        import sqlite3
+
+        from hypergraph.checkpointers._migrate import ensure_schema
+
+        db_path = str(tmp_path / "early-v6-commands.db")
+        conn = sqlite3.connect(db_path)
+        ensure_schema(conn)  # real v6 schema
+        # Simulate a v6 database created before the ticket-14 columns existed
+        # (and therefore before the due-row index that spans them).
+        conn.execute("DROP INDEX idx_host_commands_due")
+        for column in ("pause_id", "due_at", "outcome"):
+            conn.execute(f"ALTER TABLE host_commands DROP COLUMN {column}")
+        conn.execute(
+            "INSERT INTO host_commands (run_id, verb, payload, source_ref, created_at) VALUES ('wf-legacy', 'stop', '{}', 'console', '2026-07-24T00:00:00+00:00')"
+        )
+        conn.commit()
+
+        ensure_schema(conn)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(host_commands)").fetchall()}
+        assert {"pause_id", "due_at", "outcome"} <= cols
+        row = conn.execute("SELECT verb, source_ref, pause_id, due_at, outcome FROM host_commands WHERE run_id = 'wf-legacy'").fetchone()
+        assert row == ("stop", "console", None, None, None)
+        indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='host_commands'").fetchall()}
+        assert "idx_host_commands_due" in indexes  # columns land before the index that spans them
         ensure_schema(conn)  # idempotent on the migrated database
         conn.close()
 

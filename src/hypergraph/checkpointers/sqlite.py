@@ -837,6 +837,31 @@ class SqliteCheckpointer(Checkpointer):
             row = await cursor.fetchone()
         return _row_to_pause_slot(row) if row is not None else None
 
+    async def _read_settlement_inputs(self, run_id: str) -> tuple[PauseSlot | None, list[str], WorkflowStatus | None]:
+        """The three facts ``_check_settlement`` decides on, read in one place.
+
+        Caller owns the surrounding transaction. Shared by ``settle_pause``
+        and by the durable host's scheduled-answer write (ticket 14), so a
+        timer is admitted against exactly the occurrence state a human answer
+        would be — there is no second view of "which pause is current".
+        """
+        cursor = await self._db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,))
+        row = await cursor.fetchone()
+        current = _row_to_pause_slot(row) if row is not None else None
+        ids_cursor = await self._db.execute(_PAUSE_SLOT_IDS_SQL, (run_id,))
+        known = [str(item[0]) for item in await ids_cursor.fetchall()]
+        run_cursor = await self._db.execute("SELECT status FROM runs WHERE id = ?", (run_id,))
+        run_row = await run_cursor.fetchone()
+        return current, known, WorkflowStatus(run_row[0]) if run_row is not None else None
+
+    def _read_settlement_inputs_sync(self, db: Any, run_id: str) -> tuple[PauseSlot | None, list[str], WorkflowStatus | None]:
+        """Sync mirror of :meth:`_read_settlement_inputs`."""
+        row = db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,)).fetchone()
+        current = _row_to_pause_slot(row) if row is not None else None
+        known = [str(item[0]) for item in db.execute(_PAUSE_SLOT_IDS_SQL, (run_id,)).fetchall()]
+        run_row = db.execute("SELECT status FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return current, known, WorkflowStatus(run_row[0]) if run_row is not None else None
+
     async def settle_pause(self, run_id: str, *, pause_id: str | None = None, value: Any) -> PauseSlot:
         """Validate one typed value, then atomically settle the named occurrence.
 
@@ -846,24 +871,22 @@ class SqliteCheckpointer(Checkpointer):
         IMMEDIATE`` transaction. A rejected value raises before any write and
         leaves the occurrence open; a second settle of the same occurrence
         loses to the first.
+
+        This is THE settlement path for every answer, human or scheduled: a
+        durable host timer fires by calling it, so the two can never diverge
+        about who won a race (ADR 0008).
         """
         await self._ensure_db()
         async with self._txn_lock():
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
-                cursor = await self._db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,))
-                row = await cursor.fetchone()
-                current = _row_to_pause_slot(row) if row is not None else None
-                ids_cursor = await self._db.execute(_PAUSE_SLOT_IDS_SQL, (run_id,))
-                known = [str(item[0]) for item in await ids_cursor.fetchall()]
-                run_cursor = await self._db.execute("SELECT status FROM runs WHERE id = ?", (run_id,))
-                run_row = await run_cursor.fetchone()
+                current, known, run_status = await self._read_settlement_inputs(run_id)
                 slot = _check_settlement(
                     run_id=run_id,
                     pause_id=pause_id,
                     current=current,
                     known_pause_ids=known,
-                    run_status=WorkflowStatus(run_row[0]) if run_row is not None else None,
+                    run_status=run_status,
                     value=value,
                 )
                 settled_at = datetime.now(timezone.utc)
@@ -937,16 +960,13 @@ class SqliteCheckpointer(Checkpointer):
             db = self._sync_db()
             try:
                 db.execute("BEGIN IMMEDIATE")
-                row = db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,)).fetchone()
-                current = _row_to_pause_slot(row) if row is not None else None
-                known = [str(item[0]) for item in db.execute(_PAUSE_SLOT_IDS_SQL, (run_id,)).fetchall()]
-                run_row = db.execute("SELECT status FROM runs WHERE id = ?", (run_id,)).fetchone()
+                current, known, run_status = self._read_settlement_inputs_sync(db, run_id)
                 slot = _check_settlement(
                     run_id=run_id,
                     pause_id=pause_id,
                     current=current,
                     known_pause_ids=known,
-                    run_status=WorkflowStatus(run_row[0]) if run_row is not None else None,
+                    run_status=run_status,
                     value=value,
                 )
                 settled_at = datetime.now(timezone.utc)

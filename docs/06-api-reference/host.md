@@ -369,8 +369,11 @@ synchronous mirror.
 
 Like `submit()`, `stop()` accepts an optional opaque `source_ref`
 (`client.stop(ref, info=..., source_ref="ops-console")`) recorded on the
-command row for audit (ADR 0005 A11) — it is never authentication and never
-affects dedup. The worker only delivers a stop to a run the Definition's
+command row for audit (ADR 0005 A11) and carried on the durable `command`
+update so `watch()` can join a product's authenticated action to Host
+history. Every command verb records it the same way. It is **never**
+authentication and **never** part of dedup: two commands differing only in
+`source_ref` are the same command. The worker only delivers a stop to a run the Definition's
 runner reports as live (`runner.has_active_run(workflow_id)`), so a stop
 never lands on a stale or not-yet-registered execution.
 
@@ -426,10 +429,66 @@ slot open.
 
 {% hint style="warning" %}
 Settlement writes durable **resume input**; it does not itself resume the
-run. Re-delivering a settled answer to a worker (and scheduled answers) is a
-later slice of this surface. Tier 0 resume — `runner.run(graph, {slot.response_key: slot.answer}, workflow_id=...)`
+run. Re-delivering a settled answer to a worker is a later slice of this
+surface. Tier 0 resume — `runner.run(graph, {slot.response_key: slot.answer}, workflow_id=...)`
 — is unchanged.
 {% endhint %}
+
+## Scheduling an Answer
+
+"If nobody approves this within 72 hours, treat it as declined" is a
+**scheduled answer**: one typed value armed against one observed pause
+occurrence, applied when store time reaches `due_at`.
+
+```python
+from datetime import datetime, timedelta, timezone
+
+slot = await client.get_run_slot(ref)
+receipt = await client.schedule_answer(
+    ref,
+    pause_id=slot.pause_id,
+    value=False,                                            # checked against slot.answer_schema NOW
+    due_at=datetime.now(timezone.utc) + timedelta(hours=72),
+    source_ref="review-console:req-91",
+)
+receipt.verb          # "schedule_answer"
+receipt.duplicate     # True when this occurrence already had an unapplied timer
+```
+
+It is admitted through the **same refusal cascade** `answer()` uses, so an
+unarmable timer is refused now rather than discovered dead in three days:
+no `pause_id`, an unknown one, a superseded one, an already-answered one, a
+run that is not paused, or a value failing `answer_schema` all raise before
+anything is written. One timer per occurrence — a second `schedule_answer`
+for the same pause returns `duplicate=True` and the first one's value wins.
+`client.schedule_answer_sync(...)` is the synchronous mirror.
+
+`due_at` is required (an answer with no due time is `answer()`) and is
+normalized to a UTC ISO timestamp exactly like `start_at`, because the
+worker decides both with **one due-row scan**: each pass takes one
+store-authoritative `now` and applies it to submissions whose `start_at`
+has arrived and to scheduled answers whose `due_at` has arrived. There is
+no second timer service, and there is no recurrence — cron, repeating
+schedules, and a generic scheduled-command surface are deliberately out of
+scope, as are non-interrupting reminders, human-task assignment, and
+escalation, which stay product concerns.
+
+**A human answer voids its timer.** Firing goes through the same
+compare-and-set on the occurrence that `answer()` does, so a human answer
+and a timer racing the same pause resolve by **commit order** — no
+preference rule:
+
+| At fire time | Result |
+|---|---|
+| the occurrence is still open | the scheduled value settles it |
+| a human (or another writer) answered first | the timer is voided; the human's value stands |
+| a later pause occurrence is current | the timer is voided; it can never fire into a different question |
+| the run is no longer paused | the timer is voided; the occurrence stays open |
+
+A voided timer is **recorded, never deleted**: the command row keeps its
+pause id, due time, value, and `source_ref`, and gains the outcome that
+firing produced (`settled`, `already_settled`, `superseded`, `rejected`).
+The audit trail keeps the timer that lost, along with why.
 
 ## Listing Runs
 

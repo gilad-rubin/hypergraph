@@ -93,7 +93,10 @@ class RunUpdate:
             ``run_reset`` — or an event class name for previews. A
             ``status`` fact for a pause also carries the ``pause_id`` it
             committed with.
-        payload: JSON-safe fact payload.
+        payload: JSON-safe fact payload. A ``command`` fact names its
+            ``verb`` (``stop`` or ``schedule_answer``) and carries the
+            accepting caller's opaque ``source_ref`` — audit provenance
+            only, never authentication and never part of dedup.
         timestamp: ISO timestamp of the fact (or of preview observation).
     """
 

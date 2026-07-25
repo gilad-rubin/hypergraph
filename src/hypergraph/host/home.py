@@ -20,12 +20,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.checkpointers.base import CheckpointPolicy
+from hypergraph.checkpointers.base import CheckpointPolicy, _check_settlement
 
 # host/ is the same persistence subsystem as checkpointers/ (a RunHome IS a
 # SqliteCheckpointer), so reaching its private column list here is deliberate.
 from hypergraph.checkpointers.sqlite import _RUNS_COLS, SqliteCheckpointer
-from hypergraph.checkpointers.types import WorkflowStatus
+from hypergraph.checkpointers.types import (
+    AnswerRejectedError,
+    PauseAlreadySettledError,
+    StalePauseError,
+    WorkflowStatus,
+)
 from hypergraph.host.batch import BatchTolerance, tolerance_trips
 from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import AlreadyTerminalError, HostError, WorkflowIdConflictError
@@ -106,6 +111,67 @@ _UNSET = _Unset()
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_utc_iso(value: datetime | str | None, *, field: str) -> str | None:
+    """Normalize a caller timestamp to a UTC ISO string safe for `<=` compares.
+
+    Every due row in this store is decided by a lexicographic comparison
+    against one store-authoritative ``now`` (see ``_due_clause``), so every
+    stored value must share one shape: UTC ``+00:00`` ISO. Naive inputs are
+    read as UTC; offset inputs are converted. Delayed starts (``start_at``)
+    and scheduled pause answers (``due_at``) normalize through this one
+    function so a timestamp cannot mean two different instants depending on
+    which verb accepted it.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            raise ValueError(
+                f"{field} must be an ISO 8601 timestamp, got {value!r}.\n\nHow to fix:\n  Pass a datetime or an ISO 8601 string (e.g. '2026-07-25T09:00:00+00:00')."
+            ) from None
+    else:
+        raise TypeError(f"{field} must be a datetime, an ISO string, or None; got {type(value).__name__}.")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _due_clause(column: str) -> str:
+    """THE due predicate for store-authoritative time, as a SQL fragment.
+
+    One definition of "this row's time has arrived", shared by delayed
+    starts (``host_submissions.start_at``) and scheduled pause answers
+    (``host_commands.due_at``) — PRD 0017: "Scheduled answers share a
+    due-row scanner with delayed starts". The comparison always runs inside
+    the store transaction against a ``now`` the caller passes in, so tests
+    (and a clock-skewed process) drive it explicitly instead of relying on
+    wall clock at the read site. A NULL time means "already due".
+    """
+    return f"({column} IS NULL OR {column} <= ?)"
+
+
+# The ONE scheduled command verb (ADR 0008): a pause-scoped answer. There is
+# deliberately no caller-chosen verb, no recurrence, and no cron surface —
+# a generic scheduled-command framework is explicitly out of scope.
+_SCHEDULE_ANSWER_VERB = "schedule_answer"
+
+# What firing a scheduled answer produced, recorded on its command row for
+# audit. Not a status vocabulary: it never enters WorkflowStatus and never
+# decides claim eligibility. A fired row is never deleted — the audit trail
+# is the point, so a voided timer stays queryable with the reason it lost.
+SCHEDULED_ANSWER_SETTLED = "settled"
+SCHEDULED_ANSWER_ALREADY_SETTLED = "already_settled"
+SCHEDULED_ANSWER_SUPERSEDED = "superseded"
+SCHEDULED_ANSWER_REJECTED = "rejected"
 
 
 def _cap_from_row(row: tuple[Any, ...] | None) -> int | None:
@@ -1353,7 +1419,7 @@ class RunHome(SqliteCheckpointer):
                         "INSERT INTO host_commands (run_id, verb, payload, source_ref, created_at) VALUES (?, 'stop', ?, ?, ?)",
                         (child_workflow_id, json.dumps({"info": info}), source_ref, now),
                     )
-                    self._append_run_update_sync(db, child_workflow_id, "command", {"verb": "stop", "info": info})
+                    self._append_run_update_sync(db, child_workflow_id, "command", {"verb": "stop", "info": info, "source_ref": source_ref})
                 db.commit()
                 return True
             except BaseException:
@@ -1407,7 +1473,7 @@ class RunHome(SqliteCheckpointer):
                         "INSERT INTO host_commands (run_id, verb, payload, source_ref, created_at) VALUES (?, 'stop', ?, ?, ?)",
                         (child_workflow_id, json.dumps({"info": info}), source_ref, now),
                     )
-                    await self._append_run_update(child_workflow_id, "command", {"verb": "stop", "info": info})
+                    await self._append_run_update(child_workflow_id, "command", {"verb": "stop", "info": info, "source_ref": source_ref})
                 await self._db.commit()
                 return True
             except BaseException:
@@ -1451,7 +1517,7 @@ class RunHome(SqliteCheckpointer):
                 await self._db.execute("BEGIN IMMEDIATE")
                 cursor = await self._db.execute(
                     f"SELECT {_SUBMISSION_COLS} FROM host_submissions "
-                    "WHERE state = 'pending' AND compat_state = 'compatible' AND (start_at IS NULL OR start_at <= ?) "
+                    f"WHERE state = 'pending' AND compat_state = 'compatible' AND {_due_clause('start_at')} "
                     # rowid breaks created_at ties so claim order is TOTAL:
                     # two submissions accepted inside the same microsecond
                     # would otherwise be ordered arbitrarily, and "over-limit
@@ -1661,6 +1727,10 @@ class RunHome(SqliteCheckpointer):
                 raise
 
     # === host_commands (durable stop channel) ===
+    #
+    # host_commands carries exactly two verbs: 'stop' (below) and
+    # 'schedule_answer' (further down). Both are host-owned — a caller never
+    # names a verb — and neither dedup nor eligibility ever reads source_ref.
 
     def _write_stop_command_sync(self, workflow_id: str, info: Any, source_ref: str | None = None) -> bool:
         """Record a durable stop command plus its 'command' update, atomically.
@@ -1699,7 +1769,7 @@ class RunHome(SqliteCheckpointer):
                     "INSERT INTO host_commands (run_id, verb, payload, source_ref, created_at) VALUES (?, 'stop', ?, ?, ?)",
                     (workflow_id, json.dumps({"info": info}), source_ref, _now_iso()),
                 )
-                self._append_run_update_sync(db, workflow_id, "command", {"verb": "stop", "info": info})
+                self._append_run_update_sync(db, workflow_id, "command", {"verb": "stop", "info": info, "source_ref": source_ref})
                 db.commit()
                 return True
             except BaseException:
@@ -1736,9 +1806,215 @@ class RunHome(SqliteCheckpointer):
                     "INSERT INTO host_commands (run_id, verb, payload, source_ref, created_at) VALUES (?, 'stop', ?, ?, ?)",
                     (workflow_id, json.dumps({"info": info}), source_ref, _now_iso()),
                 )
-                await self._append_run_update(workflow_id, "command", {"verb": "stop", "info": info})
+                await self._append_run_update(workflow_id, "command", {"verb": "stop", "info": info, "source_ref": source_ref})
                 await self._db.commit()
                 return True
+            except BaseException:
+                await self._rollback_async()
+                raise
+
+    # === host_commands (scheduled pause answers — ADR 0008) ===
+
+    def _scheduled_answer_row(
+        self,
+        workflow_id: str,
+        pause_id: str | None,
+        value: Any,
+        due_at: datetime | str,
+        source_ref: str | None,
+    ) -> tuple[str, str, str, str | None, str]:
+        """Normalize one scheduled answer into its stored row shape.
+
+        Raises before any store work: a scheduled answer with no due time is
+        just an answer, and ``client.answer`` already applies those.
+        """
+        due_at_iso = _normalize_utc_iso(due_at, field="due_at")
+        if due_at_iso is None:
+            raise ValueError(
+                "schedule_answer() requires a due_at time.\n\nHow to fix:\n  Pass due_at=<datetime or ISO string> for when the answer should apply, or call client.answer(...) to answer the pause now."
+            )
+        return (workflow_id, json.dumps({"pause_id": pause_id, "value": value}), due_at_iso, source_ref, _now_iso())
+
+    def _write_scheduled_answer_sync(
+        self,
+        workflow_id: str,
+        *,
+        pause_id: str | None,
+        value: Any,
+        due_at: datetime | str,
+        source_ref: str | None = None,
+    ) -> bool:
+        """Record one scheduled answer for the named pause occurrence, atomically.
+
+        Admission runs the SAME refusal cascade a human answer gets
+        (``base._check_settlement``): an unnamed, unknown, superseded,
+        already-settled, or schema-failing scheduled answer is refused before
+        any write, so an unarmable timer is never accepted and later
+        discovered dead. The value is validated twice on purpose — here, so
+        the caller learns immediately, and again at fire time, because the
+        slot is what settlement compares against.
+
+        Returns True when a new command row was written; False when an
+        unapplied scheduled answer already exists for this occurrence — one
+        scheduled answer per pause, first one wins, exactly like ``stop``.
+        ``source_ref`` is opaque audit provenance and is read by neither
+        check.
+        """
+        run_id, payload, due_at_iso, source_ref, created_at = self._scheduled_answer_row(workflow_id, pause_id, value, due_at, source_ref)
+        with self._sync_lock:
+            db = self._sync_db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                current, known, run_status = self._read_settlement_inputs_sync(db, run_id)
+                slot = _check_settlement(
+                    run_id=run_id,
+                    pause_id=pause_id,
+                    current=current,
+                    known_pause_ids=known,
+                    run_status=run_status,
+                    value=value,
+                )
+                existing = db.execute(
+                    "SELECT id FROM host_commands WHERE run_id = ? AND verb = ? AND pause_id = ? AND applied_at IS NULL LIMIT 1",
+                    (run_id, _SCHEDULE_ANSWER_VERB, slot.pause_id),
+                ).fetchone()
+                if existing is not None:
+                    db.rollback()
+                    return False
+                db.execute(
+                    "INSERT INTO host_commands (run_id, verb, payload, pause_id, due_at, source_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (run_id, _SCHEDULE_ANSWER_VERB, payload, slot.pause_id, due_at_iso, source_ref, created_at),
+                )
+                self._append_run_update_sync(
+                    db,
+                    run_id,
+                    "command",
+                    {"verb": _SCHEDULE_ANSWER_VERB, "pause_id": slot.pause_id, "due_at": due_at_iso, "source_ref": source_ref},
+                )
+                db.commit()
+                return True
+            except BaseException:
+                self._rollback_sync(db)
+                raise
+
+    async def _write_scheduled_answer(
+        self,
+        workflow_id: str,
+        *,
+        pause_id: str | None,
+        value: Any,
+        due_at: datetime | str,
+        source_ref: str | None = None,
+    ) -> bool:
+        """Async mirror of ``_write_scheduled_answer_sync``."""
+        run_id, payload, due_at_iso, source_ref, created_at = self._scheduled_answer_row(workflow_id, pause_id, value, due_at, source_ref)
+        await self._ensure_db()
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                current, known, run_status = await self._read_settlement_inputs(run_id)
+                slot = _check_settlement(
+                    run_id=run_id,
+                    pause_id=pause_id,
+                    current=current,
+                    known_pause_ids=known,
+                    run_status=run_status,
+                    value=value,
+                )
+                existing_cursor = await self._db.execute(
+                    "SELECT id FROM host_commands WHERE run_id = ? AND verb = ? AND pause_id = ? AND applied_at IS NULL LIMIT 1",
+                    (run_id, _SCHEDULE_ANSWER_VERB, slot.pause_id),
+                )
+                if await existing_cursor.fetchone() is not None:
+                    await self._db.rollback()
+                    return False
+                await self._db.execute(
+                    "INSERT INTO host_commands (run_id, verb, payload, pause_id, due_at, source_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (run_id, _SCHEDULE_ANSWER_VERB, payload, slot.pause_id, due_at_iso, source_ref, created_at),
+                )
+                await self._append_run_update(
+                    run_id,
+                    "command",
+                    {"verb": _SCHEDULE_ANSWER_VERB, "pause_id": slot.pause_id, "due_at": due_at_iso, "source_ref": source_ref},
+                )
+                await self._db.commit()
+                return True
+            except BaseException:
+                await self._rollback_async()
+                raise
+
+    async def _due_scheduled_answers(self, now_iso: str) -> list[tuple[int, str, str | None, Any]]:
+        """Scheduled answers whose due time has arrived, oldest command first.
+
+        Shares ``_due_clause`` — and the caller's single store-authoritative
+        ``now`` — with the delayed-start filter in ``_claim_eligible``: one
+        due-row scan pass decides both (PRD 0017).
+        """
+        await self._ensure_db()
+        async with self._txn_lock():
+            cursor = await self._db.execute(
+                "SELECT id, run_id, pause_id, payload FROM host_commands "
+                f"WHERE verb = ? AND applied_at IS NULL AND {_due_clause('due_at')} ORDER BY id",
+                (_SCHEDULE_ANSWER_VERB, now_iso),
+            )
+            rows = await cursor.fetchall()
+        return [(int(row[0]), str(row[1]), row[2], json.loads(row[3]).get("value")) for row in rows]
+
+    async def _settle_due_answers(self, now_iso: str) -> list[tuple[int, str]]:
+        """Fire every due scheduled answer and record what it produced.
+
+        Each timer settles through ``settle_pause`` — THE settlement path a
+        human answer takes — so an answer-versus-timer race is decided by the
+        same compare-and-set on ``settled_at IS NULL``, in commit order, with
+        no preference rule and no second lock. A timer that lost, or whose
+        pause was superseded by a later occurrence, simply carries the
+        refusal the cascade raised.
+
+        "Inapplicable" means **refused at fire time and recorded**, never
+        deleted: the row keeps its pause id, due time, value, and
+        ``source_ref`` and gains an ``outcome``, so an auditor can still see
+        that a timer existed, when it was evaluated, and why it did not
+        apply. ADR 0008's "the loser receives a truthful rejection" has no
+        live caller on the timer side — this row IS how that rejection is
+        delivered.
+
+        Firing and marking are separate transactions, exactly like the stop
+        channel (``_process_stop_commands`` then ``_apply_stop_commands``):
+        commands are at-least-once. A crash between them re-fires the timer,
+        which then meets its own settled pause and records
+        ``already_settled`` — factually what the settlement path returned,
+        not a claim about who won.
+
+        Returns ``(command_id, outcome)`` per fired timer. Async only, like
+        every other worker-side scan on this Home; scheduling itself has a
+        sync mirror because callers are not workers.
+        """
+        results: list[tuple[int, str]] = []
+        for command_id, run_id, pause_id, value in await self._due_scheduled_answers(now_iso):
+            try:
+                await self.settle_pause(run_id, pause_id=pause_id, value=value)
+                outcome = SCHEDULED_ANSWER_SETTLED
+            except StalePauseError:
+                outcome = SCHEDULED_ANSWER_SUPERSEDED
+            except PauseAlreadySettledError:
+                outcome = SCHEDULED_ANSWER_ALREADY_SETTLED
+            except AnswerRejectedError:
+                outcome = SCHEDULED_ANSWER_REJECTED
+            await self._record_command_outcome(command_id, outcome)
+            results.append((command_id, outcome))
+        return results
+
+    async def _record_command_outcome(self, command_id: int, outcome: str) -> None:
+        """Mark one command applied with what firing it produced (audit only)."""
+        await self._ensure_db()
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                await self._db.execute(
+                    "UPDATE host_commands SET applied_at = ?, outcome = ? WHERE id = ? AND applied_at IS NULL",
+                    (_now_iso(), outcome, command_id),
+                )
+                await self._db.commit()
             except BaseException:
                 await self._rollback_async()
                 raise

@@ -97,7 +97,8 @@ class BatchCommandReceipt:
 
     Attributes:
         batch_ref: Inert address of the Batch the command targets.
-        verb: The command verb (``"stop"`` today).
+        verb: The command verb — ``"stop"`` today; a Batch has no
+            scheduled-answer form (its children are answered individually).
         duplicate: True when the Batch was already stopped — the first stop
             owns its payload and nothing new was written.
     """
@@ -129,10 +130,12 @@ class CommandReceipt:
 
     Attributes:
         run_ref: Inert address of the run the command targets.
-        verb: The command verb (``"stop"`` today).
+        verb: The command verb — ``"stop"`` or ``"schedule_answer"``. The
+            closed vocabulary is the host's own; callers never name a verb.
         duplicate: True when an unapplied command with the same verb already
-            existed for the run — the first accepted command owns its
-            payload and nothing new was written.
+            existed for the run — for ``schedule_answer``, for the same pause
+            occurrence. The first accepted command owns its payload and
+            nothing new was written.
     """
 
     run_ref: RunRef

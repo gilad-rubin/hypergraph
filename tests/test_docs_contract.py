@@ -1023,6 +1023,17 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert tuple(inspect.signature(RunHomeClient.get_run_slot).parameters) == ("self", "ref")
     assert tuple(inspect.signature(RunHomeClient.get_run_slot_sync).parameters) == ("self", "ref")
 
+    # Ticket 14: scheduled pause answers — one occurrence, one value, one due
+    # time, plus opaque command provenance. No recurrence surface.
+    assert "client.schedule_answer" in host_api
+    assert "schedule_answer_sync" in host_api
+    assert "due_at" in host_api
+    assert "source_ref" in host_api
+    assert tuple(inspect.signature(RunHomeClient.schedule_answer).parameters) == ("self", "ref", "pause_id", "value", "due_at", "source_ref")
+    assert tuple(inspect.signature(RunHomeClient.schedule_answer_sync).parameters) == tuple(
+        inspect.signature(RunHomeClient.schedule_answer).parameters
+    )
+
     # Definition binding and runner cloning signatures.
     assert tuple(inspect.signature(Graph.with_runner).parameters) == ("self", "runner")
     assert isinstance(Graph.bound_runner, property)
