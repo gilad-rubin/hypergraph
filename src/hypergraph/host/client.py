@@ -11,7 +11,9 @@ import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.checkpointers.types import WorkflowStatus
@@ -21,7 +23,17 @@ from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import RerunError
 from hypergraph.host.fingerprint import batch_fingerprint, start_fingerprint
 from hypergraph.host.refs import BatchCommandReceipt, BatchRef, BatchSubmitReceipt, CommandReceipt, RunRef, SubmitReceipt
-from hypergraph.host.views import BATCH_COUNT_KEYS, TERMINAL_WORKFLOW_STATUSES, BatchUpdate, BatchView, RunQuery, RunUpdate, RunView, WaitingCondition
+from hypergraph.host.views import (
+    BATCH_COUNT_KEYS,
+    TERMINAL_WORKFLOW_STATUSES,
+    BatchUpdate,
+    BatchView,
+    RunQuery,
+    RunUpdate,
+    RunView,
+    WaitingCondition,
+    is_child_settled,
+)
 
 if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Run
@@ -67,13 +79,14 @@ def _parse_batch_cursor(after: str | int | None) -> int:
     raise ValueError(f"Invalid batch watch cursor {after!r}. Expected None, an int bseq, or a 'bseq:N' cursor string from a durable BatchUpdate.")
 
 
-def _is_child_settled(submission: dict[str, Any], run: Run | None) -> bool:
-    """True when a Batch child can never change outcome again.
+def _child_settled(submission: dict[str, Any], run: Run | None) -> bool:
+    """Adapt one joined child row to the shared settled-child rule.
 
-    Terminal run, finished submission (stop-before-start or a tolerance
-    trip that closed admission), or a recovery-exhausted submission.
+    The rule itself lives in ``views.is_child_settled`` — the rerun gate and
+    ``BatchView.settled`` must never disagree about whether a child can
+    still change outcome.
     """
-    return (run is not None and run.status in TERMINAL_WORKFLOW_STATUSES) or submission["state"] in ("finished", "exhausted")
+    return is_child_settled(submission["state"], run.status.value if run is not None else None)
 
 
 def _build_batch_view(
@@ -108,7 +121,9 @@ def _build_batch_view(
             bucket, outcome = "queued", None
         counts[bucket] += 1
         outcomes[key] = outcome
-    settled = counts["active"] == 0 and counts["queued"] == 0
+    # Settlement uses THE settled-child rule, the same one the rerun gate
+    # applies — a child is never settled for rerun and in flight for the view.
+    settled = all(_child_settled(submission, run) for submission, run in child_rows.values())
     return BatchView(
         batch_ref=BatchRef(home=home_uri, batch_id=batch["batch_id"]),
         workflow_id=batch["workflow_id"],
@@ -171,81 +186,154 @@ def _build_view(home_uri: str, run_id: str, submission: dict[str, Any] | None, r
     )
 
 
+@dataclass(frozen=True)
+class _PlannedBatchRerun:
+    """The new Batch submission a subset rerun derives from its source.
+
+    Every field is read from the immutable source manifest (or minted for
+    the new Batch), so the sync and async mirrors submit byte-identical
+    work and differ only in the call they make.
+
+    Attributes:
+        batch_id: Freshly minted id for the new Batch.
+        workflow_id: New Batch workflow id (``<source>-retry-N``).
+        definition_id: The source's pinned Definition identity, verbatim.
+        items: Manifest-ordered ``(item_key, inputs_json)`` pairs for the
+            selected source items.
+        tolerance_json: The source's pinned tolerance, verbatim (or None).
+        fingerprint: Batch fingerprint of the new manifest.
+        batch_retry_of: Source ``batch_id`` recorded as Batch lineage.
+        child_retry_of: Item key → source child workflow id.
+    """
+
+    batch_id: str
+    workflow_id: str
+    definition_id: DefinitionId
+    items: list[tuple[str, str]]
+    tolerance_json: str | None
+    fingerprint: str
+    batch_retry_of: str
+    child_retry_of: dict[str, str]
+
+
+def _valid_item_keys(manifest: dict[str, Any], limit: int = 20) -> str:
+    """Render the source manifest's keys as an error's valid-options list."""
+    keys = sorted(manifest)
+    if len(keys) <= limit:
+        return repr(keys)
+    return f"{keys[:limit]!r} … (+{len(keys) - limit} more, {len(keys)} total)"
+
+
+def _did_you_mean(key: str, manifest: dict[str, Any]) -> str:
+    """A ``Did you mean 'X'?`` clause for a misspelled item key, or ''."""
+    matches = get_close_matches(key, list(manifest), n=1, cutoff=0.6)
+    return f"Did you mean {matches[0]!r}? " if matches else ""
+
+
 def _plan_batch_rerun(
     batch: dict[str, Any],
     child_rows: dict[str, tuple[dict[str, Any], Run | None]],
     item_keys: Sequence[str] | None,
     retry_count: int,
-) -> tuple[str, tuple[Any, ...], dict[str, Any]]:
+) -> _PlannedBatchRerun:
     """Validate a subset rerun and derive the new Batch submission.
 
     Everything is read from the immutable SOURCE manifest — Definition
     identity, per-item inputs, pinned tolerance — so a rerun repeats and
     never redefines. ``item_keys=None`` selects the whole manifest.
 
-    Returns the new ``workflow_id`` plus the positional and keyword
-    arguments for ``_submit_batch``, so the sync and async mirrors derive
-    identical submissions and differ only in the call they make.
+    Args:
+        batch: The source manifest row.
+        child_rows: Source children joined with their runs rows, keyed by
+            item key.
+        item_keys: Source item keys to repeat, or None for the whole
+            manifest.
+        retry_count: Batches already minted as a rerun of this source.
+
+    Returns:
+        The planned submission, ready to hand to ``_submit_batch``.
+
+    Raises:
+        TypeError: If ``item_keys`` is not a sequence of strings.
+        ValueError: If ``item_keys`` is empty, holds a non-string or empty
+            key, or names the same key twice.
+        RerunError: If ``item_keys`` names keys outside the source manifest,
+            or any selected child is still in flight.
     """
     manifest = json.loads(batch["items_json"])
     if item_keys is None:
         selected = list(manifest)
     else:
         if isinstance(item_keys, str) or not isinstance(item_keys, Sequence):
-            raise TypeError(f"rerun() item_keys must be a sequence of item key strings, got {type(item_keys).__name__}.")
+            raise TypeError(
+                f"rerun() item_keys must be a sequence of item key strings, got {type(item_keys).__name__}.\n\n"
+                f"Valid item keys: {_valid_item_keys(manifest)}\n\n"
+                "How to fix: pass a list of source manifest keys (item_keys=['a', 'b']), "
+                "or omit item_keys to repeat the whole manifest."
+            )
         seen: set[str] = set()
         for key in item_keys:
             if not isinstance(key, str) or not key:
-                raise ValueError(f"rerun() item keys must be non-empty strings, got {key!r}.")
+                raise ValueError(
+                    f"rerun() item keys must be non-empty strings, got {key!r}.\n\n"
+                    f"Valid item keys: {_valid_item_keys(manifest)}\n\n"
+                    "How to fix: name source manifest keys as non-empty strings."
+                )
             if key in seen:
-                raise ValueError(f"rerun() duplicate item key {key!r}; name every source item at most once.")
+                raise ValueError(
+                    f"rerun() duplicate item key {key!r}; name every source item at most once.\n\n"
+                    "How to fix: drop the repeated key — a rerun mints exactly one new child per selected source item."
+                )
             seen.add(key)
         if not seen:
-            raise ValueError("rerun() item_keys must name at least one source item; an empty rerun is not a rerun.")
+            raise ValueError(
+                "rerun() item_keys must name at least one source item; an empty rerun is not a rerun.\n\n"
+                f"Valid item keys: {_valid_item_keys(manifest)}\n\n"
+                "How to fix: name the source item keys to repeat, or omit item_keys to repeat the whole manifest."
+            )
         unknown = [key for key in item_keys if key not in manifest]
         if unknown:
             raise RerunError(
                 batch["workflow_id"],
-                f"Cannot rerun items {unknown!r} of Batch {batch['workflow_id']!r}: they are not in the source manifest. "
+                f"Cannot rerun items {unknown!r} of Batch {batch['workflow_id']!r}: they are not in the source manifest.\n\n"
+                f"Valid item keys: {_valid_item_keys(manifest)}\n\n"
+                f"How to fix: {_did_you_mean(unknown[0], manifest)}name only keys from the source manifest. "
                 "Subset rerun repeats source items only; a different manifest is a new submit_batch().",
             )
         # Manifest order, never caller order: item order is manifest truth.
         selected = [key for key in manifest if key in seen]
-    unsettled = [key for key in selected if not _is_child_settled(*child_rows[key])]
+    unsettled = [key for key in selected if not _child_settled(*child_rows[key])]
     if unsettled:
         raise RerunError(
             batch["workflow_id"],
-            f"Cannot rerun items {unsettled!r} of Batch {batch['workflow_id']!r}: those children are still in flight. "
-            "Rerun repeats settled work; wait for them to settle so one logical item never has two live Runs.",
+            f"Cannot rerun items {unsettled!r} of Batch {batch['workflow_id']!r}: those children are still in flight.\n\n"
+            "How to fix: wait for them to settle (watch the Batch, or poll client.get(batch_ref).settled) "
+            "and rerun then, or name only settled item keys. Rerun repeats settled work so one logical item "
+            "never has two live Runs.",
         )
     pairs = [(key, json.dumps(manifest[key])) for key in selected]
     tolerance = BatchTolerance.from_dict(json.loads(batch["tolerance_json"])) if batch["tolerance_json"] is not None else None
     definition_id = DefinitionId(batch["definition_name"], batch["def_version"], batch["def_struct_hash"])
-    workflow_id = f"{batch['workflow_id']}-retry-{retry_count + 1}"
-    args = (
-        f"b-{uuid.uuid4().hex[:12]}",
-        workflow_id,
-        definition_id.name,
-        definition_id.deployment_version,
-        definition_id.structural_hash,
-        pairs,
-        batch["tolerance_json"],
-        None,  # start_at: a repeat starts now, never on the source's past schedule
-        None,  # source_ref
-    )
-    kwargs = {
-        "fingerprint": batch_fingerprint(definition_id, {key: json.loads(value) for key, value in pairs}, tolerance, None),
-        "batch_retry_of": batch["batch_id"],
+    return _PlannedBatchRerun(
+        batch_id=f"b-{uuid.uuid4().hex[:12]}",
+        workflow_id=f"{batch['workflow_id']}-retry-{retry_count + 1}",
+        definition_id=definition_id,
+        items=pairs,
+        tolerance_json=batch["tolerance_json"],
+        fingerprint=batch_fingerprint(definition_id, {key: json.loads(value) for key, value in pairs}, tolerance, None),
+        batch_retry_of=batch["batch_id"],
         # Each new child records retry_of against its SOURCE child's
         # workflow id — lineage names the run it repeats, not the item key.
-        "child_retry_of": {key: str(child_rows[key][0]["workflow_id"]) for key in selected},
-    }
-    return workflow_id, args, kwargs
+        child_retry_of={key: str(child_rows[key][0]["workflow_id"]) for key in selected},
+    )
 
 
 def _reject_run_item_keys(item_keys: Sequence[str] | None) -> None:
     if item_keys is not None:
-        raise TypeError("rerun() item_keys is only valid for a BatchRef; a Run has no items. Pass the BatchRef to repeat named Batch items.")
+        raise TypeError(
+            "rerun() item_keys is only valid for a BatchRef; a Run has no items.\n\n"
+            "How to fix: pass the BatchRef to repeat named Batch items, or drop item_keys to repeat this Run."
+        )
 
 
 def _validate_query(query: RunQuery) -> RunQuery:
@@ -444,11 +532,25 @@ class RunHomeClient:
         if isinstance(ref, BatchRef):
             batch, child_rows = await self._require_batch_source(ref)
             retry_count = await self._home._count_batch_retries(ref.batch_id)
-            workflow_id, args, kwargs = _plan_batch_rerun(batch, child_rows, item_keys, retry_count)
-            created, row = await self._home._submit_batch(*args, **kwargs)
+            plan = _plan_batch_rerun(batch, child_rows, item_keys, retry_count)
+            created, row = await self._home._submit_batch(
+                batch_id=plan.batch_id,
+                workflow_id=plan.workflow_id,
+                definition_name=plan.definition_id.name,
+                def_version=plan.definition_id.deployment_version,
+                def_struct_hash=plan.definition_id.structural_hash,
+                items=plan.items,
+                tolerance_json=plan.tolerance_json,
+                # A repeat starts now, never on the source's past schedule.
+                start_at=None,
+                source_ref=None,
+                fingerprint=plan.fingerprint,
+                batch_retry_of=plan.batch_retry_of,
+                child_retry_of=plan.child_retry_of,
+            )
             return BatchSubmitReceipt(
                 batch_ref=BatchRef(home=self._home.uri, batch_id=row["batch_id"]),
-                workflow_id=workflow_id,
+                workflow_id=plan.workflow_id,
                 duplicate=not created,
             )
         if not isinstance(ref, RunRef):
@@ -480,11 +582,25 @@ class RunHomeClient:
                 raise RerunError(ref.batch_id, f"Cannot rerun batch {ref.batch_id!r}: no such Batch in this Run Home.")
             child_rows = self._home._batch_child_rows_sync(ref.batch_id)
             retry_count = self._home._count_batch_retries_sync(ref.batch_id)
-            workflow_id, args, kwargs = _plan_batch_rerun(batch, child_rows, item_keys, retry_count)
-            created, row = self._home._submit_batch_sync(*args, **kwargs)
+            plan = _plan_batch_rerun(batch, child_rows, item_keys, retry_count)
+            created, row = self._home._submit_batch_sync(
+                batch_id=plan.batch_id,
+                workflow_id=plan.workflow_id,
+                definition_name=plan.definition_id.name,
+                def_version=plan.definition_id.deployment_version,
+                def_struct_hash=plan.definition_id.structural_hash,
+                items=plan.items,
+                tolerance_json=plan.tolerance_json,
+                # A repeat starts now, never on the source's past schedule.
+                start_at=None,
+                source_ref=None,
+                fingerprint=plan.fingerprint,
+                batch_retry_of=plan.batch_retry_of,
+                child_retry_of=plan.child_retry_of,
+            )
             return BatchSubmitReceipt(
                 batch_ref=BatchRef(home=self._home.uri, batch_id=row["batch_id"]),
-                workflow_id=workflow_id,
+                workflow_id=plan.workflow_id,
                 duplicate=not created,
             )
         if not isinstance(ref, RunRef):

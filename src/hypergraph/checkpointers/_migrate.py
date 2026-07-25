@@ -462,6 +462,14 @@ _HOST_SUBMISSIONS_ADDED_COLUMNS = (
 _HOST_BATCHES_ADDED_COLUMNS = (("retry_of", "retry_of TEXT"),)
 
 
+def _add_missing_columns(conn: Any, table: str, columns: tuple[tuple[str, str], ...]) -> None:
+    """ALTER in every one of ``columns`` the table does not already carry."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, ddl in columns:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
 def _ensure_v6_objects(conn: Any) -> None:
     """Ensure durable-host coordination tables exist (safe idempotent guard)."""
     conn.execute(_CREATE_HOST_SUBMISSIONS)
@@ -469,14 +477,8 @@ def _ensure_v6_objects(conn: Any) -> None:
     conn.execute(_CREATE_HOST_COMMANDS)
     conn.execute(_CREATE_HOST_BATCHES)
     conn.execute(_CREATE_BATCH_UPDATES)
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()}
-    for name, ddl in _HOST_SUBMISSIONS_ADDED_COLUMNS:
-        if name not in existing:
-            conn.execute(f"ALTER TABLE host_submissions ADD COLUMN {ddl}")
-    existing_batch_cols = {row[1] for row in conn.execute("PRAGMA table_info(host_batches)").fetchall()}
-    for name, ddl in _HOST_BATCHES_ADDED_COLUMNS:
-        if name not in existing_batch_cols:
-            conn.execute(f"ALTER TABLE host_batches ADD COLUMN {ddl}")
+    _add_missing_columns(conn, "host_submissions", _HOST_SUBMISSIONS_ADDED_COLUMNS)
+    _add_missing_columns(conn, "host_batches", _HOST_BATCHES_ADDED_COLUMNS)
     _create_host_indexes(conn)
     conn.commit()
 

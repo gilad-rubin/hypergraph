@@ -206,7 +206,9 @@ together, they land in the same transaction.
 Batch update writes are append-only and never backpressure child execution.
 Durable facts are `manifest` (bseq 1), `child_settled` (a child's terminal
 transition, with `item_key`, `workflow_id`, and `status`),
-`tolerance_tripped`, and `stopped`; live previews fanned in from child runs
+`tolerance_tripped`, `child_unstarted` (an item that ended unstarted after
+the trip fact already named its unstarted items, with `item_key` and
+`workflow_id`), and `stopped`; live previews fanned in from child runs
 arrive with `update.durable is False`, repeat the last durable cursor, and
 never advance it:
 
@@ -218,12 +220,15 @@ async for update in client.watch(receipt.batch_ref, after=cursor):
 ```
 
 A Batch watch terminates once every child is terminally settled (or the
-Batch is durably stopped) and every committed fact has been delivered;
-explicit unstarted-item truth comes from `get(batch_ref)`. Reconnecting
-from a stored cursor replays with no gaps and no repeats, across process
-restarts, with no graph code. A `BatchRef` unknown to the Home terminates
-immediately with no updates. `client.get_sync(batch_ref)` is the
-synchronous mirror of `get()`.
+Batch is durably stopped) and every committed fact has been delivered. A
+tolerance trip names its unstarted items in the stream itself — in the
+`tolerance_tripped` payload, plus a `child_unstarted` fact for any item that
+ends unstarted after it — so a detached watcher accounts every manifest item
+from the durable sequence alone; `get(batch_ref)` is still the keyed view.
+Reconnecting from a stored cursor replays with no gaps and no repeats,
+across process restarts, with no graph code. A `BatchRef` unknown to the
+Home terminates immediately with no updates. `client.get_sync(batch_ref)`
+is the synchronous mirror of `get()`.
 
 ## Failure Tolerance and the Trip
 
@@ -252,7 +257,9 @@ consecutive `bseq` values and a reader never sees a Batch that should have
 tripped but has not):
 
 - **closes new child admission** — no pending child is claimed again, and a
-  child a crash returns to pending is not re-admitted either;
+  child a crash returns to pending is not re-admitted either (that refusal
+  appends its own durable `child_unstarted` fact in the same transaction as
+  the state flip, so the stream accounts the item too);
 - **lets already-claimed children settle** — running work is never killed;
 - **marks every remaining item explicitly unstarted** — named by item key,
   never a fabricated failure;

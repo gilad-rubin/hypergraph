@@ -658,13 +658,29 @@ class TestSubsetRerun:
         host, source, _state = await self._settled_source(home)
         with pytest.raises(RerunError, match="not in the source manifest") as excinfo:
             await host.client.rerun(source.batch_ref, item_keys=["p-0", "nope", "also-nope"])
-        # The error names the offending keys and nothing else.
-        assert "'nope'" in str(excinfo.value)
-        assert "'also-nope'" in str(excinfo.value)
-        assert "'p-0'" not in str(excinfo.value)
+        message = str(excinfo.value)
+        # The failure line names the offending keys and only those...
+        failure_line = message.splitlines()[0]
+        assert "'nope'" in failure_line
+        assert "'also-nope'" in failure_line
+        assert "'p-0'" not in failure_line
+        # ...and the caller is shown the source manifest's valid keys plus
+        # actionable guidance (dev/CODE-CONVENTIONS.md § Error Messages).
+        assert "Valid item keys: ['p-0', 'p-1'" in message
+        assert "How to fix:" in message
         # Nothing was written by the rejected rerun.
         db = home._sync_db()
         assert db.execute("SELECT COUNT(*) FROM host_batches").fetchone()[0] == 1
+
+    async def test_rerun_suggests_a_close_item_key(self, home):
+        """A near-miss key gets a fuzzy suggestion, not just a rejection."""
+        host, source, _state = await self._settled_source(home)
+        with pytest.raises(RerunError) as excinfo:
+            await host.client.rerun(source.batch_ref, item_keys=["p-9"])
+        message = str(excinfo.value)
+        assert "Did you mean " in message
+        # The suggestion is always a real key of the source manifest.
+        assert message.split("Did you mean ")[1].split("?")[0].strip("'") in _items(8)
 
     async def test_rerun_rejects_empty_and_duplicate_key_lists(self, home):
         host, source, _state = await self._settled_source(home)
@@ -749,3 +765,124 @@ class TestSubsetRerun:
         assert isinstance(receipt, SubmitReceipt)
         assert receipt.workflow_id == "wf-one-retry-1"
         assert home._get_submission_sync("wf-one-retry-1")["retry_of"] == "wf-one"
+
+
+# === 7. A9: the durable sequence accounts every manifest item ===
+
+
+def _accounted_from_stream(updates: list[tuple[int, str, dict]]) -> tuple[list[str], list[str]]:
+    """Reconstruct (manifest keys, accounted keys) from batch_updates ALONE.
+
+    A detached ``watch(batch_ref, after=cursor)`` consumer sees nothing but
+    these rows — no view, no store queries. PRD 0019 A9 says it follows the
+    whole Batch gap-free, so the stream must account every manifest item on
+    its own: settled children by their ``child_settled`` fact, items the
+    trip closed admission on by the trip payload, and items that end
+    unstarted after the trip by their own ``child_unstarted`` fact.
+    """
+    manifest: list[str] = []
+    accounted: list[str] = []
+    for _bseq, kind, payload in updates:
+        if kind == "manifest":
+            manifest = list(payload["item_keys"])
+        elif kind in ("child_settled", "child_unstarted"):
+            accounted.append(payload["item_key"])
+        elif kind == "tolerance_tripped":
+            accounted.extend(payload["unstarted_items"])
+    return manifest, accounted
+
+
+class TestDurableStreamAccountsEveryItem:
+    """A9: the stream and the view must reconstruct each other.
+
+    The regression these cover: children CLAIMED at trip time are rightly
+    absent from the trip fact's ``unstarted_items`` (they may still
+    settle), but when a worker death returns them to pending, admission
+    refuses them — and that refusal used to flip state with no durable
+    Batch row at all. ``BatchView`` recomputes from rows so it stayed
+    right; a ``watch()`` consumer following the cursor never learned those
+    items ended unstarted.
+    """
+
+    async def _tripped_with_claimed_children(self, home, runner: str = "sync"):
+        """8 items all claimed, then 3 failures trip with NOTHING pending.
+
+        ``unstarted_items`` is empty in the trip fact by construction: at
+        trip time every remaining item was already claimed, so the trip
+        could not name it. Those five items become unstarted only later.
+        """
+        graph, _state = _sequenced_graph("ingest", ["fail", "fail", "fail"], runner)
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await host.submit_batch(
+            "ingest",
+            items=_items(8),
+            workflow_id="drop-a9",
+            tolerance=BatchTolerance(max_failed=2),
+        )
+        claimed = await _claim(host, home)
+        assert len(claimed) == 8
+        for row in claimed[:3]:
+            await host._execute_submission(row)
+        assert home._batch_tripped_sync(receipt.batch_ref.batch_id) is True
+        assert _trip_fact(home, receipt.batch_ref.batch_id)["unstarted_items"] == []
+        return host, receipt
+
+    @pytest.mark.parametrize("runner", ["sync", "async"])
+    async def test_stream_accounts_every_item_across_the_restart_path(self, home, runner):
+        host, receipt = await self._tripped_with_claimed_children(home, runner)
+        batch_id = receipt.batch_ref.batch_id
+
+        # The worker dies with five children claimed but never executed;
+        # the restart scan returns them to pending and admission refuses
+        # them. Each refusal is a durable fact, not a silent state flip.
+        await home._restart_scan()
+        assert await _claim(host, home) == []
+
+        updates = _batch_updates(home, batch_id)
+        # Gap-free numbering AND gap-free meaning.
+        assert [bseq for bseq, _kind, _payload in updates] == list(range(1, len(updates) + 1))
+        manifest, accounted = _accounted_from_stream(updates)
+        assert len(manifest) == 8
+        assert sorted(accounted) == sorted(manifest)  # 8 of 8, from the stream alone
+        assert len(accounted) == len(set(accounted))  # each item accounted exactly once
+
+        # The stream's unstarted truth is the view's unstarted truth.
+        unstarted = [payload for _bseq, kind, payload in updates if kind == "child_unstarted"]
+        view = await host.client.get(receipt.batch_ref)
+        assert {fact["item_key"] for fact in unstarted} == set(view.unstarted_items)
+        assert len(unstarted) == 5
+        assert all(fact["workflow_id"] == f"drop-a9:{fact['item_key']}" for fact in unstarted)
+        assert view.counts["unstarted"] == 5
+        assert view.settled is True
+        assert host.client.get_sync(receipt.batch_ref) == view
+
+    async def test_a_watch_consumer_learns_every_item_without_reading_the_view(self, home):
+        host, receipt = await self._tripped_with_claimed_children(home)
+        await home._restart_scan()
+        assert await _claim(host, home) == []
+
+        durable = [update async for update in host.client.watch(receipt.batch_ref) if update.durable]
+
+        assert [u.kind for u in durable] == ["manifest"] + ["child_settled"] * 3 + ["tolerance_tripped"] + ["child_unstarted"] * 5
+        assert [u.cursor for u in durable] == [f"bseq:{n}" for n in range(1, 11)]
+        manifest, accounted = _accounted_from_stream([(n, u.kind, u.payload) for n, u in enumerate(durable, start=1)])
+        assert sorted(accounted) == sorted(manifest)
+
+    async def test_a_trip_that_names_its_unstarted_items_never_repeats_them(self, home):
+        """One item is accounted once: by the trip fact OR by its own fact."""
+        graph, _state = _sequenced_graph("ingest", ["ok", "ok", "ok", "fail", "fail", "fail"])
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await host.submit_batch(
+            "ingest",
+            items=_items(8),
+            workflow_id="drop-a9-drive",
+            tolerance=BatchTolerance(max_failed=2),
+        )
+        await _drive(host, home)
+
+        updates = _batch_updates(home, receipt.batch_ref.batch_id)
+        # The trip named both remaining items, so nothing is left to report.
+        assert [kind for _bseq, kind, _payload in updates].count("child_unstarted") == 0
+        manifest, accounted = _accounted_from_stream(updates)
+        assert sorted(accounted) == sorted(manifest)
+        assert len(accounted) == len(set(accounted))

@@ -24,6 +24,37 @@ TERMINAL_WORKFLOW_STATUSES: frozenset[WorkflowStatus] = frozenset(
         WorkflowStatus.STOPPED,
     }
 )
+# The same vocabulary as stored strings, for the store's own row values.
+TERMINAL_STATUS_VALUES: frozenset[str] = frozenset(status.value for status in TERMINAL_WORKFLOW_STATUSES)
+
+# Submission states in which the host will never touch a submission again:
+# 'finished' (terminal run, stop-before-start, or a tolerance trip that
+# closed admission) and 'exhausted' (parked by the recovery brake).
+SUBMISSION_STATE_FINISHED = "finished"
+SUBMISSION_STATE_EXHAUSTED = "exhausted"
+SETTLED_SUBMISSION_STATES: frozenset[str] = frozenset({SUBMISSION_STATE_FINISHED, SUBMISSION_STATE_EXHAUSTED})
+
+
+def is_child_settled(submission_state: str | None, run_status: str | None) -> bool:
+    """True when a Batch child can never change outcome again.
+
+    THE settled-child rule. Every caller — the rerun gate, ``BatchView``,
+    Batch stop, and Batch-owned workflow-id reuse — routes through this one
+    predicate so a child is never settled for one and in flight for another.
+    Both arguments are stored row values (``host_submissions.state`` and
+    ``runs.status``), not enums, because the store is what they compare.
+
+    Args:
+        submission_state: The child's ``host_submissions.state``, or None
+            when no submission row exists.
+        run_status: The child's ``runs.status`` value, or None when the
+            child has no runs row yet.
+
+    Returns:
+        True when the child reached a terminal run status or its submission
+        is settled (finished or recovery-exhausted).
+    """
+    return run_status in TERMINAL_STATUS_VALUES or submission_state in SETTLED_SUBMISSION_STATES
 
 
 class WaitingCondition(Enum):
@@ -208,13 +239,19 @@ class BatchUpdate:
             ``child_settled`` (a child's terminal transition, committed in
             the same transaction as the child fact), ``tolerance_tripped``
             (a pinned tolerance was strictly exceeded, committed in that
-            same transaction at the next ``bseq``), ``stopped`` (the
-            durable Batch stop) — or an event class name for previews.
+            same transaction at the next ``bseq``), ``child_unstarted`` (an
+            item that ended unstarted AFTER the trip fact already named its
+            unstarted items — a claimed child a restart returned to pending
+            and admission then refused), ``stopped`` (the durable Batch
+            stop) — or an event class name for previews.
         payload: JSON-safe fact payload. ``child_settled`` carries
             ``item_key``, ``workflow_id``, and ``status``;
             ``tolerance_tripped`` carries ``failed``, ``total_items``, the
             pinned ``max_failed``/``max_failed_percent``, and the
-            ``unstarted_items`` admission closed.
+            ``unstarted_items`` admission closed; ``child_unstarted``
+            carries ``item_key`` and ``workflow_id``. Between them, the
+            durable stream accounts every manifest item exactly once — a
+            detached ``watch`` never needs the view to learn an outcome.
         timestamp: ISO timestamp of the fact (or of preview observation).
     """
 
