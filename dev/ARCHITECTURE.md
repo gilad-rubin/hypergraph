@@ -123,7 +123,7 @@ Practical mental model:
 - `map_resume.py` — Own map-item signature, index, and claim decisions
 - `outputs.py` — Output wrapping, selection, and mapped-output collection
 - `protocols.py` — executor protocols for sync and async runners
-- `provider_limits.py` — Compose the injected provider budgets around one node execution, and carry graph-scope budgets across the nested-graph boundary
+- `provider_limits.py` — Compose the injected provider budgets around one node execution (deduplicated, then ranked into the one process-wide acquisition order), and carry graph-scope budgets across the nested-graph boundary
 - `readiness.py` — Gate activation, readiness, staleness, and result application
 - `results.py` — Public result, status, pause-info, and execution-log types
 - `run_log.py` — always-on `RunLog` collection helpers

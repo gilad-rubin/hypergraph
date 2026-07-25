@@ -12,10 +12,20 @@ mechanism the async runner already uses to share one concurrency semaphore
 with nested graphs. Without it, moving a node into ``as_node()`` would
 silently drop it out of the parent's budget.
 
-Acquisition order is fixed: graph budgets outermost-first (the enclosing
-graph before the nested one), then the node budget. One fixed order across
-every execution path is what keeps two nodes holding two limiters from
-deadlocking each other.
+Acquisition order is a **total order over limiter instances**, not over
+scopes: every unique limiter a node needs is taken in construction order
+(``_acquisition_rank``). Scope order — graph budgets outermost-first, then
+the node budget — is only an order *within* one execution path, and two
+legal graphs can name the same two limiters at opposite scopes::
+
+    Graph([node(provider_limit=beta)]).with_provider_limit(alpha)   # (alpha, beta)
+    Graph([node(provider_limit=alpha)]).with_provider_limit(beta)   # (beta, alpha)
+
+Run those together and each holds the permit the other waits for — a
+circular wait that never ends, because a provider-permit wait is
+deliberately not an attempt and has no timeout. Ranking the instances is
+what makes the two paths agree, including across the nested-graph boundary
+where ``compose_graph_limits`` merges an enclosing budget with an inner one.
 """
 
 from __future__ import annotations
@@ -32,7 +42,11 @@ _GRAPH_SCOPE_LIMITS: ContextVar[tuple[ProcessLocalLimiter, ...]] = ContextVar("h
 
 
 def current_graph_limits() -> tuple[ProcessLocalLimiter, ...]:
-    """Graph-scope budgets inherited from an enclosing graph, outermost first."""
+    """Graph-scope budgets inherited from an enclosing graph, outermost first.
+
+    Outermost-first records *where* each budget came from, nothing more.
+    Acquisition order is decided once, in ``provider_permits``.
+    """
     return _GRAPH_SCOPE_LIMITS.get()
 
 
@@ -66,14 +80,22 @@ def provider_permits(
     graph_limits: tuple[ProcessLocalLimiter, ...],
     node_limit: ProcessLocalLimiter | None,
 ) -> tuple[ProcessLocalLimiter, ...]:
-    """Budgets to hold for one node execution, outermost first.
+    """Budgets to hold for one node execution, in acquisition order.
 
-    The same limiter injected at two scopes yields ONE permit: these pools
-    are not reentrant, so acquiring twice would deadlock a graph that shares
-    its budget with a node.
+    Two rules, and the second only works because of the first:
+
+    - The same limiter injected at two scopes yields ONE permit. These pools
+      are not reentrant, so acquiring twice would deadlock a graph that
+      shares its budget with a node. Dedup is by identity and runs before
+      the sort, so ordering can never reintroduce a double acquire.
+    - Distinct limiters come back ranked by construction order, the same
+      order on every execution path in the process. Which scope a limiter
+      arrived from is deliberately not part of the key: scope order is what
+      let two graphs acquire the same pair in opposite directions.
     """
     permits: list[ProcessLocalLimiter] = []
     for limiter in (*graph_limits, node_limit):
         if limiter is not None and not any(limiter is held for held in permits):
             permits.append(limiter)
+    permits.sort(key=lambda limiter: limiter._acquisition_rank)
     return tuple(permits)

@@ -20,11 +20,33 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import threading
 from collections import deque
 from types import TracebackType
 
 __all__ = ["ProcessLocalLimiter"]
+
+# A stable total order over limiter INSTANCES, minted at construction.
+#
+# Holding several of these at once is lock ordering, and lock ordering is only
+# deadlock-free when every path takes the shared limiters in the same order.
+# "Graph budgets before the node budget" orders the scopes of one execution
+# path; it is not an order over instances, because two legal graphs can name
+# the same two limiters at opposite scopes and then wait on each other.
+#
+# The rank is monotonic and never reused for the life of the process. ``id()``
+# is not a substitute: CPython recycles addresses, so two limiters that never
+# coexist can share one id, and an id-keyed order is neither meaningful nor
+# stable across the objects it is supposed to rank.
+_ACQUISITION_RANKS = itertools.count()
+_ACQUISITION_RANK_LOCK = threading.Lock()
+
+
+def _next_acquisition_rank() -> int:
+    """One never-reused rank. Locked: limiters are built from any thread."""
+    with _ACQUISITION_RANK_LOCK:
+        return next(_ACQUISITION_RANKS)
 
 
 class _SyncWaiter:
@@ -116,9 +138,15 @@ class ProcessLocalLimiter:
 
     Node and graph scopes are **work budgets**: the permit covers the whole
     node execution, including any retry backoff. They compose as narrower
-    limits around a component quota; they never replace it. Give each scope
-    its own limiter instance — acquiring the same limiter twice on one
-    execution path deadlocks, exactly like a non-reentrant lock.
+    limits around a component quota; they never replace it.
+
+    A single limiter is not reentrant — acquiring it twice on one execution
+    path deadlocks, exactly like a non-reentrant lock — so the runner
+    collapses a limiter injected at two scopes to ONE permit. When the runner
+    holds several *different* limiters for one node it takes them in one
+    process-wide order (the order the limiters were constructed in), so no two
+    execution paths can end up each holding the permit the other is waiting
+    for. Acquire in that same order if you take several by hand.
 
     Threads and tasks share ONE arrival-ordered queue, so neither kind can
     starve the other. ``with limiter:`` blocks a thread that is not running
@@ -144,6 +172,8 @@ class ProcessLocalLimiter:
                 "  ProcessLocalLimiter(max_in_flight=4)"
             )
         self._max_in_flight = max_in_flight
+        # Where this instance sits in the process-wide acquisition order.
+        self._acquisition_rank = _next_acquisition_rank()
         self._lock = threading.Lock()
         self._in_flight = 0
         # ONE arrival-ordered queue for both waiter kinds. Two queues (or an

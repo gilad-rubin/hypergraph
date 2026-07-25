@@ -735,10 +735,17 @@ class ProcessLocalLimiter:
   concurrent Runs of the same graph draw on the same permits.
 - **Work budget vs quota.** Node and graph scope hold the permit for the
   whole node execution, retry backoff included. They compose as narrower
-  limits around a component quota; they never replace it. Give each scope
-  its own limiter — the pools are not reentrant, so acquiring the same one
-  twice on a path deadlocks (Hypergraph collapses a graph and node budget
-  that are literally the same object to one permit).
+  limits around a component quota; they never replace it. The pools are not
+  reentrant, so acquiring the same one twice on a path deadlocks —
+  Hypergraph collapses a graph and node budget that are literally the same
+  object to one permit.
+- **Composition is deadlock-free.** When a node needs several *different*
+  limiters, the runner takes them in one process-wide order (the order the
+  limiters were constructed in), not in scope order. That is what lets two
+  graphs name the same two budgets at opposite scopes — `alpha` on the
+  graph and `beta` on the node in one, reversed in the other — without each
+  holding the permit the other is waiting for. If you acquire several
+  limiters by hand, take them in that same order.
 - **Never a failure, never an attempt.** Waiting for a permit happens
   outside the attempt coordinator: it reserves no attempt, consumes no
   `RetryPolicy` budget, and runs down no `timeout`. Under the durable host
@@ -760,6 +767,16 @@ class ProcessLocalLimiter:
 > `@node(provider_limit=...)` / `graph.with_provider_limit(...)` and let the
 > runner take the permit for you (it always takes it correctly for the
 > runner in use).
+>
+> The one place the runner cannot take it for you is
+> `as_node(runner=SyncRunner())` (or any other synchronous runner) under
+> `AsyncRunner`: the nested run happens inline on the loop thread, so a
+> permit there could only be waited for by blocking the loop. That
+> combination raises `IncompatibleRunnerError` at the boundary — before the
+> nested run starts, and whether or not the permit happens to be free — so
+> it cannot pass in development and hang under load. Drop the `runner=`
+> override, drop the budget from that branch, or own the quota in the
+> component.
 
 ### Related concurrency controls
 

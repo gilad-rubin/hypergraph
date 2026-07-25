@@ -33,3 +33,36 @@ and both admission checks read the store inside their transactions, and two
 new tests hold two `RunHome` objects on one store to prove a cap set through
 one is honored and reported by the other. Passing `max_active_runs` to
 `open()` writes through; omitting it adopts the stored value.
+
+## Note on box 3 — "compose" was not true as written
+
+Box 3 claims provider limiters "live at graph, node, or component scope" and
+compose. External peer review (Codex gpt-5.6) found, and this repo
+reproduced, that they did not compose: `provider_permits` fixed the order of
+the scopes *within* one execution path (graph budgets, then the node budget)
+and imposed no order across limiter instances. Two individually legal graphs
+
+    Graph([node(provider_limit=beta)]).with_provider_limit(alpha)
+    Graph([node(provider_limit=alpha)]).with_provider_limit(beta)
+
+therefore acquired `(alpha, beta)` and `(beta, alpha)`. Run concurrently,
+each held the permit the other waited for. The wait is deliberately not an
+attempt, so nothing timed out: both permits were held forever. The same
+cycle could be spelled across the nested-graph boundary, where
+`compose_graph_limits` merges an enclosing budget with an inner one.
+
+Repaired by `fix(runners): order provider-limit acquisition globally to
+prevent deadlock`: every `ProcessLocalLimiter` is stamped with a
+never-reused construction rank, and `provider_permits` deduplicates by
+identity and then sorts by that rank, so every execution path in the process
+takes shared limiters in one order. Proof lives in
+`tests/test_runners/test_provider_limit_ordering.py` (two-graph cycle, a
+three-limiter rotation, nested composition, dedup, and a sync mirror of
+each — all bounded so a regression fails instead of hanging).
+
+The same change closes a second hole the box did not anticipate: a delegated
+**synchronous** runner (`as_node(runner=SyncRunner())`) under `AsyncRunner`
+runs inline on the event-loop thread, where the ticket-12 loop-thread guard
+makes a contended acquire *raise*. That failed only under contention — it
+passed uncontended — so it now raises `IncompatibleRunnerError` at the
+GraphNode boundary before the nested run starts.

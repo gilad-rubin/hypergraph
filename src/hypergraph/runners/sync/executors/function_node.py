@@ -21,9 +21,10 @@ class SyncFunctionNodeExecutor:
     - Regular function calls
     - Sync generators (accumulated to list)
 
-    Holds the injected provider-resource budgets (graph scope, then node
-    scope) for the whole node execution — retry backoff included, matching
-    the async mirror.
+    Holds the injected provider-resource budgets (graph and node scope) for
+    the whole node execution — retry backoff included, matching the async
+    mirror. ``provider_permits`` hands them over already deduplicated and in
+    the process-wide acquisition order; take them in exactly that order.
     """
 
     def __call__(
