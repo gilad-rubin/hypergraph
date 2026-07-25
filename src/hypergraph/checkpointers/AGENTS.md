@@ -52,11 +52,17 @@ row-count shortcuts.
   (`sqlite._read_settlement_inputs`), so a caller that only wants to VALIDATE
   a prospective answer — the durable host's scheduled answer does — asks the
   same question about the same rows.
-- Every answer settles through `settle_pause`, human or scheduled. A timer
-  is not a second writer with its own rules: it calls the same method, wins
-  or loses the same compare-and-set, and earns the same three refusals. Never
-  add a second settlement path — an answer-versus-timer race decided by two
-  different code paths could settle one occurrence twice.
+- Every answer settles through ONE body, human or scheduled:
+  `sqlite._settle_pause_in_txn`, which `settle_pause` wraps in its own
+  `BEGIN IMMEDIATE`. A timer is not a second writer with its own rules: it
+  runs the same body, wins or loses the same compare-and-set, and earns the
+  same three refusals. Never add a second settlement path — an
+  answer-versus-timer race decided by two different code paths could settle
+  one occurrence twice. A caller that must commit MORE than the settlement
+  (the host's scheduled answer commits the timer's recorded outcome and its
+  durable fate fact with it) reuses that body inside its own transaction
+  instead of re-deriving the CAS; because every refusal is raised before any
+  write, catching one leaves that transaction clean to keep writing in.
 - The answer contract is data, never a callable: render `answer_type` through
   `_answer_schema.render_answer_schema` and check values with
   `validate_answer`. The schema describes the JSON *form* of the declared

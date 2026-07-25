@@ -862,6 +862,41 @@ class SqliteCheckpointer(Checkpointer):
         run_row = db.execute("SELECT status FROM runs WHERE id = ?", (run_id,)).fetchone()
         return current, known, WorkflowStatus(run_row[0]) if run_row is not None else None
 
+    async def _settle_pause_in_txn(self, run_id: str, *, pause_id: str | None, value: Any) -> PauseSlot:
+        """THE settlement body, inside a transaction the CALLER owns.
+
+        Reads the occurrence, runs the shared refusal cascade, performs the
+        compare-and-set on ``settled_at IS NULL``, writes the resume input,
+        and appends the durable ``answer`` fact — but neither begins nor
+        commits: it is extracted so a caller that must commit MORE than the
+        settlement (the durable host's scheduled answer commits the timer's
+        recorded outcome with it) still takes exactly this path instead of
+        re-deriving the CAS. Every refusal is raised before any write, so a
+        caller may catch one and keep writing in the same transaction.
+        """
+        current, known, run_status = await self._read_settlement_inputs(run_id)
+        slot = _check_settlement(
+            run_id=run_id,
+            pause_id=pause_id,
+            current=current,
+            known_pause_ids=known,
+            run_status=run_status,
+            value=value,
+        )
+        settled_at = datetime.now(timezone.utc)
+        result = await self._db.execute(
+            _PAUSE_SLOT_SETTLE_SQL,
+            (settled_at.isoformat(), json.dumps(value), slot.pause_id),
+        )
+        if result.rowcount != 1:
+            raise _lost_settlement_race(run_id, slot.pause_id)
+        await self._after_run_mutation(
+            run_id,
+            "answer",
+            {"pause_id": slot.pause_id, "response_key": slot.response_key},
+        )
+        return replace(slot, settled_at=settled_at, answer=value)
+
     async def settle_pause(self, run_id: str, *, pause_id: str | None = None, value: Any) -> PauseSlot:
         """Validate one typed value, then atomically settle the named occurrence.
 
@@ -873,36 +908,17 @@ class SqliteCheckpointer(Checkpointer):
         loses to the first.
 
         This is THE settlement path for every answer, human or scheduled: a
-        durable host timer fires by calling it, so the two can never diverge
-        about who won a race (ADR 0008).
+        durable host timer fires through the same
+        :meth:`_settle_pause_in_txn` body, so the two can never diverge about
+        who won a race (ADR 0008).
         """
         await self._ensure_db()
         async with self._txn_lock():
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
-                current, known, run_status = await self._read_settlement_inputs(run_id)
-                slot = _check_settlement(
-                    run_id=run_id,
-                    pause_id=pause_id,
-                    current=current,
-                    known_pause_ids=known,
-                    run_status=run_status,
-                    value=value,
-                )
-                settled_at = datetime.now(timezone.utc)
-                result = await self._db.execute(
-                    _PAUSE_SLOT_SETTLE_SQL,
-                    (settled_at.isoformat(), json.dumps(value), slot.pause_id),
-                )
-                if result.rowcount != 1:
-                    raise _lost_settlement_race(run_id, slot.pause_id)
-                await self._after_run_mutation(
-                    run_id,
-                    "answer",
-                    {"pause_id": slot.pause_id, "response_key": slot.response_key},
-                )
+                slot = await self._settle_pause_in_txn(run_id, pause_id=pause_id, value=value)
                 await self._db.commit()
-                return replace(slot, settled_at=settled_at, answer=value)
+                return slot
             except BaseException:
                 await self._rollback_async()
                 raise
@@ -954,36 +970,41 @@ class SqliteCheckpointer(Checkpointer):
                 row = db.execute(_PAUSE_SLOT_BY_ID_SQL, (run_id, pause_id)).fetchone()
         return _row_to_pause_slot(row) if row is not None else None
 
+    def _settle_pause_in_txn_sync(self, db: Any, run_id: str, *, pause_id: str | None, value: Any) -> PauseSlot:
+        """Sync mirror of :meth:`_settle_pause_in_txn`; caller owns the transaction."""
+        current, known, run_status = self._read_settlement_inputs_sync(db, run_id)
+        slot = _check_settlement(
+            run_id=run_id,
+            pause_id=pause_id,
+            current=current,
+            known_pause_ids=known,
+            run_status=run_status,
+            value=value,
+        )
+        settled_at = datetime.now(timezone.utc)
+        result = db.execute(
+            _PAUSE_SLOT_SETTLE_SQL,
+            (settled_at.isoformat(), json.dumps(value), slot.pause_id),
+        )
+        if result.rowcount != 1:
+            raise _lost_settlement_race(run_id, slot.pause_id)
+        self._after_run_mutation_sync(
+            db,
+            run_id,
+            "answer",
+            {"pause_id": slot.pause_id, "response_key": slot.response_key},
+        )
+        return replace(slot, settled_at=settled_at, answer=value)
+
     def settle_pause_sync(self, run_id: str, *, pause_id: str | None = None, value: Any) -> PauseSlot:
         """Sync mirror of :meth:`settle_pause`."""
         with self._sync_lock:
             db = self._sync_db()
             try:
                 db.execute("BEGIN IMMEDIATE")
-                current, known, run_status = self._read_settlement_inputs_sync(db, run_id)
-                slot = _check_settlement(
-                    run_id=run_id,
-                    pause_id=pause_id,
-                    current=current,
-                    known_pause_ids=known,
-                    run_status=run_status,
-                    value=value,
-                )
-                settled_at = datetime.now(timezone.utc)
-                result = db.execute(
-                    _PAUSE_SLOT_SETTLE_SQL,
-                    (settled_at.isoformat(), json.dumps(value), slot.pause_id),
-                )
-                if result.rowcount != 1:
-                    raise _lost_settlement_race(run_id, slot.pause_id)
-                self._after_run_mutation_sync(
-                    db,
-                    run_id,
-                    "answer",
-                    {"pause_id": slot.pause_id, "response_key": slot.response_key},
-                )
+                slot = self._settle_pause_in_txn_sync(db, run_id, pause_id=pause_id, value=value)
                 db.commit()
-                return replace(slot, settled_at=settled_at, answer=value)
+                return slot
             except BaseException:
                 self._rollback_sync(db)
                 raise

@@ -1065,14 +1065,16 @@ def test_durable_host_docs_pin_public_contract() -> None:
         "source_ref",
     )
     assert tuple(inspect.signature(Host.submit_batch_sync).parameters) == tuple(inspect.signature(Host.submit_batch).parameters)
-    assert tuple(inspect.signature(Host.fork).parameters) == ("self", "ref", "into", "reason")
+    assert tuple(inspect.signature(Host.fork).parameters) == ("self", "ref", "into", "reason", "source_ref")
     assert tuple(inspect.signature(Host.fork_sync).parameters) == tuple(inspect.signature(Host.fork).parameters)
     assert tuple(inspect.signature(Host.work_forever).parameters) == ("self", "worker_id", "poll_interval", "drain_timeout")
     assert tuple(inspect.signature(RunHomeClient.get).parameters) == ("self", "ref")
     assert tuple(inspect.signature(RunHomeClient.get_sync).parameters) == ("self", "ref")
     assert tuple(inspect.signature(RunHomeClient.watch).parameters) == ("self", "ref", "after", "poll_interval")
     # rerun takes item_keys for the Batch form and never an input override.
-    assert tuple(inspect.signature(RunHomeClient.rerun).parameters) == ("self", "ref", "item_keys")
+    # source_ref is audit provenance, recorded on the new submission like
+    # submit/stop/fork record it — never a work-definition input.
+    assert tuple(inspect.signature(RunHomeClient.rerun).parameters) == ("self", "ref", "item_keys", "source_ref")
     assert tuple(inspect.signature(RunHomeClient.rerun_sync).parameters) == tuple(inspect.signature(RunHomeClient.rerun).parameters)
     assert tuple(inspect.signature(RunHomeClient.stop).parameters) == ("self", "ref", "info", "source_ref")
     assert tuple(inspect.signature(RunHomeClient.stop_sync).parameters) == tuple(inspect.signature(RunHomeClient.stop).parameters)

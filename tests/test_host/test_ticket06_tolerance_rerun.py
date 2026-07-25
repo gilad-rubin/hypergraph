@@ -716,7 +716,9 @@ class TestSubsetRerun:
         host, source, _state = await self._settled_source(home)
         for verb in (host.client.rerun, host.client.rerun_sync):
             parameters = inspect.signature(verb).parameters
-            assert set(parameters) == {"ref", "item_keys"}
+            # source_ref is audit provenance, not work definition: a rerun
+            # still repeats the source's pinned identity and inputs verbatim.
+            assert set(parameters) == {"ref", "item_keys", "source_ref"}
         with pytest.raises(TypeError):
             await host.client.rerun(source.batch_ref, item_keys=["p-3"], inputs={"x": 99})
 

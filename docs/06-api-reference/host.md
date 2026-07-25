@@ -371,7 +371,10 @@ Like `submit()`, `stop()` accepts an optional opaque `source_ref`
 (`client.stop(ref, info=..., source_ref="ops-console")`) recorded on the
 command row for audit (ADR 0005 A11) and carried on the durable `command`
 update so `watch()` can join a product's authenticated action to Host
-history. Every command verb records it the same way. It is **never**
+history. Every surface that accepts work records it the same way —
+`submit()`, `submit_batch()`, `stop()`, `schedule_answer()`, `rerun()`, and
+`fork()` — so provenance survives a repeat or a migration instead of ending
+at the original submission. It is **never**
 authentication and **never** part of dedup: two commands differing only in
 `source_ref` are the same command. The worker only delivers a stop to a run the Definition's
 runner reports as live (`runner.has_active_run(workflow_id)`), so a stop
@@ -465,10 +468,12 @@ for the same pause returns `duplicate=True` and the first one's value wins.
 
 `due_at` is required (an answer with no due time is `answer()`) and is
 normalized to a UTC ISO timestamp exactly like `start_at`, because the
-worker decides both with **one due-row scan**: each pass takes one
-store-authoritative `now` and applies it to submissions whose `start_at`
-has arrived and to scheduled answers whose `due_at` has arrived. There is
-no second timer service, and there is no recurrence — cron, repeating
+worker decides both with **one due-row scan**: each pass takes one `now`
+**from the store's own clock** and applies it to submissions whose
+`start_at` has arrived and to scheduled answers whose `due_at` has arrived.
+One clock, so a worker whose process clock drifts never claims early or
+fires late, and two workers on one Home agree on which rows are due. There
+is no second timer service, and there is no recurrence — cron, repeating
 schedules, and a generic scheduled-command surface are deliberately out of
 scope, as are non-interrupting reminders, human-task assignment, and
 escalation, which stay product concerns.
@@ -478,17 +483,39 @@ compare-and-set on the occurrence that `answer()` does, so a human answer
 and a timer racing the same pause resolve by **commit order** — no
 preference rule:
 
-| At fire time | Result |
-|---|---|
-| the occurrence is still open | the scheduled value settles it |
-| a human (or another writer) answered first | the timer is voided; the human's value stands |
-| a later pause occurrence is current | the timer is voided; it can never fire into a different question |
-| the run is no longer paused | the timer is voided; the occurrence stays open |
+| At fire time | Recorded outcome | Result |
+|---|---|---|
+| the occurrence is still open | `settled` | the scheduled value settles it |
+| a human (or another writer) answered first | `already_settled` | the timer is voided; the earlier answer stands |
+| a later pause occurrence is current | `superseded` | the timer is voided; it can never fire into a different question |
+| the run is no longer paused | `rejected` | the timer is voided; the occurrence stays open |
 
 A voided timer is **recorded, never deleted**: the command row keeps its
 pause id, due time, value, and `source_ref`, and gains the outcome that
-firing produced (`settled`, `already_settled`, `superseded`, `rejected`).
-The audit trail keeps the timer that lost, along with why.
+firing produced. The audit trail keeps the timer that lost, along with why.
+
+The outcome is always the truth about **that** timer, because the
+settlement attempt and the outcome it earns commit in **one transaction**,
+and a worker claims the timer inside that transaction before settling. A
+worker that crashes mid-fire leaves the pause open and the timer unapplied
+— it fires cleanly next pass — and a second worker scanning the same due
+row records nothing rather than relabelling the winner's row.
+
+Firing is itself a durable Run fact, so a detached `watch(run_ref)` learns
+the fate without any store query:
+
+```python
+async for update in client.watch(ref):
+    if update.kind == "command" and update.payload["verb"] == "schedule_answer":
+        update.payload["pause_id"]    # the occurrence it was armed against
+        update.payload["due_at"]      # when it became applicable
+        update.payload["source_ref"]  # who armed it
+        update.payload["outcome"]     # None while armed; the outcome once fired
+```
+
+Arming and firing emit the same payload shape — `outcome` is `None` on the
+arming fact and one of the four values above on the fact that settles or
+voids it — so the stream alone accounts for every timer.
 
 ## Listing Runs
 
@@ -534,8 +561,10 @@ signature is `rerun(ref)` and passing `inputs=` is a `TypeError`; changed
 inputs use a normal new `submit()`. The source must exist and be terminal,
 else `RerunError` — with one exception: a **recovery-exhausted** source is
 exactly the rerun case (reviving braked work), so `rerun()` accepts it even
-without a terminal runs row. `client.rerun_sync(...)` is the synchronous
-mirror.
+without a terminal runs row. `rerun()` also takes the same optional opaque
+`source_ref` `submit()` and `stop()` take, recorded on the new submission —
+retry lineage says what was repeated, `source_ref` says who asked.
+`client.rerun_sync(...)` is the synchronous mirror.
 
 ### Item-scoped Batch rerun
 
@@ -585,7 +614,10 @@ Compatibility is checked **at fork time**: the target Definition's
 `structural_hash` must equal the source submission's pinned hash (history
 seeding requires restorable checkpoints), else `ForkCompatibilityError`
 naming both identities. `reason` must be a non-empty string and `into` must
-name a served Definition (`ValueError` otherwise). `host.fork_sync(...)` is
+name a served Definition (`ValueError` otherwise). `fork()` takes the same
+optional opaque `source_ref` the other accepting surfaces take, recorded on
+the new submission — `reason` says why the migration happened, `source_ref`
+says which authenticated action asked for it. `host.fork_sync(...)` is
 the synchronous mirror.
 
 Rerun and fork lineage never merge: `RunView.retry_of` and

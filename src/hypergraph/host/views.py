@@ -96,7 +96,14 @@ class RunUpdate:
         payload: JSON-safe fact payload. A ``command`` fact names its
             ``verb`` (``stop`` or ``schedule_answer``) and carries the
             accepting caller's opaque ``source_ref`` — audit provenance
-            only, never authentication and never part of dedup.
+            only, never authentication and never part of dedup. A
+            ``schedule_answer`` fact also carries its ``pause_id``,
+            ``due_at``, and an ``outcome``: None while the timer is armed,
+            and one of ``settled``/``already_settled``/``superseded``/
+            ``rejected`` on the second fact that commits when it fires or is
+            voided. A fired timer is a recorded state change, so the stream
+            alone tells a detached ``watch`` consumer the timer's fate — no
+            store query needed.
         timestamp: ISO timestamp of the fact (or of preview observation).
     """
 

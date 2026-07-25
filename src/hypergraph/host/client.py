@@ -673,7 +673,9 @@ class RunHomeClient:
         rows = self._home._list_run_rows_sync()
         return _filter_list_rows(self._home.uri, rows, query, admission_full=self._home._admission_is_full_sync())
 
-    async def rerun(self, ref: RunRef | BatchRef, *, item_keys: Sequence[str] | None = None) -> SubmitReceipt | BatchSubmitReceipt:
+    async def rerun(
+        self, ref: RunRef | BatchRef, *, item_keys: Sequence[str] | None = None, source_ref: str | None = None
+    ) -> SubmitReceipt | BatchSubmitReceipt:
         """Repeat settled work under a new id with retry lineage.
 
         For a ``RunRef`` the new submission carries the source's pinned
@@ -704,6 +706,13 @@ class RunHomeClient:
         ``TypeError``: a Run has no items. Needs no loaded Definition code
         — unlike ``host.fork()``, which migrates and therefore stays
         Host-side.
+
+        ``source_ref`` is opaque caller provenance recorded on the NEW
+        submission (the new Batch manifest for a ``BatchRef``), exactly as
+        ``submit`` and ``stop`` record it (US58) — repeating settled work is
+        an authenticated product action too, and retry lineage alone cannot
+        say who asked for it. Audit only: never authentication, never a
+        fingerprint input, and never part of dedup.
         """
         if isinstance(ref, BatchRef):
             batch, child_rows = await self._require_batch_source(ref)
@@ -719,7 +728,7 @@ class RunHomeClient:
                 tolerance_json=plan.tolerance_json,
                 # A repeat starts now, never on the source's past schedule.
                 start_at=None,
-                source_ref=None,
+                source_ref=source_ref,
                 fingerprint=plan.fingerprint,
                 batch_retry_of=plan.batch_retry_of,
                 child_retry_of=plan.child_retry_of,
@@ -744,13 +753,15 @@ class RunHomeClient:
             definition_id.structural_hash,
             inputs_json,
             None,
-            None,
+            source_ref,
             fingerprint=start_fingerprint(definition_id, inputs_json, None),
             retry_of=ref.run_id,
         )
         return SubmitReceipt(run_ref=RunRef(home=self._home.uri, run_id=workflow_id), workflow_id=workflow_id, duplicate=not created)
 
-    def rerun_sync(self, ref: RunRef | BatchRef, *, item_keys: Sequence[str] | None = None) -> SubmitReceipt | BatchSubmitReceipt:
+    def rerun_sync(
+        self, ref: RunRef | BatchRef, *, item_keys: Sequence[str] | None = None, source_ref: str | None = None
+    ) -> SubmitReceipt | BatchSubmitReceipt:
         """Sync mirror of ``rerun``."""
         if isinstance(ref, BatchRef):
             batch = self._home._get_batch_sync(ref.batch_id)
@@ -769,7 +780,7 @@ class RunHomeClient:
                 tolerance_json=plan.tolerance_json,
                 # A repeat starts now, never on the source's past schedule.
                 start_at=None,
-                source_ref=None,
+                source_ref=source_ref,
                 fingerprint=plan.fingerprint,
                 batch_retry_of=plan.batch_retry_of,
                 child_retry_of=plan.child_retry_of,
@@ -802,7 +813,7 @@ class RunHomeClient:
             definition_id.structural_hash,
             inputs_json,
             None,
-            None,
+            source_ref,
             fingerprint=start_fingerprint(definition_id, inputs_json, None),
             retry_of=ref.run_id,
         )

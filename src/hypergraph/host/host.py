@@ -15,7 +15,7 @@ import json
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.host._bus import _BusEventProcessor, _PreviewBus, _register_bus
@@ -318,7 +318,7 @@ class Host:
             duplicate=not created,
         )
 
-    async def fork(self, ref: RunRef, *, into: str, reason: str) -> SubmitReceipt:
+    async def fork(self, ref: RunRef, *, into: str, reason: str, source_ref: str | None = None) -> SubmitReceipt:
         """Migrate an existing run to a served Definition via explicit fork.
 
         The new submission pins the TARGET Definition identity, keeps the
@@ -333,6 +333,12 @@ class Host:
             ref: The source run's inert address.
             into: Name of a Definition served by this host.
             reason: Non-empty migration reason, stored on the submission.
+            source_ref: Opaque caller provenance recorded on the NEW
+                submission, exactly as ``submit`` and ``stop`` record it
+                (US58) — a migration is an authenticated product action too,
+                and lineage alone cannot say who asked for it. Audit only:
+                never authentication, never a fingerprint input, and never
+                part of dedup.
         """
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError(f"fork() requires a non-empty reason string naming why the migration happens, got {reason!r}.")
@@ -352,14 +358,14 @@ class Host:
             target.struct_hash,
             inputs_json,
             None,
-            None,
+            source_ref,
             fingerprint=start_fingerprint(target.definition_id, inputs_json, None),
             forked_from=ref.run_id,
             fork_reason=reason,
         )
         return self._receipt(workflow_id, created)
 
-    def fork_sync(self, ref: RunRef, *, into: str, reason: str) -> SubmitReceipt:
+    def fork_sync(self, ref: RunRef, *, into: str, reason: str, source_ref: str | None = None) -> SubmitReceipt:
         """Sync mirror of ``fork``."""
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError(f"fork() requires a non-empty reason string naming why the migration happens, got {reason!r}.")
@@ -379,7 +385,7 @@ class Host:
             target.struct_hash,
             inputs_json,
             None,
-            None,
+            source_ref,
             fingerprint=start_fingerprint(target.definition_id, inputs_json, None),
             forked_from=ref.run_id,
             fork_reason=reason,
@@ -431,10 +437,11 @@ class Host:
         active runs up to ``drain_timeout``, cancels the rest, releases the
         lock, and returns (or re-raises the cancellation) cleanly.
 
-        Each pass takes one store-authoritative ``now`` and scans every due
-        row with it: submissions whose ``start_at`` has arrived, then
-        scheduled pause answers whose ``due_at`` has arrived. There is one
-        due-row scanner, not a timer per feature.
+        Each pass takes one ``now`` **from the store's clock** and scans
+        every due row with it: submissions whose ``start_at`` has arrived,
+        then scheduled pause answers whose ``due_at`` has arrived. There is
+        one due-row scanner, not a timer per feature — and one clock, so a
+        worker whose process clock drifts never claims early or fires late.
         """
         if not isinstance(worker_id, str) or not worker_id:
             raise ValueError("work_forever() requires a non-empty worker_id string.")
@@ -456,8 +463,10 @@ class Host:
                     # ONE store-authoritative `now` per pass drives every due
                     # row: delayed starts (`start_at`) and scheduled pause
                     # answers (`due_at`) share this scan rather than owning
-                    # separate timers (PRD 0017 / ADR 0008).
-                    now_iso = datetime.now(timezone.utc).isoformat()
+                    # separate timers (PRD 0017 / ADR 0008). It comes from the
+                    # STORE, so two workers on one Home agree on which rows
+                    # are due however their process clocks differ.
+                    now_iso = await self._home._store_now()
                     claimed = await self._home._claim_eligible(now_iso, served=self._served_identities)
                     for row in claimed:
                         task = asyncio.create_task(self._execute_submission(row))

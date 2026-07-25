@@ -15,10 +15,12 @@ Four scope notes, all deliberate:
   scheduled-command framework, so ``TestExcludedSchedulingSurfacesAreAbsent``
   asserts their absence the way ticket 12 asserted the excluded overflow
   strategies.
-- **One due-row scanner.** Delayed starts (``host_submissions.start_at``) and
-  scheduled answers (``host_commands.due_at``) share ``home._due_clause`` and
-  one store-authoritative ``now`` per worker pass. Tests drive that ``now``
-  explicitly — no sleeping, no wall clock in the assertion.
+- **One due-row scanner, one clock.** Delayed starts
+  (``host_submissions.start_at``) and scheduled answers
+  (``host_commands.due_at``) share ``home._due_clause`` and one ``now`` per
+  worker pass, taken from the STORE (``home._store_now``) so a skewed worker
+  process cannot claim early or fire late. The scans still accept an explicit
+  ``now``, and tests drive it — no sleeping, no wall clock in the assertion.
 - **Firing settles; it does not resume.** A settled answer is durable resume
   input, exactly as ticket 13 left it. Nothing here asserts or implies that an
   answered or timed-out run continues executing.
@@ -30,6 +32,7 @@ Four scope notes, all deliberate:
   other worker-side scan on this Home.
 """
 
+import ast
 import asyncio
 import inspect
 import json
@@ -38,7 +41,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, get_args
 
 import pytest
 import pytest_asyncio
@@ -62,10 +65,15 @@ from hypergraph import (
 from hypergraph.checkpointers.types import PauseSlot, WorkflowStatus
 from hypergraph.host.batch import BatchTolerance
 from hypergraph.host.home import (
+    HOST_COMMAND_VERBS,
+    SCHEDULE_ANSWER_VERB,
     SCHEDULED_ANSWER_ALREADY_SETTLED,
+    SCHEDULED_ANSWER_OUTCOMES,
     SCHEDULED_ANSWER_REJECTED,
     SCHEDULED_ANSWER_SETTLED,
     SCHEDULED_ANSWER_SUPERSEDED,
+    STOP_VERB,
+    ScheduledAnswerOutcome,
     _due_clause,
 )
 from hypergraph.host.refs import BatchRef, CommandReceipt
@@ -166,6 +174,33 @@ def _db_path(home_obj) -> str:
     return home_obj.uri[len("file:") :]
 
 
+def _sql_literals(path: Path) -> list[str]:
+    """Every string literal in a module, each reconstructed as ONE string.
+
+    Scanning source lines cannot see a clause that its statement wraps onto
+    a later line, which is most of the SQL in the Home. Walking the AST
+    joins implicitly concatenated fragments and f-string parts back into the
+    statement the database actually receives, so a claim about "this
+    statement's WHERE clause" is checked against the whole statement.
+    Placeholders keep their source text (``{_due_clause('due_at', ...)}``),
+    which is what a reader greps for anyway.
+    """
+    source = path.read_text()
+    literals: list[str] = []
+    for element in ast.walk(ast.parse(source)):
+        if isinstance(element, ast.Constant) and isinstance(element.value, str):
+            literals.append(element.value)
+        elif isinstance(element, ast.JoinedStr):
+            parts = []
+            for value in element.values:
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    parts.append(value.value)
+                else:
+                    parts.append(ast.get_source_segment(source, value) or "")
+            literals.append("".join(parts))
+    return literals
+
+
 def _command_rows(home_obj, run_id: str = RUN_ID) -> list[tuple]:
     """Read committed host_commands rows over a FRESH connection.
 
@@ -203,16 +238,53 @@ def _ref(home_obj, run_id: str = RUN_ID) -> RunRef:
     return RunRef(home=home_obj.uri, run_id=run_id)
 
 
-async def _first_command_update(client, ref: RunRef, verb: str, timeout: float = 5.0):
-    """The first durable ``command`` update for ``verb``, read the public way."""
+async def _durable_until(client, ref: RunRef, predicate, timeout: float = 5.0) -> list:
+    """Durable updates read the PUBLIC way, up to the one ``predicate`` accepts.
+
+    ``watch`` tails a nonterminal run forever (a paused run stays paused
+    after settlement — settlement writes resume input, it does not resume),
+    so a bounded read stops at the fact under test.
+    """
 
     async def _scan():
+        seen: list = []
         async for update in client.watch(ref):
-            if update.kind == "command" and update.payload.get("verb") == verb:
-                return update
-        raise AssertionError(f"watch() ended without a {verb!r} command update")
+            if not update.durable:
+                continue
+            seen.append(update)
+            if predicate(update):
+                return seen
+        raise AssertionError("watch() ended before the expected durable fact arrived")
 
     return await asyncio.wait_for(_scan(), timeout=timeout)
+
+
+async def _first_command_update(client, ref: RunRef, verb: str, timeout: float = 5.0):
+    """The first durable ``command`` update for ``verb``, read the public way."""
+    seen = await _durable_until(
+        client,
+        ref,
+        lambda update: update.kind == "command" and update.payload.get("verb") == verb,
+        timeout=timeout,
+    )
+    return seen[-1]
+
+
+def _timer_fates_from_stream(updates) -> list[tuple[str, str | None]]:
+    """Reconstruct every scheduled answer's ``(pause_id, outcome)`` from the STREAM.
+
+    A detached ``watch(run_ref, after=cursor)`` consumer sees nothing but
+    these rows — no view, no store queries. PRD 0018 A9 says every Run
+    mutation gets one monotonic durable sequence, and a fired or voided
+    timer IS a recorded state change, so arming and fate must both be
+    readable here: ``outcome`` is None on the arming fact and one of
+    ``SCHEDULED_ANSWER_OUTCOMES`` on the fact that settles or voids it.
+    """
+    return [
+        (update.payload["pause_id"], update.payload["outcome"])
+        for update in updates
+        if update.kind == "command" and update.payload.get("verb") == SCHEDULE_ANSWER_VERB
+    ]
 
 
 # === 1. A scheduled answer persists with pause id, due time, and one value ===
@@ -350,13 +422,31 @@ class TestSharedDueRowScanner:
     """One store-authoritative `now`, one due predicate — never a second timer."""
 
     def test_there_is_exactly_one_due_predicate_in_the_home(self):
-        assert _due_clause("start_at") == "(start_at IS NULL OR start_at <= ?)"
-        assert _due_clause("due_at") == "(due_at IS NULL OR due_at <= ?)"
-        source = Path(inspect.getfile(RunHome)).read_text()
-        # A second hand-written due predicate would be a second timer concept.
-        assert len(re.findall(r"IS NULL OR\b", source)) == 1
-        assert "_due_clause('start_at')" in inspect.getsource(RunHome._claim_eligible)
-        assert "_due_clause('due_at')" in inspect.getsource(RunHome._due_scheduled_answers)
+        """Both due-row scans render their predicate from the one helper."""
+        assert "_due_clause('start_at', null_is_due=True)" in inspect.getsource(RunHome._claim_eligible)
+        assert "_due_clause('due_at', null_is_due=False)" in inspect.getsource(RunHome._due_scheduled_answers)
+
+    def test_the_two_columns_share_a_predicate_but_not_a_null_semantic(self):
+        """A NULL start_at means "start now"; a NULL due_at is never due."""
+        assert _due_clause("start_at", null_is_due=True) == "(start_at IS NULL OR start_at <= ?)"
+        assert _due_clause("due_at", null_is_due=False) == "(due_at <= ?)"
+
+    async def test_a_command_row_with_no_due_time_is_inert_not_instantly_due(self, home):
+        """schedule_answer requires a due time, so a NULL one is malformed."""
+        slot = await _pause_once(home)
+        await RunHomeClient(home).schedule_answer(_ref(home), pause_id=slot.pause_id, value=True, due_at=_past_iso(hours=1))
+        # Corrupt the stored row the way only a bad migration or hand-edit
+        # could: the due predicate must refuse it rather than fire it.
+        conn = sqlite3.connect(_db_path(home))
+        try:
+            conn.execute("UPDATE host_commands SET due_at = NULL WHERE verb = 'schedule_answer'")
+            conn.commit()
+        finally:
+            conn.close()
+
+        assert await home._settle_due_answers(_now_iso()) == []
+        assert (await home.get_pause_slot(RUN_ID)).is_open
+        assert _scheduled_rows(home)[0][6] is None  # never applied
 
     async def test_one_now_decides_both_delayed_starts_and_due_answers(self, home):
         host = serve(_plain_graph(), home=home, deployment_version="v1")
@@ -576,6 +666,239 @@ class TestVoidedTimers:
         assert settled.answer == "second"
 
 
+# === 4b. The recorded outcome is always the truth about THIS command row ===
+
+
+class TestTheRecordedOutcomeIsAlwaysTrue:
+    """The audit fact and the settlement attempt it describes are one commit.
+
+    Two ordinary situations used to make the row lie while the
+    compare-and-set still held: a crash between settling and marking, and a
+    second worker scanning the same unscoped due set. Neither was ever a
+    double settlement — both were false audit.
+    """
+
+    async def test_the_settlement_and_its_outcome_commit_together_or_not_at_all(self, home):
+        """A worker killed mid-fire leaves no settled pause and no outcome."""
+        slot = await _pause_once(home)
+        client = RunHomeClient(home)
+        await client.schedule_answer(_ref(home), pause_id=slot.pause_id, value=True, due_at=_past_iso(hours=1))
+        original = home._append_run_update
+
+        async def die(*args, **kwargs):
+            raise RuntimeError("worker killed after the settlement CAS")
+
+        home._append_run_update = die
+        try:
+            with pytest.raises(RuntimeError):
+                await home._settle_due_answers(_now_iso())
+        finally:
+            home._append_run_update = original
+
+        # Nothing survived: not the settlement, not a half-written outcome.
+        assert (await client.get_run_slot(_ref(home))).is_open
+        row = _scheduled_rows(home)[0]
+        assert (row[6], row[7]) == (None, None)
+
+        # The re-fire records what it actually did — `settled`, not a
+        # relabelling of an attempt that never committed.
+        assert [outcome for _id, outcome in await home._settle_due_answers(_now_iso())] == [SCHEDULED_ANSWER_SETTLED]
+        assert _scheduled_rows(home)[0][7] == SCHEDULED_ANSWER_SETTLED
+        assert (await client.get_run_slot(_ref(home))).answer is True
+
+    async def test_a_worker_that_lost_the_claim_cannot_relabel_the_winners_fact(self, tmp_path):
+        """Two workers scan the same due row; only the winner records an outcome."""
+        uri = _home_uri(tmp_path, "race.db")
+        winner = RunHome.open(uri)
+        loser = RunHome.open(uri)
+        try:
+            slot = await _pause_once(winner)
+            await RunHomeClient(winner).schedule_answer(_ref(winner), pause_id=slot.pause_id, value=True, due_at=_past_iso(hours=1))
+
+            # Both scans happen before either fires — the due set is unscoped.
+            winner_due = await winner._due_scheduled_answers(_now_iso())
+            loser_due = await loser._due_scheduled_answers(_now_iso())
+            assert [due.command_id for due in winner_due] == [due.command_id for due in loser_due]
+
+            assert await winner._fire_scheduled_answer(winner_due[0]) == SCHEDULED_ANSWER_SETTLED
+            # The loser now meets a settled pause. It refuses to speak for a
+            # settlement it did not make instead of writing `already_settled`.
+            assert await loser._fire_scheduled_answer(loser_due[0]) is None
+
+            assert _scheduled_rows(winner)[0][7] == SCHEDULED_ANSWER_SETTLED
+            assert (await winner.get_pause_slot(RUN_ID)).answer is True
+            # And exactly ONE fate reached the durable stream.
+            fired = [payload for _seq, kind, payload, _ts in winner._read_run_updates_sync(RUN_ID) if kind == "command"]
+            assert [json.loads(payload)["outcome"] for payload in fired] == [None, SCHEDULED_ANSWER_SETTLED]
+        finally:
+            await winner.close()
+            await loser.close()
+
+    async def test_a_repeat_scan_never_relabels_the_settlement_it_made(self, home):
+        """The at-least-once re-fire that used to record `already_settled`."""
+        slot = await _pause_once(home)
+        await RunHomeClient(home).schedule_answer(_ref(home), pause_id=slot.pause_id, value=True, due_at=_past_iso(hours=1))
+
+        assert [outcome for _id, outcome in await home._settle_due_answers(_now_iso())] == [SCHEDULED_ANSWER_SETTLED]
+        for _ in range(3):
+            assert await home._settle_due_answers(_now_iso()) == []
+
+        assert _scheduled_rows(home)[0][7] == SCHEDULED_ANSWER_SETTLED
+
+    async def test_a_genuinely_voided_timer_still_records_the_refusal_it_earned(self, home):
+        """`already_settled` stays available — for a timer that really lost."""
+        slot = await _pause_once(home)
+        client = RunHomeClient(home)
+        await client.schedule_answer(_ref(home), pause_id=slot.pause_id, value=False, due_at=_past_iso(hours=1))
+        await client.answer(_ref(home), pause_id=slot.pause_id, value=True)
+
+        assert [outcome for _id, outcome in await home._settle_due_answers(_now_iso())] == [SCHEDULED_ANSWER_ALREADY_SETTLED]
+        assert (await client.get_run_slot(_ref(home))).answer is True  # the human's value stands
+
+
+# === 4c. A fired or voided timer is visible in the durable stream ===
+
+
+class TestTheDurableStreamCarriesTheTimersFate:
+    """PRD 0018 A9: every Run mutation gets one durable sequence entry."""
+
+    async def test_a_watch_consumer_learns_a_settled_timers_fate_from_the_stream_alone(self, home):
+        slot = await _pause_once(home)
+        client = RunHomeClient(home)
+        await client.schedule_answer(_ref(home), pause_id=slot.pause_id, value=True, due_at=_past_iso(hours=1), source_ref="review-console:req-91")
+
+        await home._settle_due_answers(_now_iso())
+
+        updates = await _durable_until(client, _ref(home), lambda update: update.payload.get("outcome") is not None)
+        assert _timer_fates_from_stream(updates) == [(slot.pause_id, None), (slot.pause_id, SCHEDULED_ANSWER_SETTLED)]
+        fate = updates[-1]
+        assert fate.durable is True and fate.cursor.startswith("seq:")
+        # The fate fact stands alone: which occurrence, when it was due, who
+        # armed it, and what firing produced.
+        assert fate.payload == {
+            "verb": "schedule_answer",
+            "pause_id": slot.pause_id,
+            "due_at": _scheduled_rows(home)[0][3],
+            "source_ref": "review-console:req-91",
+            "outcome": SCHEDULED_ANSWER_SETTLED,
+        }
+
+    async def test_a_voided_timer_reaches_the_stream_too(self, home):
+        """The truthful rejection ADR 0008 promises, with no live caller."""
+        graph = _loop_graph()
+        runner = AsyncRunner(checkpointer=home)
+        client = RunHomeClient(home)
+        ref = _ref(home, "wf-loop")
+
+        assert (await runner.run(graph, {}, workflow_id="wf-loop")).paused
+        first = (await home.get_run_async("wf-loop")).pause_slot
+        await client.schedule_answer(ref, pause_id=first.pause_id, value="late", due_at=_past_iso(hours=1))
+        assert (await runner.run(graph, {"reply": "first"}, workflow_id="wf-loop")).paused
+
+        await home._settle_due_answers(_now_iso())
+
+        updates = await _durable_until(client, ref, lambda update: update.payload.get("outcome") is not None)
+        assert _timer_fates_from_stream(updates) == [(first.pause_id, None), (first.pause_id, SCHEDULED_ANSWER_SUPERSEDED)]
+
+    async def test_the_outcome_needs_no_raw_sql_to_reach_a_backend_neutral_reader(self, home):
+        """Every outcome in the closed vocabulary is reachable through watch()."""
+        seen = {}
+        for index, (value, prepare) in enumerate(
+            (
+                (True, None),
+                (False, lambda client, ref, slot: client.answer(ref, pause_id=slot.pause_id, value=True)),
+                (True, lambda client, ref, slot: home.update_run_status(ref.run_id, WorkflowStatus.STOPPED)),
+            )
+        ):
+            workflow_id = f"wf-fate-{index}"
+            slot = await _pause_once(home, workflow_id=workflow_id)
+            client = RunHomeClient(home)
+            ref = _ref(home, workflow_id)
+            await client.schedule_answer(ref, pause_id=slot.pause_id, value=value, due_at=_past_iso(hours=1))
+            if prepare is not None:
+                await prepare(client, ref, slot)
+            await home._settle_due_answers(_now_iso())
+            updates = await _durable_until(client, ref, lambda update: update.payload.get("outcome") is not None)
+            seen[workflow_id] = _timer_fates_from_stream(updates)[-1][1]
+        assert set(seen.values()) == {SCHEDULED_ANSWER_SETTLED, SCHEDULED_ANSWER_ALREADY_SETTLED, SCHEDULED_ANSWER_REJECTED}
+        assert set(seen.values()) <= SCHEDULED_ANSWER_OUTCOMES
+
+
+# === 4d. Store time, not the worker's process clock, decides due-ness ===
+
+
+class TestStoreTimeDecidesDueness:
+    """ADR 0008: "store-authoritative time passes due_at" — the STORE's clock."""
+
+    async def test_store_now_is_a_utc_iso_timestamp_that_compares_with_stored_times(self, home):
+        now = await home._store_now()
+        parsed = datetime.fromisoformat(now)
+        assert parsed.utcoffset() == timedelta(0)
+        # The due predicate is a lexicographic `<=`, so the shape must sort.
+        assert _past_iso(hours=1) < now < _future_iso(hours=1)
+
+    async def test_the_scans_default_to_store_time_and_still_accept_an_explicit_now(self, home):
+        slot = await _pause_once(home)
+        await RunHomeClient(home).schedule_answer(_ref(home), pause_id=slot.pause_id, value=True, due_at=_past_iso(hours=1))
+
+        # Tests keep driving time explicitly — that is what makes them
+        # deterministic without sleeping.
+        assert await home._settle_due_answers("2000-01-01T00:00:00.000000+00:00") == []
+        # Omit it and the STORE decides.
+        assert [outcome for _id, outcome in await home._settle_due_answers()] == [SCHEDULED_ANSWER_SETTLED]
+
+    async def test_claim_eligibility_defaults_to_store_time_too(self, home):
+        """One fix, both columns: start_at and due_at share the predicate."""
+        host = serve(_plain_graph(), home=home, deployment_version="v1")
+        await host.submit("dbl", {"x": 1}, workflow_id="wf-later", start_at="2999-01-01T00:00:00+00:00")
+        await host.submit("dbl", {"x": 2}, workflow_id="wf-due")
+
+        claimed = await home._claim_eligible(served=host._served_identities)
+
+        assert [row["workflow_id"] for row in claimed] == ["wf-due"]
+
+    async def test_the_worker_reads_its_now_from_the_store_not_its_process_clock(self, home, monkeypatch):
+        """The store says it is 2999; the worker's wall clock says otherwise."""
+        host = serve(_plain_graph(), home=home, deployment_version="v1")
+        far_future = "2999-01-01T00:00:00+00:00"
+        await host.submit("dbl", {"x": 1}, workflow_id="wf-store-clock", start_at=far_future)
+        slot = await _pause_once(home)
+        await host.client.schedule_answer(_ref(home), pause_id=slot.pause_id, value=True, due_at=far_future)
+
+        async def store_now() -> str:
+            return "2999-06-01T00:00:00.000000+00:00"
+
+        monkeypatch.setattr(home, "_store_now", store_now)
+
+        worker = asyncio.create_task(host.work_forever("w-clock", poll_interval=0.01))
+        try:
+            deadline = asyncio.get_running_loop().time() + 5
+            while asyncio.get_running_loop().time() < deadline:
+                if not (await home.get_pause_slot(RUN_ID)).is_open:
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            host.shutdown()
+            await asyncio.wait_for(worker, timeout=10)
+
+        # Both due columns honored the store's clock, not this process's.
+        assert (await home.get_pause_slot(RUN_ID)).answer is True
+        assert home._get_submission_sync("wf-store-clock")["state"] == "finished"
+        assert host.worker_errors == []
+
+    async def test_a_past_due_timer_waits_while_the_store_clock_is_behind(self, home, monkeypatch):
+        slot = await _pause_once(home)
+        await RunHomeClient(home).schedule_answer(_ref(home), pause_id=slot.pause_id, value=True, due_at=_past_iso(hours=1))
+
+        async def store_now() -> str:
+            return "2000-01-01T00:00:00.000000+00:00"
+
+        monkeypatch.setattr(home, "_store_now", store_now)
+
+        assert await home._settle_due_answers() == []
+        assert (await home.get_pause_slot(RUN_ID)).is_open
+
+
 # === 5. source_ref is audit data, never authentication and never dedup ===
 
 
@@ -597,6 +920,7 @@ class TestSourceRefIsAuditOnly:
             "pause_id": slot.pause_id,
             "due_at": due_at,
             "source_ref": "review-console:req-91",
+            "outcome": None,  # armed, not yet fired
         }
 
     async def test_a_stop_carries_its_source_ref_into_the_same_stream(self, home):
@@ -656,19 +980,69 @@ class TestSourceRefIsAuditOnly:
         assert outcomes[None] == outcomes["console-x"] == (False, [SCHEDULED_ANSWER_SETTLED], True)
 
     def test_no_dedup_or_eligibility_predicate_reads_source_ref(self):
-        """Structural half: source_ref never appears in a WHERE clause."""
+        """Structural half: source_ref never appears in any WHERE clause.
+
+        Kept as source inspection because the claim is about statements the
+        Home *could* run, not the handful one test happens to trigger — and
+        it reads whole SQL statements, so a WHERE clause wrapped onto a
+        later line is checked with the statement it belongs to.
+        """
         from hypergraph.host import fingerprint as fingerprint_module
 
-        files = [Path(inspect.getfile(RunHome))]
-        files += [Path(inspect.getfile(fingerprint_module))]
-        for path in files:
-            for line in path.read_text().splitlines():
-                if "WHERE" in line:
-                    assert "source_ref" not in line, f"{path.name}: {line.strip()}"
+        for module in (RunHome, fingerprint_module):
+            path = Path(inspect.getfile(module))
+            statements = [text for text in _sql_literals(path) if "WHERE" in text]
+            assert statements or module is fingerprint_module
+            for text in statements:
+                after_where = text.split("WHERE", 1)[1]
+                assert "source_ref" not in after_where, f"{path.name}: {text}"
         # And no fingerprint input can carry it.
         for name in ("start_fingerprint", "batch_fingerprint", "canonical_json"):
             params = inspect.signature(getattr(fingerprint_module, name)).parameters
             assert "source_ref" not in params
+
+    async def test_a_rerun_records_the_caller_that_asked_for_it(self, home):
+        """US58: a product joins its authenticated action to Host history."""
+        host = serve(_plain_graph(), home=home, deployment_version="v1")
+        receipt = await host.submit("dbl", {"x": 1}, workflow_id="wf-src-run", source_ref="console-a")
+        await home.create_run("wf-src-run", graph_name="dbl")
+        await home.update_run_status("wf-src-run", WorkflowStatus.COMPLETED)
+
+        rerun = await host.client.rerun(receipt.run_ref, source_ref="console-b")
+
+        assert home._get_submission_sync(rerun.workflow_id)["source_ref"] == "console-b"
+        # Provenance is audit-only: it never enters the fingerprint, so the
+        # repeat still dedups on identity + inputs alone.
+        assert home._get_submission_sync(rerun.workflow_id)["fingerprint"] == home._get_submission_sync("wf-src-run")["fingerprint"]
+        assert home._get_submission_sync(rerun.workflow_id)["retry_of"] == "wf-src-run"
+
+    async def test_a_fork_records_the_caller_that_asked_for_it(self, home):
+        host = serve(_plain_graph(), home=home, deployment_version="v1")
+        receipt = await host.submit("dbl", {"x": 1}, workflow_id="wf-src-fork", source_ref="console-a")
+
+        fork = await host.fork(receipt.run_ref, into="dbl", reason="migrate", source_ref="console-b")
+
+        row = home._get_submission_sync(fork.workflow_id)
+        assert (row["source_ref"], row["forked_from"], row["fork_reason"]) == ("console-b", "wf-src-fork", "migrate")
+        assert row["fingerprint"] == home._get_submission_sync("wf-src-fork")["fingerprint"]
+
+    async def test_rerun_and_fork_dedup_identically_whatever_their_source_ref(self, home):
+        """The new call sites obey the same audit-only rule stop already did."""
+        host = serve(_plain_graph(), home=home, deployment_version="v1")
+        receipt = await host.submit("dbl", {"x": 1}, workflow_id="wf-src-dedup")
+        await home.create_run("wf-src-dedup", graph_name="dbl")
+        await home.update_run_status("wf-src-dedup", WorkflowStatus.COMPLETED)
+
+        first = host.client.rerun_sync(receipt.run_ref, source_ref="console-a")
+        again = host.client.rerun_sync(receipt.run_ref, source_ref="console-z")
+
+        # A different caller label is use-existing dedup, never a
+        # WorkflowIdConflictError: source_ref is not a fingerprint input.
+        assert first.workflow_id == again.workflow_id == "wf-src-dedup-retry-1"
+        assert (first.duplicate, again.duplicate) == (False, True)
+        assert home._get_submission_sync("wf-src-dedup-retry-1")["source_ref"] == "console-a"
+        forks = [host.fork_sync(receipt.run_ref, into="dbl", reason="r", source_ref=label) for label in ("console-a", "console-b")]
+        assert {home._get_submission_sync(f.workflow_id)["fingerprint"] for f in forks} == {home._get_submission_sync("wf-src-dedup")["fingerprint"]}
 
     def test_no_host_surface_treats_a_caller_label_as_identity(self):
         """There is no authentication in Hypergraph — that is the whole point."""
@@ -745,13 +1119,32 @@ class TestExcludedSchedulingSurfacesAreAbsent:
             verbs = {row[0] for row in conn.execute("SELECT DISTINCT verb FROM host_commands").fetchall()}
         finally:
             conn.close()
-        assert verbs == {"stop", "schedule_answer"}
+        assert verbs == HOST_COMMAND_VERBS == {"stop", "schedule_answer"}
+
+    def test_the_home_can_write_no_command_verb_outside_the_closed_set(self):
+        """What one test WROTE is not what the Home CAN write.
+
+        Source inspection is the honest tool here: the claim is about every
+        statement the Home could run, and a third verb would have to enter
+        SQL either as a bare literal or as a fifth constant.
+        """
+        assert {STOP_VERB, SCHEDULE_ANSWER_VERB} == HOST_COMMAND_VERBS
+        for text in _sql_literals(Path(inspect.getfile(RunHome))):
+            if "host_commands" not in text:
+                continue
+            # Every verb reaches host_commands as a bound parameter whose
+            # value is one of the two constants; a hand-written verb literal
+            # (verb = 'x', or 'x' in a VALUES list) would be a third verb.
+            assert "verb = '" not in text, text
+            assert not re.search(r"VALUES\s*\([^)]*'", text), text
 
     def test_the_fire_outcome_vocabulary_is_closed_and_is_not_a_status(self):
         outcomes = {SCHEDULED_ANSWER_SETTLED, SCHEDULED_ANSWER_ALREADY_SETTLED, SCHEDULED_ANSWER_SUPERSEDED, SCHEDULED_ANSWER_REJECTED}
-        assert outcomes == {"settled", "already_settled", "superseded", "rejected"}
+        assert outcomes == SCHEDULED_ANSWER_OUTCOMES == {"settled", "already_settled", "superseded", "rejected"}
         # A command outcome is audit data; it never enters execution truth.
         assert outcomes.isdisjoint({status.value for status in WorkflowStatus})
+        # And the closed set is the declared return type, not a test-local list.
+        assert set(get_args(ScheduledAnswerOutcome)) == outcomes
 
     async def test_nothing_non_interrupting_can_be_scheduled(self, home):
         """A reminder would need a schedulable thing that is not a pause answer."""
