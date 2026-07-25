@@ -6,7 +6,7 @@ named source items without changing their Definition identity or inputs.
 
 **Blocked by:** 05 — Submit and watch an immutable durable Batch.
 
-**Status:** done — landed in this commit
+**Status:** done — landed in commit `4c6f81c5`
 
 - [x] Count and percentage tolerances trip only when failures strictly exceed their thresholds
 - [x] Percentage always uses total logical manifest items as its denominator

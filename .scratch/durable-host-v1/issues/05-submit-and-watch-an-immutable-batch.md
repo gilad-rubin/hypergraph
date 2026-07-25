@@ -7,10 +7,10 @@ never started.
 
 **Blocked by:** 03 — Make Run identity, deduplication, rerun, and fork truthful; 04 — Stop, restart, and exhaust recovery safely.
 
-**Status:** ready-for-agent
+**Status:** done — landed in commit `8091a1d5` (includes the nested-GraphNode child-persistence blocker fix).
 
-- [ ] Batch acceptance atomically persists the immutable manifest, pinned inputs, child identities, and start intent
-- [ ] Each unique logical item key maps to one independent child Run and one keyed outcome
-- [ ] BatchRef and BatchView expose child counts, outcomes, and explicit unstarted items
-- [ ] Batch updates have one gap-free durable cursor and never backpressure execution
-- [ ] A real restart preserves completed child Runs and continues only unfinished repeat-safe children
+- [x] Batch acceptance atomically persists the immutable manifest, pinned inputs, child identities, and start intent
+- [x] Each unique logical item key maps to one independent child Run and one keyed outcome
+- [x] BatchRef and BatchView expose child counts, outcomes, and explicit unstarted items
+- [x] Batch updates have one gap-free durable cursor and never backpressure execution
+- [x] A real restart preserves completed child Runs and continues only unfinished repeat-safe children

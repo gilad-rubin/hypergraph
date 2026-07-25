@@ -7,10 +7,10 @@ must remain unchanged.
 
 **Blocked by:** 01 — Lock the Durable Host contract and publish the decision prototype; explicit maintainer approval of that prototype.
 
-**Status:** ready-for-agent
+**Status:** done — landed in commit `42360b6c`; two-axis review findings repaired in `a8836312`.
 
-- [ ] One accepted submission persists before execution and completes through the Definition's runner
-- [ ] RunHomeClient can get and watch the Run from a process that did not submit it
-- [ ] Durable Run updates use a reconnectable cursor while live previews cannot advance it
-- [ ] SQLite enforces one worker owner with explicit startup, bounded drain, and lock release
-- [ ] Direct runner and process-local Execution handle behavior remain unchanged
+- [x] One accepted submission persists before execution and completes through the Definition's runner
+- [x] RunHomeClient can get and watch the Run from a process that did not submit it
+- [x] Durable Run updates use a reconnectable cursor while live previews cannot advance it
+- [x] SQLite enforces one worker owner with explicit startup, bounded drain, and lock release
+- [x] Direct runner and process-local Execution handle behavior remain unchanged
