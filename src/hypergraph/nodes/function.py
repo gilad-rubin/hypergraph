@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import Any, get_type_hints
 
 from hypergraph._utils import ensure_tuple, hash_definition
+from hypergraph.limits import ProcessLocalLimiter
 from hypergraph.nodes._callable import CallableMixin
 from hypergraph.nodes._input_extraction import extract_inputs
 from hypergraph.nodes._rename import _apply_renames
@@ -105,6 +106,7 @@ class FunctionNode(CallableMixin, HyperNode):
     _emit: tuple[str, ...]
     _retry: RetryPolicy | None
     _timeout: float | None
+    _provider_limit: ProcessLocalLimiter | None
 
     def __init__(
         self,
@@ -119,6 +121,7 @@ class FunctionNode(CallableMixin, HyperNode):
         wait_for: str | tuple[str, ...] | None = None,
         retry: RetryPolicy | None = None,
         timeout: float | None = None,
+        provider_limit: ProcessLocalLimiter | None = None,
     ) -> None:
         """Wrap a function as a node.
 
@@ -139,6 +142,15 @@ class FunctionNode(CallableMixin, HyperNode):
                    Direct calls stay raw single-shot invocations.
             timeout: Optional positive number of seconds for cooperative
                      cancellation of an async callable under AsyncRunner.
+            provider_limit: Optional :class:`~hypergraph.limits.ProcessLocalLimiter`
+                     gating how many executions of THIS node run at once in
+                     this process (a provider-resource work budget, never
+                     the host's active-Run cap). The permit covers the whole
+                     node execution, retry backoff included; a component
+                     that owns a provider quota should acquire its own
+                     limiter at the exact scarce call instead. Waiting for a
+                     permit is not a failure and spends no retry attempt.
+                     Direct calls stay raw and do not acquire it.
         Warning:
             If the function has a return type annotation but no output_name
             is provided, a warning is emitted. This helps catch cases where
@@ -171,11 +183,20 @@ class FunctionNode(CallableMixin, HyperNode):
             if not math.isfinite(timeout) or timeout <= 0:
                 raise ValueError(f"timeout must be a positive finite number of seconds, got {timeout!r}.")
 
+        if provider_limit is not None and not isinstance(provider_limit, ProcessLocalLimiter):
+            raise TypeError(
+                f"provider_limit must be a ProcessLocalLimiter (or None), got {provider_limit!r}.\n\n"
+                "How to fix:\n"
+                "  Share one limiter across the work that draws on the same external\n"
+                "  capacity: provider_limit=ProcessLocalLimiter(max_concurrent=4)."
+            )
+
         self.func = func
         self._cache = cache
         self._hide = hide
         self._retry = retry
         self._timeout = timeout
+        self._provider_limit = provider_limit
         self._definition_hash = hash_definition(func)
         self._emit = ensure_tuple(emit) if emit else ()
         self._wait_for = ensure_tuple(wait_for) if wait_for else ()
@@ -224,6 +245,11 @@ class FunctionNode(CallableMixin, HyperNode):
     def timeout(self) -> float | None:
         """Cooperative per-attempt timeout in seconds, or None."""
         return self._timeout
+
+    @property
+    def provider_limit(self) -> ProcessLocalLimiter | None:
+        """Node-scope provider-resource budget, or None (no gate)."""
+        return self._provider_limit
 
     @property
     def hide(self) -> bool:
@@ -340,6 +366,7 @@ def node(
     wait_for: str | tuple[str, ...] | None = None,
     retry: RetryPolicy | None = None,
     timeout: float | None = None,
+    provider_limit: ProcessLocalLimiter | None = None,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]:
     """Decorator to wrap a function as a FunctionNode.
 
@@ -369,6 +396,11 @@ def node(
         timeout: Optional positive number of seconds for cooperative
                  cancellation of async callables under AsyncRunner. Direct
                  calls stay raw and do not apply the timeout.
+        provider_limit: Optional ProcessLocalLimiter capping how many
+                 executions of this node run at once in this process — a
+                 provider-resource work budget, never the host's active-Run
+                 cap. Waiting for a permit is not a failure and spends no
+                 retry attempt. Direct calls stay raw and do not acquire it.
     Returns:
         FunctionNode if source provided, else decorator function.
 
@@ -394,6 +426,7 @@ def node(
             wait_for=wait_for,
             retry=retry,
             timeout=timeout,
+            provider_limit=provider_limit,
         )
         fn_node.__wrapped__ = func  # type: ignore[attr-defined]
         return fn_node

@@ -14,6 +14,7 @@ from hypergraph.graph._conflict import validate_output_conflicts
 from hypergraph.graph._helpers import get_edge_produced_values, sources_of
 from hypergraph.graph.input_spec import InputSpec, _compute_active_scope, _data_only_subgraph, compute_input_spec
 from hypergraph.graph.validation import GraphConfigError, validate_graph
+from hypergraph.limits import ProcessLocalLimiter
 from hypergraph.nodes.base import HyperNode
 
 if TYPE_CHECKING:
@@ -195,6 +196,7 @@ class Graph:
         self._selected: tuple[str, ...] | None = None
         self._default_event_processors: tuple[EventProcessor, ...] = ()
         self._bound_runner: Any = None
+        self._provider_limit: ProcessLocalLimiter | None = None
         self._nodes = self._build_nodes_dict(nodes)
         self._validate_shared_params()
         self._entrypoints = self._normalize_constructor_entrypoints(entrypoint)
@@ -1285,6 +1287,48 @@ class Graph:
     def bound_runner(self) -> BaseRunner | None:
         """The runner bound via ``with_runner()``, or None when unbound (read-only)."""
         return self._bound_runner
+
+    def with_provider_limit(self, provider_limit: ProcessLocalLimiter) -> Graph:
+        """Cap how many of this graph's function nodes run at once. Returns new Graph (immutable).
+
+        This is **provider-resource admission** — a work budget over external
+        capacity — and never the durable host's active-Run cap
+        (``RunHome.max_active_runs``), which counts Runs a worker executes.
+        The limiter is a shared object: two concurrent Runs of this graph
+        draw on the same permits, which is what ``max_concurrency`` (a
+        per-call budget for one run) cannot express.
+
+        The binding is metadata only: it does not change graph structure,
+        ``structural_hash``, or Definition identity. Nested graphs are not
+        covered — a nested graph applies its own ``with_provider_limit``.
+        Waiting for a permit is neither a failure nor a retry attempt.
+
+        Args:
+            provider_limit: A :class:`~hypergraph.limits.ProcessLocalLimiter`.
+
+        Returns:
+            New Graph carrying the provider-resource budget.
+
+        Raises:
+            TypeError: If ``provider_limit`` is not a ``ProcessLocalLimiter``.
+
+        Example:
+            >>> budget = ProcessLocalLimiter(max_concurrent=4)
+            >>> graph = graph.with_provider_limit(budget)
+        """
+        if not isinstance(provider_limit, ProcessLocalLimiter):
+            raise TypeError(
+                f"with_provider_limit() expects a ProcessLocalLimiter, got {type(provider_limit).__name__}. "
+                "Build one with ProcessLocalLimiter(max_concurrent=...)."
+            )
+        new_graph = self._shallow_copy()
+        new_graph._provider_limit = provider_limit
+        return new_graph
+
+    @property
+    def provider_limit(self) -> ProcessLocalLimiter | None:
+        """The graph-scope provider budget, or None when unset (read-only)."""
+        return self._provider_limit
 
     @property
     def has_cycles(self) -> bool:

@@ -51,6 +51,10 @@ _QUALIFIED_RUN_COLS = ", ".join(f"r.{name}" for name in _RUNS_COLS.split(", "))
 _TERMINAL_STATUS_VALUES = tuple(sorted(TERMINAL_STATUS_VALUES))
 _PROGRESS_STATUSES = frozenset({"paused", *_TERMINAL_STATUS_VALUES})
 _CLAIM_BATCH = 16
+# THE active-Run count for host work admission: claimed submissions, the
+# ones this worker owns end to end. Both the claim gate and the view read
+# this same definition so "holds a slot" never means two different things.
+_ACTIVE_RUN_COUNT_SQL = "SELECT COUNT(*) FROM host_submissions WHERE state = 'claimed'"
 
 _BATCH_COLS = (
     "batch_id, workflow_id, definition_name, def_version, def_struct_hash, items_json, "
@@ -163,6 +167,7 @@ class RunHome(SqliteCheckpointer):
         *,
         policy: CheckpointPolicy | None = None,
         serializer: Any = None,
+        max_active_runs: int | None = None,
     ):
         if policy is not None and policy.durability == "exit":
             raise ValueError(
@@ -175,9 +180,18 @@ class RunHome(SqliteCheckpointer):
             ttl=policy.ttl if policy is not None else None,
         )
         super().__init__(path, policy=effective_policy, serializer=serializer)
+        self._max_active_runs: int | None = None
+        self.max_active_runs = max_active_runs
 
     @classmethod
-    def open(cls, uri: str | Path, *, policy: CheckpointPolicy | None = None, serializer: Any = None) -> RunHome:
+    def open(
+        cls,
+        uri: str | Path,
+        *,
+        policy: CheckpointPolicy | None = None,
+        serializer: Any = None,
+        max_active_runs: int | None = None,
+    ) -> RunHome:
         """Open (or create) a Run Home at ``uri``.
 
         Args:
@@ -186,13 +200,85 @@ class RunHome(SqliteCheckpointer):
             policy: Optional retention/ttl settings. Durability is forced to
                 ``"sync"``; ``"exit"`` durability is rejected.
             serializer: Optional value serializer (default: JSON).
+            max_active_runs: Host work admission — how many Runs this
+                worker executes at once. None (the default) is unlimited.
+                Tunable later via the ``max_active_runs`` attribute.
         """
-        return cls(uri, policy=policy, serializer=serializer)
+        return cls(uri, policy=policy, serializer=serializer, max_active_runs=max_active_runs)
 
     @property
     def uri(self) -> str:
         """The Home URI string as passed to ``open()`` (used in refs)."""
         return self._path
+
+    @property
+    def max_active_runs(self) -> int | None:
+        """Host work admission: concurrent Runs this worker may execute.
+
+        Assign at any time — including while a worker is live and work is
+        queued — and the next claim scan honors the new value. Lowering it
+        never rejects or cancels anything: over-limit Runs stay pending and
+        wait in claim order as ``WaitingCondition.ADMISSION_LIMITED``.
+        Raising it lets the oldest waiting Run in first.
+
+        This counts *Runs a worker executes*, so it is not the same control
+        as a ``ProcessLocalLimiter`` (``provider_limit``), which counts
+        concurrent calls to an external provider. A claimed Run parked on a
+        provider permit is still executing and still holds its slot here.
+        None means unlimited (no Run ever reports ADMISSION_LIMITED).
+        """
+        return self._max_active_runs
+
+    @max_active_runs.setter
+    def max_active_runs(self, value: int | None) -> None:
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
+            raise ValueError(f"max_active_runs must be an int >= 1 concurrent Runs, or None for unlimited; got {value!r}.")
+        self._max_active_runs = value
+
+    # === Host work admission ===
+
+    async def _admission_is_full(self) -> bool:
+        """True when the active-Run cap leaves no slot for new work.
+
+        A claimed submission is one this worker owns end to end — starting,
+        executing, parked on a provider permit, or settling — so it holds a
+        slot. Pending (queued, scheduled, version-incompatible), exhausted,
+        and finished submissions are not claimed and hold none. An unset cap
+        is unlimited and is answered without touching the store.
+        """
+        cap = self._max_active_runs
+        if cap is None:
+            return False
+        await self._ensure_db()
+        async with self._txn_lock():
+            cursor = await self._db.execute(_ACTIVE_RUN_COUNT_SQL)
+            row = await cursor.fetchone()
+        return (int(row[0]) if row else 0) >= cap
+
+    def _admission_is_full_sync(self) -> bool:
+        """Sync mirror of ``_admission_is_full``."""
+        cap = self._max_active_runs
+        if cap is None:
+            return False
+        with self._sync_lock:
+            row = self._sync_db().execute(_ACTIVE_RUN_COUNT_SQL).fetchone()
+        return (int(row[0]) if row else 0) >= cap
+
+    async def _free_admission_slots(self) -> int | None:
+        """Slots left under the active-Run cap; None when uncapped.
+
+        Read inside the caller's write transaction so the count a claim
+        decision uses is the count that transaction commits against. A
+        restart that re-adopted more claimed Runs than a lowered cap yields
+        a negative budget, which simply claims nothing new — admission
+        delays work, it never cancels it.
+        """
+        cap = self._max_active_runs
+        if cap is None:
+            return None
+        cursor = await self._db.execute(_ACTIVE_RUN_COUNT_SQL)
+        row = await cursor.fetchone()
+        return cap - (int(row[0]) if row else 0)
 
     # === run_updates appends (same-transaction as run mutations) ===
 
@@ -1281,6 +1367,15 @@ class RunHome(SqliteCheckpointer):
         item rather than sitting claimable forever — and a durable
         ``child_unstarted`` Batch fact commits with that flip, so the
         per-Batch sequence accounts the item too (PRD 0019 A9).
+
+        It is also where host work admission applies: at most
+        ``home.max_active_runs`` submissions are claimed at once, counting
+        the claims already outstanding. Over-limit work is left pending and
+        waits in claim order (oldest ``created_at`` first) — it is never
+        rejected or cancelled, and it is reported as
+        ``WaitingCondition.ADMISSION_LIMITED``. A full cap never starves the
+        non-claiming dispositions: tripped-Batch children and
+        version-incompatible rows are still settled on this scan.
         """
         served_set = frozenset(served)
         await self._ensure_db()
@@ -1294,6 +1389,7 @@ class RunHome(SqliteCheckpointer):
                     (now_iso, limit),
                 )
                 submissions = [_row_to_submission(row) for row in await cursor.fetchall()]
+                free_slots = await self._free_admission_slots()
                 tripped = await self._tripped_batch_ids({s["batch_id"] for s in submissions if s["batch_id"] is not None})
                 claimed: list[dict[str, Any]] = []
                 for submission in submissions:
@@ -1332,12 +1428,19 @@ class RunHome(SqliteCheckpointer):
                             (submission["workflow_id"],),
                         )
                         continue
+                    if free_slots is not None and free_slots <= 0:
+                        # Over the active-Run cap: leave it pending. Claim
+                        # order is the scan order, so the oldest waiting
+                        # submission takes the next freed slot.
+                        continue
                     result = await self._db.execute(
                         "UPDATE host_submissions SET state = 'claimed', claimed_at = ? WHERE workflow_id = ? AND state = 'pending'",
                         (now_iso, submission["workflow_id"]),
                     )
                     if result.rowcount == 1:
                         claimed.append(submission)
+                        if free_slots is not None:
+                            free_slots -= 1
                 await self._db.commit()
                 return claimed
             except BaseException:

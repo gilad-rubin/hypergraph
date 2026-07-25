@@ -28,6 +28,7 @@ ROOT_EXPORTS = (
     "END",
     "RetryPolicy",
     "RetryAfterError",
+    "ProcessLocalLimiter",
     "Graph",
     "InputSpec",
     "SyncHandle",

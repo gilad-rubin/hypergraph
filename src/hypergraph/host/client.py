@@ -138,7 +138,22 @@ def _build_batch_view(
     )
 
 
-def _build_view(home_uri: str, run_id: str, submission: dict[str, Any] | None, run: Run | None) -> RunView | None:
+def _build_view(
+    home_uri: str,
+    run_id: str,
+    submission: dict[str, Any] | None,
+    run: Run | None,
+    *,
+    admission_full: bool = False,
+) -> RunView | None:
+    """Build one RunView.
+
+    ``admission_full`` is the reading Home's answer to "is the active-Run
+    cap out of slots right now?" — computed once per ``get``/``list`` call
+    so a due, compatible, still-pending submission reports
+    ``ADMISSION_LIMITED`` instead of a bare ``QUEUED``. It is False for an
+    uncapped Home, which never produces the condition at all.
+    """
     if submission is None and run is None:
         return None
     waiting = None
@@ -155,6 +170,11 @@ def _build_view(home_uri: str, run_id: str, submission: dict[str, Any] | None, r
             waiting = WaitingCondition.SCHEDULED
         elif submission["state"] == "pending" and submission["compat_state"] == "incompatible":
             waiting = WaitingCondition.VERSION_INCOMPATIBLE
+        elif submission["state"] == "pending" and admission_full:
+            # Due, compatible, and claimable — held back only by the
+            # active-Run cap. A claimed submission is already executing and
+            # holds a slot, so it stays QUEUED until its runs row appears.
+            waiting = WaitingCondition.ADMISSION_LIMITED
         elif submission["state"] in ("pending", "claimed"):
             waiting = WaitingCondition.QUEUED
     definition_id = None
@@ -353,14 +373,20 @@ def _query_batch_id(query: RunQuery) -> str | None:
     return query.batch.batch_id if isinstance(query.batch, BatchRef) else query.batch
 
 
-def _filter_list_rows(home_uri: str, rows: list[tuple[dict[str, Any] | None, Run | None]], query: RunQuery) -> list[RunView]:
+def _filter_list_rows(
+    home_uri: str,
+    rows: list[tuple[dict[str, Any] | None, Run | None]],
+    query: RunQuery,
+    *,
+    admission_full: bool = False,
+) -> list[RunView]:
     """Build views for joined rows and apply the RunQuery filters, oldest first."""
     cutoff = datetime.now(timezone.utc) - query.older_than if query.older_than is not None else None
     batch_id = _query_batch_id(query)
     matched: list[tuple[datetime, RunView]] = []
     for submission, run in rows:
         run_id = submission["workflow_id"] if submission is not None else run.id  # type: ignore[union-attr]
-        view = _build_view(home_uri, run_id, submission, run)
+        view = _build_view(home_uri, run_id, submission, run, admission_full=admission_full)
         if view is None:  # pragma: no cover - rows always carry one side
             continue
         if query.definition is not None and view.definition_name != query.definition:
@@ -419,7 +445,7 @@ class RunHomeClient:
             raise TypeError(f"get() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         submission = await self._home._get_submission(ref.run_id)
         run = await self._home.get_run_async(ref.run_id)
-        return _build_view(self._home.uri, ref.run_id, submission, run)
+        return _build_view(self._home.uri, ref.run_id, submission, run, admission_full=await self._home._admission_is_full())
 
     def get_sync(self, ref: RunRef | BatchRef) -> RunView | BatchView | None:
         """Sync mirror of ``get``."""
@@ -433,7 +459,7 @@ class RunHomeClient:
             raise TypeError(f"get() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         submission = self._home._get_submission_sync(ref.run_id)
         run = self._home.get_run(ref.run_id)
-        return _build_view(self._home.uri, ref.run_id, submission, run)
+        return _build_view(self._home.uri, ref.run_id, submission, run, admission_full=self._home._admission_is_full_sync())
 
     async def stop(self, ref: RunRef | BatchRef, *, info: Any = None, source_ref: str | None = None) -> CommandReceipt | BatchCommandReceipt:
         """Record a durable stop command for ``ref``.
@@ -490,13 +516,13 @@ class RunHomeClient:
         """
         _validate_query(query)
         rows = await self._home._list_run_rows()
-        return _filter_list_rows(self._home.uri, rows, query)
+        return _filter_list_rows(self._home.uri, rows, query, admission_full=await self._home._admission_is_full())
 
     def list_sync(self, query: RunQuery) -> list[RunView]:
         """Sync mirror of ``list``."""
         _validate_query(query)
         rows = self._home._list_run_rows_sync()
-        return _filter_list_rows(self._home.uri, rows, query)
+        return _filter_list_rows(self._home.uri, rows, query, admission_full=self._home._admission_is_full_sync())
 
     async def rerun(self, ref: RunRef | BatchRef, *, item_keys: Sequence[str] | None = None) -> SubmitReceipt | BatchSubmitReceipt:
         """Repeat settled work under a new id with retry lineage.

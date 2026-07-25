@@ -94,10 +94,8 @@ normalized inputs, and the requested `start_at`. Resubmitting the same
 `host.submit_sync(...)` is the synchronous mirror.
 
 `submit()` also accepts `start_at` (a `datetime` or ISO string) for a
-delayed start: the submission waits as `WaitingCondition.SCHEDULED` until
-the time passes. It is normalized to a UTC ISO timestamp at submit time
-(naive inputs read as UTC; offsets converted), so equivalent spellings of
-the same instant dedupe identically.
+one-shot delayed start — no external timer service — see
+[Delayed Start](#delayed-start).
 
 `submit()` also accepts `recovery_cap` (default `3`): how many progressless
 crash re-adoptions park the run as recovery-exhausted instead of resuming
@@ -337,9 +335,9 @@ terminates immediately with no updates — matching `get()`'s honest `None`
 `WaitingCondition` is a closed enum — `QUEUED`, `SCHEDULED`, `PAUSED`,
 `VERSION_INCOMPATIBLE`, `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED` — so
 waiting work never looks alike and callers branch on typed values. `waiting`
-is `None` while a Run executes or is terminal. All members except
-`ADMISSION_LIMITED` are produced today; that one stays reserved for the
-active-Run cap in a later release.
+is `None` while a Run executes or is terminal — including while a running
+Run is queued behind a [provider permit](#provider-resource-admission),
+which is execution, not waiting.
 
 ## Stopping a Run
 
@@ -493,6 +491,125 @@ is released. On startup the worker re-adopts submissions whose previous
 worker died mid-run, so unfinished work continues without resubmission.
 Process supervision (systemd, FastAPI lifespan, cron) restarts the worker —
 Hypergraph runs no control-plane server.
+
+## Host Work Admission
+
+`RunHome.max_active_runs` caps how many Runs one worker executes at once.
+It is **tunable at runtime** — assign it while the worker is live and work
+is queued, and the next claim scan honors it:
+
+```python
+home = RunHome.open("file:./runs.db", max_active_runs=4)
+...
+home.max_active_runs = 1     # shed load without restarting the worker
+home.max_active_runs = None  # unlimited (the default)
+```
+
+Over-limit work **waits in claim order** — oldest submission first. It is
+never rejected and never cancelled: the submission stays persisted and
+pending, its view reports `WaitingCondition.ADMISSION_LIMITED`, and it
+claims the moment a slot frees. Lowering the cap below the work already
+outstanding revokes nothing; those Runs finish and the next claim simply
+waits. The cap must be an `int >= 1` or `None`.
+
+**What holds a slot.** A *claimed* Run — one this worker owns end to end,
+whether it is starting, executing, settling, or parked on a provider permit
+— holds one slot. Queued, scheduled, paused, version-incompatible, and
+recovery-exhausted Runs hold **none**.
+
+```python
+limited = await client.list(RunQuery(waiting=WaitingCondition.ADMISSION_LIMITED))
+```
+
+`ADMISSION_LIMITED` is computed against the reading Home's own
+`max_active_runs`, so an uncapped Home never reports it. In this tier the
+Home has exactly one worker, so set the cap on the Home the worker serves.
+
+Overflow strategies are deliberately **absent** in v1: there is no reject,
+no cancel-oldest, no cancel-newest, no keyed fairness, and no
+expression-language admission key. Overload delays work; it never drops it.
+
+## Provider-Resource Admission
+
+Host work admission is not the same control as an external provider's
+concurrency limit, and Hypergraph keeps them apart. A `ProcessLocalLimiter`
+is an injected budget over **external capacity** — the name states its
+scope: it coordinates only this process, and this tier ships no distributed
+limiter.
+
+```python
+from hypergraph import ProcessLocalLimiter
+
+quota = ProcessLocalLimiter(max_concurrent=4)
+quota.max_concurrent   # 4
+quota.in_flight        # permits held right now
+```
+
+Three injection scopes, narrowest budget last:
+
+```python
+class SummaryClient:                      # component scope — usually the right
+    def __init__(self) -> None:           # owner of a provider quota
+        self._quota = ProcessLocalLimiter(max_concurrent=4)
+
+    async def summarize(self, text: str) -> str:
+        async with self._quota:           # acquired at the exact scarce call
+            return await self._http.post(...)
+
+@node(output_name="summary", provider_limit=ProcessLocalLimiter(max_concurrent=2))
+async def summarize(doc: str) -> str: ... # node scope
+
+graph = graph.with_provider_limit(ProcessLocalLimiter(max_concurrent=8))
+#                                         graph scope (immutable, metadata only)
+```
+
+Several graphs and nodes reuse one shared component, so letting the
+component own the quota keeps the permit held for the provider call and
+nothing else. Graph- and node-scope limits are **work budgets**: the permit
+covers the whole node execution, retry backoff included. They compose as
+narrower limits around a component quota; they never replace it. Give each
+scope its own limiter instance — the pools are not reentrant.
+
+A graph budget is a shared object, so two concurrent Runs of the same graph
+draw on the same permits. That is what `max_concurrency` (a per-call budget
+for one run) cannot express. `graph.with_provider_limit(...)` returns a new
+Graph and changes no structure: `structural_hash` and therefore Definition
+identity are untouched. Nested graphs are not covered — a nested graph
+carries its own budget.
+
+**Waiting for a permit is neither a failure nor a retry attempt.** The wait
+happens outside the attempt coordinator, so ordinary throttling reserves no
+attempt, consumes no `RetryPolicy` budget, and runs down no node `timeout`.
+A claimed Run parked on a permit is *executing*: `RunView.waiting` is
+`None`, its status is unchanged, and it still holds its Host slot.
+
+## Delayed Start
+
+`submit()` and `submit_batch()` accept `start_at` (a `datetime` or ISO
+string) for one-shot future work — no external timer service:
+
+```python
+receipt = await host.submit("refund", {"claim_id": "c-42"},
+                            workflow_id="refund-c-42",
+                            start_at=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
+```
+
+The submission persists immediately, so a restart cannot lose the schedule.
+It is normalized to a UTC ISO timestamp at submit time (naive inputs read as
+UTC; offsets converted), so equivalent spellings of the same instant dedupe
+identically — and it is part of the **start fingerprint**, so the same id
+with a different `start_at` is a `WorkflowIdConflictError`.
+
+**Store time controls eligibility.** Until the Run Home's clock reaches
+`start_at`, the submission is never claimed and its view reports
+`WaitingCondition.SCHEDULED`. A **past** `start_at` is immediately eligible
+(it reports `QUEUED`, not `SCHEDULED`). Scheduled work holds no active-Run
+slot, so a delayed backlog never blocks work that is due now.
+
+`client.stop(ref)` on future work **prevents execution**: when the time
+arrives the pre-run gate finishes the submission without ever running the
+graph and without inventing a runs row — the same stop-before-first-execution
+path a queued run takes.
 
 ## Crash Recovery and the Recovery Brake
 

@@ -990,7 +990,7 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert tuple(inspect.signature(BaseRunner.has_active_run).parameters) == ("self", "workflow_id")
 
     # RunHome.open / serve / submit / fork / client verb signatures.
-    assert tuple(inspect.signature(RunHome.open).parameters) == ("uri", "policy", "serializer")
+    assert tuple(inspect.signature(RunHome.open).parameters) == ("uri", "policy", "serializer", "max_active_runs")
     assert tuple(inspect.signature(serve).parameters) == ("graphs", "home", "deployment_version", "accepts")
     from hypergraph.host import Host
 
@@ -1079,3 +1079,31 @@ def test_durable_host_docs_pin_public_contract() -> None:
     prototype = _read("docs/prd/durable-host-v1-decision-prototype.md")
     for member in WaitingCondition:
         assert f"WaitingCondition.{member.name}" in prototype or member.name in host_api
+
+    # Ticket 12: the two admission controls are documented, and never as one.
+    from hypergraph import ProcessLocalLimiter
+
+    assert "max_active_runs" in host_api
+    assert "ADMISSION_LIMITED" in host_api
+    assert "ProcessLocalLimiter" in host_api
+    assert "provider_limit" in host_api
+    assert isinstance(RunHome.max_active_runs, property)
+    assert RunHome.max_active_runs.fset is not None, "the active-Run cap must be tunable at runtime"
+    assert tuple(inspect.signature(Graph.with_provider_limit).parameters) == ("self", "provider_limit")
+    assert isinstance(Graph.provider_limit, property)
+    assert tuple(inspect.signature(ProcessLocalLimiter.__init__).parameters) == ("self", "max_concurrent")
+    nodes_api = _read("docs/06-api-reference/nodes.md")
+    graph_api = _read("docs/06-api-reference/graph.md")
+    assert "## ProcessLocalLimiter" in nodes_api
+    assert "with_provider_limit" in graph_api
+    # Excluded overflow strategies stay out of the public surface AND the docs.
+    for excluded in ("cancel_oldest", "cancel_newest", "admission_key"):
+        assert excluded not in host_api
+        assert excluded not in " ".join(hypergraph_all())
+
+
+def hypergraph_all() -> tuple[str, ...]:
+    """Root exports, as a tuple (kept out of the assertion for readability)."""
+    import hypergraph
+
+    return tuple(hypergraph.__all__)

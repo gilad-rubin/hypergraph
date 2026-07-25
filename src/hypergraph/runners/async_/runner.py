@@ -521,6 +521,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                 emit_fn=dispatcher.emit if dispatcher.active else None,
                 checkpointer=checkpointer if has_checkpointer else None,
                 superstep_offset=superstep_offset,
+                provider_limit=graph.provider_limit,
             )
 
             while frontier.has_pending_components():

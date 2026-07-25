@@ -81,6 +81,7 @@ from hypergraph.host import (
     WorkflowIdConflictError,
     serve,
 )
+from hypergraph.limits import ProcessLocalLimiter
 from hypergraph.nodes import (
     END,
     FunctionNode,
@@ -138,6 +139,8 @@ __all__ = [
     "END",
     "RetryPolicy",
     "RetryAfterError",
+    # Provider-resource admission (never the host active-Run cap)
+    "ProcessLocalLimiter",
     # Graph
     "Graph",
     "InputSpec",

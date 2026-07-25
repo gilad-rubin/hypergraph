@@ -163,6 +163,7 @@ def __init__(
     wait_for: str | tuple[str, ...] | None = None,
     retry: RetryPolicy | None = None,
     timeout: float | None = None,
+    provider_limit: ProcessLocalLimiter | None = None,
 ) -> None: ...
 ```
 
@@ -181,6 +182,7 @@ def __init__(
 - `wait_for`: Ordering-only graph-scope output/emit address(es). Node waits until these values exist and are fresh
 - `retry`: Optional [RetryPolicy](#retrypolicy). Node-owned only — there is no runner, graph, or per-call retry default, and no `retry=True` shorthand. Direct calls stay raw single-shot invocations
 - `timeout`: Optional positive, finite seconds for cooperative cancellation of async functions/generators under `AsyncRunner`. Unsupported runner/callable combinations are rejected before execution. Direct calls stay raw
+- `provider_limit`: Optional [ProcessLocalLimiter](#processlocallimiter) capping how many executions of this node run at once in this process. Direct calls stay raw and take no permit
 
 **Returns:** FunctionNode instance
 
@@ -505,6 +507,7 @@ def node(
     wait_for: str | tuple[str, ...] | None = None,
     retry: RetryPolicy | None = None,
     timeout: float | None = None,
+    provider_limit: ProcessLocalLimiter | None = None,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]: ...
 ```
 
@@ -518,6 +521,7 @@ def node(
 - `wait_for`: Ordering-only graph-scope output/emit address(es). Node won't run until these values exist and are fresh. Must reference an `emit` or `output_name` of another node at the current graph scope
 - `retry`: Optional [RetryPolicy](#retrypolicy) declaring which failures are safe to repeat and with what budget/backoff. See [How to Retry Transient Failures](../05-how-to/retry-transient-failures.md)
 - `timeout`: Optional positive, finite seconds for cooperative per-attempt cancellation of async functions/generators under `AsyncRunner`. See [Bound one async attempt with timeout](../05-how-to/retry-transient-failures.md#bound-one-async-attempt-with-timeout)
+- `provider_limit`: Optional [ProcessLocalLimiter](#processlocallimiter) capping how many executions of this node run at once in this process. Not the durable host's active-Run cap — see [ProcessLocalLimiter](#processlocallimiter)
 
 **Returns:**
 - FunctionNode if source provided (decorator without parens)
@@ -680,6 +684,68 @@ class RetryAfterError(Exception):
 - `retry_after`: Finite delay in seconds, `>= 0`. When a retry may start, this delay is honored **exactly** — no jitter and no `max_delay` cap — but it remains bounded by `max_attempts` and `retry_window`. If the wait cannot end before the series deadline, hypergraph skips the pointless sleep and re-raises the exact underlying exception (never the carrier)
 
 **Raises:** `TypeError` for a non-`Exception` or nested-carrier `error`; `ValueError` for a negative or non-finite `retry_after`.
+
+---
+
+## ProcessLocalLimiter
+
+An injected budget over **external capacity** — how many concurrent calls a
+provider tolerates. The name states its coordination scope: it covers only
+the process that constructed it, and there is no distributed variant in this
+release. It is not the durable host's active-Run cap
+([`RunHome.max_active_runs`](host.md#host-work-admission)), which counts
+Runs a worker executes, and it is not the runner's `max_concurrency`, which
+budgets one call.
+
+```python
+from hypergraph import ProcessLocalLimiter, node
+
+quota = ProcessLocalLimiter(max_concurrent=2)
+
+@node(output_name="summary", provider_limit=quota)
+async def summarize(doc: str) -> str:
+    return await client.generate(doc)
+```
+
+### Signature
+
+```python
+class ProcessLocalLimiter:
+    def __init__(self, max_concurrent: int) -> None: ...
+
+    max_concurrent: int   # permits this limiter was built with (read-only)
+    in_flight: int        # permits held right now (read-only)
+
+    def __enter__(self) -> ProcessLocalLimiter: ...        # blocks the thread
+    async def __aenter__(self) -> ProcessLocalLimiter: ... # suspends the task
+```
+
+**Args:**
+
+- `max_concurrent` (required): Permit count, an `int >= 1`. Anything else is a `ValueError`.
+
+### Semantics
+
+- **Three scopes, one object.** Acquire it inside a shared **component** at
+  the exact scarce call (usually the right owner of a provider quota); pass
+  it as `@node(provider_limit=...)` for **node** scope; or bind it with
+  `graph.with_provider_limit(...)` for **graph** scope.
+- **Shared across runs.** A limiter is a long-lived object, so two
+  concurrent Runs of the same graph draw on the same permits.
+- **Work budget vs quota.** Node and graph scope hold the permit for the
+  whole node execution, retry backoff included. They compose as narrower
+  limits around a component quota; they never replace it. Give each scope
+  its own limiter — the pools are not reentrant, so acquiring the same one
+  twice on a path deadlocks (Hypergraph collapses a graph and node budget
+  that are literally the same object to one permit).
+- **Never a failure, never an attempt.** Waiting for a permit happens
+  outside the attempt coordinator: it reserves no attempt, consumes no
+  `RetryPolicy` budget, and runs down no `timeout`. Under the durable host
+  a Run parked on a permit is still executing and still holds its slot.
+- **One pool for sync and async.** `with limiter:` blocks the calling
+  thread; `async with limiter:` suspends the task. Both draw on the same
+  permits, and async waiters are served in arrival order.
+- **Direct calls stay raw.** `node(...)` and `node.func(...)` take no permit.
 
 ---
 

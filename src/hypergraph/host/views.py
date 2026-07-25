@@ -62,6 +62,12 @@ class WaitingCondition(Enum):
 
     A waiting condition is a coordination fact, never a ``WorkflowStatus``.
     ``None`` on ``RunView.waiting`` means the Run is executing or terminal.
+
+    ``ADMISSION_LIMITED`` names HOST work admission only — the Run Home's
+    ``max_active_runs`` cap on Runs one worker executes at once. A Run
+    parked on an injected provider permit is executing, holds its Host
+    slot, and reports ``None``: provider-resource admission is a different
+    control and never appears in this vocabulary.
     """
 
     QUEUED = "queued"  # eligible, awaiting claim
@@ -106,13 +112,14 @@ class RunView:
         definition_name: Definition the run was submitted against.
         status: The run's ``WorkflowStatus``, or None while no runs row
             exists yet (submission still pending).
-        waiting: Typed waiting condition, or None. Produced today:
-            ``QUEUED`` (accepted, execution not started), ``SCHEDULED``
-            (future ``start_at``), ``PAUSED`` (runs row paused),
-            ``VERSION_INCOMPATIBLE`` (no serving worker claims the pinned
-            identity), and ``RECOVERY_EXHAUSTED`` (the pinned recovery cap
-            tripped). ``ADMISSION_LIMITED`` stays reserved for a later host
-            ticket. Never a WorkflowStatus.
+        waiting: Typed waiting condition, or None: ``QUEUED`` (accepted,
+            execution not started), ``SCHEDULED`` (future ``start_at``),
+            ``PAUSED`` (runs row paused), ``VERSION_INCOMPATIBLE`` (no
+            serving worker claims the pinned identity),
+            ``ADMISSION_LIMITED`` (due and claimable, but the reading
+            Home's ``max_active_runs`` has no free slot), and
+            ``RECOVERY_EXHAUSTED`` (the pinned recovery cap tripped).
+            Never a WorkflowStatus.
         definition_id: The pinned Definition identity from the submission,
             or reconstructed from the runs row for host-less (Tier 0) runs.
             None only when neither exists.

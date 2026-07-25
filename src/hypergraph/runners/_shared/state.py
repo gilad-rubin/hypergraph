@@ -11,6 +11,7 @@ from hypergraph.runners._shared.results import PauseInfo, RunLog
 if TYPE_CHECKING:
     from hypergraph.checkpointers.base import Checkpointer
     from hypergraph.events.processor import EventProcessor
+    from hypergraph.limits import ProcessLocalLimiter
 
 CheckpointErrorSink = Callable[[str], None]
 
@@ -98,6 +99,13 @@ class ExecutionContext:
     process-local ones. ``superstep_offset`` (per-run resume offset) plus
     ``superstep`` (current index, set per superstep) give attempt reservations
     the same superstep numbering StepRecords use.
+
+    ``provider_limit`` carries the graph-scope provider-resource budget
+    (``graph.with_provider_limit``) to the function-node executors. It is a
+    shared process-local permit pool over EXTERNAL capacity — never the
+    durable host's active-Run cap and never the per-call ``max_concurrency``
+    work budget. Each ``_execute_graph`` builds its own context, so a nested
+    graph carries its own budget instead of inheriting the parent's.
     """
 
     event_processors: list[EventProcessor] | None = None
@@ -115,6 +123,7 @@ class ExecutionContext:
     checkpointer: Checkpointer | None = None
     superstep_offset: int = 0
     superstep: int = 0
+    provider_limit: ProcessLocalLimiter | None = None
 
 
 @dataclass

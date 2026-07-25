@@ -396,6 +396,7 @@ class SyncRunner(SyncRunnerTemplate):
             emit_fn=dispatcher.emit if dispatcher.active else None,
             checkpointer=sync_cp,
             superstep_offset=superstep_offset,
+            provider_limit=graph.provider_limit,
         )
 
         try:

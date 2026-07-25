@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.cache_observer import node_cache_observer
 from hypergraph.runners._shared.outputs import wrap_outputs
+from hypergraph.runners._shared.provider_limits import provider_permits
 
 if TYPE_CHECKING:
     from hypergraph.nodes.function import FunctionNode
@@ -18,6 +20,10 @@ class SyncFunctionNodeExecutor:
     Handles:
     - Regular function calls
     - Sync generators (accumulated to list)
+
+    Holds the injected provider-resource budgets (graph scope, then node
+    scope) for the whole node execution — retry backoff included, matching
+    the async mirror.
     """
 
     def __call__(
@@ -38,6 +44,25 @@ class SyncFunctionNodeExecutor:
         Returns:
             Dict mapping output names to their values
         """
+        permits = provider_permits(ctx.provider_limit, node.provider_limit)
+        if not permits:
+            return self._execute(node, inputs, ctx)
+        # Waiting here is throttling, not failure: it happens outside the
+        # attempt coordinator, so no attempt is reserved and no retry budget
+        # or retry window runs while the permit is unavailable.
+        with ExitStack() as stack:
+            for limiter in permits:
+                stack.enter_context(limiter)
+            outputs = self._execute(node, inputs, ctx)
+        return outputs
+
+    def _execute(
+        self,
+        node: FunctionNode,
+        inputs: dict[str, Any],
+        ctx: ExecutionContext,
+    ) -> dict[str, Any]:
+        """Invoke the function (with retry attempts) and wrap its result."""
         # Map renamed inputs back to original function parameter names
         func_inputs = node.map_inputs_to_params(inputs)
 
