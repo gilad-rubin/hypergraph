@@ -402,7 +402,8 @@ CREATE TABLE IF NOT EXISTS host_commands (
 # batch_updates is the per-Batch durable sequence (bseq) that
 # RunHomeClient.watch(batch_ref) replays — same gap-free discipline as
 # run_updates. Children are ordinary host_submissions rows linked by
-# host_submissions.batch_id.
+# host_submissions.batch_id. host_batches.retry_of (ticket 06) records Batch
+# lineage when an item-scoped rerun mints a new manifest from a source Batch.
 _CREATE_HOST_BATCHES = """
 CREATE TABLE IF NOT EXISTS host_batches (
     batch_id TEXT PRIMARY KEY,
@@ -415,7 +416,8 @@ CREATE TABLE IF NOT EXISTS host_batches (
     start_at TEXT,
     fingerprint TEXT NOT NULL,
     source_ref TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    retry_of TEXT
 )
 """
 
@@ -454,6 +456,11 @@ _HOST_SUBMISSIONS_ADDED_COLUMNS = (
     ("item_key", "item_key TEXT"),
 )
 
+# Columns appended to host_batches after its initial cut (ticket 06). The v6
+# DDL above already carries it; this guarded ALTER migrates dev databases
+# that were created at v6 before the column existed.
+_HOST_BATCHES_ADDED_COLUMNS = (("retry_of", "retry_of TEXT"),)
+
 
 def _ensure_v6_objects(conn: Any) -> None:
     """Ensure durable-host coordination tables exist (safe idempotent guard)."""
@@ -466,6 +473,10 @@ def _ensure_v6_objects(conn: Any) -> None:
     for name, ddl in _HOST_SUBMISSIONS_ADDED_COLUMNS:
         if name not in existing:
             conn.execute(f"ALTER TABLE host_submissions ADD COLUMN {ddl}")
+    existing_batch_cols = {row[1] for row in conn.execute("PRAGMA table_info(host_batches)").fetchall()}
+    for name, ddl in _HOST_BATCHES_ADDED_COLUMNS:
+        if name not in existing_batch_cols:
+            conn.execute(f"ALTER TABLE host_batches ADD COLUMN {ddl}")
     _create_host_indexes(conn)
     conn.commit()
 

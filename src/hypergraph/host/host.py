@@ -262,8 +262,10 @@ class Host:
                 manifest order used for keyed outcomes.
             workflow_id: Required explicit Batch id (dedup identity).
             tolerance: Optional ``BatchTolerance`` pinned into the manifest
-                (part of the dedup fingerprint; trip semantics land with
-                the tolerance ticket).
+                (part of the dedup fingerprint). Once failure-equivalent
+                children strictly exceed either threshold the Batch trips:
+                new child admission closes, claimed children settle, and
+                every remaining item becomes explicitly unstarted.
             start_at: Optional delayed start (datetime or ISO string),
                 applied to every child.
             source_ref: Optional caller provenance marker.

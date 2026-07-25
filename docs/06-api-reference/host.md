@@ -163,9 +163,9 @@ plain run submission (or a run id owned by a Batch) is a conflict too.
 thresholds into the manifest at acceptance — never `serve()` configuration
 — and is part of the dedup fingerprint. At least one threshold must be set;
 `max_failed` is an `int >= 0`, `max_failed_percent` a whole `int` between 0
-and 100 whose denominator is the fixed manifest item count. Trip
-enforcement (strictly-exceeds evaluation, admission close, PARTIAL) lands
-with the tolerance ticket; today the declaration is persisted verbatim.
+and 100 whose denominator is the fixed manifest item count. See
+[Failure tolerance](#failure-tolerance-and-the-trip) for what happens when
+one is exceeded.
 
 `BatchSubmitReceipt` mirrors `SubmitReceipt` (inert, with `batch_ref`,
 `workflow_id`, `duplicate`). `BatchRef` mirrors `RunRef`: identity only
@@ -186,15 +186,17 @@ view.outcomes        # item key -> terminal status ("completed" / "failed" /
 view.unstarted_items # item keys whose child never executed — never
                      # invented results
 view.settled         # True when no child is active or queued
+view.tolerance_tripped  # True once a pinned tolerance was exceeded
+view.retry_of        # source batch_id when minted by client.rerun(batch_ref)
 ```
 
 Counts are keyed by **logical item key**, never by completion order or
 child workflow id. The terminal buckets (`completed`, `failed`, `partial`,
 `stopped`) come from the child runs row; `active` is a started nonterminal
 child; `queued` a child not yet started but still claimable;
-`recovery_exhausted` a parked child (it counts as settled in v1 — tolerance
-trip semantics land with the tolerance ticket); `unstarted` a child that
-finished without ever executing (stop-before-start).
+`recovery_exhausted` a parked child (it counts as settled); `unstarted` a
+child that finished without ever executing (stop-before-start, or a
+tolerance trip that closed admission before it ran).
 
 `client.watch(batch_ref, after=cursor)` follows the whole Batch through one
 gap-free per-Batch durable sequence, yielding `BatchUpdate` values with
@@ -203,9 +205,10 @@ gap-free per-Batch durable sequence, yielding `BatchUpdate` values with
 together, they land in the same transaction.
 Batch update writes are append-only and never backpressure child execution.
 Durable facts are `manifest` (bseq 1), `child_settled` (a child's terminal
-transition, with `item_key`, `workflow_id`, and `status`), and `stopped`;
-live previews fanned in from child runs arrive with `update.durable is
-False`, repeat the last durable cursor, and never advance it:
+transition, with `item_key`, `workflow_id`, and `status`),
+`tolerance_tripped`, and `stopped`; live previews fanned in from child runs
+arrive with `update.durable is False`, repeat the last durable cursor, and
+never advance it:
 
 ```python
 cursor = None
@@ -221,6 +224,45 @@ from a stored cursor replays with no gaps and no repeats, across process
 restarts, with no graph code. A `BatchRef` unknown to the Home terminates
 immediately with no updates. `client.get_sync(batch_ref)` is the
 synchronous mirror of `get()`.
+
+## Failure Tolerance and the Trip
+
+A pinned `BatchTolerance` **trips** when failure-equivalent children
+**strictly exceed** either threshold. Both are evaluated independently, so
+either one exceeded trips the Batch:
+
+```python
+tolerance=BatchTolerance(max_failed=2, max_failed_percent=25)  # over 8 items
+# 2 failures → tolerated (2 is not more than 2, and 25% of 8 is exactly 2)
+# 3 failures → tripped
+```
+
+The percentage denominator is always the **total logical manifest item
+count pinned at acceptance** — it never shrinks to the items that happen to
+have settled, so an early failure can never read as 100%.
+
+**Failure equivalence.** A child counts toward tolerance when its run
+`failed` or its submission is recovery-exhausted. Paused, queued, delayed,
+admission-limited, and unstarted children never count — and neither do
+`partial` or `stopped` runs.
+
+**What a trip does**, all in the same transaction as the child fact that
+caused it (so the `child_settled` and `tolerance_tripped` rows land at
+consecutive `bseq` values and a reader never sees a Batch that should have
+tripped but has not):
+
+- **closes new child admission** — no pending child is claimed again, and a
+  child a crash returns to pending is not re-admitted either;
+- **lets already-claimed children settle** — running work is never killed;
+- **marks every remaining item explicitly unstarted** — named by item key,
+  never a fabricated failure;
+- **leaves the Batch truthfully partial** — mixed outcomes with explicit
+  unstarted items, never a failed Batch and never a stopped one.
+
+A trip is a **Batch fact, not a `WorkflowStatus`**: it appears as
+`view.tolerance_tripped`, as the durable `tolerance_tripped` update (with
+`failed`, `total_items`, the pinned thresholds, and the `unstarted_items`
+admission closed), and nowhere in any run's status.
 
 ## Stopping a Batch
 
@@ -343,12 +385,12 @@ that Batch's children, and `older_than` compares creation time. Omitted
 fields match everything. `limit` must be a positive `int`.
 `client.list_sync(...)` is the synchronous mirror.
 
-## Rerun: Repeat a Settled Run
+## Rerun: Repeat Settled Work
 
-`client.rerun(ref)` repeats a terminal run under a new workflow id with
-retry lineage — it lives on the client because it needs **no loaded
-Definition code**: the new submission carries the source's pinned
-`DefinitionId` and inputs verbatim.
+`client.rerun(ref)` repeats terminal work under a new id with retry
+lineage — it lives on the client because it needs **no loaded Definition
+code**: the new submission carries the source's pinned `DefinitionId` and
+inputs verbatim.
 
 ```python
 rerun_receipt = await client.rerun(receipt.run_ref)
@@ -364,6 +406,36 @@ else `RerunError` — with one exception: a **recovery-exhausted** source is
 exactly the rerun case (reviving braked work), so `rerun()` accepts it even
 without a terminal runs row. `client.rerun_sync(...)` is the synchronous
 mirror.
+
+### Item-scoped Batch rerun
+
+`client.rerun(batch_ref, item_keys=[...])` repeats **named source items**.
+It never mutates the source Batch: it mints a **new immutable manifest**
+with a new `BatchRef`, containing new child Runs for the selected keys
+only, carrying the source's pinned `DefinitionId`, source inputs, and
+pinned tolerance:
+
+```python
+rerun_receipt = await client.rerun(receipt.batch_ref,
+                                   item_keys=["protocol-20", "protocol-21"])
+rerun_receipt.batch_ref        # NEW BatchRef — a new manifest, not a mutation
+rerun_receipt.workflow_id      # "schneider-drop-42-retry-1"
+```
+
+- **Lineage.** The new Batch records `retry_of` against the source
+  `batch_id` (readable as `BatchView.retry_of`), and each new child records
+  `retry_of` against its **source child's workflow id**. The source Batch
+  stays settled and queryable forever.
+- **Keys.** Only keys present in the source manifest are accepted;
+  anything else is a `RerunError` naming the offending keys. Selected
+  children must already be settled — a child still in flight is a
+  `RerunError`, so one logical item never has two live Runs. Omit
+  `item_keys` to repeat the whole manifest.
+- **No overrides.** There is no `inputs` parameter here either, and
+  `item_keys` with a `RunRef` is a `TypeError` (a Run has no items).
+  Definition-identity changes go through `fork()`.
+
+`client.rerun_sync(batch_ref, item_keys=[...])` is the synchronous mirror.
 
 ## Fork: Migrate to New Code
 

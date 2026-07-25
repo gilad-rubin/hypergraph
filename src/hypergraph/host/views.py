@@ -172,8 +172,15 @@ class BatchView:
             manifest order — requested but never admitted.
         settled: True when no child is active or queued (terminal,
             unstarted, and recovery-exhausted children are settled). A
-            recovery-exhausted child counts as settled in v1; tolerance
-            trip semantics (PARTIAL) land with the tolerance ticket.
+            recovery-exhausted child counts as settled.
+        tolerance_tripped: True when failure-equivalent children strictly
+            exceeded a pinned tolerance, closing new child admission. A
+            trip is a Batch fact, never a ``WorkflowStatus``: the Batch
+            stays truthfully partial — mixed outcomes with the remaining
+            items explicitly unstarted, never a failed or stopped Batch.
+        retry_of: Source ``batch_id`` when this Batch was minted by
+            ``client.rerun(batch_ref, ...)``, else None. The source Batch
+            is never mutated; lineage points backwards only.
     """
 
     batch_ref: BatchRef
@@ -183,6 +190,8 @@ class BatchView:
     outcomes: dict[str, str | None]
     unstarted_items: tuple[str, ...]
     settled: bool
+    tolerance_tripped: bool
+    retry_of: str | None
 
 
 @dataclass(frozen=True)
@@ -197,10 +206,15 @@ class BatchUpdate:
             Callers must only store cursors from durable updates.
         kind: Fact kind — ``manifest`` (bseq 1, the accepted start intent),
             ``child_settled`` (a child's terminal transition, committed in
-            the same transaction as the child fact), ``stopped`` (the
+            the same transaction as the child fact), ``tolerance_tripped``
+            (a pinned tolerance was strictly exceeded, committed in that
+            same transaction at the next ``bseq``), ``stopped`` (the
             durable Batch stop) — or an event class name for previews.
         payload: JSON-safe fact payload. ``child_settled`` carries
-            ``item_key``, ``workflow_id``, and ``status``.
+            ``item_key``, ``workflow_id``, and ``status``;
+            ``tolerance_tripped`` carries ``failed``, ``total_items``, the
+            pinned ``max_failed``/``max_failed_percent``, and the
+            ``unstarted_items`` admission closed.
         timestamp: ISO timestamp of the fact (or of preview observation).
     """
 

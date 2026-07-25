@@ -996,8 +996,9 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert tuple(inspect.signature(RunHomeClient.get).parameters) == ("self", "ref")
     assert tuple(inspect.signature(RunHomeClient.get_sync).parameters) == ("self", "ref")
     assert tuple(inspect.signature(RunHomeClient.watch).parameters) == ("self", "ref", "after", "poll_interval")
-    assert tuple(inspect.signature(RunHomeClient.rerun).parameters) == ("self", "ref")
-    assert tuple(inspect.signature(RunHomeClient.rerun_sync).parameters) == ("self", "ref")
+    # rerun takes item_keys for the Batch form and never an input override.
+    assert tuple(inspect.signature(RunHomeClient.rerun).parameters) == ("self", "ref", "item_keys")
+    assert tuple(inspect.signature(RunHomeClient.rerun_sync).parameters) == tuple(inspect.signature(RunHomeClient.rerun).parameters)
     assert tuple(inspect.signature(RunHomeClient.stop).parameters) == ("self", "ref", "info", "source_ref")
     assert tuple(inspect.signature(RunHomeClient.stop_sync).parameters) == tuple(inspect.signature(RunHomeClient.stop).parameters)
     assert tuple(inspect.signature(RunHomeClient.list).parameters) == ("self", "query")
@@ -1034,6 +1035,8 @@ def test_durable_host_docs_pin_public_contract() -> None:
         "outcomes",
         "unstarted_items",
         "settled",
+        "tolerance_tripped",
+        "retry_of",
     )
     assert tuple(BatchUpdate.__dataclass_fields__) == ("cursor", "durable", "kind", "payload", "timestamp")
     assert {member.name for member in WaitingCondition} == {

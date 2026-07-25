@@ -23,6 +23,7 @@ from hypergraph.checkpointers.base import CheckpointPolicy
 # host/ is the same persistence subsystem as checkpointers/ (a RunHome IS a
 # SqliteCheckpointer), so reaching its private column list here is deliberate.
 from hypergraph.checkpointers.sqlite import _RUNS_COLS, SqliteCheckpointer
+from hypergraph.host.batch import BatchTolerance, tolerance_trips
 from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import AlreadyTerminalError, HostError, WorkflowIdConflictError
 from hypergraph.host.fingerprint import batch_mismatch_aspect, canonical_json, fingerprint_mismatch_aspect, start_fingerprint
@@ -44,11 +45,19 @@ _TERMINAL_STATUS_VALUES = ("completed", "failed", "partial", "stopped")
 _PROGRESS_STATUSES = frozenset({"paused", *_TERMINAL_STATUS_VALUES})
 _CLAIM_BATCH = 16
 
-_BATCH_COLS = (
-    "batch_id, workflow_id, definition_name, def_version, def_struct_hash, items_json, tolerance_json, start_at, fingerprint, source_ref, created_at"
-)
+_BATCH_COLS = "batch_id, workflow_id, definition_name, def_version, def_struct_hash, items_json, tolerance_json, start_at, fingerprint, source_ref, created_at, retry_of"
 _BATCH_PLACEHOLDERS = ", ".join("?" for _ in _BATCH_COLS.split(", "))
 _SETTLED_SUBMISSION_STATES = ("finished", "exhausted")
+
+# Failure equivalence (PRD 0019): a child counts toward tolerance when its
+# runs row failed or its submission is recovery-exhausted. Paused, queued,
+# delayed, admission-limited, and unstarted children never count — and
+# neither do partial or stopped runs.
+_COUNT_FAILURE_EQUIVALENT = (
+    "SELECT COUNT(*) FROM host_submissions s LEFT JOIN runs r ON r.id = s.workflow_id "
+    "WHERE s.batch_id = ? AND (r.status = 'failed' OR s.state = 'exhausted')"
+)
+_SELECT_TRIPPED = "SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = 'tolerance_tripped' LIMIT 1"
 
 
 def _now_iso() -> str:
@@ -67,10 +76,14 @@ def _children_settled_rows(rows: list[tuple[Any, ...]]) -> bool:
     """True when every (submission_state, run_status) pair is settled.
 
     A child is settled when its run reached a terminal status, its
-    submission finished (terminal run or stop-before-start — never
-    executed), or its submission is recovery-exhausted (parked; v1 treats
-    parked work as settled for Batch settlement — tolerance trip semantics
-    land with the tolerance ticket).
+    submission finished (terminal run, stop-before-start, or a tolerance
+    trip that closed admission before it ever ran), or its submission is
+    recovery-exhausted (parked; v1 treats parked work as settled).
+
+    A tolerance trip needs no special case here: it marks every remaining
+    item's submission finished in the tripping transaction, so those items
+    are settled-and-unstarted by the same rule stop-before-start already
+    uses.
     """
     return all(run_status in _TERMINAL_STATUS_VALUES or sub_state in _SETTLED_SUBMISSION_STATES for sub_state, run_status in rows)
 
@@ -263,6 +276,7 @@ class RunHome(SqliteCheckpointer):
             {"item_key": item_key, "workflow_id": run_id, "status": status},
             item_key=item_key,
         )
+        self._maybe_trip_tolerance_sync(db, batch_id)
 
     async def _append_child_settled(self, run_id: str, status: str) -> None:
         """Async mirror of ``_append_child_settled_sync``."""
@@ -286,6 +300,107 @@ class RunHome(SqliteCheckpointer):
             {"item_key": item_key, "workflow_id": run_id, "status": status},
             item_key=item_key,
         )
+        await self._maybe_trip_tolerance(batch_id)
+
+    # === Pinned tolerance (ticket 06) ===
+
+    def _maybe_trip_tolerance_sync(self, db: Any, batch_id: str) -> None:
+        """Evaluate the pinned tolerance and trip the Batch, same transaction.
+
+        Called immediately after a child fact that can change failure
+        truth, INSIDE the caller's transaction (PRD 0019 A9): the child's
+        terminal record and the trip land together, so the per-Batch
+        sequence stays gap-free and a reader never sees a Batch that should
+        have tripped but has not.
+
+        Tripping does three things, all durable at once:
+
+        1. Appends the ``tolerance_tripped`` fact at the next ``bseq``.
+        2. Marks every still-pending child finished — those items are
+           explicitly unstarted, never fabricated failures (ADR 0004).
+        3. Leaves claimed children alone: already-claimed work settles.
+
+        Idempotent per Batch (a Batch trips exactly once) and a no-op when
+        no tolerance was pinned. The Batch keeps no status of its own: a
+        trip is a Batch fact, never a ``WorkflowStatus``.
+        """
+        batch_row = db.execute("SELECT items_json, tolerance_json FROM host_batches WHERE batch_id = ?", (batch_id,)).fetchone()
+        if batch_row is None or batch_row[1] is None:
+            return
+        if db.execute(_SELECT_TRIPPED, (batch_id,)).fetchone() is not None:
+            return
+        (failure_count,) = db.execute(_COUNT_FAILURE_EQUIVALENT, (batch_id,)).fetchone()
+        payload = self._trip_payload(batch_row[0], batch_row[1], int(failure_count))
+        if payload is None:
+            return
+        unstarted = [
+            str(row[0])
+            for row in db.execute(
+                "SELECT item_key FROM host_submissions WHERE batch_id = ? AND state = 'pending' ORDER BY rowid",
+                (batch_id,),
+            ).fetchall()
+        ]
+        db.execute(
+            "UPDATE host_submissions SET state = 'finished', finished_at = ? WHERE batch_id = ? AND state = 'pending'",
+            (_now_iso(), batch_id),
+        )
+        self._append_batch_update_sync(db, batch_id, "tolerance_tripped", {**payload, "unstarted_items": unstarted})
+
+    async def _maybe_trip_tolerance(self, batch_id: str) -> None:
+        """Async mirror of ``_maybe_trip_tolerance_sync``; caller holds the transaction."""
+        batch_cursor = await self._db.execute("SELECT items_json, tolerance_json FROM host_batches WHERE batch_id = ?", (batch_id,))
+        batch_row = await batch_cursor.fetchone()
+        if batch_row is None or batch_row[1] is None:
+            return
+        tripped_cursor = await self._db.execute(_SELECT_TRIPPED, (batch_id,))
+        if await tripped_cursor.fetchone() is not None:
+            return
+        count_cursor = await self._db.execute(_COUNT_FAILURE_EQUIVALENT, (batch_id,))
+        (failure_count,) = await count_cursor.fetchone()
+        payload = self._trip_payload(batch_row[0], batch_row[1], int(failure_count))
+        if payload is None:
+            return
+        pending_cursor = await self._db.execute(
+            "SELECT item_key FROM host_submissions WHERE batch_id = ? AND state = 'pending' ORDER BY rowid",
+            (batch_id,),
+        )
+        unstarted = [str(row[0]) for row in await pending_cursor.fetchall()]
+        await self._db.execute(
+            "UPDATE host_submissions SET state = 'finished', finished_at = ? WHERE batch_id = ? AND state = 'pending'",
+            (_now_iso(), batch_id),
+        )
+        await self._append_batch_update(batch_id, "tolerance_tripped", {**payload, "unstarted_items": unstarted})
+
+    @staticmethod
+    def _trip_payload(items_json: str, tolerance_json: str, failure_count: int) -> dict[str, Any] | None:
+        """Return the trip fact payload, or None when the Batch has not tripped.
+
+        The percentage denominator is the pinned manifest length, read from
+        the immutable manifest row — never a live count of remaining work.
+        """
+        tolerance = BatchTolerance.from_dict(json.loads(tolerance_json))
+        total_items = len(json.loads(items_json))
+        if not tolerance_trips(tolerance, failure_count=failure_count, total_items=total_items):
+            return None
+        return {
+            "failed": failure_count,
+            "total_items": total_items,
+            "max_failed": tolerance.max_failed,
+            "max_failed_percent": tolerance.max_failed_percent,
+        }
+
+    def _batch_tripped_sync(self, batch_id: str) -> bool:
+        """True when a durable ``tolerance_tripped`` fact exists for this Batch."""
+        with self._sync_lock:
+            db = self._sync_db()
+            return db.execute(_SELECT_TRIPPED, (batch_id,)).fetchone() is not None
+
+    async def _batch_tripped(self, batch_id: str) -> bool:
+        """Async mirror of ``_batch_tripped_sync``."""
+        await self._ensure_db()
+        async with self._txn_lock():
+            cursor = await self._db.execute(_SELECT_TRIPPED, (batch_id,))
+            return await cursor.fetchone() is not None
 
     # === Submissions ===
 
@@ -525,6 +640,25 @@ class RunHome(SqliteCheckpointer):
             (count,) = await cursor.fetchone()
             return int(count or 0)
 
+    def _count_batch_retries_sync(self, batch_id: str) -> int:
+        """Count Batches minted as a rerun of ``batch_id`` (rerun id derivation).
+
+        Mirrors the Run rule (``<source>-retry-N`` with N = count + 1) so a
+        Batch rerun and a Run rerun read the same way.
+        """
+        with self._sync_lock:
+            db = self._sync_db()
+            (count,) = db.execute("SELECT COUNT(*) FROM host_batches WHERE retry_of = ?", (batch_id,)).fetchone()
+            return int(count or 0)
+
+    async def _count_batch_retries(self, batch_id: str) -> int:
+        """Async mirror of ``_count_batch_retries_sync``."""
+        await self._ensure_db()
+        async with self._txn_lock():
+            cursor = await self._db.execute("SELECT COUNT(*) FROM host_batches WHERE retry_of = ?", (batch_id,))
+            (count,) = await cursor.fetchone()
+            return int(count or 0)
+
     # === Batches (ticket 05) ===
 
     def _submit_batch_sync(
@@ -541,6 +675,8 @@ class RunHome(SqliteCheckpointer):
         *,
         fingerprint: str,
         recovery_cap: int = 3,
+        batch_retry_of: str | None = None,
+        child_retry_of: dict[str, str] | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         """Accept one Batch atomically: manifest + child submissions + bseq 1.
 
@@ -549,6 +685,12 @@ class RunHome(SqliteCheckpointer):
         the 'manifest' batch_updates row at bseq 1 — a partial Batch can
         never appear accepted. ``items`` is a manifest-ordered list of
         ``(item_key, inputs_json)`` pairs.
+
+        ``batch_retry_of`` records Batch lineage when an item-scoped rerun
+        mints this manifest from a source Batch (the source batch id);
+        ``child_retry_of`` maps item key -> source child workflow id so each
+        new child records ``retry_of`` against its source child. Both are
+        None for ordinary submissions.
 
         Returns ``(created, batch_row)``. Dedup mirrors the Run rules: a
         fingerprint-identical nonterminal resubmission returns
@@ -625,6 +767,7 @@ class RunHome(SqliteCheckpointer):
                         fingerprint,
                         source_ref,
                         now,
+                        batch_retry_of,
                     ),
                 )
                 for key, child_workflow_id, inputs_json in child_ids:
@@ -650,7 +793,7 @@ class RunHome(SqliteCheckpointer):
                                 start_at,
                             ),
                             "compatible",
-                            None,
+                            (child_retry_of or {}).get(key),
                             None,
                             None,
                             0,
@@ -680,6 +823,7 @@ class RunHome(SqliteCheckpointer):
                         "tolerance": json.loads(tolerance_json) if tolerance_json is not None else None,
                         "start_at": start_at,
                         "source_ref": source_ref,
+                        "retry_of": batch_retry_of,
                     },
                 )
                 db.commit()
@@ -704,6 +848,8 @@ class RunHome(SqliteCheckpointer):
         *,
         fingerprint: str,
         recovery_cap: int = 3,
+        batch_retry_of: str | None = None,
+        child_retry_of: dict[str, str] | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         """Async mirror of ``_submit_batch_sync``."""
         await self._ensure_db()
@@ -772,6 +918,7 @@ class RunHome(SqliteCheckpointer):
                         fingerprint,
                         source_ref,
                         now,
+                        batch_retry_of,
                     ),
                 )
                 for key, child_workflow_id, inputs_json in child_ids:
@@ -797,7 +944,7 @@ class RunHome(SqliteCheckpointer):
                                 start_at,
                             ),
                             "compatible",
-                            None,
+                            (child_retry_of or {}).get(key),
                             None,
                             None,
                             0,
@@ -825,6 +972,7 @@ class RunHome(SqliteCheckpointer):
                         "tolerance": json.loads(tolerance_json) if tolerance_json is not None else None,
                         "start_at": start_at,
                         "source_ref": source_ref,
+                        "retry_of": batch_retry_of,
                     },
                 )
                 await self._db.commit()
@@ -1057,6 +1205,12 @@ class RunHome(SqliteCheckpointer):
         ``compat_state='incompatible'`` (idempotent): later scans skip it so
         incompatible rows never starve claimable ones, and clients see
         ``WaitingCondition.VERSION_INCOMPATIBLE``.
+
+        This is also the single admission choke point a tolerance trip
+        closes: a child of a tripped Batch is never claimed. It is finished
+        without executing instead, so a child that a crash returned to
+        'pending' after its Batch tripped becomes an explicit unstarted
+        item rather than sitting claimable forever.
         """
         served_set = frozenset(served)
         await self._ensure_db()
@@ -1069,10 +1223,16 @@ class RunHome(SqliteCheckpointer):
                     "ORDER BY created_at LIMIT ?",
                     (now_iso, limit),
                 )
-                rows = await cursor.fetchall()
+                submissions = [_row_to_submission(row) for row in await cursor.fetchall()]
+                tripped = await self._tripped_batch_ids({s["batch_id"] for s in submissions if s["batch_id"] is not None})
                 claimed: list[dict[str, Any]] = []
-                for row in rows:
-                    submission = _row_to_submission(row)
+                for submission in submissions:
+                    if submission["batch_id"] in tripped:
+                        await self._db.execute(
+                            "UPDATE host_submissions SET state = 'finished', finished_at = ? WHERE workflow_id = ? AND state = 'pending'",
+                            (now_iso, submission["workflow_id"]),
+                        )
+                        continue
                     identity = DefinitionId(
                         submission["definition_name"],
                         submission["def_version"],
@@ -1095,7 +1255,7 @@ class RunHome(SqliteCheckpointer):
                         continue
                     result = await self._db.execute(
                         "UPDATE host_submissions SET state = 'claimed', claimed_at = ? WHERE workflow_id = ? AND state = 'pending'",
-                        (now_iso, row[0]),
+                        (now_iso, submission["workflow_id"]),
                     )
                     if result.rowcount == 1:
                         claimed.append(submission)
@@ -1104,6 +1264,18 @@ class RunHome(SqliteCheckpointer):
             except BaseException:
                 await self._rollback_async()
                 raise
+
+    async def _tripped_batch_ids(self, batch_ids: Collection[str]) -> frozenset[str]:
+        """Which of ``batch_ids`` have a durable trip; caller holds the transaction."""
+        ids = list(batch_ids)
+        if not ids:
+            return frozenset()
+        placeholders = ", ".join("?" for _ in ids)
+        cursor = await self._db.execute(
+            f"SELECT DISTINCT batch_id FROM batch_updates WHERE kind = 'tolerance_tripped' AND batch_id IN ({placeholders})",
+            ids,
+        )
+        return frozenset(str(row[0]) for row in await cursor.fetchall())
 
     async def _finish_submission(self, workflow_id: str) -> None:
         """Mark a claimed submission finished after its run settled."""
@@ -1208,6 +1380,11 @@ class RunHome(SqliteCheckpointer):
                             "recovery_exhausted",
                             {"recovery_attempts": attempts, "recovery_cap": submission["recovery_cap"]},
                         )
+                        # Recovery exhaustion is failure-equivalent (PRD
+                        # 0019), so it can trip the Batch — in this same
+                        # transaction, like any other child fact.
+                        if submission["batch_id"] is not None:
+                            await self._maybe_trip_tolerance(submission["batch_id"])
                         continue
                     await self._db.execute(
                         "UPDATE host_submissions SET state = 'pending', claimed_at = NULL, recovery_attempts = ? WHERE workflow_id = ?",

@@ -2,8 +2,10 @@
 
 A Batch is an immutable manifest of unique logical item keys, each mapped to
 one independent child Run (PRD 0019). This module owns the pinned tolerance
-declaration and submission-time item validation; trip semantics
-(strictly-exceeds evaluation, PARTIAL) land with the tolerance ticket.
+declaration, its strictly-exceeds trip predicate, and submission-time item
+validation. Where a trip is evaluated (in the same transaction as the child
+terminal write) and what it does (close admission, mark the rest unstarted)
+belongs to the Run Home.
 """
 
 from __future__ import annotations
@@ -27,8 +29,9 @@ class BatchTolerance:
 
     At least one threshold must be set. Values are pinned into the Batch
     manifest at acceptance (they are part of the dedup fingerprint) and are
-    never ``serve()`` configuration. Trip evaluation lands with the
-    tolerance ticket; today the declaration is persisted verbatim.
+    never ``serve()`` configuration. Both thresholds are evaluated
+    independently by ``tolerance_trips``; either one exceeded trips the
+    Batch.
     """
 
     max_failed: int | None = None
@@ -54,6 +57,33 @@ class BatchTolerance:
         if not isinstance(data, dict):
             raise TypeError(f"BatchTolerance.from_dict() expects a dict, got {type(data).__name__}.")
         return cls(max_failed=data.get("max_failed"), max_failed_percent=data.get("max_failed_percent"))
+
+
+def tolerance_trips(tolerance: BatchTolerance | None, *, failure_count: int, total_items: int) -> bool:
+    """True when failure-equivalent children STRICTLY exceed either threshold.
+
+    Count and percentage are evaluated independently: either one exceeded
+    trips the Batch, and an exact-threshold failure count never does
+    (``count == max_failed`` is tolerated, ``count == max_failed + 1`` is
+    not).
+
+    ``total_items`` is the total logical manifest item count pinned at
+    acceptance — the percentage denominator, which never shrinks as items
+    settle. The comparison is exact integer arithmetic
+    (``failures * 100 > percent * total``) so no float rounding can move the
+    boundary: 2 of 8 at 25% is tolerated, 3 of 8 is not.
+
+    Args:
+        tolerance: The Batch's pinned tolerance, or None (never trips).
+        failure_count: Failure-equivalent children — failed runs and
+            recovery-exhausted submissions only.
+        total_items: Total logical manifest items pinned at acceptance.
+    """
+    if tolerance is None:
+        return False
+    if tolerance.max_failed is not None and failure_count > tolerance.max_failed:
+        return True
+    return tolerance.max_failed_percent is not None and failure_count * 100 > tolerance.max_failed_percent * total_items
 
 
 def validate_batch_items(items: Mapping[str, Mapping[str, Any]]) -> list[tuple[str, str]]:

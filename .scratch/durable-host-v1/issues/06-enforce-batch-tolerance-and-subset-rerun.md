@@ -6,10 +6,10 @@ named source items without changing their Definition identity or inputs.
 
 **Blocked by:** 05 — Submit and watch an immutable durable Batch.
 
-**Status:** ready-for-agent
+**Status:** done — landed in this commit
 
-- [ ] Count and percentage tolerances trip only when failures strictly exceed their thresholds
-- [ ] Percentage always uses total logical manifest items as its denominator
-- [ ] Failed and recovery-exhausted children count while paused, queued, delayed, and unstarted children do not
-- [ ] A tripped Batch lets claimed children settle, marks the rest unstarted, and remains partial
-- [ ] Subset rerun accepts only source item keys and records new Run or Batch lineage without input overrides
+- [x] Count and percentage tolerances trip only when failures strictly exceed their thresholds
+- [x] Percentage always uses total logical manifest items as its denominator
+- [x] Failed and recovery-exhausted children count while paused, queued, delayed, and unstarted children do not
+- [x] A tripped Batch lets claimed children settle, marks the rest unstarted, and remains partial
+- [x] Subset rerun accepts only source item keys and records new Run or Batch lineage without input overrides
