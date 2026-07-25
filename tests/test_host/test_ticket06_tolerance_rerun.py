@@ -776,9 +776,16 @@ def _accounted_from_stream(updates: list[tuple[int, str, dict]]) -> tuple[list[s
     A detached ``watch(batch_ref, after=cursor)`` consumer sees nothing but
     these rows — no view, no store queries. PRD 0019 A9 says it follows the
     whole Batch gap-free, so the stream must account every manifest item on
-    its own: settled children by their ``child_settled`` fact, items the
-    trip closed admission on by the trip payload, and items that end
-    unstarted after the trip by their own ``child_unstarted`` fact.
+    its own, however the item ended:
+
+    - settled children by their ``child_settled`` fact — terminal runs AND
+      children the recovery brake parked (``status`` is then the same
+      ``"recovery_exhausted"`` string ``BatchView.outcomes`` reports, so
+      the parked child needs no separate kind);
+    - items a trip closed admission on, by the trip payload;
+    - every other item that ends unstarted — a stopped Batch's child that
+      never executed, or one a crash returned to pending after the trip —
+      by its own ``child_unstarted`` fact.
     """
     manifest: list[str] = []
     accounted: list[str] = []
@@ -795,13 +802,19 @@ def _accounted_from_stream(updates: list[tuple[int, str, dict]]) -> tuple[list[s
 class TestDurableStreamAccountsEveryItem:
     """A9: the stream and the view must reconstruct each other.
 
-    The regression these cover: children CLAIMED at trip time are rightly
-    absent from the trip fact's ``unstarted_items`` (they may still
-    settle), but when a worker death returns them to pending, admission
-    refuses them — and that refusal used to flip state with no durable
-    Batch row at all. ``BatchView`` recomputes from rows so it stayed
-    right; a ``watch()`` consumer following the cursor never learned those
-    items ended unstarted.
+    The regression these cover: three paths used to settle a Batch child
+    with no ``batch_updates`` row at all. ``BatchView`` recomputes from the
+    submission rows so it stayed right every time; a ``watch()`` consumer
+    following the durable cursor never learned those items' outcomes, so
+    the sequence was gap-free in numbering but not in meaning.
+
+    1. A child CLAIMED at trip time is rightly absent from the trip fact's
+       ``unstarted_items`` (it may still settle) — but when a worker death
+       returns it to pending, admission refuses it.
+    2. A Batch stop finishes a child that never executed. The ``stopped``
+       fact's payload is only the verb and info; it names no items.
+    3. The recovery brake parks a child as ``exhausted`` — a settled,
+       failure-equivalent child outcome, so it is Batch truth.
     """
 
     async def _tripped_with_claimed_children(self, home, runner: str = "sync"):
@@ -867,6 +880,127 @@ class TestDurableStreamAccountsEveryItem:
         assert [u.cursor for u in durable] == [f"bseq:{n}" for n in range(1, 11)]
         manifest, accounted = _accounted_from_stream([(n, u.kind, u.payload) for n, u in enumerate(durable, start=1)])
         assert sorted(accounted) == sorted(manifest)
+
+    async def _stopped_mid_flight(self, home, runner: str = "sync"):
+        """6 items: 2 settled, 2 claimed-not-executed, 2 pending, then stop.
+
+        The ``stopped`` fact names no items, so the four that never execute
+        are Batch truth only their own facts can carry.
+        """
+        graph, state = _sequenced_graph("ingest", ["ok", "fail"], runner)
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await host.submit_batch("ingest", items=_items(6), workflow_id="drop-a9-stop")
+        claimed = await _claim(host, home, limit=4)
+        assert len(claimed) == 4
+        for row in claimed[:2]:
+            await host._execute_submission(row)
+
+        stop = await host.client.stop(receipt.batch_ref, info={"reason": "drop recalled"})
+        assert stop.duplicate is False
+
+        # The worker resumes. The two claimed-but-unexecuted children hit
+        # the pre-run gate and finish without inventing a runs row; the two
+        # still pending are claimed and hit the same gate.
+        for row in claimed[2:]:
+            await host._execute_submission(row)
+        await _drive(host, home)
+        assert state["n"] == 2  # the stop really did prevent four executions
+        return host, receipt
+
+    @pytest.mark.parametrize("runner", ["sync", "async"])
+    async def test_stream_accounts_every_item_of_a_batch_stopped_mid_flight(self, home, runner):
+        host, receipt = await self._stopped_mid_flight(home, runner)
+        batch_id = receipt.batch_ref.batch_id
+
+        updates = _batch_updates(home, batch_id)
+        assert [bseq for bseq, _kind, _payload in updates] == list(range(1, len(updates) + 1))
+        manifest, accounted = _accounted_from_stream(updates)
+        assert len(manifest) == 6
+        assert sorted(accounted) == sorted(manifest)  # 6 of 6, from the stream alone
+        assert len(accounted) == len(set(accounted))  # each item accounted exactly once
+        assert [kind for _bseq, kind, _payload in updates] == (["manifest"] + ["child_settled"] * 2 + ["stopped"] + ["child_unstarted"] * 4)
+
+        # The stream's unstarted truth is the view's unstarted truth.
+        unstarted = [payload for _bseq, kind, payload in updates if kind == "child_unstarted"]
+        view = await host.client.get(receipt.batch_ref)
+        assert {fact["item_key"] for fact in unstarted} == set(view.unstarted_items)
+        assert all(fact["workflow_id"] == f"drop-a9-stop:{fact['item_key']}" for fact in unstarted)
+        assert view.counts["unstarted"] == 4
+        assert view.counts["completed"] == 1
+        assert view.counts["failed"] == 1
+        assert view.settled is True
+        assert host.client.get_sync(receipt.batch_ref) == view
+
+    async def test_a_watch_consumer_learns_every_stopped_item_without_the_view(self, home):
+        host, receipt = await self._stopped_mid_flight(home)
+
+        durable = [update async for update in host.client.watch(receipt.batch_ref) if update.durable]
+
+        manifest, accounted = _accounted_from_stream([(n, u.kind, u.payload) for n, u in enumerate(durable, start=1)])
+        assert sorted(accounted) == sorted(manifest)
+        assert [u.kind for u in durable] == ["manifest"] + ["child_settled"] * 2 + ["stopped"] + ["child_unstarted"] * 4
+        assert [u.cursor for u in durable] == [f"bseq:{n}" for n in range(1, 9)]
+        # The Batch stop itself never names an item — only the per-item facts do.
+        stopped = next(u for u in durable if u.kind == "stopped")
+        assert set(stopped.payload) == {"verb", "info", "source_ref"}
+
+    async def _parked_by_the_recovery_brake(self, home):
+        """4 items: 2 settle, 2 are parked exhausted by honest re-adoption.
+
+        No tolerance is pinned, so nothing trips: the ONLY way the parked
+        children reach the stream is their own settle fact.
+        """
+        graph, _state = _sequenced_graph("ingest", ["ok", "fail"])
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await host.submit_batch("ingest", items=_items(4), workflow_id="drop-a9-parked")
+        claimed = await _claim(host, home)
+        assert len(claimed) == 4
+        for row in claimed[:2]:
+            await host._execute_submission(row)
+
+        # The worker dies with two children claimed and no committed
+        # progress, three times over: the brake parks both at the default
+        # recovery_cap of 3.
+        for _ in range(3):
+            await home._restart_scan()
+            await _claim(host, home)
+        assert [home._get_submission_sync(f"drop-a9-parked:p-{n}")["state"] for n in range(4)].count("exhausted") == 2
+        return host, receipt
+
+    async def test_stream_accounts_recovery_exhausted_children(self, home):
+        host, receipt = await self._parked_by_the_recovery_brake(home)
+
+        updates = _batch_updates(home, receipt.batch_ref.batch_id)
+        assert [bseq for bseq, _kind, _payload in updates] == list(range(1, len(updates) + 1))
+        manifest, accounted = _accounted_from_stream(updates)
+        assert len(manifest) == 4
+        assert sorted(accounted) == sorted(manifest)  # 4 of 4, from the stream alone
+        assert len(accounted) == len(set(accounted))
+        assert [kind for _bseq, kind, _payload in updates] == ["manifest"] + ["child_settled"] * 4
+
+        # The parked children reuse child_settled with the SAME outcome
+        # string the view reports, so a stream consumer rebuilds outcomes
+        # verbatim — no extra kind in the closed vocabulary.
+        view = await host.client.get(receipt.batch_ref)
+        assert {payload["item_key"]: payload["status"] for _bseq, kind, payload in updates if kind == "child_settled"} == view.outcomes
+        assert view.counts["recovery_exhausted"] == 2
+        assert view.counts["completed"] == 1
+        assert view.counts["failed"] == 1
+        assert view.tolerance_tripped is False
+        assert view.settled is True
+
+    async def test_a_watch_consumer_learns_a_parked_child_without_the_view(self, home):
+        host, receipt = await self._parked_by_the_recovery_brake(home)
+
+        durable = [update async for update in host.client.watch(receipt.batch_ref) if update.durable]
+
+        manifest, accounted = _accounted_from_stream([(n, u.kind, u.payload) for n, u in enumerate(durable, start=1)])
+        assert sorted(accounted) == sorted(manifest)
+        assert [u.kind for u in durable] == ["manifest"] + ["child_settled"] * 4
+        assert [u.cursor for u in durable] == [f"bseq:{n}" for n in range(1, 6)]
+        parked = [u.payload for u in durable if u.payload.get("status") == "recovery_exhausted"]
+        assert len(parked) == 2
+        assert all(fact["workflow_id"] == f"drop-a9-parked:{fact['item_key']}" for fact in parked)
 
     async def test_a_trip_that_names_its_unstarted_items_never_repeats_them(self, home):
         """One item is accounted once: by the trip fact OR by its own fact."""

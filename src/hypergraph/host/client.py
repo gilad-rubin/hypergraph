@@ -25,6 +25,7 @@ from hypergraph.host.fingerprint import batch_fingerprint, start_fingerprint
 from hypergraph.host.refs import BatchCommandReceipt, BatchRef, BatchSubmitReceipt, CommandReceipt, RunRef, SubmitReceipt
 from hypergraph.host.views import (
     BATCH_COUNT_KEYS,
+    BATCH_OUTCOME_RECOVERY_EXHAUSTED,
     TERMINAL_WORKFLOW_STATUSES,
     BatchUpdate,
     BatchView,
@@ -110,7 +111,7 @@ def _build_batch_view(
         if run is not None and run.status in TERMINAL_WORKFLOW_STATUSES:
             bucket, outcome = run.status.value, run.status.value
         elif submission["state"] == "exhausted":
-            bucket, outcome = "recovery_exhausted", "recovery_exhausted"
+            bucket, outcome = BATCH_OUTCOME_RECOVERY_EXHAUSTED, BATCH_OUTCOME_RECOVERY_EXHAUSTED
         elif run is not None:
             bucket, outcome = "active", None
         elif submission["state"] == "finished":

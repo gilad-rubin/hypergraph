@@ -204,13 +204,15 @@ gap-free per-Batch durable sequence, yielding `BatchUpdate` values with
 `batch_updates` row — and where a child fact and a Batch fact commit
 together, they land in the same transaction.
 Batch update writes are append-only and never backpressure child execution.
-Durable facts are `manifest` (bseq 1), `child_settled` (a child's terminal
-transition, with `item_key`, `workflow_id`, and `status`),
-`tolerance_tripped`, `child_unstarted` (an item that ended unstarted after
-the trip fact already named its unstarted items, with `item_key` and
-`workflow_id`), and `stopped`; live previews fanned in from child runs
-arrive with `update.durable is False`, repeat the last durable cursor, and
-never advance it:
+Durable facts are `manifest` (bseq 1), `child_settled` (a child settled for
+good, with `item_key`, `workflow_id`, and `status` — a terminal status, or
+`"recovery_exhausted"` when the recovery brake parked the child),
+`tolerance_tripped`, `child_unstarted` (an item that ended unstarted
+without the trip fact naming it — a stopped Batch's child that never
+executed, or a child a crash returned to pending after the trip — with
+`item_key` and `workflow_id`), and `stopped`; live previews fanned in from
+child runs arrive with `update.durable is False`, repeat the last durable
+cursor, and never advance it:
 
 ```python
 cursor = None
@@ -220,11 +222,14 @@ async for update in client.watch(receipt.batch_ref, after=cursor):
 ```
 
 A Batch watch terminates once every child is terminally settled (or the
-Batch is durably stopped) and every committed fact has been delivered. A
-tolerance trip names its unstarted items in the stream itself — in the
-`tolerance_tripped` payload, plus a `child_unstarted` fact for any item that
-ends unstarted after it — so a detached watcher accounts every manifest item
-from the durable sequence alone; `get(batch_ref)` is still the keyed view.
+Batch is durably stopped) and every committed fact has been delivered. The
+stream accounts **every manifest item exactly once**, so a detached watcher
+never has to read the view to learn an outcome: settled children by their
+`child_settled` fact (parked children included), items a tolerance trip
+closed admission on by the `tolerance_tripped` payload's `unstarted_items`,
+and any other item that ends unstarted — a stopped Batch's child, or one a
+crash returned to pending after the trip — by its own `child_unstarted`
+fact. `get(batch_ref)` is still the keyed view.
 Reconnecting from a stored cursor replays with no gaps and no repeats,
 across process restarts, with no graph code. A `BatchRef` unknown to the
 Home terminates immediately with no updates. `client.get_sync(batch_ref)`
@@ -278,7 +283,10 @@ transaction appends the `stopped` batch update and writes a durable stop
 command for every unsettled child:
 
 - **pending children** finish without ever executing — no runs row is
-  invented; they become explicit `unstarted_items`;
+  invented; they become explicit `unstarted_items`, each recorded by its
+  own `child_unstarted` Batch fact in the same transaction as the flip (the
+  `stopped` fact carries only the verb and info, so this is how the stream
+  names them);
 - **executing children** receive the stop on the worker's next scan and
   settle cooperatively as `STOPPED`;
 - **settled children** are unaffected.
@@ -509,7 +517,11 @@ brake counts **progressless re-adoptions**:
 - when the incremented count reaches the cap, the submission is parked as
   recovery-exhausted: workers stop claiming it, a durable
   `recovery_exhausted` update is recorded, and the view reports
-  `WaitingCondition.RECOVERY_EXHAUSTED`.
+  `WaitingCondition.RECOVERY_EXHAUSTED`. Parking is a settled,
+  failure-equivalent **child outcome**, so a parked Batch child also gets a
+  `child_settled` Batch fact with `status: "recovery_exhausted"` in that
+  same transaction — the stream reports the parked child exactly as
+  `BatchView.outcomes` does.
 
 `client.rerun(ref)` revives braked work under a fresh workflow id.
 

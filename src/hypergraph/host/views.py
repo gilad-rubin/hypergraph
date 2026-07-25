@@ -162,6 +162,12 @@ class RunQuery:
     batch: BatchRef | str | None = None
 
 
+# THE Batch-level outcome name for a child parked by the recovery brake.
+# It is not a WorkflowStatus — the child's run never reached one — so the
+# view and the durable stream must agree on one string: BatchView.outcomes
+# reports it and the child_settled fact carries it as its status.
+BATCH_OUTCOME_RECOVERY_EXHAUSTED = "recovery_exhausted"
+
 # Closed bucket vocabulary for BatchView.counts. Every manifest item is
 # accounted in exactly one bucket; terminal buckets are WorkflowStatus
 # values so child outcomes share the Run vocabulary.
@@ -236,16 +242,20 @@ class BatchUpdate:
             live previews fanned in from child runs (same process only).
             Callers must only store cursors from durable updates.
         kind: Fact kind — ``manifest`` (bseq 1, the accepted start intent),
-            ``child_settled`` (a child's terminal transition, committed in
-            the same transaction as the child fact), ``tolerance_tripped``
+            ``child_settled`` (a child settled for good: a terminal run
+            transition, or the recovery brake parking it), ``tolerance_tripped``
             (a pinned tolerance was strictly exceeded, committed in that
             same transaction at the next ``bseq``), ``child_unstarted`` (an
-            item that ended unstarted AFTER the trip fact already named its
-            unstarted items — a claimed child a restart returned to pending
-            and admission then refused), ``stopped`` (the durable Batch
-            stop) — or an event class name for previews.
+            item that ended unstarted without the trip fact naming it — a
+            claimed child a restart returned to pending and admission then
+            refused, or a stopped Batch's child that never executed),
+            ``stopped`` (the durable Batch stop) — or an event class name
+            for previews. Every one of these commits in the same
+            transaction as the child or Batch state change that causes it.
         payload: JSON-safe fact payload. ``child_settled`` carries
-            ``item_key``, ``workflow_id``, and ``status``;
+            ``item_key``, ``workflow_id``, and ``status`` — a terminal
+            ``WorkflowStatus`` value, or ``"recovery_exhausted"`` for a
+            parked child, exactly the string ``BatchView.outcomes`` reports;
             ``tolerance_tripped`` carries ``failed``, ``total_items``, the
             pinned ``max_failed``/``max_failed_percent``, and the
             ``unstarted_items`` admission closed; ``child_unstarted``

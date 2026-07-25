@@ -516,10 +516,17 @@ class TestUnstartedItems:
         assert view.outcomes == {"a": None, "b": None, "c": None}
         assert view.settled is True
 
-        # The durable Batch sequence records manifest then stop — nothing else.
+        # The durable Batch sequence records manifest, the stop, and then
+        # one child_unstarted fact per item that ended without executing —
+        # the stop fact names no items, so this is how a detached watch()
+        # accounts all three from the stream alone (PRD 0019 A9).
         updates = home._read_batch_updates_sync(receipt.batch_ref.batch_id)
-        assert [(u[0], u[1]) for u in updates] == [(1, "manifest"), (2, "stopped")]
+        assert [u[1] for u in updates] == ["manifest", "stopped", "child_unstarted", "child_unstarted", "child_unstarted"]
+        assert [u[0] for u in updates] == [1, 2, 3, 4, 5]
         assert json.loads(updates[1][2])["info"] == {"reason": "drop recalled"}
+        unstarted = [json.loads(u[2]) for u in updates if u[1] == "child_unstarted"]
+        assert sorted(fact["item_key"] for fact in unstarted) == list(view.unstarted_items)
+        assert all(fact["workflow_id"] == f"drop-7:{fact['item_key']}" for fact in unstarted)
 
     async def test_stop_mid_batch_settles_running_children_and_skips_settled(self, home):
         started = asyncio.Event()

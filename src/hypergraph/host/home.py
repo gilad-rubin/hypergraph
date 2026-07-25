@@ -28,7 +28,12 @@ from hypergraph.host.batch import BatchTolerance, tolerance_trips
 from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import AlreadyTerminalError, HostError, WorkflowIdConflictError
 from hypergraph.host.fingerprint import batch_mismatch_aspect, canonical_json, fingerprint_mismatch_aspect, start_fingerprint
-from hypergraph.host.views import SUBMISSION_STATE_EXHAUSTED, TERMINAL_STATUS_VALUES, is_child_settled
+from hypergraph.host.views import (
+    BATCH_OUTCOME_RECOVERY_EXHAUSTED,
+    SUBMISSION_STATE_EXHAUSTED,
+    TERMINAL_STATUS_VALUES,
+    is_child_settled,
+)
 
 if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Run
@@ -56,6 +61,7 @@ _BATCH_PLACEHOLDERS = ", ".join("?" for _ in _BATCH_COLS.split(", "))
 # Batch update kinds that are matched (not just written) in SQL.
 _TRIP_UPDATE_KIND = "tolerance_tripped"
 _UNSTARTED_UPDATE_KIND = "child_unstarted"
+_SETTLED_UPDATE_KIND = "child_settled"
 
 # Failure equivalence (PRD 0019): a child counts toward tolerance when its
 # runs row failed or its submission is recovery-exhausted. Paused, queued,
@@ -257,10 +263,15 @@ class RunHome(SqliteCheckpointer):
         )
 
     def _append_child_settled_sync(self, db: Any, run_id: str, status: str) -> None:
-        """Mirror a child's terminal transition onto its Batch, same transaction.
+        """Mirror a child settling for good onto its Batch, same transaction.
+
+        ``status`` is a terminal ``WorkflowStatus`` value, or
+        ``BATCH_OUTCOME_RECOVERY_EXHAUSTED`` when the recovery brake parked
+        the child — the same string ``BatchView.outcomes`` reports, so a
+        stream consumer reconstructs the view's outcome verbatim.
 
         No-op for runs without Batch membership. Idempotent per child: a
-        repeated terminal write (e.g. a resume path) never duplicates the
+        repeated settle write (e.g. a resume path) never duplicates the
         child_settled fact, so the per-Batch sequence stays gap-free without
         backpressuring the child's commit path.
         """
@@ -272,15 +283,15 @@ class RunHome(SqliteCheckpointer):
             return
         batch_id, item_key = row
         exists = db.execute(
-            "SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = 'child_settled' AND item_key = ? LIMIT 1",
-            (batch_id, item_key),
+            "SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = ? AND item_key = ? LIMIT 1",
+            (batch_id, _SETTLED_UPDATE_KIND, item_key),
         ).fetchone()
         if exists is not None:
             return
         self._append_batch_update_sync(
             db,
             batch_id,
-            "child_settled",
+            _SETTLED_UPDATE_KIND,
             {"item_key": item_key, "workflow_id": run_id, "status": status},
             item_key=item_key,
         )
@@ -297,18 +308,60 @@ class RunHome(SqliteCheckpointer):
             return
         batch_id, item_key = row
         exists_cursor = await self._db.execute(
-            "SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = 'child_settled' AND item_key = ? LIMIT 1",
-            (batch_id, item_key),
+            "SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = ? AND item_key = ? LIMIT 1",
+            (batch_id, _SETTLED_UPDATE_KIND, item_key),
         )
         if await exists_cursor.fetchone() is not None:
             return
         await self._append_batch_update(
             batch_id,
-            "child_settled",
+            _SETTLED_UPDATE_KIND,
             {"item_key": item_key, "workflow_id": run_id, "status": status},
             item_key=item_key,
         )
         await self._maybe_trip_tolerance(batch_id)
+
+    async def _append_child_unstarted(self, run_id: str) -> None:
+        """Record that a Batch item ended unstarted, in the caller's transaction.
+
+        THE unstarted-child fact (PRD 0019 A9). Every path that settles a
+        child WITHOUT ever executing it — admission refusing a child of an
+        already-tripped Batch, and a stop that landed before first
+        execution — appends this row in the SAME transaction as the state
+        flip that causes it, so a detached ``watch(batch_ref)`` accounts
+        the item from the durable sequence alone. Items the trip fact
+        itself named in ``unstarted_items`` never reach here: their flip
+        happened inside the trip.
+
+        No-op for runs without Batch membership. Idempotent per item, like
+        ``_append_child_settled``: the flip is already once-only (it moves
+        the row out of 'pending'/'claimed'), and the guard keeps a replayed
+        path from double-accounting the item even so.
+
+        Async-only on purpose: both callers are worker paths
+        (``_claim_eligible``, ``_apply_stop_never_started``) that have no
+        sync mirror, so a ``_sync`` twin here would be dead code.
+        """
+        cursor = await self._db.execute(
+            "SELECT batch_id, item_key FROM host_submissions WHERE workflow_id = ?",
+            (run_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None or row[0] is None:
+            return
+        batch_id, item_key = row
+        exists_cursor = await self._db.execute(
+            "SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = ? AND item_key = ? LIMIT 1",
+            (batch_id, _UNSTARTED_UPDATE_KIND, item_key),
+        )
+        if await exists_cursor.fetchone() is not None:
+            return
+        await self._append_batch_update(
+            batch_id,
+            _UNSTARTED_UPDATE_KIND,
+            {"item_key": item_key, "workflow_id": run_id},
+            item_key=item_key,
+        )
 
     # === Pinned tolerance (ticket 06) ===
 
@@ -1093,9 +1146,11 @@ class RunHome(SqliteCheckpointer):
         Appends the 'stopped' batch_updates row and writes a durable stop
         command (with its 'command' run update) for every child that has
         not settled yet — pending children then finish via the existing
-        stop-before-start gate (no runs row invented) and executing
-        children receive the stop on the worker's next scan. Children with
-        an unapplied stop already keep their first stop (first stop wins).
+        stop-before-start gate (no runs row invented, and the gate appends
+        each one's ``child_unstarted`` Batch fact, since the 'stopped' row
+        names no items) and executing children receive the stop on the
+        worker's next scan. Children with an unapplied stop already keep
+        their first stop (first stop wins).
 
         Returns True when the Batch stop was newly written; False when the
         Batch was already stopped (duplicate). Raises ``HostError`` for an
@@ -1255,12 +1310,7 @@ class RunHome(SqliteCheckpointer):
                             # detached watch() would never learn the item's
                             # outcome and the stream could not reconstruct
                             # the view.
-                            await self._append_batch_update(
-                                submission["batch_id"],
-                                _UNSTARTED_UPDATE_KIND,
-                                {"item_key": submission["item_key"], "workflow_id": submission["workflow_id"]},
-                                item_key=submission["item_key"],
-                            )
+                            await self._append_child_unstarted(submission["workflow_id"])
                         continue
                     identity = DefinitionId(
                         submission["definition_name"],
@@ -1365,7 +1415,8 @@ class RunHome(SqliteCheckpointer):
         finished. Every other claimed submission is a recovery attempt and
         gets ``recovery_attempts += 1``: when the incremented count reaches
         the submission's ``recovery_cap`` it is parked as 'exhausted' (a
-        durable ``recovery_exhausted`` update is appended in the same
+        durable ``recovery_exhausted`` run update — and, for a Batch child,
+        a ``child_settled`` Batch fact — is appended in the same
         transaction) so a crash-looping run is braked instead of resumed
         forever; otherwise it returns to 'pending' with the incremented
         count. The counter is NOT evaluated against step history here —
@@ -1409,11 +1460,17 @@ class RunHome(SqliteCheckpointer):
                             "recovery_exhausted",
                             {"recovery_attempts": attempts, "recovery_cap": submission["recovery_cap"]},
                         )
-                        # Recovery exhaustion is failure-equivalent (PRD
-                        # 0019), so it can trip the Batch — in this same
-                        # transaction, like any other child fact.
-                        if submission["batch_id"] is not None:
-                            await self._maybe_trip_tolerance(submission["batch_id"])
+                        # A parked child is a settled, failure-equivalent
+                        # child OUTCOME (PRD 0019), so it is Batch truth:
+                        # its Batch learns it as a child_settled fact whose
+                        # status is the same "recovery_exhausted" string
+                        # BatchView.outcomes reports, in this same
+                        # transaction. That fact can also trip the Batch,
+                        # like any other child fact. Without it the view
+                        # counted the parked child and the durable stream
+                        # stayed silent, so a detached watch() under-
+                        # accounted the manifest (A9).
+                        await self._append_child_settled(workflow_id, BATCH_OUTCOME_RECOVERY_EXHAUSTED)
                         continue
                     await self._db.execute(
                         "UPDATE host_submissions SET state = 'pending', claimed_at = NULL, recovery_attempts = ? WHERE workflow_id = ?",
@@ -1549,6 +1606,13 @@ class RunHome(SqliteCheckpointer):
         never executes and no runs row is invented). Returns False when no
         stop is pending or a runs row already exists (a resume proceeds and
         the periodic scan delivers the stop to the live execution).
+
+        A Batch child stopped this way is an explicit unstarted item, so
+        the flip commits with its own ``child_unstarted`` Batch fact (PRD
+        0019 A9). The ``stopped`` fact carries only the verb and info — it
+        never names which items ended unstarted — so without this row a
+        detached ``watch(batch_ref)`` could not account those items from
+        the stream alone.
         """
         await self._ensure_db()
         async with self._txn_lock():
@@ -1570,10 +1634,14 @@ class RunHome(SqliteCheckpointer):
                     "UPDATE host_commands SET applied_at = ? WHERE run_id = ? AND verb = 'stop' AND applied_at IS NULL",
                     (now, workflow_id),
                 )
-                await self._db.execute(
+                result = await self._db.execute(
                     "UPDATE host_submissions SET state = 'finished', finished_at = ? WHERE workflow_id = ? AND state IN ('pending', 'claimed')",
                     (now, workflow_id),
                 )
+                if result.rowcount == 1:
+                    # Only a real transition emits, so a Batch item is never
+                    # accounted twice by the stream.
+                    await self._append_child_unstarted(workflow_id)
                 await self._db.commit()
                 return True
             except BaseException:
