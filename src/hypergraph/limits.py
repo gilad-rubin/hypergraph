@@ -19,11 +19,64 @@ outside the attempt coordinator, so ordinary throttling never consumes a
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 from collections import deque
 from types import TracebackType
 
 __all__ = ["ProcessLocalLimiter"]
+
+
+class _SyncWaiter:
+    """A thread parked in ``__enter__``, queued in arrival order.
+
+    Each waiter owns a ``Condition`` over the limiter's single lock, so a
+    release can wake exactly the one taker whose turn it is instead of
+    stampeding every parked thread.
+    """
+
+    __slots__ = ("cond", "granted")
+
+    def __init__(self, lock: threading.Lock) -> None:
+        self.cond = threading.Condition(lock)
+        self.granted = False
+
+
+class _AsyncWaiter:
+    """A task suspended in ``__aenter__``, queued in arrival order."""
+
+    __slots__ = ("future",)
+
+    def __init__(self, future: asyncio.Future[None]) -> None:
+        self.future = future
+
+
+def _reject_blocking_the_event_loop() -> None:
+    """Refuse to park a thread that is running an event loop.
+
+    ``with limiter:`` blocks the calling thread. Sync callables run inline on
+    the loop thread under ``AsyncRunner``, so blocking there also stops every
+    task that holds a permit from ever releasing it: the wait cannot end.
+    Detection is exact and costs one call — ``get_running_loop()`` raises
+    unless this very thread is driving a loop — and it only runs on the path
+    that was about to block, so an uncontended acquire is untouched.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    raise RuntimeError(
+        "ProcessLocalLimiter: 'with limiter:' would block a thread that is running an event loop, "
+        "and the tasks holding the permits cannot release them while that thread is blocked. "
+        "This is a hang, not a wait.\n\n"
+        "How to fix:\n"
+        "  - In async code, take the permit with 'async with limiter:'.\n"
+        "  - In a SYNC node under AsyncRunner, make the node async and use\n"
+        "    'async with limiter:', or move the blocking work off the loop with\n"
+        "    asyncio.to_thread(...).\n"
+        "  - Or declare the budget as @node(provider_limit=...) or\n"
+        "    graph.with_provider_limit(...) and let the runner take it for you."
+    )
 
 
 class ProcessLocalLimiter:
@@ -37,10 +90,9 @@ class ProcessLocalLimiter:
     coordination, own it in the shared component that talks to the
     provider.
 
-    Do not confuse it with the runner's ``max_concurrency``, which is a
-    per-call work budget for one run. A ``ProcessLocalLimiter`` is an
-    object you construct once and **share**: two concurrent Runs of the
-    same graph draw on the same permits.
+    A ``ProcessLocalLimiter`` is an object you construct once and
+    **share**: two concurrent Runs of the same graph draw on the same
+    permits.
 
     Three injection scopes, narrowest budget last:
 
@@ -50,17 +102,17 @@ class ProcessLocalLimiter:
 
           class SummaryClient:
               def __init__(self) -> None:
-                  self._quota = ProcessLocalLimiter(max_concurrent=4)
+                  self._quota = ProcessLocalLimiter(max_in_flight=4)
 
               async def summarize(self, text: str) -> str:
                   async with self._quota:          # the exact scarce call
                       return await self._http.post(...)
 
     - **node**: ``@node(..., provider_limit=budget)`` — at most
-      ``max_concurrent`` executions of that node run at once, process-wide.
+      ``max_in_flight`` executions of that node run at once, process-wide.
     - **graph**: ``graph.with_provider_limit(budget)`` — at most
-      ``max_concurrent`` of that graph's function nodes run at once,
-      process-wide.
+      ``max_in_flight`` of that graph's function nodes run at once,
+      process-wide, nested graphs included.
 
     Node and graph scopes are **work budgets**: the permit covers the whole
     node execution, including any retry backoff. They compose as narrower
@@ -68,43 +120,70 @@ class ProcessLocalLimiter:
     its own limiter instance — acquiring the same limiter twice on one
     execution path deadlocks, exactly like a non-reentrant lock.
 
+    Threads and tasks share ONE arrival-ordered queue, so neither kind can
+    starve the other. ``with limiter:`` blocks a thread that is not running
+    an event loop; on a loop thread it raises instead of hanging (use
+    ``async with limiter:`` there).
+
     Args:
-        max_concurrent: Number of permits, an ``int >= 1``.
+        max_in_flight: Number of permits, an ``int >= 1``.
 
     Example:
-        >>> budget = ProcessLocalLimiter(max_concurrent=2)
+        >>> budget = ProcessLocalLimiter(max_in_flight=2)
         >>> with budget:
         ...     budget.in_flight
         1
     """
 
-    def __init__(self, max_concurrent: int) -> None:
-        if isinstance(max_concurrent, bool) or not isinstance(max_concurrent, int) or max_concurrent < 1:
-            raise ValueError(f"ProcessLocalLimiter(max_concurrent=...) must be an int >= 1 concurrent permits, got {max_concurrent!r}.")
-        self._max_concurrent = max_concurrent
+    def __init__(self, max_in_flight: int) -> None:
+        if isinstance(max_in_flight, bool) or not isinstance(max_in_flight, int) or max_in_flight < 1:
+            raise ValueError(
+                f"ProcessLocalLimiter(max_in_flight=...) must be an int >= 1 concurrent permits, got {max_in_flight!r}.\n\n"
+                "How to fix:\n"
+                "  Pass the number of concurrent calls the provider tolerates:\n"
+                "  ProcessLocalLimiter(max_in_flight=4)"
+            )
+        self._max_in_flight = max_in_flight
         self._lock = threading.Lock()
-        # Shares _lock, so one critical section covers both waiter kinds.
-        self._sync_free = threading.Condition(self._lock)
         self._in_flight = 0
-        self._async_waiters: deque[asyncio.Future[None]] = deque()
+        # ONE arrival-ordered queue for both waiter kinds. Two queues (or an
+        # async-first release) would let a continuous stream of one kind
+        # starve the other.
+        self._waiters: deque[_SyncWaiter | _AsyncWaiter] = deque()
 
     @property
-    def max_concurrent(self) -> int:
+    def max_in_flight(self) -> int:
         """Permit count this limiter was built with (never changes)."""
-        return self._max_concurrent
+        return self._max_in_flight
 
     @property
     def in_flight(self) -> int:
-        """Permits held right now (0..``max_concurrent``)."""
+        """Permits held right now (0..``max_in_flight``)."""
         with self._lock:
             return self._in_flight
 
     def __enter__(self) -> ProcessLocalLimiter:
         """Take one permit, blocking this thread until one is free."""
-        with self._sync_free:
-            while self._in_flight >= self._max_concurrent:
-                self._sync_free.wait()
-            self._in_flight += 1
+        with self._lock:
+            # Never barge past a queued taker of either kind.
+            if self._in_flight < self._max_in_flight and not self._waiters:
+                self._in_flight += 1
+                return self
+            _reject_blocking_the_event_loop()
+            waiter = _SyncWaiter(self._lock)
+            self._waiters.append(waiter)
+            try:
+                while not waiter.granted:
+                    waiter.cond.wait()
+            except BaseException:
+                with contextlib.suppress(ValueError):
+                    self._waiters.remove(waiter)
+                if waiter.granted:
+                    # The permit was handed over before the interruption;
+                    # give it to the next taker rather than leaking it.
+                    self._in_flight -= 1
+                    self._release_locked()
+                raise
         return self
 
     def __exit__(
@@ -119,26 +198,24 @@ class ProcessLocalLimiter:
         """Take one permit, suspending this task until one is free."""
         loop = asyncio.get_running_loop()
         with self._lock:
-            # Never barge past a queued async waiter: permits go out in
-            # arrival order among awaiting tasks.
-            if self._in_flight < self._max_concurrent and not self._async_waiters:
+            if self._in_flight < self._max_in_flight and not self._waiters:
                 self._in_flight += 1
                 return self
-            waiter: asyncio.Future[None] = loop.create_future()
-            self._async_waiters.append(waiter)
+            waiter = _AsyncWaiter(loop.create_future())
+            self._waiters.append(waiter)
         try:
-            await waiter
+            await waiter.future
         except BaseException:
             hand_back = False
             with self._lock:
                 try:
-                    self._async_waiters.remove(waiter)
+                    self._waiters.remove(waiter)
                 except ValueError:
                     # Already dequeued: either the permit was handed over
                     # (release it) or the hand-over callback is still
                     # pending and will see a cancelled waiter and release
                     # the permit itself.
-                    hand_back = waiter.done() and not waiter.cancelled()
+                    hand_back = waiter.future.done() and not waiter.future.cancelled()
             if hand_back:
                 self._release()
             raise
@@ -154,28 +231,37 @@ class ProcessLocalLimiter:
 
     def _release(self) -> None:
         """Return one permit, handing it to the longest-waiting taker."""
-        granted: asyncio.Future[None] | None = None
         with self._lock:
             if self._in_flight <= 0:  # pragma: no cover - defensive
                 raise RuntimeError("ProcessLocalLimiter released a permit it never held.")
             self._in_flight -= 1
-            while self._async_waiters:
-                waiter = self._async_waiters.popleft()
-                if waiter.cancelled():
-                    continue
-                # Hand the permit straight over: in_flight never dips below
-                # the handover, so a third taker cannot steal it.
+            self._release_locked()
+
+    def _release_locked(self) -> None:
+        """Hand the free permit to the head of the queue; caller holds the lock.
+
+        The permit is handed straight over — ``in_flight`` never dips below
+        the handover — so a third taker cannot steal it from the waiter whose
+        turn it is.
+        """
+        while self._waiters:
+            waiter = self._waiters.popleft()
+            if isinstance(waiter, _SyncWaiter):
                 self._in_flight += 1
-                granted = waiter
-                break
-            if granted is None:
-                self._sync_free.notify()
-        if granted is None:
+                waiter.granted = True
+                # Safe under the lock: notify() only marks the waiter
+                # runnable, and the woken thread reacquires the lock itself.
+                waiter.cond.notify()
+                return
+            if waiter.future.cancelled():
+                continue
+            self._in_flight += 1
+            try:
+                waiter.future.get_loop().call_soon_threadsafe(self._grant, waiter.future)
+            except RuntimeError:  # pragma: no cover - waiter's loop already closed
+                self._in_flight -= 1
+                continue
             return
-        try:
-            granted.get_loop().call_soon_threadsafe(self._grant, granted)
-        except RuntimeError:  # pragma: no cover - waiter's loop already closed
-            self._release()
 
     def _grant(self, waiter: asyncio.Future[None]) -> None:
         """Deliver a handed-over permit in the waiter's own loop."""
@@ -185,4 +271,4 @@ class ProcessLocalLimiter:
         waiter.set_result(None)
 
     def __repr__(self) -> str:
-        return f"ProcessLocalLimiter(max_concurrent={self._max_concurrent}, in_flight={self.in_flight})"
+        return f"ProcessLocalLimiter(max_in_flight={self._max_in_flight}, in_flight={self.in_flight})"

@@ -116,8 +116,8 @@ class RunView:
             execution not started), ``SCHEDULED`` (future ``start_at``),
             ``PAUSED`` (runs row paused), ``VERSION_INCOMPATIBLE`` (no
             serving worker claims the pinned identity),
-            ``ADMISSION_LIMITED`` (due and claimable, but the reading
-            Home's ``max_active_runs`` has no free slot), and
+            ``ADMISSION_LIMITED`` (due and claimable, but the Home's
+            stored ``max_active_runs`` has no free slot), and
             ``RECOVERY_EXHAUSTED`` (the pinned recovery cap tripped).
             Never a WorkflowStatus.
         definition_id: The pinned Definition identity from the submission,

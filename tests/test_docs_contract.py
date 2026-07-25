@@ -86,6 +86,13 @@ def _documented_function_defs(section: str) -> dict[str, ast.FunctionDef | ast.A
     return {node.name: node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
 
 
+def _hypergraph_all() -> tuple[str, ...]:
+    """Root exports, as a tuple (kept out of the assertion for readability)."""
+    import hypergraph
+
+    return tuple(hypergraph.__all__)
+
+
 def _parameter_names(function: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[str, ...]:
     arguments = function.args
     names = [
@@ -1091,19 +1098,19 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert RunHome.max_active_runs.fset is not None, "the active-Run cap must be tunable at runtime"
     assert tuple(inspect.signature(Graph.with_provider_limit).parameters) == ("self", "provider_limit")
     assert isinstance(Graph.provider_limit, property)
-    assert tuple(inspect.signature(ProcessLocalLimiter.__init__).parameters) == ("self", "max_concurrent")
+    assert tuple(inspect.signature(ProcessLocalLimiter.__init__).parameters) == ("self", "max_in_flight")
     nodes_api = _read("docs/06-api-reference/nodes.md")
     graph_api = _read("docs/06-api-reference/graph.md")
     assert "## ProcessLocalLimiter" in nodes_api
     assert "with_provider_limit" in graph_api
+    # The permit budget must never be spelled like a runner concurrency option.
+    assert "max_concurrent" not in nodes_api
+    assert "max_concurrent" not in host_api
+    # The provider budget names its sibling controls instead of leaving the
+    # reader to guess how @stateful(max_concurrency=...) relates to it.
+    assert "### Related concurrency controls" in nodes_api
+    assert "@stateful(max_concurrency=...)" in nodes_api
     # Excluded overflow strategies stay out of the public surface AND the docs.
     for excluded in ("cancel_oldest", "cancel_newest", "admission_key"):
         assert excluded not in host_api
-        assert excluded not in " ".join(hypergraph_all())
-
-
-def hypergraph_all() -> tuple[str, ...]:
-    """Root exports, as a tuple (kept out of the assertion for readability)."""
-    import hypergraph
-
-    return tuple(hypergraph.__all__)
+        assert excluded not in " ".join(_hypergraph_all())

@@ -1,9 +1,11 @@
 """RunHome — the SQLite Run Home for the durable host (Tier 1).
 
 A RunHome IS the existing SQLite checkpointer plus coordination tables
-(schema v6): durable submissions, the per-Run durable update sequence, and
-the host command channel. Steps stay the sole execution journal; host
-coordination facts never enter ``RunStatus``/``WorkflowStatus``.
+(schema v6): durable submissions, the per-Run durable update sequence, the
+host command channel, and the Home-scoped coordination settings every
+process that opens the store agrees on (``max_active_runs``). Steps stay the
+sole execution journal; host coordination facts never enter
+``RunStatus``/``WorkflowStatus``.
 
 Home-bound runners persist every mutation immediately: the Home forces
 checkpoint durability ``"sync"`` and rejects ``"exit"`` policies.
@@ -55,6 +57,16 @@ _CLAIM_BATCH = 16
 # ones this worker owns end to end. Both the claim gate and the view read
 # this same definition so "holds a slot" never means two different things.
 _ACTIVE_RUN_COUNT_SQL = "SELECT COUNT(*) FROM host_submissions WHERE state = 'claimed'"
+# The active-Run cap is a Home-scoped fact in the store, not a per-instance
+# Python attribute: the worker enforcing it and the operator tuning or reading
+# it hold different RunHome objects (often in different processes), and a
+# process-local cap would make them disagree about the same queue.
+_MAX_ACTIVE_RUNS_KEY = "max_active_runs"
+_SELECT_SETTING_SQL = "SELECT value FROM host_settings WHERE key = ?"
+_UPSERT_SETTING_SQL = (
+    "INSERT INTO host_settings (key, value, updated_at) VALUES (?, ?, ?) "
+    "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+)
 
 _BATCH_COLS = (
     "batch_id, workflow_id, definition_name, def_version, def_struct_hash, items_json, "
@@ -78,8 +90,47 @@ _COUNT_FAILURE_EQUIVALENT = (
 _SELECT_TRIPPED = f"SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = '{_TRIP_UPDATE_KIND}' LIMIT 1"
 
 
+class _Unset:
+    """Sentinel for 'argument omitted', which ``None`` cannot express here.
+
+    ``max_active_runs=None`` is a real value (unlimited), so ``open()`` needs a
+    third state to mean "adopt whatever the store already holds".
+    """
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "<unset>"
+
+
+_UNSET = _Unset()
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _cap_from_row(row: tuple[Any, ...] | None) -> int | None:
+    """The stored active-Run cap, or None when uncapped.
+
+    A missing row and a NULL value both mean unlimited, so callers never have
+    to distinguish "never configured" from "explicitly unlimited".
+    """
+    if row is None or row[0] is None:
+        return None
+    return int(row[0])
+
+
+def _slots_left(cap_row: tuple[Any, ...] | None, count_row: tuple[Any, ...] | None) -> int | None:
+    """Free slots under the stored cap; None when uncapped.
+
+    THE definition of "a free slot" for host work admission, shared by the
+    claim gate and the view, sync and async. A restart that re-adopted more
+    claimed Runs than a lowered cap yields a negative budget, which simply
+    claims nothing new — admission delays work, it never cancels it.
+    """
+    cap = _cap_from_row(cap_row)
+    if cap is None:
+        return None
+    return cap - (int(count_row[0]) if count_row else 0)
 
 
 def _row_to_submission(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -167,7 +218,7 @@ class RunHome(SqliteCheckpointer):
         *,
         policy: CheckpointPolicy | None = None,
         serializer: Any = None,
-        max_active_runs: int | None = None,
+        max_active_runs: int | None | _Unset = _UNSET,
     ):
         if policy is not None and policy.durability == "exit":
             raise ValueError(
@@ -180,8 +231,10 @@ class RunHome(SqliteCheckpointer):
             ttl=policy.ttl if policy is not None else None,
         )
         super().__init__(path, policy=effective_policy, serializer=serializer)
-        self._max_active_runs: int | None = None
-        self.max_active_runs = max_active_runs
+        if not isinstance(max_active_runs, _Unset):
+            # Explicit argument writes through; omitting it adopts whatever the
+            # store already holds (see the `max_active_runs` property).
+            self.max_active_runs = max_active_runs
 
     @classmethod
     def open(
@@ -190,7 +243,7 @@ class RunHome(SqliteCheckpointer):
         *,
         policy: CheckpointPolicy | None = None,
         serializer: Any = None,
-        max_active_runs: int | None = None,
+        max_active_runs: int | None | _Unset = _UNSET,
     ) -> RunHome:
         """Open (or create) a Run Home at ``uri``.
 
@@ -200,9 +253,12 @@ class RunHome(SqliteCheckpointer):
             policy: Optional retention/ttl settings. Durability is forced to
                 ``"sync"``; ``"exit"`` durability is rejected.
             serializer: Optional value serializer (default: JSON).
-            max_active_runs: Host work admission — how many Runs this
-                worker executes at once. None (the default) is unlimited.
-                Tunable later via the ``max_active_runs`` attribute.
+            max_active_runs: Host work admission — how many Runs a worker
+                executes at once. The cap lives in the store, so **passing it
+                writes through** (including an explicit ``None`` for
+                unlimited) and **omitting it adopts the stored value**. A
+                store that was never configured is unlimited. Tunable later
+                via the ``max_active_runs`` attribute.
         """
         return cls(uri, policy=policy, serializer=serializer, max_active_runs=max_active_runs)
 
@@ -213,13 +269,19 @@ class RunHome(SqliteCheckpointer):
 
     @property
     def max_active_runs(self) -> int | None:
-        """Host work admission: concurrent Runs this worker may execute.
+        """Host work admission: concurrent Runs a worker may execute.
 
-        Assign at any time — including while a worker is live and work is
-        queued — and the next claim scan honors the new value. Lowering it
-        never rejects or cancels anything: over-limit Runs stay pending and
-        wait in claim order as ``WaitingCondition.ADMISSION_LIMITED``.
-        Raising it lets the oldest waiting Run in first.
+        The cap is a **Home-scoped fact in the store**, not a per-instance
+        attribute: the worker that enforces it and the operator process that
+        tunes or reads it hold different ``RunHome`` objects. Assigning
+        writes through immediately, so a worker already polling this Home
+        honors the new value on its next claim scan — no restart, no shared
+        Python object. Reading returns what the store holds.
+
+        Lowering it never rejects or cancels anything: over-limit Runs stay
+        pending and wait in claim order as
+        ``WaitingCondition.ADMISSION_LIMITED``. Raising it lets the oldest
+        waiting Run in first.
 
         This counts *Runs a worker executes*, so it is not the same control
         as a ``ProcessLocalLimiter`` (``provider_limit``), which counts
@@ -227,58 +289,62 @@ class RunHome(SqliteCheckpointer):
         provider permit is still executing and still holds its slot here.
         None means unlimited (no Run ever reports ADMISSION_LIMITED).
         """
-        return self._max_active_runs
+        with self._sync_lock:
+            row = self._sync_db().execute(_SELECT_SETTING_SQL, (_MAX_ACTIVE_RUNS_KEY,)).fetchone()
+        return _cap_from_row(row)
 
     @max_active_runs.setter
     def max_active_runs(self, value: int | None) -> None:
         if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
-            raise ValueError(f"max_active_runs must be an int >= 1 concurrent Runs, or None for unlimited; got {value!r}.")
-        self._max_active_runs = value
+            raise ValueError(
+                f"max_active_runs must be an int >= 1 concurrent Runs, or None for unlimited; got {value!r}.\n\n"
+                "How to fix:\n"
+                "  home.max_active_runs = 4     # this Home admits 4 Runs at once\n"
+                "  home.max_active_runs = None  # unlimited (the default)"
+            )
+        with self._sync_lock:
+            db = self._sync_db()
+            db.execute(_UPSERT_SETTING_SQL, (_MAX_ACTIVE_RUNS_KEY, None if value is None else str(value), _now_iso()))
+            db.commit()
 
     # === Host work admission ===
 
     async def _admission_is_full(self) -> bool:
         """True when the active-Run cap leaves no slot for new work.
 
-        A claimed submission is one this worker owns end to end — starting,
+        A claimed submission is one a worker owns end to end — starting,
         executing, parked on a provider permit, or settling — so it holds a
         slot. Pending (queued, scheduled, version-incompatible), exhausted,
-        and finished submissions are not claimed and hold none. An unset cap
-        is unlimited and is answered without touching the store.
+        and finished submissions are not claimed and hold none.
         """
-        cap = self._max_active_runs
-        if cap is None:
-            return False
         await self._ensure_db()
         async with self._txn_lock():
-            cursor = await self._db.execute(_ACTIVE_RUN_COUNT_SQL)
-            row = await cursor.fetchone()
-        return (int(row[0]) if row else 0) >= cap
+            free = await self._free_admission_slots()
+        return free is not None and free <= 0
 
     def _admission_is_full_sync(self) -> bool:
         """Sync mirror of ``_admission_is_full``."""
-        cap = self._max_active_runs
-        if cap is None:
-            return False
         with self._sync_lock:
-            row = self._sync_db().execute(_ACTIVE_RUN_COUNT_SQL).fetchone()
-        return (int(row[0]) if row else 0) >= cap
+            db = self._sync_db()
+            cap_row = db.execute(_SELECT_SETTING_SQL, (_MAX_ACTIVE_RUNS_KEY,)).fetchone()
+            if _cap_from_row(cap_row) is None:  # uncapped is never full
+                return False
+            free = _slots_left(cap_row, db.execute(_ACTIVE_RUN_COUNT_SQL).fetchone())
+        return free is not None and free <= 0
 
     async def _free_admission_slots(self) -> int | None:
         """Slots left under the active-Run cap; None when uncapped.
 
-        Read inside the caller's write transaction so the count a claim
-        decision uses is the count that transaction commits against. A
-        restart that re-adopted more claimed Runs than a lowered cap yields
-        a negative budget, which simply claims nothing new — admission
-        delays work, it never cancels it.
+        Both the cap and the count are read inside the caller's transaction,
+        so a claim decision uses the numbers that transaction commits
+        against — including a cap another process wrote a moment ago.
         """
-        cap = self._max_active_runs
-        if cap is None:
+        cursor = await self._db.execute(_SELECT_SETTING_SQL, (_MAX_ACTIVE_RUNS_KEY,))
+        cap_row = await cursor.fetchone()
+        if _cap_from_row(cap_row) is None:
             return None
         cursor = await self._db.execute(_ACTIVE_RUN_COUNT_SQL)
-        row = await cursor.fetchone()
-        return cap - (int(row[0]) if row else 0)
+        return _slots_left(cap_row, await cursor.fetchone())
 
     # === run_updates appends (same-transaction as run mutations) ===
 
@@ -1368,11 +1434,12 @@ class RunHome(SqliteCheckpointer):
         ``child_unstarted`` Batch fact commits with that flip, so the
         per-Batch sequence accounts the item too (PRD 0019 A9).
 
-        It is also where host work admission applies: at most
-        ``home.max_active_runs`` submissions are claimed at once, counting
+        It is also where host work admission applies: at most the Home's
+        stored ``max_active_runs`` submissions are claimed at once, counting
         the claims already outstanding. Over-limit work is left pending and
-        waits in claim order (oldest ``created_at`` first) — it is never
-        rejected or cancelled, and it is reported as
+        waits in claim order (oldest ``created_at`` first, ``rowid``
+        breaking ties) — it is never rejected or cancelled, and it is
+        reported as
         ``WaitingCondition.ADMISSION_LIMITED``. A full cap never starves the
         non-claiming dispositions: tripped-Batch children and
         version-incompatible rows are still settled on this scan.
@@ -1385,7 +1452,11 @@ class RunHome(SqliteCheckpointer):
                 cursor = await self._db.execute(
                     f"SELECT {_SUBMISSION_COLS} FROM host_submissions "
                     "WHERE state = 'pending' AND compat_state = 'compatible' AND (start_at IS NULL OR start_at <= ?) "
-                    "ORDER BY created_at LIMIT ?",
+                    # rowid breaks created_at ties so claim order is TOTAL:
+                    # two submissions accepted inside the same microsecond
+                    # would otherwise be ordered arbitrarily, and "over-limit
+                    # work waits in claim order" would be undefined for them.
+                    "ORDER BY created_at, rowid LIMIT ?",
                     (now_iso, limit),
                 )
                 submissions = [_row_to_submission(row) for row in await cursor.fetchall()]

@@ -26,6 +26,7 @@ from hypergraph.runners._shared.pending_boundaries import (
     supports_pending_boundaries,
 )
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
+from hypergraph.runners._shared.provider_limits import compose_graph_limits, current_graph_limits, pop_graph_limits, push_graph_limits
 from hypergraph.runners._shared.results import MapResult, RunResult
 from hypergraph.runners._shared.scheduling import (
     ExecutionFrontier,
@@ -504,6 +505,14 @@ class AsyncRunner(AsyncRunnerTemplate):
         signal = get_stop_signal()
         assert signal is not None, "run template must install a workflow stop signal"
 
+        # Graph-scope provider budgets: this graph's own, composed onto any an
+        # enclosing graph already holds, and published so a nested graph run
+        # inherits them (a node must stay covered by the parent's budget when
+        # it moves inside as_node()). Identity comparison: compose returns the
+        # inherited tuple unchanged when this graph adds nothing to push.
+        graph_limits = compose_graph_limits(graph.provider_limit)
+        limits_token = push_graph_limits(graph_limits) if graph_limits is not current_graph_limits() else None
+
         try:
             superstep_idx = 0
             frontier = ExecutionFrontier.from_scope(scope, max_iterations)
@@ -521,7 +530,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                 emit_fn=dispatcher.emit if dispatcher.active else None,
                 checkpointer=checkpointer if has_checkpointer else None,
                 superstep_offset=superstep_offset,
-                provider_limit=graph.provider_limit,
+                provider_limits=graph_limits,
             )
 
             while frontier.has_pending_components():
@@ -692,6 +701,8 @@ class AsyncRunner(AsyncRunnerTemplate):
             # Reset concurrency limiter only if we set it
             if token is not None:
                 reset_concurrency_limiter(token)
+            if limits_token is not None:
+                pop_graph_limits(limits_token)
 
         # Propagate stopped flag to the template layer
         state.stopped = signal.is_set

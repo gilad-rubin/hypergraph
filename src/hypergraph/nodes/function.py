@@ -188,7 +188,7 @@ class FunctionNode(CallableMixin, HyperNode):
                 f"provider_limit must be a ProcessLocalLimiter (or None), got {provider_limit!r}.\n\n"
                 "How to fix:\n"
                 "  Share one limiter across the work that draws on the same external\n"
-                "  capacity: provider_limit=ProcessLocalLimiter(max_concurrent=4)."
+                "  capacity: provider_limit=ProcessLocalLimiter(max_in_flight=4)."
             )
 
         self.func = func

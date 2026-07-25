@@ -23,7 +23,6 @@ import asyncio
 import contextlib
 import inspect
 import threading
-import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -44,8 +43,16 @@ from hypergraph import (
     serve,
 )
 from hypergraph.checkpointers.types import WorkflowStatus
+from hypergraph.events.processor import EventProcessor
+from hypergraph.events.types import NodeAttemptEndEvent, NodeErrorEvent, RunEndEvent
 from hypergraph.host.views import WaitingCondition as _WaitingCondition
-from hypergraph.runners._shared.provider_limits import provider_permits
+from hypergraph.runners._shared.provider_limits import (
+    compose_graph_limits,
+    current_graph_limits,
+    pop_graph_limits,
+    provider_permits,
+    push_graph_limits,
+)
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -162,14 +169,86 @@ def _attempt_count(home, workflow_id: str) -> int:
 
 
 class TestActiveRunCap:
-    def test_uncapped_by_default(self, home):
+    async def test_uncapped_by_default(self, home):
         assert home.max_active_runs is None
-        assert RunHome.open(":memory:", max_active_runs=2).max_active_runs == 2
+        declared = RunHome.open(":memory:", max_active_runs=2)
+        try:
+            assert declared.max_active_runs == 2
+        finally:
+            await declared.close()
 
     @pytest.mark.parametrize("bad", [0, -1, True, False, 2.0, "2"])
     def test_cap_rejects_anything_but_a_positive_int_or_none(self, home, bad):
         with pytest.raises(ValueError, match="max_active_runs"):
             home.max_active_runs = bad
+        with pytest.raises(ValueError, match="How to fix"):
+            home.max_active_runs = 0
+
+    async def test_the_cap_lives_in_the_store_not_on_one_python_object(self, tmp_path, home):
+        """US41: an operator tuning the cap holds their OWN RunHome, not the worker's."""
+        operator = RunHome.open(_home_uri(tmp_path))  # same store, different object
+        try:
+            assert operator.max_active_runs is None
+
+            home.max_active_runs = 2  # the worker's Home
+
+            assert operator.max_active_runs == 2
+
+            operator.max_active_runs = 1  # tuned from the operator's side
+
+            assert home.max_active_runs == 1
+        finally:
+            await operator.close()
+
+    async def test_an_operator_client_reports_what_the_worker_holds_back(self, tmp_path, home):
+        """US5 + US21: a separate inspection process must not say QUEUED here."""
+        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        home.max_active_runs = 1
+        await host.submit("dbl", {"x": 1}, workflow_id="wf-a")
+        second = await host.submit("dbl", {"x": 1}, workflow_id="wf-b")
+        await _claim(host, home)
+
+        operator = RunHome.open(_home_uri(tmp_path))
+        try:
+            client = RunHomeClient(operator)  # never saw the worker's cap
+            limited = RunQuery(waiting=WaitingCondition.ADMISSION_LIMITED)
+
+            assert (await client.get(second.run_ref)).waiting is WaitingCondition.ADMISSION_LIMITED
+            assert client.get_sync(second.run_ref).waiting is WaitingCondition.ADMISSION_LIMITED
+            assert [view.workflow_id for view in await client.list(limited)] == ["wf-b"]
+            assert [view.workflow_id for view in client.list_sync(limited)] == ["wf-b"]
+        finally:
+            await operator.close()
+
+    async def test_open_writes_an_explicit_cap_through_and_adopts_a_stored_one(self, tmp_path):
+        """The documented rule for open(): explicit writes, omitted adopts."""
+        uri = _home_uri(tmp_path, "open.db")
+
+        async def cap(**kwargs) -> int | None:
+            opened = RunHome.open(uri, **kwargs)
+            try:
+                return opened.max_active_runs
+            finally:
+                await opened.close()
+
+        assert await cap(max_active_runs=3) == 3
+        assert await cap() == 3  # omitted: adopts what the store holds
+        assert await cap(max_active_runs=None) is None  # explicit None writes through
+        assert await cap() is None
+
+    async def test_claim_order_stays_total_when_created_at_ties(self, home):
+        """Microsecond timestamps collide; insertion order still decides."""
+        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        home.max_active_runs = 1
+        for workflow_id in ("wf-a", "wf-b", "wf-c"):
+            await host.submit("dbl", {"x": 1}, workflow_id=workflow_id)
+        db = home._sync_db()  # force the exact tie created_at alone cannot resolve
+        db.execute("UPDATE host_submissions SET created_at = '2026-01-01T00:00:00.000000+00:00'")
+        db.commit()
+
+        for expected in ("wf-a", "wf-b", "wf-c"):
+            assert [row["workflow_id"] for row in await _claim(host, home)] == [expected]
+            await home._finish_submission(expected)
 
     async def test_over_limit_work_waits_pending_in_claim_order(self, home):
         """Cap=1 claims only the oldest; the rest stay pending, untouched."""
@@ -177,7 +256,6 @@ class TestActiveRunCap:
         home.max_active_runs = 1
         for workflow_id in ("wf-a", "wf-b", "wf-c"):
             await host.submit("dbl", {"x": 1}, workflow_id=workflow_id)
-            time.sleep(0.002)
 
         claimed = await _claim(host, home)
 
@@ -193,7 +271,6 @@ class TestActiveRunCap:
         home.max_active_runs = 1
         for workflow_id in ("wf-a", "wf-b", "wf-c"):
             await host.submit("dbl", {"x": 1}, workflow_id=workflow_id)
-            time.sleep(0.002)
         assert [row["workflow_id"] for row in await _claim(host, home)] == ["wf-a"]
 
         home.max_active_runs = 3  # tuned with wf-a still claimed and holding a slot
@@ -206,7 +283,6 @@ class TestActiveRunCap:
         home.max_active_runs = 2
         for workflow_id in ("wf-a", "wf-b", "wf-c"):
             await host.submit("dbl", {"x": 1}, workflow_id=workflow_id)
-            time.sleep(0.002)
         assert [row["workflow_id"] for row in await _claim(host, home)] == ["wf-a", "wf-b"]
 
         home.max_active_runs = 1  # below the work already outstanding
@@ -224,7 +300,6 @@ class TestActiveRunCap:
         client = host.client
         home.max_active_runs = 1
         first = await host.submit("dbl", {"x": 1}, workflow_id="wf-a")
-        time.sleep(0.002)
         second = await host.submit("dbl", {"x": 1}, workflow_id="wf-b")
         # Uncapped-so-far: both are plainly queued.
         assert (await client.get(second.run_ref)).waiting is WaitingCondition.QUEUED
@@ -244,7 +319,6 @@ class TestActiveRunCap:
         host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
         for workflow_id in ("wf-a", "wf-b", "wf-c"):
             await host.submit("dbl", {"x": 1}, workflow_id=workflow_id)
-            time.sleep(0.002)
         assert len(await _claim(host, home)) == 3
         assert await host.client.list(RunQuery(waiting=WaitingCondition.ADMISSION_LIMITED)) == []
 
@@ -253,7 +327,6 @@ class TestActiveRunCap:
         client = host.client
         home.max_active_runs = 1
         await host.submit("dbl", {"x": 1}, workflow_id="wf-a")
-        time.sleep(0.002)
         second = await host.submit("dbl", {"x": 1}, workflow_id="wf-b")
         await _claim(host, home)
 
@@ -270,7 +343,6 @@ class TestActiveRunCap:
         host = serve(_gated_async_graph("gated", started, gate), home=home, deployment_version="v1")
         home.max_active_runs = 1
         first = await host.submit("gated", {"x": 1}, workflow_id="wf-a")
-        time.sleep(0.002)
         second = await host.submit("gated", {"x": 2}, workflow_id="wf-b")
 
         async with _worker(host):
@@ -365,7 +437,7 @@ class TestSlotAccounting:
 
     async def test_claimed_run_waiting_on_a_provider_permit_holds_its_slot(self, home):
         """The distinguishing case: throttled work is running work."""
-        quota = ProcessLocalLimiter(max_concurrent=1)
+        quota = ProcessLocalLimiter(max_in_flight=1)
         calls = {"n": 0}
 
         @node(output_name="out", provider_limit=quota)
@@ -378,7 +450,6 @@ class TestSlotAccounting:
         client = host.client
         home.max_active_runs = 1
         first = await host.submit("provider", {"x": 1}, workflow_id="wf-a")
-        time.sleep(0.002)
         second = await host.submit("provider", {"x": 2}, workflow_id="wf-b")
 
         async with _PermitHolder(quota) as holder, _worker(host):
@@ -463,7 +534,7 @@ class _PermitHolder:
 class TestProviderLimiterPrimitive:
     @pytest.mark.parametrize("bad", [0, -1, True, False, 1.5, "1"])
     def test_rejects_anything_but_a_positive_int(self, bad):
-        with pytest.raises(ValueError, match="max_concurrent"):
+        with pytest.raises(ValueError, match="max_in_flight"):
             ProcessLocalLimiter(bad)
 
     def test_name_carries_the_scope_and_no_distributed_variant_is_offered(self):
@@ -476,17 +547,17 @@ class TestProviderLimiterPrimitive:
         assert "not a distributed limiter" in " ".join(ProcessLocalLimiter.__doc__.split())
 
     def test_sync_context_manager_takes_and_returns_one_permit(self):
-        limiter = ProcessLocalLimiter(max_concurrent=2)
+        limiter = ProcessLocalLimiter(max_in_flight=2)
         assert limiter.in_flight == 0
         with limiter:
             assert limiter.in_flight == 1
             with limiter:
                 assert limiter.in_flight == 2
         assert limiter.in_flight == 0
-        assert repr(limiter) == "ProcessLocalLimiter(max_concurrent=2, in_flight=0)"
+        assert repr(limiter) == "ProcessLocalLimiter(max_in_flight=2, in_flight=0)"
 
     async def test_async_waiters_are_served_in_arrival_order(self):
-        limiter = ProcessLocalLimiter(max_concurrent=1)
+        limiter = ProcessLocalLimiter(max_in_flight=1)
         order: list[int] = []
         release = asyncio.Event()
 
@@ -505,8 +576,82 @@ class TestProviderLimiterPrimitive:
         assert order == [0, 1, 2, 3]
         assert limiter.in_flight == 0
 
+    async def test_a_queued_thread_is_not_starved_by_arriving_async_waiters(self):
+        """One arrival-ordered queue: the thread at the head wins the next permit.
+
+        Async arrivals never stop coming here, so an async-first release would
+        park the thread forever rather than merely delaying it.
+        """
+        limiter = ProcessLocalLimiter(max_in_flight=1)
+        served = threading.Event()
+        let_go = threading.Event()
+        stop_churn = asyncio.Event()
+
+        def sync_taker() -> None:
+            with limiter:
+                served.set()
+                let_go.wait(15)
+
+        async def churn() -> None:
+            while not stop_churn.is_set():
+                async with limiter:
+                    await asyncio.sleep(0)
+
+        thread = threading.Thread(target=sync_taker, daemon=True)
+        churners: list[asyncio.Task] = []
+        async with limiter:  # the one permit is held right here
+            thread.start()
+            await _wait_for(lambda: _queued(limiter, 1))  # the thread is the head
+            churners = [asyncio.create_task(churn()) for _ in range(4)]
+            await _wait_for(lambda: _queued(limiter, 5))
+
+        try:
+            assert await asyncio.to_thread(served.wait, 15) is True
+        finally:
+            stop_churn.set()
+            let_go.set()
+            await asyncio.gather(*churners)
+            await asyncio.to_thread(thread.join, 15)
+
+        assert limiter.in_flight == 0
+
+    async def test_blocking_on_a_permit_from_an_event_loop_thread_raises(self):
+        """A wait that could never end is reported, not entered."""
+        limiter = ProcessLocalLimiter(max_in_flight=1)
+
+        async with limiter:  # the permit is held by a task on THIS loop
+            with pytest.raises(RuntimeError, match="How to fix"):
+                with limiter:  # noqa: SIM117 - the point is that it raises
+                    pass
+
+        # Uncontended is not a wait, so a loop thread may still take one.
+        with limiter:
+            assert limiter.in_flight == 1
+        assert limiter.in_flight == 0
+
+    async def test_a_sync_node_that_blocks_on_a_permit_under_asyncrunner_says_so(self):
+        """The documented trap: sync callables run inline on the loop thread."""
+        quota = ProcessLocalLimiter(max_in_flight=1)
+
+        @node(output_name="out")
+        def call_provider(x: int) -> int:
+            with quota:  # component-scope pattern, but from a SYNC node
+                return x + 1
+
+        graph = Graph([call_provider], name="loopblock")
+        async with quota:
+            with pytest.raises(Exception) as excinfo:  # noqa: B017 - the chain is the assertion
+                await AsyncRunner().run(graph, {"x": 1})
+
+        chain: list[str] = []
+        error: BaseException | None = excinfo.value
+        while error is not None:
+            chain.append(str(error))
+            error = error.__cause__
+        assert any("running an event loop" in text for text in chain), chain
+
     async def test_a_cancelled_waiter_never_leaks_its_permit(self):
-        limiter = ProcessLocalLimiter(max_concurrent=1)
+        limiter = ProcessLocalLimiter(max_in_flight=1)
         release = asyncio.Event()
 
         async def take() -> None:
@@ -528,12 +673,31 @@ class TestProviderLimiterPrimitive:
             assert limiter.in_flight == 1
 
     def test_the_same_limiter_at_two_scopes_yields_one_permit(self):
-        shared = ProcessLocalLimiter(max_concurrent=1)
-        other = ProcessLocalLimiter(max_concurrent=1)
-        assert provider_permits(shared, shared) == (shared,)
-        assert provider_permits(shared, other) == (shared, other)  # graph first
-        assert provider_permits(None, other) == (other,)
-        assert provider_permits(None, None) == ()
+        shared = ProcessLocalLimiter(max_in_flight=1)
+        other = ProcessLocalLimiter(max_in_flight=1)
+        outer = ProcessLocalLimiter(max_in_flight=1)
+        assert provider_permits((shared,), shared) == (shared,)
+        assert provider_permits((shared,), other) == (shared, other)  # graph first
+        assert provider_permits((), other) == (other,)
+        assert provider_permits((), None) == ()
+        # Nested graph scopes stack outermost-first and still collapse repeats.
+        assert provider_permits((outer, shared), other) == (outer, shared, other)
+        assert provider_permits((outer, shared), outer) == (outer, shared)
+
+    def test_a_nested_graph_never_re_enters_a_budget_its_parent_holds(self):
+        """compose_graph_limits is what keeps a shared budget from deadlocking."""
+        shared = ProcessLocalLimiter(max_in_flight=1)
+        inner = ProcessLocalLimiter(max_in_flight=1)
+
+        assert compose_graph_limits(None) == ()
+        token = push_graph_limits((shared,))
+        try:
+            assert compose_graph_limits(None) is current_graph_limits()  # nothing to push
+            assert compose_graph_limits(shared) is current_graph_limits()  # already held
+            assert compose_graph_limits(inner) == (shared, inner)
+        finally:
+            pop_graph_limits(token)
+        assert current_graph_limits() == ()
 
 
 async def _has(values: list, count: int) -> bool:
@@ -544,9 +708,14 @@ async def _has_flight(limiter, count: int) -> bool:
     return limiter.in_flight >= count
 
 
+async def _queued(limiter, count: int) -> bool:
+    """Waiters parked on the limiter, whatever kind they are."""
+    return len(limiter._waiters) >= count
+
+
 class TestProviderLimiterScopes:
     async def test_node_scope_caps_concurrent_executions_of_that_node(self):
-        quota = ProcessLocalLimiter(max_concurrent=1)
+        quota = ProcessLocalLimiter(max_in_flight=1)
         peak = _PeakTracker()
 
         @node(output_name="a", provider_limit=quota)
@@ -581,7 +750,7 @@ class TestProviderLimiterScopes:
 
     async def test_graph_scope_is_one_budget_shared_by_concurrent_runs(self):
         """What max_concurrency (a per-call budget) cannot express."""
-        quota = ProcessLocalLimiter(max_concurrent=1)
+        quota = ProcessLocalLimiter(max_in_flight=1)
         peak = _PeakTracker()
 
         @node(output_name="out")
@@ -595,9 +764,83 @@ class TestProviderLimiterScopes:
         assert peak.peak == 1
         assert quota.in_flight == 0
 
+    async def test_a_nested_graph_inherits_the_parent_graph_budget(self):
+        """Nested must match flat: as_node() never drops a node out of the budget."""
+
+        def _nested(limit):
+            peak = _PeakTracker()
+
+            @node(output_name="a")
+            async def left(x: int) -> int:
+                return await peak.observe_async(x)
+
+            @node(output_name="b")
+            async def right(x: int) -> int:
+                return await peak.observe_async(x)
+
+            inner = Graph([left, right], name="inner")
+            outer = Graph([inner.as_node(name="inner")], name="outer")
+            return (outer if limit is None else outer.with_provider_limit(limit)), peak
+
+        control, control_peak = _nested(None)
+        await AsyncRunner().run(control, {"x": 1})
+        assert control_peak.peak == 2  # control: nested siblings really do overlap
+
+        quota = ProcessLocalLimiter(max_in_flight=1)
+        limited, limited_peak = _nested(quota)
+        await AsyncRunner().run(limited, {"x": 1})
+
+        assert limited_peak.peak == 1  # the parent's budget reached inside as_node()
+        assert quota.in_flight == 0
+
+    async def test_a_nested_graphs_own_budget_composes_under_the_parents(self):
+        outer_budget = ProcessLocalLimiter(max_in_flight=2)
+        inner_budget = ProcessLocalLimiter(max_in_flight=1)
+        held: list[tuple[int, int]] = []
+
+        @node(output_name="a")
+        async def left(x: int) -> int:
+            held.append((outer_budget.in_flight, inner_budget.in_flight))
+            await asyncio.sleep(0)
+            return x
+
+        @node(output_name="b")
+        async def right(x: int) -> int:
+            held.append((outer_budget.in_flight, inner_budget.in_flight))
+            await asyncio.sleep(0)
+            return x
+
+        inner = Graph([left, right], name="inner").with_provider_limit(inner_budget)
+        outer = Graph([inner.as_node(name="inner")], name="outer").with_provider_limit(outer_budget)
+
+        await AsyncRunner().run(outer, {"x": 1})
+
+        # Both budgets held for each node, and the narrower one serialized them.
+        assert held == [(1, 1), (1, 1)]
+        assert outer_budget.in_flight == 0 and inner_budget.in_flight == 0
+
+    def test_sync_nested_graph_inherits_the_parent_graph_budget(self):
+        """Sync mirror of the nested inheritance."""
+        quota = ProcessLocalLimiter(max_in_flight=1)
+        seen: list[int] = []
+
+        @node(output_name="out")
+        def work(x: int) -> int:
+            seen.append(quota.in_flight)
+            return x + 1
+
+        inner = Graph([work], name="inner")
+        outer = Graph([inner.as_node(name="inner")], name="outer").with_provider_limit(quota)
+
+        result = SyncRunner().run(outer, {"x": 1})
+
+        assert result["out"] == 2
+        assert seen == [1]  # the permit was held inside the nested graph
+        assert quota.in_flight == 0
+
     async def test_component_scope_holds_the_permit_only_at_the_scarce_call(self):
         """The preferred owner of a provider quota: the shared component."""
-        client = _ProviderClient(max_concurrent=1)
+        client = _ProviderClient(max_in_flight=1)
         inside_together = _PeakTracker()
 
         @node(output_name="a")
@@ -624,8 +867,8 @@ class TestProviderLimiterScopes:
         assert client.calls == ["a1", "b1"]
 
     async def test_graph_and_node_budgets_compose_as_narrower_limits(self):
-        graph_budget = ProcessLocalLimiter(max_concurrent=2)
-        node_budget = ProcessLocalLimiter(max_concurrent=1)
+        graph_budget = ProcessLocalLimiter(max_in_flight=2)
+        node_budget = ProcessLocalLimiter(max_in_flight=1)
         graph_peak = _PeakTracker()
         node_peak = _PeakTracker()
 
@@ -654,7 +897,7 @@ class TestProviderLimiterScopes:
         assert graph_budget.in_flight == 0 and node_budget.in_flight == 0
 
     def test_sync_runner_takes_and_releases_the_same_permit(self):
-        quota = ProcessLocalLimiter(max_concurrent=1)
+        quota = ProcessLocalLimiter(max_in_flight=1)
         seen: list[int] = []
 
         @node(output_name="out", provider_limit=quota)
@@ -670,7 +913,7 @@ class TestProviderLimiterScopes:
 
     def test_sync_runner_blocks_until_a_permit_frees(self):
         """Sync mirror of the async wait: same one pool, no second budget."""
-        quota = ProcessLocalLimiter(max_concurrent=1)
+        quota = ProcessLocalLimiter(max_in_flight=1)
         entered = threading.Event()
 
         @node(output_name="out", provider_limit=quota)
@@ -697,7 +940,7 @@ class TestProviderLimiterScopes:
         assert quota.in_flight == 0
 
     def test_graph_provider_limit_is_metadata_only(self):
-        quota = ProcessLocalLimiter(max_concurrent=1)
+        quota = ProcessLocalLimiter(max_in_flight=1)
 
         @node(output_name="out")
         def work(x: int) -> int:
@@ -714,7 +957,7 @@ class TestProviderLimiterScopes:
             graph.with_provider_limit(2)
 
     def test_node_provider_limit_is_typed_and_readable(self):
-        quota = ProcessLocalLimiter(max_concurrent=1)
+        quota = ProcessLocalLimiter(max_in_flight=1)
 
         @node(output_name="out", provider_limit=quota)
         def gated(x: int) -> int:
@@ -761,8 +1004,8 @@ class _PeakTracker:
 class _ProviderClient:
     """A shared component that owns its provider quota (canon's preferred owner)."""
 
-    def __init__(self, max_concurrent: int) -> None:
-        self._quota = ProcessLocalLimiter(max_concurrent=max_concurrent)
+    def __init__(self, max_in_flight: int) -> None:
+        self._quota = ProcessLocalLimiter(max_in_flight=max_in_flight)
         self.calls: list[str] = []
         self._in_call = 0
         self.peak_in_call = 0
@@ -778,10 +1021,28 @@ class _ProviderClient:
             return f"ok:{payload}"
 
 
+class _FailureEventRecorder(EventProcessor):
+    """Every event a permit wait must NOT produce."""
+
+    def __init__(self) -> None:
+        self.failures: list[object] = []
+
+    def on_event(self, event) -> None:
+        if (
+            isinstance(event, NodeErrorEvent)
+            or isinstance(event, NodeAttemptEndEvent)
+            and (event.outcome != "succeeded" or event.retry_scheduled)
+            or isinstance(event, RunEndEvent)
+            and event.error is not None
+        ):
+            self.failures.append(event)
+
+
 class TestPermitWaitIsNeitherFailureNorRetry:
     async def test_async_permit_wait_spends_no_retry_attempt(self, home):
-        quota = ProcessLocalLimiter(max_concurrent=1)
+        quota = ProcessLocalLimiter(max_in_flight=1)
         calls = {"n": 0}
+        events = _FailureEventRecorder()
 
         @node(
             output_name="out",
@@ -792,13 +1053,14 @@ class TestPermitWaitIsNeitherFailureNorRetry:
             calls["n"] += 1
             return x + 1
 
-        graph = Graph([call_provider], name="retrying").with_runner(AsyncRunner())
+        graph = Graph([call_provider], name="retrying").with_processors(events).with_runner(AsyncRunner())
         host = serve(graph, home=home, deployment_version="v1")
         receipt = await host.submit("retrying", {"x": 1}, workflow_id="wf-retry")
 
         async with _PermitHolder(quota) as holder, _worker(host):
             await _wait_for(lambda: _executing(home, "wf-retry"))
             assert calls["n"] == 0
+            assert events.failures == []  # parked on a permit is not failing
             await holder.give_back()
             await _wait_for(lambda: _terminal(host.client, receipt.run_ref))
 
@@ -807,15 +1069,17 @@ class TestPermitWaitIsNeitherFailureNorRetry:
         assert view.waiting is None
         assert calls["n"] == 1
         assert _attempt_count(home, "wf-retry") == 1  # the wait was not an attempt
+        assert events.failures == []  # ...and it dispatched no failure event either
         submission = home._get_submission_sync("wf-retry")
         assert submission["state"] == "finished"
         assert submission["recovery_attempts"] == 0
 
     async def test_sync_permit_wait_spends_no_retry_attempt(self, home):
         """Sync mirror, driven straight through SyncRunner + checkpointer."""
-        quota = ProcessLocalLimiter(max_concurrent=1)
+        quota = ProcessLocalLimiter(max_in_flight=1)
         calls = {"n": 0}
         entered = threading.Event()
+        events = _FailureEventRecorder()
 
         @node(
             output_name="out",
@@ -827,23 +1091,25 @@ class TestPermitWaitIsNeitherFailureNorRetry:
             entered.set()
             return x + 1
 
-        graph = Graph([call_provider], name="retrying_sync")
+        graph = Graph([call_provider], name="retrying_sync").with_processors(events)
         runner = SyncRunner(checkpointer=home)
         results: list[int] = []
         with quota:
             worker = threading.Thread(target=lambda: results.append(runner.run(graph, {"x": 1}, workflow_id="wf-sync")["out"]))
             worker.start()
             assert entered.wait(0.1) is False  # blocked on the permit, no attempt spent
+            assert events.failures == []
         worker.join(timeout=10)
 
         assert results == [2]
         assert calls["n"] == 1
         assert _attempt_count(home, "wf-sync") == 1
+        assert events.failures == []  # no failure event for the wait
         assert home.get_run("wf-sync").status is WorkflowStatus.COMPLETED
 
     async def test_permit_wait_does_not_run_down_a_node_timeout(self):
         """The permit is taken outside the attempt, so the deadline is not burning."""
-        quota = ProcessLocalLimiter(max_concurrent=1)
+        quota = ProcessLocalLimiter(max_in_flight=1)
 
         @node(output_name="out", provider_limit=quota, timeout=0.05)
         async def call_provider(x: int) -> int:
@@ -900,7 +1166,6 @@ class TestDelayedStart:
         host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
         home.max_active_runs = 1
         await host.submit("dbl", {"x": 1}, workflow_id="wf-later", start_at="2999-01-01T00:00:00+00:00")
-        time.sleep(0.002)
         await host.submit("dbl", {"x": 1}, workflow_id="wf-now")
 
         assert [row["workflow_id"] for row in await _claim(host, home)] == ["wf-now"]
@@ -942,7 +1207,6 @@ class TestStopBeforeDue:
         home.max_active_runs = 1
         receipt = await host.submit("dbl", {"x": 1}, workflow_id="wf-later", start_at="2999-01-01T00:00:00+00:00")
         await host.client.stop(receipt.run_ref)
-        time.sleep(0.002)
         await host.submit("dbl", {"x": 2}, workflow_id="wf-other")
 
         assert [row["workflow_id"] for row in await _claim(host, home)] == ["wf-other"]
@@ -1008,7 +1272,6 @@ class TestExcludedOverflowStrategiesAreAbsent:
         refs: list[RunRef] = []
         for index in range(4):
             refs.append((await host.submit("dbl", {"x": index}, workflow_id=f"wf-{index}")).run_ref)
-            time.sleep(0.002)
 
         await _claim(host, home)
         views = {view.workflow_id: view for view in await host.client.list(RunQuery(limit=10))}

@@ -341,7 +341,8 @@ def _create_fts(conn: Any) -> None:
 # is durable intent recorded BEFORE execution; the runs row is created later
 # by the executing runner. run_updates is the per-Run durable sequence that
 # RunHomeClient.watch replays; host_commands is the durable control channel
-# (the host's stop verb writes it today).
+# (the host's stop verb writes it today); host_settings holds Home-scoped
+# coordination settings every process that opens the store agrees on.
 
 _CREATE_HOST_SUBMISSIONS = """
 CREATE TABLE IF NOT EXISTS host_submissions (
@@ -433,6 +434,21 @@ CREATE TABLE IF NOT EXISTS batch_updates (
 )
 """
 
+# Home-scoped coordination settings (ticket 12): one row per setting, shared by
+# every process that opens this store. `max_active_runs` lives here rather than
+# on a Python object because the worker that enforces the cap and the operator
+# that tunes or reads it are usually different processes holding different
+# RunHome instances — a per-instance attribute would make them disagree.
+# NULL value means "explicitly unset" (unlimited), which is also what a missing
+# row means.
+_CREATE_HOST_SETTINGS = """
+CREATE TABLE IF NOT EXISTS host_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at TEXT
+)
+"""
+
 
 # Pending node boundaries (ticket 08 / PRD 0013). This is a CORE checkpointer
 # table, not a host-only one: any checkpointed run records the superstep's
@@ -516,6 +532,7 @@ def _ensure_v6_objects(conn: Any) -> None:
     conn.execute(_CREATE_HOST_COMMANDS)
     conn.execute(_CREATE_HOST_BATCHES)
     conn.execute(_CREATE_BATCH_UPDATES)
+    conn.execute(_CREATE_HOST_SETTINGS)
     _add_missing_columns(conn, "host_submissions", _HOST_SUBMISSIONS_ADDED_COLUMNS)
     _add_missing_columns(conn, "host_batches", _HOST_BATCHES_ADDED_COLUMNS)
     _create_host_indexes(conn)

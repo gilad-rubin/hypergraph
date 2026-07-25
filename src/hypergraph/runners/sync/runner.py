@@ -24,6 +24,7 @@ from hypergraph.runners._shared.pending_boundaries import (
     supports_pending_boundaries,
 )
 from hypergraph.runners._shared.protocols import NodeExecutor
+from hypergraph.runners._shared.provider_limits import compose_graph_limits, current_graph_limits, pop_graph_limits, push_graph_limits
 from hypergraph.runners._shared.results import MapResult, RunResult
 from hypergraph.runners._shared.scheduling import ExecutionFrontier, compute_execution_scope
 from hypergraph.runners._shared.state import ExecutionContext, GraphState, RunnerCapabilities
@@ -380,6 +381,11 @@ class SyncRunner(SyncRunnerTemplate):
         signal = get_stop_signal()
         assert signal is not None, "run template must install a workflow stop signal"
 
+        # Graph-scope provider budgets: this graph's own, composed onto any an
+        # enclosing graph already holds. A node must stay covered by the
+        # parent's budget when it moves inside as_node().
+        graph_limits = compose_graph_limits(graph.provider_limit)
+
         superstep_idx = 0
         frontier = ExecutionFrontier.from_scope(scope, max_iterations)
         ctx_base = ExecutionContext(
@@ -396,8 +402,13 @@ class SyncRunner(SyncRunnerTemplate):
             emit_fn=dispatcher.emit if dispatcher.active else None,
             checkpointer=sync_cp,
             superstep_offset=superstep_offset,
-            provider_limit=graph.provider_limit,
+            provider_limits=graph_limits,
         )
+
+        # Published last, so a nested graph run inherits them. Identity
+        # comparison: compose returns the inherited tuple unchanged when this
+        # graph adds nothing, and then there is nothing to push.
+        limits_token = push_graph_limits(graph_limits) if graph_limits is not current_graph_limits() else None
 
         try:
             while frontier.has_pending_components():
@@ -512,6 +523,8 @@ class SyncRunner(SyncRunnerTemplate):
             # Expose cooperative-stop truth even when execution exits early.
             state.stopped = signal.is_set
             state.stop_info = signal.info
+            if limits_token is not None:
+                pop_graph_limits(limits_token)
 
         return state
 

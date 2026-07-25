@@ -694,13 +694,12 @@ provider tolerates. The name states its coordination scope: it covers only
 the process that constructed it, and there is no distributed variant in this
 release. It is not the durable host's active-Run cap
 ([`RunHome.max_active_runs`](host.md#host-work-admission)), which counts
-Runs a worker executes, and it is not the runner's `max_concurrency`, which
-budgets one call.
+Runs a worker executes.
 
 ```python
 from hypergraph import ProcessLocalLimiter, node
 
-quota = ProcessLocalLimiter(max_concurrent=2)
+quota = ProcessLocalLimiter(max_in_flight=2)
 
 @node(output_name="summary", provider_limit=quota)
 async def summarize(doc: str) -> str:
@@ -711,10 +710,10 @@ async def summarize(doc: str) -> str:
 
 ```python
 class ProcessLocalLimiter:
-    def __init__(self, max_concurrent: int) -> None: ...
+    def __init__(self, max_in_flight: int) -> None: ...
 
-    max_concurrent: int   # permits this limiter was built with (read-only)
-    in_flight: int        # permits held right now (read-only)
+    max_in_flight: int   # permits this limiter was built with (read-only)
+    in_flight: int       # permits held right now (read-only)
 
     def __enter__(self) -> ProcessLocalLimiter: ...        # blocks the thread
     async def __aenter__(self) -> ProcessLocalLimiter: ... # suspends the task
@@ -722,14 +721,16 @@ class ProcessLocalLimiter:
 
 **Args:**
 
-- `max_concurrent` (required): Permit count, an `int >= 1`. Anything else is a `ValueError`.
+- `max_in_flight` (required): Permit count, an `int >= 1`. Anything else is a `ValueError`.
 
 ### Semantics
 
 - **Three scopes, one object.** Acquire it inside a shared **component** at
   the exact scarce call (usually the right owner of a provider quota); pass
   it as `@node(provider_limit=...)` for **node** scope; or bind it with
-  `graph.with_provider_limit(...)` for **graph** scope.
+  `graph.with_provider_limit(...)` for **graph** scope. A graph budget
+  covers nested graphs too, so a node stays covered when it moves inside
+  `as_node()`.
 - **Shared across runs.** A limiter is a long-lived object, so two
   concurrent Runs of the same graph draw on the same permits.
 - **Work budget vs quota.** Node and graph scope hold the permit for the
@@ -742,10 +743,39 @@ class ProcessLocalLimiter:
   outside the attempt coordinator: it reserves no attempt, consumes no
   `RetryPolicy` budget, and runs down no `timeout`. Under the durable host
   a Run parked on a permit is still executing and still holds its slot.
-- **One pool for sync and async.** `with limiter:` blocks the calling
-  thread; `async with limiter:` suspends the task. Both draw on the same
-  permits, and async waiters are served in arrival order.
+- **One pool, one queue.** `with limiter:` blocks the calling thread;
+  `async with limiter:` suspends the task. Both draw on the same permits
+  and queue in the same arrival order, so neither kind can starve the
+  other.
 - **Direct calls stay raw.** `node(...)` and `node.func(...)` take no permit.
+
+> **`with limiter:` never runs on an event-loop thread.** Blocking a loop
+> thread also stops the tasks holding the permits from releasing them, so the
+> wait could never end. `ProcessLocalLimiter` raises a `RuntimeError` naming
+> the fix instead of hanging. This bites exactly one way: a **sync** node
+> function that does `with self._quota:` while running under `AsyncRunner`,
+> because sync callables execute inline on the loop thread. Make the node
+> `async` and use `async with self._quota:`, move the blocking call out with
+> `asyncio.to_thread(...)`, or declare the budget as
+> `@node(provider_limit=...)` / `graph.with_provider_limit(...)` and let the
+> runner take the permit for you (it always takes it correctly for the
+> runner in use).
+
+### Related concurrency controls
+
+Three different budgets, three different owners — pick by what is scarce:
+
+| Control | Scope | Owns |
+|---|---|---|
+| `ProcessLocalLimiter` | process-wide, shared across runs | an external provider's concurrency |
+| [`AsyncRunner(max_concurrency=...)`](runners.md#concurrency-control) | one `run()`/`map()` call | how much of *this* call runs at once |
+| [`@stateful(max_concurrency=...)`](runners.md#stateful) | one Daft worker replica | how many rows a `@daft.cls` instance handles at once |
+
+`ProcessLocalLimiter` and `@stateful(max_concurrency=...)` express the same
+idea — a component-scoped budget around a shared resource — at two layers:
+`@stateful` is Daft's own per-replica control, lowered into the Daft
+execution plan, and it applies only under `DaftRunner`. `ProcessLocalLimiter`
+is the runner-independent one and is what `SyncRunner`/`AsyncRunner` honor.
 
 ---
 

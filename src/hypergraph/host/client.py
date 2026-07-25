@@ -148,11 +148,13 @@ def _build_view(
 ) -> RunView | None:
     """Build one RunView.
 
-    ``admission_full`` is the reading Home's answer to "is the active-Run
-    cap out of slots right now?" — computed once per ``get``/``list`` call
-    so a due, compatible, still-pending submission reports
-    ``ADMISSION_LIMITED`` instead of a bare ``QUEUED``. It is False for an
-    uncapped Home, which never produces the condition at all.
+    ``admission_full`` answers "is the active-Run cap out of slots right
+    now?" from the STORE — the cap and the claim count are both Home-scoped
+    facts, so an operator's client process reports exactly what the worker
+    holds back. It is computed once per ``get``/``list`` call so a due,
+    compatible, still-pending submission reports ``ADMISSION_LIMITED``
+    instead of a bare ``QUEUED``, and it is False for an uncapped Home,
+    which never produces the condition at all.
     """
     if submission is None and run is None:
         return None

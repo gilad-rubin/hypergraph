@@ -5,14 +5,30 @@ Module boundaries and dependency rules for `src/hypergraph/`.
 ## Dependency Direction
 
 ```
-nodes  →  graph  →  runners  →  events
-                        ↓
-                     _shared/
+limits ──────┬──────────┬─────────────┐
+             ↓          ↓             ↓
+          nodes  →  graph  →  runners  →  events
+                                 ↓
+                              _shared/
 ```
 
-One-way: downstream modules import upstream, never the reverse. `nodes` knows nothing about `graph`. `graph` knows nothing about `runners`.
+One-way: downstream modules import upstream, never the reverse. `nodes` knows nothing about `graph`. `graph` knows nothing about `runners`. `limits` is a leaf: `nodes`, `graph`, and `runners` all import it, and it imports none of them.
 
 ## Module Boundaries
+
+### limits.py
+
+Injected provider-resource budgets — permit pools over external capacity.
+
+| File | Purpose |
+|------|---------|
+| `limits.py` | `ProcessLocalLimiter` — one permit pool shared by every thread and task in this process |
+
+**Rule**: A leaf module with no Hypergraph imports, so `nodes`, `graph`, and
+`runners` can all depend on it without creating a cycle. Keep the scope in the
+name: this coordinates one process, never a fleet. Provider-resource admission
+is not the durable host's active-Run cap (`RunHome.max_active_runs`); the two
+controls never merge.
 
 ### nodes/
 
@@ -106,6 +122,7 @@ Practical mental model:
 - `map_resume.py` — Own map-item signature, index, and claim decisions
 - `outputs.py` — Output wrapping, selection, and mapped-output collection
 - `protocols.py` — executor protocols for sync and async runners
+- `provider_limits.py` — Compose the injected provider budgets around one node execution, and carry graph-scope budgets across the nested-graph boundary
 - `readiness.py` — Gate activation, readiness, staleness, and result application
 - `results.py` — Public result, status, pause-info, and execution-log types
 - `run_log.py` — always-on `RunLog` collection helpers

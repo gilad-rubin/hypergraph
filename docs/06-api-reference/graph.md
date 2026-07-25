@@ -693,22 +693,23 @@ This is **provider-resource admission** — a work budget over external
 capacity — never the durable host's active-Run cap
 ([`RunHome.max_active_runs`](host.md#host-work-admission)). The limiter is a
 shared object, so two concurrent Runs of this graph draw on the same
-permits; that is what `max_concurrency` (a per-call budget for one run)
-cannot express.
+permits; that is what a per-call runner budget cannot express.
 
 ```python
 from hypergraph import ProcessLocalLimiter
 
-budget = ProcessLocalLimiter(max_concurrent=4)
+budget = ProcessLocalLimiter(max_in_flight=4)
 limited = graph.with_provider_limit(budget)
 limited.provider_limit is budget          # True
 limited.structural_hash == graph.structural_hash  # True — metadata only
 ```
 
 The binding changes no structure, so `structural_hash` — and therefore
-durable-host Definition identity — is untouched. Nested graphs are not
-covered: a nested graph carries its own budget. Waiting for a permit is
-neither a failure nor a retry attempt. See
+durable-host Definition identity — is untouched. Nested graphs **are**
+covered: a graph run inside `as_node()` inherits this budget, and a budget
+the nested graph declares itself composes as a narrower one on top. Moving a
+node into a nested graph therefore never drops it out of the budget. Waiting
+for a permit is neither a failure nor a retry attempt. See
 [ProcessLocalLimiter](nodes.md#processlocallimiter).
 
 **Args:**

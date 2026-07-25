@@ -44,7 +44,7 @@ class SyncFunctionNodeExecutor:
         Returns:
             Dict mapping output names to their values
         """
-        permits = provider_permits(ctx.provider_limit, node.provider_limit)
+        permits = provider_permits(ctx.provider_limits, node.provider_limit)
         if not permits:
             return self._execute(node, inputs, ctx)
         # Waiting here is throttling, not failure: it happens outside the

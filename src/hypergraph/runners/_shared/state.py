@@ -100,12 +100,13 @@ class ExecutionContext:
     ``superstep`` (current index, set per superstep) give attempt reservations
     the same superstep numbering StepRecords use.
 
-    ``provider_limit`` carries the graph-scope provider-resource budget
-    (``graph.with_provider_limit``) to the function-node executors. It is a
-    shared process-local permit pool over EXTERNAL capacity — never the
-    durable host's active-Run cap and never the per-call ``max_concurrency``
-    work budget. Each ``_execute_graph`` builds its own context, so a nested
-    graph carries its own budget instead of inheriting the parent's.
+    ``provider_limits`` carries the graph-scope provider-resource budgets
+    (``graph.with_provider_limit``) to the function-node executors,
+    outermost first. These are shared process-local permit pools over
+    EXTERNAL capacity — never the durable host's active-Run cap. A nested
+    graph inherits the enclosing graph's budgets and composes its own on
+    top, so a node covered by a budget stays covered when it moves inside
+    ``as_node()``.
     """
 
     event_processors: list[EventProcessor] | None = None
@@ -123,7 +124,7 @@ class ExecutionContext:
     checkpointer: Checkpointer | None = None
     superstep_offset: int = 0
     superstep: int = 0
-    provider_limit: ProcessLocalLimiter | None = None
+    provider_limits: tuple[ProcessLocalLimiter, ...] = ()
 
 
 @dataclass

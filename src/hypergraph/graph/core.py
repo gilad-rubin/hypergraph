@@ -1295,13 +1295,16 @@ class Graph:
         capacity — and never the durable host's active-Run cap
         (``RunHome.max_active_runs``), which counts Runs a worker executes.
         The limiter is a shared object: two concurrent Runs of this graph
-        draw on the same permits, which is what ``max_concurrency`` (a
-        per-call budget for one run) cannot express.
+        draw on the same permits, which is what a per-call runner budget
+        cannot express.
 
         The binding is metadata only: it does not change graph structure,
-        ``structural_hash``, or Definition identity. Nested graphs are not
-        covered — a nested graph applies its own ``with_provider_limit``.
-        Waiting for a permit is neither a failure nor a retry attempt.
+        ``structural_hash``, or Definition identity. Nested graphs **are**
+        covered: a graph run inside ``as_node()`` inherits this budget, and
+        its own ``with_provider_limit`` composes as a narrower one on top —
+        so moving a node into a nested graph never drops it out of the
+        budget. Waiting for a permit is neither a failure nor a retry
+        attempt.
 
         Args:
             provider_limit: A :class:`~hypergraph.limits.ProcessLocalLimiter`.
@@ -1313,13 +1316,15 @@ class Graph:
             TypeError: If ``provider_limit`` is not a ``ProcessLocalLimiter``.
 
         Example:
-            >>> budget = ProcessLocalLimiter(max_concurrent=4)
+            >>> budget = ProcessLocalLimiter(max_in_flight=4)
             >>> graph = graph.with_provider_limit(budget)
         """
         if not isinstance(provider_limit, ProcessLocalLimiter):
             raise TypeError(
-                f"with_provider_limit() expects a ProcessLocalLimiter, got {type(provider_limit).__name__}. "
-                "Build one with ProcessLocalLimiter(max_concurrent=...)."
+                f"with_provider_limit() expects a ProcessLocalLimiter, got {type(provider_limit).__name__}.\n\n"
+                "How to fix:\n"
+                "  Share one limiter across the work that draws on the same external\n"
+                "  capacity: graph.with_provider_limit(ProcessLocalLimiter(max_in_flight=4))"
             )
         new_graph = self._shallow_copy()
         new_graph._provider_limit = provider_limit

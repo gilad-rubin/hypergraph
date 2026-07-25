@@ -494,25 +494,39 @@ Hypergraph runs no control-plane server.
 
 ## Host Work Admission
 
-`RunHome.max_active_runs` caps how many Runs one worker executes at once.
-It is **tunable at runtime** — assign it while the worker is live and work
-is queued, and the next claim scan honors it:
+`RunHome.max_active_runs` caps how many Runs a worker executes at once.
+The cap is a **Home-scoped fact stored in the Run Home**, not a setting on
+one Python object, so it is **tunable at runtime from anywhere that can open
+the Home** — including a one-off operator process while the worker keeps
+running:
 
 ```python
-home = RunHome.open("file:./runs.db", max_active_runs=4)
-...
-home.max_active_runs = 1     # shed load without restarting the worker
+# In the operator's shell — the worker is a different process.
+home = RunHome.open("file:./runs.db")
+home.max_active_runs = 1     # shed load; the live worker's next claim honors it
 home.max_active_runs = None  # unlimited (the default)
+home.max_active_runs         # reads what the store holds
 ```
 
-Over-limit work **waits in claim order** — oldest submission first. It is
-never rejected and never cancelled: the submission stays persisted and
-pending, its view reports `WaitingCondition.ADMISSION_LIMITED`, and it
-claims the moment a slot frees. Lowering the cap below the work already
-outstanding revokes nothing; those Runs finish and the next claim simply
-waits. The cap must be an `int >= 1` or `None`.
+Passing `max_active_runs` to `open()` **writes it through**; omitting it
+**adopts whatever the store already holds**. That is the difference between
+declaring the cap and merely connecting:
 
-**What holds a slot.** A *claimed* Run — one this worker owns end to end,
+```python
+RunHome.open("file:./runs.db", max_active_runs=4)     # sets the cap to 4
+RunHome.open("file:./runs.db", max_active_runs=None)  # sets it to unlimited
+RunHome.open("file:./runs.db")                        # adopts the stored cap
+```
+
+Over-limit work **waits in claim order** — oldest submission first, ties
+broken by insertion order so the ordering is total. It is never rejected and
+never cancelled: the submission stays persisted and pending, its view
+reports `WaitingCondition.ADMISSION_LIMITED`, and it claims the moment a
+slot frees. Lowering the cap below the work already outstanding revokes
+nothing; those Runs finish and the next claim simply waits. The cap must be
+an `int >= 1` or `None`.
+
+**What holds a slot.** A *claimed* Run — one a worker owns end to end,
 whether it is starting, executing, settling, or parked on a provider permit
 — holds one slot. Queued, scheduled, paused, version-incompatible, and
 recovery-exhausted Runs hold **none**.
@@ -521,9 +535,10 @@ recovery-exhausted Runs hold **none**.
 limited = await client.list(RunQuery(waiting=WaitingCondition.ADMISSION_LIMITED))
 ```
 
-`ADMISSION_LIMITED` is computed against the reading Home's own
-`max_active_runs`, so an uncapped Home never reports it. In this tier the
-Home has exactly one worker, so set the cap on the Home the worker serves.
+Because the cap and the claim count are both stored facts, a
+`RunHomeClient` in an inspection process reports exactly the work the worker
+is holding back — no separate configuration to keep in sync. An uncapped
+Home never reports `ADMISSION_LIMITED` at all.
 
 Overflow strategies are deliberately **absent** in v1: there is no reject,
 no cancel-oldest, no cancel-newest, no keyed fairness, and no
@@ -540,8 +555,8 @@ limiter.
 ```python
 from hypergraph import ProcessLocalLimiter
 
-quota = ProcessLocalLimiter(max_concurrent=4)
-quota.max_concurrent   # 4
+quota = ProcessLocalLimiter(max_in_flight=4)
+quota.max_in_flight    # 4
 quota.in_flight        # permits held right now
 ```
 
@@ -550,16 +565,16 @@ Three injection scopes, narrowest budget last:
 ```python
 class SummaryClient:                      # component scope — usually the right
     def __init__(self) -> None:           # owner of a provider quota
-        self._quota = ProcessLocalLimiter(max_concurrent=4)
+        self._quota = ProcessLocalLimiter(max_in_flight=4)
 
     async def summarize(self, text: str) -> str:
         async with self._quota:           # acquired at the exact scarce call
             return await self._http.post(...)
 
-@node(output_name="summary", provider_limit=ProcessLocalLimiter(max_concurrent=2))
+@node(output_name="summary", provider_limit=ProcessLocalLimiter(max_in_flight=2))
 async def summarize(doc: str) -> str: ... # node scope
 
-graph = graph.with_provider_limit(ProcessLocalLimiter(max_concurrent=8))
+graph = graph.with_provider_limit(ProcessLocalLimiter(max_in_flight=8))
 #                                         graph scope (immutable, metadata only)
 ```
 
@@ -571,11 +586,12 @@ narrower limits around a component quota; they never replace it. Give each
 scope its own limiter instance — the pools are not reentrant.
 
 A graph budget is a shared object, so two concurrent Runs of the same graph
-draw on the same permits. That is what `max_concurrency` (a per-call budget
-for one run) cannot express. `graph.with_provider_limit(...)` returns a new
-Graph and changes no structure: `structural_hash` and therefore Definition
-identity are untouched. Nested graphs are not covered — a nested graph
-carries its own budget.
+draw on the same permits — what a per-call runner budget cannot express.
+`graph.with_provider_limit(...)` returns a new Graph and changes no
+structure: `structural_hash` and therefore Definition identity are
+untouched. Nested graphs are covered: a graph run inside `as_node()`
+inherits the enclosing budget and composes its own on top, so a node stays
+covered when it moves into a nested graph.
 
 **Waiting for a permit is neither a failure nor a retry attempt.** The wait
 happens outside the attempt coordinator, so ordinary throttling reserves no
