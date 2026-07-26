@@ -12,11 +12,11 @@ batch filter, a real SIGKILL restart mid-batch, and sync mirrors.
 import asyncio
 import contextlib
 import json
+import pathlib
 import subprocess
 import sys
 import time
 from collections import Counter
-from collections.abc import Mapping
 
 import pytest
 import pytest_asyncio
@@ -32,10 +32,12 @@ from hypergraph import (
     BatchView,
     Graph,
     HostError,
+    ItemKeyError,
     RunHome,
     RunQuery,
     RunRef,
     SyncRunner,
+    UnservedGraphError,
     WorkflowIdConflictError,
     interrupt,
     node,
@@ -43,8 +45,12 @@ from hypergraph import (
 )
 from hypergraph.checkpointers.types import WorkflowStatus
 from tests._interrupt_questions import StringQuestion
+from tests.test_host._batch_api import graph_of, submit_keyed, submit_keyed_sync
 
 aiosqlite = pytest.importorskip("aiosqlite")
+
+#: Repo root, injected into the `python -c` child so it can import `tests.*`.
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 # === Helpers (mirrors ticket-02/03/04 conventions) ===
@@ -52,7 +58,7 @@ aiosqlite = pytest.importorskip("aiosqlite")
 
 def _sync_graph(name: str) -> Graph:
     @node(output_name="out")
-    def compute(x: int) -> int:
+    def compute(x: int, item: str = "") -> int:
         return x * 10
 
     return Graph([compute], name=name).with_runner(SyncRunner())
@@ -62,7 +68,7 @@ def _flaky_sync_graph(name: str) -> Graph:
     """One-node graph that fails for x == 1."""
 
     @node(output_name="out")
-    def compute(x: int) -> int:
+    def compute(x: int, item: str = "") -> int:
         if x == 1:
             raise ValueError("boom")
         return x * 10
@@ -74,7 +80,7 @@ def _gated_async_graph(name: str, started: asyncio.Event, release: asyncio.Event
     """Two-node async graph whose second node blocks until released."""
 
     @node(output_name="seed")
-    async def seed(x: int) -> int:
+    async def seed(x: int, item: str = "") -> int:
         calls["seed"] += 1
         return x
 
@@ -92,7 +98,7 @@ def _mixed_async_graph(name: str, started: asyncio.Event, release: asyncio.Event
     """One-node graph: item x == 2 blocks until released; others complete."""
 
     @node(output_name="out")
-    async def compute(x: int) -> int:
+    async def compute(x: int, item: str = "") -> int:
         if x == 2:
             started.set()
             await release.wait()
@@ -105,7 +111,7 @@ def _pausing_async_graph(name: str) -> Graph:
     """One-node-plus-interrupt graph: every child parks on a human answer."""
 
     @node(output_name="seed")
-    async def seed(x: int) -> int:
+    async def seed(x: int, item: str = "") -> int:
         return x
 
     @interrupt(answer_name="ans")
@@ -193,9 +199,10 @@ async def home(tmp_path):
 class TestAtomicAcceptance:
     async def test_acceptance_persists_manifest_children_and_start_intent(self, home):
         host = serve(_sync_graph("ingest"), home=home, deployment_version="v1")
-        receipt = await host.submit_batch(
-            "ingest",
-            items={"p-17": {"x": 17}, "p-18": {"x": 18}, "p-19": {"x": 19}},
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            {"p-17": {"x": 17}, "p-18": {"x": 18}, "p-19": {"x": 19}},
             workflow_id="drop-42",
             tolerance=BatchTolerance(max_failed=2, max_failed_percent=25),
             start_at="2030-01-01T00:00:00+00:00",
@@ -215,7 +222,11 @@ class TestAtomicAcceptance:
         ).fetchall()
         assert manifest[0:3] == ("drop-42", "ingest", "v1")
         # The manifest preserves item order and pinned per-item inputs.
-        assert json.loads(manifest[3]) == {"p-17": {"x": 17}, "p-18": {"x": 18}, "p-19": {"x": 19}}
+        assert json.loads(manifest[3]) == {
+            "p-17": {"item": "p-17", "x": 17},
+            "p-18": {"item": "p-18", "x": 18},
+            "p-19": {"item": "p-19", "x": 19},
+        }
         assert json.loads(manifest[4]) == {"max_failed": 2, "max_failed_percent": 25}
         assert manifest[5] == "2030-01-01T00:00:00+00:00"
         assert manifest[6]  # fingerprint pinned
@@ -233,7 +244,7 @@ class TestAtomicAcceptance:
             ("drop-42:p-19", "p-19", "pending"),
         ]
         assert all(row[4] == "2030-01-01T00:00:00+00:00" for row in children)
-        assert json.loads(children[0][3]) == {"x": 17}
+        assert json.loads(children[0][3]) == {"item": "p-17", "x": 17}
 
         # The manifest event is bseq 1; each child has its own seq-1 submitted fact.
         updates = db.execute("SELECT bseq, kind, payload FROM batch_updates WHERE batch_id = ?", (batch_id,)).fetchall()
@@ -260,7 +271,7 @@ class TestAtomicAcceptance:
 
         monkeypatch.setattr(home, "_append_batch_update_sync", _boom)
         with pytest.raises(RuntimeError, match="simulated crash"):
-            host.submit_batch_sync("ingest", items={"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-x")
+            submit_keyed_sync(host, graph_of(host, "ingest"), {"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-x")
 
         db = home._sync_db()
         assert db.execute("SELECT COUNT(*) FROM host_batches").fetchone()[0] == 0
@@ -269,50 +280,41 @@ class TestAtomicAcceptance:
         assert db.execute("SELECT COUNT(*) FROM run_updates").fetchone()[0] == 0
         # The Home is still usable afterwards.
         monkeypatch.undo()
-        receipt = host.submit_batch_sync("ingest", items={"a": {"x": 1}}, workflow_id="drop-y")
+        receipt = submit_keyed_sync(host, graph_of(host, "ingest"), {"a": {"x": 1}}, workflow_id="drop-y")
         assert receipt.duplicate is False
 
     async def test_item_and_argument_validation(self, home):
+        """Refusals on the runner-shaped submission surface (issue #342).
+
+        Item identity is now derived by ``key_by`` from an expanded input
+        rather than supplied as a mapping key, so the empty / non-scalar /
+        duplicate refusals moved onto the expanded values and raise the
+        typed ``ItemKeyError``. The argument-level refusals (workflow_id,
+        tolerance, unserved Graph) are unchanged.
+        """
         host = serve(_sync_graph("ingest"), home=home)
-        with pytest.raises(ValueError, match="at least one item"):
-            await host.submit_batch("ingest", items={}, workflow_id="b-empty")
-        with pytest.raises(TypeError, match="Mapping"):
-            await host.submit_batch("ingest", items=[("a", {"x": 1})], workflow_id="b-list")
-        with pytest.raises(ValueError, match="non-empty strings"):
-            await host.submit_batch("ingest", items={"": {"x": 1}}, workflow_id="b-key")
-        with pytest.raises(ValueError, match="non-empty strings"):
-            await host.submit_batch("ingest", items={7: {"x": 1}}, workflow_id="b-key2")
-        with pytest.raises(TypeError, match="Mapping"):
-            await host.submit_batch("ingest", items={"a": 42}, workflow_id="b-inputs")
+        graph = graph_of(host, "ingest")
+
+        with pytest.raises(ValueError, match="an empty Batch is not a Batch"):
+            await submit_keyed(host, graph, {}, workflow_id="b-empty")
+        with pytest.raises(TypeError, match="values must be a Mapping"):
+            await host.submit_batch(graph, [("a", 1)], map_over="item", key_by="item", workflow_id="b-list")
+        with pytest.raises(ItemKeyError, match="empty"):
+            await submit_keyed(host, graph, {"": {"x": 1}}, workflow_id="b-key")
+        with pytest.raises(ItemKeyError, match="a float"):
+            await host.submit_batch(graph, {"item": [1.5], "x": [1]}, map_over=["item", "x"], key_by="item", workflow_id="b-key2")
         with pytest.raises(TypeError, match="JSON-serializable"):
-            await host.submit_batch("ingest", items={"a": {"x": object()}}, workflow_id="b-ser")
+            await submit_keyed(host, graph, {"a": {"x": object()}}, workflow_id="b-ser")
         with pytest.raises(ValueError, match="workflow_id"):
-            await host.submit_batch("ingest", items={"a": {"x": 1}}, workflow_id="")
+            await submit_keyed(host, graph, {"a": {"x": 1}}, workflow_id="")
         with pytest.raises(TypeError, match="BatchTolerance"):
-            await host.submit_batch("ingest", items={"a": {"x": 1}}, workflow_id="b-tol", tolerance={"max_failed": 1})
-        with pytest.raises(ValueError, match="Unknown definition"):
-            await host.submit_batch("nope", items={"a": {"x": 1}}, workflow_id="b-def")
-
-        class _DupKeys(Mapping):
-            """A Mapping whose items() yields a duplicate key."""
-
-            def __init__(self):
-                self._data = {"a": {"x": 1}}
-
-            def __getitem__(self, key):
-                return self._data[key]
-
-            def __iter__(self):
-                return iter(self._data)
-
-            def __len__(self):
-                return len(self._data)
-
-            def items(self):
-                return [("a", {"x": 1}), ("a", {"x": 2})]
-
-        with pytest.raises(ValueError, match="duplicate item key"):
-            await host.submit_batch("ingest", items=_DupKeys(), workflow_id="b-dup")
+            await submit_keyed(host, graph, {"a": {"x": 1}}, workflow_id="b-tol", tolerance={"max_failed": 1})
+        with pytest.raises(UnservedGraphError, match="not served by this host"):
+            await submit_keyed(host, _sync_graph("nope"), {"a": {"x": 1}}, workflow_id="b-def")
+        with pytest.raises(ItemKeyError, match="duplicate item key"):
+            await host.submit_batch(graph, {"item": ["a", "a"], "x": [1, 2]}, map_over=["item", "x"], key_by="item", workflow_id="b-dup")
+        # Every refusal happened before acceptance: nothing was written.
+        assert home._sync_db().execute("SELECT COUNT(*) FROM host_batches").fetchone()[0] == 0
 
     async def test_batch_tolerance_validation_and_roundtrip(self, home):
         with pytest.raises(ValueError, match="at least one"):
@@ -339,16 +341,18 @@ class TestDedupConflictTerminal:
         release = asyncio.Event()
         calls = {"seed": 0, "gated": 0}
         host = serve(_gated_async_graph("ingest", started, release, calls), home=home, deployment_version="v1")
-        receipt = await host.submit_batch(
-            "ingest",
-            items={"a": {"x": 1}, "b": {"x": 2}},
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            {"a": {"x": 1}, "b": {"x": 2}},
             workflow_id="drop-1",
             tolerance=BatchTolerance(max_failed=1),
         )
         # Mapping order never affects the fingerprint.
-        dup = await host.submit_batch(
-            "ingest",
-            items={"b": {"x": 2}, "a": {"x": 1}},
+        dup = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            {"b": {"x": 2}, "a": {"x": 1}},
             workflow_id="drop-1",
             tolerance=BatchTolerance(max_failed=1),
         )
@@ -361,9 +365,10 @@ class TestDedupConflictTerminal:
         assert db.execute("SELECT COUNT(*) FROM batch_updates").fetchone()[0] == 1
 
         # Sync mirror dedupes identically.
-        dup_sync = host.submit_batch_sync(
-            "ingest",
-            items={"a": {"x": 1}, "b": {"x": 2}},
+        dup_sync = submit_keyed_sync(
+            host,
+            graph_of(host, "ingest"),
+            {"a": {"x": 1}, "b": {"x": 2}},
             workflow_id="drop-1",
             tolerance=BatchTolerance(max_failed=1),
         )
@@ -372,22 +377,24 @@ class TestDedupConflictTerminal:
 
     async def test_fingerprint_mismatch_conflicts(self, home):
         host = serve(_sync_graph("ingest"), home=home, deployment_version="v1")
-        receipt = await host.submit_batch(
-            "ingest",
-            items={"a": {"x": 1}},
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            {"a": {"x": 1}},
             workflow_id="drop-2",
             tolerance=BatchTolerance(max_failed=1),
         )
         with pytest.raises(WorkflowIdConflictError, match="items differs"):
-            await host.submit_batch("ingest", items={"a": {"x": 2}}, workflow_id="drop-2", tolerance=BatchTolerance(max_failed=1))
+            await submit_keyed(host, graph_of(host, "ingest"), {"a": {"x": 2}}, workflow_id="drop-2", tolerance=BatchTolerance(max_failed=1))
         with pytest.raises(WorkflowIdConflictError, match="tolerance differs"):
-            await host.submit_batch("ingest", items={"a": {"x": 1}}, workflow_id="drop-2", tolerance=BatchTolerance(max_failed=2))
+            await submit_keyed(host, graph_of(host, "ingest"), {"a": {"x": 1}}, workflow_id="drop-2", tolerance=BatchTolerance(max_failed=2))
         with pytest.raises(WorkflowIdConflictError, match="tolerance differs"):
-            await host.submit_batch("ingest", items={"a": {"x": 1}}, workflow_id="drop-2")
+            await submit_keyed(host, graph_of(host, "ingest"), {"a": {"x": 1}}, workflow_id="drop-2")
         with pytest.raises(WorkflowIdConflictError, match="start_at differs"):
-            await host.submit_batch(
-                "ingest",
-                items={"a": {"x": 1}},
+            await submit_keyed(
+                host,
+                graph_of(host, "ingest"),
+                {"a": {"x": 1}},
                 workflow_id="drop-2",
                 tolerance=BatchTolerance(max_failed=1),
                 start_at="2030-01-01T00:00:00+00:00",
@@ -401,39 +408,39 @@ class TestDedupConflictTerminal:
 
     async def test_settled_batch_resubmission_is_already_terminal(self, home):
         host = serve(_sync_graph("ingest"), home=home, deployment_version="v1")
-        receipt = await host.submit_batch("ingest", items={"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-3")
+        receipt = await submit_keyed(host, graph_of(host, "ingest"), {"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-3")
         async with _worker(host):
             view = await _wait_for(lambda: _settled_view(host.client, receipt.batch_ref))
         assert view.counts["completed"] == 2
         with pytest.raises(AlreadyTerminalError):
-            await host.submit_batch("ingest", items={"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-3")
+            await submit_keyed(host, graph_of(host, "ingest"), {"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-3")
         with pytest.raises(AlreadyTerminalError):
-            host.submit_batch_sync("ingest", items={"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-3")
+            submit_keyed_sync(host, graph_of(host, "ingest"), {"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-3")
 
     async def test_run_and_batch_share_workflow_id_namespace(self, home):
         """Prototype Scenario 2: a run submit on a Batch's id is a conflict."""
         host = serve(_sync_graph("ingest"), home=home, deployment_version="v1")
-        batch_receipt = await host.submit_batch("ingest", items={"a": {"x": 1}}, workflow_id="drop-4")
+        batch_receipt = await submit_keyed(host, graph_of(host, "ingest"), {"a": {"x": 1}}, workflow_id="drop-4")
         # Run submit reusing the live Batch's id: conflict, not silent reuse.
         with pytest.raises(WorkflowIdConflictError, match="Batch owns"):
-            await host.submit("ingest", {"x": 1}, workflow_id="drop-4")
+            await host.submit(graph_of(host, "ingest"), {"x": 1}, workflow_id="drop-4")
         # Batch submit reusing a live run's id: same rule, other direction.
-        run_receipt = await host.submit("ingest", {"x": 9}, workflow_id="run-9")
+        run_receipt = await host.submit(graph_of(host, "ingest"), {"x": 9}, workflow_id="run-9")
         with pytest.raises(WorkflowIdConflictError, match="Run owns"):
-            await host.submit_batch("ingest", items={"a": {"x": 1}}, workflow_id="run-9")
+            await submit_keyed(host, graph_of(host, "ingest"), {"a": {"x": 1}}, workflow_id="run-9")
         # Child workflow ids are claimed too: a run submit on a child id
         # with different inputs conflicts through the ordinary rules.
         with pytest.raises(WorkflowIdConflictError):
-            await host.submit("ingest", {"x": 999}, workflow_id="drop-4:a")
+            await host.submit(graph_of(host, "ingest"), {"x": 999}, workflow_id="drop-4:a")
 
         async with _worker(host):
             await _wait_for(lambda: _settled_view(host.client, batch_receipt.batch_ref))
             await _wait_for(lambda: _terminal_run(host.client, run_receipt.run_ref))
         # Settled on both sides: completed history never changes identity.
         with pytest.raises(AlreadyTerminalError):
-            await host.submit("ingest", {"x": 1}, workflow_id="drop-4")
+            await host.submit(graph_of(host, "ingest"), {"x": 1}, workflow_id="drop-4")
         with pytest.raises(AlreadyTerminalError):
-            await host.submit_batch("ingest", items={"a": {"x": 9}}, workflow_id="run-9")
+            await submit_keyed(host, graph_of(host, "ingest"), {"a": {"x": 9}}, workflow_id="run-9")
 
 
 async def _terminal_run(client, ref):
@@ -454,9 +461,10 @@ async def _terminal_run(client, ref):
 class TestKeyedOutcomes:
     async def test_mixed_outcomes_stay_keyed_by_item(self, home):
         host = serve(_flaky_sync_graph("ingest"), home=home, deployment_version="v1")
-        receipt = await host.submit_batch(
-            "ingest",
-            items={"ok-0": {"x": 0}, "bad-1": {"x": 1}, "ok-2": {"x": 2}},
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            {"ok-0": {"x": 0}, "bad-1": {"x": 1}, "ok-2": {"x": 2}},
             workflow_id="drop-5",
         )
         async with _worker(host):
@@ -468,6 +476,7 @@ class TestKeyedOutcomes:
             "partial": 0,
             "stopped": 0,
             "active": 0,
+            "paused": 0,
             "queued": 0,
             "recovery_exhausted": 0,
             "unstarted": 0,
@@ -500,7 +509,7 @@ class TestKeyedOutcomes:
 
     async def test_child_settled_is_not_duplicated_on_repeated_terminal_write(self, home):
         host = serve(_sync_graph("ingest"), home=home)
-        receipt = await host.submit_batch("ingest", items={"a": {"x": 1}}, workflow_id="drop-6")
+        receipt = await submit_keyed(host, graph_of(host, "ingest"), {"a": {"x": 1}}, workflow_id="drop-6")
         async with _worker(host):
             await _wait_for(lambda: _settled_view(host.client, receipt.batch_ref))
         # A repeated terminal write (idempotent status path) must not add a
@@ -519,7 +528,7 @@ class TestUnstartedItems:
         started = asyncio.Event()
         release = asyncio.Event()
         host = serve(_gated_async_graph("ingest", started, release, calls), home=home, deployment_version="v1")
-        receipt = await host.submit_batch("ingest", items={"a": {"x": 1}, "b": {"x": 2}, "c": {"x": 3}}, workflow_id="drop-7")
+        receipt = await submit_keyed(host, graph_of(host, "ingest"), {"a": {"x": 1}, "b": {"x": 2}, "c": {"x": 3}}, workflow_id="drop-7")
         stop_receipt = await host.client.stop(receipt.batch_ref, info={"reason": "drop recalled"})
         assert isinstance(stop_receipt, BatchCommandReceipt)
         assert stop_receipt.duplicate is False
@@ -554,7 +563,7 @@ class TestUnstartedItems:
         started = asyncio.Event()
         release = asyncio.Event()
         host = serve(_mixed_async_graph("ingest", started, release), home=home, deployment_version="v1")
-        receipt = await host.submit_batch("ingest", items={"f-0": {"x": 0}, "f-1": {"x": 1}, "slow": {"x": 2}}, workflow_id="drop-8")
+        receipt = await submit_keyed(host, graph_of(host, "ingest"), {"f-0": {"x": 0}, "f-1": {"x": 1}, "slow": {"x": 2}}, workflow_id="drop-8")
 
         async with _worker(host):
             # Two fast children complete while the slow one blocks mid-run.
@@ -594,7 +603,7 @@ class TestUnstartedItems:
         with pytest.raises(HostError, match="no such batch"):
             host.client.stop_sync(unknown)
 
-        receipt = await host.submit_batch("ingest", items={"a": {"x": 1}}, workflow_id="drop-9")
+        receipt = await submit_keyed(host, graph_of(host, "ingest"), {"a": {"x": 1}}, workflow_id="drop-9")
         async with _worker(host):
             await _wait_for(lambda: _settled_view(host.client, receipt.batch_ref))
         with pytest.raises(AlreadyTerminalError):
@@ -612,23 +621,25 @@ class TestUnstartedItems:
 class TestPausedChildIsNotSettled:
     """A child parked on a human answer is in flight, not settled.
 
-    The bucket ladder counts a paused child ``active`` (its runs row is
-    nonterminal). Settlement must agree: if the worker released the
-    submission as 'finished', ``is_child_settled`` would call the same
-    child settled and ``watch(batch_ref)`` would end while a human decision
-    is still outstanding.
+    The bucket ladder counts a paused child ``paused`` — its own bucket,
+    disjoint from ``active`` (issue #342): it holds no active-Run slot, so
+    reporting it as running told an operator that human response time was
+    throughput. Settlement must agree: if the worker released the submission
+    as 'finished', ``is_child_settled`` would call the same child settled
+    and ``watch(batch_ref)`` would end while a human decision is still
+    outstanding.
     """
 
     async def _both_children_paused(self, home):
         host = serve(_pausing_async_graph("ask"), home=home, deployment_version="v1")
-        receipt = await host.submit_batch("ask", items={"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-pause")
+        receipt = await submit_keyed(host, graph_of(host, "ask"), {"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-pause")
         for row in await _claim(host, home):
             await host._execute_submission(row)
         for key in ("a", "b"):
             assert home.get_run(f"drop-pause:{key}").status is WorkflowStatus.PAUSED
         return host, receipt
 
-    async def test_a_paused_child_is_active_and_the_batch_is_not_settled(self, home):
+    async def test_a_paused_child_is_paused_and_the_batch_is_not_settled(self, home):
         host, receipt = await self._both_children_paused(home)
 
         # The worker released the slot but did NOT finish the submission:
@@ -637,7 +648,9 @@ class TestPausedChildIsNotSettled:
         assert home._get_submission_sync("drop-pause:a")["finished_at"] is None
 
         view = await host.client.get(receipt.batch_ref)
-        assert view.counts["active"] == 2
+        # Parked on a human is its own bucket, never "active".
+        assert view.counts["paused"] == 2
+        assert view.counts["active"] == 0
         assert view.counts["completed"] == 0
         assert view.outcomes == {"a": None, "b": None}
         # The bucket ladder and THE settled-child rule agree.
@@ -651,7 +664,14 @@ class TestPausedChildIsNotSettled:
         try:
             first = await asyncio.wait_for(gen.__anext__(), timeout=10)
             assert (first.kind, first.durable, first.cursor) == ("manifest", True, "bseq:1")
-            # No child has settled, so the stream must block, not end.
+            # Each pause commits its own durable child_paused fact, so a
+            # detached consumer learns "these items are waiting for you"
+            # from the stream alone (issue #342).
+            paused = [await asyncio.wait_for(gen.__anext__(), timeout=10) for _ in range(2)]
+            assert [update.kind for update in paused] == ["child_paused", "child_paused"]
+            assert {update.payload["item_key"] for update in paused} == {"a", "b"}
+            assert all(update.payload["run_ref"]["run_id"].startswith("drop-pause:") for update in paused)
+            # No child has SETTLED, so the stream must block, not end.
             with pytest.raises(asyncio.TimeoutError):
                 await asyncio.wait_for(gen.__anext__(), timeout=0.4)
         finally:
@@ -684,14 +704,14 @@ class TestGapFreeWatch:
         entered = {"n": 0}
 
         @node(output_name="out")
-        async def compute(x: int) -> int:
+        async def compute(x: int, item: str = "") -> int:
             entered["n"] += 1
             await release.wait()
             return x * 10
 
         graph = Graph([compute], name="ingest").with_runner(AsyncRunner())
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch("ingest", items={"a": {"x": 1}, "b": {"x": 2}, "c": {"x": 3}}, workflow_id="drop-10")
+        receipt = await submit_keyed(host, graph_of(host, "ingest"), {"a": {"x": 1}, "b": {"x": 2}, "c": {"x": 3}}, workflow_id="drop-10")
         client = host.client
         manifest_seen = asyncio.Event()
         observed: list = []
@@ -768,7 +788,7 @@ class TestGapFreeWatch:
         release = asyncio.Event()
         calls = {"seed": 0, "gated": 0}
         host = serve(_gated_async_graph("ingest", started, release, calls), home=home)
-        receipt = await host.submit_batch("ingest", items={"a": {"x": 1}}, workflow_id="drop-11")
+        receipt = await submit_keyed(host, graph_of(host, "ingest"), {"a": {"x": 1}}, workflow_id="drop-11")
         await host.client.stop(receipt.batch_ref)
 
         # Nothing has closed the item out yet, so the stream must stay open.
@@ -801,7 +821,7 @@ class TestGapFreeWatch:
 
     async def test_watch_invalid_cursor_raises(self, home):
         host = serve(_sync_graph("ingest"), home=home)
-        receipt = await host.submit_batch("ingest", items={"a": {"x": 1}}, workflow_id="drop-12")
+        receipt = await submit_keyed(host, graph_of(host, "ingest"), {"a": {"x": 1}}, workflow_id="drop-12")
         with pytest.raises(ValueError, match="Invalid batch watch cursor"):
             [u async for u in host.client.watch(receipt.batch_ref, after="seq:3")]
         with pytest.raises(ValueError, match="Invalid batch watch cursor"):
@@ -818,8 +838,8 @@ class TestGapFreeWatch:
 class TestRunQueryBatchFilter:
     async def test_list_filters_children_by_batch(self, home):
         host = serve(_sync_graph("ingest"), home=home, deployment_version="v1")
-        batch_receipt = await host.submit_batch("ingest", items={"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-13")
-        run_receipt = await host.submit("ingest", {"x": 9}, workflow_id="run-solo")
+        batch_receipt = await submit_keyed(host, graph_of(host, "ingest"), {"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-13")
+        run_receipt = await host.submit(graph_of(host, "ingest"), {"x": 9}, workflow_id="run-solo")
         batch_id = batch_receipt.batch_ref.batch_id
 
         by_ref = await host.client.list(RunQuery(batch=batch_receipt.batch_ref))
@@ -841,13 +861,17 @@ class TestRunQueryBatchFilter:
 
 _CHILD_SCRIPT = """
 import asyncio
+import sys
 import time
 
+sys.path.insert(0, {repo!r})
+
 from hypergraph import Graph, RunHome, SyncRunner, node, serve
+from tests.test_host._batch_api import submit_keyed_sync
 
 
 @node(output_name="first_out")
-def first(x: int) -> int:
+def first(x: int, item: str = "") -> int:
     if x >= 3:
         time.sleep(30)  # items 3,4: claimed but never commit a step
     with open({marker!r}, "a") as f:
@@ -867,9 +891,8 @@ def second(first_out: int) -> int:
 graph = Graph([first, second], name="bkilldef").with_runner(SyncRunner())
 home = RunHome.open({uri!r})
 host = serve(graph, home=home, deployment_version="v1")
-host.submit_batch_sync(
-    "bkilldef",
-    items={{"item-%d" % n: {{"x": n}} for n in range(5)}},
+submit_keyed_sync(host, graph,
+    {{"item-%d" % n: {{"x": n}} for n in range(5)}},
     workflow_id="wf-bkill",
 )
 asyncio.run(host.work_forever("w-child", poll_interval=0.02))
@@ -879,7 +902,7 @@ asyncio.run(host.work_forever("w-child", poll_interval=0.02))
 class TestRealKillRestart:
     async def test_sigkill_mid_batch_preserves_completed_and_continues_rest(self, tmp_path, home):
         marker = tmp_path / "marker.txt"
-        script = _CHILD_SCRIPT.format(marker=str(marker), uri=_home_uri(tmp_path))
+        script = _CHILD_SCRIPT.format(marker=str(marker), uri=_home_uri(tmp_path), repo=str(_REPO_ROOT))
         proc = subprocess.Popen([sys.executable, "-c", script])
         try:
             deadline = time.time() + 30
@@ -905,8 +928,11 @@ class TestRealKillRestart:
 
         marker_path = str(marker)
 
+        # Byte-for-byte the child's Definition: a restart worker claims a
+        # submission only when its pinned structural_hash matches, so this
+        # signature carries the manifest's `item` input too.
         @node(output_name="first_out")
-        def first(x: int) -> int:
+        def first(x: int, item: str = "") -> int:
             with open(marker_path, "a") as f:
                 f.write(f"first:{x}\n")
             return x
@@ -961,9 +987,10 @@ class TestRealKillRestart:
 class TestSyncMirrors:
     async def test_submit_batch_sync_end_to_end(self, home):
         host = serve(_sync_graph("ingest"), home=home, deployment_version="v1")
-        receipt = host.submit_batch_sync(
-            "ingest",
-            items={"a": {"x": 1}, "b": {"x": 2}},
+        receipt = submit_keyed_sync(
+            host,
+            graph_of(host, "ingest"),
+            {"a": {"x": 1}, "b": {"x": 2}},
             workflow_id="drop-20",
             tolerance=BatchTolerance(max_failed=1),
         )
@@ -978,7 +1005,7 @@ class TestSyncMirrors:
 
     async def test_stop_sync_before_start_marks_unstarted(self, home):
         host = serve(_sync_graph("ingest"), home=home)
-        receipt = host.submit_batch_sync("ingest", items={"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-21")
+        receipt = submit_keyed_sync(host, graph_of(host, "ingest"), {"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-21")
         stop_receipt = host.client.stop_sync(receipt.batch_ref)
         assert isinstance(stop_receipt, BatchCommandReceipt)
         assert stop_receipt.duplicate is False

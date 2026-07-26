@@ -11,6 +11,7 @@ import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from difflib import get_close_matches
@@ -26,7 +27,11 @@ from hypergraph.host.refs import BatchCommandReceipt, BatchRef, BatchSubmitRecei
 from hypergraph.host.views import (
     BATCH_COUNT_KEYS,
     BATCH_OUTCOME_RECOVERY_EXHAUSTED,
+    SUBMISSION_STATE_EXHAUSTED,
+    SUBMISSION_STATE_FINISHED,
+    SUBMISSION_STATE_PAUSED,
     TERMINAL_WORKFLOW_STATUSES,
+    BatchItemView,
     BatchUpdate,
     BatchView,
     RunQuery,
@@ -39,6 +44,27 @@ from hypergraph.host.views import (
 if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Run
     from hypergraph.host.home import RunHome
+
+
+def _now_iso() -> str:
+    """The timestamp a live (non-durable) preview carries."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _drain(queue: asyncio.Queue | None) -> list[tuple[str, dict[str, Any]]]:
+    """Take every preview already queued, without blocking.
+
+    Previews only exist when a worker runs in this process; ``None`` (no
+    preview bus) simply yields nothing to fan in.
+    """
+    if queue is None:
+        return []
+    drained: list[tuple[str, dict[str, Any]]] = []
+    while True:
+        try:
+            drained.append(queue.get_nowait())
+        except asyncio.QueueEmpty:
+            return drained
 
 
 def _parse_iso(value: str) -> datetime:
@@ -90,38 +116,79 @@ def _child_settled(submission: dict[str, Any], run: Run | None) -> bool:
     return is_child_settled(submission["state"], run.status.value if run is not None else None)
 
 
+def _child_bucket(submission: dict[str, Any], run: Run | None) -> tuple[str, str | None]:
+    """The one counts bucket and outcome for one child. THE bucket ladder.
+
+    Ordered most-settled-first so a child is never counted twice. The two
+    nonterminal buckets read the SUBMISSION, not the runs row, because that
+    is where "who owns this child right now" lives:
+
+    - ``paused``: the worker released it to a human. Its runs row still says
+      PAUSED, but nobody is executing it and it holds no active-Run slot.
+    - ``active``: a worker holds the claim — the only state that means
+      "being worked on".
+    - ``queued``: awaiting claim. This includes an answered child whose runs
+      row is still PAUSED: it is back in claim order, not parked, and not
+      yet running.
+    """
+    if run is not None and run.status in TERMINAL_WORKFLOW_STATUSES:
+        return run.status.value, run.status.value
+    state = submission["state"]
+    if state == SUBMISSION_STATE_EXHAUSTED:
+        return BATCH_OUTCOME_RECOVERY_EXHAUSTED, BATCH_OUTCOME_RECOVERY_EXHAUSTED
+    if state == SUBMISSION_STATE_PAUSED:
+        return "paused", None
+    if run is not None and state == "claimed":
+        return "active", None
+    if run is not None:
+        return "queued", None
+    if state == SUBMISSION_STATE_FINISHED:
+        # Finished with no runs row: stopped before first execution.
+        return "unstarted", None
+    return "queued", None
+
+
 def _build_batch_view(
     home_uri: str,
     batch: dict[str, Any],
     child_rows: dict[str, tuple[dict[str, Any], Run | None]],
     tripped: bool,
+    *,
+    admission_full: bool = False,
 ) -> BatchView:
     """Build the keyed BatchView from the manifest row and joined children.
 
-    Every manifest item lands in exactly one counts bucket; outcomes and
-    unstarted items stay keyed by logical item key in manifest order —
-    completion order never changes result identity.
+    Every manifest item lands in exactly one counts bucket and gets one
+    ``BatchItemView``; outcomes, items, and unstarted items stay keyed by
+    logical item key in manifest order — completion order never changes
+    result identity.
     """
     item_keys = list(json.loads(batch["items_json"]))
     counts = {key: 0 for key in BATCH_COUNT_KEYS}
+    items: dict[str, BatchItemView] = {}
     outcomes: dict[str, str | None] = {}
     unstarted: list[str] = []
     for key in item_keys:
         submission, run = child_rows[key]
-        if run is not None and run.status in TERMINAL_WORKFLOW_STATUSES:
-            bucket, outcome = run.status.value, run.status.value
-        elif submission["state"] == "exhausted":
-            bucket, outcome = BATCH_OUTCOME_RECOVERY_EXHAUSTED, BATCH_OUTCOME_RECOVERY_EXHAUSTED
-        elif run is not None:
-            bucket, outcome = "active", None
-        elif submission["state"] == "finished":
-            # Finished with no runs row: stopped before first execution.
-            bucket, outcome = "unstarted", None
+        bucket, outcome = _child_bucket(submission, run)
+        if bucket == "unstarted":
             unstarted.append(key)
-        else:
-            bucket, outcome = "queued", None
         counts[bucket] += 1
         outcomes[key] = outcome
+        workflow_id = submission["workflow_id"]
+        # The item's waiting condition comes from the SAME computation
+        # RunView uses, so an item view and client.get(item.run_ref) can
+        # never disagree about why the item waits.
+        view = _build_view(home_uri, workflow_id, submission, run, admission_full=admission_full)
+        items[key] = BatchItemView(
+            item_key=key,
+            run_ref=RunRef(home=home_uri, run_id=workflow_id),
+            workflow_id=workflow_id,
+            status=run.status if run is not None else None,
+            waiting=view.waiting if view is not None else None,
+            outcome=outcome,
+            started=run is not None,
+        )
     # Settlement uses THE settled-child rule, the same one the rerun gate
     # applies — a child is never settled for rerun and in flight for the view.
     settled = all(_child_settled(submission, run) for submission, run in child_rows.values())
@@ -130,12 +197,59 @@ def _build_batch_view(
         workflow_id=batch["workflow_id"],
         definition_id=DefinitionId(batch["definition_name"], batch["def_version"], batch["def_struct_hash"]),
         counts=counts,
+        items=items,
         outcomes=outcomes,
         unstarted_items=tuple(unstarted),
         settled=settled,
         tolerance_tripped=tripped,
         retry_of=batch["retry_of"],
     )
+
+
+def _parked_on_human(submission: dict[str, Any] | None) -> bool:
+    """True when a PAUSED runs row really means "waiting for a person".
+
+    A run's status stays ``PAUSED`` from the moment it parks until a worker
+    resumes it — including the whole interval after its answer commits,
+    while it sits in claim order. Only the SUBMISSION knows the difference:
+    ``paused`` is parked on a human, anything else means the answer already
+    landed and the Host owns the run again. A Tier-0 run (no submission) has
+    no such owner, so a paused one is parked by definition.
+    """
+    return submission is None or submission["state"] == SUBMISSION_STATE_PAUSED
+
+
+def _pending_condition(submission: dict[str, Any], admission_full: bool) -> WaitingCondition | None:
+    """Why an accepted-but-not-executing submission waits."""
+    state = submission["state"]
+    if state != "pending":
+        return WaitingCondition.QUEUED if state == "claimed" else None
+    if submission["start_at"] is not None and _parse_iso(submission["start_at"]) > datetime.now(timezone.utc):
+        return WaitingCondition.SCHEDULED
+    if submission["compat_state"] == "incompatible":
+        return WaitingCondition.VERSION_INCOMPATIBLE
+    if admission_full:
+        # Due, compatible, and claimable — held back only by the active-Run
+        # cap. A claimed submission is already executing and holds a slot,
+        # so it stays QUEUED until its runs row appears.
+        return WaitingCondition.ADMISSION_LIMITED
+    return WaitingCondition.QUEUED
+
+
+def _waiting_condition(submission: dict[str, Any] | None, run: Run | None, admission_full: bool) -> WaitingCondition | None:
+    """THE typed waiting computation, shared by RunView and BatchItemView."""
+    answered_but_unresumed = run is not None and run.status is WorkflowStatus.PAUSED and not _parked_on_human(submission)
+    if run is not None and run.status is WorkflowStatus.PAUSED and not answered_but_unresumed:
+        return WaitingCondition.PAUSED
+    if submission is None:
+        return None
+    if submission["state"] == SUBMISSION_STATE_EXHAUSTED:
+        return WaitingCondition.RECOVERY_EXHAUSTED
+    if run is not None and not answered_but_unresumed:
+        return None  # executing
+    # No runs row yet, or an answered pause back in claim order: both are
+    # waiting on the Host, and the submission says exactly what for.
+    return _pending_condition(submission, admission_full)
 
 
 def _build_view(
@@ -158,27 +272,7 @@ def _build_view(
     """
     if submission is None and run is None:
         return None
-    waiting = None
-    if run is not None and run.status is WorkflowStatus.PAUSED:
-        waiting = WaitingCondition.PAUSED
-    elif submission is not None and submission["state"] == "exhausted":
-        waiting = WaitingCondition.RECOVERY_EXHAUSTED
-    elif submission is not None and run is None:
-        if (
-            submission["state"] == "pending"
-            and submission["start_at"] is not None
-            and _parse_iso(submission["start_at"]) > datetime.now(timezone.utc)
-        ):
-            waiting = WaitingCondition.SCHEDULED
-        elif submission["state"] == "pending" and submission["compat_state"] == "incompatible":
-            waiting = WaitingCondition.VERSION_INCOMPATIBLE
-        elif submission["state"] == "pending" and admission_full:
-            # Due, compatible, and claimable — held back only by the
-            # active-Run cap. A claimed submission is already executing and
-            # holds a slot, so it stays QUEUED until its runs row appears.
-            waiting = WaitingCondition.ADMISSION_LIMITED
-        elif submission["state"] in ("pending", "claimed"):
-            waiting = WaitingCondition.QUEUED
+    waiting = _waiting_condition(submission, run, admission_full)
     definition_id = None
     if submission is not None:
         definition_name = submission["definition_name"]
@@ -441,7 +535,13 @@ class RunHomeClient:
             if batch is None:
                 return None
             child_rows = await self._home._batch_child_rows(ref.batch_id)
-            return _build_batch_view(self._home.uri, batch, child_rows, await self._home._batch_tripped(ref.batch_id))
+            return _build_batch_view(
+                self._home.uri,
+                batch,
+                child_rows,
+                await self._home._batch_tripped(ref.batch_id),
+                admission_full=await self._home._admission_is_full(),
+            )
         if not isinstance(ref, RunRef):
             raise TypeError(f"get() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         submission = await self._home._get_submission(ref.run_id)
@@ -455,7 +555,13 @@ class RunHomeClient:
             if batch is None:
                 return None
             child_rows = self._home._batch_child_rows_sync(ref.batch_id)
-            return _build_batch_view(self._home.uri, batch, child_rows, self._home._batch_tripped_sync(ref.batch_id))
+            return _build_batch_view(
+                self._home.uri,
+                batch,
+                child_rows,
+                self._home._batch_tripped_sync(ref.batch_id),
+                admission_full=self._home._admission_is_full_sync(),
+            )
         if not isinstance(ref, RunRef):
             raise TypeError(f"get() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         submission = self._home._get_submission_sync(ref.run_id)
@@ -875,61 +981,103 @@ class RunHomeClient:
         no updates, matching ``get()``'s honest ``None``.
         """
         if isinstance(ref, BatchRef):
-            async for update in self._watch_batch(ref, after=after, poll_interval=poll_interval):
-                yield update
-            return
-        if not isinstance(ref, RunRef):
+            stream: AsyncIterator[RunUpdate | BatchUpdate] = self._watch_batch(ref, after=after, poll_interval=poll_interval)
+        elif isinstance(ref, RunRef):
+            stream = self._watch_run(ref, after=after, poll_interval=poll_interval)
+        else:
             raise TypeError(f"watch() expects a RunRef or BatchRef, got {type(ref).__name__}.")
-        cursor_seq = _parse_cursor(after)
-        queue: asyncio.Queue | None = None
-        if self._bus is not None:
-            queue = self._bus.subscribe(ref.run_id)
+        # aclosing() runs the inner generator's finally (preview unsubscribe)
+        # when the caller abandons this one, instead of leaving it to GC.
+        async with aclosing(stream) as updates:
+            async for update in updates:
+                yield update
+
+    async def _run_updates_since(self, run_id: str, cursor: int, queue: asyncio.Queue | None) -> tuple[list[RunUpdate], int, bool]:
+        """Durable facts after ``cursor``, then whatever previews are queued.
+
+        Returns ``(updates, cursor, had_durable)``. Previews repeat the last
+        durable cursor, so only durable rows advance it.
+        """
+        rows = await self._home._read_run_updates(run_id, cursor)
+        updates = []
+        for seq, kind, payload, created_at in rows:
+            cursor = seq
+            updates.append(RunUpdate(cursor=f"seq:{seq}", durable=True, kind=kind, payload=json.loads(payload), timestamp=created_at))
+        updates.extend(
+            RunUpdate(cursor=f"seq:{cursor}", durable=False, kind=kind, payload=payload, timestamp=_now_iso()) for kind, payload in _drain(queue)
+        )
+        return updates, cursor, bool(rows)
+
+    async def _run_stream_ended(self, run_id: str) -> bool | None:
+        """Has this run settled? ``None`` means the ref is unknown here."""
+        run = await self._home.get_run_async(run_id)
+        if run is not None:
+            return run.status in TERMINAL_WORKFLOW_STATUSES
+        submission = await self._home._get_submission(run_id)
+        if submission is None:
+            # Unknown ref: nothing to replay, nothing to tail.
+            return None
+        # Stop-before-start (or never-admitted) work is settled once its
+        # submission is finished, with no runs row.
+        return submission["state"] == "finished"
+
+    async def _watch_run(self, ref: RunRef, *, after: str | int | None, poll_interval: float) -> AsyncIterator[RunUpdate]:
+        """Replay one run's durable sequence, then tail its previews."""
+        cursor = _parse_cursor(after)
+        queue = self._bus.subscribe(ref.run_id) if self._bus is not None else None
         terminal = False
         try:
             while True:
-                rows = await self._home._read_run_updates(ref.run_id, cursor_seq)
-                for seq, kind, payload, created_at in rows:
-                    cursor_seq = seq
-                    yield RunUpdate(
-                        cursor=f"seq:{seq}",
-                        durable=True,
-                        kind=kind,
-                        payload=json.loads(payload),
-                        timestamp=created_at,
-                    )
-                if queue is not None:
-                    while True:
-                        try:
-                            kind, payload = queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
-                        yield RunUpdate(
-                            cursor=f"seq:{cursor_seq}",
-                            durable=False,
-                            kind=kind,
-                            payload=payload,
-                            timestamp=datetime.now(timezone.utc).isoformat(),
-                        )
-                if rows:
+                updates, cursor, had_durable = await self._run_updates_since(ref.run_id, cursor, queue)
+                for update in updates:
+                    yield update
+                if had_durable:
                     continue
                 if terminal:
                     return
-                run = await self._home.get_run_async(ref.run_id)
-                if run is None:
-                    submission = await self._home._get_submission(ref.run_id)
-                    if submission is None:
-                        # Unknown ref: nothing to replay, nothing to tail.
-                        return
-                    # Stop-before-start (or never-admitted) work is settled
-                    # once its submission is finished, with no runs row.
-                    terminal = submission["state"] == "finished"
-                else:
-                    terminal = run.status in TERMINAL_WORKFLOW_STATUSES
+                ended = await self._run_stream_ended(ref.run_id)
+                if ended is None:
+                    return
+                terminal = ended
                 if not terminal:
                     await asyncio.sleep(poll_interval)
         finally:
-            if queue is not None and self._bus is not None:
-                self._bus.unsubscribe(ref.run_id, queue)
+            self._unsubscribe(ref.run_id, queue)
+
+    def _unsubscribe(self, run_id: str, queue: asyncio.Queue | None) -> None:
+        if queue is not None and self._bus is not None:
+            self._bus.unsubscribe(run_id, queue)
+
+    def _subscribe_children(self, child_rows: dict[str, Any]) -> dict[str, tuple[str, asyncio.Queue]]:
+        """One preview queue per manifest child, keyed by child run id."""
+        if self._bus is None:
+            return {}
+        return {
+            submission["workflow_id"]: (item_key, self._bus.subscribe(submission["workflow_id"]))
+            for item_key, (submission, _run) in child_rows.items()
+        }
+
+    async def _batch_updates_since(
+        self, batch_id: str, cursor: int, queues: dict[str, tuple[str, asyncio.Queue]]
+    ) -> tuple[list[BatchUpdate], int, bool]:
+        """Durable Batch facts after ``cursor``, then fanned-in child previews."""
+        rows = await self._home._read_batch_updates(batch_id, cursor)
+        updates = []
+        for bseq, kind, payload, created_at in rows:
+            cursor = bseq
+            updates.append(BatchUpdate(cursor=f"bseq:{bseq}", durable=True, kind=kind, payload=json.loads(payload), timestamp=created_at))
+        for run_id, (item_key, queue) in queues.items():
+            updates.extend(
+                BatchUpdate(
+                    cursor=f"bseq:{cursor}",
+                    durable=False,
+                    kind=kind,
+                    payload={**payload, "run_id": run_id, "item_key": item_key},
+                    timestamp=_now_iso(),
+                )
+                for kind, payload in _drain(queue)
+            )
+        return updates, cursor, bool(rows)
 
     async def _watch_batch(self, ref: BatchRef, *, after: str | int | None, poll_interval: float) -> AsyncIterator[BatchUpdate]:
         """Replay the per-Batch durable sequence, then tail child previews.
@@ -945,45 +1093,20 @@ class RunHomeClient:
         control fact, never end-of-stream: the per-item facts a stop causes
         commit after it.
         """
-        cursor_seq = _parse_batch_cursor(after)
+        cursor = _parse_batch_cursor(after)
         # The manifest is immutable, so the child set is read once.
-        child_rows = await self._home._batch_child_rows(ref.batch_id)
-        queues: dict[str, tuple[str | None, asyncio.Queue]] = {}
-        if self._bus is not None:
-            for item_key, (submission, _run) in child_rows.items():
-                queues[submission["workflow_id"]] = (item_key, self._bus.subscribe(submission["workflow_id"]))
+        queues = self._subscribe_children(await self._home._batch_child_rows(ref.batch_id))
         terminal = False
         try:
             while True:
-                rows = await self._home._read_batch_updates(ref.batch_id, cursor_seq)
-                for bseq, kind, payload, created_at in rows:
-                    cursor_seq = bseq
-                    yield BatchUpdate(
-                        cursor=f"bseq:{bseq}",
-                        durable=True,
-                        kind=kind,
-                        payload=json.loads(payload),
-                        timestamp=created_at,
-                    )
-                for run_id, (item_key, queue) in queues.items():
-                    while True:
-                        try:
-                            kind, payload = queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
-                        yield BatchUpdate(
-                            cursor=f"bseq:{cursor_seq}",
-                            durable=False,
-                            kind=kind,
-                            payload={**payload, "run_id": run_id, "item_key": item_key},
-                            timestamp=datetime.now(timezone.utc).isoformat(),
-                        )
-                if rows:
+                updates, cursor, had_durable = await self._batch_updates_since(ref.batch_id, cursor, queues)
+                for update in updates:
+                    yield update
+                if had_durable:
                     continue
                 if terminal:
                     return
-                batch = await self._home._get_batch(ref.batch_id)
-                if batch is None:
+                if await self._home._get_batch(ref.batch_id) is None:
                     # Unknown ref: nothing to replay, nothing to tail.
                     return
                 # A durable stop is NOT end-of-stream: `_write_batch_stop`
@@ -995,6 +1118,5 @@ class RunHomeClient:
                 if not terminal:
                     await asyncio.sleep(poll_interval)
         finally:
-            if self._bus is not None:
-                for run_id, (_item_key, queue) in queues.items():
-                    self._bus.unsubscribe(run_id, queue)
+            for run_id, (_item_key, queue) in queues.items():
+                self._unsubscribe(run_id, queue)

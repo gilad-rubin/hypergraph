@@ -39,6 +39,7 @@ from hypergraph import (
 from hypergraph.checkpointers.types import WorkflowStatus
 from hypergraph.host.batch import tolerance_trips
 from hypergraph.host.errors import RerunError
+from tests.test_host._batch_api import graph_of, submit_keyed
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -78,13 +79,13 @@ def _sequenced_graph(name: str, outcomes: list[str], runner: str = "sync") -> tu
     if runner == "sync":
 
         @node(output_name="out")
-        def compute(x: int) -> int:
+        def compute(x: int, item: str = "") -> int:
             return _outcome(x)
 
         return Graph([compute], name=name).with_runner(SyncRunner()), state
 
     @node(output_name="out")
-    async def compute_async(x: int) -> int:
+    async def compute_async(x: int, item: str = "") -> int:
         return _outcome(x)
 
     return Graph([compute_async], name=name).with_runner(AsyncRunner()), state
@@ -209,9 +210,10 @@ class TestScenarioFiveTable:
         """8 items, max_failed=2, max_failed_percent=25 → 3/3/2, 8 of 8."""
         graph, state = _sequenced_graph("ingest", ["ok", "ok", "ok", "fail", "fail", "fail"], runner)
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch(
-            "ingest",
-            items=_items(8),
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            _items(8),
             workflow_id="drop-42",
             tolerance=BatchTolerance(max_failed=2, max_failed_percent=25),
         )
@@ -228,6 +230,7 @@ class TestScenarioFiveTable:
             "partial": 0,
             "stopped": 0,
             "active": 0,
+            "paused": 0,
             "queued": 0,
             "recovery_exhausted": 0,
             "unstarted": 2,
@@ -261,9 +264,10 @@ class TestScenarioFiveTable:
         """A9: the trip lands at the very next bseq, one transaction."""
         graph, _state = _sequenced_graph("ingest", ["ok", "ok", "ok", "fail", "fail", "fail"])
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch(
-            "ingest",
-            items=_items(8),
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            _items(8),
             workflow_id="drop-42",
             tolerance=BatchTolerance(max_failed=2, max_failed_percent=25),
         )
@@ -296,9 +300,10 @@ class TestFixedDenominator:
         """4 of 8 at 50% is tolerated even though the first item is 1-of-1."""
         graph, state = _sequenced_graph("ingest", ["fail", "fail", "fail", "fail"], runner)
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch(
-            "ingest",
-            items=_items(8),
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            _items(8),
             workflow_id="drop-pct",
             tolerance=BatchTolerance(max_failed_percent=50),
         )
@@ -316,9 +321,10 @@ class TestFixedDenominator:
     async def test_trip_payload_reports_the_pinned_manifest_total(self, home):
         graph, state = _sequenced_graph("ingest", ["fail"] * 5)
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch(
-            "ingest",
-            items=_items(8),
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            _items(8),
             workflow_id="drop-pct2",
             tolerance=BatchTolerance(max_failed_percent=50),
         )
@@ -340,9 +346,10 @@ class TestFailureEquivalence:
     async def _batch_of(self, home, keys: int = 6, tolerance: BatchTolerance | None = None):
         graph, _state = _sequenced_graph("ingest", [])
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch(
-            "ingest",
-            items=_items(keys),
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            _items(keys),
             workflow_id="drop-eq",
             tolerance=tolerance or BatchTolerance(max_failed=0),
         )
@@ -353,9 +360,13 @@ class TestFailureEquivalence:
         host, receipt = await self._batch_of(home)
         batch_id = receipt.batch_ref.batch_id
 
-        # Paused: a durable pause waits on purpose; it never counts.
+        # Paused: a durable pause waits on purpose; it never counts. The
+        # submission state mirrors what `_release_submission` writes for a
+        # parked child, so the bucket ladder sees the real shape.
         home.create_run_sync("drop-eq:p-0", graph_name="ingest")
         home.update_run_status_sync("drop-eq:p-0", WorkflowStatus.PAUSED)
+        home._sync_db().execute("UPDATE host_submissions SET state = 'paused' WHERE workflow_id = 'drop-eq:p-0'")
+        home._sync_db().commit()
         assert home._batch_tripped_sync(batch_id) is False
 
         # Partial and stopped are terminal but NOT failure-equivalent.
@@ -375,6 +386,8 @@ class TestFailureEquivalence:
         # pending, and admission stayed open the whole way through.
         view = await host.client.get(receipt.batch_ref)
         assert view.counts["queued"] == 2
+        # Parked on a human is its own bucket, disjoint from active.
+        assert view.counts["paused"] == 1 and view.counts["active"] == 0
         assert view.tolerance_tripped is False
 
         # One failed child is one failure-equivalent child: the trip fires.
@@ -432,9 +445,10 @@ class TestFailureEquivalence:
         graph, state = _sequenced_graph("ingest", ["fail"] * 4)
         host = serve(graph, home=home, deployment_version="v1")
         start_at = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
-        receipt = await host.submit_batch(
-            "ingest",
-            items=_items(4),
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            _items(4),
             workflow_id="drop-delay",
             tolerance=BatchTolerance(max_failed=0),
             start_at=start_at,
@@ -454,9 +468,10 @@ class TestTripBehavior:
     async def test_claimed_children_settle_after_the_trip(self, home, runner):
         graph, state = _sequenced_graph("ingest", ["fail", "fail", "fail"], runner)
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch(
-            "ingest",
-            items=_items(8),
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            _items(8),
             workflow_id="drop-claimed",
             tolerance=BatchTolerance(max_failed=2),
         )
@@ -475,9 +490,10 @@ class TestTripBehavior:
     async def test_trip_is_recorded_exactly_once(self, home):
         graph, _state = _sequenced_graph("ingest", ["fail"] * 6)
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch(
-            "ingest",
-            items=_items(8),
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            _items(8),
             workflow_id="drop-once",
             tolerance=BatchTolerance(max_failed=2),
         )
@@ -493,9 +509,10 @@ class TestTripBehavior:
         """A crash cannot reopen a tripped Batch's admission."""
         graph, state = _sequenced_graph("ingest", ["fail", "fail", "fail"])
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch(
-            "ingest",
-            items=_items(8),
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            _items(8),
             workflow_id="drop-reopen",
             tolerance=BatchTolerance(max_failed=2),
         )
@@ -521,6 +538,7 @@ class TestTripBehavior:
             "partial": 0,
             "stopped": 0,
             "active": 0,
+            "paused": 0,
             "queued": 0,
             "recovery_exhausted": 0,
             "unstarted": 5,
@@ -531,7 +549,7 @@ class TestTripBehavior:
     async def test_batch_without_tolerance_never_closes_admission(self, home):
         graph, state = _sequenced_graph("ingest", ["fail"] * 8)
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch("ingest", items=_items(8), workflow_id="drop-notol")
+        receipt = await submit_keyed(host, graph_of(host, "ingest"), _items(8), workflow_id="drop-notol")
         await _drive(host, home)
 
         assert state["n"] == 8
@@ -544,9 +562,10 @@ class TestTripBehavior:
     async def test_watch_delivers_the_trip_and_terminates(self, home):
         graph, _state = _sequenced_graph("ingest", ["fail"] * 3)
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch(
-            "ingest",
-            items=_items(8),
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            _items(8),
             workflow_id="drop-watch",
             tolerance=BatchTolerance(max_failed=2),
         )
@@ -566,9 +585,10 @@ class TestSubsetRerun:
     async def _settled_source(self, home, workflow_id: str = "drop-42"):
         graph, state = _sequenced_graph("ingest", ["ok", "ok", "ok", "fail", "fail", "fail"])
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch(
-            "ingest",
-            items=_items(8),
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            _items(8),
             workflow_id=workflow_id,
             tolerance=BatchTolerance(max_failed=2, max_failed_percent=25),
         )
@@ -729,14 +749,14 @@ class TestSubsetRerun:
     async def test_rerun_rejects_children_still_in_flight(self, home):
         graph, _state = _sequenced_graph("ingest", [])
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch("ingest", items=_items(3), workflow_id="drop-live")
+        receipt = await submit_keyed(host, graph_of(host, "ingest"), _items(3), workflow_id="drop-live")
         with pytest.raises(RerunError, match="still in flight"):
             await host.client.rerun(receipt.batch_ref, item_keys=["p-0"])
 
     async def test_rerun_rejects_item_keys_for_a_run(self, home):
         graph, _state = _sequenced_graph("ingest", [])
         host = serve(graph, home=home, deployment_version="v1")
-        await host.submit("ingest", {"x": 1}, workflow_id="wf-solo")
+        await host.submit(graph_of(host, "ingest"), {"x": 1}, workflow_id="wf-solo")
         run_ref = RunRef(home=home.uri, run_id="wf-solo")
         with pytest.raises(TypeError, match="item_keys is only valid for a BatchRef"):
             await host.client.rerun(run_ref, item_keys=["p-0"])
@@ -793,7 +813,7 @@ class TestSubsetRerun:
         """The RunRef form keeps its ticket-03 shape and lineage."""
         graph, _state = _sequenced_graph("ingest", ["fail"])
         host = serve(graph, home=home, deployment_version="v1")
-        await host.submit("ingest", {"x": 1}, workflow_id="wf-one")
+        await host.submit(graph_of(host, "ingest"), {"x": 1}, workflow_id="wf-one")
         await _drive(host, home)
 
         receipt = await host.client.rerun(RunRef(home=home.uri, run_id="wf-one"))
@@ -861,9 +881,10 @@ class TestDurableStreamAccountsEveryItem:
         """
         graph, _state = _sequenced_graph("ingest", ["fail", "fail", "fail"], runner)
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch(
-            "ingest",
-            items=_items(8),
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            _items(8),
             workflow_id="drop-a9",
             tolerance=BatchTolerance(max_failed=2),
         )
@@ -924,7 +945,7 @@ class TestDurableStreamAccountsEveryItem:
         """
         graph, state = _sequenced_graph("ingest", ["ok", "fail"], runner)
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch("ingest", items=_items(6), workflow_id="drop-a9-stop")
+        receipt = await submit_keyed(host, graph_of(host, "ingest"), _items(6), workflow_id="drop-a9-stop")
         claimed = await _claim(host, home, limit=4)
         assert len(claimed) == 4
         for row in claimed[:2]:
@@ -991,7 +1012,7 @@ class TestDurableStreamAccountsEveryItem:
         """
         graph, state = _sequenced_graph("ingest", ["ok", "fail"])
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch("ingest", items=_items(6), workflow_id="drop-a9-live-stop")
+        receipt = await submit_keyed(host, graph_of(host, "ingest"), _items(6), workflow_id="drop-a9-live-stop")
 
         observed: list = []
 
@@ -1042,7 +1063,7 @@ class TestDurableStreamAccountsEveryItem:
         """
         graph, _state = _sequenced_graph("ingest", ["ok", "fail"])
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch("ingest", items=_items(4), workflow_id="drop-a9-parked")
+        receipt = await submit_keyed(host, graph_of(host, "ingest"), _items(4), workflow_id="drop-a9-parked")
         claimed = await _claim(host, home)
         assert len(claimed) == 4
         for row in claimed[:2]:
@@ -1096,9 +1117,10 @@ class TestDurableStreamAccountsEveryItem:
         """One item is accounted once: by the trip fact OR by its own fact."""
         graph, _state = _sequenced_graph("ingest", ["ok", "ok", "ok", "fail", "fail", "fail"])
         host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit_batch(
-            "ingest",
-            items=_items(8),
+        receipt = await submit_keyed(
+            host,
+            graph_of(host, "ingest"),
+            _items(8),
             workflow_id="drop-a9-drive",
             tolerance=BatchTolerance(max_failed=2),
         )

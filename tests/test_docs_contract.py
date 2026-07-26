@@ -949,6 +949,7 @@ def test_durable_host_docs_pin_public_contract() -> None:
     from hypergraph import (
         BaseRunner,
         BatchCommandReceipt,
+        BatchItemView,
         BatchRef,
         BatchSubmitReceipt,
         BatchTolerance,
@@ -1045,24 +1046,34 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert tuple(inspect.signature(serve).parameters) == ("graphs", "home", "deployment_version", "accepts")
     from hypergraph.host import Host
 
+    # Graph-first submission (#342): the served Graph object IS the selector,
+    # resolved by its own pinned identity. A Definition-name string is not.
     assert tuple(inspect.signature(Host.submit).parameters) == (
         "self",
-        "definition_name",
-        "inputs",
+        "graph",
+        "values",
         "workflow_id",
         "start_at",
         "source_ref",
         "recovery_cap",
     )
     assert tuple(inspect.signature(Host.submit_sync).parameters) == tuple(inspect.signature(Host.submit).parameters)
+    # Batch submission reuses runner map's expansion vocabulary and freezes
+    # it into the manifest; key_by names the input that IS the item key.
+    # Deliberately absent: max_concurrency (Host admission owns durable
+    # concurrency) and error_handling (BatchTolerance owns durable failure).
     assert tuple(inspect.signature(Host.submit_batch).parameters) == (
         "self",
-        "definition_name",
-        "items",
+        "graph",
+        "values",
+        "map_over",
+        "map_mode",
+        "key_by",
         "workflow_id",
         "tolerance",
         "start_at",
         "source_ref",
+        "recovery_cap",
     )
     assert tuple(inspect.signature(Host.submit_batch_sync).parameters) == tuple(inspect.signature(Host.submit_batch).parameters)
     assert tuple(inspect.signature(Host.fork).parameters) == ("self", "ref", "into", "reason", "source_ref")
@@ -1109,12 +1120,14 @@ def test_durable_host_docs_pin_public_contract() -> None:
         "workflow_id",
         "definition_id",
         "counts",
+        "items",
         "outcomes",
         "unstarted_items",
         "settled",
         "tolerance_tripped",
         "retry_of",
     )
+    assert tuple(BatchItemView.__dataclass_fields__) == ("item_key", "run_ref", "workflow_id", "status", "waiting", "outcome", "started")
     assert tuple(BatchUpdate.__dataclass_fields__) == ("cursor", "durable", "kind", "payload", "timestamp")
     assert {member.name for member in WaitingCondition} == {
         "QUEUED",

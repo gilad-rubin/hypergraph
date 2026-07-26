@@ -597,11 +597,13 @@ All three subclass `PauseSettlementError`, which is both a `RuntimeError` and a 
 
 Unlike a node boundary, a pause slot is **not** pruned by retention compaction: a boundary's state is derived from `steps`, but a slot carries the question and the human answer — truth in its own right, not a projection of the journal.
 
-Settlement records durable resume input; it does not itself resume the run. Replaying it is an ordinary run call:
+At this layer settlement records durable resume input; it does not itself resume the run. Replaying it is an ordinary run call:
 
 ```python
 await runner.run(graph, {slot.response_key: slot.answer}, workflow_id="refund-c-42")
 ```
+
+A [`RunHome`](host.md) settles through this same seam but owns the surrounding transaction, so it commits **more** in the same unit of work: the answer plus the submission's re-admission, which is what makes a hosted run continue on its own. See [Answering a Pause](host.md#answering-a-pause).
 
 ## Backend Comparison
 

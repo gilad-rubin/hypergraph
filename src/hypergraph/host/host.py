@@ -1,11 +1,18 @@
 """Host and serve() — the durable host's ownership seam.
 
-The Host owns new work (``submit``) and worker lifecycle
+The Host owns new work (``submit``, ``submit_batch``) and worker lifecycle
 (``work_forever``, bounded drain, lock release). It exposes the one
 ``RunHomeClient`` as ``host.client`` and adds no pass-through verb copies.
 Direct runner execution (Tier 0) is unchanged: the host clones each
 Definition's runner onto the Home's checkpointer and never mutates the
 supplied runner.
+
+**Submission is graph-first.** Every new-work verb takes the served
+``Graph`` object and resolves its pinned Definition internally; a caller
+never types a Definition-name string. There are exactly two new-work verbs
+— ``submit`` (one durable Run) and ``submit_batch`` (an immutable set of
+independent durable Runs) — and deliberately no ``host.map``: a Durable
+Batch returns a durable receipt, not an immediate ``MapResult``.
 """
 
 from __future__ import annotations
@@ -13,20 +20,20 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.host._bus import _BusEventProcessor, _PreviewBus, _register_bus
-from hypergraph.host.batch import BatchTolerance, validate_batch_items
+from hypergraph.host.batch import BatchTolerance, MapMode, expand_batch_items
 from hypergraph.host.client import RunHomeClient
 from hypergraph.host.definition import DefinitionId
-from hypergraph.host.errors import ForkCompatibilityError, HostError
+from hypergraph.host.errors import ForkCompatibilityError, HostError, UnservedGraphError
 from hypergraph.host.fingerprint import batch_fingerprint, start_fingerprint
 from hypergraph.host.home import RunHome, _normalize_utc_iso
 from hypergraph.host.refs import BatchRef, BatchSubmitReceipt, RunRef, SubmitReceipt
-from hypergraph.host.views import TERMINAL_WORKFLOW_STATUSES
+from hypergraph.host.views import SUBMISSION_STATE_FINISHED, SUBMISSION_STATE_PAUSED, TERMINAL_WORKFLOW_STATUSES
 from hypergraph.host.worker import _drain, _WorkerLock
 
 if TYPE_CHECKING:
@@ -105,15 +112,21 @@ class Host:
 
     async def submit(
         self,
-        definition_name: str,
-        inputs: dict[str, Any],
+        graph: Graph,
+        values: dict[str, Any],
         *,
         workflow_id: str | None = None,
         start_at: datetime | str | None = None,
         source_ref: str | None = None,
         recovery_cap: int = 3,
     ) -> SubmitReceipt:
-        """Accept one run into the Run Home BEFORE any execution.
+        """Accept ONE durable Run into the Run Home BEFORE any execution.
+
+        The call reads like ``runner.run(graph, values)`` and returns a
+        durable receipt instead of a result::
+
+            receipt = await host.submit(ingestion_graph, {"work_item_id": "work-a81f43c129"})
+            receipt.run_ref     # inert, serializable — safe to store
 
         The submission row and its first durable update commit in one
         transaction before this method returns — process loss afterwards
@@ -126,8 +139,13 @@ class Host:
         raises ``WorkflowIdConflictError``.
 
         Args:
-            definition_name: A Definition named in ``serve()``.
-            inputs: JSON-serializable graph inputs.
+            graph: A Graph this host serves. Its Definition is resolved from
+                the object's own pinned identity — name plus
+                ``structural_hash`` — so no call site types a Definition
+                name. An unserved Graph raises ``UnservedGraphError``
+                immediately: a submission must never name code no worker can
+                execute.
+            values: JSON-serializable graph inputs.
             workflow_id: Optional explicit id; one is generated when omitted.
             start_at: Optional delayed start (datetime or ISO string).
             source_ref: Optional caller provenance marker.
@@ -136,11 +154,9 @@ class Host:
                 instead of resuming it (0 brakes on the first re-adoption).
                 Not part of the dedup fingerprint.
         """
-        _validate_recovery_cap(recovery_cap)
-        definition = self._require_definition(definition_name)
-        inputs_json = self._serialize_inputs(inputs)
-        start_at_iso = _normalize_start_at(start_at)
-        workflow_id = workflow_id or f"{definition_name}-{uuid.uuid4().hex[:12]}"
+        definition, inputs_json, start_at_iso, workflow_id = self._prepare_run(
+            graph, values, workflow_id=workflow_id, start_at=start_at, recovery_cap=recovery_cap
+        )
         created, _row = await self._home._submit(
             workflow_id,
             definition.name,
@@ -156,8 +172,8 @@ class Host:
 
     def submit_sync(
         self,
-        definition_name: str,
-        inputs: dict[str, Any],
+        graph: Graph,
+        values: dict[str, Any],
         *,
         workflow_id: str | None = None,
         start_at: datetime | str | None = None,
@@ -165,11 +181,9 @@ class Host:
         recovery_cap: int = 3,
     ) -> SubmitReceipt:
         """Sync mirror of ``submit``."""
-        _validate_recovery_cap(recovery_cap)
-        definition = self._require_definition(definition_name)
-        inputs_json = self._serialize_inputs(inputs)
-        start_at_iso = _normalize_start_at(start_at)
-        workflow_id = workflow_id or f"{definition_name}-{uuid.uuid4().hex[:12]}"
+        definition, inputs_json, start_at_iso, workflow_id = self._prepare_run(
+            graph, values, workflow_id=workflow_id, start_at=start_at, recovery_cap=recovery_cap
+        )
         created, _row = self._home._submit_sync(
             workflow_id,
             definition.name,
@@ -183,22 +197,49 @@ class Host:
         )
         return self._receipt(workflow_id, created)
 
+    def _prepare_run(
+        self,
+        graph: Graph,
+        values: dict[str, Any],
+        *,
+        workflow_id: str | None,
+        start_at: datetime | str | None,
+        recovery_cap: int,
+    ) -> tuple[_Definition, str, str | None, str]:
+        """Validate one Run submission and normalize its stored fields."""
+        _validate_recovery_cap(recovery_cap)
+        definition = self._require_definition(graph)
+        inputs_json = self._serialize_inputs(values)
+        start_at_iso = _normalize_start_at(start_at)
+        return definition, inputs_json, start_at_iso, workflow_id or f"{definition.name}-{uuid.uuid4().hex[:12]}"
+
     def _prepare_batch(
         self,
-        definition_name: str,
-        items: Mapping[str, Mapping[str, Any]],
+        graph: Graph,
+        values: Mapping[str, Any],
         *,
+        map_over: str | Sequence[str],
+        map_mode: MapMode,
+        key_by: str,
         workflow_id: str,
         tolerance: BatchTolerance | None,
         start_at: datetime | str | None,
+        recovery_cap: int,
     ) -> tuple[_Definition, list[tuple[str, str]], str | None, str | None, str]:
-        """Validate a Batch submission and compute its start fingerprint."""
+        """Expand and freeze a Batch submission, then fingerprint it.
+
+        Expansion runs HERE — before the acceptance transaction — so the
+        transaction only ever writes the frozen manifest (PRD 0019: the
+        accepted manifest is all-or-nothing, and mutating the caller's
+        collection afterwards cannot change durable intent).
+        """
         if not isinstance(workflow_id, str) or not workflow_id:
             raise ValueError(f"submit_batch() requires a non-empty workflow_id string, got {workflow_id!r}.")
         if tolerance is not None and not isinstance(tolerance, BatchTolerance):
             raise TypeError(f"submit_batch() tolerance must be a BatchTolerance or None, got {type(tolerance).__name__}.")
-        definition = self._require_definition(definition_name)
-        pairs = validate_batch_items(items)
+        _validate_recovery_cap(recovery_cap)
+        definition = self._require_definition(graph)
+        pairs = expand_batch_items(values, map_over=map_over, map_mode=map_mode, key_by=key_by)
         start_at_iso = _normalize_start_at(start_at)
         tolerance_json = json.dumps(tolerance.to_dict()) if tolerance is not None else None
         fingerprint = batch_fingerprint(
@@ -211,24 +252,47 @@ class Host:
 
     async def submit_batch(
         self,
-        definition_name: str,
-        items: Mapping[str, Mapping[str, Any]],
+        graph: Graph,
+        values: Mapping[str, Any],
         *,
+        map_over: str | Sequence[str],
+        map_mode: MapMode = "zip",
+        key_by: str,
         workflow_id: str,
         tolerance: BatchTolerance | None = None,
         start_at: datetime | str | None = None,
         source_ref: str | None = None,
+        recovery_cap: int = 3,
     ) -> BatchSubmitReceipt:
-        """Accept an immutable Batch into the Run Home BEFORE any execution.
+        """Accept an immutable Batch of independent durable Runs.
+
+        The call reads like ``runner.map(graph, values, map_over=...)`` and
+        returns a durable receipt instead of a ``MapResult``::
+
+            receipt = await host.submit_batch(
+                ingestion_graph,
+                {"work_item_id": work_item_ids},
+                map_over="work_item_id",
+                key_by="work_item_id",
+                workflow_id=batch_id,
+            )
+
+        Only the **input-expansion** vocabulary is borrowed from
+        ``runner.map``. Map execution controls are deliberately absent
+        because their durable equivalents already exist: active-Run
+        admission owns concurrency (``home.max_active_runs``), Batch
+        ``tolerance`` owns failure policy, and ``watch`` owns incremental
+        observation.
 
         ONE transaction persists the immutable manifest (Definition
         identity, item keys with pinned inputs, tolerance declaration,
-        start intent), one child submission per unique item key (child
-        workflow id ``<workflow_id>:<item_key>``), and the ``manifest``
-        batch update at ``bseq=1`` — a partial Batch can never appear
-        accepted. Children are ordinary submissions: they flow through the
-        existing claim/execute/stop/recovery machinery unchanged, each
-        carrying its pinned per-item inputs.
+        start intent), one child submission per item key (child workflow id
+        ``<workflow_id>:<item_key>``), and the ``manifest`` batch update at
+        ``bseq=1`` — a partial Batch can never appear accepted. Children are
+        ordinary submissions and independent Runs, never one parent graph
+        Run: they flow through the existing claim/execute/pause/stop/
+        recovery machinery unchanged, each carrying its pinned per-item
+        inputs.
 
         Dedup mirrors ``submit``: a fingerprint-identical (Definition
         identity + manifest + tolerance + ``start_at``) nonterminal
@@ -240,11 +304,21 @@ class Host:
         conflict too.
 
         Args:
-            definition_name: A Definition named in ``serve()``.
-            items: Mapping of unique, non-empty logical item keys to
-                JSON-serializable per-item inputs. Duplicate keys and an
-                empty manifest are ``ValueError``; the mapping order is the
-                manifest order used for keyed outcomes.
+            graph: A Graph this host serves (see ``submit``). An unserved
+                Graph raises ``UnservedGraphError``.
+            values: Runner-shaped inputs. Inputs named in ``map_over`` hold
+                per-item collections; every other input is broadcast to
+                every child verbatim.
+            map_over: Input name (or names) to expand, exactly as
+                ``runner.map`` reads it.
+            map_mode: ``"zip"`` (parallel iteration, the default) or
+                ``"product"`` (cartesian), exactly as ``runner.map`` reads
+                it.
+            key_by: Required. Names one expanded input whose per-item
+                JSON-safe scalar value becomes the logical item key. Missing,
+                empty, non-scalar, and duplicate keys are refused before
+                acceptance (``ItemKeyError``) — a generated map index is
+                never durable identity.
             workflow_id: Required explicit Batch id (dedup identity).
             tolerance: Optional ``BatchTolerance`` pinned into the manifest
                 (part of the dedup fingerprint). Once failure-equivalent
@@ -254,13 +328,18 @@ class Host:
             start_at: Optional delayed start (datetime or ISO string),
                 applied to every child.
             source_ref: Optional caller provenance marker.
+            recovery_cap: Recovery brake budget applied to every child.
         """
         definition, pairs, start_at_iso, tolerance_json, fingerprint = self._prepare_batch(
-            definition_name,
-            items,
+            graph,
+            values,
+            map_over=map_over,
+            map_mode=map_mode,
+            key_by=key_by,
             workflow_id=workflow_id,
             tolerance=tolerance,
             start_at=start_at,
+            recovery_cap=recovery_cap,
         )
         batch_id = f"b-{uuid.uuid4().hex[:12]}"
         created, row = await self._home._submit_batch(
@@ -274,6 +353,7 @@ class Host:
             start_at_iso,
             source_ref,
             fingerprint=fingerprint,
+            recovery_cap=recovery_cap,
         )
         return BatchSubmitReceipt(
             batch_ref=BatchRef(home=self._home.uri, batch_id=row["batch_id"]),
@@ -283,21 +363,29 @@ class Host:
 
     def submit_batch_sync(
         self,
-        definition_name: str,
-        items: Mapping[str, Mapping[str, Any]],
+        graph: Graph,
+        values: Mapping[str, Any],
         *,
+        map_over: str | Sequence[str],
+        map_mode: MapMode = "zip",
+        key_by: str,
         workflow_id: str,
         tolerance: BatchTolerance | None = None,
         start_at: datetime | str | None = None,
         source_ref: str | None = None,
+        recovery_cap: int = 3,
     ) -> BatchSubmitReceipt:
         """Sync mirror of ``submit_batch``."""
         definition, pairs, start_at_iso, tolerance_json, fingerprint = self._prepare_batch(
-            definition_name,
-            items,
+            graph,
+            values,
+            map_over=map_over,
+            map_mode=map_mode,
+            key_by=key_by,
             workflow_id=workflow_id,
             tolerance=tolerance,
             start_at=start_at,
+            recovery_cap=recovery_cap,
         )
         batch_id = f"b-{uuid.uuid4().hex[:12]}"
         created, row = self._home._submit_batch_sync(
@@ -311,6 +399,7 @@ class Host:
             start_at_iso,
             source_ref,
             fingerprint=fingerprint,
+            recovery_cap=recovery_cap,
         )
         return BatchSubmitReceipt(
             batch_ref=BatchRef(home=self._home.uri, batch_id=row["batch_id"]),
@@ -318,7 +407,7 @@ class Host:
             duplicate=not created,
         )
 
-    async def fork(self, ref: RunRef, *, into: str, reason: str, source_ref: str | None = None) -> SubmitReceipt:
+    async def fork(self, ref: RunRef, *, into: Graph, reason: str, source_ref: str | None = None) -> SubmitReceipt:
         """Migrate an existing run to a served Definition via explicit fork.
 
         The new submission pins the TARGET Definition identity, keeps the
@@ -331,7 +420,9 @@ class Host:
 
         Args:
             ref: The source run's inert address.
-            into: Name of a Definition served by this host.
+            into: The target Graph, served by this host. Like ``submit``,
+                migration names loaded code — never a Definition-name
+                string.
             reason: Non-empty migration reason, stored on the submission.
             source_ref: Opaque caller provenance recorded on the NEW
                 submission, exactly as ``submit`` and ``stop`` record it
@@ -365,7 +456,7 @@ class Host:
         )
         return self._receipt(workflow_id, created)
 
-    def fork_sync(self, ref: RunRef, *, into: str, reason: str, source_ref: str | None = None) -> SubmitReceipt:
+    def fork_sync(self, ref: RunRef, *, into: Graph, reason: str, source_ref: str | None = None) -> SubmitReceipt:
         """Sync mirror of ``fork``."""
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError(f"fork() requires a non-empty reason string naming why the migration happens, got {reason!r}.")
@@ -392,17 +483,38 @@ class Host:
         )
         return self._receipt(workflow_id, created)
 
-    def _require_definition(self, definition_name: str) -> _Definition:
-        definition = self._definitions.get(definition_name)
-        if definition is None:
-            raise ValueError(f"Unknown definition {definition_name!r}. This host serves: {sorted(self._definitions)}.")
+    def _require_definition(self, graph: Graph) -> _Definition:
+        """Resolve the served Definition a Graph object names, or refuse.
+
+        THE graph-first resolution point, shared by ``submit``,
+        ``submit_batch``, and ``fork``. Identity is the Graph's own pinned
+        pair — name plus ``structural_hash`` — never object identity, so
+        the served object and an equivalent rebuild (or the pre-
+        ``with_runner`` original, which keeps both) resolve alike, while a
+        graph whose topology drifted is refused rather than silently
+        submitted against a Definition it no longer matches.
+        """
+        from hypergraph.graph import Graph as _Graph
+
+        if not isinstance(graph, _Graph):
+            raise TypeError(
+                f"submit() expects the served Graph object, got {type(graph).__name__}. "
+                "Durable submission is graph-first: pass the Graph you passed to serve(...), not a Definition name."
+            )
+        definition = self._definitions.get(graph.name or "")
+        if definition is None or definition.struct_hash != graph.structural_hash:
+            raise UnservedGraphError(
+                graph.name or "",
+                graph.structural_hash,
+                {name: served.struct_hash for name, served in self._definitions.items()},
+            )
         return definition
 
     @staticmethod
-    def _serialize_inputs(inputs: dict[str, Any]) -> str:
-        if not isinstance(inputs, dict):
-            raise TypeError(f"submit() inputs must be a dict, got {type(inputs).__name__}.")
-        return json.dumps(inputs)
+    def _serialize_inputs(values: dict[str, Any]) -> str:
+        if not isinstance(values, dict):
+            raise TypeError(f"submit() values must be a dict, got {type(values).__name__}.")
+        return json.dumps(values)
 
     def _receipt(self, workflow_id: str, created: bool) -> SubmitReceipt:
         return SubmitReceipt(
@@ -500,41 +612,67 @@ class Host:
 
         A command is marked applied only when the observation is final:
         terminal runs (or finished submissions) are applied with no effect,
-        and executing runs receive ``runner.stop(workflow_id, info=...)``
-        once the run is actually registered with the runner. Everything
-        else stays unapplied for a later cycle — a stop targeting a run
-        that never started is handled by the pre-run gate in
+        a run parked on a durable pause is stopped where it sits, and
+        executing runs receive ``runner.stop(workflow_id, info=...)`` once
+        the run is actually registered with the runner. Everything else
+        stays unapplied for a later cycle — a stop targeting a run that
+        never started is handled by the pre-run gate in
         ``_execute_submission``; a stop targeting a crashed-but-resumable
-        run, or one parked on a durable pause, lands once that run executes
-        again. Neither is terminal, so the durable intent waits rather than
-        being marked applied against a run that never saw it.
+        run lands once that run executes again. Neither is terminal, so the
+        durable intent waits rather than being marked applied against a run
+        that never saw it.
         """
         commands = await self._home._unapplied_stop_commands()
         if not commands:
             return
-        applied: list[int] = []
-        for command_id, workflow_id, info in commands:
-            submission = await self._home._get_submission(workflow_id)
-            run = await self._home.get_run_async(workflow_id)
-            if run is not None and run.status in TERMINAL_WORKFLOW_STATUSES:
-                applied.append(command_id)
-                continue
-            if submission is not None and submission["state"] == "finished":
-                applied.append(command_id)
-                continue
-            if workflow_id not in executing or submission is None:
-                continue
-            definition = self._definitions.get(submission["definition_name"])
-            if definition is None:
-                continue
-            if not definition.runner.has_active_run(workflow_id):
-                # Claimed and executing, but the runner has not registered
-                # the workflow yet — stop() would be a no-op. Retry next
-                # cycle; the pre-run gate covers the never-started case.
-                continue
-            definition.runner.stop(workflow_id, info=info)
-            applied.append(command_id)
+        applied = [command_id for command_id, workflow_id, info in commands if await self._apply_one_stop(workflow_id, info, executing)]
         await self._home._apply_stop_commands(applied)
+
+    async def _apply_one_stop(self, workflow_id: str, info: Any, executing: set[str]) -> bool:
+        """Deliver one durable stop; True once the observation is final."""
+        submission = await self._home._get_submission(workflow_id)
+        run = await self._home.get_run_async(workflow_id)
+        if run is not None and run.status in TERMINAL_WORKFLOW_STATUSES:
+            return True
+        if submission is not None and submission["state"] == SUBMISSION_STATE_FINISHED:
+            return True
+        if submission is not None and submission["state"] == SUBMISSION_STATE_PAUSED:
+            # Parked on a person, so there is no live execution to cooperate
+            # with — and none will exist unless somebody answers. Waiting
+            # here meant a cancelled review item stayed open forever, so the
+            # Home settles the parked run instead (atomically, and losing to
+            # an answer that commits first).
+            return await self._home._apply_stop_to_paused(workflow_id)
+        if workflow_id not in executing or submission is None:
+            return False
+        definition = self._definitions.get(submission["definition_name"])
+        if definition is None or not definition.runner.has_active_run(workflow_id):
+            # Claimed and executing, but the runner has not registered the
+            # workflow yet — stop() would be a no-op. Retry next cycle; the
+            # pre-run gate covers the never-started case.
+            return False
+        definition.runner.stop(workflow_id, info=info)
+        return True
+
+    async def _resume_values(self, workflow_id: str) -> dict[str, Any] | None:
+        """The settled answer port to resume an answered pause with, or None.
+
+        A worker resumes an answered child with **only** ``{response_key:
+        answer}`` read from the persisted slot. It never resupplies the
+        submission's pinned start inputs: those were consumed on the first
+        attempt and live in checkpoint state, so replaying them would be an
+        input override (``InputOverrideRequiresForkError``) rather than a
+        resume. The answer port is the one payload strict checkpoint resume
+        accepts on the same workflow id.
+
+        None means "resume with nothing" — an unanswered parked run
+        re-adopted by the restart scan simply replays to its interrupt and
+        parks again on the same occurrence.
+        """
+        slot = await self._home.get_pause_slot(workflow_id)
+        if slot is None or slot.settled_at is None:
+            return None
+        return {slot.response_key: slot.answer}
 
     async def _execute_submission(self, row: dict[str, Any]) -> None:
         """Execute one claimed submission through its Definition's runner."""
@@ -564,11 +702,12 @@ class Host:
             # the submission below.
             existing_run = None
         if existing_run is not None:
-            # Crash resume: the runs row already exists. Checkpoint state
-            # supplies the consumed inputs — passing them again raises
+            # Resume: the runs row already exists. Checkpoint state supplies
+            # the consumed inputs — passing them again raises
             # InputOverrideRequiresForkError — and lineage was recorded by
-            # the first attempt, so retry/fork kwargs stay off too.
-            inputs = None
+            # the first attempt, so retry/fork kwargs stay off too. The one
+            # payload a resume may carry is a settled answer port.
+            inputs = await self._resume_values(workflow_id)
         elif row["retry_of"]:
             # Rerun: explicit workflow_id + retry_from is a legal runner
             # combination (validate_lineage_request only forbids
@@ -597,6 +736,68 @@ class Host:
         await self._home._release_submission(workflow_id)
 
 
+def _definition_from(graph: Graph, *, home: RunHome, deployment_version: str, taken: Collection[str]) -> _Definition:
+    """Validate one served graph and bind its runner to the Run Home.
+
+    ``taken`` is the set of Definition names already claimed in this
+    ``serve()`` call — two graphs of the same name would make Definition
+    identity ambiguous at submission time.
+    """
+    from hypergraph.graph import Graph as GraphType
+    from hypergraph.runners.base import BaseRunner
+
+    if not isinstance(graph, GraphType):
+        raise TypeError(f"serve() expects Graph instances, got {type(graph).__name__}.")
+    if not graph.name:
+        raise ValueError("serve() requires every graph to have a name. Pass name=... to Graph(...) and retry.")
+    if graph.name in taken:
+        raise ValueError(f"Duplicate definition name {graph.name!r} in serve().")
+    runner = graph.bound_runner
+    if runner is None:
+        raise ValueError(f"Graph {graph.name!r} has no bound runner. Call graph.with_runner(runner) before serve().")
+    if not isinstance(runner, BaseRunner):
+        raise TypeError(f"Graph {graph.name!r} carries {type(runner).__name__}, not a BaseRunner. Use graph.with_runner(SyncRunner()/AsyncRunner()).")
+    capabilities = runner.capabilities
+    if not capabilities.supports_checkpointing and not capabilities.supports_events:
+        # Statically incapable runners (e.g. DaftRunner) fail loudly at
+        # construction. An unbound SyncRunner/AsyncRunner also reports
+        # supports_checkpointing=False (it flips True once bound), so the
+        # capability alone is not decisive — with_checkpointer() has the
+        # final say on whether a binding seam exists at all.
+        raise ValueError(
+            f"{type(runner).__name__} cannot serve durable runs: it has no checkpointer/event support. Bind a SyncRunner or AsyncRunner instead."
+        )
+    try:
+        bound_runner = runner.with_checkpointer(home)
+    except TypeError as exc:
+        raise ValueError(
+            f"{type(runner).__name__} cannot serve durable runs: it has no checkpointer/event support. Bind a SyncRunner or AsyncRunner instead."
+        ) from exc
+    return _Definition(
+        name=graph.name,
+        graph=graph,
+        runner=bound_runner,
+        version=deployment_version,
+        struct_hash=graph.structural_hash,
+    )
+
+
+def _validate_accepts(accepts: tuple[DefinitionId, ...], definitions: dict[str, _Definition]) -> None:
+    """Refuse an ``accepts=`` declaration this deployment could never drain."""
+    for entry in accepts:
+        served = definitions.get(entry.name)
+        if served is None:
+            raise ValueError(
+                f"serve() accepts= entry {entry.to_dict()!r} names Definition {entry.name!r}, which this host does not serve. "
+                "An accepts declaration must name a served Definition so its parked submissions can actually drain."
+            )
+        if entry.structural_hash != served.struct_hash:
+            raise ValueError(
+                f"serve() accepts= entry {entry.to_dict()!r} pins structural_hash {entry.structural_hash!r}, but the served "
+                f"Definition {entry.name!r} has hash {served.struct_hash!r}. accepts= requires structural compatibility (ADR 0007)."
+            )
+
+
 def serve(*graphs: Graph, home: RunHome, deployment_version: str = "", accepts: tuple[DefinitionId, ...] = ()) -> Host:
     """Bind Definitions to a Run Home and return the Host.
 
@@ -620,9 +821,6 @@ def serve(*graphs: Graph, home: RunHome, deployment_version: str = "", accepts: 
             served Definition's hash — anything else is a ``ValueError``
             (an undrainable declaration would park submissions forever).
     """
-    from hypergraph.graph import Graph
-    from hypergraph.runners.base import BaseRunner
-
     if not isinstance(home, RunHome):
         raise TypeError(f"serve() requires home=RunHome.open(...), got {type(home).__name__}.")
     if not graphs:
@@ -633,55 +831,9 @@ def serve(*graphs: Graph, home: RunHome, deployment_version: str = "", accepts: 
 
     definitions: dict[str, _Definition] = {}
     for graph in graphs:
-        if not isinstance(graph, Graph):
-            raise TypeError(f"serve() expects Graph instances, got {type(graph).__name__}.")
-        if not graph.name:
-            raise ValueError("serve() requires every graph to have a name. Pass name=... to Graph(...) and retry.")
-        if graph.name in definitions:
-            raise ValueError(f"Duplicate definition name {graph.name!r} in serve().")
-        runner = graph.bound_runner
-        if runner is None:
-            raise ValueError(f"Graph {graph.name!r} has no bound runner. Call graph.with_runner(runner) before serve().")
-        if not isinstance(runner, BaseRunner):
-            raise TypeError(
-                f"Graph {graph.name!r} carries {type(runner).__name__}, not a BaseRunner. Use graph.with_runner(SyncRunner()/AsyncRunner())."
-            )
-        capabilities = runner.capabilities
-        if not capabilities.supports_checkpointing and not capabilities.supports_events:
-            # Statically incapable runners (e.g. DaftRunner) fail loudly at
-            # construction. An unbound SyncRunner/AsyncRunner also reports
-            # supports_checkpointing=False (it flips True once bound), so the
-            # capability alone is not decisive — with_checkpointer() has the
-            # final say on whether a binding seam exists at all.
-            raise ValueError(
-                f"{type(runner).__name__} cannot serve durable runs: it has no checkpointer/event support. Bind a SyncRunner or AsyncRunner instead."
-            )
-        try:
-            bound_runner = runner.with_checkpointer(home)
-        except TypeError as exc:
-            raise ValueError(
-                f"{type(runner).__name__} cannot serve durable runs: it has no checkpointer/event support. Bind a SyncRunner or AsyncRunner instead."
-            ) from exc
-        definitions[graph.name] = _Definition(
-            name=graph.name,
-            graph=graph,
-            runner=bound_runner,
-            version=deployment_version,
-            struct_hash=graph.structural_hash,
-        )
-
-    for entry in accepts:
-        served = definitions.get(entry.name)
-        if served is None:
-            raise ValueError(
-                f"serve() accepts= entry {entry.to_dict()!r} names Definition {entry.name!r}, which this host does not serve. "
-                "An accepts declaration must name a served Definition so its parked submissions can actually drain."
-            )
-        if entry.structural_hash != served.struct_hash:
-            raise ValueError(
-                f"serve() accepts= entry {entry.to_dict()!r} pins structural_hash {entry.structural_hash!r}, but the served "
-                f"Definition {entry.name!r} has hash {served.struct_hash!r}. accepts= requires structural compatibility (ADR 0007)."
-            )
+        definition = _definition_from(graph, home=home, deployment_version=deployment_version, taken=definitions)
+        definitions[definition.name] = definition
+    _validate_accepts(accepts, definitions)
 
     bus = _PreviewBus()
     _register_bus(home.uri, bus)

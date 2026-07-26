@@ -449,7 +449,7 @@ inner = Graph([inner_fast, inner_slow], name="inner")
 graph = Graph([seed, alpha, inner.as_node(name="nested")], name="killdef").with_runner({runner})
 home = RunHome.open({uri!r})
 host = serve(graph, home=home, deployment_version="v1")
-host.submit_sync("killdef", {{"x": 1}}, workflow_id="wf-kill")
+host.submit_sync(graph, {{"x": 1}}, workflow_id="wf-kill")
 asyncio.run(host.work_forever("w-child", poll_interval=0.02))
 """
 
@@ -671,7 +671,7 @@ def keep_going(count: int) -> str:
 graph = Graph([worker, keep_going], name="loopdef", entrypoint="worker").with_runner({runner})
 home = RunHome.open({uri!r})
 host = serve(graph, home=home, deployment_version="v1")
-host.submit_sync("loopdef", {{"count": 0}}, workflow_id="wf-loop")
+host.submit_sync(graph, {{"count": 0}}, workflow_id="wf-loop")
 asyncio.run(host.work_forever("w-child", poll_interval=0.02))
 """
 

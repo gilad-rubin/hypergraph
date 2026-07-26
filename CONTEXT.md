@@ -167,7 +167,7 @@ _Avoid_: Stopped result, skipped run
 Vocabulary for the Durable Host V1 program ([PRD 0017](docs/prd/0017-durable-host-v1-program.md); decisions in ADRs 0005–0008 and the [2026-07-23 amendment package](docs/research/2026-07-23-durable-host-amendments.md)). Intent, not shipped behavior, until the ticket tree lands.
 
 **Definition**:
-A root graph bound to its runner and deployment identity, accepted by `serve(...)`. New submission always names a loaded Definition.
+A root graph bound to its runner and deployment identity, accepted by `serve(...)`. New submission is **graph-first**: it passes the served `Graph` object, which resolves to its Definition by name and structural hash. A name string is never a selector.
 _Avoid_: Registered workflow, catalog entry, app
 
 **Definition identity**:
@@ -199,8 +199,24 @@ An immutable manifest of unique stable logical item keys, each mapped to one ind
 _Avoid_: Persisted MapResult, batch job array
 
 **Logical item key**:
-The caller-chosen stable key naming one requested Batch item; child outcomes are keyed by it regardless of completion order.
+The caller-chosen stable key naming one requested Batch item; child outcomes are keyed by it regardless of completion order. Chosen by `key_by`, which names one **expanded** input whose JSON-safe scalar value is the key.
 _Avoid_: Item index, result position
+
+**Batch item expansion**:
+Turning one `submit_batch(graph, values, map_over=..., map_mode=...)` call into the manifest, reusing runner map's input-expansion vocabulary and then freezing the result. Durable concurrency comes from Host admission, never a per-call `max_concurrency`; durable failure policy comes from Batch tolerance, never `error_handling`.
+_Avoid_: Fan-out config, batch map (a Batch is not a MapResult)
+
+**Batch item view**:
+`BatchItemView` — the per-item truth for one manifest key: its inert child RunRef, current status and waiting condition, terminal outcome once settled, and whether the child ever started. Exposed as `BatchView.items[item_key]`.
+_Avoid_: Item result, child handle (a RunRef is not a handle)
+
+**Paused child**:
+A Batch child parked on a durable PauseSlot. It is a distinct `paused` Batch count, never folded into `active`, and it holds no active-Run admission slot — `active` means claimed and executing.
+_Avoid_: Blocked item, idle run, waiting child (that is the general condition)
+
+**Answer re-admission**:
+The single transaction in which an accepted answer settles its PauseSlot, persists the resume input, appends the Run `answer` fact and the Batch `child_runnable` fact, and flips the submission from `paused` back to `pending`. There is no state where an accepted answer exists without its run being claimable, or the reverse. Answer-vs-stop and answer-vs-answer resolve only by commit order.
+_Avoid_: Delivering the answer, waking the run, retry (nothing is repeated)
 
 **Batch tolerance**:
 Optional manifest-pinned count and percentage failure thresholds. Either trips only when failure-equivalent children strictly exceed it; the percentage denominator is always the total manifest item count.
@@ -239,6 +255,9 @@ _Avoid_: Event offset, log position (no OutputLog exists), progress counter
 - **Rerun** repeats; **fork** migrates. Their lineage relations never merge.
 - A **recovery-exhausted condition** parks a Run without touching Retry budgets, Retry windows, or WorkflowStatus; it surfaces as `WaitingCondition.RECOVERY_EXHAUSTED`, never as an execution status.
 - An **Unknown effect outcome** extends the Unknown attempt outcome rule to declared external effects: ambiguity is surfaced, never resolved by guessing.
+- A **paused child** is in flight, not settled: its Batch reports `settled=False` and its watch stream stays open. `child_paused` / `child_runnable` are lifecycle facts that may repeat (a second interrupt mints a new PauseSlot); only `child_settled`, `child_unstarted`, and a trip's `unstarted_items` account an item for good.
+- **Answer re-admission** resumes the *same* checkpointed Run with only `{response_key: answer}`. Pinned start inputs are never resupplied — strict checkpoint resume would refuse them as an input override.
+- Stopping a **paused child** is a stop, not a duplicate-resolution decision: the Run settles `STOPPED` and the domain question stays unanswered.
 
 ## Materialization
 

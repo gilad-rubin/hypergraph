@@ -1122,7 +1122,7 @@ def settle(approved: bool) -> str:
 graph = Graph([draft, approval, settle], name="refund").with_runner(AsyncRunner())
 home = RunHome.open({uri!r})
 host = serve(graph, home=home, deployment_version="v1")
-host.submit_sync("refund", {{"claim_id": "c-42"}}, workflow_id="wf-kill")
+host.submit_sync(graph, {{"claim_id": "c-42"}}, workflow_id="wf-kill")
 asyncio.run(host.work_forever("w-child", poll_interval=0.02))
 """
 

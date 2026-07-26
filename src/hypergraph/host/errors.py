@@ -20,7 +20,9 @@ __all__ = [
     # checkpointers' pause-settlement refusals) can subclass it without an
     # import cycle; this module stays its canonical import site.
     "HostError",
+    "ItemKeyError",
     "RerunError",
+    "UnservedGraphError",
     "WorkerLockError",
     "WorkflowIdConflictError",
 ]
@@ -98,6 +100,56 @@ class ForkCompatibilityError(HostError):
             "Fork requires restorable checkpoints (equal structural_hash); changed topology needs a new submit, not a fork."
         )
         super().__init__(self.message)
+
+
+class UnservedGraphError(HostError):
+    """A Graph this host does not serve was passed to a submission verb.
+
+    Submission is graph-first: ``host.submit(graph, ...)`` resolves the
+    served Definition from the Graph object's own pinned identity (its name
+    plus its ``structural_hash``). A Graph whose name this host never
+    served, or whose topology no longer matches the served Definition's
+    structural hash, names code no worker could execute — so it is refused
+    at the call site rather than parked forever as version-incompatible
+    work.
+    """
+
+    def __init__(self, graph_name: str, structural_hash: str, served: dict[str, str], message: str | None = None) -> None:
+        self.graph_name = graph_name
+        self.structural_hash = structural_hash
+        self.served = dict(served)
+        served_hash = self.served.get(graph_name)
+        if served_hash is None:
+            detail = (
+                f"This host serves: {sorted(self.served)}.\n\n"
+                "How to fix: pass a Graph named in serve(...), or add this one — "
+                "serve(this_graph, ..., home=home) — so a worker can execute it."
+            )
+        else:
+            detail = (
+                f"The served Definition {graph_name!r} pins structural_hash {served_hash!r}, "
+                f"but this Graph has {structural_hash!r}.\n\n"
+                "How to fix: submit the Graph object this host served. A changed topology is a new "
+                "Definition: re-serve it, and migrate parked work with host.fork(ref, into=new_graph, reason=...)."
+            )
+        self.message = message or f"Graph {graph_name!r} is not served by this host.\n\n{detail}"
+        super().__init__(self.message)
+
+
+class ItemKeyError(HostError):
+    """``submit_batch(..., key_by=...)`` could not derive stable item identity.
+
+    A durable Batch item key must be a JSON-safe scalar that names one
+    logical item for the life of the manifest, so restart and out-of-order
+    completion never make an item anonymous. A missing, empty, non-scalar,
+    or duplicated key is refused before acceptance — never silently
+    replaced by a generated map index.
+    """
+
+    def __init__(self, key_by: str, message: str) -> None:
+        self.key_by = key_by
+        self.message = message
+        super().__init__(message)
 
 
 class RerunError(HostError):

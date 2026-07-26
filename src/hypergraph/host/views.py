@@ -200,16 +200,61 @@ BATCH_OUTCOME_RECOVERY_EXHAUSTED = "recovery_exhausted"
 # Closed bucket vocabulary for BatchView.counts. Every manifest item is
 # accounted in exactly one bucket; terminal buckets are WorkflowStatus
 # values so child outcomes share the Run vocabulary.
+#
+# ``paused`` and ``active`` are disjoint on purpose: a child parked on a
+# human decision is NOT running. Counting it as active told an operator
+# "N items are being worked on" when the true answer was "N items are
+# waiting for you", and made human response time look like throughput.
 BATCH_COUNT_KEYS: tuple[str, ...] = (
     "completed",
     "failed",
     "partial",
     "stopped",
     "active",
+    "paused",
     "queued",
     "recovery_exhausted",
     "unstarted",
 )
+
+
+@dataclass(frozen=True)
+class BatchItemView:
+    """One logical Batch item: its address, its truth, and whether it ran.
+
+    The unit an item-scoped operator surface acts on. It carries the
+    child's inert ``RunRef`` so ``client.get``/``answer``/``get_run_slot``/
+    ``watch``/``stop``/``rerun`` all work per item without anyone deriving
+    a ``<batch workflow id>:<item key>`` string — child id syntax is Run
+    Home implementation detail, not a consumer contract.
+
+    Attributes:
+        item_key: The logical item key from the immutable manifest.
+        run_ref: Inert address of this item's independent child Run.
+        workflow_id: The child's workflow id (same as ``run_ref.run_id``).
+        status: The child's ``WorkflowStatus``, or None while it has no
+            runs row (never started).
+        waiting: Typed waiting condition, or None — the same closed
+            ``WaitingCondition`` vocabulary ``RunView.waiting`` reports, so
+            an item and its Run never disagree about why it waits.
+        outcome: The item's settled outcome string (terminal status, or
+            ``"recovery_exhausted"``), or None while it can still change.
+            Exactly the value ``BatchView.outcomes`` reports for this key.
+        started: Whether this child ever began executing (it has a runs
+            row). False distinguishes "requested but never admitted" from
+            "ran and produced nothing".
+
+    It deliberately carries no graph output values: results are Run truth,
+    read through the child's own ``RunRef``.
+    """
+
+    item_key: str
+    run_ref: RunRef
+    workflow_id: str
+    status: WorkflowStatus | None
+    waiting: WaitingCondition | None
+    outcome: str | None
+    started: bool
 
 
 @dataclass(frozen=True)
@@ -223,12 +268,17 @@ class BatchView:
         counts: Children per state bucket over the closed
             ``BATCH_COUNT_KEYS`` vocabulary (all keys always present):
             terminal buckets (``completed``/``failed``/``partial``/
-            ``stopped``) from the child runs row; ``active`` for a started
-            nonterminal child; ``queued`` for a child not yet started but
-            still claimable; ``recovery_exhausted`` for a parked child;
-            ``unstarted`` for a child that finished without ever executing
-            (stop-before-start). Every manifest item is accounted exactly
-            once.
+            ``stopped``) from the child runs row; ``active`` for a child a
+            worker has claimed and is executing; ``paused`` for a child
+            parked on a human answer (never ``active`` — it holds no
+            active-Run slot); ``queued`` for a child awaiting claim,
+            including one whose answer just made it runnable again;
+            ``recovery_exhausted`` for a parked child; ``unstarted`` for a
+            child that finished without ever executing (stop-before-start).
+            Every manifest item is accounted exactly once.
+        items: Logical item key → ``BatchItemView``, in manifest order.
+            The item-scoped surface: each entry carries the child's inert
+            ``RunRef`` and current truth.
         outcomes: Logical item key → outcome, in manifest order: the
             terminal status string for settled children,
             ``"recovery_exhausted"`` for parked children, None while a
@@ -236,9 +286,10 @@ class BatchView:
             never fabricates results for items that never ran).
         unstarted_items: Manifest keys whose child never executed, in
             manifest order — requested but never admitted.
-        settled: True when no child is active or queued (terminal,
+        settled: True when no child is active, paused, or queued (terminal,
             unstarted, and recovery-exhausted children are settled). A
-            recovery-exhausted child counts as settled.
+            paused child is deliberately NOT settled: its question is open
+            and its outcome can still change.
         tolerance_tripped: True when failure-equivalent children strictly
             exceeded a pinned tolerance, closing new child admission. A
             trip is a Batch fact, never a ``WorkflowStatus``: the Batch
@@ -253,6 +304,7 @@ class BatchView:
     workflow_id: str
     definition_id: DefinitionId
     counts: dict[str, int]
+    items: dict[str, BatchItemView]
     outcomes: dict[str, str | None]
     unstarted_items: tuple[str, ...]
     settled: bool
@@ -271,6 +323,9 @@ class BatchUpdate:
             live previews fanned in from child runs (same process only).
             Callers must only store cursors from durable updates.
         kind: Fact kind — ``manifest`` (bseq 1, the accepted start intent),
+            ``child_paused`` (a child committed a durable pause and is
+            waiting on a human), ``child_runnable`` (that occurrence was
+            answered and the child re-entered claim order),
             ``child_settled`` (a child settled for good: a terminal run
             transition, or the recovery brake parking it), ``tolerance_tripped``
             (a pinned tolerance was strictly exceeded, committed in that
@@ -285,12 +340,19 @@ class BatchUpdate:
             ``item_key``, ``workflow_id``, and ``status`` — a terminal
             ``WorkflowStatus`` value, or ``"recovery_exhausted"`` for a
             parked child, exactly the string ``BatchView.outcomes`` reports;
-            ``tolerance_tripped`` carries ``failed``, ``total_items``, the
-            pinned ``max_failed``/``max_failed_percent``, and the
-            ``unstarted_items`` admission closed; ``child_unstarted``
+            ``child_paused`` and ``child_runnable`` carry ``item_key``,
+            ``workflow_id``, an inert ``run_ref`` dict, and the ``pause_id``
+            of the occurrence, so a consumer addresses the item without
+            parsing child workflow-id syntax and can tell one loop turn from
+            the next; ``tolerance_tripped`` carries ``failed``,
+            ``total_items``, the pinned ``max_failed``/``max_failed_percent``,
+            and the ``unstarted_items`` admission closed; ``child_unstarted``
             carries ``item_key`` and ``workflow_id``. Between them, the
             durable stream accounts every manifest item exactly once — a
             detached ``watch`` never needs the view to learn an outcome.
+            ``child_paused``/``child_runnable`` are state facts, not
+            accounting facts: they never settle an item, and a loop that
+            pauses again earns a fresh pair under a new ``pause_id``.
         timestamp: ISO timestamp of the fact (or of preview observation).
     """
 

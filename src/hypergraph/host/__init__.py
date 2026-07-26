@@ -12,18 +12,21 @@ from hypergraph.host.errors import (
     AlreadyTerminalError,
     ForkCompatibilityError,
     HostError,
+    ItemKeyError,
     RerunError,
+    UnservedGraphError,
     WorkerLockError,
     WorkflowIdConflictError,
 )
 from hypergraph.host.home import RunHome
 from hypergraph.host.host import Host, SubmitReceipt, serve
 from hypergraph.host.refs import BatchCommandReceipt, BatchRef, BatchSubmitReceipt, CommandReceipt, RunRef
-from hypergraph.host.views import BatchUpdate, BatchView, RunQuery, RunUpdate, RunView, WaitingCondition
+from hypergraph.host.views import BatchItemView, BatchUpdate, BatchView, RunQuery, RunUpdate, RunView, WaitingCondition
 
 __all__ = [
     "AlreadyTerminalError",
     "BatchCommandReceipt",
+    "BatchItemView",
     "BatchRef",
     "BatchSubmitReceipt",
     "BatchTolerance",
@@ -34,6 +37,7 @@ __all__ = [
     "ForkCompatibilityError",
     "Host",
     "HostError",
+    "ItemKeyError",
     "RerunError",
     "RunHome",
     "RunHomeClient",
@@ -42,6 +46,7 @@ __all__ = [
     "RunUpdate",
     "RunView",
     "SubmitReceipt",
+    "UnservedGraphError",
     "WaitingCondition",
     "WorkerLockError",
     "WorkflowIdConflictError",

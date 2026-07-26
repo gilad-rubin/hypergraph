@@ -11,8 +11,8 @@ This page covers the local Tier 1 host: `serve()`, `RunHome`, `Host`, and
 `RunHomeClient`. For direct execution semantics see [Runners](runners.md);
 for process-local background handles see
 [Control Work After It Starts](../05-how-to/control-background-execution.md).
-`client.answer()` settles a durable pause; **scheduled** (timed) answers land
-in a later release of this surface.
+`client.answer()` settles a durable pause **and re-admits the run** in one
+transaction — see [Answering a Pause](#answering-a-pause).
 {% endhint %}
 
 ## Serving Definitions
@@ -71,11 +71,20 @@ undrainable declaration would park submissions forever (ADR 0007).
 ## Submitting a Run
 
 ```python
-receipt = await host.submit("refund", {"claim_id": "c-42"},
+receipt = await host.submit(refund, {"claim_id": "c-42"},
                             workflow_id="refund-c-42")
 receipt.run_ref        # RunRef — inert, JSON-serializable address
 receipt.duplicate      # True when an identical nonterminal submission existed
 ```
+
+Submission is **graph-first**: you pass the `Graph` object you served, not a
+Definition-name string. The Host resolves it by the graph's own pinned
+identity — its `name` **and** its `structural_hash` — so the code you hold a
+reference to is the code that runs. A graph this host does not serve, or one
+whose structure has drifted from the served Definition, raises
+`UnservedGraphError` at the call site instead of being accepted and parked;
+a bare string raises `TypeError`. The same rule covers `submit_batch()` and
+`fork(..., into=graph)`.
 
 The submission commits to the Run Home **before** any execution: process
 loss after `submit()` returns cannot erase durable intent. Each submission
@@ -129,8 +138,10 @@ each mapped to one independent child Run with its own pinned inputs (PRD
 from hypergraph import BatchTolerance
 
 receipt = await host.submit_batch(
-    "ingest",
-    items={"protocol-17": {"doc": ...}, "protocol-18": {"doc": ...}},
+    ingest,                                    # the served Graph object
+    {"work_item_id": ["protocol-17", "protocol-18"], "reviewer": "ops"},
+    map_over="work_item_id",                   # which inputs expand per item
+    key_by="work_item_id",                     # which expanded input names the item
     workflow_id="schneider-drop-42",
     tolerance=BatchTolerance(max_failed=2, max_failed_percent=25),  # optional
 )
@@ -138,14 +149,36 @@ receipt.batch_ref          # BatchRef — inert, JSON-serializable address
 receipt.duplicate          # True when an identical nonterminal Batch existed
 ```
 
+`submit_batch` speaks the same **input-expansion vocabulary as runner map**
+— `values` plus `map_over` (one name or a sequence) and `map_mode`
+(`"zip"`, the default, or `"product"`) — and then **freezes** the expansion
+into the immutable manifest. Names not in `map_over` are broadcast to every
+item, exactly as in `runner.map(...)`. Two knobs runner map has are
+deliberately absent: durable concurrency comes from
+[Host work admission](#host-work-admission), not a per-call
+`max_concurrency`, and durable failure policy comes from `tolerance`, not
+`error_handling`.
+
+`key_by` names one **expanded** input whose value is the logical item key —
+the identity every count, outcome, and durable fact is reported under. It
+must be a name in `map_over`, and each item's value must be a JSON-safe
+scalar (a non-empty `str`, or an `int`), unique across the manifest;
+missing, empty, non-scalar (including `bool`, `float`, and `None`), or
+duplicate keys raise `ItemKeyError` before anything is written. Expanding to
+zero items is a `ValueError` — an empty Batch is not a Batch.
+
 **One transaction** persists all of it — the manifest row (Definition
 identity, item keys with pinned inputs, the tolerance declaration, the
 start intent), one child submission per item key (child workflow id
 `<workflow_id>:<item_key>`), and the `manifest` fact at per-Batch durable
 sequence `bseq=1`. A kill anywhere inside acceptance leaves the Batch fully
-absent, never half-accepted. Duplicate or empty item keys are rejected at
-submission (`ValueError`); the mapping order of `items` is the manifest
-order used for keyed outcomes.
+absent, never half-accepted. Expansion order is the manifest order used for
+keyed outcomes.
+
+There is deliberately no `host.map()`. Two new-work verbs cover durable
+submission — `submit` for one Run, `submit_batch` for many — and a `map`
+verb would promise an immediate `MapResult` while a durable Batch returns a
+receipt for work that has not started yet.
 
 Children are **ordinary Runs**: they flow through the same
 claim/execute/stop/recovery machinery as submitted runs — each gets a
@@ -189,24 +222,51 @@ The same client verbs accept a `BatchRef`:
 ```python
 view = await client.get(receipt.batch_ref)   # BatchView: keyed persisted facts
 view.counts          # every manifest item in exactly one bucket:
-                     # {"completed": 1, "failed": 0, "active": 0, "queued": 1,
-                     #  "unstarted": 0, ...} — all keys always present
+                     # {"completed": 1, "failed": 0, "active": 0, "paused": 1,
+                     #  "queued": 1, "unstarted": 0, ...} — all keys always present
+view.items           # item key -> BatchItemView (per-item truth, below)
 view.outcomes        # item key -> terminal status ("completed" / "failed" /
                      # ...) for settled children, None while in flight
 view.unstarted_items # item keys whose child never executed — never
                      # invented results
-view.settled         # True when no child is active or queued
+view.settled         # True when no child is active, paused, or queued
 view.tolerance_tripped  # True once a pinned tolerance was exceeded
 view.retry_of        # source batch_id when minted by client.rerun(batch_ref)
 ```
 
 Counts are keyed by **logical item key**, never by completion order or
 child workflow id. The terminal buckets (`completed`, `failed`, `partial`,
-`stopped`) come from the child runs row; `active` is a started nonterminal
-child; `queued` a child not yet started but still claimable;
+`stopped`) come from the child runs row; `active` is a child claimed and
+executing; `paused` a child parked on a durable pause slot waiting for a
+human; `queued` a child not yet started but still claimable;
 `recovery_exhausted` a parked child (it counts as settled); `unstarted` a
 child that finished without ever executing (stop-before-start, or a
 tolerance trip that closed admission before it ran).
+
+`active` and `paused` are separate buckets because they answer different
+operational questions. `active` means *this item is consuming a worker right
+now*; `paused` means *this item is consuming nothing and is waiting on a
+person*. A paused child holds no active-Run admission slot, so a Batch of
+100 items where 99 are parked on questions still lets the hundredth run
+under `max_active_runs=1`.
+
+`view.items` is the per-item view — one `BatchItemView` per manifest key, so
+a caller learns an item's whole situation without cross-referencing three
+maps:
+
+```python
+item = view.items["protocol-17"]
+item.item_key        # "protocol-17" — the logical key, not the child run id
+item.run_ref         # RunRef for the child — inert, addresses client.get/answer/stop
+item.workflow_id     # "<batch workflow_id>:protocol-17"
+item.status          # WorkflowStatus | None — the child runs row, None before it starts
+item.waiting         # WaitingCondition | None — PAUSED, QUEUED, ADMISSION_LIMITED, …
+item.outcome         # terminal status once settled ("completed" / "recovery_exhausted" / …)
+item.started         # False until the child has a runs row at all
+```
+
+`item.run_ref` is the address you answer or stop an individual child
+through: `await client.answer(item.run_ref, pause_id=…, value=…)`.
 
 `client.watch(batch_ref, after=cursor)` follows the whole Batch through one
 gap-free per-Batch durable sequence, yielding `BatchUpdate` values with
@@ -217,12 +277,15 @@ Batch update writes are append-only and never backpressure child execution.
 Durable facts are `manifest` (bseq 1), `child_settled` (a child settled for
 good, with `item_key`, `workflow_id`, and `status` — a terminal status, or
 `"recovery_exhausted"` when the recovery brake parked the child),
-`tolerance_tripped`, `child_unstarted` (an item that ended unstarted
-without the trip fact naming it — a stopped Batch's child that never
-executed, or a child a crash returned to pending after the trip — with
-`item_key` and `workflow_id`), and `stopped`; live previews fanned in from
-child runs arrive with `update.durable is False`, repeat the last durable
-cursor, and never advance it:
+`child_paused` (a child parked on a human, with `item_key`, `workflow_id`,
+`run_ref`, and the `pause_id` of the occurrence), `child_runnable` (that
+child's answer settled and it is claimable again, naming the `pause_id` that
+was answered), `tolerance_tripped`, `child_unstarted` (an item that ended
+unstarted without the trip fact naming it — a stopped Batch's child that
+never executed, or a child a crash returned to pending after the trip —
+with `item_key` and `workflow_id`), and `stopped`; live previews fanned in
+from child runs arrive with `update.durable is False`, repeat the last
+durable cursor, and never advance it:
 
 ```python
 cursor = None
@@ -230,6 +293,12 @@ async for update in client.watch(receipt.batch_ref, after=cursor):
     if update.durable:
         cursor = update.cursor             # "bseq:N" — store this
 ```
+
+`child_paused` and `child_runnable` are **lifecycle** facts, not
+end-of-stream facts: a child can pause, be answered, resume, and pause again
+at a second interrupt, appending a new pair each time. Only `child_settled`,
+`child_unstarted`, and the trip's `unstarted_items` account an item for
+good.
 
 A Batch watch terminates once **every manifest child is accounted** —
 settled, unstarted, or recovery-exhausted — and every committed fact has
@@ -447,22 +516,58 @@ still accepted and settles the run), while a stop whose terminal transition
 commits first makes the answer raise `AnswerRejectedError` and leaves the
 slot open.
 
-{% hint style="warning" %}
-Settlement writes durable **resume input**; it does not itself resume the
-run. Re-delivering a settled answer to a worker is a later slice of this
-surface. Tier 0 resume — `runner.run(graph, {slot.response_key: slot.answer}, workflow_id=...)`
-— is unchanged.
-{% endhint %}
-
 **A parked run is in flight, not settled.** When a hosted run pauses, the
 worker releases its active-Run slot but the submission is recorded as
 `paused`, never `finished`: the run is nonterminal and a human decision is
 outstanding. So `watch(run_ref)` and `watch(batch_ref)` keep following it, a
 Batch containing a paused child reports `settled=False` with that child
-counted `active`, and `client.stop()` on a parked run is **accepted** rather
-than refused as terminal (the durable command lands the next time that run
-executes). A `paused` submission is still not re-claimable — parking is not
-re-admission.
+counted `paused`, and `client.stop()` on a parked run is **accepted** rather
+than refused as terminal. A `paused` submission is not claimable — parking
+is not re-admission.
+
+### Answering re-admits the run
+
+Settlement does not just write resume input; it **makes the run runnable
+again**, in the same transaction:
+
+```python
+settled = await client.answer(item.run_ref, pause_id=slot.pause_id,
+                              value=DuplicateDecision.REPLACE)
+# one commit: schema check → CAS on pause_id → answer + resume input →
+#             run `answer` fact → Batch `child_runnable` fact →
+#             submission paused → pending
+```
+
+There is no window in which an accepted answer exists but the run is still
+parked, and none in which a run is re-admitted without its answer durably
+stored. Process death between the two is therefore not a state the store can
+hold: the answer either committed with the re-admission or neither happened,
+and an idle worker picks the run up on its next scan.
+
+The worker resumes the **same** checkpointed workflow id with **only** the
+settled `{response_key: answer}` — never the pinned start inputs again, which
+strict checkpoint resume would refuse as an input override
+(`InputOverrideRequiresForkError`). Execution continues from the checkpoint,
+so the answer can route the rest of the graph anywhere the graph allows: a
+different downstream branch, a loop back to a second interrupt (which mints a
+new `pause_id` and parks again), or straight to a terminal status.
+
+Two races resolve **only by commit order**, never by wall clock:
+
+- **answer vs stop** — an answer that commits first stands and the run
+  resumes; a stop whose terminal transition commits first makes the answer
+  raise `AnswerRejectedError` and leaves the slot open. Stopping a paused
+  child is a *stop*, not a duplicate-resolution decision: the run settles
+  `STOPPED` and the domain question stays unanswered.
+- **answer vs answer** — the first commit wins with
+  `PauseAlreadySettledError` for the loser, and exactly one
+  `child_runnable` fact is appended, so a doubly-answered item can never
+  continue twice.
+
+{% hint style="info" %}
+Tier 0 resume — `runner.run(graph, {slot.response_key: slot.answer}, workflow_id=...)`
+— is unchanged, and remains how you resume a run you never submitted to a host.
+{% endhint %}
 
 ## Scheduling an Answer
 
@@ -641,7 +746,7 @@ pinned to the target's `DefinitionId`, and records `forked_from` lineage
 plus your reason on the submission:
 
 ```python
-fork_receipt = await host.fork(run_ref, into="refund",
+fork_receipt = await host.fork(run_ref, into=refund,
                                reason="2026.07.3 schema migration, approved by ops")
 fork_receipt.workflow_id       # "refund-c-42-fork-a1b2c3"
 ```
@@ -649,8 +754,9 @@ fork_receipt.workflow_id       # "refund-c-42-fork-a1b2c3"
 Compatibility is checked **at fork time**: the target Definition's
 `structural_hash` must equal the source submission's pinned hash (history
 seeding requires restorable checkpoints), else `ForkCompatibilityError`
-naming both identities. `reason` must be a non-empty string and `into` must
-name a served Definition (`ValueError` otherwise). `fork()` takes the same
+naming both identities. `reason` must be a non-empty string, and `into` is a
+served `Graph` object like every other new-work verb — an unserved one is
+refused at the call site with `UnservedGraphError`. `fork()` takes the same
 optional opaque `source_ref` the other accepting surfaces take, recorded on
 the new submission — `reason` says why the migration happened, `source_ref`
 says which authenticated action asked for it. `host.fork_sync(...)` is
@@ -790,7 +896,7 @@ A claimed Run parked on a permit is *executing*: `RunView.waiting` is
 string) for one-shot future work — no external timer service:
 
 ```python
-receipt = await host.submit("refund", {"claim_id": "c-42"},
+receipt = await host.submit(refund, {"claim_id": "c-42"},
                             workflow_id="refund-c-42",
                             start_at=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc))
 ```
@@ -848,6 +954,8 @@ brake counts **progressless re-adoptions**:
 | Error | Raised when |
 |---|---|
 | `WorkerLockError` | a second worker starts on the same Run Home |
+| `UnservedGraphError` | `submit`, `submit_batch`, or `fork(into=…)` names a `Graph` this host does not serve, or one whose `structural_hash` drifted from the served Definition |
+| `ItemKeyError` | `submit_batch` `key_by` names an input outside `map_over`, or an item's key is missing, empty, non-scalar, or duplicated |
 | `AlreadyTerminalError` | a terminal `workflow_id` is reused for submit, submit_batch, or stop (including a fully settled Batch) |
 | `WorkflowIdConflictError` | a nonterminal `workflow_id` is reused with a different start fingerprint (Run or Batch), or a Batch id collides with existing work |
 | `ForkCompatibilityError` | `host.fork()` targets a structurally incompatible Definition |

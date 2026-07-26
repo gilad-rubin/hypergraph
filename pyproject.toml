@@ -130,6 +130,7 @@ dev = [
     "opentelemetry-sdk>=1.20.0",
     "pandas>=2.3.3",
     "playwright>=1.56.0",
+    "coverage>=7.6.0",
     "pre-commit>=4.0.0",
     "pylance>=7.0.0",
     "pytest>=8.4.2",
@@ -176,6 +177,8 @@ asyncio_mode = "auto"
 markers = [
     "slow: marks tests as slow (run with pytest -m slow)",
     "full_matrix: marks tests that run the full capability matrix (CI only)",
+    "host_batch_interrupt: durable Batch interrupt public behavior matrix (issue #342)",
+    "host_batch_interrupt_kill: real process-kill matrix for durable Batch interrupts (issue #342)",
 ]
 # Run tests in parallel with minimal output; show only failures/errors by default
 addopts = "-q -r fE -n auto --dist loadfile -m 'not full_matrix'"
