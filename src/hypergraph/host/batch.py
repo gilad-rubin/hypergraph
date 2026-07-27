@@ -5,7 +5,8 @@ one independent child Run (PRD 0019). This module owns the pinned tolerance
 declaration, its strictly-exceeds trip predicate, the runner-shaped
 input expansion that freezes into that manifest, and submission-time item
 validation. Where a trip is evaluated (in the same transaction as the child
-terminal write) and what it does (close admission, mark the rest unstarted)
+terminal write) and what it does (close admission, then account each
+still-pending item unstarted or abandoned by whether it had started)
 belongs to the Run Home.
 """
 
@@ -94,6 +95,10 @@ def tolerance_trips(tolerance: BatchTolerance | None, *, failure_count: int, tot
     return tolerance.max_failed_percent is not None and failure_count * 100 > tolerance.max_failed_percent * total_items
 
 
+#: The example every ``map_over`` refusal shows, so one shape is taught once.
+_MAP_OVER_EXAMPLE = "map_over='work_item_id', or map_over=['work_item_id', 'shard'] for several"
+
+
 def normalize_map_over(map_over: str | Sequence[str]) -> list[str]:
     """Normalize ``map_over`` to a non-empty list of distinct input names.
 
@@ -101,19 +106,51 @@ def normalize_map_over(map_over: str | Sequence[str]) -> list[str]:
     one Run, and ``host.submit`` is the verb for that. The vocabulary is
     ``runner.map``'s verbatim (``str`` or a sequence of names), so a caller
     never learns a second collection-expansion model.
+
+    Every refusal here names the submission argument that was wrong, what
+    was supplied, and what to pass instead. In particular a non-sequence
+    ``map_over`` is refused BY NAME rather than letting ``list()`` surface
+    ``'int' object is not iterable`` — a raw Python message that never
+    mentions ``submit_batch`` or ``map_over`` and reads like a framework bug.
     """
-    names = [map_over] if isinstance(map_over, str) else list(map_over)
+    if isinstance(map_over, str):
+        names: list[str] = [map_over]
+    elif isinstance(map_over, Mapping):
+        raise TypeError(
+            f"submit_batch() map_over must name inputs, not map them: got a {type(map_over).__name__} "
+            f"({map_over!r}). Per-item values belong in `values`.\n\n"
+            f"How to fix: pass {_MAP_OVER_EXAMPLE}, and put the collections in values — "
+            "submit_batch(graph, {'work_item_id': [...]}, map_over='work_item_id', key_by='work_item_id')."
+        )
+    else:
+        try:
+            names = list(map_over)
+        except TypeError:
+            raise TypeError(
+                f"submit_batch() map_over must be an input name or a sequence of input names, "
+                f"got {type(map_over).__name__} ({map_over!r}).\n\n"
+                f"How to fix: pass {_MAP_OVER_EXAMPLE}."
+            ) from None
     if not names:
         raise ValueError(
-            "submit_batch() requires map_over to name at least one input to expand.\n\n"
-            "How to fix: pass map_over='work_item_id' (or a list of input names). "
+            "submit_batch() requires map_over to name at least one input to expand, got an empty sequence.\n\n"
+            f"How to fix: pass {_MAP_OVER_EXAMPLE}. "
             "A submission with nothing to expand is one Run — use host.submit(graph, values)."
         )
-    for name in names:
-        if not isinstance(name, str) or not name:
-            raise ValueError(f"submit_batch() map_over entries must be non-empty input-name strings, got {name!r}.")
-    if len(set(names)) != len(names):
-        raise ValueError(f"submit_batch() map_over names an input twice: {names!r}. Each expanded input is named once.")
+    bad = [name for name in names if not isinstance(name, str) or not name]
+    if bad:
+        raise ValueError(
+            f"submit_batch() map_over entries must be non-empty input-name strings; got {bad!r} in {names!r}.\n\n"
+            f"How to fix: pass {_MAP_OVER_EXAMPLE}. Each entry names an input of the graph whose "
+            "value in `values` is the per-item collection."
+        )
+    duplicated = sorted({name for name in names if names.count(name) > 1})
+    if duplicated:
+        raise ValueError(
+            f"submit_batch() map_over names {duplicated!r} more than once: {names!r}.\n\n"
+            "How to fix: name each expanded input exactly once. Expanding one input twice cannot mean "
+            "anything different from expanding it once, in either map_mode."
+        )
     return names
 
 
@@ -201,22 +238,31 @@ def expand_batch_items(
         Manifest-ordered ``(item_key, inputs_json)`` pairs.
 
     Raises:
-        TypeError: ``values`` is not a Mapping, or an item's inputs are not
+        TypeError: ``values`` is not a Mapping, ``map_over`` is neither a
+            name nor a sequence of names, or an item's inputs are not
             JSON-serializable.
-        ValueError: Empty/duplicate ``map_over``, an unknown ``map_mode``, a
-            ``map_over`` input missing from ``values``, or unequal zip
-            lengths.
+        ValueError: Empty/duplicate ``map_over``, a non-name ``map_over``
+            entry, an unknown ``map_mode``, a ``map_over`` input missing
+            from ``values``, unequal zip lengths, or an empty expansion.
         ItemKeyError: ``key_by`` names a broadcast input, or an item's key
             is missing, empty, non-scalar, or duplicated.
     """
     from hypergraph.runners._shared.map_inputs import generate_map_inputs
 
     if not isinstance(values, Mapping):
-        raise TypeError(f"submit_batch() values must be a Mapping of input name to value, got {type(values).__name__}.")
+        raise TypeError(
+            f"submit_batch() values must be a Mapping of input name to value, got {type(values).__name__} ({values!r}).\n\n"
+            "How to fix: pass the same runner-shaped dict runner.map takes — "
+            "submit_batch(graph, {'work_item_id': [...]}, map_over='work_item_id', key_by='work_item_id')."
+        )
     names = normalize_map_over(map_over)
     _require_key_input(key_by, names)
     if map_mode not in ("zip", "product"):
-        raise ValueError(f"submit_batch() map_mode must be 'zip' or 'product', got {map_mode!r}.")
+        raise ValueError(
+            f"submit_batch() map_mode must be 'zip' or 'product', got {map_mode!r}.\n\n"
+            "How to fix: use map_mode='zip' to walk the expanded inputs in parallel (equal lengths, one "
+            "item per position), or map_mode='product' for every combination of them."
+        )
     missing = [name for name in names if name not in values]
     if missing:
         raise ValueError(
@@ -225,8 +271,24 @@ def expand_batch_items(
         )
     expanded = list(generate_map_inputs(dict(values), names, map_mode))
     if not expanded:
-        raise ValueError("submit_batch() expanded to zero items; an empty Batch is not a Batch.")
+        empty = sorted(name for name in names if not values[name])
+        raise ValueError(
+            f"submit_batch() expanded to zero items; an empty Batch is not a Batch. "
+            f"map_over={names!r} with map_mode={map_mode!r}, and {empty!r} supplied no values.\n\n"
+            "How to fix: submit only when there is work — check the collection before calling, and "
+            "treat 'nothing to do' as a decision your code makes, not a durable Batch with no children. "
+            "An accepted Batch pins its manifest forever, so an empty one could never be filled in later."
+        )
     return _freeze_manifest(expanded, key_by=key_by)
+
+
+def _is_json_safe(value: Any) -> bool:
+    """Whether one input value survives the store round trip, for diagnostics."""
+    try:
+        json.dumps(value)
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def _freeze_manifest(expanded: list[dict[str, Any]], *, key_by: str) -> list[tuple[str, str]]:
@@ -245,6 +307,13 @@ def _freeze_manifest(expanded: list[dict[str, Any]], *, key_by: str) -> list[tup
         seen[key] = index
         try:
             pairs.append((key, json.dumps(item)))
-        except (TypeError, ValueError):
-            raise TypeError(f"submit_batch() item {key!r} inputs must be JSON-serializable; got {item!r}.") from None
+        except (TypeError, ValueError) as exc:
+            unserializable = sorted(name for name, value in item.items() if not _is_json_safe(value))
+            raise TypeError(
+                f"submit_batch() item {key!r} inputs must be JSON-serializable; "
+                f"{unserializable!r} {'is' if len(unserializable) == 1 else 'are'} not ({exc}). Item: {item!r}.\n\n"
+                "How to fix: pass values that survive a round trip through the store — a child Run is "
+                "started from its pinned inputs by a worker in another process, which has no access to "
+                "the object you submitted. Send an id or a path and load it inside the graph."
+            ) from None
     return pairs

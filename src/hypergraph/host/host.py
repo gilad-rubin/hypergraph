@@ -497,9 +497,13 @@ class Host:
         from hypergraph.graph import Graph as _Graph
 
         if not isinstance(graph, _Graph):
+            served = sorted(self._definitions)
             raise TypeError(
-                f"submit() expects the served Graph object, got {type(graph).__name__}. "
-                "Durable submission is graph-first: pass the Graph you passed to serve(...), not a Definition name."
+                f"Durable submission is graph-first: it expects the served Graph object, got "
+                f"{type(graph).__name__} ({graph!r}). This host serves: {served}.\n\n"
+                "How to fix: pass the Graph you passed to serve(...) — "
+                "host.submit(graph, values). A Definition-name string is not a selector: the pinned "
+                "identity is the Graph's own name plus structural_hash, which only the object carries."
             )
         definition = self._definitions.get(graph.name or "")
         if definition is None or definition.struct_hash != graph.structural_hash:

@@ -278,6 +278,20 @@ item.started         # False until the child has a runs row at all
 `item.run_ref` is the address you answer or stop an individual child
 through: `await client.answer(item.run_ref, pause_id=…, value=…)`.
 
+Printing one reads as a single line — the item, where it is, and its child
+run — so triaging a Batch in a REPL or notebook needs no destructuring:
+
+```python
+>>> view.items["protocol-17"]
+BatchItem: protocol-17 | waiting: paused | drop-2026-07:protocol-17
+```
+
+The middle field answers "where is this item?" in priority order: a settled
+`outcome` if it has one, else the `waiting` condition (the actionable
+thing), else a bare running `status`, else `unstarted` — the same word
+`view.unstarted_items` uses. In a notebook it renders as a panel with the
+child's address; `set_display_mode("plain")` falls back to the text form.
+
 `client.watch(batch_ref, after=cursor)` follows the whole Batch through one
 gap-free per-Batch durable sequence, yielding `BatchUpdate` values with
 `bseq:N` cursors. Every manifest or child-outcome change appends one

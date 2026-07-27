@@ -269,6 +269,41 @@ class BatchItemView:
     outcome: str | None
     started: bool
 
+    def __repr__(self) -> str:
+        return " | ".join([f"BatchItem: {self.item_key}", item_condition(self), self.workflow_id])
+
+    def _repr_html_(self) -> str | None:
+        from hypergraph._repr import plain_reprs
+        from hypergraph.host.presenters import render_batch_item_html
+
+        if plain_reprs():
+            return None
+        return render_batch_item_html(self)
+
+
+def item_condition(item: BatchItemView) -> str:
+    """One phrase answering "where is this item?", for both reprs.
+
+    The fields are deliberately not equal in weight, so reading them in
+    priority order is what makes a one-line repr honest:
+
+    1. A settled ``outcome`` is final — nothing else can still change.
+    2. A ``waiting`` condition is why an unsettled item is not progressing,
+       which is the thing an operator can actually act on.
+    3. A bare ``status`` means it is executing right now.
+    4. None of the three means the item has no runs row and nothing is
+       waiting on it — it was accepted and settled without ever executing.
+       ``BatchView`` calls that ``unstarted``, and so does this, because an
+       item and the Batch that holds it must not name one state two ways.
+    """
+    if item.outcome is not None:
+        return item.outcome
+    if item.waiting is not None:
+        return f"waiting: {item.waiting.value}"
+    if item.status is not None:
+        return item.status.value
+    return "unstarted"
+
 
 @dataclass(frozen=True)
 class BatchView:
@@ -287,7 +322,9 @@ class BatchView:
             active-Run slot); ``queued`` for a child awaiting claim,
             including one whose answer just made it runnable again;
             ``recovery_exhausted`` for a parked child; ``unstarted`` for a
-            child that finished without ever executing (stop-before-start).
+            child that finished without ever executing (stop-before-start,
+            or closed admission it never reached); and ``abandoned`` for one
+            that HAD started when closed admission settled it.
             Every manifest item is accounted exactly once.
         items: Logical item key → ``BatchItemView``, in manifest order.
             The item-scoped surface: each entry carries the child's inert

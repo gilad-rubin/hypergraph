@@ -13,7 +13,9 @@ What each scenario is falsifying, in one line:
  1. Served Graph objects work; unserved ones fail immediately.
  2. No public string Definition selector, and no ``host.map``.
  3. Runner-shaped zip and product expansion freeze the expected manifests.
- 4. ``key_by`` produces stable identity and rejects invalid/duplicate keys.
+ 4. ``key_by`` produces stable identity and rejects invalid/duplicate keys,
+    and every submission refusal names the input, the supplied value, and
+    a literal fix.
  5. A mixed Batch keeps clean/paused/answered/stopped/failed/unstarted
     siblings independent.
  6. A paused child is visible, nonterminal, and holds no active-Run slot.
@@ -54,6 +56,7 @@ from hypergraph import (
     WaitingCondition,
     node,
     serve,
+    set_display_mode,
 )
 from hypergraph.checkpointers.types import (
     AnswerRejectedError,
@@ -412,6 +415,75 @@ class TestKeyByIdentity:
             await host.submit_batch(graph, {"work_item_id": ["a"]}, map_over="work_item_id", workflow_id="drop-nokey")
 
 
+# === 4b. Every submission refusal is actionable ===
+
+
+class TestRefusalsAreActionable:
+    """A refusal a caller cannot act on is a bug report addressed to us.
+
+    Each case below is a mistake someone makes at 2am against a durable
+    store, so each message must carry three things: WHAT failed, what was
+    SUPPLIED against what was expected, and a literal ``How to fix:``.
+    """
+
+    #: (kwargs that fail, exception type, a phrase naming the supplied value).
+    REFUSALS = [
+        ({"values": {"work_item_id": ["a"]}, "map_over": 7, "key_by": "work_item_id"}, TypeError, "int"),
+        ({"values": {"work_item_id": ["a"]}, "map_over": {"work_item_id": ["a"]}, "key_by": "work_item_id"}, TypeError, "dict"),
+        ({"values": {"work_item_id": ["a"]}, "map_over": [], "key_by": "work_item_id"}, ValueError, "empty sequence"),
+        ({"values": {"work_item_id": ["a"]}, "map_over": ["work_item_id", ""], "key_by": "work_item_id"}, ValueError, "''"),
+        ({"values": {"work_item_id": ["a"]}, "map_over": ["work_item_id", "work_item_id"], "key_by": "work_item_id"}, ValueError, "more than once"),
+        ({"values": [("work_item_id", ["a"])], "map_over": "work_item_id", "key_by": "work_item_id"}, TypeError, "list"),
+        ({"values": {"work_item_id": ["a"]}, "map_over": "work_item_id", "map_mode": "cross", "key_by": "work_item_id"}, ValueError, "'cross'"),
+        ({"values": {"other": [1]}, "map_over": "work_item_id", "key_by": "work_item_id"}, ValueError, "not in values"),
+        ({"values": {"work_item_id": []}, "map_over": "work_item_id", "key_by": "work_item_id"}, ValueError, "zero items"),
+        ({"values": {"work_item_id": ["a"], "blob": object()}, "map_over": "work_item_id", "key_by": "work_item_id"}, TypeError, "blob"),
+        ({"values": {"work_item_id": ["a"], "t": "x"}, "map_over": "work_item_id", "key_by": "t"}, ItemKeyError, "does not name an expanded input"),
+        ({"values": {"work_item_id": ["a", "a"]}, "map_over": "work_item_id", "key_by": "work_item_id"}, ItemKeyError, "duplicate item key"),
+    ]
+
+    @pytest.mark.parametrize(("kwargs", "error", "supplied"), REFUSALS, ids=[str(i) for i in range(len(REFUSALS))])
+    async def test_a_batch_refusal_names_the_input_the_value_and_the_fix(self, home, kwargs, error, supplied):
+        graph = ingestion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+
+        with pytest.raises(error) as excinfo:
+            await host.submit_batch(graph, workflow_id="drop-refused", **kwargs)
+
+        message = str(excinfo.value)
+        assert "submit_batch()" in message, message  # WHAT failed, by verb
+        assert supplied in message, message  # what was SUPPLIED
+        assert "How to fix:" in message, message  # what to do instead
+        assert await host.client.list(RunQuery()) == []
+
+    async def test_a_non_graph_submission_names_what_is_served_and_the_fix(self, home):
+        host = serve(ingestion_graph(), home=home, deployment_version="v1")
+
+        with pytest.raises(TypeError) as excinfo:
+            await host.submit("ingest", {"work_item_id": "w"})
+
+        message = str(excinfo.value)
+        assert "graph-first" in message and "str" in message
+        assert "This host serves: ['ingest']" in message
+        assert "How to fix:" in message
+
+    async def test_an_unserved_graph_names_both_identities_and_the_fix(self, home):
+        host = serve(ingestion_graph("ingest"), home=home, deployment_version="v1")
+
+        @node(output_name="validated_id")
+        def different(work_item_id: str) -> str:
+            return work_item_id
+
+        drifted = Graph([different], name="ingest").with_runner(AsyncRunner())
+        with pytest.raises(UnservedGraphError) as excinfo:
+            await host.submit(drifted, {"work_item_id": "w"})
+
+        message = str(excinfo.value)
+        assert drifted.structural_hash in message  # what was SUPPLIED
+        assert ingestion_graph("ingest").structural_hash in message  # what was EXPECTED
+        assert "How to fix:" in message
+
+
 # === 5. A mixed Batch: six sibling conditions at once ===
 
 
@@ -638,6 +710,55 @@ class TestItemScopedControl:
             paused = await host.client.list(RunQuery(batch=receipt.batch_ref, waiting=WaitingCondition.PAUSED))
 
         assert [run.run_ref for run in paused] == [view.items["work-dup-1"].run_ref]
+
+    async def test_an_item_prints_where_it_is_without_being_destructured(self, home, ledger):
+        """A repr an operator can read at a glance, in both display modes."""
+        graph = ingestion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await submit_ids(host, graph, ["work-dup-1", "work-clean"], "drop-repr")
+        client = host.client
+
+        pending = (await client.get(receipt.batch_ref)).items["work-dup-1"]
+        assert repr(pending) == "BatchItem: work-dup-1 | waiting: queued | drop-repr:work-dup-1"
+
+        async with worker(host):
+            view = await batch_where(client, receipt.batch_ref, lambda v: len(paused_items(v)) == 1)
+            parked = view.items["work-dup-1"]
+            assert repr(parked) == "BatchItem: work-dup-1 | waiting: paused | drop-repr:work-dup-1"
+
+            html = parked._repr_html_()
+            assert "Batch item: work-dup-1" in html
+            assert "waiting: paused" in html and "drop-repr:work-dup-1" in html
+            assert home.uri in html  # the address, not a derived id
+            set_display_mode("plain")
+            try:
+                assert parked._repr_html_() is None  # falls back to __repr__
+            finally:
+                set_display_mode("rich")
+
+            await answer_item(client, parked, "create_new")
+            final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+
+        # A settled item leads with its outcome, not with how it got there.
+        assert repr(final.items["work-dup-1"]) == "BatchItem: work-dup-1 | completed | drop-repr:work-dup-1"
+
+    async def test_an_item_that_never_ran_says_so_rather_than_looking_clean(self, home, ledger):
+        """The repr uses the Batch's own word for it, not a second one."""
+        graph = ingestion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await submit_ids(host, graph, ["work-a", "work-b"], "drop-repr-unstarted")
+        client = host.client
+
+        accepted = await client.get(receipt.batch_ref)
+        await client.stop(accepted.items["work-a"].run_ref, info="withdrawn before pickup")
+        async with worker(host):
+            view = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+
+        never_ran = view.items["work-a"]
+        assert never_ran.started is False and never_ran.outcome is None
+        assert view.unstarted_items == ("work-a",)
+        assert repr(never_ran) == "BatchItem: work-a | unstarted | drop-repr-unstarted:work-a"
+        assert "Started:</span> <span" in never_ran._repr_html_()
 
 
 # === 8. Answering makes the child runnable; the worker resumes it ===
