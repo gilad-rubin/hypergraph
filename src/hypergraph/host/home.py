@@ -913,7 +913,7 @@ class RunHome(SqliteCheckpointer):
         Batch is settled) — run and Batch workflow ids share one namespace,
         and so does the execution journal: an id already owned by a
         host-less (Tier-0) runs row is refused last, once the host rows have
-        had their say (``_raise_on_tier0_reuse``).
+        had their say (``refuse_tier0_reuse``).
         """
         with self._sync_lock:
             db = self._sync_db()

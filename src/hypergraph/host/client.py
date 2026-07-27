@@ -8,9 +8,10 @@ Host. The same surface runs against SQLite now and other backends later.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import json
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -785,7 +786,7 @@ class RunHomeClient:
         rows = await self._home._list_run_rows()
         return _filter_list_rows(self._home.uri, rows, query, admission_full=await self._home._admission_is_full())
 
-    def list_sync(self, query: RunQuery) -> list[RunView]:
+    def list_sync(self, query: RunQuery) -> builtins.list[RunView]:
         """Sync mirror of ``list``."""
         _validate_query(query)
         rows = self._home._list_run_rows_sync()
@@ -999,8 +1000,12 @@ class RunHomeClient:
         it. A ``ref`` unknown to this Run Home terminates immediately with
         no updates, matching ``get()``'s honest ``None``.
         """
+        # Typed as a generator, not an iterator: aclosing() below needs the
+        # `aclose` that AsyncIterator does not declare, and both branches
+        # are async generators.
+        stream: AsyncGenerator[RunUpdate | BatchUpdate, None]
         if isinstance(ref, BatchRef):
-            stream: AsyncIterator[RunUpdate | BatchUpdate] = self._watch_batch(ref, after=after, poll_interval=poll_interval)
+            stream = self._watch_batch(ref, after=after, poll_interval=poll_interval)
         elif isinstance(ref, RunRef):
             stream = self._watch_run(ref, after=after, poll_interval=poll_interval)
         else:
@@ -1011,7 +1016,7 @@ class RunHomeClient:
             async for update in updates:
                 yield update
 
-    async def _run_updates_since(self, run_id: str, cursor: int, queue: asyncio.Queue | None) -> tuple[list[RunUpdate], int, bool]:
+    async def _run_updates_since(self, run_id: str, cursor: int, queue: asyncio.Queue | None) -> tuple[builtins.list[RunUpdate], int, bool]:
         """Durable facts after ``cursor``, then whatever previews are queued.
 
         Returns ``(updates, cursor, had_durable)``. Previews repeat the last
@@ -1040,7 +1045,7 @@ class RunHomeClient:
         # submission is finished, with no runs row.
         return submission["state"] == "finished"
 
-    async def _watch_run(self, ref: RunRef, *, after: str | int | None, poll_interval: float) -> AsyncIterator[RunUpdate]:
+    async def _watch_run(self, ref: RunRef, *, after: str | int | None, poll_interval: float) -> AsyncGenerator[RunUpdate, None]:
         """Replay one run's durable sequence, then tail its previews."""
         cursor = _parse_cursor(after)
         queue = self._bus.subscribe(ref.run_id) if self._bus is not None else None
@@ -1078,7 +1083,7 @@ class RunHomeClient:
 
     async def _batch_updates_since(
         self, batch_id: str, cursor: int, queues: dict[str, tuple[str, asyncio.Queue]]
-    ) -> tuple[list[BatchUpdate], int, bool]:
+    ) -> tuple[builtins.list[BatchUpdate], int, bool]:
         """Durable Batch facts after ``cursor``, then fanned-in child previews."""
         rows = await self._home._read_batch_updates(batch_id, cursor)
         updates = []
@@ -1098,7 +1103,7 @@ class RunHomeClient:
             )
         return updates, cursor, bool(rows)
 
-    async def _watch_batch(self, ref: BatchRef, *, after: str | int | None, poll_interval: float) -> AsyncIterator[BatchUpdate]:
+    async def _watch_batch(self, ref: BatchRef, *, after: str | int | None, poll_interval: float) -> AsyncGenerator[BatchUpdate, None]:
         """Replay the per-Batch durable sequence, then tail child previews.
 
         Durable facts (``manifest``, ``child_settled``,

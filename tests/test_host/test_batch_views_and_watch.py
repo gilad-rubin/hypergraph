@@ -28,6 +28,7 @@ from hypergraph import (
     serve,
     set_display_mode,
 )
+from hypergraph.checkpointers.types import WorkflowStatus
 from tests.test_host._batch_interrupt import (
     answer_item,
     batch_where,
@@ -335,12 +336,21 @@ class TestTerminalSiblingsNeverReplay:
         client = host.client
 
         async with worker(host):
-            view = await batch_where(client, receipt.batch_ref, lambda v: len(paused_items(v)) == 1)
+            # Wait for BOTH: the sibling settled AND the target parked.
+            # Waiting only for the pause can snapshot a sibling that is
+            # still executing, and "active" trivially differs from
+            # "completed" — which would prove nothing about replay.
+            view = await batch_where(
+                client,
+                receipt.batch_ref,
+                lambda v: len(paused_items(v)) == 1 and v.outcomes["work-clean-a"] == "completed",
+            )
             before = await home.get_run_async("drop-replay:work-clean-a")
             await answer_item(client, view.items["work-dup-1"], "create_new")
             await batch_where(client, receipt.batch_ref, lambda v: v.settled)
             after = await home.get_run_async("drop-replay:work-clean-a")
 
+        assert before.status is WorkflowStatus.COMPLETED and before.completed_at is not None
         assert before.completed_at == after.completed_at and before.status == after.status
         # Each deterministic effect ran exactly once.
         assert sorted(read_ledger(ledger)) == ["created:work-clean-a", "created:work-clean-b", "created:work-dup-1"]
