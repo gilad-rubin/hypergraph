@@ -222,6 +222,14 @@ _Avoid_: Delivering the answer, waking the run, retry (nothing is repeated)
 Optional manifest-pinned count and percentage failure thresholds. Either trips only when failure-equivalent children strictly exceed it; the percentage denominator is always the total manifest item count.
 _Avoid_: Error rate, failure policy
 
+**Closed admission**:
+What a tolerance trip does: no pending child of that Batch is ever newly claimed or re-admitted again, including one an answered pause just returned to claim order. A trip is a stop-the-line decision, not an advisory threshold.
+_Avoid_: Paused batch, throttled, soft limit
+
+**Abandoned item**:
+A Batch child that HAD started when closed admission settled it. Terminal and settled, reported as the `abandoned` count/outcome and the durable `child_abandoned` fact. Distinct from an unstarted item, which never began: an abandoned item committed steps and may have landed side effects, so it is the one an operator reconciles before rerunning.
+_Avoid_: Unstarted (it ran), cancelled, orphaned, recovery-exhausted (that is the brake, not tolerance)
+
 **Rerun**:
 Creating a new Run under a new workflow id from a source Run or Batch with its pinned Definition identity and inputs intact, recording `retry_of` lineage. A Batch rerun mints a new immutable Batch manifest with a new BatchRef and explicit Batch lineage, containing new child Runs only for the selected source item keys; it never mutates the source Batch. Never accepts input overrides.
 _Avoid_: Redrive (an SQS dead-letter term), retry (node-owned), resume (continues the same Run)

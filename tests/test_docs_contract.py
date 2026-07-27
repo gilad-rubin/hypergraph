@@ -1123,6 +1123,7 @@ def test_durable_host_docs_pin_public_contract() -> None:
         "items",
         "outcomes",
         "unstarted_items",
+        "abandoned_items",
         "settled",
         "tolerance_tripped",
         "retry_of",

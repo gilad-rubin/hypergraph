@@ -234,6 +234,7 @@ class TestScenarioFiveTable:
             "queued": 0,
             "recovery_exhausted": 0,
             "unstarted": 2,
+            "abandoned": 0,
         }
         # Every manifest item accounted exactly once.
         assert sum(view.counts.values()) == 8
@@ -542,6 +543,7 @@ class TestTripBehavior:
             "queued": 0,
             "recovery_exhausted": 0,
             "unstarted": 5,
+            "abandoned": 0,
         }
         assert len(view.unstarted_items) == 5
         assert view.settled is True

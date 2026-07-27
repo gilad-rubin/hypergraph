@@ -86,6 +86,10 @@ _BATCH_PLACEHOLDERS = ", ".join("?" for _ in _BATCH_COLS.split(", "))
 # Batch update kinds that are matched (not just written) in SQL.
 _TRIP_UPDATE_KIND = "tolerance_tripped"
 _UNSTARTED_UPDATE_KIND = "child_unstarted"
+# A child that HAD started when a tolerance trip closed admission. Distinct
+# from `child_unstarted` on purpose: that item committed steps and may have
+# landed side effects, so it is not safe to describe as never having run.
+_ABANDONED_UPDATE_KIND = "child_abandoned"
 _SETTLED_UPDATE_KIND = "child_settled"
 # The two nonterminal child facts. Unlike the settled/unstarted pair these
 # are NOT once-per-item: a loop that pauses again is a new occurrence and
@@ -320,6 +324,28 @@ def _row_to_submission(row: tuple[Any, ...]) -> dict[str, Any]:
 
 def _row_to_batch(row: tuple[Any, ...]) -> dict[str, Any]:
     return dict(zip(_BATCH_COLS.split(", "), row, strict=True))
+
+
+#: Every pending child of a Batch, with whether it ever produced a runs row.
+#: The LEFT JOIN is what separates "never began" from "began, unfinished".
+_SELECT_PENDING_CLOSEOUT = (
+    "SELECT s.item_key, r.id IS NOT NULL FROM host_submissions s "
+    "LEFT JOIN runs r ON r.id = s.workflow_id "
+    "WHERE s.batch_id = ? AND s.state = 'pending' ORDER BY s.rowid"
+)
+
+
+def _split_closeout(rows: list[tuple[Any, ...]]) -> tuple[list[str], list[str]]:
+    """Split pending children a trip closes into (unstarted, abandoned).
+
+    A trip closes admission on every pending child at once, but the two
+    dispositions are not the same fact: an item with no runs row never
+    began and is safe to rerun from scratch, while one with a runs row
+    committed steps and may have landed side effects.
+    """
+    unstarted = [str(item_key) for item_key, started in rows if not started]
+    abandoned = [str(item_key) for item_key, started in rows if started]
+    return unstarted, abandoned
 
 
 def _items_map(items: list[tuple[str, str]]) -> dict[str, Any]:
@@ -961,8 +987,8 @@ class RunHome(SqliteCheckpointer):
         row = await cursor.fetchone()
         return None if row is None or row[0] is None else (str(row[0]), str(row[1]))
 
-    async def _append_child_unstarted(self, run_id: str) -> None:
-        """Record that a Batch item ended unstarted, in the caller's transaction.
+    async def _append_child_unstarted(self, run_id: str, *, kind: str = _UNSTARTED_UPDATE_KIND) -> None:
+        """Record that a Batch item settled without executing, same transaction.
 
         THE unstarted-child fact (PRD 0019 A9). Every path that settles a
         child WITHOUT ever executing it — admission refusing a child of an
@@ -973,13 +999,18 @@ class RunHome(SqliteCheckpointer):
         itself named in ``unstarted_items`` never reach here: their flip
         happened inside the trip.
 
+        ``kind`` selects the honest fact for the disposition:
+        ``child_unstarted`` for an item that never began, or
+        ``child_abandoned`` for one that began and will not be resumed
+        (see ``_append_trip_closeout``).
+
         No-op for runs without Batch membership. Idempotent per item, like
         ``_append_child_settled``: the flip is already once-only (it moves
         the row out of 'pending'/'claimed'), and the guard keeps a replayed
         path from double-accounting the item even so.
 
-        Async-only on purpose: both callers are worker paths
-        (``_claim_eligible``, ``_apply_stop_never_started``) that have no
+        Async-only on purpose: every caller is a worker path
+        (``_claim_eligible``, ``_apply_stop_never_started``) that has no
         sync mirror, so a ``_sync`` twin here would be dead code.
         """
         cursor = await self._db.execute(
@@ -991,16 +1022,33 @@ class RunHome(SqliteCheckpointer):
             return
         batch_id, item_key = row
         exists_cursor = await self._db.execute(
-            "SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = ? AND item_key = ? LIMIT 1",
-            (batch_id, _UNSTARTED_UPDATE_KIND, item_key),
+            "SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind IN (?, ?) AND item_key = ? LIMIT 1",
+            (batch_id, _UNSTARTED_UPDATE_KIND, _ABANDONED_UPDATE_KIND, item_key),
         )
         if await exists_cursor.fetchone() is not None:
             return
         await self._append_batch_update(
             batch_id,
-            _UNSTARTED_UPDATE_KIND,
+            kind,
             {"item_key": item_key, "workflow_id": run_id},
             item_key=item_key,
+        )
+
+    async def _append_trip_closeout(self, run_id: str) -> None:
+        """Account a child a tolerance trip closed admission on, truthfully.
+
+        Two genuinely different things end here and they must not share a
+        name. An item with no runs row never began: ``child_unstarted``,
+        and it is safe to rerun from scratch. An item WITH a runs row began,
+        committed real steps, and possibly landed side effects — closed
+        admission means it will never be resumed, so it is ``child_abandoned``.
+        Calling the second one "unstarted" would tell an operator that
+        nothing happened when something did.
+        """
+        started = await self._has_run_row(run_id)
+        await self._append_child_unstarted(
+            run_id,
+            kind=_ABANDONED_UPDATE_KIND if started else _UNSTARTED_UPDATE_KIND,
         )
 
     # === Pinned tolerance (ticket 06) ===
@@ -1039,18 +1087,18 @@ class RunHome(SqliteCheckpointer):
         payload = self._trip_payload(batch_row[0], batch_row[1], int(failure_count))
         if payload is None:
             return
-        unstarted = [
-            str(row[0])
-            for row in db.execute(
-                "SELECT item_key FROM host_submissions WHERE batch_id = ? AND state = 'pending' ORDER BY rowid",
-                (batch_id,),
-            ).fetchall()
-        ]
+        closed = db.execute(_SELECT_PENDING_CLOSEOUT, (batch_id,)).fetchall()
+        unstarted, abandoned = _split_closeout(closed)
         db.execute(
             "UPDATE host_submissions SET state = 'finished', finished_at = ? WHERE batch_id = ? AND state = 'pending'",
             (_now_iso(), batch_id),
         )
-        self._append_batch_update_sync(db, batch_id, _TRIP_UPDATE_KIND, {**payload, "unstarted_items": unstarted})
+        self._append_batch_update_sync(
+            db,
+            batch_id,
+            _TRIP_UPDATE_KIND,
+            {**payload, "unstarted_items": unstarted, "abandoned_items": abandoned},
+        )
 
     async def _maybe_trip_tolerance(self, batch_id: str) -> None:
         """Async mirror of ``_maybe_trip_tolerance_sync``; caller holds the transaction."""
@@ -1066,16 +1114,17 @@ class RunHome(SqliteCheckpointer):
         payload = self._trip_payload(batch_row[0], batch_row[1], int(failure_count))
         if payload is None:
             return
-        pending_cursor = await self._db.execute(
-            "SELECT item_key FROM host_submissions WHERE batch_id = ? AND state = 'pending' ORDER BY rowid",
-            (batch_id,),
-        )
-        unstarted = [str(row[0]) for row in await pending_cursor.fetchall()]
+        pending_cursor = await self._db.execute(_SELECT_PENDING_CLOSEOUT, (batch_id,))
+        unstarted, abandoned = _split_closeout(await pending_cursor.fetchall())
         await self._db.execute(
             "UPDATE host_submissions SET state = 'finished', finished_at = ? WHERE batch_id = ? AND state = 'pending'",
             (_now_iso(), batch_id),
         )
-        await self._append_batch_update(batch_id, _TRIP_UPDATE_KIND, {**payload, "unstarted_items": unstarted})
+        await self._append_batch_update(
+            batch_id,
+            _TRIP_UPDATE_KIND,
+            {**payload, "unstarted_items": unstarted, "abandoned_items": abandoned},
+        )
 
     @staticmethod
     def _trip_payload(items_json: str, tolerance_json: str, failure_count: int) -> dict[str, Any] | None:
@@ -2227,20 +2276,25 @@ class RunHome(SqliteCheckpointer):
                 tripped = await self._tripped_batch_ids({s["batch_id"] for s in submissions if s["batch_id"] is not None})
                 claimed: list[dict[str, Any]] = []
                 for submission in submissions:
-                    if submission["batch_id"] in tripped and not await self._has_run_row(submission["workflow_id"]):
+                    if submission["batch_id"] in tripped:
+                        # A tripped Batch has CLOSED ADMISSION: no pending
+                        # child is newly claimed, and none is re-admitted —
+                        # including one an answered pause just returned to
+                        # claim order. Tolerance is a stop-the-line decision;
+                        # exempting work that happens to have started would
+                        # make the threshold advisory.
                         result = await self._db.execute(
                             "UPDATE host_submissions SET state = 'finished', finished_at = ? WHERE workflow_id = ? AND state = 'pending'",
                             (now_iso, submission["workflow_id"]),
                         )
                         if result.rowcount == 1:
-                            # A9: this item ends unstarted AFTER the trip
-                            # fact already listed its unstarted items, so it
-                            # gets its own durable row in the SAME
-                            # transaction as the state flip. Without it a
-                            # detached watch() would never learn the item's
-                            # outcome and the stream could not reconstruct
-                            # the view.
-                            await self._append_child_unstarted(submission["workflow_id"])
+                            # A9: this item settles AFTER the trip fact
+                            # already listed its items, so it gets its own
+                            # durable row in the SAME transaction as the
+                            # state flip. Without it a detached watch()
+                            # would never learn the item's outcome and the
+                            # stream could not reconstruct the view.
+                            await self._append_trip_closeout(submission["workflow_id"])
                         continue
                     identity = DefinitionId(
                         submission["definition_name"],

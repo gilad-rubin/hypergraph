@@ -26,6 +26,7 @@ from hypergraph.host.fingerprint import batch_fingerprint, start_fingerprint
 from hypergraph.host.refs import BatchCommandReceipt, BatchRef, BatchSubmitReceipt, CommandReceipt, RunRef, SubmitReceipt
 from hypergraph.host.views import (
     BATCH_COUNT_KEYS,
+    BATCH_OUTCOME_ABANDONED,
     BATCH_OUTCOME_RECOVERY_EXHAUSTED,
     SUBMISSION_STATE_EXHAUSTED,
     SUBMISSION_STATE_FINISHED,
@@ -140,10 +141,17 @@ def _child_bucket(submission: dict[str, Any], run: Run | None) -> tuple[str, str
         return "paused", None
     if run is not None and state == "claimed":
         return "active", None
+    if run is not None and state == SUBMISSION_STATE_FINISHED:
+        # Finished, nonterminal runs row: it started and will not continue.
+        # Only a tolerance trip closes admission on a started child, so this
+        # is the abandoned disposition — never "unstarted", which would deny
+        # that steps ran.
+        return BATCH_OUTCOME_ABANDONED, BATCH_OUTCOME_ABANDONED
     if run is not None:
         return "queued", None
     if state == SUBMISSION_STATE_FINISHED:
-        # Finished with no runs row: stopped before first execution.
+        # Finished with no runs row: stopped before first execution, or a
+        # tolerance trip that closed admission before it ever ran.
         return "unstarted", None
     return "queued", None
 
@@ -168,11 +176,14 @@ def _build_batch_view(
     items: dict[str, BatchItemView] = {}
     outcomes: dict[str, str | None] = {}
     unstarted: list[str] = []
+    abandoned: list[str] = []
     for key in item_keys:
         submission, run = child_rows[key]
         bucket, outcome = _child_bucket(submission, run)
         if bucket == "unstarted":
             unstarted.append(key)
+        elif bucket == BATCH_OUTCOME_ABANDONED:
+            abandoned.append(key)
         counts[bucket] += 1
         outcomes[key] = outcome
         workflow_id = submission["workflow_id"]
@@ -200,6 +211,7 @@ def _build_batch_view(
         items=items,
         outcomes=outcomes,
         unstarted_items=tuple(unstarted),
+        abandoned_items=tuple(abandoned),
         settled=settled,
         tolerance_tripped=tripped,
         retry_of=batch["retry_of"],

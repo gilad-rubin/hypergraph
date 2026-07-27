@@ -480,6 +480,7 @@ class TestKeyedOutcomes:
             "queued": 0,
             "recovery_exhausted": 0,
             "unstarted": 0,
+            "abandoned": 0,
         }
         # Keyed by logical item key in manifest order — completion order
         # never changes result identity.

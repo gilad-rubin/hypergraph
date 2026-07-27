@@ -462,12 +462,17 @@ class TestMixedBatchIndependence:
         # Domain effects ran once each, and only for items that reached them.
         assert sorted(read_ledger(ledger)) == ["created:work-clean", "replaced:work-dup-answer:3143"]
 
-    async def test_an_answered_child_of_a_tripped_batch_settles_its_own_work(self, home, ledger):
-        """A trip closes admission for work that never STARTED.
+    async def test_answering_a_child_of_a_tripped_batch_does_not_reopen_admission(self, home, ledger):
+        """A trip CLOSES admission — an answer cannot reopen it.
 
-        A paused child never counts toward tolerance, so it survives the
-        trip. Once answered it has committed steps — calling it "unstarted"
-        would contradict its own journal — so it finishes.
+        A paused child never counts toward tolerance, so it is still parked
+        when the Batch trips. Answering it returns it to claim order, and
+        closed admission then settles it instead of running it: tolerance is
+        a stop-the-line decision, not an advisory threshold.
+
+        It settles as ``abandoned``, never ``unstarted``. It committed steps
+        and could have landed side effects, so an operator must reconcile it
+        before rerunning — the exact distinction ``unstarted`` would erase.
         """
         from hypergraph import BatchTolerance
 
@@ -487,12 +492,39 @@ class TestMixedBatchIndependence:
             await answer_item(client, view.items["work-dup-1"], "create_new")
             final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
 
-        assert final.outcomes["work-dup-1"] == "completed"
-        assert final.counts["failed"] == 2 and final.counts["unstarted"] == 0
-        assert read_ledger(ledger) == ["created:work-dup-1"]
-        # Accounted exactly once, and never as an unstarted item.
+        assert final.outcomes["work-dup-1"] == "abandoned"
+        assert final.counts["failed"] == 2 and final.counts["abandoned"] == 1
+        assert final.counts["unstarted"] == 0
+        assert final.abandoned_items == ("work-dup-1",)
+        # The decision was accepted, but no domain effect followed it.
+        assert read_ledger(ledger) == []
+        # Accounted exactly once, by the honest fact.
         kinds = [k for _s, k, _p, _a in await home._read_batch_updates(receipt.batch_ref.batch_id)]
+        assert kinds.count("child_abandoned") == 1
         assert kinds.count("child_unstarted") == 0
+
+    async def test_a_never_started_child_of_a_tripped_batch_is_still_unstarted(self, home, ledger):
+        """The other half of the split: nothing ran, so nothing to reconcile."""
+        from hypergraph import BatchTolerance
+
+        graph = ingestion_graph()
+        home.max_active_runs = 1  # keep later items from ever being claimed
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await submit_ids(
+            host,
+            graph,
+            ["work-boom-a", "work-boom-b", "work-clean-c", "work-clean-d"],
+            "drop-tripped-cold",
+            tolerance=BatchTolerance(max_failed=1),
+        )
+
+        async with worker(host):
+            final = await batch_where(host.client, receipt.batch_ref, lambda v: v.settled)
+
+        assert final.tolerance_tripped is True
+        assert final.counts["abandoned"] == 0
+        assert set(final.unstarted_items) == {"work-clean-c", "work-clean-d"}
+        assert all(final.outcomes[key] is None for key in final.unstarted_items)
 
     async def test_every_manifest_item_is_counted_exactly_once(self, home, ledger):
         graph = ingestion_graph()

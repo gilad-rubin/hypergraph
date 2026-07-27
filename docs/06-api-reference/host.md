@@ -223,12 +223,15 @@ The same client verbs accept a `BatchRef`:
 view = await client.get(receipt.batch_ref)   # BatchView: keyed persisted facts
 view.counts          # every manifest item in exactly one bucket:
                      # {"completed": 1, "failed": 0, "active": 0, "paused": 1,
-                     #  "queued": 1, "unstarted": 0, ...} — all keys always present
+                     #  "queued": 1, "unstarted": 0, "abandoned": 0, ...}
+                     # — all keys always present
 view.items           # item key -> BatchItemView (per-item truth, below)
 view.outcomes        # item key -> terminal status ("completed" / "failed" /
                      # ...) for settled children, None while in flight
 view.unstarted_items # item keys whose child never executed — never
                      # invented results
+view.abandoned_items # item keys whose child HAD started when a tolerance
+                     # trip closed admission — reconcile before rerunning
 view.settled         # True when no child is active, paused, or queued
 view.tolerance_tripped  # True once a pinned tolerance was exceeded
 view.retry_of        # source batch_id when minted by client.rerun(batch_ref)
@@ -241,7 +244,14 @@ executing; `paused` a child parked on a durable pause slot waiting for a
 human; `queued` a child not yet started but still claimable;
 `recovery_exhausted` a parked child (it counts as settled); `unstarted` a
 child that finished without ever executing (stop-before-start, or a
-tolerance trip that closed admission before it ran).
+tolerance trip that closed admission before it ran); `abandoned` a child
+that HAD started when a tolerance trip closed admission.
+
+`unstarted` and `abandoned` are separate for the same reason `active` and
+`paused` are. An unstarted item ran nothing, so it is safe to rerun from
+scratch. An abandoned item committed steps and may already have landed side
+effects, so it is the one an operator has to reconcile first. Calling both
+"unstarted" would say nothing happened when something did.
 
 `active` and `paused` are separate buckets because they answer different
 operational questions. `active` means *this item is consuming a worker right
@@ -280,7 +290,9 @@ good, with `item_key`, `workflow_id`, and `status` — a terminal status, or
 `child_paused` (a child parked on a human, with `item_key`, `workflow_id`,
 `run_ref`, and the `pause_id` of the occurrence), `child_runnable` (that
 child's answer settled and it is claimable again, naming the `pause_id` that
-was answered), `tolerance_tripped`, `child_unstarted` (an item that ended
+was answered), `tolerance_tripped` (carrying both `unstarted_items` and
+`abandoned_items`), `child_abandoned` (a started child a trip closed
+admission on, with `item_key` and `workflow_id`), `child_unstarted` (an item that ended
 unstarted without the trip fact naming it — a stopped Batch's child that
 never executed, or a child a crash returned to pending after the trip —
 with `item_key` and `workflow_id`), and `stopped`; live previews fanned in

@@ -197,6 +197,12 @@ class RunQuery:
 # reports it and the child_settled fact carries it as its status.
 BATCH_OUTCOME_RECOVERY_EXHAUSTED = "recovery_exhausted"
 
+# THE Batch-level outcome for a child a tolerance trip closed admission on
+# AFTER it had started. Terminal and settled like the brake outcome above,
+# but it names the tolerance decision, not the recovery brake — and it is
+# emphatically not "unstarted": this child committed steps.
+BATCH_OUTCOME_ABANDONED = "abandoned"
+
 # Closed bucket vocabulary for BatchView.counts. Every manifest item is
 # accounted in exactly one bucket; terminal buckets are WorkflowStatus
 # values so child outcomes share the Run vocabulary.
@@ -205,6 +211,12 @@ BATCH_OUTCOME_RECOVERY_EXHAUSTED = "recovery_exhausted"
 # human decision is NOT running. Counting it as active told an operator
 # "N items are being worked on" when the true answer was "N items are
 # waiting for you", and made human response time look like throughput.
+#
+# ``unstarted`` and ``abandoned`` are disjoint for the same kind of reason.
+# A tolerance trip closes admission on every pending child at once, but an
+# item that never began is safe to rerun from scratch, while one that began
+# may have landed side effects already. One bucket for both would tell an
+# operator nothing happened when something did.
 BATCH_COUNT_KEYS: tuple[str, ...] = (
     "completed",
     "failed",
@@ -215,6 +227,7 @@ BATCH_COUNT_KEYS: tuple[str, ...] = (
     "queued",
     "recovery_exhausted",
     "unstarted",
+    "abandoned",
 )
 
 
@@ -285,11 +298,17 @@ class BatchView:
             child is in flight, and None for unstarted items (Hypergraph
             never fabricates results for items that never ran).
         unstarted_items: Manifest keys whose child never executed, in
-            manifest order — requested but never admitted.
+            manifest order — requested but never admitted. Safe to rerun
+            from scratch: nothing ran, so nothing landed.
+        abandoned_items: Manifest keys whose child HAD started when a
+            tolerance trip closed admission, in manifest order. These
+            committed steps and may have landed side effects, so they are
+            the items an operator has to reconcile before rerunning —
+            which is exactly why they are not called unstarted.
         settled: True when no child is active, paused, or queued (terminal,
-            unstarted, and recovery-exhausted children are settled). A
-            paused child is deliberately NOT settled: its question is open
-            and its outcome can still change.
+            unstarted, abandoned, and recovery-exhausted children are
+            settled). A paused child is deliberately NOT settled: its
+            question is open and its outcome can still change.
         tolerance_tripped: True when failure-equivalent children strictly
             exceeded a pinned tolerance, closing new child admission. A
             trip is a Batch fact, never a ``WorkflowStatus``: the Batch
@@ -307,6 +326,7 @@ class BatchView:
     items: dict[str, BatchItemView]
     outcomes: dict[str, str | None]
     unstarted_items: tuple[str, ...]
+    abandoned_items: tuple[str, ...]
     settled: bool
     tolerance_tripped: bool
     retry_of: str | None
