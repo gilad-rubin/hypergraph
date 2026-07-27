@@ -241,6 +241,7 @@ class BatchAcceptance:
             0,
             self.batch_id,
             spec.item_key,
+            0,  # claim_seq: no claim has been handed out yet
         )
 
     def child_submitted_fact(self, spec: ChildSpec) -> dict[str, Any]:

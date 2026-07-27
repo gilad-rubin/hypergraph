@@ -78,12 +78,17 @@ def _arm_pause_boundaries(home: RunHome, boundary: str) -> None:
 def _arm_release_window_boundary(home: RunHome) -> None:
     """Kill INSIDE the release window, after the answer settled.
 
-    Two things are armed together so the boundary is exact rather than
-    lucky: this process stops claiming the moment the target parks, and its
-    release call holds open until the parent's answer is durable, then dies
-    without ever releasing. So nothing this worker did after the answer can
-    be part of why the child is claimable again — only the answer
-    transaction itself can be.
+    Two things are armed together so the kill lands on the exact side of the
+    commit rather than luckily: this process stops claiming the moment the
+    target parks, and its release call holds open until the parent's answer
+    is durable, then dies without ever releasing. Suppressing the re-claim
+    is what pins the kill to the window — it is not what makes the answer
+    survive. A worker that DOES re-claim inside the window is covered
+    deterministically by
+    ``test_batch_stop_and_races.TestTheReleaseWindowIsNotARace``'s
+    ``test_a_stale_release_cannot_settle_a_fresh_claim``: the release
+    compare-and-sets on the claim it held, so it is a no-op against any
+    later one.
     """
     original_claim = home._claim_eligible
     original_release = home._release_submission
@@ -92,9 +97,9 @@ def _arm_release_window_boundary(home: RunHome) -> None:
     async def claim_eligible(*args, **kwargs):
         return [] if frozen.is_set() else await original_claim(*args, **kwargs)
 
-    async def release(workflow_id):
+    async def release(workflow_id, claim_seq):
         if TARGET_ITEM not in workflow_id:
-            return await original_release(workflow_id)
+            return await original_release(workflow_id, claim_seq)
         frozen.set()
         while not await _has_settled_answer(home, workflow_id):
             await asyncio.sleep(0.005)
@@ -133,11 +138,11 @@ def _arm_terminal_boundary(home: RunHome) -> None:
     """Kill after the terminal Run commit, before anything observes it."""
     original = home._release_submission
 
-    async def release(workflow_id):
+    async def release(workflow_id, claim_seq):
         run = await home.get_run_async(workflow_id)
         if TARGET_ITEM in workflow_id and run is not None and run.status in TERMINAL_WORKFLOW_STATUSES:
             die()  # runs row terminal + child_settled committed; claim outstanding
-        return await original(workflow_id)
+        return await original(workflow_id, claim_seq)
 
     home._release_submission = release
 

@@ -11,7 +11,8 @@ What this file falsifies:
    outcome.
 4. The worker's release window is not a race: the pause transaction parks
    the submission and the answer transaction re-admits it, so a release
-   owns neither and can undo neither.
+   owns neither and can undo neither — and it settles only the claim it
+   itself held, never a fresher one wearing the same state name.
 """
 
 from __future__ import annotations
@@ -236,6 +237,10 @@ class TestTheReleaseWindowIsNotARace:
     lands while the worker is still finishing cannot be missed — and process
     death anywhere in the window cannot separate a durable decision from a
     claimable run.
+
+    Owning no transition is not enough on its own: the release still has to
+    know WHICH claim it speaks for, because park, answer, and re-claim
+    return a submission to the same state name under a different attempt.
     """
 
     async def test_the_pause_transaction_parks_the_submission_itself(self, home, ledger):
@@ -276,14 +281,14 @@ class TestTheReleaseWindowIsNotARace:
 
         original = home._release_submission
 
-        async def answer_first(wid: str) -> None:
+        async def answer_first(wid: str, claim_seq: int) -> bool:
             # Hold the release open, answer, THEN let the worker release.
             if wid == workflow_id and not answered.is_set():
                 slot = await home.get_pause_slot(wid)
                 if slot is not None and slot.is_open:
                     await client.answer(RunRef(home=home.uri, run_id=wid), pause_id=slot.pause_id, value=answer_value("create_new"))
                     answered.set()
-            await original(wid)
+            return await original(wid, claim_seq)
 
         home._release_submission = answer_first  # type: ignore[method-assign]
         try:
@@ -310,17 +315,75 @@ class TestTheReleaseWindowIsNotARace:
         async with worker(host) as task:
             view = await batch_where(client, receipt.batch_ref, lambda v: len(paused_items(v)) == 1)
             item = view.items["work-dup-1"]
+            held_claim = (await home._get_submission(item.workflow_id))["claim_seq"]
             host.shutdown()
             await asyncio.wait_for(task, timeout=25)
             await answer_item(client, item, "create_new")
 
             assert (await home._get_submission(item.workflow_id))["state"] == "pending"
-            # A late release for the same run must change nothing.
-            await home._release_submission(item.workflow_id)
+            # A late release for the same run, carrying the claim the dead
+            # worker really held, must change nothing.
+            assert await home._release_submission(item.workflow_id, held_claim) is False
 
         assert (await home._get_submission(item.workflow_id))["state"] == "pending"
         kinds = [k for _s, k, _p, _a in await home._read_batch_updates(receipt.batch_ref.batch_id)]
         assert kinds.count("child_runnable") == 1
+
+    async def test_a_stale_release_cannot_settle_a_fresh_claim(self, home, ledger):
+        """The release compare-and-sets on the CLAIM, not on the state name.
+
+        Park, answer, and re-claim walk one submission
+        'claimed' → 'paused' → 'pending' → 'claimed'. A release still
+        unwinding from the FIRST attempt therefore found exactly the state
+        name it was looking for, and settled the SECOND attempt's live
+        claim: the Batch reported the item accounted while its question was
+        open, the item was mislabeled abandoned, and the restart scan — which
+        re-adopts 'claimed' only — never picked it up again.
+
+        Every step here is a transition the host itself performs; only the
+        ORDER is staged, so the interleaving is deterministic rather than
+        timing-dependent.
+        """
+        graph = ingestion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await submit_ids(host, graph, ["work-dup-1"], "drop-aba")
+        client = host.client
+        workflow_id = "drop-aba:work-dup-1"
+
+        # Not the `worker` helper: its exit shuts the Host down a second
+        # time, and that request would be consumed by the worker started
+        # further down, which must actually run.
+        first = asyncio.create_task(host.work_forever("w-342-a"))
+        view = await batch_where(client, receipt.batch_ref, lambda v: len(paused_items(v)) == 1)
+        item = view.items["work-dup-1"]
+        # The claim the first attempt holds while it parks.
+        stale_claim = (await home._get_submission(workflow_id))["claim_seq"]
+        host.shutdown()
+        await asyncio.wait_for(first, timeout=25)
+
+        await answer_item(client, item, "create_new")  # paused -> pending
+        fresh = await home._claim_eligible(served=host._served_identities)  # pending -> claimed
+        assert [row["workflow_id"] for row in fresh] == [workflow_id]
+        assert fresh[0]["claim_seq"] > stale_claim
+
+        released = await home._release_submission(workflow_id, stale_claim)
+
+        submission = await home._get_submission(workflow_id)
+        assert submission["state"] == "claimed"  # the fresh claim survives
+        assert submission["claim_seq"] == fresh[0]["claim_seq"]
+        assert released is False
+        assert (await client.get(receipt.batch_ref)).settled is False
+
+        # The item runs to its own outcome and the stream accounts it ONCE.
+        async with worker(host, "w-342-b"):
+            final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+
+        assert final.outcomes["work-dup-1"] == "completed"
+        assert read_ledger(ledger) == ["created:work-dup-1"]
+        kinds = [k for _s, k, _p, _a in await home._read_batch_updates(receipt.batch_ref.batch_id)]
+        assert kinds.count("child_settled") == 1
+        assert kinds.count("child_abandoned") == 0
+        assert kinds.count("child_unstarted") == 0
 
     async def test_a_watch_replay_shows_one_pause_and_one_runnable(self, home, ledger):
         """Reconnectable history, from the durable sequence alone."""

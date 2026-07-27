@@ -13,6 +13,19 @@ submission some other path already moved. ``_release_submission`` owns
 neither, which is what closed the window in which an answer could land
 between a pause commit and the worker's release.
 
+The two CASes deliberately compare DIFFERENT things, because they assert
+different facts:
+
+- park and re-admit assert something about the RUN — "it is parked on a
+  person", "its question was answered". Those are true whoever holds the
+  claim, so comparing the state name is the whole guard they need.
+- the release asserts something about ONE EXECUTION — "the attempt I ran
+  came back". That is true only for the claim that ran it, so its CAS also
+  compares ``claim_seq``. Comparing the state name alone made it an ABA:
+  park, answer, and re-claim take a submission from 'claimed' back to
+  'claimed', and a release still unwinding from the FIRST attempt then
+  matched — and finished — the SECOND attempt's live claim.
+
 The SQL and the vocabulary live here so a reader can see the pair together;
 ``RunHome`` still owns the transactions they commit inside. The scheduled
 answer (ADR 0008) is here for the same reason: a timer is a deferred answer,
@@ -29,6 +42,16 @@ from typing import Any, Literal
 #: THE park transition: claimed -> paused, inside the pause transaction.
 #: Compare-and-set on 'claimed' so a submission another path already moved
 #: is left alone, and so a replayed pause commit is a no-op.
+#:
+#: Deliberately NOT claim-scoped, unlike the release. A park is caused by an
+#: interrupt RAISING inside the executing attempt and commits with that same
+#: attempt's ``PAUSED`` run status; there is no unwind path that parks late,
+#: so the ABA interleaving the release suffered has no analogue here. The one
+#: way a park can land under a claim that did not cause it is the documented
+#: at-least-once case — an orphaned thread from a cancelled ``to_thread``
+#: still executing the same run id — and there the park states the truth
+#: about the shared runs row anyway: that run really is paused on a question
+#: nobody has answered, and the answer transaction re-admits it as usual.
 PARK_SUBMISSION_SQL = "UPDATE host_submissions SET state = ?, claimed_at = NULL, finished_at = NULL WHERE workflow_id = ? AND state = 'claimed'"
 
 #: THE re-admit transition: paused -> pending, inside the answer transaction.
@@ -40,7 +63,15 @@ READMIT_ANSWERED_SQL = "UPDATE host_submissions SET state = 'pending', claimed_a
 
 #: THE release: settled work becoming finished, and nothing else. Every other
 #: outcome was already decided by the transaction that caused it.
-RELEASE_SUBMISSION_SQL = "UPDATE host_submissions SET state = ?, finished_at = ? WHERE workflow_id = ? AND state = 'claimed'"
+#:
+#: Compare-and-set on the CLAIM (``claim_seq``), not merely on the state
+#: name. A releaser speaks only for the attempt it ran, and between that
+#: attempt parking and its release returning, an answer plus a re-claim can
+#: put the submission back in 'claimed' under a NEW attempt. Matching the
+#: name alone finished that live claim: the batch stream ended on an open
+#: question, the item was reported abandoned, and the restart scan (which
+#: re-adopts 'claimed' only) never picked it up again.
+RELEASE_SUBMISSION_SQL = "UPDATE host_submissions SET state = ?, finished_at = ? WHERE workflow_id = ? AND state = 'claimed' AND claim_seq = ?"
 
 STOP_VERB = "stop"
 SCHEDULE_ANSWER_VERB = "schedule_answer"

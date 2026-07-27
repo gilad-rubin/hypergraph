@@ -737,9 +737,10 @@ class Host:
             await asyncio.to_thread(run_fn, definition.graph, inputs, **run_kwargs)
         # Release the claim only after the run came back: a cancelled or
         # crashed execution leaves the submission claimed for the restart
-        # scan. The Home branches on the run's own committed status — a
-        # PAUSED run is parked awaiting a human answer, not finished.
-        await self._home._release_submission(workflow_id)
+        # scan. The release settles THIS claim (`row["claim_seq"]`) or
+        # nothing — while this attempt was unwinding, an answer plus a
+        # re-claim may already have handed the submission to a newer one.
+        await self._home._release_submission(workflow_id, row["claim_seq"])
 
 
 def _definition_from(graph: Graph, *, home: RunHome, deployment_version: str, taken: Collection[str]) -> _Definition:

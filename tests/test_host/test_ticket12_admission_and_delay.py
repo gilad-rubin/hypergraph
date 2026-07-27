@@ -249,8 +249,9 @@ class TestActiveRunCap:
         db.commit()
 
         for expected in ("wf-a", "wf-b", "wf-c"):
-            assert [row["workflow_id"] for row in await _claim(host, home)] == [expected]
-            await home._release_submission(expected)
+            claimed = await _claim(host, home)
+            assert [row["workflow_id"] for row in claimed] == [expected]
+            await home._release_submission(expected, claimed[0]["claim_seq"])
 
     async def test_over_limit_work_waits_pending_in_claim_order(self, home):
         """Cap=1 claims only the oldest; the rest stay pending, untouched."""
@@ -285,16 +286,17 @@ class TestActiveRunCap:
         home.max_active_runs = 2
         for workflow_id in ("wf-a", "wf-b", "wf-c"):
             await host.submit(served["dbl"], {"x": 1}, workflow_id=workflow_id)
-        assert [row["workflow_id"] for row in await _claim(host, home)] == ["wf-a", "wf-b"]
+        claimed = {row["workflow_id"]: row["claim_seq"] for row in await _claim(host, home)}
+        assert list(claimed) == ["wf-a", "wf-b"]
 
         home.max_active_runs = 1  # below the work already outstanding
 
         assert await _claim(host, home) == []
         assert _states(home) == {"wf-a": "claimed", "wf-b": "claimed", "wf-c": "pending"}
         # The over-subscribed claims are never revoked; wf-c waits its turn.
-        await home._release_submission("wf-a")
+        await home._release_submission("wf-a", claimed["wf-a"])
         assert await _claim(host, home) == []  # one claim still outstanding at cap 1
-        await home._release_submission("wf-b")
+        await home._release_submission("wf-b", claimed["wf-b"])
         assert [row["workflow_id"] for row in await _claim(host, home)] == ["wf-c"]
 
     async def test_waiting_view_names_the_cap_and_flips_back_when_a_slot_frees(self, home):
@@ -306,13 +308,13 @@ class TestActiveRunCap:
         # Uncapped-so-far: both are plainly queued.
         assert (await client.get(second.run_ref)).waiting is WaitingCondition.QUEUED
 
-        await _claim(host, home)
+        claimed = await _claim(host, home)
 
         assert (await client.get(first.run_ref)).waiting is WaitingCondition.QUEUED  # claimed, holds the slot
         assert (await client.get(second.run_ref)).waiting is WaitingCondition.ADMISSION_LIMITED
         assert [view.workflow_id for view in await client.list(RunQuery(waiting=WaitingCondition.ADMISSION_LIMITED))] == ["wf-b"]
 
-        await home._release_submission("wf-a")
+        await home._release_submission("wf-a", claimed[0]["claim_seq"])
 
         assert (await client.get(second.run_ref)).waiting is WaitingCondition.QUEUED
         assert await client.list(RunQuery(waiting=WaitingCondition.ADMISSION_LIMITED)) == []

@@ -383,7 +383,14 @@ CREATE TABLE IF NOT EXISTS host_submissions (
     -- is the logical manifest key; the child workflow id stays
     -- "<batch_workflow_id>:<item_key>".
     batch_id TEXT,
-    item_key TEXT
+    item_key TEXT,
+    -- WHICH claim of this submission is current. Every claim bumps it, so a
+    -- claimant carries an identity — not just the state name 'claimed' —
+    -- that its release can compare against. claimed_at cannot serve: the
+    -- store clock is millisecond-grained, and park -> answer -> re-claim
+    -- fits inside one millisecond, so two successive claims of one
+    -- submission can share a timestamp.
+    claim_seq INTEGER NOT NULL DEFAULT 0
 )
 """
 
@@ -573,6 +580,7 @@ _HOST_SUBMISSIONS_ADDED_COLUMNS = (
     ("last_progress_step_count", "last_progress_step_count INTEGER NOT NULL DEFAULT 0"),
     ("batch_id", "batch_id TEXT"),
     ("item_key", "item_key TEXT"),
+    ("claim_seq", "claim_seq INTEGER NOT NULL DEFAULT 0"),
 )
 
 # Columns appended to host_batches after its initial cut (ticket 06). The v6

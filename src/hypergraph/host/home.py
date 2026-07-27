@@ -119,7 +119,7 @@ _memory_lock_tokens = itertools.count()
 _SUBMISSION_COLS = (
     "workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
     "start_at, state, recovery_attempts, recovery_cap, source_ref, created_at, claimed_at, finished_at, "
-    "fingerprint, compat_state, retry_of, retry_index, forked_from, fork_reason, last_progress_step_count, batch_id, item_key"
+    "fingerprint, compat_state, retry_of, retry_index, forked_from, fork_reason, last_progress_step_count, batch_id, item_key, claim_seq"
 )
 _SUBMISSION_PLACEHOLDERS = ", ".join("?" for _ in _SUBMISSION_COLS.split(", "))
 _SELECT_SUBMISSION = f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE workflow_id = ?"
@@ -990,6 +990,7 @@ class RunHome(SqliteCheckpointer):
                         0,
                         batch_id,
                         item_key,
+                        0,  # claim_seq: no claim has been handed out yet
                     ),
                 )
                 self._append_run_update_sync(
@@ -1095,6 +1096,7 @@ class RunHome(SqliteCheckpointer):
                         0,
                         batch_id,
                         item_key,
+                        0,  # claim_seq: no claim has been handed out yet
                     ),
                 )
                 await self._append_run_update(
@@ -1567,11 +1569,13 @@ class RunHome(SqliteCheckpointer):
 
         The compare-and-set on ``state = 'paused'`` is what makes the whole
         thing safe. It flips exactly once, so a re-fired timer or a replayed
-        settlement cannot re-admit twice; and it flips NOTHING while the
-        worker still holds the claim — a run answered in the window between
-        its pause commit and ``_release_submission`` is re-admitted by that
-        release instead, which reads the same settled slot. Between them the
-        child becomes runnable exactly once, whichever side commits first.
+        settlement cannot re-admit twice. And it is the ONLY re-admission
+        there is: the worker's release owns no such transition, and since it
+        compare-and-sets on the claim it held, it cannot even reach a
+        submission this call has already moved. An answer that lands in the
+        window between the pause commit and ``_release_submission`` is
+        therefore re-admitted here and only here — the late release finds a
+        claim that is no longer its own and does nothing.
 
         Returns True when this call performed the transition.
         """
@@ -1635,6 +1639,14 @@ class RunHome(SqliteCheckpointer):
         self, now_iso: str | None = None, *, served: Collection[DefinitionId], limit: int = _CLAIM_BATCH
     ) -> list[dict[str, Any]]:
         """CAS-claim eligible pending submissions (state -> 'claimed').
+
+        Every claim bumps the submission's ``claim_seq`` and the returned row
+        carries the bumped value, so the claimant holds the IDENTITY of its
+        own claim and not merely the knowledge that some claim exists. That
+        is what ``_release_submission`` compares against: park, answer, and
+        re-claim can return a submission to 'claimed' under a different
+        attempt while this one is still unwinding, and a release that
+        compared only the state name would settle that live claim.
 
         Eligible means ``state='pending'``, ``compat_state='compatible'``,
         and ``start_at`` absent or past. ``now_iso`` defaults to the STORE's
@@ -1741,10 +1753,16 @@ class RunHome(SqliteCheckpointer):
                         # submission takes the next freed slot.
                         continue
                     result = await self._db.execute(
-                        "UPDATE host_submissions SET state = 'claimed', claimed_at = ? WHERE workflow_id = ? AND state = 'pending'",
+                        "UPDATE host_submissions SET state = 'claimed', claimed_at = ?, claim_seq = claim_seq + 1 "
+                        "WHERE workflow_id = ? AND state = 'pending'",
                         (now_iso, submission["workflow_id"]),
                     )
                     if result.rowcount == 1:
+                        # The row was read before the bump, so the claim this
+                        # caller now owns is one past what it says. Handing
+                        # the stale value back would let the releaser match a
+                        # claim it never held.
+                        submission["claim_seq"] = int(submission["claim_seq"]) + 1
                         claimed.append(submission)
                         if free_slots is not None:
                             free_slots -= 1
@@ -1771,11 +1789,13 @@ class RunHome(SqliteCheckpointer):
         )
         return frozenset(str(row[0]) for row in await cursor.fetchall())
 
-    async def _release_submission(self, workflow_id: str) -> None:
-        """Settle a still-claimed submission the worker finished executing.
+    async def _release_submission(self, workflow_id: str, claim_seq: int) -> bool:
+        """Settle the submission THIS claim finished executing.
 
-        Deliberately a COMPARE-AND-SET on ``claimed``, and deliberately the
-        owner of only one transition — settled work becoming ``finished``.
+        Deliberately a COMPARE-AND-SET on the claim — ``state = 'claimed'``
+        **and** ``claim_seq``, the value ``_claim_eligible`` handed this
+        caller — and deliberately the owner of only one transition: settled
+        work becoming ``finished``.
 
         Every other outcome was already decided by the transaction that
         caused it, so this call is a no-op for it:
@@ -1792,13 +1812,25 @@ class RunHome(SqliteCheckpointer):
         re-applied by the worker, so process death between the two left the
         decision durable and the run unclaimable. Now each transition has
         exactly one owner and one commit, and this call cannot undo either.
+
+        Matching the state NAME alone was not enough to keep that promise.
+        Park, answer, and re-claim walk a submission 'claimed' → 'paused' →
+        'pending' → 'claimed', so a release still unwinding from the first
+        attempt found the name it expected and finished the SECOND attempt's
+        live claim: the batch stream ended while the question was open, the
+        item was reported abandoned, and the restart scan never re-adopted
+        it. Comparing ``claim_seq`` makes a stale release exactly what it
+        should be — nothing.
+
+        Returns True when this claim was the one settled.
         """
         await self._ensure_db()
         async with self._txn_lock():
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
-                await self._db.execute(RELEASE_SUBMISSION_SQL, (SUBMISSION_STATE_FINISHED, _now_iso(), workflow_id))
+                result = await self._db.execute(RELEASE_SUBMISSION_SQL, (SUBMISSION_STATE_FINISHED, _now_iso(), workflow_id, claim_seq))
                 await self._db.commit()
+                return bool(result.rowcount == 1)
             except BaseException:
                 await self._rollback_async()
                 raise
