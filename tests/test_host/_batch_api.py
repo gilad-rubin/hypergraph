@@ -41,8 +41,8 @@ def serve_graphs(*graphs: Any, **kwargs: Any) -> tuple[Any, dict[str, Any]]:
     something the test itself constructed one line earlier, and would tie
     every one of these suites to that registry's internal shape.
 
-    The door itself is proven by ``test_batch_interrupt_matrix.py``, which
-    submits real Graph objects and asserts an unserved one is refused.
+    The door itself is proven by ``test_batch_public_api.py``, which submits
+    real Graph objects and asserts an unserved one is refused.
     """
     from hypergraph import serve
 
