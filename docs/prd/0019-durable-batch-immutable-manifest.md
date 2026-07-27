@@ -84,8 +84,10 @@ Requirements:
   already-claimed children settle, accounts every remaining item
   explicitly (unstarted if it never began, abandoned if it had), and
   stays truthfully PARTIAL — not failed, not stopped. Closed admission
-  is closed: answering a paused child of a tripped Batch settles its
-  question but never re-admits it.
+  is closed at the CLAIM: answering a paused child of a tripped Batch
+  settles its question and returns the child to claim order like any
+  other answer, and the claim gate then refuses it — settling it
+  `abandoned`, because it had already started, rather than running it.
 - **One durable sequence (A9).** Every manifest or child-outcome change
   receives a monotonic per-Batch sequence; when a child commit changes
   Batch truth, both records land in the same transaction. `watch(batch_ref,

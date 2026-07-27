@@ -284,8 +284,10 @@ worker death returned to pending, say — is accounted **abandoned** instead
 of unstarted. There is none in this scenario, and that is exactly why the
 two buckets are separate: an unstarted item is safe to rerun from scratch,
 while an abandoned one committed steps an operator must reconcile first.
-Closed admission is closed for both: answering a paused child of a tripped
-Batch settles its question but never puts it back in claim order.
+Closed admission is closed for both, and it is closed at the CLAIM: answering
+a paused child of a tripped Batch settles its question and puts it back in
+claim order like any other answer — the claim gate is what refuses it, and
+settles it `abandoned` rather than running it.
 
 ## Scenario 6 — Version-incompatible refusal (ADR 0007)
 
