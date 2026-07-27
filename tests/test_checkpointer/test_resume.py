@@ -994,3 +994,58 @@ class TestCreateRunUpsert:
         stored = checkpointer.get_run("upsert-1")
         assert stored.created_at == original_created
         assert stored.status == WorkflowStatus.ACTIVE
+
+
+class TestRunInputsMustBeStorable:
+    """Durable run inputs are a NEW requirement, so the refusal must say so.
+
+    Before ``runs.inputs_data``, only node outputs went through the
+    serializer and a live handle passed as a graph input ran fine. Now it
+    stops the run at start — and a bare "Object of type Client is not JSON
+    serializable" names neither the run, nor the input, nor the rule.
+    """
+
+    class Client:
+        """A typical non-storable graph input: a live handle."""
+
+    async def test_a_non_storable_graph_input_is_refused_by_name(self, checkpointer):
+        @node(output_name="out")
+        def use_client(client: object, key: str) -> str:
+            return f"{client}{key}"
+
+        runner = AsyncRunner(checkpointer=checkpointer)
+
+        with pytest.raises(TypeError) as raised:
+            await runner.run(Graph([use_client]), {"client": self.Client(), "key": "k"}, workflow_id="unstorable-1")
+
+        message = str(raised.value)
+        assert "'unstorable-1'" in message  # which run
+        assert "client (Client)" in message  # which input, and what it is
+        assert "graph inputs" in message  # and the rule it broke
+        assert "How to fix:" in message
+
+    def test_the_sync_mirror_refuses_the_same_way(self, sync_checkpointer):
+        @node(output_name="out")
+        def use_client(client: object, key: str) -> str:
+            return f"{client}{key}"
+
+        runner = SyncRunner(checkpointer=sync_checkpointer)
+
+        with pytest.raises(TypeError, match="client \\(Client\\)"):
+            runner.run(Graph([use_client]), {"client": self.Client(), "key": "k"}, workflow_id="unstorable-sync-1")
+
+    async def test_a_lossy_serializer_still_accepts_it(self, tmp_path):
+        """The escape hatch the message offers actually works."""
+        from hypergraph.checkpointers import JsonSerializer
+
+        @node(output_name="out")
+        def use_client(client: object, key: str) -> str:
+            return f"seen:{key}"
+
+        cp = SqliteCheckpointer(str(tmp_path / "lossy.db"), serializer=JsonSerializer(lossy=True))
+        try:
+            result = await AsyncRunner(checkpointer=cp).run(Graph([use_client]), {"client": self.Client(), "key": "k"}, workflow_id="lossy-1")
+            assert result["out"] == "seen:k"
+            assert isinstance((await cp.get_run_inputs("lossy-1"))["client"], str)
+        finally:
+            await cp.close()

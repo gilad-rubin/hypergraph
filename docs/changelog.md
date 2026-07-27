@@ -23,6 +23,39 @@
   policy is `BatchTolerance`. There is no `host.map()` — it would promise an
   immediate `MapResult` where a durable Batch returns a receipt.
 
+- **BREAKING (checkpointers): a checkpointed run now stores its graph inputs,
+  so those inputs must be storable.** Step records fold node *outputs*, which
+  left the values a run started from unrecorded — a node placed after an
+  interrupt that consumed a raw graph input could never be satisfied on
+  resume. `create_run()` / `create_run_sync()` therefore take a new
+  `inputs=` keyword and `SqliteCheckpointer` persists it to `runs.inputs_data`
+  first-write-wins (a resume carries only the answer port and must not clobber
+  the originals). Three consequences:
+
+  - **A graph input the serializer cannot encode now fails the run at start.**
+    Previously only node outputs went through the serializer, so a live client
+    or connection handle passed as a graph input ran fine; it now raises
+    `TypeError` naming the run and the offending input. Pass a storable
+    stand-in and build the object inside a node, or configure a serializer
+    that accepts it (`SqliteCheckpointer(..., serializer=JsonSerializer(lossy=True))`).
+  - **`Checkpoint.values` gained the run's own inputs**, layered *underneath*
+    the folded step values (a node output shadowing an input name still wins).
+    Code that treated `Checkpoint.values` as "node outputs only" now sees more
+    keys.
+  - **`create_run` / `create_run_sync` gained a parameter.** Third-party
+    checkpointers that do not accept `inputs=` must add it; ignoring the
+    argument and keeping the inherited `get_run_inputs()` (which returns `{}`)
+    preserves the previous behavior exactly. There is no capability probe —
+    the ABC and the protocol both declare the parameter, and
+    `docs/06-api-reference/checkpointers.md` documents it.
+
+  This also **inverts two resume refusals**, deliberately. Resuming a
+  checkpoint whose source run consumed a graph input no later node reproduces
+  used to raise `MissingInputError`, because the value genuinely was not
+  available; it now restores the input and does real work
+  (`test_checkpoint_resume_restores_a_source_run_input`, async and sync). The
+  guard itself is unchanged and still fires for a genuinely absent seed.
+
 - **BREAKING (durable record content): raw exception text no longer enters
   durable or telemetry surfaces.** Previously `str(exception)` flowed
   verbatim through `NodeErrorEvent.error` → `RunLog` / checkpoint

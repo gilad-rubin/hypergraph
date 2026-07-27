@@ -163,16 +163,50 @@ Every checkpointer implements the same contract, so runners don't need to know w
 | Method | Purpose |
 |---|---|
 | `save_step(record)` | Persist one node's execution atomically. Upserts on `(run_id, superstep, node_name)`. |
-| `create_run(run_id, ...)` | Create or reset a run record at run start. |
+| `create_run(run_id, ..., inputs=None)` | Create or reset a run record at run start, and store the run's graph-boundary inputs. |
 | `update_run_status(run_id, status, ...)` | Update lifecycle status with duration/counts. |
 | `get_state(run_id, superstep=None)` | Fold step values into accumulated state. `None` means latest. |
 | `get_steps(run_id, superstep=None, show_internal=False)` | Public step records through a superstep. Set `show_internal=True` to include retention carriers. |
-| `get_checkpoint(run_id, superstep=None)` | `Checkpoint` (values + steps) for forking — has a default implementation built from `get_state`/`get_steps`. |
+| `get_run_inputs(run_id)` | The graph-boundary values this run started from. Has a default implementation returning `{}`. |
+| `get_checkpoint(run_id, superstep=None)` | `Checkpoint` (values + steps) for restoring — has a default implementation built from `get_run_inputs`, `get_state`, and `get_steps`. |
 | `list_runs(status=None, graph_name=None, since=None, parent_run_id=<omitted>, limit=100)` | List runs with composable filters. Omit `parent_run_id` for all runs; pass `None` for top-level runs only. |
 | `count_runs(status=None, parent_run_id=<omitted>, retry_of=None)` | Count with the same omitted/all versus explicit-`None`/top-level parent filter. |
 | `search_async(query, field=None, limit=20)` | FTS search over step values. Returns `[]` if unsupported. |
 
 `graph_name`, `since`, `status`, and `parent_run_id` compose with AND before `limit` is applied. `since` is inclusive; naive datetimes mean UTC and aware datetimes are normalized to UTC. The same rules apply to SQLite's sync `runs()` adapter.
+
+### Run inputs
+
+`create_run(..., inputs=...)` and `get_run_inputs(run_id)` are how a run's own
+graph-boundary values become restorable. Step records fold node **outputs**,
+so before this the values a run *started* from were the one piece of
+restorable state nothing recorded: a node placed after an interrupt that
+consumed a raw graph input could never be satisfied on resume.
+
+- **Stored first-write-wins.** A resume passes only `{response_key: answer}`,
+  and overwriting the originals with it would destroy the state the resume
+  needs. `SqliteCheckpointer` uses `COALESCE` on `runs.inputs_data`; the
+  in-memory checkpointer mirrors the rule.
+- **Only declared graph inputs are stored** — an interrupt answer is a node
+  output, so a resume payload contributes nothing. A fork or retry inherits
+  the source checkpoint's restored inputs and so is independently restorable
+  in turn.
+- **`get_checkpoint` layers them underneath the folded step values**, so a
+  node output that shadows an input name still wins, exactly as it does live.
+- **Backends need not persist them.** The ABC's `get_run_inputs` returns `{}`
+  by default, and a `create_run` that ignores `inputs=` keeps the pre-existing
+  behavior: the checkpoint then carries only folded step values.
+- **The values must be storable by the checkpointer's serializer.** A live
+  handle passed as a graph input now stops the run at start with a `TypeError`
+  naming the run and the offending input. Pass a storable stand-in and build
+  the object inside a node, or configure a serializer that accepts it
+  (`SqliteCheckpointer(..., serializer=JsonSerializer(lossy=True))`).
+
+```python
+await checkpointer.create_run("wf-1", graph_name="demo", inputs={"x": 5})
+await checkpointer.get_run_inputs("wf-1")   # {"x": 5}
+(await checkpointer.get_checkpoint("wf-1")).values  # inputs, with step values over them
+```
 
 `SqliteCheckpointer` supports runner-managed use across accepted background
 executions. For any other shared backend, follow its documented concurrency

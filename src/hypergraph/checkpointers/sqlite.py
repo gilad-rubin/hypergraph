@@ -421,6 +421,52 @@ def _deserialize_run_inputs(serializer: Any, row: Sequence[Any] | None) -> dict[
     return dict(serializer.deserialize(row[0]) or {})
 
 
+def _serialize_run_inputs(serializer: Any, run_id: str, inputs: dict[str, Any] | None) -> Any:
+    """Encode a run's graph-boundary inputs, naming what refused to encode.
+
+    Run inputs became durable so a checkpoint can restore them, which turns
+    them into a persisted record rather than a live call argument. The bare
+    ``TypeError`` the serializer raises for one ("Object of type Client is
+    not JSON serializable") names neither the run, nor the input, nor the
+    rule, so a caller cannot tell that the value was refused for being a
+    graph INPUT — node outputs have always had to serialize, graph inputs
+    did not.
+
+    The failure is re-raised as the same type with the offending names, the
+    run they belong to, and the two ways out. Re-encoding key by key to find
+    them runs only on the failing path.
+    """
+    if not inputs:
+        return None
+    try:
+        return serializer.serialize(inputs)
+    except TypeError as error:
+        raise TypeError(_run_inputs_type_error(serializer, run_id, inputs, error)) from error
+
+
+def _run_inputs_type_error(serializer: Any, run_id: str, inputs: dict[str, Any], error: TypeError) -> str:
+    """The message for graph inputs the checkpointer cannot store."""
+    offenders = [f"{name} ({type(value).__name__})" for name, value in inputs.items() if not _encodes(serializer, name, value)]
+    return (
+        f"Run {run_id!r} cannot start: a checkpointed run stores its graph inputs, and "
+        f"{', '.join(offenders) if offenders else str(error)} cannot be stored by this checkpointer's serializer.\n\n"
+        "Hypergraph persists a run's graph-boundary inputs so a checkpoint can restore them — a node placed after an "
+        "interrupt has no other way to read a raw graph input when the run resumes.\n\n"
+        "How to fix:\n"
+        "  Pass a storable stand-in as the graph input (an id, a config dict) and build the live object inside a node; or\n"
+        "  give the checkpointer a serializer that accepts it, e.g. SqliteCheckpointer(..., serializer=JsonSerializer(lossy=True))."
+    )
+
+
+def _encodes(serializer: Any, name: str, value: Any) -> bool:
+    """Whether this one input survives the serializer on its own."""
+    try:
+        serializer.serialize({name: value})
+    except TypeError:
+        return False
+    return True
+
+
 def _lineage_parent_id(run: Run) -> str | None:
     """Return the workflow-lineage parent for fork/retry traversal."""
     return run.forked_from or run.retry_of
@@ -1040,7 +1086,7 @@ class SqliteCheckpointer(Checkpointer):
         await self._ensure_db()
         now = datetime.now(timezone.utc)
         config_json = json.dumps(config) if config is not None else None
-        inputs_blob = self._serializer.serialize(inputs) if inputs else None
+        inputs_blob = _serialize_run_inputs(self._serializer, run_id, inputs)
         async with self._txn_lock():
             await self._db.execute(
                 "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config, inputs_data) "
@@ -1993,7 +2039,7 @@ class SqliteCheckpointer(Checkpointer):
             db = self._sync_db()
             now = datetime.now(timezone.utc)
             config_json = json.dumps(config) if config is not None else None
-            inputs_blob = self._serializer.serialize(inputs) if inputs else None
+            inputs_blob = _serialize_run_inputs(self._serializer, run_id, inputs)
             db.execute(
                 "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config, inputs_data) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
