@@ -485,6 +485,33 @@ class TestWorkerLock:
         finally:
             await detached.close()
 
+    async def test_two_uri_spellings_of_one_database_share_one_lock(self, tmp_path, home):
+        """The lock identifies the FILE, not the string that named it.
+
+        SQLite accepts several spellings of one database. Keying the lock on
+        the raw URI gave ``file:.../runs.db`` and
+        ``file:.../runs.db?mode=rwc`` different lock files, so two exclusive
+        workers were admitted to the same database — the one thing the lock
+        exists to prevent.
+        """
+        from hypergraph.host.worker import _WorkerLock
+
+        spelled_differently = RunHome.open(f"{_home_uri(tmp_path)}?mode=rwc")
+        try:
+            assert _WorkerLock.for_home(home)._lock_path == _WorkerLock.for_home(spelled_differently)._lock_path
+
+            host1 = serve(_sync_graph("dbl"), home=home)
+            first = asyncio.create_task(host1.work_forever("w-1"))
+            await asyncio.sleep(0.15)  # the first worker holds the lock
+            try:
+                with pytest.raises(WorkerLockError):
+                    await serve(_sync_graph("dbl"), home=spelled_differently).work_forever("w-2")
+            finally:
+                host1.shutdown()
+                await asyncio.wait_for(first, timeout=20)
+        finally:
+            await spelled_differently.close()
+
 
 # === 6. Bounded drain ===
 

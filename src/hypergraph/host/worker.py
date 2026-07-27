@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import unquote, urlsplit
 
 from hypergraph.host.errors import WorkerLockError
 
@@ -31,6 +33,25 @@ _memory_locks: set[int] = set()
 _memory_locks_guard = threading.Lock()
 
 
+def lock_path_for(uri: str) -> str:
+    """THE lock file for a database, whatever URI spelling names it.
+
+    The lock has to identify the FILE, not the string. SQLite accepts
+    several spellings of one database — ``/x/runs.db``, ``file:/x/runs.db``,
+    ``file:/x/runs.db?mode=rwc``, a relative path from a different working
+    directory — and keying the lock on the raw string admitted two exclusive
+    workers to the same database, which is the one thing the lock exists to
+    prevent. So the query and fragment (SQLite parameters, not part of the
+    filename), percent-encoding, and relative/symlinked spellings are all
+    normalized away first.
+    """
+    path = uri
+    if path.startswith("file:"):
+        parts = urlsplit(path)
+        path = unquote(parts.path)
+    return f"{Path(path).resolve()}.lock"
+
+
 class _WorkerLock:
     """One exclusive-worker claim on a Run Home."""
 
@@ -44,10 +65,7 @@ class _WorkerLock:
     def for_home(cls, home: RunHome) -> _WorkerLock:
         if home._is_memory:
             return cls(None, home._memory_lock_token)
-        path = home.path
-        if path.startswith("file:"):
-            path = path[len("file:") :]
-        return cls(f"{path}.lock", None)
+        return cls(lock_path_for(home.path), None)
 
     def acquire(self) -> None:
         """Take the lock; raise WorkerLockError immediately if held."""
