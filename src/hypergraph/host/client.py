@@ -18,6 +18,7 @@ from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.checkpointers.types import PauseSlot, WorkflowStatus
+from hypergraph.host._batch_store import BatchAcceptance, DefinitionPin
 from hypergraph.host._bus import _bus_for, _PreviewBus
 from hypergraph.host.batch import BatchTolerance
 from hypergraph.host.definition import DefinitionId
@@ -837,23 +838,26 @@ class RunHomeClient:
         if isinstance(ref, BatchRef):
             batch, child_rows = await self._require_batch_source(ref)
             plan = _plan_batch_rerun(batch, child_rows, item_keys)
-            created, row = await self._home._submit_batch(
+            request = BatchAcceptance(
                 batch_id=plan.batch_id,
                 # The retry ordinal — and so the id — is allocated inside
                 # the acceptance transaction, never before it.
                 workflow_id=None,
-                definition_name=plan.definition_id.name,
-                def_version=plan.definition_id.deployment_version,
-                def_struct_hash=plan.definition_id.structural_hash,
-                items=plan.items,
+                definition=DefinitionPin(
+                    plan.definition_id.name,
+                    plan.definition_id.deployment_version,
+                    plan.definition_id.structural_hash,
+                ),
+                items=tuple(plan.items),
+                fingerprint=plan.fingerprint,
                 tolerance_json=plan.tolerance_json,
                 # A repeat starts now, never on the source's past schedule.
                 start_at=None,
                 source_ref=source_ref,
-                fingerprint=plan.fingerprint,
                 batch_retry_of=plan.batch_retry_of,
                 child_retry_of=plan.child_retry_of,
             )
+            created, row = await self._home._submit_batch(request)
             return BatchSubmitReceipt(
                 batch_ref=BatchRef(home=self._home.uri, batch_id=row["batch_id"]),
                 workflow_id=row["workflow_id"],
@@ -891,23 +895,26 @@ class RunHomeClient:
                 raise RerunError(ref.batch_id, f"Cannot rerun batch {ref.batch_id!r}: no such Batch in this Run Home.")
             child_rows = self._home._batch_child_rows_sync(ref.batch_id)
             plan = _plan_batch_rerun(batch, child_rows, item_keys)
-            created, row = self._home._submit_batch_sync(
+            request = BatchAcceptance(
                 batch_id=plan.batch_id,
                 # The retry ordinal — and so the id — is allocated inside
                 # the acceptance transaction, never before it.
                 workflow_id=None,
-                definition_name=plan.definition_id.name,
-                def_version=plan.definition_id.deployment_version,
-                def_struct_hash=plan.definition_id.structural_hash,
-                items=plan.items,
+                definition=DefinitionPin(
+                    plan.definition_id.name,
+                    plan.definition_id.deployment_version,
+                    plan.definition_id.structural_hash,
+                ),
+                items=tuple(plan.items),
+                fingerprint=plan.fingerprint,
                 tolerance_json=plan.tolerance_json,
                 # A repeat starts now, never on the source's past schedule.
                 start_at=None,
                 source_ref=source_ref,
-                fingerprint=plan.fingerprint,
                 batch_retry_of=plan.batch_retry_of,
                 child_retry_of=plan.child_retry_of,
             )
+            created, row = self._home._submit_batch_sync(request)
             return BatchSubmitReceipt(
                 batch_ref=BatchRef(home=self._home.uri, batch_id=row["batch_id"]),
                 workflow_id=row["workflow_id"],

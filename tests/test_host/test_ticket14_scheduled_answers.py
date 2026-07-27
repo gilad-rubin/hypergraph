@@ -63,9 +63,7 @@ from hypergraph import (
     serve,
 )
 from hypergraph.checkpointers.types import PauseSlot, WorkflowStatus
-from hypergraph.host.batch import BatchTolerance
-from hypergraph.host.home import (
-    HOST_COMMAND_VERBS,
+from hypergraph.host._pause_lifecycle import (
     SCHEDULE_ANSWER_VERB,
     SCHEDULED_ANSWER_ALREADY_SETTLED,
     SCHEDULED_ANSWER_OUTCOMES,
@@ -74,8 +72,9 @@ from hypergraph.host.home import (
     SCHEDULED_ANSWER_SUPERSEDED,
     STOP_VERB,
     ScheduledAnswerOutcome,
-    _due_clause,
 )
+from hypergraph.host.batch import BatchTolerance
+from hypergraph.host.home import HOST_COMMAND_VERBS, _due_clause
 from hypergraph.host.refs import BatchRef, CommandReceipt
 from tests.test_host._batch_api import serve_graphs
 

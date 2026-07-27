@@ -15,11 +15,10 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Collection
-from dataclasses import dataclass
+from collections.abc import Collection, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from hypergraph.checkpointers.base import CheckpointPolicy, _check_settlement
 
@@ -33,17 +32,76 @@ from hypergraph.checkpointers.types import (
     StalePauseError,
     WorkflowStatus,
 )
-from hypergraph.host.batch import BatchTolerance, tolerance_trips
+from hypergraph.host._batch_store import (
+    ABANDONED_UPDATE_KIND,
+    CLOSE_PENDING_CHILDREN,
+    COUNT_FAILURE_EQUIVALENT,
+    INSERT_BATCH,
+    INSERT_BATCH_UPDATE,
+    MANIFEST_UPDATE_KIND,
+    PAUSED_UPDATE_KIND,
+    RUNNABLE_UPDATE_KIND,
+    SELECT_ACCOUNTED,
+    SELECT_BATCH_BY_ID,
+    SELECT_BATCH_BY_WORKFLOW,
+    SELECT_BATCH_UPDATES,
+    SELECT_BATCH_WORKFLOW_ID,
+    SELECT_CHILD_ID_COLLISION,
+    SELECT_CHILD_SETTLEMENT,
+    SELECT_LAST_OCCURRENCE,
+    SELECT_MEMBERSHIP,
+    SELECT_PENDING_CLOSEOUT,
+    SELECT_STOP_TARGETS,
+    SELECT_STOPPED,
+    SELECT_TOLERANCE_INPUTS,
+    SELECT_TRIPPED,
+    SETTLED_UPDATE_KIND,
+    TRIP_UPDATE_KIND,
+    UNSTARTED_UPDATE_KIND,
+    BatchAcceptance,
+    BatchStop,
+    ChildSpec,
+    children_settled_rows,
+    closeout_kind,
+    is_repeat_occurrence,
+    occurrence_fact,
+    refuse_child_id_collision,
+    refuse_run_owned_id,
+    refuse_tier0_reuse,
+    resolve_batch_reuse,
+    resolve_batch_stop,
+    row_to_batch,
+    split_closeout,
+    trip_payload,
+)
+from hypergraph.host._pause_lifecycle import (
+    INSERT_COMMAND,
+    INSERT_SCHEDULED_ANSWER,
+    PARK_SUBMISSION_SQL,
+    READMIT_ANSWERED_SQL,
+    RELEASE_SUBMISSION_SQL,
+    SCHEDULE_ANSWER_VERB,
+    SCHEDULED_ANSWER_ALREADY_SETTLED,
+    SCHEDULED_ANSWER_REJECTED,
+    SCHEDULED_ANSWER_SETTLED,
+    SCHEDULED_ANSWER_SUPERSEDED,
+    SELECT_UNAPPLIED_COMMAND,
+    SELECT_UNAPPLIED_SCHEDULED_ANSWER,
+    STOP_VERB,
+    DueScheduledAnswer,
+    ScheduledAnswerOutcome,
+    ScheduledAnswerRow,
+    scheduled_answer_fact,
+    scheduled_answer_row,
+)
 from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import AlreadyTerminalError, HostError, WorkflowIdConflictError
-from hypergraph.host.fingerprint import batch_mismatch_aspect, canonical_json, fingerprint_mismatch_aspect, start_fingerprint
+from hypergraph.host.fingerprint import fingerprint_mismatch_aspect
 from hypergraph.host.views import (
     BATCH_OUTCOME_RECOVERY_EXHAUSTED,
-    SUBMISSION_STATE_EXHAUSTED,
     SUBMISSION_STATE_FINISHED,
     SUBMISSION_STATE_PAUSED,
     TERMINAL_STATUS_VALUES,
-    is_child_settled,
 )
 
 if TYPE_CHECKING:
@@ -57,6 +115,16 @@ _SUBMISSION_COLS = (
     "fingerprint, compat_state, retry_of, retry_index, forked_from, fork_reason, last_progress_step_count, batch_id, item_key"
 )
 _SUBMISSION_PLACEHOLDERS = ", ".join("?" for _ in _SUBMISSION_COLS.split(", "))
+_SELECT_SUBMISSION = f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE workflow_id = ?"
+_SELECT_SUBMISSION_STATE = "SELECT state FROM host_submissions WHERE workflow_id = ?"
+_INSERT_SUBMISSION = f"INSERT INTO host_submissions ({_SUBMISSION_COLS}) VALUES ({_SUBMISSION_PLACEHOLDERS})"
+_RESET_RECOVERY_ATTEMPTS = "UPDATE host_submissions SET recovery_attempts = 0 WHERE workflow_id = ? AND recovery_attempts > 0"
+_SELECT_RUN_EXISTS = "SELECT 1 FROM runs WHERE id = ?"
+#: The seq allocation and the insert are ONE statement, so two writers can
+#: never read the same max and both claim it.
+_INSERT_RUN_UPDATE = (
+    "INSERT INTO run_updates (run_id, seq, kind, payload, created_at) SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ? FROM run_updates WHERE run_id = ?"
+)
 _QUALIFIED_SUBMISSION_COLS = ", ".join(f"s.{name}" for name in _SUBMISSION_COLS.split(", "))
 _QUALIFIED_RUN_COLS = ", ".join(f"r.{name}" for name in _RUNS_COLS.split(", "))
 _TERMINAL_STATUS_VALUES = tuple(sorted(TERMINAL_STATUS_VALUES))
@@ -77,50 +145,14 @@ _UPSERT_SETTING_SQL = (
     "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
 )
 
-_BATCH_COLS = (
-    "batch_id, workflow_id, definition_name, def_version, def_struct_hash, items_json, "
-    "tolerance_json, start_at, fingerprint, source_ref, created_at, retry_of"
-)
-_BATCH_PLACEHOLDERS = ", ".join("?" for _ in _BATCH_COLS.split(", "))
-
-# Batch update kinds that are matched (not just written) in SQL.
-_TRIP_UPDATE_KIND = "tolerance_tripped"
-_UNSTARTED_UPDATE_KIND = "child_unstarted"
-# A child that HAD started when a tolerance trip closed admission. Distinct
-# from `child_unstarted` on purpose: that item committed steps and may have
-# landed side effects, so it is not safe to describe as never having run.
-_ABANDONED_UPDATE_KIND = "child_abandoned"
-_SETTLED_UPDATE_KIND = "child_settled"
-# The two nonterminal child facts. Unlike the settled/unstarted pair these
-# are NOT once-per-item: a loop that pauses again is a new occurrence and
-# earns its own pair, which is why both are deduped by ``pause_id`` rather
-# than by item key (see ``_last_occurrence_fact``).
-_PAUSED_UPDATE_KIND = "child_paused"
-_RUNNABLE_UPDATE_KIND = "child_runnable"
-
-# The run's current pause occurrence, for the paths that must decide
-# The run's CURRENT occurrence — a later pause supersedes an earlier one, so
-# "current" is the newest row. The worker reads it to resume with the stored
-# answer and nothing else.
+# The run's CURRENT pause occurrence — a later pause supersedes an earlier
+# one, so "current" is the newest row. The worker reads it to resume with
+# the stored answer and nothing else.
 _CURRENT_SLOT_SQL = "SELECT pause_id, settled_at, response_key, answer FROM pause_slots WHERE run_id = ? ORDER BY rowid DESC LIMIT 1"
-
-# THE pause transition, shared by both mirrors so they cannot drift on the
-# compare-and-set that makes it once-only.
-_PARK_SUBMISSION_SQL = "UPDATE host_submissions SET state = ?, claimed_at = NULL, finished_at = NULL WHERE workflow_id = ? AND state = 'claimed'"
-
-# Failure equivalence (PRD 0019): a child counts toward tolerance when its
-# runs row failed or its submission is recovery-exhausted. Paused, queued,
-# delayed, admission-limited, and unstarted children never count — and
-# neither do partial or stopped runs.
-_COUNT_FAILURE_EQUIVALENT = (
-    "SELECT COUNT(*) FROM host_submissions s LEFT JOIN runs r ON r.id = s.workflow_id "
-    f"WHERE s.batch_id = ? AND (r.status = '{WorkflowStatus.FAILED.value}' OR s.state = '{SUBMISSION_STATE_EXHAUSTED}')"
-)
-_SELECT_TRIPPED = f"SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = '{_TRIP_UPDATE_KIND}' LIMIT 1"
 
 # The execution journal's own claim on a workflow_id. Every acceptance path
 # checks it AFTER the host rows, so a runs row that answers here belongs to
-# Tier-0 work no host submission or Batch owns (see _raise_on_tier0_reuse).
+# Tier-0 work no host submission or Batch owns (see refuse_tier0_reuse).
 _SELECT_RUN_STATUS = "SELECT status FROM runs WHERE id = ?"
 
 # Rerun ordinal allocation. Both counts run INSIDE the transaction that
@@ -224,78 +256,7 @@ def _due_clause(column: str, *, null_is_due: bool) -> str:
 # recurrence, and no cron surface — a generic scheduled-command framework is
 # explicitly out of scope. Every statement that writes or matches a verb
 # binds one of these, so a third verb cannot appear as a bare SQL literal.
-STOP_VERB = "stop"
-SCHEDULE_ANSWER_VERB = "schedule_answer"
 HOST_COMMAND_VERBS: frozenset[str] = frozenset({STOP_VERB, SCHEDULE_ANSWER_VERB})
-
-# What firing a scheduled answer produced, recorded on its command row and on
-# its durable ``command`` run update for audit. Not a status vocabulary: it
-# never enters WorkflowStatus and never decides claim eligibility. A fired row
-# is never deleted — the audit trail is the point, so a voided timer stays
-# queryable with the reason it lost.
-ScheduledAnswerOutcome = Literal["settled", "already_settled", "superseded", "rejected"]
-
-SCHEDULED_ANSWER_SETTLED: ScheduledAnswerOutcome = "settled"
-SCHEDULED_ANSWER_ALREADY_SETTLED: ScheduledAnswerOutcome = "already_settled"
-SCHEDULED_ANSWER_SUPERSEDED: ScheduledAnswerOutcome = "superseded"
-SCHEDULED_ANSWER_REJECTED: ScheduledAnswerOutcome = "rejected"
-# The same closed vocabulary as stored strings, for the store's own values.
-SCHEDULED_ANSWER_OUTCOMES: frozenset[str] = frozenset(
-    {SCHEDULED_ANSWER_SETTLED, SCHEDULED_ANSWER_ALREADY_SETTLED, SCHEDULED_ANSWER_SUPERSEDED, SCHEDULED_ANSWER_REJECTED}
-)
-
-
-@dataclass(frozen=True)
-class _ScheduledAnswerRow:
-    """One scheduled answer normalized into its stored ``host_commands`` shape.
-
-    Named because the write path passes it whole between a pure normalizer
-    and two mirrors; an anonymous tuple made callers rebind ``source_ref`` to
-    itself just to keep positions straight.
-    """
-
-    run_id: str
-    payload: str
-    due_at: str
-    source_ref: str | None
-    created_at: str
-
-
-@dataclass(frozen=True)
-class _DueScheduledAnswer:
-    """One due timer, read from its command row for firing.
-
-    Carries everything the fire path both applies and reports: the value it
-    would answer with, and the provenance (``due_at``, ``source_ref``) its
-    durable outcome fact republishes so a detached ``watch`` consumer learns
-    the timer's fate without reading the store.
-    """
-
-    command_id: int
-    run_id: str
-    pause_id: str | None
-    value: Any
-    due_at: str | None
-    source_ref: str | None
-
-
-def _scheduled_answer_fact(
-    *,
-    pause_id: str | None,
-    due_at: str | None,
-    source_ref: str | None,
-    outcome: ScheduledAnswerOutcome | None,
-) -> dict[str, Any]:
-    """The durable ``command`` payload for one scheduled answer, arming or fired.
-
-    Arming and settling emit the SAME shape so a detached ``watch`` consumer
-    never has to infer which it is: ``outcome`` is None while the timer is
-    armed and one of ``SCHEDULED_ANSWER_OUTCOMES`` once it fired. PRD 0018
-    A9 — every Run mutation receives one monotonic durable sequence — and a
-    fired or voided timer IS a recorded state change, so the fate must be
-    readable from the stream alone.
-    """
-    return {"verb": SCHEDULE_ANSWER_VERB, "pause_id": pause_id, "due_at": due_at, "source_ref": source_ref, "outcome": outcome}
 
 
 def _cap_from_row(row: tuple[Any, ...] | None) -> int | None:
@@ -325,126 +286,6 @@ def _slots_left(cap_row: tuple[Any, ...] | None, count_row: tuple[Any, ...] | No
 
 def _row_to_submission(row: tuple[Any, ...]) -> dict[str, Any]:
     return dict(zip(_SUBMISSION_COLS.split(", "), row, strict=True))
-
-
-def _row_to_batch(row: tuple[Any, ...]) -> dict[str, Any]:
-    return dict(zip(_BATCH_COLS.split(", "), row, strict=True))
-
-
-#: Every pending child of a Batch, with whether it ever produced a runs row.
-#: The LEFT JOIN is what separates "never began" from "began, unfinished".
-_SELECT_PENDING_CLOSEOUT = (
-    "SELECT s.item_key, r.id IS NOT NULL FROM host_submissions s "
-    "LEFT JOIN runs r ON r.id = s.workflow_id "
-    "WHERE s.batch_id = ? AND s.state = 'pending' ORDER BY s.rowid"
-)
-
-
-def _split_closeout(rows: list[tuple[Any, ...]]) -> tuple[list[str], list[str]]:
-    """Split pending children a trip closes into (unstarted, abandoned).
-
-    A trip closes admission on every pending child at once, but the two
-    dispositions are not the same fact: an item with no runs row never
-    began and is safe to rerun from scratch, while one with a runs row
-    committed steps and may have landed side effects.
-    """
-    unstarted = [str(item_key) for item_key, started in rows if not started]
-    abandoned = [str(item_key) for item_key, started in rows if started]
-    return unstarted, abandoned
-
-
-def _items_map(items: list[tuple[str, str]]) -> dict[str, Any]:
-    """The manifest as ``{item_key: inputs}``, in expansion order."""
-    return {key: json.loads(inputs_json) for key, inputs_json in items}
-
-
-def _manifest_payload(
-    batch_id: str,
-    workflow_id: str,
-    *,
-    definition_name: str,
-    def_version: str,
-    def_struct_hash: str,
-    items: list[tuple[str, str]],
-    tolerance_json: str | None,
-    start_at: str | None,
-    source_ref: str | None,
-    batch_retry_of: str | None,
-) -> dict[str, Any]:
-    """The ``manifest`` Batch fact at ``bseq=1``. Shared by both mirrors."""
-    return {
-        "batch_id": batch_id,
-        "workflow_id": workflow_id,
-        "definition_id": {
-            "name": definition_name,
-            "deployment_version": def_version,
-            "structural_hash": def_struct_hash,
-        },
-        "item_keys": [key for key, _ in items],
-        "tolerance": json.loads(tolerance_json) if tolerance_json is not None else None,
-        "start_at": start_at,
-        "source_ref": source_ref,
-        "retry_of": batch_retry_of,
-    }
-
-
-def _child_submission_row(
-    child_workflow_id: str,
-    inputs_json: str,
-    item_key: str,
-    *,
-    batch_id: str,
-    definition_name: str,
-    def_version: str,
-    def_struct_hash: str,
-    start_at: str | None,
-    source_ref: str | None,
-    recovery_cap: int,
-    child_source: str | None,
-    child_retry_index: int | None,
-    now: str,
-) -> tuple[Any, ...]:
-    """One child submission row — ordinary pending work with Batch membership."""
-    return (
-        child_workflow_id,
-        definition_name,
-        def_version,
-        def_struct_hash,
-        inputs_json,
-        start_at,
-        "pending",
-        0,
-        recovery_cap,
-        source_ref,
-        now,
-        None,
-        None,
-        start_fingerprint(DefinitionId(definition_name, def_version, def_struct_hash), inputs_json, start_at),
-        "compatible",
-        child_source,
-        child_retry_index,
-        None,
-        None,
-        0,
-        batch_id,
-        item_key,
-    )
-
-
-def _children_settled_rows(rows: list[tuple[Any, ...]]) -> bool:
-    """True when every (submission_state, run_status) pair is settled.
-
-    A child is settled when its run reached a terminal status, its
-    submission finished (terminal run, stop-before-start, or a tolerance
-    trip that closed admission before it ever ran), or its submission is
-    recovery-exhausted (parked; v1 treats parked work as settled).
-
-    A tolerance trip needs no special case here: it marks every remaining
-    item's submission finished in the tripping transaction, so those items
-    are settled-and-unstarted by the same rule stop-before-start already
-    uses.
-    """
-    return all(is_child_settled(sub_state, run_status) for sub_state, run_status in rows)
 
 
 def _is_committed_progress(kind: str, payload: dict[str, Any]) -> bool:
@@ -484,55 +325,6 @@ def _require_retry_source(retry_of: str | None) -> str:
             "acceptance transaction can mint '<source>-retry-N'."
         )
     return retry_of
-
-
-def _raise_on_tier0_reuse(status: str | None, *, workflow_id: str, item_key: str | None = None) -> None:
-    """Refuse a workflow_id the execution journal already owns (US11).
-
-    THE third owner of the workflow_id namespace. A ``runs`` row with no
-    ``host_submissions`` and no ``host_batches`` row is Tier-0 work —
-    executed straight against this store as a plain checkpointer. Callers
-    reach here only after the host-row checks, which already resolve
-    host-owned reuse (use-existing dedup, terminal conflict, fingerprint
-    conflict); this one fires when no host row exists at all.
-
-    The host cannot adopt such a run: it holds no pinned Definition
-    identity and no start fingerprint for it, so there is nothing to
-    compare and nothing to dedupe against. Both cases are conflicts, and
-    the existing typed errors already carry the distinction — terminal
-    Tier-0 history is ``AlreadyTerminalError`` (completed history never
-    changes identity), a still-running one is ``WorkflowIdConflictError``
-    (the id is taken by live work).
-
-    ``status`` is the stored ``runs.status`` value, or None when no runs
-    row exists (the accept-it case). ``item_key`` names the manifest item
-    when the refused id is a generated Batch child id.
-    """
-    if status is None:
-        return
-    subject = f"The child workflow id for item {item_key!r} ({workflow_id!r})" if item_key else f"workflow_id {workflow_id!r}"
-    pick_new = (
-        "choose a new Batch workflow_id or item key (a child id is always '<batch workflow_id>:<item key>')"
-        if item_key
-        else "choose a new workflow_id"
-    )
-    if status in TERMINAL_STATUS_VALUES:
-        raise AlreadyTerminalError(
-            workflow_id,
-            f"{subject} is already terminal in this Run Home: a run with that id settled ({status}) with no host "
-            "submission behind it — it was executed directly against this store as a checkpointer.\n\n"
-            f"How to fix: {pick_new}. Completed history never changes identity, and the host cannot take over an id "
-            "it did not submit.",
-        )
-    raise WorkflowIdConflictError(
-        workflow_id,
-        "a run this host never submitted owns this workflow_id",
-        f"{subject} is already in use in this Run Home by a {status!r} run this host never submitted — it was "
-        "executed directly against this store, so there is no pinned Definition identity or start fingerprint to "
-        "compare against and nothing to dedupe into.\n\n"
-        f"How to fix: {pick_new}, or wait for that run to settle and pick a fresh id either way. Host submissions, "
-        "Batches, and host-less runs share one workflow_id namespace.",
-    )
 
 
 def _raise_on_conflicting_reuse(
@@ -743,23 +535,21 @@ class RunHome(SqliteCheckpointer):
         statement (no read-then-write race).
         """
         db.execute(
-            "INSERT INTO run_updates (run_id, seq, kind, payload, created_at) "
-            "SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ? FROM run_updates WHERE run_id = ?",
+            _INSERT_RUN_UPDATE,
             (run_id, kind, json.dumps(payload), _now_iso(), run_id),
         )
 
     async def _append_run_update(self, run_id: str, kind: str, payload: dict[str, Any]) -> None:
         """Append one run_updates row; caller holds the write transaction."""
         await self._db.execute(
-            "INSERT INTO run_updates (run_id, seq, kind, payload, created_at) "
-            "SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ? FROM run_updates WHERE run_id = ?",
+            _INSERT_RUN_UPDATE,
             (run_id, kind, json.dumps(payload), _now_iso(), run_id),
         )
 
     def _reset_recovery_attempts_sync(self, db: Any, run_id: str) -> None:
         """Reset the recovery brake on NEW committed progress (same transaction)."""
         db.execute(
-            "UPDATE host_submissions SET recovery_attempts = 0 WHERE workflow_id = ? AND recovery_attempts > 0",
+            _RESET_RECOVERY_ATTEMPTS,
             (run_id,),
         )
 
@@ -771,24 +561,24 @@ class RunHome(SqliteCheckpointer):
             self._append_child_settled_sync(db, run_id, payload["status"])
         elif kind == "status" and payload.get("status") == WorkflowStatus.PAUSED.value:
             self._park_submission_sync(db, run_id)
-            self._append_child_paused_sync(db, run_id, payload.get("pause_id"))
+            self._append_occurrence_fact_sync(db, run_id, payload.get("pause_id"), kind=PAUSED_UPDATE_KIND)
 
     async def _after_run_mutation(self, run_id: str, kind: str, payload: dict[str, Any]) -> None:
         await self._append_run_update(run_id, kind, payload)
         if _is_committed_progress(kind, payload):
             await self._db.execute(
-                "UPDATE host_submissions SET recovery_attempts = 0 WHERE workflow_id = ? AND recovery_attempts > 0",
+                _RESET_RECOVERY_ATTEMPTS,
                 (run_id,),
             )
         if kind == "status" and payload.get("status") in _TERMINAL_STATUS_VALUES:
             await self._append_child_settled(run_id, payload["status"])
         elif kind == "status" and payload.get("status") == WorkflowStatus.PAUSED.value:
             await self._park_submission(run_id)
-            await self._append_child_paused(run_id, payload.get("pause_id"))
+            await self._append_occurrence_fact(run_id, payload.get("pause_id"), kind=PAUSED_UPDATE_KIND)
 
     def _park_submission_sync(self, db: Any, run_id: str) -> None:
         """Sync mirror of ``_park_submission``."""
-        db.execute(_PARK_SUBMISSION_SQL, (SUBMISSION_STATE_PAUSED, run_id))
+        db.execute(PARK_SUBMISSION_SQL, (SUBMISSION_STATE_PAUSED, run_id))
 
     async def _park_submission(self, run_id: str) -> None:
         """Park a claimed submission, INSIDE the pause transaction.
@@ -805,7 +595,7 @@ class RunHome(SqliteCheckpointer):
         Compare-and-set on ``claimed`` so it is once-only and never disturbs
         a submission some other path already moved.
         """
-        await self._db.execute(_PARK_SUBMISSION_SQL, (SUBMISSION_STATE_PAUSED, run_id))
+        await self._db.execute(PARK_SUBMISSION_SQL, (SUBMISSION_STATE_PAUSED, run_id))
 
     # === batch_updates appends (same-transaction as Batch facts) ===
 
@@ -816,16 +606,14 @@ class RunHome(SqliteCheckpointer):
         statement (no read-then-write race) — same discipline as run_updates.
         """
         db.execute(
-            "INSERT INTO batch_updates (batch_id, bseq, kind, item_key, payload, created_at) "
-            "SELECT ?, COALESCE(MAX(bseq), 0) + 1, ?, ?, ?, ? FROM batch_updates WHERE batch_id = ?",
+            INSERT_BATCH_UPDATE,
             (batch_id, kind, item_key, json.dumps(payload), _now_iso(), batch_id),
         )
 
     async def _append_batch_update(self, batch_id: str, kind: str, payload: dict[str, Any], item_key: str | None = None) -> None:
         """Append one batch_updates row; caller holds the write transaction."""
         await self._db.execute(
-            "INSERT INTO batch_updates (batch_id, bseq, kind, item_key, payload, created_at) "
-            "SELECT ?, COALESCE(MAX(bseq), 0) + 1, ?, ?, ?, ? FROM batch_updates WHERE batch_id = ?",
+            INSERT_BATCH_UPDATE,
             (batch_id, kind, item_key, json.dumps(payload), _now_iso(), batch_id),
         )
 
@@ -843,22 +631,22 @@ class RunHome(SqliteCheckpointer):
         backpressuring the child's commit path.
         """
         row = db.execute(
-            "SELECT batch_id, item_key FROM host_submissions WHERE workflow_id = ?",
+            SELECT_MEMBERSHIP,
             (run_id,),
         ).fetchone()
         if row is None or row[0] is None:
             return
         batch_id, item_key = row
         exists = db.execute(
-            "SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = ? AND item_key = ? LIMIT 1",
-            (batch_id, _SETTLED_UPDATE_KIND, item_key),
+            SELECT_ACCOUNTED,
+            (batch_id, SETTLED_UPDATE_KIND, item_key),
         ).fetchone()
         if exists is not None:
             return
         self._append_batch_update_sync(
             db,
             batch_id,
-            _SETTLED_UPDATE_KIND,
+            SETTLED_UPDATE_KIND,
             {"item_key": item_key, "workflow_id": run_id, "status": status},
             item_key=item_key,
         )
@@ -867,7 +655,7 @@ class RunHome(SqliteCheckpointer):
     async def _append_child_settled(self, run_id: str, status: str) -> None:
         """Async mirror of ``_append_child_settled_sync``."""
         cursor = await self._db.execute(
-            "SELECT batch_id, item_key FROM host_submissions WHERE workflow_id = ?",
+            SELECT_MEMBERSHIP,
             (run_id,),
         )
         row = await cursor.fetchone()
@@ -875,14 +663,14 @@ class RunHome(SqliteCheckpointer):
             return
         batch_id, item_key = row
         exists_cursor = await self._db.execute(
-            "SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = ? AND item_key = ? LIMIT 1",
-            (batch_id, _SETTLED_UPDATE_KIND, item_key),
+            SELECT_ACCOUNTED,
+            (batch_id, SETTLED_UPDATE_KIND, item_key),
         )
         if await exists_cursor.fetchone() is not None:
             return
         await self._append_batch_update(
             batch_id,
-            _SETTLED_UPDATE_KIND,
+            SETTLED_UPDATE_KIND,
             {"item_key": item_key, "workflow_id": run_id, "status": status},
             item_key=item_key,
         )
@@ -903,119 +691,42 @@ class RunHome(SqliteCheckpointer):
     # on the occurrence (``pause_id``) rather than once per item key the way
     # ``child_settled``/``child_unstarted`` do.
 
-    @staticmethod
-    def _occurrence_fact(batch_id: str, item_key: str, run_id: str, home_uri: str, pause_id: str | None) -> dict[str, Any]:
-        """The shared payload for both occurrence facts.
+    def _append_occurrence_fact_sync(self, db: Any, run_id: str, pause_id: str | None, *, kind: str) -> None:
+        """Mirror ONE pause-occurrence fact onto the child's Batch, same txn.
 
-        Carries the logical item key AND the child's inert Run address (PRD
-        0017 US38), so a consumer never parses ``<batch>:<item>`` child
-        workflow-id syntax to act on the item.
+        ``child_paused`` and ``child_runnable`` differ only in which kind
+        they append: same membership lookup, same occurrence dedupe, same
+        payload. Writing them twice each (once per mirror) was four copies
+        of one rule, which is three too many for a guard whose whole job is
+        to be identical everywhere.
         """
-        return {
-            "batch_id": batch_id,
-            "item_key": item_key,
-            "workflow_id": run_id,
-            "run_ref": {"home": home_uri, "run_id": run_id},
-            "pause_id": pause_id,
-        }
-
-    @staticmethod
-    def _is_repeat_occurrence(row: tuple[Any, ...] | None, pause_id: str | None) -> bool:
-        """True when the last fact of this kind already named this occurrence.
-
-        A resumed run that replays its interrupt re-commits the identical
-        ``pause_id`` (the slot insert is a no-op by ``ON CONFLICT``), and a
-        settlement path may be reached twice for one answer. Comparing the
-        LAST fact's occurrence suppresses both without suppressing the next
-        turn of a loop, whose ``pause_id`` differs by superstep.
-        """
-        return row is not None and json.loads(row[0]).get("pause_id") == pause_id
-
-    def _append_child_paused_sync(self, db: Any, run_id: str, pause_id: str | None) -> None:
-        """Mirror a child parking on a human onto its Batch, same transaction."""
-        membership = db.execute("SELECT batch_id, item_key FROM host_submissions WHERE workflow_id = ?", (run_id,)).fetchone()
+        membership = db.execute(SELECT_MEMBERSHIP, (run_id,)).fetchone()
         if membership is None or membership[0] is None:
             return
         batch_id, item_key = membership
-        last = db.execute(
-            "SELECT payload FROM batch_updates WHERE batch_id = ? AND kind = ? AND item_key = ? ORDER BY bseq DESC LIMIT 1",
-            (batch_id, _PAUSED_UPDATE_KIND, item_key),
-        ).fetchone()
-        if self._is_repeat_occurrence(last, pause_id):
+        last = db.execute(SELECT_LAST_OCCURRENCE, (batch_id, kind, item_key)).fetchone()
+        if is_repeat_occurrence(last, pause_id):
             return
-        self._append_batch_update_sync(
-            db,
-            batch_id,
-            _PAUSED_UPDATE_KIND,
-            self._occurrence_fact(batch_id, item_key, run_id, self.uri, pause_id),
-            item_key=item_key,
-        )
+        self._append_batch_update_sync(db, batch_id, kind, occurrence_fact(batch_id, item_key, run_id, self.uri, pause_id), item_key=item_key)
 
-    async def _append_child_paused(self, run_id: str, pause_id: str | None) -> None:
-        """Async mirror of ``_append_child_paused_sync``."""
+    async def _append_occurrence_fact(self, run_id: str, pause_id: str | None, *, kind: str) -> None:
+        """Async mirror of ``_append_occurrence_fact_sync``."""
         membership = await self._batch_membership(run_id)
         if membership is None:
             return
         batch_id, item_key = membership
-        cursor = await self._db.execute(
-            "SELECT payload FROM batch_updates WHERE batch_id = ? AND kind = ? AND item_key = ? ORDER BY bseq DESC LIMIT 1",
-            (batch_id, _PAUSED_UPDATE_KIND, item_key),
-        )
-        if self._is_repeat_occurrence(await cursor.fetchone(), pause_id):
+        cursor = await self._db.execute(SELECT_LAST_OCCURRENCE, (batch_id, kind, item_key))
+        if is_repeat_occurrence(await cursor.fetchone(), pause_id):
             return
-        await self._append_batch_update(
-            batch_id,
-            _PAUSED_UPDATE_KIND,
-            self._occurrence_fact(batch_id, item_key, run_id, self.uri, pause_id),
-            item_key=item_key,
-        )
-
-    async def _append_child_runnable(self, run_id: str, pause_id: str | None) -> None:
-        """Mirror an answered child re-entering claim order, same transaction."""
-        membership = await self._batch_membership(run_id)
-        if membership is None:
-            return
-        batch_id, item_key = membership
-        cursor = await self._db.execute(
-            "SELECT payload FROM batch_updates WHERE batch_id = ? AND kind = ? AND item_key = ? ORDER BY bseq DESC LIMIT 1",
-            (batch_id, _RUNNABLE_UPDATE_KIND, item_key),
-        )
-        if self._is_repeat_occurrence(await cursor.fetchone(), pause_id):
-            return
-        await self._append_batch_update(
-            batch_id,
-            _RUNNABLE_UPDATE_KIND,
-            self._occurrence_fact(batch_id, item_key, run_id, self.uri, pause_id),
-            item_key=item_key,
-        )
-
-    def _append_child_runnable_sync(self, db: Any, run_id: str, pause_id: str | None) -> None:
-        """Sync mirror of ``_append_child_runnable``."""
-        membership = db.execute("SELECT batch_id, item_key FROM host_submissions WHERE workflow_id = ?", (run_id,)).fetchone()
-        if membership is None or membership[0] is None:
-            return
-        batch_id, item_key = membership
-        last = db.execute(
-            "SELECT payload FROM batch_updates WHERE batch_id = ? AND kind = ? AND item_key = ? ORDER BY bseq DESC LIMIT 1",
-            (batch_id, _RUNNABLE_UPDATE_KIND, item_key),
-        ).fetchone()
-        if self._is_repeat_occurrence(last, pause_id):
-            return
-        self._append_batch_update_sync(
-            db,
-            batch_id,
-            _RUNNABLE_UPDATE_KIND,
-            self._occurrence_fact(batch_id, item_key, run_id, self.uri, pause_id),
-            item_key=item_key,
-        )
+        await self._append_batch_update(batch_id, kind, occurrence_fact(batch_id, item_key, run_id, self.uri, pause_id), item_key=item_key)
 
     async def _batch_membership(self, run_id: str) -> tuple[str, str] | None:
         """``(batch_id, item_key)`` for a Batch child, else None; caller holds the txn."""
-        cursor = await self._db.execute("SELECT batch_id, item_key FROM host_submissions WHERE workflow_id = ?", (run_id,))
+        cursor = await self._db.execute(SELECT_MEMBERSHIP, (run_id,))
         row = await cursor.fetchone()
         return None if row is None or row[0] is None else (str(row[0]), str(row[1]))
 
-    async def _append_child_unstarted(self, run_id: str, *, kind: str = _UNSTARTED_UPDATE_KIND) -> None:
+    async def _append_child_unstarted(self, run_id: str, *, kind: str = UNSTARTED_UPDATE_KIND) -> None:
         """Record that a Batch item settled without executing, same transaction.
 
         THE unstarted-child fact (PRD 0019 A9). Every path that settles a
@@ -1042,7 +753,7 @@ class RunHome(SqliteCheckpointer):
         sync mirror, so a ``_sync`` twin here would be dead code.
         """
         cursor = await self._db.execute(
-            "SELECT batch_id, item_key FROM host_submissions WHERE workflow_id = ?",
+            SELECT_MEMBERSHIP,
             (run_id,),
         )
         row = await cursor.fetchone()
@@ -1051,7 +762,7 @@ class RunHome(SqliteCheckpointer):
         batch_id, item_key = row
         exists_cursor = await self._db.execute(
             "SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind IN (?, ?) AND item_key = ? LIMIT 1",
-            (batch_id, _UNSTARTED_UPDATE_KIND, _ABANDONED_UPDATE_KIND, item_key),
+            (batch_id, UNSTARTED_UPDATE_KIND, ABANDONED_UPDATE_KIND, item_key),
         )
         if await exists_cursor.fetchone() is not None:
             return
@@ -1074,10 +785,7 @@ class RunHome(SqliteCheckpointer):
         nothing happened when something did.
         """
         started = await self._has_run_row(run_id)
-        await self._append_child_unstarted(
-            run_id,
-            kind=_ABANDONED_UPDATE_KIND if started else _UNSTARTED_UPDATE_KIND,
-        )
+        await self._append_child_unstarted(run_id, kind=closeout_kind(started))
 
     # === Pinned tolerance (ticket 06) ===
 
@@ -1106,83 +814,65 @@ class RunHome(SqliteCheckpointer):
         no tolerance was pinned. The Batch keeps no status of its own: a
         trip is a Batch fact, never a ``WorkflowStatus``.
         """
-        batch_row = db.execute("SELECT items_json, tolerance_json FROM host_batches WHERE batch_id = ?", (batch_id,)).fetchone()
+        batch_row = db.execute(SELECT_TOLERANCE_INPUTS, (batch_id,)).fetchone()
         if batch_row is None or batch_row[1] is None:
             return
-        if db.execute(_SELECT_TRIPPED, (batch_id,)).fetchone() is not None:
+        if db.execute(SELECT_TRIPPED, (batch_id,)).fetchone() is not None:
             return
-        (failure_count,) = db.execute(_COUNT_FAILURE_EQUIVALENT, (batch_id,)).fetchone()
-        payload = self._trip_payload(batch_row[0], batch_row[1], int(failure_count))
+        (failure_count,) = db.execute(COUNT_FAILURE_EQUIVALENT, (batch_id,)).fetchone()
+        payload = trip_payload(batch_row[0], batch_row[1], int(failure_count))
         if payload is None:
             return
-        closed = db.execute(_SELECT_PENDING_CLOSEOUT, (batch_id,)).fetchall()
-        unstarted, abandoned = _split_closeout(closed)
+        closed = db.execute(SELECT_PENDING_CLOSEOUT, (batch_id,)).fetchall()
+        unstarted, abandoned = split_closeout(closed)
         db.execute(
-            "UPDATE host_submissions SET state = 'finished', finished_at = ? WHERE batch_id = ? AND state = 'pending'",
+            CLOSE_PENDING_CHILDREN,
             (_now_iso(), batch_id),
         )
         self._append_batch_update_sync(
             db,
             batch_id,
-            _TRIP_UPDATE_KIND,
+            TRIP_UPDATE_KIND,
             {**payload, "unstarted_items": unstarted, "abandoned_items": abandoned},
         )
 
     async def _maybe_trip_tolerance(self, batch_id: str) -> None:
         """Async mirror of ``_maybe_trip_tolerance_sync``; caller holds the transaction."""
-        batch_cursor = await self._db.execute("SELECT items_json, tolerance_json FROM host_batches WHERE batch_id = ?", (batch_id,))
+        batch_cursor = await self._db.execute(SELECT_TOLERANCE_INPUTS, (batch_id,))
         batch_row = await batch_cursor.fetchone()
         if batch_row is None or batch_row[1] is None:
             return
-        tripped_cursor = await self._db.execute(_SELECT_TRIPPED, (batch_id,))
+        tripped_cursor = await self._db.execute(SELECT_TRIPPED, (batch_id,))
         if await tripped_cursor.fetchone() is not None:
             return
-        count_cursor = await self._db.execute(_COUNT_FAILURE_EQUIVALENT, (batch_id,))
+        count_cursor = await self._db.execute(COUNT_FAILURE_EQUIVALENT, (batch_id,))
         (failure_count,) = await count_cursor.fetchone()
-        payload = self._trip_payload(batch_row[0], batch_row[1], int(failure_count))
+        payload = trip_payload(batch_row[0], batch_row[1], int(failure_count))
         if payload is None:
             return
-        pending_cursor = await self._db.execute(_SELECT_PENDING_CLOSEOUT, (batch_id,))
-        unstarted, abandoned = _split_closeout(await pending_cursor.fetchall())
+        pending_cursor = await self._db.execute(SELECT_PENDING_CLOSEOUT, (batch_id,))
+        unstarted, abandoned = split_closeout(await pending_cursor.fetchall())
         await self._db.execute(
-            "UPDATE host_submissions SET state = 'finished', finished_at = ? WHERE batch_id = ? AND state = 'pending'",
+            CLOSE_PENDING_CHILDREN,
             (_now_iso(), batch_id),
         )
         await self._append_batch_update(
             batch_id,
-            _TRIP_UPDATE_KIND,
+            TRIP_UPDATE_KIND,
             {**payload, "unstarted_items": unstarted, "abandoned_items": abandoned},
         )
-
-    @staticmethod
-    def _trip_payload(items_json: str, tolerance_json: str, failure_count: int) -> dict[str, Any] | None:
-        """Return the trip fact payload, or None when the Batch has not tripped.
-
-        The percentage denominator is the pinned manifest length, read from
-        the immutable manifest row — never a live count of remaining work.
-        """
-        tolerance = BatchTolerance.from_dict(json.loads(tolerance_json))
-        total_items = len(json.loads(items_json))
-        if not tolerance_trips(tolerance, failure_count=failure_count, total_items=total_items):
-            return None
-        return {
-            "failed": failure_count,
-            "total_items": total_items,
-            "max_failed": tolerance.max_failed,
-            "max_failed_percent": tolerance.max_failed_percent,
-        }
 
     def _batch_tripped_sync(self, batch_id: str) -> bool:
         """True when a durable ``tolerance_tripped`` fact exists for this Batch."""
         with self._sync_lock:
             db = self._sync_db()
-            return db.execute(_SELECT_TRIPPED, (batch_id,)).fetchone() is not None
+            return db.execute(SELECT_TRIPPED, (batch_id,)).fetchone() is not None
 
     async def _batch_tripped(self, batch_id: str) -> bool:
         """Async mirror of ``_batch_tripped_sync``."""
         await self._ensure_db()
         async with self._txn_lock():
-            cursor = await self._db.execute(_SELECT_TRIPPED, (batch_id,))
+            cursor = await self._db.execute(SELECT_TRIPPED, (batch_id,))
             return await cursor.fetchone() is not None
 
     # === Submissions ===
@@ -1234,7 +924,7 @@ class RunHome(SqliteCheckpointer):
                     retry_index = _next_ordinal(db.execute(_COUNT_ACCEPTED_RETRIES, (_require_retry_source(retry_of),)).fetchone())
                     workflow_id = _retry_workflow_id(str(retry_of), retry_index)
                 existing_row = db.execute(
-                    f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE workflow_id = ?",
+                    _SELECT_SUBMISSION,
                     (workflow_id,),
                 ).fetchone()
                 if existing_row is not None:
@@ -1251,13 +941,13 @@ class RunHome(SqliteCheckpointer):
                     db.rollback()
                     return False, _row_to_submission(existing_row)
                 batch_row = db.execute(
-                    f"SELECT {_BATCH_COLS} FROM host_batches WHERE workflow_id = ?",
+                    SELECT_BATCH_BY_WORKFLOW,
                     (workflow_id,),
                 ).fetchone()
                 if batch_row is not None:
-                    if _children_settled_rows(
+                    if children_settled_rows(
                         db.execute(
-                            "SELECT s.state, r.status FROM host_submissions s LEFT JOIN runs r ON r.id = s.workflow_id WHERE s.batch_id = ?",
+                            SELECT_CHILD_SETTLEMENT,
                             (batch_row[0],),
                         ).fetchall()
                     ):
@@ -1265,10 +955,10 @@ class RunHome(SqliteCheckpointer):
                     raise WorkflowIdConflictError(workflow_id, "an existing Batch owns this workflow_id")
                 run_row = db.execute(_SELECT_RUN_STATUS, (workflow_id,)).fetchone()
                 if run_row is not None:
-                    _raise_on_tier0_reuse(str(run_row[0]), workflow_id=workflow_id)
+                    refuse_tier0_reuse(str(run_row[0]), workflow_id=workflow_id)
                 now = _now_iso()
                 db.execute(
-                    f"INSERT INTO host_submissions ({_SUBMISSION_COLS}) VALUES ({_SUBMISSION_PLACEHOLDERS})",
+                    _INSERT_SUBMISSION,
                     (
                         workflow_id,
                         definition_name,
@@ -1337,7 +1027,7 @@ class RunHome(SqliteCheckpointer):
                     retry_index = _next_ordinal(await retry_cursor.fetchone())
                     workflow_id = _retry_workflow_id(str(retry_of), retry_index)
                 cursor = await self._db.execute(
-                    f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE workflow_id = ?",
+                    _SELECT_SUBMISSION,
                     (workflow_id,),
                 )
                 existing_row = await cursor.fetchone()
@@ -1355,25 +1045,25 @@ class RunHome(SqliteCheckpointer):
                     await self._db.rollback()
                     return False, _row_to_submission(existing_row)
                 batch_cursor = await self._db.execute(
-                    f"SELECT {_BATCH_COLS} FROM host_batches WHERE workflow_id = ?",
+                    SELECT_BATCH_BY_WORKFLOW,
                     (workflow_id,),
                 )
                 batch_row = await batch_cursor.fetchone()
                 if batch_row is not None:
                     children_cursor = await self._db.execute(
-                        "SELECT s.state, r.status FROM host_submissions s LEFT JOIN runs r ON r.id = s.workflow_id WHERE s.batch_id = ?",
+                        SELECT_CHILD_SETTLEMENT,
                         (batch_row[0],),
                     )
-                    if _children_settled_rows(await children_cursor.fetchall()):
+                    if children_settled_rows(await children_cursor.fetchall()):
                         raise AlreadyTerminalError(workflow_id)
                     raise WorkflowIdConflictError(workflow_id, "an existing Batch owns this workflow_id")
                 run_cursor = await self._db.execute(_SELECT_RUN_STATUS, (workflow_id,))
                 run_row = await run_cursor.fetchone()
                 if run_row is not None:
-                    _raise_on_tier0_reuse(str(run_row[0]), workflow_id=workflow_id)
+                    refuse_tier0_reuse(str(run_row[0]), workflow_id=workflow_id)
                 now = _now_iso()
                 await self._db.execute(
-                    f"INSERT INTO host_submissions ({_SUBMISSION_COLS}) VALUES ({_SUBMISSION_PLACEHOLDERS})",
+                    _INSERT_SUBMISSION,
                     (
                         workflow_id,
                         definition_name,
@@ -1416,7 +1106,7 @@ class RunHome(SqliteCheckpointer):
         with self._sync_lock:
             db = self._sync_db()
             row = db.execute(
-                f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE workflow_id = ?",
+                _SELECT_SUBMISSION,
                 (workflow_id,),
             ).fetchone()
             return _row_to_submission(row) if row is not None else None
@@ -1425,7 +1115,7 @@ class RunHome(SqliteCheckpointer):
         await self._ensure_db()
         async with self._txn_lock():
             cursor = await self._db.execute(
-                f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE workflow_id = ?",
+                _SELECT_SUBMISSION,
                 (workflow_id,),
             )
             row = await cursor.fetchone()
@@ -1465,499 +1155,227 @@ class RunHome(SqliteCheckpointer):
 
     # === Batches (ticket 05) ===
 
-    def _submit_batch_sync(
-        self,
-        batch_id: str,
-        workflow_id: str | None,
-        definition_name: str,
-        def_version: str,
-        def_struct_hash: str,
-        items: list[tuple[str, str]],
-        tolerance_json: str | None,
-        start_at: str | None,
-        source_ref: str | None,
-        *,
-        fingerprint: str,
-        recovery_cap: int = 3,
-        batch_retry_of: str | None = None,
-        child_retry_of: dict[str, str] | None = None,
-    ) -> tuple[bool, dict[str, Any]]:
+    def _submit_batch_sync(self, request: BatchAcceptance) -> tuple[bool, dict[str, Any]]:
         """Accept one Batch atomically: manifest + child submissions + bseq 1.
 
         ONE transaction persists the host_batches manifest row, one child
         submission (with its own 'submitted' run update) per item key, and
         the 'manifest' batch_updates row at bseq 1 — a partial Batch can
-        never appear accepted. ``items`` is a manifest-ordered list of
-        ``(item_key, inputs_json)`` pairs.
+        never appear accepted.
 
-        ``batch_retry_of`` records Batch lineage when an item-scoped rerun
-        mints this manifest from a source Batch (the source batch id);
-        ``child_retry_of`` maps item key -> source child workflow id so each
-        new child records ``retry_of`` against its source child. Both are
-        None for ordinary submissions.
+        The whole request arrives as one frozen ``BatchAcceptance``, which
+        knows how to project itself into every row and fact written below.
+        That is deliberate: identity, manifest, timing, provenance, retry,
+        and recovery used to travel as thirteen separate parameters through
+        four call layers, where a two-of-three mistake on the pinned
+        Definition triple was possible at every hop.
 
-        ``workflow_id=None`` means "mint the next rerun of
+        ``request.workflow_id=None`` means "mint the next rerun of
         ``batch_retry_of``": the Batch ordinal is allocated from accepted
         Batches INSIDE this transaction and the id derived from it, so
         concurrent rerun callers can never mint the same
         ``<source>-retry-N`` and dedupe into one Batch. Each rerun child
         gets its own accepted ordinal the same way.
 
-        Returns ``(created, batch_row)``. Dedup mirrors the Run rules: a
-        fingerprint-identical nonterminal resubmission returns
-        ``(False, existing)`` (use-existing), a settled Batch raises
-        ``AlreadyTerminalError``, and a fingerprint mismatch raises
-        ``WorkflowIdConflictError``. Run and Batch workflow ids share one
-        namespace: reusing an id owned by a plain Run submission is a
-        conflict (AlreadyTerminalError once that Run is finished), and so
-        is a child workflow id owned by unrelated existing work. The
-        execution journal owns ids too: the Batch id and every generated
-        child id are checked against host-less (Tier-0) runs rows as well
-        (``_raise_on_tier0_reuse``), so a child can never be minted onto
-        somebody else's history.
+        Returns ``(created, batch_row)``; the reuse contract lives in
+        ``_batch_store.resolve_batch_reuse``.
         """
         with self._sync_lock:
             db = self._sync_db()
             try:
                 db.execute("BEGIN IMMEDIATE")
+                workflow_id = request.workflow_id
                 if workflow_id is None:
                     source_row = db.execute(
-                        "SELECT workflow_id FROM host_batches WHERE batch_id = ?",
-                        (_require_retry_source(batch_retry_of),),
+                        SELECT_BATCH_WORKFLOW_ID,
+                        (_require_retry_source(request.batch_retry_of),),
                     ).fetchone()
                     workflow_id = _retry_workflow_id(
                         str(source_row[0]),
-                        _next_ordinal(db.execute(_COUNT_ACCEPTED_BATCH_RETRIES, (batch_retry_of,)).fetchone()),
+                        _next_ordinal(db.execute(_COUNT_ACCEPTED_BATCH_RETRIES, (request.batch_retry_of,)).fetchone()),
                     )
-                existing = self._batch_dedup_sync(
-                    db,
-                    workflow_id,
-                    definition_name=definition_name,
-                    def_version=def_version,
-                    def_struct_hash=def_struct_hash,
-                    items=items,
-                    tolerance_json=tolerance_json,
-                    start_at=start_at,
-                    fingerprint=fingerprint,
-                )
+                existing = self._batch_dedup_sync(db, request, workflow_id)
                 if existing is not None:
                     db.rollback()
                     return False, existing
-                child_ids = self._reserve_child_ids_sync(db, workflow_id, items)
+                specs = self._reserve_child_ids_sync(db, request, workflow_id)
                 now = _now_iso()
                 db.execute(
-                    f"INSERT INTO host_batches ({_BATCH_COLS}) VALUES ({_BATCH_PLACEHOLDERS})",
-                    (
-                        batch_id,
-                        workflow_id,
-                        definition_name,
-                        def_version,
-                        def_struct_hash,
-                        json.dumps(_items_map(items)),
-                        tolerance_json,
-                        start_at,
-                        fingerprint,
-                        source_ref,
-                        now,
-                        batch_retry_of,
-                    ),
+                    INSERT_BATCH,
+                    request.batch_row(workflow_id, now),
                 )
-                self._insert_children_sync(
-                    db,
-                    child_ids,
-                    batch_id=batch_id,
-                    definition_name=definition_name,
-                    def_version=def_version,
-                    def_struct_hash=def_struct_hash,
-                    start_at=start_at,
-                    source_ref=source_ref,
-                    recovery_cap=recovery_cap,
-                    child_retry_of=child_retry_of,
-                    now=now,
-                )
-                self._append_batch_update_sync(
-                    db,
-                    batch_id,
-                    "manifest",
-                    _manifest_payload(
-                        batch_id,
-                        workflow_id,
-                        definition_name=definition_name,
-                        def_version=def_version,
-                        def_struct_hash=def_struct_hash,
-                        items=items,
-                        tolerance_json=tolerance_json,
-                        start_at=start_at,
-                        source_ref=source_ref,
-                        batch_retry_of=batch_retry_of,
-                    ),
-                )
+                self._insert_children_sync(db, request, specs, now=now)
+                self._append_batch_update_sync(db, request.batch_id, MANIFEST_UPDATE_KIND, request.manifest_fact(workflow_id))
                 db.commit()
             except BaseException:
                 self._rollback_sync(db)
                 raise
-        row = self._get_batch_sync(batch_id)
+        row = self._get_batch_sync(request.batch_id)
         assert row is not None
         return True, row
 
-    def _batch_dedup_sync(
-        self,
-        db: Any,
-        workflow_id: str,
-        *,
-        definition_name: str,
-        def_version: str,
-        def_struct_hash: str,
-        items: list[tuple[str, str]],
-        tolerance_json: str | None,
-        start_at: str | None,
-        fingerprint: str,
-    ) -> dict[str, Any] | None:
-        """Resolve ``workflow_id`` reuse: use-existing row, a raise, or None.
+    def _batch_dedup_sync(self, db: Any, request: BatchAcceptance, workflow_id: str) -> dict[str, Any] | None:
+        """Read what owns ``workflow_id``; the shared policy decides.
 
-        Returns the existing Batch row when this is a fingerprint-identical
-        nonterminal resubmission (use-existing) and ``None`` when the id is
-        free to accept. Everything else raises — a settled Batch, a
-        fingerprint mismatch, an id owned by a plain Run submission, or one
-        owned by a host-less (Tier-0) run.
+        Returns the existing Batch row for a use-existing resubmission and
+        None when the id is free. Everything else raises. The reads are the
+        only thing this mirror owns — the three refusals it can reach live
+        in ``_batch_store``, so the sync and async doors cannot drift on
+        which reuse is a dedup and which is a typed conflict.
         """
-        existing_batch_row = db.execute(
-            f"SELECT {_BATCH_COLS} FROM host_batches WHERE workflow_id = ?",
-            (workflow_id,),
-        ).fetchone()
-        if existing_batch_row is not None:
-            existing = _row_to_batch(existing_batch_row)
-            settled = _children_settled_rows(
-                db.execute(
-                    "SELECT s.state, r.status FROM host_submissions s LEFT JOIN runs r ON r.id = s.workflow_id WHERE s.batch_id = ?",
-                    (existing["batch_id"],),
-                ).fetchall()
+        batch_row = db.execute(SELECT_BATCH_BY_WORKFLOW, (workflow_id,)).fetchone()
+        if batch_row is not None:
+            children = db.execute(
+                SELECT_CHILD_SETTLEMENT,
+                (row_to_batch(batch_row)["batch_id"],),
+            ).fetchall()
+            return resolve_batch_reuse(
+                batch_row,
+                workflow_id=workflow_id,
+                request=request,
+                children_settled=children_settled_rows(children),
             )
-            if settled:
-                raise AlreadyTerminalError(workflow_id)
-            if existing["fingerprint"] != fingerprint:
-                raise WorkflowIdConflictError(
-                    workflow_id,
-                    batch_mismatch_aspect(
-                        existing,
-                        definition_name=definition_name,
-                        def_version=def_version,
-                        def_struct_hash=def_struct_hash,
-                        items_canonical=canonical_json(_items_map(items)),
-                        tolerance_json=tolerance_json,
-                        start_at=start_at,
-                    ),
-                )
-            return existing
-        submission_row = db.execute("SELECT state FROM host_submissions WHERE workflow_id = ?", (workflow_id,)).fetchone()
+        submission_row = db.execute(_SELECT_SUBMISSION_STATE, (workflow_id,)).fetchone()
         if submission_row is not None:
-            if submission_row[0] == "finished":
-                raise AlreadyTerminalError(workflow_id)
-            raise WorkflowIdConflictError(workflow_id, "an existing Run owns this workflow_id")
+            refuse_run_owned_id(submission_row[0], workflow_id=workflow_id)
         run_row = db.execute(_SELECT_RUN_STATUS, (workflow_id,)).fetchone()
         if run_row is not None:
-            _raise_on_tier0_reuse(str(run_row[0]), workflow_id=workflow_id)
+            refuse_tier0_reuse(str(run_row[0]), workflow_id=workflow_id)
         return None
 
-    def _reserve_child_ids_sync(self, db: Any, workflow_id: str, items: list[tuple[str, str]]) -> list[tuple[str, str, str]]:
-        """Derive every child workflow id and refuse one already owned.
-
-        Returns ``(item_key, child_workflow_id, inputs_json)`` triples in
-        manifest order.
-        """
-        child_ids = [(key, f"{workflow_id}:{key}", inputs_json) for key, inputs_json in items]
-        for key, child_workflow_id, _inputs_json in child_ids:
+    def _reserve_child_ids_sync(self, db: Any, request: BatchAcceptance, workflow_id: str) -> tuple[ChildSpec, ...]:
+        """Derive every child identity and refuse one already owned."""
+        specs = request.child_specs(workflow_id)
+        for spec in specs:
             collision = db.execute(
-                "SELECT 1 FROM host_submissions WHERE workflow_id = ? UNION SELECT 1 FROM host_batches WHERE workflow_id = ?",
-                (child_workflow_id, child_workflow_id),
+                SELECT_CHILD_ID_COLLISION,
+                (spec.workflow_id, spec.workflow_id),
             ).fetchone()
-            if collision is not None:
-                raise WorkflowIdConflictError(
-                    child_workflow_id,
-                    f"the child workflow id for item {key!r} collides with existing work in this Run Home",
-                )
-            child_run_row = db.execute(_SELECT_RUN_STATUS, (child_workflow_id,)).fetchone()
+            refuse_child_id_collision(spec, collides=collision is not None)
+            child_run_row = db.execute(_SELECT_RUN_STATUS, (spec.workflow_id,)).fetchone()
             if child_run_row is not None:
-                _raise_on_tier0_reuse(str(child_run_row[0]), workflow_id=child_workflow_id, item_key=key)
-        return child_ids
+                refuse_tier0_reuse(str(child_run_row[0]), workflow_id=spec.workflow_id, item_key=spec.item_key)
+        return specs
 
-    def _insert_children_sync(
-        self,
-        db: Any,
-        child_ids: list[tuple[str, str, str]],
-        *,
-        batch_id: str,
-        definition_name: str,
-        def_version: str,
-        def_struct_hash: str,
-        start_at: str | None,
-        source_ref: str | None,
-        recovery_cap: int,
-        child_retry_of: dict[str, str] | None,
-        now: str,
-    ) -> None:
+    def _insert_children_sync(self, db: Any, request: BatchAcceptance, specs: Sequence[ChildSpec], *, now: str) -> None:
         """Insert one pending child submission per item, each with its own fact."""
-        for key, child_workflow_id, inputs_json in child_ids:
-            child_source = (child_retry_of or {}).get(key)
-            child_retry_index = None if child_source is None else _next_ordinal(db.execute(_COUNT_ACCEPTED_RETRIES, (child_source,)).fetchone())
+        for spec in specs:
+            source = request.child_source(spec.item_key)
+            retry_index = None if source is None else _next_ordinal(db.execute(_COUNT_ACCEPTED_RETRIES, (source,)).fetchone())
             db.execute(
-                f"INSERT INTO host_submissions ({_SUBMISSION_COLS}) VALUES ({_SUBMISSION_PLACEHOLDERS})",
-                _child_submission_row(
-                    child_workflow_id,
-                    inputs_json,
-                    key,
-                    batch_id=batch_id,
-                    definition_name=definition_name,
-                    def_version=def_version,
-                    def_struct_hash=def_struct_hash,
-                    start_at=start_at,
-                    source_ref=source_ref,
-                    recovery_cap=recovery_cap,
-                    child_source=child_source,
-                    child_retry_index=child_retry_index,
-                    now=now,
-                ),
+                _INSERT_SUBMISSION,
+                request.child_row(spec, retry_index=retry_index, now=now),
             )
-            self._append_run_update_sync(
-                db,
-                child_workflow_id,
-                "submitted",
-                {"definition_name": definition_name, "workflow_id": child_workflow_id, "batch_id": batch_id, "item_key": key},
-            )
+            self._append_run_update_sync(db, spec.workflow_id, "submitted", request.child_submitted_fact(spec))
 
-    async def _submit_batch(
-        self,
-        batch_id: str,
-        workflow_id: str | None,
-        definition_name: str,
-        def_version: str,
-        def_struct_hash: str,
-        items: list[tuple[str, str]],
-        tolerance_json: str | None,
-        start_at: str | None,
-        source_ref: str | None,
-        *,
-        fingerprint: str,
-        recovery_cap: int = 3,
-        batch_retry_of: str | None = None,
-        child_retry_of: dict[str, str] | None = None,
-    ) -> tuple[bool, dict[str, Any]]:
+    async def _submit_batch(self, request: BatchAcceptance) -> tuple[bool, dict[str, Any]]:
         """Async mirror of ``_submit_batch_sync``."""
         await self._ensure_db()
         async with self._txn_lock():
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
+                workflow_id = request.workflow_id
                 if workflow_id is None:
                     source_cursor = await self._db.execute(
-                        "SELECT workflow_id FROM host_batches WHERE batch_id = ?",
-                        (_require_retry_source(batch_retry_of),),
+                        SELECT_BATCH_WORKFLOW_ID,
+                        (_require_retry_source(request.batch_retry_of),),
                     )
                     source_row = await source_cursor.fetchone()
-                    ordinal_cursor = await self._db.execute(_COUNT_ACCEPTED_BATCH_RETRIES, (batch_retry_of,))
+                    ordinal_cursor = await self._db.execute(_COUNT_ACCEPTED_BATCH_RETRIES, (request.batch_retry_of,))
                     workflow_id = _retry_workflow_id(str(source_row[0]), _next_ordinal(await ordinal_cursor.fetchone()))
-                existing = await self._batch_dedup(
-                    workflow_id,
-                    definition_name=definition_name,
-                    def_version=def_version,
-                    def_struct_hash=def_struct_hash,
-                    items=items,
-                    tolerance_json=tolerance_json,
-                    start_at=start_at,
-                    fingerprint=fingerprint,
-                )
+                existing = await self._batch_dedup(request, workflow_id)
                 if existing is not None:
                     await self._db.rollback()
                     return False, existing
-                child_ids = await self._reserve_child_ids(workflow_id, items)
+                specs = await self._reserve_child_ids(request, workflow_id)
                 now = _now_iso()
                 await self._db.execute(
-                    f"INSERT INTO host_batches ({_BATCH_COLS}) VALUES ({_BATCH_PLACEHOLDERS})",
-                    (
-                        batch_id,
-                        workflow_id,
-                        definition_name,
-                        def_version,
-                        def_struct_hash,
-                        json.dumps(_items_map(items)),
-                        tolerance_json,
-                        start_at,
-                        fingerprint,
-                        source_ref,
-                        now,
-                        batch_retry_of,
-                    ),
+                    INSERT_BATCH,
+                    request.batch_row(workflow_id, now),
                 )
-                await self._insert_children(
-                    child_ids,
-                    batch_id=batch_id,
-                    definition_name=definition_name,
-                    def_version=def_version,
-                    def_struct_hash=def_struct_hash,
-                    start_at=start_at,
-                    source_ref=source_ref,
-                    recovery_cap=recovery_cap,
-                    child_retry_of=child_retry_of,
-                    now=now,
-                )
-                await self._append_batch_update(
-                    batch_id,
-                    "manifest",
-                    _manifest_payload(
-                        batch_id,
-                        workflow_id,
-                        definition_name=definition_name,
-                        def_version=def_version,
-                        def_struct_hash=def_struct_hash,
-                        items=items,
-                        tolerance_json=tolerance_json,
-                        start_at=start_at,
-                        source_ref=source_ref,
-                        batch_retry_of=batch_retry_of,
-                    ),
-                )
+                await self._insert_children(request, specs, now=now)
+                await self._append_batch_update(request.batch_id, MANIFEST_UPDATE_KIND, request.manifest_fact(workflow_id))
                 await self._db.commit()
             except BaseException:
                 await self._rollback_async()
                 raise
-        row = await self._get_batch(batch_id)
+        row = await self._get_batch(request.batch_id)
         assert row is not None
         return True, row
 
-    async def _batch_dedup(
-        self,
-        workflow_id: str,
-        *,
-        definition_name: str,
-        def_version: str,
-        def_struct_hash: str,
-        items: list[tuple[str, str]],
-        tolerance_json: str | None,
-        start_at: str | None,
-        fingerprint: str,
-    ) -> dict[str, Any] | None:
+    async def _batch_dedup(self, request: BatchAcceptance, workflow_id: str) -> dict[str, Any] | None:
         """Async mirror of ``_batch_dedup_sync``."""
-        batch_cursor = await self._db.execute(
-            f"SELECT {_BATCH_COLS} FROM host_batches WHERE workflow_id = ?",
-            (workflow_id,),
-        )
-        existing_batch_row = await batch_cursor.fetchone()
-        if existing_batch_row is not None:
-            existing = _row_to_batch(existing_batch_row)
-            settled_cursor = await self._db.execute(
-                "SELECT s.state, r.status FROM host_submissions s LEFT JOIN runs r ON r.id = s.workflow_id WHERE s.batch_id = ?",
-                (existing["batch_id"],),
+        batch_cursor = await self._db.execute(SELECT_BATCH_BY_WORKFLOW, (workflow_id,))
+        batch_row = await batch_cursor.fetchone()
+        if batch_row is not None:
+            children_cursor = await self._db.execute(
+                SELECT_CHILD_SETTLEMENT,
+                (row_to_batch(batch_row)["batch_id"],),
             )
-            if _children_settled_rows(await settled_cursor.fetchall()):
-                raise AlreadyTerminalError(workflow_id)
-            if existing["fingerprint"] != fingerprint:
-                raise WorkflowIdConflictError(
-                    workflow_id,
-                    batch_mismatch_aspect(
-                        existing,
-                        definition_name=definition_name,
-                        def_version=def_version,
-                        def_struct_hash=def_struct_hash,
-                        items_canonical=canonical_json(_items_map(items)),
-                        tolerance_json=tolerance_json,
-                        start_at=start_at,
-                    ),
-                )
-            return existing
-        submission_cursor = await self._db.execute("SELECT state FROM host_submissions WHERE workflow_id = ?", (workflow_id,))
+            return resolve_batch_reuse(
+                batch_row,
+                workflow_id=workflow_id,
+                request=request,
+                children_settled=children_settled_rows(await children_cursor.fetchall()),
+            )
+        submission_cursor = await self._db.execute(_SELECT_SUBMISSION_STATE, (workflow_id,))
         submission_row = await submission_cursor.fetchone()
         if submission_row is not None:
-            if submission_row[0] == "finished":
-                raise AlreadyTerminalError(workflow_id)
-            raise WorkflowIdConflictError(workflow_id, "an existing Run owns this workflow_id")
+            refuse_run_owned_id(submission_row[0], workflow_id=workflow_id)
         run_cursor = await self._db.execute(_SELECT_RUN_STATUS, (workflow_id,))
         run_row = await run_cursor.fetchone()
         if run_row is not None:
-            _raise_on_tier0_reuse(str(run_row[0]), workflow_id=workflow_id)
+            refuse_tier0_reuse(str(run_row[0]), workflow_id=workflow_id)
         return None
 
-    async def _reserve_child_ids(self, workflow_id: str, items: list[tuple[str, str]]) -> list[tuple[str, str, str]]:
+    async def _reserve_child_ids(self, request: BatchAcceptance, workflow_id: str) -> tuple[ChildSpec, ...]:
         """Async mirror of ``_reserve_child_ids_sync``."""
-        child_ids = [(key, f"{workflow_id}:{key}", inputs_json) for key, inputs_json in items]
-        for key, child_workflow_id, _inputs_json in child_ids:
+        specs = request.child_specs(workflow_id)
+        for spec in specs:
             collision_cursor = await self._db.execute(
-                "SELECT 1 FROM host_submissions WHERE workflow_id = ? UNION SELECT 1 FROM host_batches WHERE workflow_id = ?",
-                (child_workflow_id, child_workflow_id),
+                SELECT_CHILD_ID_COLLISION,
+                (spec.workflow_id, spec.workflow_id),
             )
-            if await collision_cursor.fetchone() is not None:
-                raise WorkflowIdConflictError(
-                    child_workflow_id,
-                    f"the child workflow id for item {key!r} collides with existing work in this Run Home",
-                )
-            child_run_cursor = await self._db.execute(_SELECT_RUN_STATUS, (child_workflow_id,))
+            refuse_child_id_collision(spec, collides=await collision_cursor.fetchone() is not None)
+            child_run_cursor = await self._db.execute(_SELECT_RUN_STATUS, (spec.workflow_id,))
             child_run_row = await child_run_cursor.fetchone()
             if child_run_row is not None:
-                _raise_on_tier0_reuse(str(child_run_row[0]), workflow_id=child_workflow_id, item_key=key)
-        return child_ids
+                refuse_tier0_reuse(str(child_run_row[0]), workflow_id=spec.workflow_id, item_key=spec.item_key)
+        return specs
 
-    async def _insert_children(
-        self,
-        child_ids: list[tuple[str, str, str]],
-        *,
-        batch_id: str,
-        definition_name: str,
-        def_version: str,
-        def_struct_hash: str,
-        start_at: str | None,
-        source_ref: str | None,
-        recovery_cap: int,
-        child_retry_of: dict[str, str] | None,
-        now: str,
-    ) -> None:
+    async def _insert_children(self, request: BatchAcceptance, specs: Sequence[ChildSpec], *, now: str) -> None:
         """Async mirror of ``_insert_children_sync``."""
-        for key, child_workflow_id, inputs_json in child_ids:
-            child_source = (child_retry_of or {}).get(key)
-            child_retry_index = None
-            if child_source is not None:
-                child_ordinal_cursor = await self._db.execute(_COUNT_ACCEPTED_RETRIES, (child_source,))
-                child_retry_index = _next_ordinal(await child_ordinal_cursor.fetchone())
+        for spec in specs:
+            source = request.child_source(spec.item_key)
+            retry_index = None
+            if source is not None:
+                ordinal_cursor = await self._db.execute(_COUNT_ACCEPTED_RETRIES, (source,))
+                retry_index = _next_ordinal(await ordinal_cursor.fetchone())
             await self._db.execute(
-                f"INSERT INTO host_submissions ({_SUBMISSION_COLS}) VALUES ({_SUBMISSION_PLACEHOLDERS})",
-                _child_submission_row(
-                    child_workflow_id,
-                    inputs_json,
-                    key,
-                    batch_id=batch_id,
-                    definition_name=definition_name,
-                    def_version=def_version,
-                    def_struct_hash=def_struct_hash,
-                    start_at=start_at,
-                    source_ref=source_ref,
-                    recovery_cap=recovery_cap,
-                    child_source=child_source,
-                    child_retry_index=child_retry_index,
-                    now=now,
-                ),
+                _INSERT_SUBMISSION,
+                request.child_row(spec, retry_index=retry_index, now=now),
             )
-            await self._append_run_update(
-                child_workflow_id,
-                "submitted",
-                {"definition_name": definition_name, "workflow_id": child_workflow_id, "batch_id": batch_id, "item_key": key},
-            )
+            await self._append_run_update(spec.workflow_id, "submitted", request.child_submitted_fact(spec))
 
     def _get_batch_sync(self, batch_id: str) -> dict[str, Any] | None:
         with self._sync_lock:
             db = self._sync_db()
             row = db.execute(
-                f"SELECT {_BATCH_COLS} FROM host_batches WHERE batch_id = ?",
+                SELECT_BATCH_BY_ID,
                 (batch_id,),
             ).fetchone()
-            return _row_to_batch(row) if row is not None else None
+            return row_to_batch(row) if row is not None else None
 
     async def _get_batch(self, batch_id: str) -> dict[str, Any] | None:
         """Async mirror of ``_get_batch_sync``."""
         await self._ensure_db()
         async with self._txn_lock():
             cursor = await self._db.execute(
-                f"SELECT {_BATCH_COLS} FROM host_batches WHERE batch_id = ?",
+                SELECT_BATCH_BY_ID,
                 (batch_id,),
             )
             row = await cursor.fetchone()
-            return _row_to_batch(row) if row is not None else None
+            return row_to_batch(row) if row is not None else None
 
     def _batch_child_rows_sync(self, batch_id: str) -> dict[str, tuple[dict[str, Any], Run | None]]:
         """Batch children joined with their runs rows, keyed by item key."""
@@ -1998,7 +1416,7 @@ class RunHome(SqliteCheckpointer):
         with self._sync_lock:
             db = self._sync_db()
             cursor = db.execute(
-                "SELECT bseq, kind, payload, created_at FROM batch_updates WHERE batch_id = ? AND bseq > ? ORDER BY bseq",
+                SELECT_BATCH_UPDATES,
                 (batch_id, after_bseq),
             )
             return [(int(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in cursor.fetchall()]
@@ -2008,7 +1426,7 @@ class RunHome(SqliteCheckpointer):
         await self._ensure_db()
         async with self._txn_lock():
             cursor = await self._db.execute(
-                "SELECT bseq, kind, payload, created_at FROM batch_updates WHERE batch_id = ? AND bseq > ? ORDER BY bseq",
+                SELECT_BATCH_UPDATES,
                 (batch_id, after_bseq),
             )
             rows = await cursor.fetchall()
@@ -2030,10 +1448,10 @@ class RunHome(SqliteCheckpointer):
         await self._ensure_db()
         async with self._txn_lock():
             children_cursor = await self._db.execute(
-                "SELECT s.state, r.status FROM host_submissions s LEFT JOIN runs r ON r.id = s.workflow_id WHERE s.batch_id = ?",
+                SELECT_CHILD_SETTLEMENT,
                 (batch_id,),
             )
-            return _children_settled_rows(await children_cursor.fetchall())
+            return children_settled_rows(await children_cursor.fetchall())
 
     def _write_batch_stop_sync(self, batch_id: str, info: Any, source_ref: str | None = None) -> bool:
         """Record a durable Batch stop, atomically, in ONE transaction.
@@ -2047,56 +1465,42 @@ class RunHome(SqliteCheckpointer):
         worker's next scan. Children with an unapplied stop already keep
         their first stop (first stop wins).
 
+        Which children the stop reaches, and the two refusals it can raise,
+        are ``_batch_store.resolve_batch_stop``; this mirror owns the reads
+        and the writes.
+
         Returns True when the Batch stop was newly written; False when the
-        Batch was already stopped (duplicate). Raises ``HostError`` for an
-        unknown batch and ``AlreadyTerminalError`` when every child is
-        already settled.
+        Batch was already stopped (duplicate).
         """
+        stop = BatchStop(batch_id, info, source_ref)
         with self._sync_lock:
             db = self._sync_db()
             try:
                 db.execute("BEGIN IMMEDIATE")
-                batch_row = db.execute(
-                    f"SELECT {_BATCH_COLS} FROM host_batches WHERE batch_id = ?",
-                    (batch_id,),
-                ).fetchone()
-                if batch_row is None:
-                    raise HostError(f"Cannot stop batch {batch_id!r}: no such batch in this Run Home.")
-                batch = _row_to_batch(batch_row)
+                batch_row = db.execute(SELECT_BATCH_BY_ID, (batch_id,)).fetchone()
                 child_rows = db.execute(
-                    "SELECT s.workflow_id, s.state, r.status FROM host_submissions s LEFT JOIN runs r ON r.id = s.workflow_id WHERE s.batch_id = ?",
+                    SELECT_STOP_TARGETS,
                     (batch_id,),
                 ).fetchall()
-                if _children_settled_rows([(state, status) for _wf, state, status in child_rows]):
-                    raise AlreadyTerminalError(batch["workflow_id"])
-                stopped_row = db.execute(
-                    "SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = 'stopped' LIMIT 1",
-                    (batch_id,),
-                ).fetchone()
-                if stopped_row is not None:
+                _batch, targets = resolve_batch_stop(batch_row, child_rows, batch_id=batch_id)
+                already = db.execute(SELECT_STOPPED, (batch_id,)).fetchone()
+                if already is not None:
                     db.rollback()
                     return False
                 now = _now_iso()
-                self._append_batch_update_sync(
-                    db,
-                    batch_id,
-                    "stopped",
-                    {"verb": STOP_VERB, "info": info, "source_ref": source_ref},
-                )
-                for child_workflow_id, _state, _status in child_rows:
-                    if is_child_settled(_state, _status):
-                        continue
+                self._append_batch_update_sync(db, batch_id, "stopped", stop.fact)
+                for child_workflow_id in targets:
                     existing = db.execute(
-                        "SELECT id FROM host_commands WHERE run_id = ? AND verb = ? AND applied_at IS NULL LIMIT 1",
+                        SELECT_UNAPPLIED_COMMAND,
                         (child_workflow_id, STOP_VERB),
                     ).fetchone()
                     if existing is not None:
                         continue
                     db.execute(
-                        "INSERT INTO host_commands (run_id, verb, payload, source_ref, created_at) VALUES (?, ?, ?, ?, ?)",
-                        (child_workflow_id, STOP_VERB, json.dumps({"info": info}), source_ref, now),
+                        INSERT_COMMAND,
+                        stop.child_command_row(child_workflow_id, now),
                     )
-                    self._append_run_update_sync(db, child_workflow_id, "command", {"verb": STOP_VERB, "info": info, "source_ref": source_ref})
+                    self._append_run_update_sync(db, child_workflow_id, "command", stop.fact)
                 db.commit()
                 return True
             except BaseException:
@@ -2105,52 +1509,37 @@ class RunHome(SqliteCheckpointer):
 
     async def _write_batch_stop(self, batch_id: str, info: Any, source_ref: str | None = None) -> bool:
         """Async mirror of ``_write_batch_stop_sync``."""
+        stop = BatchStop(batch_id, info, source_ref)
         await self._ensure_db()
         async with self._txn_lock():
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
-                batch_cursor = await self._db.execute(
-                    f"SELECT {_BATCH_COLS} FROM host_batches WHERE batch_id = ?",
-                    (batch_id,),
-                )
+                batch_cursor = await self._db.execute(SELECT_BATCH_BY_ID, (batch_id,))
                 batch_row = await batch_cursor.fetchone()
-                if batch_row is None:
-                    raise HostError(f"Cannot stop batch {batch_id!r}: no such batch in this Run Home.")
-                batch = _row_to_batch(batch_row)
                 children_cursor = await self._db.execute(
-                    "SELECT s.workflow_id, s.state, r.status FROM host_submissions s LEFT JOIN runs r ON r.id = s.workflow_id WHERE s.batch_id = ?",
+                    SELECT_STOP_TARGETS,
                     (batch_id,),
                 )
                 child_rows = await children_cursor.fetchall()
-                if _children_settled_rows([(state, status) for _wf, state, status in child_rows]):
-                    raise AlreadyTerminalError(batch["workflow_id"])
-                stopped_cursor = await self._db.execute(
-                    "SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = 'stopped' LIMIT 1",
-                    (batch_id,),
-                )
-                if await stopped_cursor.fetchone() is not None:
+                _batch, targets = resolve_batch_stop(batch_row, child_rows, batch_id=batch_id)
+                already_cursor = await self._db.execute(SELECT_STOPPED, (batch_id,))
+                if await already_cursor.fetchone() is not None:
                     await self._db.rollback()
                     return False
                 now = _now_iso()
-                await self._append_batch_update(
-                    batch_id,
-                    "stopped",
-                    {"verb": STOP_VERB, "info": info, "source_ref": source_ref},
-                )
-                for child_workflow_id, _state, _status in child_rows:
-                    if is_child_settled(_state, _status):
-                        continue
+                await self._append_batch_update(batch_id, "stopped", stop.fact)
+                for child_workflow_id in targets:
                     existing_cursor = await self._db.execute(
-                        "SELECT id FROM host_commands WHERE run_id = ? AND verb = ? AND applied_at IS NULL LIMIT 1",
+                        SELECT_UNAPPLIED_COMMAND,
                         (child_workflow_id, STOP_VERB),
                     )
                     if await existing_cursor.fetchone() is not None:
                         continue
                     await self._db.execute(
-                        "INSERT INTO host_commands (run_id, verb, payload, source_ref, created_at) VALUES (?, ?, ?, ?, ?)",
-                        (child_workflow_id, STOP_VERB, json.dumps({"info": info}), source_ref, now),
+                        INSERT_COMMAND,
+                        stop.child_command_row(child_workflow_id, now),
                     )
-                    await self._append_run_update(child_workflow_id, "command", {"verb": STOP_VERB, "info": info, "source_ref": source_ref})
+                    await self._append_run_update(child_workflow_id, "command", stop.fact)
                 await self._db.commit()
                 return True
             except BaseException:
@@ -2178,24 +1567,18 @@ class RunHome(SqliteCheckpointer):
 
         Returns True when this call performed the transition.
         """
-        result = await self._db.execute(
-            "UPDATE host_submissions SET state = 'pending', claimed_at = NULL, finished_at = NULL WHERE workflow_id = ? AND state = ?",
-            (run_id, SUBMISSION_STATE_PAUSED),
-        )
+        result = await self._db.execute(READMIT_ANSWERED_SQL, (run_id, SUBMISSION_STATE_PAUSED))
         if result.rowcount != 1:
             return False
-        await self._append_child_runnable(run_id, pause_id)
+        await self._append_occurrence_fact(run_id, pause_id, kind=RUNNABLE_UPDATE_KIND)
         return True
 
     def _readmit_answered_pause_sync(self, db: Any, run_id: str, pause_id: str | None) -> bool:
         """Sync mirror of ``_readmit_answered_pause``."""
-        result = db.execute(
-            "UPDATE host_submissions SET state = 'pending', claimed_at = NULL, finished_at = NULL WHERE workflow_id = ? AND state = ?",
-            (run_id, SUBMISSION_STATE_PAUSED),
-        )
+        result = db.execute(READMIT_ANSWERED_SQL, (run_id, SUBMISSION_STATE_PAUSED))
         if result.rowcount != 1:
             return False
-        self._append_child_runnable_sync(db, run_id, pause_id)
+        self._append_occurrence_fact_sync(db, run_id, pause_id, kind=RUNNABLE_UPDATE_KIND)
         return True
 
     async def settle_pause(self, run_id: str, *, pause_id: str | None = None, value: Any) -> PauseSlot:
@@ -2365,7 +1748,7 @@ class RunHome(SqliteCheckpointer):
 
     async def _has_run_row(self, workflow_id: str) -> bool:
         """Whether this submission ever started executing; caller holds the txn."""
-        cursor = await self._db.execute("SELECT 1 FROM runs WHERE id = ?", (workflow_id,))
+        cursor = await self._db.execute(_SELECT_RUN_EXISTS, (workflow_id,))
         return await cursor.fetchone() is not None
 
     async def _tripped_batch_ids(self, batch_ids: Collection[str]) -> frozenset[str]:
@@ -2375,7 +1758,7 @@ class RunHome(SqliteCheckpointer):
             return frozenset()
         placeholders = ", ".join("?" for _ in ids)
         cursor = await self._db.execute(
-            f"SELECT DISTINCT batch_id FROM batch_updates WHERE kind = '{_TRIP_UPDATE_KIND}' AND batch_id IN ({placeholders})",
+            f"SELECT DISTINCT batch_id FROM batch_updates WHERE kind = '{TRIP_UPDATE_KIND}' AND batch_id IN ({placeholders})",
             ids,
         )
         return frozenset(str(row[0]) for row in await cursor.fetchall())
@@ -2406,10 +1789,7 @@ class RunHome(SqliteCheckpointer):
         async with self._txn_lock():
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
-                await self._db.execute(
-                    "UPDATE host_submissions SET state = ?, finished_at = ? WHERE workflow_id = ? AND state = 'claimed'",
-                    (SUBMISSION_STATE_FINISHED, _now_iso(), workflow_id),
-                )
+                await self._db.execute(RELEASE_SUBMISSION_SQL, (SUBMISSION_STATE_FINISHED, _now_iso(), workflow_id))
                 await self._db.commit()
             except BaseException:
                 await self._rollback_async()
@@ -2558,7 +1938,7 @@ class RunHome(SqliteCheckpointer):
             try:
                 db.execute("BEGIN IMMEDIATE")
                 submission_row = db.execute(
-                    "SELECT state FROM host_submissions WHERE workflow_id = ?",
+                    _SELECT_SUBMISSION_STATE,
                     (workflow_id,),
                 ).fetchone()
                 run_row = db.execute(_SELECT_RUN_STATUS, (workflow_id,)).fetchone()
@@ -2569,14 +1949,14 @@ class RunHome(SqliteCheckpointer):
                 if submission_row is not None and submission_row[0] == "finished":
                     raise AlreadyTerminalError(workflow_id)
                 existing = db.execute(
-                    "SELECT id FROM host_commands WHERE run_id = ? AND verb = ? AND applied_at IS NULL LIMIT 1",
+                    SELECT_UNAPPLIED_COMMAND,
                     (workflow_id, STOP_VERB),
                 ).fetchone()
                 if existing is not None:
                     db.rollback()
                     return False
                 db.execute(
-                    "INSERT INTO host_commands (run_id, verb, payload, source_ref, created_at) VALUES (?, ?, ?, ?, ?)",
+                    INSERT_COMMAND,
                     (workflow_id, STOP_VERB, json.dumps({"info": info}), source_ref, _now_iso()),
                 )
                 self._append_run_update_sync(db, workflow_id, "command", {"verb": STOP_VERB, "info": info, "source_ref": source_ref})
@@ -2593,7 +1973,7 @@ class RunHome(SqliteCheckpointer):
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
                 submission_cursor = await self._db.execute(
-                    "SELECT state FROM host_submissions WHERE workflow_id = ?",
+                    _SELECT_SUBMISSION_STATE,
                     (workflow_id,),
                 )
                 submission_row = await submission_cursor.fetchone()
@@ -2606,14 +1986,14 @@ class RunHome(SqliteCheckpointer):
                 if submission_row is not None and submission_row[0] == "finished":
                     raise AlreadyTerminalError(workflow_id)
                 existing_cursor = await self._db.execute(
-                    "SELECT id FROM host_commands WHERE run_id = ? AND verb = ? AND applied_at IS NULL LIMIT 1",
+                    SELECT_UNAPPLIED_COMMAND,
                     (workflow_id, STOP_VERB),
                 )
                 if await existing_cursor.fetchone() is not None:
                     await self._db.rollback()
                     return False
                 await self._db.execute(
-                    "INSERT INTO host_commands (run_id, verb, payload, source_ref, created_at) VALUES (?, ?, ?, ?, ?)",
+                    INSERT_COMMAND,
                     (workflow_id, STOP_VERB, json.dumps({"info": info}), source_ref, _now_iso()),
                 )
                 await self._append_run_update(workflow_id, "command", {"verb": STOP_VERB, "info": info, "source_ref": source_ref})
@@ -2632,25 +2012,15 @@ class RunHome(SqliteCheckpointer):
         value: Any,
         due_at: datetime | str,
         source_ref: str | None,
-    ) -> _ScheduledAnswerRow:
-        """Normalize one scheduled answer into its stored row shape.
-
-        Raises before any store work: a scheduled answer with no due time is
-        just an answer, and ``client.answer`` already applies those. The
-        stored ``due_at`` is therefore never NULL, which is why the due
-        predicate treats a NULL one as inert rather than instantly due.
-        """
-        due_at_iso = _normalize_utc_iso(due_at, field="due_at")
-        if due_at_iso is None:
-            raise ValueError(
-                "schedule_answer() requires a due_at time.\n\nHow to fix:\n  Pass due_at=<datetime or ISO string> for when the answer should apply, or call client.answer(...) to answer the pause now."
-            )
-        return _ScheduledAnswerRow(
-            run_id=workflow_id,
-            payload=json.dumps({"pause_id": pause_id, "value": value}),
-            due_at=due_at_iso,
-            source_ref=source_ref,
-            created_at=_now_iso(),
+    ) -> ScheduledAnswerRow:
+        """Normalize one scheduled answer into its stored row shape."""
+        return scheduled_answer_row(
+            workflow_id,
+            pause_id,
+            value,
+            _normalize_utc_iso(due_at, field="due_at"),
+            source_ref,
+            now=_now_iso(),
         )
 
     def _write_scheduled_answer_sync(
@@ -2693,21 +2063,21 @@ class RunHome(SqliteCheckpointer):
                     value=value,
                 )
                 existing = db.execute(
-                    "SELECT id FROM host_commands WHERE run_id = ? AND verb = ? AND pause_id = ? AND applied_at IS NULL LIMIT 1",
+                    SELECT_UNAPPLIED_SCHEDULED_ANSWER,
                     (row.run_id, SCHEDULE_ANSWER_VERB, slot.pause_id),
                 ).fetchone()
                 if existing is not None:
                     db.rollback()
                     return False
                 db.execute(
-                    "INSERT INTO host_commands (run_id, verb, payload, pause_id, due_at, source_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    INSERT_SCHEDULED_ANSWER,
                     (row.run_id, SCHEDULE_ANSWER_VERB, row.payload, slot.pause_id, row.due_at, row.source_ref, row.created_at),
                 )
                 self._append_run_update_sync(
                     db,
                     row.run_id,
                     "command",
-                    _scheduled_answer_fact(pause_id=slot.pause_id, due_at=row.due_at, source_ref=row.source_ref, outcome=None),
+                    scheduled_answer_fact(pause_id=slot.pause_id, due_at=row.due_at, source_ref=row.source_ref, outcome=None),
                 )
                 db.commit()
                 return True
@@ -2740,20 +2110,20 @@ class RunHome(SqliteCheckpointer):
                     value=value,
                 )
                 existing_cursor = await self._db.execute(
-                    "SELECT id FROM host_commands WHERE run_id = ? AND verb = ? AND pause_id = ? AND applied_at IS NULL LIMIT 1",
+                    SELECT_UNAPPLIED_SCHEDULED_ANSWER,
                     (row.run_id, SCHEDULE_ANSWER_VERB, slot.pause_id),
                 )
                 if await existing_cursor.fetchone() is not None:
                     await self._db.rollback()
                     return False
                 await self._db.execute(
-                    "INSERT INTO host_commands (run_id, verb, payload, pause_id, due_at, source_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    INSERT_SCHEDULED_ANSWER,
                     (row.run_id, SCHEDULE_ANSWER_VERB, row.payload, slot.pause_id, row.due_at, row.source_ref, row.created_at),
                 )
                 await self._append_run_update(
                     row.run_id,
                     "command",
-                    _scheduled_answer_fact(pause_id=slot.pause_id, due_at=row.due_at, source_ref=row.source_ref, outcome=None),
+                    scheduled_answer_fact(pause_id=slot.pause_id, due_at=row.due_at, source_ref=row.source_ref, outcome=None),
                 )
                 await self._db.commit()
                 return True
@@ -2761,7 +2131,7 @@ class RunHome(SqliteCheckpointer):
                 await self._rollback_async()
                 raise
 
-    async def _due_scheduled_answers(self, now_iso: str) -> list[_DueScheduledAnswer]:
+    async def _due_scheduled_answers(self, now_iso: str) -> list[DueScheduledAnswer]:
         """Scheduled answers whose due time has arrived, oldest command first.
 
         Shares ``_due_clause`` — and the caller's single store-authoritative
@@ -2776,17 +2146,7 @@ class RunHome(SqliteCheckpointer):
                 (SCHEDULE_ANSWER_VERB, now_iso),
             )
             rows = await cursor.fetchall()
-        return [
-            _DueScheduledAnswer(
-                command_id=int(row[0]),
-                run_id=str(row[1]),
-                pause_id=row[2],
-                value=json.loads(row[3]).get("value"),
-                due_at=row[4],
-                source_ref=row[5],
-            )
-            for row in rows
-        ]
+        return [DueScheduledAnswer.from_row(row) for row in rows]
 
     async def _settle_due_answers(self, now_iso: str | None = None) -> list[tuple[int, ScheduledAnswerOutcome]]:
         """Fire every due scheduled answer and record what it produced.
@@ -2809,7 +2169,7 @@ class RunHome(SqliteCheckpointer):
                 results.append((due.command_id, outcome))
         return results
 
-    async def _fire_scheduled_answer(self, due: _DueScheduledAnswer) -> ScheduledAnswerOutcome | None:
+    async def _fire_scheduled_answer(self, due: DueScheduledAnswer) -> ScheduledAnswerOutcome | None:
         """Settle one due timer and record what THAT attempt produced, atomically.
 
         The settlement attempt and the ``outcome`` it earns are ONE
@@ -2879,7 +2239,7 @@ class RunHome(SqliteCheckpointer):
                 await self._append_run_update(
                     due.run_id,
                     "command",
-                    _scheduled_answer_fact(pause_id=due.pause_id, due_at=due.due_at, source_ref=due.source_ref, outcome=outcome),
+                    scheduled_answer_fact(pause_id=due.pause_id, due_at=due.due_at, source_ref=due.source_ref, outcome=outcome),
                 )
                 await self._db.commit()
                 return outcome
@@ -2991,13 +2351,13 @@ class RunHome(SqliteCheckpointer):
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
                 stop_cursor = await self._db.execute(
-                    "SELECT id FROM host_commands WHERE run_id = ? AND verb = ? AND applied_at IS NULL LIMIT 1",
+                    SELECT_UNAPPLIED_COMMAND,
                     (workflow_id, STOP_VERB),
                 )
                 if await stop_cursor.fetchone() is None:
                     await self._db.commit()
                     return False
-                run_cursor = await self._db.execute("SELECT 1 FROM runs WHERE id = ?", (workflow_id,))
+                run_cursor = await self._db.execute(_SELECT_RUN_EXISTS, (workflow_id,))
                 if await run_cursor.fetchone() is not None:
                     await self._db.commit()
                     return False

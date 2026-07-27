@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from hypergraph.host._batch_store import BatchAcceptance, DefinitionPin
 from hypergraph.host._bus import _BusEventProcessor, _PreviewBus, _register_bus
 from hypergraph.host.batch import BatchTolerance, MapMode, expand_batch_items
 from hypergraph.host.client import RunHomeClient
@@ -341,20 +342,18 @@ class Host:
             start_at=start_at,
             recovery_cap=recovery_cap,
         )
-        batch_id = f"b-{uuid.uuid4().hex[:12]}"
-        created, row = await self._home._submit_batch(
-            batch_id,
-            workflow_id,
-            definition.name,
-            definition.version,
-            definition.struct_hash,
-            pairs,
-            tolerance_json,
-            start_at_iso,
-            source_ref,
+        request = BatchAcceptance(
+            batch_id=f"b-{uuid.uuid4().hex[:12]}",
+            workflow_id=workflow_id,
+            definition=DefinitionPin(definition.name, definition.version, definition.struct_hash),
+            items=tuple(pairs),
             fingerprint=fingerprint,
+            tolerance_json=tolerance_json,
+            start_at=start_at_iso,
+            source_ref=source_ref,
             recovery_cap=recovery_cap,
         )
+        created, row = await self._home._submit_batch(request)
         return BatchSubmitReceipt(
             batch_ref=BatchRef(home=self._home.uri, batch_id=row["batch_id"]),
             workflow_id=workflow_id,
@@ -387,20 +386,18 @@ class Host:
             start_at=start_at,
             recovery_cap=recovery_cap,
         )
-        batch_id = f"b-{uuid.uuid4().hex[:12]}"
-        created, row = self._home._submit_batch_sync(
-            batch_id,
-            workflow_id,
-            definition.name,
-            definition.version,
-            definition.struct_hash,
-            pairs,
-            tolerance_json,
-            start_at_iso,
-            source_ref,
+        request = BatchAcceptance(
+            batch_id=f"b-{uuid.uuid4().hex[:12]}",
+            workflow_id=workflow_id,
+            definition=DefinitionPin(definition.name, definition.version, definition.struct_hash),
+            items=tuple(pairs),
             fingerprint=fingerprint,
+            tolerance_json=tolerance_json,
+            start_at=start_at_iso,
+            source_ref=source_ref,
             recovery_cap=recovery_cap,
         )
+        created, row = self._home._submit_batch_sync(request)
         return BatchSubmitReceipt(
             batch_ref=BatchRef(home=self._home.uri, batch_id=row["batch_id"]),
             workflow_id=workflow_id,
