@@ -587,7 +587,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                 # work — never a side effect of the first one finishing.
                 if persist_boundaries:
                     await record_superstep_boundaries_async(
-                        checkpointer,
+                        checkpointer,  # type: ignore[arg-type]  # probe_seam proved the pending-node seam
                         workflow_id,  # type: ignore[arg-type]
                         superstep_idx + superstep_offset,
                         ready_nodes,

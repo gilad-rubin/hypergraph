@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from hypergraph.checkpointers.base import Checkpointer
     from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
+    from hypergraph.runners._shared.stop import _ActiveWorkflows
 
 
 class BaseRunner(ABC):
@@ -26,6 +27,18 @@ class BaseRunner(ABC):
     - run(): execute a graph once
     - map(): execute a graph multiple times with different inputs
     """
+
+    if TYPE_CHECKING:
+        # Declared for the type checker only. Runners with a checkpointer
+        # seam (Sync/Async) define these in __init__; DaftRunner never does,
+        # which is why every use below probes ``self.__dict__`` first
+        # instead of trusting the declaration.
+        _checkpointer_instance: Checkpointer | None
+        _active_workflows: _ActiveWorkflows
+        _executors: dict[type[Any], Any]
+
+        def stop(self, workflow_id: str, *, info: Any = None) -> None:
+            """Declared for typing; real runners define it, Daft has none."""
 
     def with_checkpointer(self, checkpointer: Checkpointer) -> BaseRunner:
         """Return a shallow clone of this runner bound to ``checkpointer``.

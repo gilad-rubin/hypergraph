@@ -461,7 +461,7 @@ class SyncRunner(SyncRunnerTemplate):
                 # work — never a side effect of the first one finishing.
                 if persist_boundaries:
                     record_superstep_boundaries_sync(
-                        sync_cp,
+                        sync_cp,  # type: ignore[arg-type]  # probe_seam proved the pending-node seam
                         workflow_id,  # type: ignore[arg-type]
                         superstep_idx + superstep_offset,
                         ready_nodes,
