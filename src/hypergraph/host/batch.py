@@ -202,9 +202,9 @@ def _item_key(value: Any, *, key_by: str, index: int) -> str:
         key_by,
         f"submit_batch() item {index} has {kind} {key_by!r} ({value!r}); a logical item key must be a "
         "JSON-safe scalar (a non-empty str, or an int).\n\n"
-        "How to fix: expand an input whose per-item value already identifies the item (Panda passes its "
-        "generated WorkItem id). Composite identity needs an explicit key projection computed before "
-        "submission — Hypergraph never invents one from the map index.",
+        "How to fix: expand an input whose per-item value already identifies the item — an id column, "
+        "not a payload. Composite identity needs an explicit key projection computed before submission; "
+        "Hypergraph never invents one from the map index.",
     )
 
 
