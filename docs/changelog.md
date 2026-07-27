@@ -92,8 +92,8 @@
   outcome, and whether it ever started — the address you answer or stop an
   individual item through. Batch watch gains the `child_paused` and
   `child_runnable` lifecycle facts (repeatable; only `child_settled`,
-  `child_unstarted`, and a trip's `unstarted_items` account an item for
-  good). Stopping a paused child is a stop, not a duplicate-resolution
+  `child_unstarted`, `child_abandoned`, and a trip's `unstarted_items` /
+  `abandoned_items` account an item for good). Stopping a paused child is a stop, not a duplicate-resolution
   decision: the run settles `STOPPED` with the domain question unanswered.
   Answer-vs-stop and answer-vs-answer races resolve only by commit order, so
   a doubly-answered item can never continue twice.

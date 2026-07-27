@@ -250,9 +250,11 @@ class BatchItemView:
         waiting: Typed waiting condition, or None — the same closed
             ``WaitingCondition`` vocabulary ``RunView.waiting`` reports, so
             an item and its Run never disagree about why it waits.
-        outcome: The item's settled outcome string (terminal status, or
-            ``"recovery_exhausted"``), or None while it can still change.
-            Exactly the value ``BatchView.outcomes`` reports for this key.
+        outcome: The item's settled outcome string — a terminal status,
+            ``"recovery_exhausted"`` for a child the recovery brake parked,
+            or ``"abandoned"`` for a started child a tolerance trip closed
+            admission on — and None while it can still change. Exactly the
+            value ``BatchView.outcomes`` reports for this key.
         started: Whether this child ever began executing (it has a runs
             row). False distinguishes "requested but never admitted" from
             "ran and produced nothing".
@@ -331,9 +333,10 @@ class BatchView:
             ``RunRef`` and current truth.
         outcomes: Logical item key → outcome, in manifest order: the
             terminal status string for settled children,
-            ``"recovery_exhausted"`` for parked children, None while a
-            child is in flight, and None for unstarted items (Hypergraph
-            never fabricates results for items that never ran).
+            ``"recovery_exhausted"`` for parked children, ``"abandoned"``
+            for a started child a tolerance trip closed admission on, None
+            while a child is in flight, and None for unstarted items
+            (Hypergraph never fabricates results for items that never ran).
         unstarted_items: Manifest keys whose child never executed, in
             manifest order — requested but never admitted. Safe to rerun
             from scratch: nothing ran, so nothing landed.
@@ -388,11 +391,13 @@ class BatchUpdate:
             (a pinned tolerance was strictly exceeded, committed in that
             same transaction at the next ``bseq``), ``child_unstarted`` (an
             item that ended unstarted without the trip fact naming it — a
-            claimed child a restart returned to pending and admission then
-            refused, or a stopped Batch's child that never executed),
-            ``stopped`` (the durable Batch stop) — or an event class name
-            for previews. Every one of these commits in the same
-            transaction as the child or Batch state change that causes it.
+            stopped Batch's child that never executed, or a child a crash
+            returned to pending after the trip), ``child_abandoned`` (the
+            other half of that split: a child that HAD started when closed
+            admission settled it), ``stopped`` (the durable Batch stop) —
+            or an event class name for previews. Every one of these commits
+            in the same transaction as the child or Batch state change that
+            causes it.
         payload: JSON-safe fact payload. ``child_settled`` carries
             ``item_key``, ``workflow_id``, and ``status`` — a terminal
             ``WorkflowStatus`` value, or ``"recovery_exhausted"`` for a
@@ -403,8 +408,9 @@ class BatchUpdate:
             parsing child workflow-id syntax and can tell one loop turn from
             the next; ``tolerance_tripped`` carries ``failed``,
             ``total_items``, the pinned ``max_failed``/``max_failed_percent``,
-            and the ``unstarted_items`` admission closed; ``child_unstarted``
-            carries ``item_key`` and ``workflow_id``. Between them, the
+            and both the ``unstarted_items`` and ``abandoned_items``
+            admission closed; ``child_unstarted`` and ``child_abandoned``
+            each carry ``item_key`` and ``workflow_id``. Between them, the
             durable stream accounts every manifest item exactly once — a
             detached ``watch`` never needs the view to learn an outcome.
             ``child_paused``/``child_runnable`` are state facts, not
