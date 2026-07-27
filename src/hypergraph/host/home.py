@@ -99,9 +99,14 @@ _PAUSED_UPDATE_KIND = "child_paused"
 _RUNNABLE_UPDATE_KIND = "child_runnable"
 
 # The run's current pause occurrence, for the paths that must decide
-# "is this run's open question already answered?" inside their own
-# transaction (release-after-pause and worker resume both hinge on it).
+# The run's CURRENT occurrence — a later pause supersedes an earlier one, so
+# "current" is the newest row. The worker reads it to resume with the stored
+# answer and nothing else.
 _CURRENT_SLOT_SQL = "SELECT pause_id, settled_at, response_key, answer FROM pause_slots WHERE run_id = ? ORDER BY rowid DESC LIMIT 1"
+
+# THE pause transition, shared by both mirrors so they cannot drift on the
+# compare-and-set that makes it once-only.
+_PARK_SUBMISSION_SQL = "UPDATE host_submissions SET state = ?, claimed_at = NULL, finished_at = NULL WHERE workflow_id = ? AND state = 'claimed'"
 
 # Failure equivalence (PRD 0019): a child counts toward tolerance when its
 # runs row failed or its submission is recovery-exhausted. Paused, queued,
@@ -765,6 +770,7 @@ class RunHome(SqliteCheckpointer):
         if kind == "status" and payload.get("status") in _TERMINAL_STATUS_VALUES:
             self._append_child_settled_sync(db, run_id, payload["status"])
         elif kind == "status" and payload.get("status") == WorkflowStatus.PAUSED.value:
+            self._park_submission_sync(db, run_id)
             self._append_child_paused_sync(db, run_id, payload.get("pause_id"))
 
     async def _after_run_mutation(self, run_id: str, kind: str, payload: dict[str, Any]) -> None:
@@ -777,7 +783,29 @@ class RunHome(SqliteCheckpointer):
         if kind == "status" and payload.get("status") in _TERMINAL_STATUS_VALUES:
             await self._append_child_settled(run_id, payload["status"])
         elif kind == "status" and payload.get("status") == WorkflowStatus.PAUSED.value:
+            await self._park_submission(run_id)
             await self._append_child_paused(run_id, payload.get("pause_id"))
+
+    def _park_submission_sync(self, db: Any, run_id: str) -> None:
+        """Sync mirror of ``_park_submission``."""
+        db.execute(_PARK_SUBMISSION_SQL, (SUBMISSION_STATE_PAUSED, run_id))
+
+    async def _park_submission(self, run_id: str) -> None:
+        """Park a claimed submission, INSIDE the pause transaction.
+
+        THE pause transition. It commits with the pause slot, the ``PAUSED``
+        run status, and the ``child_paused`` Batch fact, so there is no
+        instant in which a run is durably paused while its submission still
+        reads ``claimed``. That instant used to be a real race: an answer
+        arriving inside it found nothing to re-admit (the compare-and-set
+        looks for ``paused``), and the worker's later release had to notice
+        and re-admit instead — a second required transition owned by a
+        different transaction, which process death could sit between.
+
+        Compare-and-set on ``claimed`` so it is once-only and never disturbs
+        a submission some other path already moved.
+        """
+        await self._db.execute(_PARK_SUBMISSION_SQL, (SUBMISSION_STATE_PAUSED, run_id))
 
     # === batch_updates appends (same-transaction as Batch facts) ===
 
@@ -2353,70 +2381,39 @@ class RunHome(SqliteCheckpointer):
         return frozenset(str(row[0]) for row in await cursor.fetchall())
 
     async def _release_submission(self, workflow_id: str) -> None:
-        """Release a claimed submission the worker is done executing.
+        """Settle a still-claimed submission the worker finished executing.
 
-        THE outcome branch a worker takes when ``runner.run`` returns. It
-        reads the run's own committed status rather than trusting the
-        caller, so the durable submission state can never disagree with the
-        journal:
+        Deliberately a COMPARE-AND-SET on ``claimed``, and deliberately the
+        owner of only one transition — settled work becoming ``finished``.
 
-        - a run that came back ``PAUSED`` parked on a durable interrupt.
-          The worker is finished with it (it stops holding an active-Run
-          slot) but the RUN is not: a human answer is outstanding. It gets
-          ``paused`` and NO ``finished_at`` — writing 'finished' here made
-          the same child ``active`` to the bucket ladder and settled to
-          ``is_child_settled``, so ``watch(batch_ref)`` ended while a
-          decision was still open, and a detached ``stop`` of the parked
-          run was refused as terminal.
-        - a run that came back ``PAUSED`` whose occurrence is ALREADY
-          settled is not parked at all: somebody answered it in the window
-          between the pause commit and this release. Parking it would strand
-          an answered run forever, because ``settle_pause``'s re-admission
-          compare-and-set found the submission still ``claimed`` and flipped
-          nothing. It goes straight back to ``pending`` — runnable, with its
-          ``child_runnable`` Batch fact — so the two paths together admit
-          the child exactly once whichever commits first.
-        - every other outcome is settled work: ``finished`` with its
-          timestamp.
+        Every other outcome was already decided by the transaction that
+        caused it, so this call is a no-op for it:
 
-        A ``paused`` submission stays parked and unclaimable until its
-        occurrence is answered; ``settle_pause`` is what re-admits it.
+        - a run that paused was parked by the PAUSE transaction
+          (``_park_submission``), together with its slot, its ``PAUSED``
+          status, and its ``child_paused`` fact;
+        - a run whose pause was answered was re-admitted by the ANSWER
+          transaction (``settle_pause`` -> ``_readmit_answered_pause``),
+          together with the stored answer and its ``child_runnable`` fact.
+
+        Owning a second required transition here is what made the release
+        window a race: an answer landing inside it had to be noticed and
+        re-applied by the worker, so process death between the two left the
+        decision durable and the run unclaimable. Now each transition has
+        exactly one owner and one commit, and this call cannot undo either.
         """
         await self._ensure_db()
         async with self._txn_lock():
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
-                cursor = await self._db.execute(_SELECT_RUN_STATUS, (workflow_id,))
-                run_row = await cursor.fetchone()
-                paused = run_row is not None and str(run_row[0]) == WorkflowStatus.PAUSED.value
-                answered = await self._settled_slot(workflow_id) if paused else None
-                if answered is not None:
-                    await self._db.execute(
-                        "UPDATE host_submissions SET state = 'pending', claimed_at = NULL, finished_at = NULL WHERE workflow_id = ?",
-                        (workflow_id,),
-                    )
-                    await self._append_child_runnable(workflow_id, answered)
-                else:
-                    state = SUBMISSION_STATE_PAUSED if paused else SUBMISSION_STATE_FINISHED
-                    await self._db.execute(
-                        "UPDATE host_submissions SET state = ?, finished_at = ? WHERE workflow_id = ?",
-                        (state, None if paused else _now_iso(), workflow_id),
-                    )
+                await self._db.execute(
+                    "UPDATE host_submissions SET state = ?, finished_at = ? WHERE workflow_id = ? AND state = 'claimed'",
+                    (SUBMISSION_STATE_FINISHED, _now_iso(), workflow_id),
+                )
                 await self._db.commit()
             except BaseException:
                 await self._rollback_async()
                 raise
-
-    async def _settled_slot(self, run_id: str) -> str | None:
-        """The current occurrence's ``pause_id`` when it is already answered.
-
-        None means "no occurrence, or the question is still open". Caller
-        holds the transaction, so the answer this reads is the one the
-        caller's decision commits against.
-        """
-        cursor = await self._db.execute(_CURRENT_SLOT_SQL, (run_id,))
-        row = await cursor.fetchone()
-        return None if row is None or row[1] is None else str(row[0])
 
     async def _reset_unstarted_run(self, run_id: str) -> bool:
         """Delete a runs row that carries zero execution history.

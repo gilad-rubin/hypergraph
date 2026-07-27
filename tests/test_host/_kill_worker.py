@@ -7,10 +7,10 @@ Definition, and SIGKILLs ITSELF at one named commit boundary — a real
 after it: no ``finally``, no flush, no rollback the process chose. The parent
 then reopens the database in a fresh process and asserts what survived.
 
-Each boundary is armed by wrapping ONE method so the kill lands on the exact
-side of the commit under test. ``plain`` arms nothing — the parent kills that
-child itself, which is how the "answer settled, nobody claimed it yet"
-boundary is staged.
+Each boundary is armed by wrapping the fewest methods that make the kill land
+on the exact side of the commit under test — usually one. ``plain`` arms
+nothing: the parent kills that child itself, which is how the "answer
+settled, nobody claimed it yet" boundary is staged.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ BOUNDARIES = (
     "before_pause_commit",
     "after_pause_commit",
     "plain",  # parent-driven: answer settles while no worker is alive
+    "after_answer_before_release",
     "after_claim_before_resume",
     "during_resumed_run",
     "after_terminal_before_batch_observation",
@@ -67,11 +68,40 @@ def _arm_pause_boundaries(home: RunHome, boundary: str) -> None:
         if boundary == "before_pause_commit":
             die()
         await original(slot, **kwargs)
-        # The slot, the PAUSED status, and the child_paused Batch fact are
-        # committed; the submission is still 'claimed'.
+        # The slot, the PAUSED status, the parked submission, and the
+        # child_paused Batch fact are ONE commit; nothing else has run.
         die()
 
     home.record_pause = record_pause
+
+
+def _arm_release_window_boundary(home: RunHome) -> None:
+    """Kill INSIDE the release window, after the answer settled.
+
+    Two things are armed together so the boundary is exact rather than
+    lucky: this process stops claiming the moment the target parks, and its
+    release call holds open until the parent's answer is durable, then dies
+    without ever releasing. So nothing this worker did after the answer can
+    be part of why the child is claimable again — only the answer
+    transaction itself can be.
+    """
+    original_claim = home._claim_eligible
+    original_release = home._release_submission
+    frozen = asyncio.Event()
+
+    async def claim_eligible(*args, **kwargs):
+        return [] if frozen.is_set() else await original_claim(*args, **kwargs)
+
+    async def release(workflow_id):
+        if TARGET_ITEM not in workflow_id:
+            return await original_release(workflow_id)
+        frozen.set()
+        while not await _has_settled_answer(home, workflow_id):
+            await asyncio.sleep(0.005)
+        die()
+
+    home._claim_eligible = claim_eligible
+    home._release_submission = release
 
 
 def _arm_resume_boundaries(home: RunHome, host, boundary: str) -> None:
@@ -115,6 +145,8 @@ def _arm_terminal_boundary(home: RunHome) -> None:
 def arm(home: RunHome, host, boundary: str) -> None:
     if boundary in ("before_pause_commit", "after_pause_commit"):
         _arm_pause_boundaries(home, boundary)
+    elif boundary == "after_answer_before_release":
+        _arm_release_window_boundary(home)
     elif boundary in ("after_claim_before_resume", "during_resumed_run"):
         _arm_resume_boundaries(home, host, boundary)
     elif boundary == "after_terminal_before_batch_observation":

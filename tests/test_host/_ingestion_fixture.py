@@ -13,10 +13,10 @@ issue #342 pins:
 - **The head consumes the start input; everything downstream threads node
   outputs.** ``work_item_id`` is read once by ``stage_candidate``, which
   emits ``validated_id``. A durable resume replays only
-  ``{response_key: answer}`` (never the pinned start inputs), and a
-  checkpoint stores node OUTPUTS only — a post-interrupt node reading a raw
-  graph-boundary input could not be satisfied. ``test_resume_contract.py``
-  pins that limitation directly.
+  ``{response_key: answer}`` — never the pinned start inputs, which a run
+  restores from its own durable ``runs.inputs_data``. That restoration is
+  what lets a post-interrupt node read a raw graph-boundary input at all;
+  ``test_resume_contract.py`` pins it directly.
 - **The domain decision lives in routes, not in the Host.** Host stop is
   execution control; create / replace / archive is a graph route over the
   answer value.

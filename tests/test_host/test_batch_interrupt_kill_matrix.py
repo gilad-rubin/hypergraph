@@ -1,15 +1,16 @@
 """Issue #342 — the real process-kill matrix for durable Batch interrupts.
 
-Six commit boundaries, each proven with an ACTUAL child process that
+Seven commit boundaries, each proven with an ACTUAL child process that
 ``SIGKILL``s itself (or is killed by this one) and a fresh process that
 reopens the same SQLite file:
 
 1. before the pause commit;
 2. after the pause commit;
 3. after answer settlement but before any claim;
-4. after the claim but before the resumed runner execution;
-5. during the resumed execution;
-6. after the terminal Run commit but before the Batch observation.
+4. after answer settlement, inside the worker's own release window;
+5. after the claim but before the resumed runner execution;
+6. during the resumed execution;
+7. after the terminal Run commit but before the Batch observation.
 
 ``SIGKILL`` is uncatchable: no ``finally``, no flush, no chosen rollback runs
 after it. A mocked exception would prove none of this, so none is used.
@@ -25,7 +26,7 @@ Two invariants every boundary asserts:
   answer chose (see ``assert_effects_once`` for what is deliberately NOT
   claimed about concurrently-killed siblings).
 
-Boundary 5 kills *between* the routed decision and the terminal effect
+Boundary 6 kills *between* the routed decision and the terminal effect
 node, deliberately: replaying a node that was killed mid-effect is the
 external-effect-identity problem, which this slice does not claim to solve
 (PRD 0017; issue #342 "Out of Scope").
@@ -321,10 +322,67 @@ class TestBoundary3AfterAnswerBeforeClaim:
         assert_effects_once(ledger, f"archived:{TARGET_ITEM}:77", "created:work-clean-a", "created:work-clean-b")
 
 
-# === Boundary 4: after the claim, before the resumed execution ===
+# === Boundary 4: after the answer, inside the worker's release window ===
 
 
-class TestBoundary4AfterClaimBeforeResume:
+class TestBoundary4AfterAnswerBeforeRelease:
+    """THE race the release window used to be.
+
+    A live worker owns the claim record it took before running. Its child
+    pauses, the operator answers, and the process dies before it ever
+    releases. If the release still owned a required transition, the answer
+    would be durable and the child unclaimable forever.
+    """
+
+    async def test_an_answer_in_the_release_window_survives_the_worker(self, submitted):
+        receipt, db, ledger = submitted
+
+        child = spawn(db, ledger, "after_answer_before_release")
+        await wait_paused(db)
+
+        # Answer with the worker still alive and still holding the claim.
+        home = await reopen(db)
+        try:
+            slot = await home.get_pause_slot(TARGET_RUN_ID)
+            await home.settle_pause(TARGET_RUN_ID, pause_id=slot.pause_id, value=answer_value("archive_duplicate", 91))
+        finally:
+            await home.close()
+
+        await_death(child)
+
+        home = await reopen(db)
+        try:
+            # The ANSWER transaction alone left the child claimable, and
+            # said so on the Batch stream exactly once. The dead worker
+            # contributed nothing to either fact.
+            assert (await home._get_submission(TARGET_RUN_ID))["state"] == "pending"
+            kinds = [k for _s, k, _p, _a in await home._read_batch_updates(receipt.batch_ref.batch_id)]
+            assert kinds.count("child_paused") == 1
+            assert kinds.count("child_runnable") == 1
+            # Nothing continued it before the kill.
+            assert (await home.get_run_async(TARGET_RUN_ID)).status is WorkflowStatus.PAUSED
+            assert [entry for entry in read_ledger(ledger) if TARGET_ITEM in entry] == []
+        finally:
+            await home.close()
+
+        view, home = await drive_to_completion(db, ledger, receipt.batch_ref)
+        try:
+            assert view.outcomes[TARGET_ITEM] == "completed"
+            assert_clean_siblings(view)
+            # Exactly ONE continuation: the restart did not re-ask, and the
+            # re-admission was never duplicated across the two processes.
+            kinds = [k for _s, k, _p, _a in await home._read_batch_updates(receipt.batch_ref.batch_id)]
+            assert kinds.count("child_runnable") == 1
+            assert kinds.count("child_paused") == 1
+        finally:
+            await home.close()
+        assert_effects_once(ledger, f"archived:{TARGET_ITEM}:91", "created:work-clean-a", "created:work-clean-b")
+
+
+# === Boundary 5: after the claim, before the resumed execution ===
+
+
+class TestBoundary5AfterClaimBeforeResume:
     async def test_a_claim_lost_before_the_resume_is_re_adopted(self, submitted):
         receipt, db, ledger = submitted
 
@@ -360,10 +418,10 @@ class TestBoundary4AfterClaimBeforeResume:
         assert_effects_once(ledger, f"replaced:{TARGET_ITEM}:5", "created:work-clean-a", "created:work-clean-b")
 
 
-# === Boundary 5: during the resumed execution ===
+# === Boundary 6: during the resumed execution ===
 
 
-class TestBoundary5DuringResumedRun:
+class TestBoundary6DuringResumedRun:
     async def test_a_death_mid_resume_continues_without_duplicating_the_effect(self, submitted):
         receipt, db, ledger = submitted
 
@@ -401,10 +459,10 @@ class TestBoundary5DuringResumedRun:
         assert_effects_once(ledger, f"replaced:{TARGET_ITEM}:42", "created:work-clean-a", "created:work-clean-b")
 
 
-# === Boundary 6: after the terminal commit, before the Batch observation ===
+# === Boundary 7: after the terminal commit, before the Batch observation ===
 
 
-class TestBoundary6AfterTerminalBeforeObservation:
+class TestBoundary7AfterTerminalBeforeObservation:
     async def test_a_terminal_child_is_observed_after_the_writer_dies(self, submitted):
         receipt, db, ledger = submitted
 
@@ -472,6 +530,11 @@ class TestNoBoundaryLosesTheQuestion:
             view = await client.get(receipt.batch_ref)
             assert view.settled is False
             assert view.items[TARGET_ITEM].waiting is WaitingCondition.PAUSED
-            assert view.counts["paused"] == 1 and view.counts["active"] == 0
+            # The parked item is counted paused, never active. The siblings
+            # this kill left mid-flight are irrelevant to that rule, so the
+            # assertion names the item rather than the whole batch.
+            assert view.counts["paused"] == 1
+            assert view.items[TARGET_ITEM].outcome is None
+            assert view.items[TARGET_ITEM].started is True
         finally:
             await home.close()

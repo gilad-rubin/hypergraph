@@ -2,8 +2,11 @@
 
 Sixteen scenarios over ONE seam: the graph-first Host plus RunHomeClient
 against a real SQLite Run Home. They observe only receipts, Batch/Run views,
-PauseSlots, durable updates, and final domain outcomes — never a private
-helper — because that is exactly the surface a Panda operator console holds.
+PauseSlots, durable updates, and final domain outcomes, because that is
+exactly the surface a Panda operator console holds. The one deliberate
+exception is scenario 15's release-window race, which has to interpose on
+the transaction seam to stage the instant it is falsifying — no black-box
+schedule can make that instant reliably occur.
 
 What each scenario is falsifying, in one line:
 
@@ -23,7 +26,9 @@ What each scenario is falsifying, in one line:
 12. Completed siblings never replay when another child pauses or resumes.
 13. A second interrupt occurrence uses a new pause id; the old one is stale.
 14. Stop is execution control, never a duplicate-resolution decision.
-15. Stop/answer and answer/answer races elect exactly one committed outcome.
+15. Stop/answer and answer/answer races elect exactly one committed
+    outcome, and an answer landing inside the worker's release window is
+    neither lost nor applied twice.
 16. A fresh world — an empty SQLite Home, no hand-seeded rows — runs the
     whole public flow.
 """
@@ -1026,6 +1031,141 @@ class TestRaces:
             assert read_ledger(ledger) == []
         else:
             assert len(read_ledger(ledger)) <= 1
+
+
+class TestTheReleaseWindowIsNotARace:
+    """Each transition has ONE owner and ONE commit.
+
+    The pause transaction parks the submission; the answer transaction
+    re-admits it. ``_release_submission`` owns neither, so an answer that
+    lands while the worker is still finishing cannot be missed — and process
+    death anywhere in the window cannot separate a durable decision from a
+    claimable run.
+    """
+
+    async def test_the_pause_transaction_parks_the_submission_itself(self, home, ledger):
+        """No instant where the run is PAUSED but the submission is claimed."""
+        graph = ingestion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await submit_ids(host, graph, ["work-dup-1"], "drop-park")
+        workflow_id = "drop-park:work-dup-1"
+        observed: list[tuple[str, str]] = []
+
+        original = home.record_pause
+
+        async def observe(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            # First read after the pause COMMITTED: both halves must agree.
+            run = await home.get_run_async(workflow_id)
+            submission = await home._get_submission(workflow_id)
+            observed.append((run.status.value, submission["state"]))
+            return result
+
+        home.record_pause = observe  # type: ignore[method-assign]
+        try:
+            async with worker(host):
+                await batch_where(host.client, receipt.batch_ref, lambda v: len(paused_items(v)) == 1)
+        finally:
+            home.record_pause = original  # type: ignore[method-assign]
+
+        assert observed == [("paused", "paused")]
+
+    async def test_an_answer_inside_the_release_window_still_re_admits(self, home, ledger):
+        """THE deterministic race: answer between pause commit and release."""
+        graph = ingestion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await submit_ids(host, graph, ["work-dup-1"], "drop-window")
+        client = host.client
+        workflow_id = "drop-window:work-dup-1"
+        answered = asyncio.Event()
+
+        original = home._release_submission
+
+        async def answer_first(wid: str) -> None:
+            # Hold the release open, answer, THEN let the worker release.
+            if wid == workflow_id and not answered.is_set():
+                slot = await home.get_pause_slot(wid)
+                if slot is not None and slot.is_open:
+                    await client.answer(RunRef(home=home.uri, run_id=wid), pause_id=slot.pause_id, value=answer_value("create_new"))
+                    answered.set()
+            await original(wid)
+
+        home._release_submission = answer_first  # type: ignore[method-assign]
+        try:
+            async with worker(host):
+                final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+        finally:
+            home._release_submission = original  # type: ignore[method-assign]
+
+        assert answered.is_set()
+        assert final.outcomes["work-dup-1"] == "completed"
+        assert read_ledger(ledger) == ["created:work-dup-1"]
+        # The release did NOT own the re-admission, and did not duplicate it.
+        kinds = [k for _s, k, _p, _a in await home._read_batch_updates(receipt.batch_ref.batch_id)]
+        assert kinds.count("child_runnable") == 1
+        assert kinds.count("child_paused") == 1
+
+    async def test_the_release_never_undoes_an_answer(self, home, ledger):
+        """A release arriving after an answer is a compare-and-set no-op."""
+        graph = ingestion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await submit_ids(host, graph, ["work-dup-1"], "drop-noop")
+        client = host.client
+
+        async with worker(host) as task:
+            view = await batch_where(client, receipt.batch_ref, lambda v: len(paused_items(v)) == 1)
+            item = view.items["work-dup-1"]
+            host.shutdown()
+            await asyncio.wait_for(task, timeout=25)
+            await answer_item(client, item, "create_new")
+
+            assert (await home._get_submission(item.workflow_id))["state"] == "pending"
+            # A late release for the same run must change nothing.
+            await home._release_submission(item.workflow_id)
+
+        assert (await home._get_submission(item.workflow_id))["state"] == "pending"
+        kinds = [k for _s, k, _p, _a in await home._read_batch_updates(receipt.batch_ref.batch_id)]
+        assert kinds.count("child_runnable") == 1
+
+    async def test_a_watch_replay_shows_one_pause_and_one_runnable(self, home, ledger):
+        """Reconnectable history, from the durable sequence alone."""
+        graph = ingestion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await submit_ids(host, graph, ["work-dup-1"], "drop-replay")
+        client = host.client
+
+        async with worker(host):
+            view = await batch_where(client, receipt.batch_ref, lambda v: len(paused_items(v)) == 1)
+            await answer_item(client, view.items["work-dup-1"], "create_new")
+            await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            replayed = [u.kind for u in await collect(client.watch(receipt.batch_ref)) if u.durable]
+
+        assert replayed.count("child_paused") == 1
+        assert replayed.count("child_runnable") == 1
+        assert replayed.index("child_paused") < replayed.index("child_runnable")
+
+    async def test_the_sync_store_mirror_parks_and_re_admits_identically(self, home, ledger):
+        """Sync/async parity for both transitions, at the store."""
+        graph = ingestion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await submit_ids(host, graph, ["work-dup-1"], "drop-sync-parity")
+        client = host.client
+
+        async with worker(host) as task:
+            view = await batch_where(client, receipt.batch_ref, lambda v: len(paused_items(v)) == 1)
+            item = view.items["work-dup-1"]
+            # The pause transition was written by the ASYNC mirror; read it
+            # back through the SYNC one and settle through the sync answer.
+            assert home._get_submission_sync(item.workflow_id)["state"] == "paused"
+            host.shutdown()
+            await asyncio.wait_for(task, timeout=25)
+
+            slot = client.get_run_slot_sync(item.run_ref)
+            client.answer_sync(item.run_ref, pause_id=slot.pause_id, value=answer_value("create_new"))
+
+        assert home._get_submission_sync(item.workflow_id)["state"] == "pending"
+        kinds = [k for _s, k, _p, _a in await home._read_batch_updates(receipt.batch_ref.batch_id)]
+        assert kinds.count("child_runnable") == 1
 
 
 # === 16. Fresh world: the whole flow on an empty Home ===
