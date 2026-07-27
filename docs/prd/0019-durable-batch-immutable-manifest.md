@@ -27,8 +27,10 @@ After:
 
 ```python
 receipt = await host.submit_batch(
-    "ingest",
-    items={"protocol-17": {"doc": ...}, "protocol-18": {"doc": ...}},
+    ingest_graph,
+    {"protocol_id": ["protocol-17", "protocol-18"], "doc": [doc_17, doc_18]},
+    map_over=["protocol_id", "doc"],
+    key_by="protocol_id",
     workflow_id="schneider-drop-42",
     tolerance=BatchTolerance(max_failed=2, max_failed_percent=25),  # optional, pinned
 )
@@ -38,6 +40,7 @@ view = await client.get(receipt.batch_ref)      # BatchView
 view.counts          # {"completed": 1, "failed": 0, "unstarted": 1, ...}
 view.outcomes        # keyed by logical item key, not completion order
 view.unstarted_items # explicit item keys never admitted — never invented results
+view.abandoned_items # keys whose child HAD started when admission closed
 
 async for update in client.watch(receipt.batch_ref, after=cursor):
     ...   # one gap-free per-Batch durable sequence
@@ -47,8 +50,14 @@ Requirements:
 
 - **Immutable manifest (A2).** A Batch is a manifest of unique stable
   logical item keys, each mapped to one independent child Run with its
-  pinned inputs — never a durable parent `MapResult`. Duplicate item keys
-  are rejected at submission.
+  pinned inputs — never a durable parent `MapResult`. The caller states
+  the expansion in `runner.map`'s own vocabulary (`values` plus
+  `map_over` / `map_mode`) and names the key input with `key_by`; the
+  expansion is frozen into `(item_key, inputs)` pairs BEFORE the
+  acceptance transaction, so mutating the caller's collection afterwards
+  cannot change durable intent. Duplicate, missing, empty, or non-scalar
+  item keys are rejected at submission — never replaced by a generated
+  map index, which no operator could reproduce.
 - **Atomic acceptance.** One transaction persists the manifest, child Run
   identities, pinned inputs, and the accepted start command. A partial
   Batch can never appear accepted.
@@ -58,7 +67,10 @@ Requirements:
 - **Explicit unstarted items.** Items never admitted — because of
   cooperative stop, tolerance trip, or worker death — are listed by key.
   Hypergraph never fabricates failed results for them, matching ADR 0004's
-  unstarted-item truth at durable scale.
+  unstarted-item truth at durable scale. An item that HAD started when
+  closed admission settled it is listed separately as **abandoned**: it
+  committed steps and may have landed side effects, so calling it
+  unstarted would tell an operator nothing happened when something did.
 - **Pinned tolerances (A7).** `BatchTolerance(max_failed=…,
   max_failed_percent=…)` values are optional manifest fields, pinned at
   acceptance — never `serve()` configuration. Either tolerance trips when
@@ -69,8 +81,11 @@ Requirements:
   toward tolerance. Paused, queued, delayed, admission-limited, and
   unstarted items never count.
 - **Trip behavior.** A tripped Batch closes new child admission, lets
-  already-claimed children settle, marks every remaining item explicitly
-  unstarted, and stays truthfully PARTIAL — not failed, not stopped.
+  already-claimed children settle, accounts every remaining item
+  explicitly (unstarted if it never began, abandoned if it had), and
+  stays truthfully PARTIAL — not failed, not stopped. Closed admission
+  is closed: answering a paused child of a tripped Batch settles its
+  question but never re-admits it.
 - **One durable sequence (A9).** Every manifest or child-outcome change
   receives a monotonic per-Batch sequence; when a child commit changes
   Batch truth, both records land in the same transaction. `watch(batch_ref,

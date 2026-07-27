@@ -34,11 +34,11 @@ host = serve(refund, triage, home=RunHome.open("file:./runs.db"),
              deployment_version="2026.07.3")
 client = host.client        # the one RunHomeClient; the Host never copies its verbs
 
-receipt = await host.submit("refund", {"claim_id": "c-42"},
+receipt = await host.submit(refund, {"claim_id": "c-42"},
                             workflow_id="refund-c-42")
 receipt.run_ref             # inert, serializable address — no status or control methods
 
-dup = await host.submit("refund", {"claim_id": "c-42"},
+dup = await host.submit(refund, {"claim_id": "c-42"},
                         workflow_id="refund-c-42")
 assert dup.run_ref == receipt.run_ref and dup.duplicate  # fingerprint-identical → use-existing
 

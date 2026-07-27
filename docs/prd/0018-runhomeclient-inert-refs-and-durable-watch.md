@@ -25,7 +25,7 @@ handle = runner.start_run(refund_graph, {"claim_id": "c-42"},
 After:
 
 ```python
-receipt = await host.submit("refund", {"claim_id": "c-42"},
+receipt = await host.submit(refund_graph, {"claim_id": "c-42"},
                             workflow_id="refund-c-42")
 ref = receipt.run_ref            # RunRef: frozen, JSON-serializable, inert
 json.dumps(ref.to_dict())        # safe to store in a product table

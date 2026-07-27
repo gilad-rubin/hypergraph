@@ -122,9 +122,12 @@ expression-language keys, and keyed fairness stay excluded from v1.
 Schneider's drop arrives: 8 protocols, submitted as one durable Batch.
 
 ```python
+protocols = [f"protocol-{n}" for n in range(17, 25)]
 receipt = await host.submit_batch(
-    "ingest",
-    items={f"protocol-{n}": {"doc": ..., "doc_meta": {...}} for n in range(17, 25)},
+    ingest_graph,                                  # the served Graph, never its name
+    {"protocol_id": protocols, "doc": docs, "doc_meta": metas},
+    map_over=["protocol_id", "doc", "doc_meta"],   # runner.map's own vocabulary
+    key_by="protocol_id",                          # the durable logical item key
     workflow_id="schneider-drop-42",
     tolerance=BatchTolerance(max_failed=2, max_failed_percent=25),
     start_at=None,
@@ -149,16 +152,19 @@ half-accepted (PRD 0019, atomic acceptance).
 ## Scenario 2 — Webhook retry and conflicting reuse (A5)
 
 ```python
-dup = await host.submit_batch("ingest", items={...same...},
+dup = await host.submit_batch(ingest_graph, {...same values...},
+                              map_over=["protocol_id", "doc", "doc_meta"],
+                              key_by="protocol_id",
                               workflow_id="schneider-drop-42",
                               tolerance=BatchTolerance(max_failed=2, max_failed_percent=25))
 assert dup.duplicate and dup.batch_ref == receipt.batch_ref   # use-existing
 
-await host.submit("ingest", {"doc": ...}, workflow_id="schneider-drop-42")
+await host.submit(ingest_graph, {"doc": ...}, workflow_id="schneider-drop-42")
 # WorkflowIdConflictError — same id, different fingerprint
 
 # … after the Batch settles terminally:
-await host.submit_batch("ingest", items={...same...}, workflow_id="schneider-drop-42", ...)
+await host.submit_batch(ingest_graph, {...same values...}, map_over=[...], key_by="protocol_id",
+                        workflow_id="schneider-drop-42", ...)
 # AlreadyTerminalError — completed history never changes identity
 ```
 
@@ -272,6 +278,14 @@ outcome. Failure-equivalent count becomes 3 > 2.
 
 Paused, queued, delayed, and admission-limited children never count toward
 tolerance; unstarted items never become fake failures.
+
+A still-pending child that HAD started before admission closed — one a
+worker death returned to pending, say — is accounted **abandoned** instead
+of unstarted. There is none in this scenario, and that is exactly why the
+two buckets are separate: an unstarted item is safe to rerun from scratch,
+while an abandoned one committed steps an operator must reconcile first.
+Closed admission is closed for both: answering a paused child of a tripped
+Batch settles its question but never puts it back in claim order.
 
 ## Scenario 6 — Version-incompatible refusal (ADR 0007)
 
