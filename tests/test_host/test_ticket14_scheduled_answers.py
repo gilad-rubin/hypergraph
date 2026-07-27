@@ -182,8 +182,13 @@ def _sql_literals(path: Path) -> list[str]:
     joins implicitly concatenated fragments and f-string parts back into the
     statement the database actually receives, so a claim about "this
     statement's WHERE clause" is checked against the whole statement.
-    Placeholders keep their source text (``{_due_clause('due_at', ...)}``),
-    which is what a reader greps for anyway.
+    Placeholders keep their expression text (``{_due_clause('due_at', ...)}``),
+    which is what a reader greps for anyway. Reconstructed with
+    ``ast.unparse``, never ``ast.get_source_segment``: before PEP 701
+    (3.10/3.11) an f-string interior carries synthetic positions, and
+    get_source_segment returns a slice spanning the NEIGHBORING string
+    fragment — its quoted source then leaks into this statement, and a
+    SELECT column reads as part of the WHERE clause.
     """
     source = path.read_text()
     literals: list[str] = []
@@ -195,8 +200,8 @@ def _sql_literals(path: Path) -> list[str]:
             for value in element.values:
                 if isinstance(value, ast.Constant) and isinstance(value.value, str):
                     parts.append(value.value)
-                else:
-                    parts.append(ast.get_source_segment(source, value) or "")
+                elif isinstance(value, ast.FormattedValue):
+                    parts.append("{" + ast.unparse(value.value) + "}")
             literals.append("".join(parts))
     return literals
 
