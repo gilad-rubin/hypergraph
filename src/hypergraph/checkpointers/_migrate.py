@@ -101,9 +101,16 @@ CREATE TABLE IF NOT EXISTS runs (
     fork_superstep INTEGER,
     retry_of TEXT REFERENCES runs(id),
     retry_index INTEGER,
-    config TEXT
+    config TEXT,
+    inputs_data BLOB
 )
 """
+
+# The run's graph-boundary inputs, serialized once at first creation and
+# never rewritten. Step values fold only node OUTPUTS, so without this a
+# resumed run could not restore the values it originally started from and a
+# node consuming a raw graph input after an interrupt could never execute.
+_RUNS_ADDED_COLUMNS = (("inputs_data", "inputs_data BLOB"),)
 
 _CREATE_STEPS = """
 CREATE TABLE IF NOT EXISTS steps (
@@ -604,6 +611,7 @@ def _ensure_v6_objects(conn: Any) -> None:
     conn.execute(_CREATE_HOST_BATCHES)
     conn.execute(_CREATE_BATCH_UPDATES)
     conn.execute(_CREATE_HOST_SETTINGS)
+    _add_missing_columns(conn, "runs", _RUNS_ADDED_COLUMNS)
     _add_missing_columns(conn, "host_submissions", _HOST_SUBMISSIONS_ADDED_COLUMNS)
     _add_missing_columns(conn, "host_batches", _HOST_BATCHES_ADDED_COLUMNS)
     _add_missing_columns(conn, "host_commands", _HOST_COMMANDS_ADDED_COLUMNS)

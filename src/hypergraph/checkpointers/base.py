@@ -382,11 +382,17 @@ class Checkpointer(ABC):
         retry_of: str | None = None,
         retry_index: int | None = None,
         config: dict[str, Any] | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> Run:
         """Create or reset a run record (upsert). Called by runner at run start.
 
         If a run with this ID already exists, reset it to ACTIVE status.
         This allows re-running with the same workflow_id after interruption.
+
+        ``inputs`` are this run's graph-boundary values, stored first-write-
+        wins so a resume (which supplies only the interrupt answer) cannot
+        overwrite them. Backends that do not persist them simply ignore the
+        argument and keep returning ``{}`` from ``get_run_inputs``.
         """
         ...
 
@@ -424,15 +430,34 @@ class Checkpointer(ABC):
         """Get step records through a superstep, hiding internal carriers by default."""
         ...
 
-    async def get_checkpoint(self, run_id: str, *, superstep: int | None = None) -> Checkpoint:
-        """Get a checkpoint for forking runs.
+    async def get_run_inputs(self, run_id: str) -> dict[str, Any]:
+        """The graph-boundary values this run started from.
 
-        Default implementation calls get_state + get_steps.
+        Backends that do not persist run inputs return ``{}``; a checkpoint
+        then carries only folded step values, as it did before run inputs
+        became durable.
         """
+        return {}
+
+    async def get_checkpoint(self, run_id: str, *, superstep: int | None = None) -> Checkpoint:
+        """Get a checkpoint for restoring a run — resume, fork, or retry.
+
+        A checkpoint is the whole restorable state of a run, which is the
+        run's own graph-boundary inputs with the folded step values layered
+        over them. ``get_state`` deliberately folds node OUTPUTS only; that
+        is the execution journal's projection, not a restore point. Without
+        the inputs underneath, a node consuming a raw graph input after an
+        interrupt could never be satisfied on resume — it would silently not
+        execute while the run still reported COMPLETED.
+
+        Step values win on a name collision, exactly as they do live: a node
+        output that shadows an input name is the newer value.
+        """
+        inputs = await self.get_run_inputs(run_id)
         values = await self.get_state(run_id, superstep=superstep)
         steps = await self.get_steps(run_id, superstep=superstep)
         return Checkpoint(
-            values=values,
+            values={**inputs, **values},
             steps=steps,
             source_run_id=run_id,
             source_superstep=superstep,

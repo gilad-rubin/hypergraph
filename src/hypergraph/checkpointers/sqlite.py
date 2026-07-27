@@ -414,6 +414,13 @@ def _run_status_update(status: WorkflowStatus, totals: RunTotals) -> tuple[str, 
     return f"UPDATE runs SET {', '.join(sets)} WHERE id = ?", params
 
 
+def _deserialize_run_inputs(serializer: Any, row: Sequence[Any] | None) -> dict[str, Any]:
+    """Decode a stored ``runs.inputs_data`` blob; ``{}`` when absent."""
+    if row is None or row[0] is None:
+        return {}
+    return dict(serializer.deserialize(row[0]) or {})
+
+
 def _lineage_parent_id(run: Run) -> str | None:
     """Return the workflow-lineage parent for fork/retry traversal."""
     return run.forked_from or run.retry_of
@@ -1020,18 +1027,28 @@ class SqliteCheckpointer(Checkpointer):
         retry_of: str | None = None,
         retry_index: int | None = None,
         config: dict[str, Any] | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> Run:
-        """Create or reset a run record (upsert)."""
+        """Create or reset a run record (upsert).
+
+        ``inputs`` are the run's graph-boundary values. They are written
+        once, on the first creation of this run id, and every later upsert
+        leaves them alone (``COALESCE``): a resume passes only the interrupt
+        answer, and overwriting the original inputs with it would destroy
+        the very state resume needs. See ``get_checkpoint``.
+        """
         await self._ensure_db()
         now = datetime.now(timezone.utc)
         config_json = json.dumps(config) if config is not None else None
+        inputs_blob = self._serializer.serialize(inputs) if inputs else None
         async with self._txn_lock():
             await self._db.execute(
-                "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config, inputs_data) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, duration_ms = NULL, node_count = 0, "
                 "error_count = 0, completed_at = NULL, parent_run_id = ?, forked_from = ?, "
-                "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?",
+                "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?, "
+                "inputs_data = COALESCE(runs.inputs_data, ?)",
                 (
                     run_id,
                     WorkflowStatus.ACTIVE.value,
@@ -1043,6 +1060,7 @@ class SqliteCheckpointer(Checkpointer):
                     retry_of,
                     retry_index,
                     config_json,
+                    inputs_blob,
                     WorkflowStatus.ACTIVE.value,
                     graph_name or "",
                     parent_run_id,
@@ -1051,6 +1069,7 @@ class SqliteCheckpointer(Checkpointer):
                     retry_of,
                     retry_index,
                     config_json,
+                    inputs_blob,
                 ),
             )
             await self._after_run_mutation(run_id, "run_started", {"graph_name": graph_name or ""})
@@ -1086,6 +1105,24 @@ class SqliteCheckpointer(Checkpointer):
             await self._db.commit()
 
     # === Read ===
+
+    async def get_run_inputs(self, run_id: str) -> dict[str, Any]:
+        """The graph-boundary values this run started from.
+
+        Empty for a run created before this column existed, which is exactly
+        the legacy case ``build_resume_validation_values`` still tolerates.
+        """
+        await self._ensure_db()
+        async with self._txn_lock():
+            cursor = await self._db.execute("SELECT inputs_data FROM runs WHERE id = ?", (run_id,))
+            row = await cursor.fetchone()
+        return _deserialize_run_inputs(self._serializer, row)
+
+    def get_run_inputs_sync(self, run_id: str) -> dict[str, Any]:
+        """Sync mirror of ``get_run_inputs``."""
+        with self._sync_lock:
+            row = self._sync_db().execute("SELECT inputs_data FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return _deserialize_run_inputs(self._serializer, row)
 
     async def get_state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:
         """Compute state by folding step values in timestamp execution order."""
@@ -1889,10 +1926,10 @@ class SqliteCheckpointer(Checkpointer):
             }
 
     def checkpoint(self, run_id: str, *, superstep: int | None = None) -> Checkpoint:
-        """Get a checkpoint synchronously."""
+        """Get a checkpoint synchronously — see ``get_checkpoint`` for the model."""
         with self._sync_lock:
             return Checkpoint(
-                values=self.state(run_id, superstep=superstep),
+                values={**self.get_run_inputs_sync(run_id), **self.state(run_id, superstep=superstep)},
                 steps=self.steps(run_id, superstep=superstep),
                 source_run_id=run_id,
                 source_superstep=superstep,
@@ -1946,18 +1983,24 @@ class SqliteCheckpointer(Checkpointer):
         retry_of: str | None = None,
         retry_index: int | None = None,
         config: dict[str, Any] | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> Run:
-        """Create or reset a run record synchronously (upsert)."""
+        """Create or reset a run record synchronously (upsert).
+
+        ``inputs`` follow the same first-write-wins rule as ``create_run``.
+        """
         with self._sync_lock:
             db = self._sync_db()
             now = datetime.now(timezone.utc)
             config_json = json.dumps(config) if config is not None else None
+            inputs_blob = self._serializer.serialize(inputs) if inputs else None
             db.execute(
-                "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config, inputs_data) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, duration_ms = NULL, node_count = 0, "
                 "error_count = 0, completed_at = NULL, parent_run_id = ?, forked_from = ?, "
-                "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?",
+                "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?, "
+                "inputs_data = COALESCE(runs.inputs_data, ?)",
                 (
                     run_id,
                     WorkflowStatus.ACTIVE.value,
@@ -1969,6 +2012,7 @@ class SqliteCheckpointer(Checkpointer):
                     retry_of,
                     retry_index,
                     config_json,
+                    inputs_blob,
                     WorkflowStatus.ACTIVE.value,
                     graph_name or "",
                     parent_run_id,
@@ -1977,6 +2021,7 @@ class SqliteCheckpointer(Checkpointer):
                     retry_of,
                     retry_index,
                     config_json,
+                    inputs_blob,
                 ),
             )
             self._after_run_mutation_sync(db, run_id, "run_started", {"graph_name": graph_name or ""})

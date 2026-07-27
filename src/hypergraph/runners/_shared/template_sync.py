@@ -90,6 +90,7 @@ from hypergraph.runners._shared.validation import (
 )
 from hypergraph.runners._shared.value_resolution import (
     build_resume_validation_values,
+    start_inputs_for_run,
     warn_on_bind_overrides,
 )
 from hypergraph.runners.base import BaseRunner
@@ -548,6 +549,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     retry_of=run_lineage.retry_of,
                     retry_index=run_lineage.retry_index,
                     config=run_config,
+                    inputs=start_inputs_for_run(graph, normalized_values, resume_checkpoint),
                 )
                 run_row_created = True
         except BaseException as error:

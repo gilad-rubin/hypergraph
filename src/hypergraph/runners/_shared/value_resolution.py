@@ -393,6 +393,32 @@ def _resolve_input(
     return value
 
 
+def start_inputs_for_run(
+    graph: Graph,
+    normalized_values: dict[str, Any],
+    resume_checkpoint: Checkpoint | None,
+) -> dict[str, Any]:
+    """The graph-boundary values this run starts from, for durable storage.
+
+    Step records fold node OUTPUTS, so a run's own inputs are the one piece
+    of restorable state nothing else records. The checkpointer stores these
+    first-write-wins (see ``create_run``), which is what lets a node placed
+    after an interrupt consume a raw graph input on resume.
+
+    Only names the graph declares as inputs are stored. An interrupt answer
+    is a node output, not an input, so a resume payload contributes nothing
+    here — and a fork or retry inherits the source checkpoint's restored
+    inputs, so the new run is independently restorable in turn.
+    """
+    names = set(graph.inputs.all)
+    stored = {name: value for name, value in normalized_values.items() if name in names}
+    if resume_checkpoint is not None:
+        for name in names - set(stored):
+            if name in resume_checkpoint.values:
+                stored[name] = resume_checkpoint.values[name]
+    return stored
+
+
 def build_resume_validation_values(
     graph: Graph,
     normalized_values: dict[str, Any],
@@ -410,9 +436,13 @@ def build_resume_validation_values(
             validation_values[input_name] = resume_checkpoint.values[input_name]
             continue
         if any(input_name in (step.input_versions or {}) for step in resume_checkpoint.steps):
-            # The checkpoint may omit original graph inputs once downstream
-            # state is sufficient to resume. A prior consumed version is enough
-            # to satisfy canonical key-presence validation.
+            # LEGACY ONLY: runs created before `runs.inputs_data` existed have
+            # no stored inputs, so the checkpoint cannot restore a graph input
+            # that no step output re-produces. A prior consumed version is
+            # accepted as key-presence evidence to keep those runs resumable.
+            # Runs created since then always carry their real inputs, so this
+            # placeholder is unreachable for them — which matters, because a
+            # placeholder satisfies validation without satisfying the node.
             validation_values[input_name] = None
 
     return validation_values

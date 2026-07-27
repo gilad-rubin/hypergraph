@@ -113,8 +113,17 @@ class TestAsyncRunResume:
         result = await runner.run(graph_step2, checkpoint=checkpoint, workflow_id="valid-1-fork")
         assert result["tripled"] == 30
 
-    async def test_checkpoint_resume_missing_seed_inputs_raises(self, checkpointer):
-        """Checkpoint-started runs should fail clearly instead of no-op completing."""
+    async def test_checkpoint_resume_restores_a_source_run_input(self, checkpointer):
+        """A source run's own inputs are part of what its checkpoint restores.
+
+        This case used to raise ``MissingInputError``: the checkpoint folded
+        node OUTPUTS only, so ``x`` — consumed by the source run but never
+        re-produced — was simply unavailable and the guard correctly refused
+        a no-op resume. ``runs.inputs_data`` now makes ``x`` restorable, so
+        the same resume does real work instead. The guard itself is
+        unchanged and still fires for a genuinely absent seed — see
+        ``test_checkpoint_resume_missing_seed_inputs_across_active_branches_raises``.
+        """
         runner = AsyncRunner(checkpointer=checkpointer)
 
         @node(output_name="consumed")
@@ -124,12 +133,13 @@ class TestAsyncRunResume:
         await runner.run(Graph([double]), {"x": 5}, workflow_id="missing-seed-src")
         checkpoint = checkpointer.checkpoint("missing-seed-src")
 
-        with pytest.raises(MissingInputError, match="missing required seed inputs"):
-            await runner.run(
-                Graph([consume_x]),
-                checkpoint=checkpoint,
-                workflow_id="missing-seed-fork",
-            )
+        result = await runner.run(
+            Graph([consume_x]),
+            checkpoint=checkpoint,
+            workflow_id="missing-seed-fork",
+        )
+
+        assert result["consumed"] == 6
 
     async def test_checkpoint_resume_missing_seed_inputs_across_active_branches_raises(self, checkpointer):
         """Resume must not complete one branch while silently skipping another."""
@@ -609,8 +619,8 @@ class TestSyncRunResume:
         assert result["doubled"] == 200
         assert result["tripled"] == 600
 
-    def test_checkpoint_resume_missing_seed_inputs_raises(self, sync_checkpointer):
-        """Sync mirror: checkpoint-started no-op resumes should fail clearly."""
+    def test_checkpoint_resume_restores_a_source_run_input(self, sync_checkpointer):
+        """Sync mirror: a source run's inputs are restorable from its checkpoint."""
         runner = SyncRunner(checkpointer=sync_checkpointer)
 
         @node(output_name="consumed")
@@ -620,12 +630,13 @@ class TestSyncRunResume:
         runner.run(Graph([double]), {"x": 5}, workflow_id="sync-missing-seed-src")
         checkpoint = sync_checkpointer.checkpoint("sync-missing-seed-src")
 
-        with pytest.raises(MissingInputError, match="missing required seed inputs"):
-            runner.run(
-                Graph([consume_x]),
-                checkpoint=checkpoint,
-                workflow_id="sync-missing-seed-fork",
-            )
+        result = runner.run(
+            Graph([consume_x]),
+            checkpoint=checkpoint,
+            workflow_id="sync-missing-seed-fork",
+        )
+
+        assert result["consumed"] == 6
 
     def test_checkpoint_resume_missing_seed_inputs_across_active_branches_raises(self, sync_checkpointer):
         """Sync mirror: resume must validate every active branch."""

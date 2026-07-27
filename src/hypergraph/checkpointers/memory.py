@@ -60,6 +60,8 @@ class MemoryCheckpointer(Checkpointer):
     def __init__(self) -> None:
         super().__init__()
         self._runs: dict[str, Run] = {}
+        #: run_id -> the graph-boundary values that run started from.
+        self._run_inputs: dict[str, dict[str, Any]] = {}
         self._steps: dict[str, dict[tuple[int, str], StepRecord]] = {}
         self._attempt_series: dict[str, AttemptSeries] = {}
         self._attempt_records: dict[str, dict[int, AttemptRecord]] = {}
@@ -183,9 +185,14 @@ class MemoryCheckpointer(Checkpointer):
         retry_of: str | None = None,
         retry_index: int | None = None,
         config: dict[str, Any] | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> Run:
         existing = self._runs.get(run_id)
         created_at = existing.created_at if existing is not None else datetime.now(timezone.utc)
+        # First write wins, mirroring the SQLite COALESCE: a resume passes
+        # only the interrupt answer and must not clobber the originals.
+        if inputs and run_id not in self._run_inputs:
+            self._run_inputs[run_id] = dict(inputs)
         run = Run(
             id=run_id,
             status=WorkflowStatus.ACTIVE,
@@ -239,6 +246,10 @@ class MemoryCheckpointer(Checkpointer):
                 else None
             ),
         )
+
+    async def get_run_inputs(self, run_id: str) -> dict[str, Any]:
+        """The graph-boundary values this run started from."""
+        return dict(self._run_inputs.get(run_id, {}))
 
     async def get_state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:
         state: dict[str, Any] = {}
