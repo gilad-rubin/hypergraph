@@ -35,7 +35,7 @@ from hypergraph import (
     serve,
 )
 from hypergraph.checkpointers.types import StepRecord, StepStatus, WorkflowStatus
-from tests.test_host._batch_api import graph_of
+from tests.test_host._batch_api import serve_graphs
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -160,8 +160,8 @@ class TestDurableStop:
         release = asyncio.Event()
         calls = {"seed": 0, "gated": 0}
         graph = _gated_async_graph("stopdef", started, release, calls)
-        host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "stopdef"), {"x": 2}, workflow_id="wf-stop")
+        host, served = serve_graphs(graph, home=home, deployment_version="v1")
+        receipt = await host.submit(served["stopdef"], {"x": 2}, workflow_id="wf-stop")
         # A client built from the Home alone (no host) can stop: durable
         # stop is a client verb, not a worker verb.
         detached = RunHomeClient(home)
@@ -201,8 +201,8 @@ class TestDurableStop:
         assert home._get_submission_sync("wf-stop")["state"] == "finished"
 
     async def test_stop_after_terminal_and_unknown_run_raise(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-done")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-done")
         async with _worker(host):
             await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
         with pytest.raises(AlreadyTerminalError):
@@ -216,8 +216,8 @@ class TestDurableStop:
             host.client.stop_sync(RunRef(home=home.uri, run_id="wf-nope"))
 
     async def test_double_stop_dedupes_first_info_wins(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-dbl")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-dbl")
         first = await host.client.stop(receipt.run_ref, info={"n": 1})
         second = await host.client.stop(receipt.run_ref, info={"n": 2})
         assert first.duplicate is False
@@ -232,15 +232,15 @@ class TestDurableStop:
         assert len(command_updates) == 1
 
         # Sync mirror dedupes identically.
-        receipt2 = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-dbl2")
+        receipt2 = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-dbl2")
         s1 = host.client.stop_sync(receipt2.run_ref, info="first")
         s2 = host.client.stop_sync(receipt2.run_ref, info="second")
         assert (s1.duplicate, s2.duplicate) == (False, True)
 
     async def test_stop_before_first_execution_never_executes(self, home):
         calls = {"n": 0}
-        host = serve(_counting_sync_graph("neverdef", calls), home=home)
-        receipt = await host.submit(graph_of(host, "neverdef"), {"x": 1}, workflow_id="wf-never")
+        host, served = serve_graphs(_counting_sync_graph("neverdef", calls), home=home)
+        receipt = await host.submit(served["neverdef"], {"x": 1}, workflow_id="wf-never")
         stop_receipt = await host.client.stop(receipt.run_ref, info="too late")
         assert stop_receipt.duplicate is False
 
@@ -266,8 +266,8 @@ class TestDurableStop:
     async def test_resubmit_after_stop_before_start_is_already_terminal(self, home):
         """Finished submissions are terminal even with no runs row (F6)."""
         calls = {"n": 0}
-        host = serve(_counting_sync_graph("termdef", calls), home=home)
-        receipt = await host.submit(graph_of(host, "termdef"), {"x": 1}, workflow_id="wf-term-nb")
+        host, served = serve_graphs(_counting_sync_graph("termdef", calls), home=home)
+        receipt = await host.submit(served["termdef"], {"x": 1}, workflow_id="wf-term-nb")
         await host.client.stop(receipt.run_ref)
 
         async with _worker(host):
@@ -278,21 +278,21 @@ class TestDurableStop:
         # Fingerprint-identical reuse of the finished submission raises —
         # completed history never changes identity, runs row or not.
         with pytest.raises(AlreadyTerminalError):
-            await host.submit(graph_of(host, "termdef"), {"x": 1}, workflow_id="wf-term-nb")
+            await host.submit(served["termdef"], {"x": 1}, workflow_id="wf-term-nb")
         with pytest.raises(AlreadyTerminalError):
-            host.submit_sync(graph_of(host, "termdef"), {"x": 1}, workflow_id="wf-term-nb")
+            host.submit_sync(served["termdef"], {"x": 1}, workflow_id="wf-term-nb")
 
     async def test_stop_records_source_ref_on_command_row(self, home):
         """ADR 0005 A11: commands may carry an opaque source_ref (F13)."""
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-srcref")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-srcref")
         await host.client.stop(receipt.run_ref, info="audit", source_ref="ops-console-7")
         db = home._sync_db()
         (stored,) = db.execute("SELECT source_ref FROM host_commands WHERE run_id = 'wf-srcref' AND verb = 'stop'").fetchone()
         assert stored == "ops-console-7"
 
         # Omitted source_ref stays NULL; the sync mirror accepts it too.
-        receipt2 = await host.submit(graph_of(host, "dbl"), {"x": 2}, workflow_id="wf-srcref2")
+        receipt2 = await host.submit(served["dbl"], {"x": 2}, workflow_id="wf-srcref2")
         host.client.stop_sync(receipt2.run_ref, info="plain")
         (stored2,) = db.execute("SELECT source_ref FROM host_commands WHERE run_id = 'wf-srcref2' AND verb = 'stop'").fetchone()
         assert stored2 is None
@@ -394,8 +394,8 @@ class TestRealKillRestart:
             return x * 10
 
         graph = Graph([compute], name="freshdef").with_runner(SyncRunner())
-        host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "freshdef"), {"x": 1}, workflow_id="wf-fresh")
+        host, served = serve_graphs(graph, home=home, deployment_version="v1")
+        receipt = await host.submit(served["freshdef"], {"x": 1}, workflow_id="wf-fresh")
 
         # Stand-in for a worker killed after claim but before the first
         # committed step: an empty active runs row, submission still claimed.
@@ -422,8 +422,8 @@ class TestRealKillRestart:
 class TestRecoveryBrake:
     async def test_poison_run_exhausts_then_rerun_revives(self, home):
         calls = {"n": 0}
-        host = serve(_counting_sync_graph("poisondef", calls), home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "poisondef"), {"x": 1}, workflow_id="wf-poison", recovery_cap=2)
+        host, served = serve_graphs(_counting_sync_graph("poisondef", calls), home=home, deployment_version="v1")
+        receipt = await host.submit(served["poisondef"], {"x": 1}, workflow_id="wf-poison", recovery_cap=2)
         assert home._get_submission_sync("wf-poison")["recovery_cap"] == 2
 
         # Two progressless crash cycles: claimed with no committed steps.
@@ -469,8 +469,8 @@ class TestRecoveryBrake:
         re-adoption always increments; only NEW committed progress (a saved
         StepRecord, a durable pause, a terminal transition) resets, at
         commit time. A status flip to active at re-claim never resets."""
-        host = serve(_sync_graph("progdef"), home=home, deployment_version="v1")
-        await host.submit(graph_of(host, "progdef"), {"x": 2}, workflow_id="wf-prog", recovery_cap=3)
+        host, served = serve_graphs(_sync_graph("progdef"), home=home, deployment_version="v1")
+        await host.submit(served["progdef"], {"x": 2}, workflow_id="wf-prog", recovery_cap=3)
 
         # Killed mid-execution WITH one committed step. The raw INSERT
         # stands in for the dead process's commit (no reset hook fired).
@@ -504,8 +504,8 @@ class TestRecoveryBrake:
         assert home._get_submission_sync("wf-prog")["recovery_attempts"] == 0
 
     async def test_pause_and_terminal_transitions_reset_the_brake(self, home):
-        host = serve(_sync_graph("pausedef"), home=home, deployment_version="v1")
-        await host.submit(graph_of(host, "pausedef"), {"x": 3}, workflow_id="wf-pause", recovery_cap=3)
+        host, served = serve_graphs(_sync_graph("pausedef"), home=home, deployment_version="v1")
+        await host.submit(served["pausedef"], {"x": 3}, workflow_id="wf-pause", recovery_cap=3)
         home.create_run_sync("wf-pause", graph_name="pausedef")
         db = home._sync_db()
         db.execute("UPDATE host_submissions SET state = 'claimed', recovery_attempts = 2 WHERE workflow_id = 'wf-pause'")
@@ -516,7 +516,7 @@ class TestRecoveryBrake:
         assert home._get_submission_sync("wf-pause")["recovery_attempts"] == 0
 
         # A terminal transition also resets (the submission then finishes).
-        await host.submit(graph_of(host, "pausedef"), {"x": 4}, workflow_id="wf-term2", recovery_cap=3)
+        await host.submit(served["pausedef"], {"x": 4}, workflow_id="wf-term2", recovery_cap=3)
         home.create_run_sync("wf-term2", graph_name="pausedef")
         db.execute("UPDATE host_submissions SET state = 'claimed', recovery_attempts = 1 WHERE workflow_id = 'wf-term2'")
         db.commit()
@@ -524,18 +524,18 @@ class TestRecoveryBrake:
         assert home._get_submission_sync("wf-term2")["recovery_attempts"] == 0
 
     async def test_recovery_cap_validation_and_fingerprint_exclusion(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
         with pytest.raises(ValueError, match="recovery_cap"):
-            await host.submit(graph_of(host, "dbl"), {"x": 1}, recovery_cap=-1)
+            await host.submit(served["dbl"], {"x": 1}, recovery_cap=-1)
         with pytest.raises(ValueError, match="recovery_cap"):
-            await host.submit(graph_of(host, "dbl"), {"x": 1}, recovery_cap=1.5)
+            await host.submit(served["dbl"], {"x": 1}, recovery_cap=1.5)
         with pytest.raises(ValueError, match="recovery_cap"):
-            host.submit_sync(graph_of(host, "dbl"), {"x": 1}, recovery_cap=True)
+            host.submit_sync(served["dbl"], {"x": 1}, recovery_cap=True)
 
         # recovery_cap is not part of the start fingerprint: an identical
         # resubmission with a different cap dedupes and keeps the first cap.
-        first = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-cap", recovery_cap=2)
-        dup = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-cap", recovery_cap=5)
+        first = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-cap", recovery_cap=2)
+        dup = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-cap", recovery_cap=5)
         assert first.duplicate is False
         assert dup.duplicate is True
         assert home._get_submission_sync("wf-cap")["recovery_cap"] == 2
@@ -547,14 +547,14 @@ class TestRecoveryBrake:
 class TestClientList:
     async def _fixtures(self, home) -> RunHomeClient:
         """Manufacture one run per waiting condition plus a completed bare run."""
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-q")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-q")
         time.sleep(0.002)
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-sched", start_at="2030-01-01T00:00:00+00:00")
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-sched", start_at="2030-01-01T00:00:00+00:00")
         time.sleep(0.002)
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-incomp")
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-incomp")
         time.sleep(0.002)
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-exh", recovery_cap=1)
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-exh", recovery_cap=1)
         # Trip the brake honestly: claimed + no progress + cap=1.
         db = home._sync_db()
         db.execute("UPDATE host_submissions SET state = 'claimed' WHERE workflow_id = 'wf-exh'")
@@ -624,8 +624,8 @@ class TestClientList:
             client.list_sync(RunQuery(limit=True))
 
     async def test_rerun_sync_accepts_exhausted_source(self, home):
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-exh2", recovery_cap=1)
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-exh2", recovery_cap=1)
         db = home._sync_db()
         db.execute("UPDATE host_submissions SET state = 'claimed' WHERE workflow_id = 'wf-exh2'")
         db.commit()

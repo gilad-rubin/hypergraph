@@ -24,6 +24,7 @@ import contextlib
 import inspect
 import threading
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -53,7 +54,7 @@ from hypergraph.runners._shared.provider_limits import (
     provider_permits,
     push_graph_limits,
 )
-from tests.test_host._batch_api import graph_of
+from tests.test_host._batch_api import serve_graphs
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -203,10 +204,10 @@ class TestActiveRunCap:
 
     async def test_an_operator_client_reports_what_the_worker_holds_back(self, tmp_path, home):
         """US5 + US21: a separate inspection process must not say QUEUED here."""
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
         home.max_active_runs = 1
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-a")
-        second = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-b")
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-a")
+        second = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-b")
         await _claim(host, home)
 
         operator = RunHome.open(_home_uri(tmp_path))
@@ -239,10 +240,10 @@ class TestActiveRunCap:
 
     async def test_claim_order_stays_total_when_created_at_ties(self, home):
         """Microsecond timestamps collide; insertion order still decides."""
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
         home.max_active_runs = 1
         for workflow_id in ("wf-a", "wf-b", "wf-c"):
-            await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id=workflow_id)
+            await host.submit(served["dbl"], {"x": 1}, workflow_id=workflow_id)
         db = home._sync_db()  # force the exact tie created_at alone cannot resolve
         db.execute("UPDATE host_submissions SET created_at = '2026-01-01T00:00:00.000000+00:00'")
         db.commit()
@@ -253,10 +254,10 @@ class TestActiveRunCap:
 
     async def test_over_limit_work_waits_pending_in_claim_order(self, home):
         """Cap=1 claims only the oldest; the rest stay pending, untouched."""
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
         home.max_active_runs = 1
         for workflow_id in ("wf-a", "wf-b", "wf-c"):
-            await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id=workflow_id)
+            await host.submit(served["dbl"], {"x": 1}, workflow_id=workflow_id)
 
         claimed = await _claim(host, home)
 
@@ -268,10 +269,10 @@ class TestActiveRunCap:
 
     async def test_raising_the_cap_while_work_is_queued_admits_in_claim_order(self, home):
         """PRD 0017: change the cap while work is queued; order is preserved."""
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
         home.max_active_runs = 1
         for workflow_id in ("wf-a", "wf-b", "wf-c"):
-            await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id=workflow_id)
+            await host.submit(served["dbl"], {"x": 1}, workflow_id=workflow_id)
         assert [row["workflow_id"] for row in await _claim(host, home)] == ["wf-a"]
 
         home.max_active_runs = 3  # tuned with wf-a still claimed and holding a slot
@@ -280,10 +281,10 @@ class TestActiveRunCap:
         assert set(_states(home).values()) == {"claimed"}
 
     async def test_lowering_the_cap_stops_new_claims_without_touching_running_work(self, home):
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
         home.max_active_runs = 2
         for workflow_id in ("wf-a", "wf-b", "wf-c"):
-            await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id=workflow_id)
+            await host.submit(served["dbl"], {"x": 1}, workflow_id=workflow_id)
         assert [row["workflow_id"] for row in await _claim(host, home)] == ["wf-a", "wf-b"]
 
         home.max_active_runs = 1  # below the work already outstanding
@@ -297,11 +298,11 @@ class TestActiveRunCap:
         assert [row["workflow_id"] for row in await _claim(host, home)] == ["wf-c"]
 
     async def test_waiting_view_names_the_cap_and_flips_back_when_a_slot_frees(self, home):
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
         client = host.client
         home.max_active_runs = 1
-        first = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-a")
-        second = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-b")
+        first = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-a")
+        second = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-b")
         # Uncapped-so-far: both are plainly queued.
         assert (await client.get(second.run_ref)).waiting is WaitingCondition.QUEUED
 
@@ -317,18 +318,18 @@ class TestActiveRunCap:
         assert await client.list(RunQuery(waiting=WaitingCondition.ADMISSION_LIMITED)) == []
 
     async def test_uncapped_home_never_reports_admission_limited(self, home):
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
         for workflow_id in ("wf-a", "wf-b", "wf-c"):
-            await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id=workflow_id)
+            await host.submit(served["dbl"], {"x": 1}, workflow_id=workflow_id)
         assert len(await _claim(host, home)) == 3
         assert await host.client.list(RunQuery(waiting=WaitingCondition.ADMISSION_LIMITED)) == []
 
     async def test_sync_and_async_view_mirrors_agree_on_the_cap(self, home):
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
         client = host.client
         home.max_active_runs = 1
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-a")
-        second = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-b")
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-a")
+        second = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-b")
         await _claim(host, home)
 
         assert client.get_sync(second.run_ref).waiting is WaitingCondition.ADMISSION_LIMITED
@@ -341,10 +342,10 @@ class TestActiveRunCap:
         """The named PRD 0017 test: raise the cap on a running worker."""
         started: dict[int, asyncio.Event] = {1: asyncio.Event(), 2: asyncio.Event()}
         gate = asyncio.Event()
-        host = serve(_gated_async_graph("gated", started, gate), home=home, deployment_version="v1")
+        host, served = serve_graphs(_gated_async_graph("gated", started, gate), home=home, deployment_version="v1")
         home.max_active_runs = 1
-        first = await host.submit(graph_of(host, "gated"), {"x": 1}, workflow_id="wf-a")
-        second = await host.submit(graph_of(host, "gated"), {"x": 2}, workflow_id="wf-b")
+        first = await host.submit(served["gated"], {"x": 1}, workflow_id="wf-a")
+        second = await host.submit(served["gated"], {"x": 2}, workflow_id="wf-b")
 
         async with _worker(host):
             await asyncio.wait_for(started[1].wait(), timeout=15)
@@ -378,11 +379,11 @@ async def _terminal(client, ref):
 
 
 class TestSlotAccounting:
-    async def _park_one_of_each(self, home) -> dict[str, str]:
+    async def _park_one_of_each(self, home) -> dict[str, Any]:
         """Manufacture one honestly-parked Run per non-slot-holding condition."""
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-sched", start_at=_future_iso(days=1))
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-exh", recovery_cap=1)
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-sched", start_at=_future_iso(days=1))
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-exh", recovery_cap=1)
         db = home._sync_db()
         db.execute("UPDATE host_submissions SET state = 'claimed' WHERE workflow_id = 'wf-exh'")
         db.commit()
@@ -391,20 +392,20 @@ class TestSlotAccounting:
 
         # Version-incompatible: a worker that cannot serve the pinned
         # identity refuses it at the claim choke point.
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-incomp")
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-incomp")
         other = serve(_sync_graph("dbl"), home=home, deployment_version="v2")
         assert await _claim(other, home) == []
         assert home._get_submission_sync("wf-incomp")["compat_state"] == "incompatible"
-        return {"host": host}
+        return {"host": host, "served": served}
 
     async def test_delayed_incompatible_and_exhausted_runs_hold_no_slot(self, home):
         parked = await self._park_one_of_each(home)
-        host = parked["host"]
+        host, served = parked["host"], parked["served"]
         home.max_active_runs = 1
 
         # Three parked Runs and a cap of one: a fresh submission still claims.
         assert await home._admission_is_full() is False
-        await host.submit(graph_of(host, "dbl"), {"x": 9}, workflow_id="wf-new")
+        await host.submit(served["dbl"], {"x": 9}, workflow_id="wf-new")
         assert [row["workflow_id"] for row in await _claim(host, home)] == ["wf-new"]
         assert await home._admission_is_full() is True
 
@@ -424,9 +425,9 @@ class TestSlotAccounting:
             return StringQuestion(prompt=f"continue with {seed}?")
 
         graph = Graph([seed, ask], name="pauser").with_runner(AsyncRunner())
-        host = serve(graph, home=home, deployment_version="v1")
+        host, served = serve_graphs(graph, home=home, deployment_version="v1")
         home.max_active_runs = 1
-        receipt = await host.submit(graph_of(host, "pauser"), {"x": 1}, workflow_id="wf-paused")
+        receipt = await host.submit(served["pauser"], {"x": 1}, workflow_id="wf-paused")
         claimed = await _claim(host, home)
         await host._execute_submission(claimed[0])
 
@@ -453,11 +454,11 @@ class TestSlotAccounting:
             return x + 1
 
         graph = Graph([call_provider], name="provider").with_runner(AsyncRunner())
-        host = serve(graph, home=home, deployment_version="v1")
+        host, served = serve_graphs(graph, home=home, deployment_version="v1")
         client = host.client
         home.max_active_runs = 1
-        first = await host.submit(graph_of(host, "provider"), {"x": 1}, workflow_id="wf-a")
-        second = await host.submit(graph_of(host, "provider"), {"x": 2}, workflow_id="wf-b")
+        first = await host.submit(served["provider"], {"x": 1}, workflow_id="wf-a")
+        second = await host.submit(served["provider"], {"x": 2}, workflow_id="wf-b")
 
         async with _PermitHolder(quota) as holder, _worker(host):
             # The component's only permit is taken elsewhere, so wf-a starts
@@ -1064,8 +1065,8 @@ class TestPermitWaitIsNeitherFailureNorRetry:
             return x + 1
 
         graph = Graph([call_provider], name="retrying").with_processors(events).with_runner(AsyncRunner())
-        host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "retrying"), {"x": 1}, workflow_id="wf-retry")
+        host, served = serve_graphs(graph, home=home, deployment_version="v1")
+        receipt = await host.submit(served["retrying"], {"x": 1}, workflow_id="wf-retry")
 
         async with _PermitHolder(quota) as holder, _worker(host):
             await _wait_for(lambda: _executing(home, "wf-retry"))
@@ -1141,10 +1142,10 @@ class TestPermitWaitIsNeitherFailureNorRetry:
 
 class TestDelayedStart:
     async def test_future_start_persists_and_fingerprints_at_submission(self, home):
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
         start_at = _future_iso(days=1)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-later", start_at=start_at)
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-now")
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-later", start_at=start_at)
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-now")
 
         later = home._get_submission_sync("wf-later")
         now = home._get_submission_sync("wf-now")
@@ -1156,8 +1157,8 @@ class TestDelayedStart:
         assert [view.workflow_id for view in await host.client.list(RunQuery(waiting=WaitingCondition.SCHEDULED))] == ["wf-later"]
 
     async def test_future_work_is_not_claimable_until_store_time_reaches_it(self, home):
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-later", start_at="2999-01-01T00:00:00+00:00")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-later", start_at="2999-01-01T00:00:00+00:00")
 
         assert await _claim(host, home) == []
         assert _state(home, "wf-later") == "pending"
@@ -1165,26 +1166,26 @@ class TestDelayedStart:
         assert [row["workflow_id"] for row in await _claim(host, home, now="2999-01-02T00:00:00+00:00")] == ["wf-later"]
 
     async def test_past_start_time_is_immediately_eligible(self, home):
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-past", start_at=_past_iso(hours=1))
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-past", start_at=_past_iso(hours=1))
 
         view = await host.client.get(receipt.run_ref)
         assert view.waiting is WaitingCondition.QUEUED  # never SCHEDULED
         assert [row["workflow_id"] for row in await _claim(host, home)] == ["wf-past"]
 
     async def test_scheduled_work_holds_no_active_slot(self, home):
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
         home.max_active_runs = 1
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-later", start_at="2999-01-01T00:00:00+00:00")
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-now")
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-later", start_at="2999-01-01T00:00:00+00:00")
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-now")
 
         assert [row["workflow_id"] for row in await _claim(host, home)] == ["wf-now"]
         assert await home._admission_is_full() is True
 
     def test_sync_submit_mirror_persists_the_same_start_at(self, home):
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
         start_at = _future_iso(days=1)
-        receipt = host.submit_sync(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-sync-later", start_at=start_at)
+        receipt = host.submit_sync(served["dbl"], {"x": 1}, workflow_id="wf-sync-later", start_at=start_at)
 
         assert home._get_submission_sync("wf-sync-later")["start_at"] == start_at
         assert host.client.get_sync(receipt.run_ref).waiting is WaitingCondition.SCHEDULED
@@ -1193,8 +1194,8 @@ class TestDelayedStart:
 class TestStopBeforeDue:
     async def test_stopping_future_work_prevents_execution(self, home):
         calls = {"n": 0}
-        host = serve(_sync_graph("dbl", calls), home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-later", start_at="2999-01-01T00:00:00+00:00")
+        host, served = serve_graphs(_sync_graph("dbl", calls), home=home, deployment_version="v1")
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-later", start_at="2999-01-01T00:00:00+00:00")
 
         stop = await host.client.stop(receipt.run_ref, info={"reason": "recalled before it was due"})
         assert stop.verb == "stop"
@@ -1213,11 +1214,11 @@ class TestStopBeforeDue:
 
     async def test_stopped_future_work_holds_no_slot_and_frees_the_worker(self, home):
         calls = {"n": 0}
-        host = serve(_sync_graph("dbl", calls), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl", calls), home=home, deployment_version="v1")
         home.max_active_runs = 1
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-later", start_at="2999-01-01T00:00:00+00:00")
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-later", start_at="2999-01-01T00:00:00+00:00")
         await host.client.stop(receipt.run_ref)
-        await host.submit(graph_of(host, "dbl"), {"x": 2}, workflow_id="wf-other")
+        await host.submit(served["dbl"], {"x": 2}, workflow_id="wf-other")
 
         assert [row["workflow_id"] for row in await _claim(host, home)] == ["wf-other"]
         assert calls["n"] == 0
@@ -1282,11 +1283,11 @@ class TestExcludedOverflowStrategiesAreAbsent:
 
     async def test_over_limit_work_is_delayed_never_dropped(self, home):
         """The behavioral half of the exclusion: overload delays, it never drops."""
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
         home.max_active_runs = 1
         refs: list[RunRef] = []
         for index in range(4):
-            refs.append((await host.submit(graph_of(host, "dbl"), {"x": index}, workflow_id=f"wf-{index}")).run_ref)
+            refs.append((await host.submit(served["dbl"], {"x": index}, workflow_id=f"wf-{index}")).run_ref)
 
         await _claim(host, home)
         views = {view.workflow_id: view for view in await host.client.list(RunQuery(limit=10))}

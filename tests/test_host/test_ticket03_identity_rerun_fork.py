@@ -37,7 +37,7 @@ from hypergraph import (
 from hypergraph.checkpointers.types import WorkflowStatus
 from hypergraph.host import host as host_module
 from tests._interrupt_questions import StringQuestion
-from tests.test_host._batch_api import graph_of, submit_keyed, submit_keyed_sync
+from tests.test_host._batch_api import serve_graphs, submit_keyed, submit_keyed_sync
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -177,8 +177,8 @@ class TestDefinitionIdValue:
 
     async def test_pinned_identity_visible_on_view_and_submission(self, home):
         graph = _sync_graph("dbl")
-        host = serve(graph, home=home, deployment_version="2026.07.3")
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-pin")
+        host, served = serve_graphs(graph, home=home, deployment_version="2026.07.3")
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-pin")
 
         expected = DefinitionId("dbl", "2026.07.3", graph.structural_hash)
         submission = home._get_submission_sync("wf-pin")
@@ -204,60 +204,60 @@ class TestDefinitionIdValue:
 
 class TestFingerprintDedup:
     async def test_identical_nonterminal_resubmit_dedupes(self, home):
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
-        first = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-dup")
-        second = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-dup")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
+        first = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-dup")
+        second = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-dup")
         assert second.duplicate is True
         assert second.run_ref == first.run_ref
         # No new submission or update rows were written.
         assert len(home._read_run_updates_sync("wf-dup")) == 1
 
     async def test_terminal_reuse_raises_already_terminal(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-term")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-term")
         async with _worker(host):
             await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
         # Identical resubmission of a terminal run is a terminal conflict.
         with pytest.raises(AlreadyTerminalError):
-            await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-term")
+            await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-term")
 
     async def test_different_inputs_raise_workflow_id_conflict(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-conf")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-conf")
         with pytest.raises(WorkflowIdConflictError, match="inputs"):
-            await host.submit(graph_of(host, "dbl"), {"x": 2}, workflow_id="wf-conf")
+            await host.submit(served["dbl"], {"x": 2}, workflow_id="wf-conf")
 
     async def test_different_start_at_raises_workflow_id_conflict(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-sched", start_at="2030-01-01T00:00:00+00:00")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-sched", start_at="2030-01-01T00:00:00+00:00")
         with pytest.raises(WorkflowIdConflictError, match="start_at"):
-            await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-sched", start_at="2031-01-01T00:00:00+00:00")
+            await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-sched", start_at="2031-01-01T00:00:00+00:00")
         # Same start_at dedupes.
-        dup = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-sched", start_at="2030-01-01T00:00:00+00:00")
+        dup = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-sched", start_at="2030-01-01T00:00:00+00:00")
         assert dup.duplicate is True
 
     async def test_mismatch_after_terminal_is_already_terminal(self, home):
         """Terminal reuse wins over fingerprint mismatch (order matters)."""
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-order")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-order")
         async with _worker(host):
             await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
         with pytest.raises(AlreadyTerminalError):
-            await host.submit(graph_of(host, "dbl"), {"x": 999}, workflow_id="wf-order")
+            await host.submit(served["dbl"], {"x": 999}, workflow_id="wf-order")
 
     async def test_conflict_error_carries_workflow_id(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-carry")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-carry")
         with pytest.raises(WorkflowIdConflictError) as excinfo:
-            await host.submit(graph_of(host, "dbl"), {"x": 2}, workflow_id="wf-carry")
+            await host.submit(served["dbl"], {"x": 2}, workflow_id="wf-carry")
         assert excinfo.value.workflow_id == "wf-carry"
 
 
 class TestFingerprintNormalization:
     async def test_dict_key_order_dedupes_identically(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        first = await host.submit(graph_of(host, "dbl"), {"a": 1, "b": {"c": 2, "d": 3}}, workflow_id="wf-norm")
-        second = await host.submit(graph_of(host, "dbl"), {"b": {"d": 3, "c": 2}, "a": 1}, workflow_id="wf-norm")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        first = await host.submit(served["dbl"], {"a": 1, "b": {"c": 2, "d": 3}}, workflow_id="wf-norm")
+        second = await host.submit(served["dbl"], {"b": {"d": 3, "c": 2}, "a": 1}, workflow_id="wf-norm")
         assert second.duplicate is True
         assert second.run_ref == first.run_ref
         assert len(home._read_run_updates_sync("wf-norm")) == 1
@@ -282,8 +282,8 @@ class TestVersionRefusal:
         graph = _sync_graph("dbl")
         old_id = DefinitionId("dbl", "old", graph.structural_hash)
 
-        host_old = serve(graph, home=home, deployment_version="old")
-        receipt = await host_old.submit(graph_of(host_old, "dbl"), {"x": 1}, workflow_id="wf-parked")
+        host_old, served_old = serve_graphs(graph, home=home, deployment_version="old")
+        receipt = await host_old.submit(served_old["dbl"], {"x": 1}, workflow_id="wf-parked")
         assert home._get_submission_sync("wf-parked")["def_version"] == "old"
 
         # A new deployment refuses the old pinned identity: the submission
@@ -339,8 +339,8 @@ class TestRerun:
         calls = {"seed": 0, "flaky": 0}
         should_fail = {"v": True}
         graph = _flaky_sync_graph("flaky-def", calls, should_fail)
-        host = serve(graph, home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "flaky-def"), {"x": 5}, workflow_id="wf-src")
+        host, served = serve_graphs(graph, home=home, deployment_version="v1")
+        receipt = await host.submit(served["flaky-def"], {"x": 5}, workflow_id="wf-src")
         async with _worker(host):
             view = await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
         assert view.status in (WorkflowStatus.FAILED, WorkflowStatus.PARTIAL)
@@ -389,8 +389,8 @@ class TestRerun:
         assert run2.retry_index == 2
 
     async def test_rerun_rejects_nonterminal_and_unknown_sources(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-pending")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-pending")
         with pytest.raises(RerunError, match="not terminal"):
             await host.client.rerun(receipt.run_ref)
         with pytest.raises(RerunError, match="no such run"):
@@ -398,16 +398,16 @@ class TestRerun:
         assert RerunError.__mro__[1].__name__ == "HostError"
 
     async def test_rerun_accepts_no_input_override(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-noov")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-noov")
         async with _worker(host):
             await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
         with pytest.raises(TypeError):
             await host.client.rerun(receipt.run_ref, inputs={"x": 9})
 
     async def test_rerun_sync_mirror(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = host.submit_sync(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-rsync")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = host.submit_sync(served["dbl"], {"x": 1}, workflow_id="wf-rsync")
         async with _worker(host):
             await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
         rerun_receipt = host.client.rerun_sync(receipt.run_ref)
@@ -429,8 +429,8 @@ class TestRerunIdAllocation:
     """
 
     async def _settled_source(self, home, workflow_id: str):
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id=workflow_id)
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id=workflow_id)
         async with _worker(host):
             await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
         return host, receipt
@@ -496,14 +496,14 @@ class TestFork:
         target = _flaky_sync_graph("newdef", calls, should_fail)
         assert target.structural_hash == graph.structural_hash
 
-        host = serve(graph, target, home=home, deployment_version="2026.07.3")
-        receipt = await host.submit(graph_of(host, "olddef"), {"x": 5}, workflow_id="wf-fork-src")
+        host, served = serve_graphs(graph, target, home=home, deployment_version="2026.07.3")
+        receipt = await host.submit(served["olddef"], {"x": 5}, workflow_id="wf-fork-src")
         async with _worker(host):
             view = await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
         assert view.status in (WorkflowStatus.FAILED, WorkflowStatus.PARTIAL)
 
         should_fail["v"] = False
-        fork_receipt = await host.fork(receipt.run_ref, into=graph_of(host, "newdef"), reason="migrate to 2026.07.3")
+        fork_receipt = await host.fork(receipt.run_ref, into=served["newdef"], reason="migrate to 2026.07.3")
         assert re.fullmatch(r"wf-fork-src-fork-[0-9a-f]{6}", fork_receipt.workflow_id)
         assert fork_receipt.duplicate is False
 
@@ -542,20 +542,20 @@ class TestFork:
         different = Graph([compute], name="different").with_runner(SyncRunner())
         assert different.structural_hash != graph.structural_hash
 
-        host = serve(graph, different, home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-incompat")
+        host, served = serve_graphs(graph, different, home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-incompat")
         with pytest.raises(ForkCompatibilityError) as excinfo:
-            await host.fork(receipt.run_ref, into=graph_of(host, "different"), reason="schema change")
+            await host.fork(receipt.run_ref, into=served["different"], reason="schema change")
         assert excinfo.value.source.name == "dbl"
         assert excinfo.value.target.name == "different"
 
     async def test_fork_validates_reason_and_target(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-val")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-val")
         with pytest.raises(ValueError, match="reason"):
-            await host.fork(receipt.run_ref, into=graph_of(host, "dbl"), reason="")
+            await host.fork(receipt.run_ref, into=served["dbl"], reason="")
         with pytest.raises(ValueError, match="reason"):
-            await host.fork(receipt.run_ref, into=graph_of(host, "dbl"), reason="   ")
+            await host.fork(receipt.run_ref, into=served["dbl"], reason="   ")
         # Migration names loaded code too: an unserved Graph is refused at
         # the call site, not parked as version-incompatible work (#342).
         with pytest.raises(UnservedGraphError, match="not served by this host"):
@@ -564,9 +564,9 @@ class TestFork:
     async def test_fork_sync_mirror(self, home):
         graph = _sync_graph("dbl")
         other = _sync_graph("dbl2")
-        host = serve(graph, other, home=home, deployment_version="v2")
-        receipt = host.submit_sync(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-fsync")
-        fork_receipt = host.fork_sync(receipt.run_ref, into=graph_of(host, "dbl2"), reason="migrate to v2")
+        host, served = serve_graphs(graph, other, home=home, deployment_version="v2")
+        receipt = host.submit_sync(served["dbl"], {"x": 1}, workflow_id="wf-fsync")
+        fork_receipt = host.fork_sync(receipt.run_ref, into=served["dbl2"], reason="migrate to v2")
         assert re.fullmatch(r"wf-fsync-fork-[0-9a-f]{6}", fork_receipt.workflow_id)
         fork_sub = home._get_submission_sync(fork_receipt.workflow_id)
         assert fork_sub["forked_from"] == "wf-fsync"
@@ -583,14 +583,14 @@ class TestSyncAsyncParity:
         should_fail = {"v": True}
         graph = _flaky_async_graph("async-old", calls, should_fail)
         target = _flaky_async_graph("async-new", calls, should_fail)
-        host = serve(graph, target, home=home, deployment_version="v1")
+        host, served = serve_graphs(graph, target, home=home, deployment_version="v1")
 
         # Dedup: identical resubmission uses the existing run.
-        first = await host.submit(graph_of(host, "async-old"), {"x": 5}, workflow_id="wf-a-src")
-        dup = await host.submit(graph_of(host, "async-old"), {"x": 5}, workflow_id="wf-a-src")
+        first = await host.submit(served["async-old"], {"x": 5}, workflow_id="wf-a-src")
+        dup = await host.submit(served["async-old"], {"x": 5}, workflow_id="wf-a-src")
         assert dup.duplicate is True and dup.run_ref == first.run_ref
         with pytest.raises(WorkflowIdConflictError):
-            await host.submit(graph_of(host, "async-old"), {"x": 6}, workflow_id="wf-a-src")
+            await host.submit(served["async-old"], {"x": 6}, workflow_id="wf-a-src")
 
         async with _worker(host):
             view = await _wait_for(lambda: _terminal_view(host.client, first.run_ref))
@@ -603,7 +603,7 @@ class TestSyncAsyncParity:
         assert rerun_receipt.workflow_id == "wf-a-src-retry-1"
 
         # Fork: fork lineage through the async runner.
-        fork_receipt = await host.fork(first.run_ref, into=graph_of(host, "async-new"), reason="async migration")
+        fork_receipt = await host.fork(first.run_ref, into=served["async-new"], reason="async migration")
 
         async with _worker(host, "w-2"):
             retry_view = await _wait_for(lambda: _terminal_view(host.client, rerun_receipt.run_ref))
@@ -653,14 +653,14 @@ class TestTier0RunIdNamespace:
 
     async def test_submit_refuses_a_terminal_tier0_workflow_id(self, home):
         self._terminal_tier0(home, "wf-t0-done")
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
 
         with pytest.raises(AlreadyTerminalError) as excinfo:
-            await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-t0-done")
+            await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-t0-done")
         assert excinfo.value.workflow_id == "wf-t0-done"
         assert "How to fix:" in str(excinfo.value)
         with pytest.raises(AlreadyTerminalError):
-            host.submit_sync(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-t0-done")
+            host.submit_sync(served["dbl"], {"x": 1}, workflow_id="wf-t0-done")
         # Nothing was accepted: the host and the journal still agree. The
         # Tier-0 run's own updates stay untouched; no 'submitted' fact was
         # grafted onto its sequence.
@@ -673,46 +673,46 @@ class TestTier0RunIdNamespace:
 
     async def test_submit_refuses_a_nonterminal_tier0_workflow_id(self, home):
         await self._paused_tier0(home, "wf-t0-live")
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
 
         with pytest.raises(WorkflowIdConflictError) as excinfo:
-            await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-t0-live")
+            await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-t0-live")
         assert excinfo.value.workflow_id == "wf-t0-live"
         assert "How to fix:" in str(excinfo.value)
         with pytest.raises(WorkflowIdConflictError):
-            host.submit_sync(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-t0-live")
+            host.submit_sync(served["dbl"], {"x": 1}, workflow_id="wf-t0-live")
         assert home._get_submission_sync("wf-t0-live") is None
 
     async def test_submit_batch_refuses_a_tier0_batch_workflow_id(self, home):
         self._terminal_tier0(home, "drop-t0")
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
 
         with pytest.raises(AlreadyTerminalError):
-            await submit_keyed(host, graph_of(host, "dbl"), {"a": {"x": 1}}, workflow_id="drop-t0")
+            await submit_keyed(host, served["dbl"], {"a": {"x": 1}}, workflow_id="drop-t0")
         with pytest.raises(AlreadyTerminalError):
-            submit_keyed_sync(host, graph_of(host, "dbl"), {"a": {"x": 1}}, workflow_id="drop-t0")
+            submit_keyed_sync(host, served["dbl"], {"a": {"x": 1}}, workflow_id="drop-t0")
         assert self._host_row_counts(home) == (0, 0)
 
     async def test_submit_batch_refuses_a_tier0_child_workflow_id(self, home):
         """A generated child id colliding with Tier-0 work is the same corruption."""
         self._terminal_tier0(home, "drop-kid:a")
         await self._paused_tier0(home, "drop-live:a")
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
 
         with pytest.raises(AlreadyTerminalError, match="item 'a'"):
-            await submit_keyed(host, graph_of(host, "dbl"), {"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-kid")
+            await submit_keyed(host, served["dbl"], {"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-kid")
         with pytest.raises(AlreadyTerminalError, match="item 'a'"):
-            submit_keyed_sync(host, graph_of(host, "dbl"), {"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-kid")
+            submit_keyed_sync(host, served["dbl"], {"a": {"x": 1}, "b": {"x": 2}}, workflow_id="drop-kid")
         with pytest.raises(WorkflowIdConflictError, match="item 'a'"):
-            await submit_keyed(host, graph_of(host, "dbl"), {"a": {"x": 1}}, workflow_id="drop-live")
+            await submit_keyed(host, served["dbl"], {"a": {"x": 1}}, workflow_id="drop-live")
         with pytest.raises(WorkflowIdConflictError, match="item 'a'"):
-            submit_keyed_sync(host, graph_of(host, "dbl"), {"a": {"x": 1}}, workflow_id="drop-live")
+            submit_keyed_sync(host, served["dbl"], {"a": {"x": 1}}, workflow_id="drop-live")
         # Acceptance is all-or-nothing: no manifest, no sibling child rows.
         assert self._host_row_counts(home) == (0, 0)
 
     async def test_rerun_inherits_the_journal_check(self, home):
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-src-t0")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-src-t0")
         async with _worker(host):
             await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
         # Tier-0 work already owns the id the first rerun would mint.
@@ -725,17 +725,17 @@ class TestTier0RunIdNamespace:
 
     async def test_fork_inherits_the_journal_check(self, home, monkeypatch):
         monkeypatch.setattr(host_module.uuid, "uuid4", lambda: uuid.UUID(int=0))
-        host = serve(_sync_graph("dbl"), home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-fork-t0")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-fork-t0")
         async with _worker(host):
             await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
         # The fork id is derived, so Tier-0 work can already own it.
         self._terminal_tier0(home, "wf-fork-t0-fork-000000")
 
         with pytest.raises(AlreadyTerminalError):
-            await host.fork(receipt.run_ref, into=graph_of(host, "dbl"), reason="migrate")
+            await host.fork(receipt.run_ref, into=served["dbl"], reason="migrate")
         with pytest.raises(AlreadyTerminalError):
-            host.fork_sync(receipt.run_ref, into=graph_of(host, "dbl"), reason="migrate")
+            host.fork_sync(receipt.run_ref, into=served["dbl"], reason="migrate")
 
     @staticmethod
     def _host_row_counts(home) -> tuple[int, int]:

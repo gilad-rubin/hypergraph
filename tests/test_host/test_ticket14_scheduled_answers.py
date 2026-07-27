@@ -77,7 +77,7 @@ from hypergraph.host.home import (
     _due_clause,
 )
 from hypergraph.host.refs import BatchRef, CommandReceipt
-from tests.test_host._batch_api import graph_of
+from tests.test_host._batch_api import serve_graphs
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -450,9 +450,9 @@ class TestSharedDueRowScanner:
         assert _scheduled_rows(home)[0][6] is None  # never applied
 
     async def test_one_now_decides_both_delayed_starts_and_due_answers(self, home):
-        host = serve(_plain_graph(), home=home, deployment_version="v1")
+        host, served = serve_graphs(_plain_graph(), home=home, deployment_version="v1")
         due = "2999-01-01T00:00:00+00:00"
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-later", start_at=due)
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-later", start_at=due)
         slot = await _pause_once(home)
         await host.client.schedule_answer(_ref(home), pause_id=slot.pause_id, value=True, due_at=due)
 
@@ -850,9 +850,9 @@ class TestStoreTimeDecidesDueness:
 
     async def test_claim_eligibility_defaults_to_store_time_too(self, home):
         """One fix, both columns: start_at and due_at share the predicate."""
-        host = serve(_plain_graph(), home=home, deployment_version="v1")
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-later", start_at="2999-01-01T00:00:00+00:00")
-        await host.submit(graph_of(host, "dbl"), {"x": 2}, workflow_id="wf-due")
+        host, served = serve_graphs(_plain_graph(), home=home, deployment_version="v1")
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-later", start_at="2999-01-01T00:00:00+00:00")
+        await host.submit(served["dbl"], {"x": 2}, workflow_id="wf-due")
 
         claimed = await home._claim_eligible(served=host._served_identities)
 
@@ -860,9 +860,9 @@ class TestStoreTimeDecidesDueness:
 
     async def test_the_worker_reads_its_now_from_the_store_not_its_process_clock(self, home, monkeypatch):
         """The store says it is 2999; the worker's wall clock says otherwise."""
-        host = serve(_plain_graph(), home=home, deployment_version="v1")
+        host, served = serve_graphs(_plain_graph(), home=home, deployment_version="v1")
         far_future = "2999-01-01T00:00:00+00:00"
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-store-clock", start_at=far_future)
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-store-clock", start_at=far_future)
         slot = await _pause_once(home)
         await host.client.schedule_answer(_ref(home), pause_id=slot.pause_id, value=True, due_at=far_future)
 
@@ -926,8 +926,8 @@ class TestSourceRefIsAuditOnly:
 
     async def test_a_stop_carries_its_source_ref_into_the_same_stream(self, home):
         """One provenance rule for every command verb, not one per feature."""
-        host = serve(_plain_graph(), home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-stop")
+        host, served = serve_graphs(_plain_graph(), home=home, deployment_version="v1")
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-stop")
         await host.client.stop(receipt.run_ref, info="recalled", source_ref="ops-console-7")
 
         update = await _first_command_update(host.client, receipt.run_ref, "stop")
@@ -949,8 +949,8 @@ class TestSourceRefIsAuditOnly:
         assert len(rows) == 1 and rows[0][5] == "console-a"
 
     async def test_stops_dedup_identically_whatever_their_source_ref(self, home):
-        host = serve(_plain_graph(), home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-dedup")
+        host, served = serve_graphs(_plain_graph(), home=home, deployment_version="v1")
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-dedup")
 
         first = await host.client.stop(receipt.run_ref, info="one", source_ref="console-a")
         second = await host.client.stop(receipt.run_ref, info="two", source_ref="console-b")
@@ -959,9 +959,9 @@ class TestSourceRefIsAuditOnly:
         assert len(_command_rows(home, "wf-dedup")) == 1
 
     async def test_submission_fingerprints_ignore_source_ref(self, home):
-        host = serve(_plain_graph(), home=home, deployment_version="v1")
-        first = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-fp", source_ref="console-a")
-        second = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-fp", source_ref="console-b")
+        host, served = serve_graphs(_plain_graph(), home=home, deployment_version="v1")
+        first = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-fp", source_ref="console-a")
+        second = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-fp", source_ref="console-b")
 
         # A differing source_ref is use-existing, never a WorkflowIdConflictError.
         assert (first.duplicate, second.duplicate) == (False, True)
@@ -1004,8 +1004,8 @@ class TestSourceRefIsAuditOnly:
 
     async def test_a_rerun_records_the_caller_that_asked_for_it(self, home):
         """US58: a product joins its authenticated action to Host history."""
-        host = serve(_plain_graph(), home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-src-run", source_ref="console-a")
+        host, served = serve_graphs(_plain_graph(), home=home, deployment_version="v1")
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-src-run", source_ref="console-a")
         await home.create_run("wf-src-run", graph_name="dbl")
         await home.update_run_status("wf-src-run", WorkflowStatus.COMPLETED)
 
@@ -1018,10 +1018,10 @@ class TestSourceRefIsAuditOnly:
         assert home._get_submission_sync(rerun.workflow_id)["retry_of"] == "wf-src-run"
 
     async def test_a_fork_records_the_caller_that_asked_for_it(self, home):
-        host = serve(_plain_graph(), home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-src-fork", source_ref="console-a")
+        host, served = serve_graphs(_plain_graph(), home=home, deployment_version="v1")
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-src-fork", source_ref="console-a")
 
-        fork = await host.fork(receipt.run_ref, into=graph_of(host, "dbl"), reason="migrate", source_ref="console-b")
+        fork = await host.fork(receipt.run_ref, into=served["dbl"], reason="migrate", source_ref="console-b")
 
         row = home._get_submission_sync(fork.workflow_id)
         assert (row["source_ref"], row["forked_from"], row["fork_reason"]) == ("console-b", "wf-src-fork", "migrate")
@@ -1029,8 +1029,8 @@ class TestSourceRefIsAuditOnly:
 
     async def test_rerun_and_fork_ignore_source_ref_for_identity(self, home):
         """The new call sites obey the same audit-only rule stop already did."""
-        host = serve(_plain_graph(), home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-src-dedup")
+        host, served = serve_graphs(_plain_graph(), home=home, deployment_version="v1")
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-src-dedup")
         await home.create_run("wf-src-dedup", graph_name="dbl")
         await home.update_run_status("wf-src-dedup", WorkflowStatus.COMPLETED)
 
@@ -1047,7 +1047,7 @@ class TestSourceRefIsAuditOnly:
         # ...and the label is absent from the fingerprint: the two reruns
         # repeat identical work, so their fingerprints are identical.
         assert rows[0]["fingerprint"] == rows[1]["fingerprint"]
-        forks = [host.fork_sync(receipt.run_ref, into=graph_of(host, "dbl"), reason="r", source_ref=label) for label in ("console-a", "console-b")]
+        forks = [host.fork_sync(receipt.run_ref, into=served["dbl"], reason="r", source_ref=label) for label in ("console-a", "console-b")]
         assert {home._get_submission_sync(f.workflow_id)["fingerprint"] for f in forks} == {home._get_submission_sync("wf-src-dedup")["fingerprint"]}
 
     def test_no_host_surface_treats_a_caller_label_as_identity(self):
@@ -1114,8 +1114,8 @@ class TestExcludedSchedulingSurfacesAreAbsent:
             assert "verb" not in inspect.signature(surface).parameters
 
     async def test_the_host_writes_exactly_two_command_verbs(self, home):
-        host = serve(_plain_graph(), home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-verbs")
+        host, served = serve_graphs(_plain_graph(), home=home, deployment_version="v1")
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-verbs")
         await host.client.stop(receipt.run_ref)
         slot = await _pause_once(home)
         await host.client.schedule_answer(_ref(home), pause_id=slot.pause_id, value=True, due_at=_future_iso(days=1))
@@ -1154,8 +1154,8 @@ class TestExcludedSchedulingSurfacesAreAbsent:
 
     async def test_nothing_non_interrupting_can_be_scheduled(self, home):
         """A reminder would need a schedulable thing that is not a pause answer."""
-        host = serve(_plain_graph(), home=home, deployment_version="v1")
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-running")
+        host, served = serve_graphs(_plain_graph(), home=home, deployment_version="v1")
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-running")
 
         # A running (unpaused) run has nothing to schedule against.
         with pytest.raises(AnswerRejectedError, match="no durable pause"):

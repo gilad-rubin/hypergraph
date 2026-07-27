@@ -35,7 +35,7 @@ from hypergraph import (
 )
 from hypergraph.checkpointers.types import WorkflowStatus
 from hypergraph.runners._shared.state import RunnerCapabilities
-from tests.test_host._batch_api import graph_of
+from tests.test_host._batch_api import serve_graphs
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -212,9 +212,9 @@ class TestRefsAndBinding:
 class TestSubmitPersistsBeforeExecution:
     async def test_submit_then_worker_completes_through_definition_runner(self, tmp_path, home):
         graph = _sync_graph("dbl", delay=0.1)
-        host = serve(graph, home=home, deployment_version="v1")
+        host, served = serve_graphs(graph, home=home, deployment_version="v1")
 
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-1")
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-1")
         assert receipt.run_ref == RunRef(home=home.uri, run_id="wf-1")
         assert receipt.workflow_id == "wf-1"
         assert receipt.duplicate is False
@@ -252,25 +252,25 @@ class TestSubmitPersistsBeforeExecution:
         assert home.values("wf-1")["out"] == 2
 
     async def test_duplicate_submit_uses_existing_receipt(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        first = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-dup")
-        second = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-dup")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        first = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-dup")
+        second = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-dup")
         assert second.duplicate is True
         assert second.run_ref == first.run_ref
         # No new rows written for the duplicate.
         assert len(home._read_run_updates_sync("wf-dup")) == 1
 
     async def test_terminal_reuse_raises_typed_error(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-term")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-term")
         async with _worker(host):
             await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
         with pytest.raises(AlreadyTerminalError):
-            await host.submit(graph_of(host, "dbl"), {"x": 2}, workflow_id="wf-term")
+            await host.submit(served["dbl"], {"x": 2}, workflow_id="wf-term")
 
     async def test_submit_sync_mirror(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = host.submit_sync(graph_of(host, "dbl"), {"x": 3}, workflow_id="wf-sync-submit")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = host.submit_sync(served["dbl"], {"x": 3}, workflow_id="wf-sync-submit")
         assert receipt.duplicate is False
         assert home._get_submission_sync("wf-sync-submit")["inputs_json"] == json.dumps({"x": 3})
 
@@ -280,8 +280,8 @@ class TestSubmitPersistsBeforeExecution:
 
 class TestDetachedClient:
     async def test_second_home_instance_get_and_watch(self, tmp_path, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-1")
         async with _worker(host):
             await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
 
@@ -305,8 +305,8 @@ class TestDetachedClient:
             await detached.close()
 
     async def test_actual_subprocess_get_and_watch(self, tmp_path, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-1")
         async with _worker(host):
             await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
         await home.close()  # release this process's connections before the child opens the file
@@ -355,8 +355,8 @@ asyncio.run(main())
 
 class TestCursorReconnection:
     async def test_resume_from_stored_cursor_has_no_gaps_or_repeats(self, tmp_path, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-1")
         async with _worker(host):
             updates1 = await _collect_watch(host.client, receipt.run_ref)
         durable1 = [u for u in updates1 if u.durable]
@@ -378,8 +378,8 @@ class TestCursorReconnection:
         assert all(u.durable for u in updates2)
 
     async def test_watch_cursor_accepts_none_int_and_string(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-1")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-1")
         async with _worker(host):
             await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
 
@@ -398,8 +398,8 @@ class TestPreviewsNeverAdvanceCursor:
     async def test_in_process_previews_repeat_last_durable_cursor(self, tmp_path, home):
         gate = threading.Event()
         graph = _sync_graph("dbl", gate=gate)
-        host = serve(graph, home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-1")
+        host, served = serve_graphs(graph, home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-1")
 
         updates = []
 
@@ -471,8 +471,8 @@ class TestWorkerLock:
 class TestBoundedDrain:
     async def test_shutdown_mid_run_finishes_within_drain_timeout(self, tmp_path, home):
         graph = _sync_graph("dbl", delay=0.3)
-        host = serve(graph, home=home)
-        await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-1")
+        host, served = serve_graphs(graph, home=home)
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-1")
 
         worker = asyncio.create_task(host.work_forever("w-1", drain_timeout=5.0))
         # Wait until the run has actually started executing, then shut down mid-run.
@@ -497,8 +497,8 @@ class TestRestartScan:
     async def test_killed_worker_claimed_submission_completes_without_resubmission(self, tmp_path, home):
         gate = threading.Event()
         graph = _sync_graph("dbl", gate=gate)
-        host1 = serve(graph, home=home)
-        receipt = await host1.submit(graph_of(host1, "dbl"), {"x": 1}, workflow_id="wf-1")
+        host1, served1 = serve_graphs(graph, home=home)
+        receipt = await host1.submit(served1["dbl"], {"x": 1}, workflow_id="wf-1")
 
         crashed = asyncio.create_task(host1.work_forever("w-1", drain_timeout=0.05))
         await _wait_for(lambda: _run_started(home, "wf-1"))
@@ -540,10 +540,10 @@ class TestRestartScan:
 
 class TestSyncAsyncParity:
     async def test_sync_and_async_definitions_complete_through_one_worker(self, tmp_path, home):
-        host = serve(_sync_graph("sync-def", delay=0.05), _async_graph("async-def", delay=0.05), home=home, deployment_version="v1")
+        host, served = serve_graphs(_sync_graph("sync-def", delay=0.05), _async_graph("async-def", delay=0.05), home=home, deployment_version="v1")
 
-        receipt_sync = await host.submit(graph_of(host, "sync-def"), {"x": 1}, workflow_id="wf-sync")
-        receipt_async = await host.submit(graph_of(host, "async-def"), {"x": 10}, workflow_id="wf-async")
+        receipt_sync = await host.submit(served["sync-def"], {"x": 1}, workflow_id="wf-sync")
+        receipt_async = await host.submit(served["async-def"], {"x": 10}, workflow_id="wf-async")
 
         async with _worker(host):
             view_sync = await _wait_for(lambda: _terminal_view(host.client, receipt_sync.run_ref))
@@ -659,8 +659,8 @@ class TestNestedGraphNodePersistence:
 
     async def test_sync_nested_child_steps_land_in_run_home(self, home):
         graph = _nested_sync_graph("nestdef")
-        host = serve(graph, home=home)
-        receipt = await host.submit(graph_of(host, "nestdef"), {"x": 3}, workflow_id="wf-nest")
+        host, served = serve_graphs(graph, home=home)
+        receipt = await host.submit(served["nestdef"], {"x": 3}, workflow_id="wf-nest")
 
         async with _worker(host):
             view = await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
@@ -681,8 +681,8 @@ class TestNestedGraphNodePersistence:
 
     async def test_async_nested_child_steps_land_in_run_home(self, home):
         graph = _nested_async_graph("anestdef")
-        host = serve(graph, home=home)
-        receipt = await host.submit(graph_of(host, "anestdef"), {"x": 4}, workflow_id="wf-anest")
+        host, served = serve_graphs(graph, home=home)
+        receipt = await host.submit(served["anestdef"], {"x": 4}, workflow_id="wf-anest")
 
         async with _worker(host):
             view = await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
@@ -709,8 +709,8 @@ class TestWatchUnknownRef:
         assert updates == []
 
     async def test_watch_negative_cursor_clamps_to_stream_start(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-neg")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-neg")
         async with _worker(host):
             await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
         clamped = await _collect_watch(host.client, receipt.run_ref, after=-5)
@@ -723,25 +723,25 @@ class TestWatchUnknownRef:
 
 class TestStartAtNormalization:
     async def test_offset_and_naive_spellings_normalize_to_utc(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
-        receipt = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-tz", start_at="2030-01-01T02:00:00+02:00")
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
+        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-tz", start_at="2030-01-01T02:00:00+02:00")
         submission = home._get_submission_sync("wf-tz")
         assert submission["start_at"] == "2030-01-01T00:00:00+00:00"
         # The same instant spelled differently dedupes (same fingerprint).
-        dup = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-tz", start_at="2030-01-01T00:00:00")
+        dup = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-tz", start_at="2030-01-01T00:00:00")
         assert dup.duplicate is True
         assert dup.run_ref == receipt.run_ref
         # A naive datetime normalizes as UTC too.
         from datetime import datetime
 
-        other = await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-tz2", start_at=datetime(2030, 6, 1, 12, 0, 0))
+        other = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-tz2", start_at=datetime(2030, 6, 1, 12, 0, 0))
         assert home._get_submission_sync("wf-tz2")["start_at"] == "2030-06-01T12:00:00+00:00"
         assert other.duplicate is False
 
     async def test_unparseable_start_at_rejected(self, home):
-        host = serve(_sync_graph("dbl"), home=home)
+        host, served = serve_graphs(_sync_graph("dbl"), home=home)
         with pytest.raises(ValueError, match="start_at"):
-            await host.submit(graph_of(host, "dbl"), {"x": 1}, workflow_id="wf-badtz", start_at="next tuesday")
+            await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-badtz", start_at="next tuesday")
 
 
 def _one_node():

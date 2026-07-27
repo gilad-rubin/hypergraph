@@ -25,22 +25,28 @@ from typing import Any
 ITEM_KEY_INPUT = "item"
 
 
-def graph_of(host, name: str):
-    """The served Graph object for ``name``, for suites that kept only a name.
+def serve_graphs(*graphs: Any, **kwargs: Any) -> tuple[Any, dict[str, Any]]:
+    """``serve()`` these graphs and hand the objects back, keyed by name.
 
     Issue #342 made every new-work verb graph-first: ``host.submit(graph,
     ...)`` resolves the Definition from the Graph's own pinned identity, and
     a Definition-name string is no longer a selector. The pre-existing Host
     suites test the machinery BEHIND that door — identity, dedup, stop,
     recovery, tolerance, admission, pause slots — and most of them build
-    their graph inline inside ``serve(...)``.
+    their graph inline inside ``serve(...)``, throwing the object away at
+    the exact moment it became the submission key.
 
-    Rather than restructure ~180 call sites that never cared which door they
-    came through, they ask the Host for the object it already holds. The
-    door itself is proven by ``test_batch_interrupt_matrix.py``, which
+    Keeping it is the whole job. The alternative — asking the Host for the
+    Definition it stored — would read a private registry to recover
+    something the test itself constructed one line earlier, and would tie
+    every one of these suites to that registry's internal shape.
+
+    The door itself is proven by ``test_batch_interrupt_matrix.py``, which
     submits real Graph objects and asserts an unserved one is refused.
     """
-    return host._definitions[name].graph
+    from hypergraph import serve
+
+    return serve(*graphs, **kwargs), {graph.name: graph for graph in graphs}
 
 
 def keyed_values(items: Mapping[str, Mapping[str, Any]]) -> tuple[dict[str, list[Any]], list[str]]:
