@@ -47,12 +47,33 @@ def _sync_graph(name: str, *, delay: float = 0.0, gate: threading.Event | None =
     @node(output_name="out")
     def compute(x: int) -> int:
         if gate is not None:
-            gate.wait(timeout=15)
+            # UNBOUNDED on purpose. A timeout here is a second, invisible way
+            # for the node to finish: the wait would expire, the run would
+            # complete, and the durability assertion downstream ("still
+            # claimed", "still active") would fail as a state mismatch rather
+            # than as the timing accident it is. `_open_gate_after` guarantees
+            # every caller opens it, so an unbounded wait cannot hang.
+            gate.wait()
         if delay:
             time.sleep(delay)
         return x + 1
 
     return Graph([compute], name=name).with_runner(SyncRunner())
+
+
+@contextlib.contextmanager
+def _open_gate_after(gate: threading.Event):
+    """Guarantee a gated node is released, however the test body ends.
+
+    The node's wait is unbounded, and the thread running it is not the test's
+    to cancel — a `to_thread` the worker abandoned keeps running. Leaving it
+    blocked on a failed assertion would hang interpreter shutdown, so the
+    gate opens in a `finally` whatever happened.
+    """
+    try:
+        yield gate
+    finally:
+        gate.set()
 
 
 def _async_graph(name: str, *, delay: float = 0.05) -> Graph:
@@ -396,23 +417,23 @@ class TestCursorReconnection:
 
 class TestPreviewsNeverAdvanceCursor:
     async def test_in_process_previews_repeat_last_durable_cursor(self, tmp_path, home):
-        gate = threading.Event()
-        graph = _sync_graph("dbl", gate=gate)
-        host, served = serve_graphs(graph, home=home)
-        receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-1")
+        with _open_gate_after(threading.Event()) as gate:
+            graph = _sync_graph("dbl", gate=gate)
+            host, served = serve_graphs(graph, home=home)
+            receipt = await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-1")
 
-        updates = []
+            updates = []
 
-        async def consume():
-            async for update in host.client.watch(receipt.run_ref, poll_interval=0.02):
-                updates.append(update)
+            async def consume():
+                async for update in host.client.watch(receipt.run_ref, poll_interval=0.02):
+                    updates.append(update)
 
-        watcher = asyncio.create_task(consume())
-        await asyncio.sleep(0.1)  # let the watcher subscribe before execution starts
-        async with _worker(host):
-            await _wait_for(lambda: _first_preview(updates))
-            gate.set()
-            await asyncio.wait_for(watcher, timeout=20)
+            watcher = asyncio.create_task(consume())
+            await asyncio.sleep(0.1)  # let the watcher subscribe before execution starts
+            async with _worker(host):
+                await _wait_for(lambda: _first_preview(updates))
+                gate.set()
+                await asyncio.wait_for(watcher, timeout=20)
 
         previews = [u for u in updates if not u.durable]
         durables = [u for u in updates if u.durable]
@@ -495,44 +516,47 @@ class TestBoundedDrain:
 
 class TestRestartScan:
     async def test_killed_worker_claimed_submission_completes_without_resubmission(self, tmp_path, home):
-        gate = threading.Event()
-        graph = _sync_graph("dbl", gate=gate)
-        host1, served1 = serve_graphs(graph, home=home)
-        receipt = await host1.submit(served1["dbl"], {"x": 1}, workflow_id="wf-1")
+        with _open_gate_after(threading.Event()) as gate:
+            graph = _sync_graph("dbl", gate=gate)
+            host1, served1 = serve_graphs(graph, home=home)
+            receipt = await host1.submit(served1["dbl"], {"x": 1}, workflow_id="wf-1")
 
-        crashed = asyncio.create_task(host1.work_forever("w-1", drain_timeout=0.05))
-        await _wait_for(lambda: _run_started(home, "wf-1"))
-        crashed.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await crashed
+            crashed = asyncio.create_task(host1.work_forever("w-1", drain_timeout=0.05))
+            await _wait_for(lambda: _run_started(home, "wf-1"))
+            crashed.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await crashed
 
-        # Crash state: claimed, run active but unfinished, worker dead.
-        submission = home._get_submission_sync("wf-1")
-        assert submission["state"] == "claimed"
-        assert home.get_run("wf-1").status == WorkflowStatus.ACTIVE
+            # Crash state: claimed, run active but unfinished, worker dead.
+            # Only the gate keeps it that way, which is why the gate has no
+            # deadline: an expiring wait would complete the run and turn this
+            # durability assertion into a stopwatch.
+            submission = home._get_submission_sync("wf-1")
+            assert submission["state"] == "claimed"
+            assert home.get_run("wf-1").status == WorkflowStatus.ACTIVE
 
-        # A new worker re-adopts the claimed-but-unfinished submission.
-        detached = RunHome.open(_home_uri(tmp_path))
-        try:
-            host2 = serve(graph, home=detached)
-            restarted = asyncio.create_task(host2.work_forever("w-2"))
+            # A new worker re-adopts the claimed-but-unfinished submission.
+            detached = RunHome.open(_home_uri(tmp_path))
             try:
-                # Wait for the re-claim, then unblock both the orphaned thread
-                # and the re-adopted execution (at-least-once is documented).
-                await _wait_for(lambda: _submission_state(detached, "wf-1", "claimed"))
-                gate.set()
-                await _wait_for(lambda: _terminal_view(host2.client, receipt.run_ref))
-            finally:
-                host2.shutdown()
-                await asyncio.wait_for(restarted, timeout=20)
+                host2 = serve(graph, home=detached)
+                restarted = asyncio.create_task(host2.work_forever("w-2"))
+                try:
+                    # Wait for the re-claim, then unblock both the orphaned thread
+                    # and the re-adopted execution (at-least-once is documented).
+                    await _wait_for(lambda: _submission_state(detached, "wf-1", "claimed"))
+                    gate.set()
+                    await _wait_for(lambda: _terminal_view(host2.client, receipt.run_ref))
+                finally:
+                    host2.shutdown()
+                    await asyncio.wait_for(restarted, timeout=20)
 
-            run = detached.get_run("wf-1")
-            assert run.status == WorkflowStatus.COMPLETED
-            assert detached._get_submission_sync("wf-1")["state"] == "finished"
-            assert detached.values("wf-1")["out"] == 2
-            await asyncio.sleep(0.3)  # let the orphaned thread settle before closing its home
-        finally:
-            await detached.close()
+                run = detached.get_run("wf-1")
+                assert run.status == WorkflowStatus.COMPLETED
+                assert detached._get_submission_sync("wf-1")["state"] == "finished"
+                assert detached.values("wf-1")["out"] == 2
+                await asyncio.sleep(0.3)  # let the orphaned thread settle before closing its home
+            finally:
+                await detached.close()
 
 
 # === 9. Sync + async Definition parity ===
