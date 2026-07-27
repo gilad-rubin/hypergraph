@@ -105,6 +105,15 @@ For native execution inspection, start with
 [Debug Workflows](05-how-to/debug-workflows.md), then use the
 [runner reference](06-api-reference/runners.md) for exact signatures.
 
+For the Durable Host program (intent, not shipped behavior), the delivery
+contract is [PRD 0017](prd/0017-durable-host-v1-program.md), its inspectable
+decision prototype is
+[the Panda-shaped prototype](prd/durable-host-v1-decision-prototype.md),
+and the ticket map is the
+[wayfinder](issues/wayfinder-durable-host.md). ADRs 0005–0008 record the
+accepted decisions with amendments A1–A16; PRDs 0010–0011, 0013–0014, and
+0018–0019 carry the per-area intent contracts.
+
 ## Documentation
 
 ### Getting Started
@@ -148,6 +157,7 @@ For native execution inspection, start with
 - [Nodes](06-api-reference/nodes.md) - FunctionNode, GraphNode, and HyperNode
 - [Gates](06-api-reference/gates.md) - RouteNode, IfElseNode, @route, @ifelse
 - [Runners](06-api-reference/runners.md) - SyncRunner, AsyncRunner, and execution model
+- [Durable Host](06-api-reference/host.md) - serve(), RunHome, RunHomeClient, and the local worker
 - [Events](06-api-reference/events.md) - Event types, processors, and RichProgressProcessor
 - [InputSpec](06-api-reference/inputspec.md) - Input categorization and requirements
 - [Checkpointers](06-api-reference/checkpointers.md) - Persistence, resume, fork/retry lineage, and inspection

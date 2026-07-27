@@ -76,6 +76,20 @@ controller is stale" (verdict pending). Independent nodes outside the
 re-firing gate's chain — including ungated nodes co-batched in the same
 superstep — are unaffected.
 
+## Pending Node Boundaries (`pending_boundaries.py`)
+
+Both runners persist the superstep's runnable node boundaries BEFORE the
+first sibling dispatches — never as a side effect of a sibling finishing.
+If you move, reorder, or re-batch the ready set (interrupt planning, gate
+blocking, new filters), the boundary write must stay after the batch is
+final and before `run_superstep_*`, and it must use the same
+`superstep_idx + superstep_offset` the StepRecords will carry: a boundary
+and its step share one address.
+
+Put boundary logic in `pending_boundaries.py` and call it from both
+runners. A boundary is intent, never execution truth — never derive "this
+node ran" from it.
+
 ## Staleness (`_is_stale`)
 
 A previously-executed node is stale if any input version changed since last execution.
@@ -99,6 +113,27 @@ InterruptNode execution has two paths and one loud error:
 With a checkpointer, `is_resuming` prevents fresh-run values from masquerading
 as a resume payload. Without a checkpointer it is intentionally true so an
 answer supplied up front supports headless/CSV/batch execution.
+
+## Durable Pause Slots (`pause_slots.py`)
+
+Both templates commit a pause through `commit_pause_async` /
+`commit_pause_sync`: the durable slot, whatever step records are still
+buffered, and the `PAUSED` transition go to the backend as ONE call, never as
+separate writes. Under `durability="sync"`/`"async"` the paused StepRecord was
+already committed by the ordinary per-superstep path, so the atomic unit is
+slot + `PAUSED`; the invariant to preserve is that the step record is never
+written AFTER the slot, so no reader sees a committed `PAUSED` run without its
+question. Keep the two templates identical here even though no shipped sync
+runner declares `supports_interrupts` yet.
+
+The slot is addressed by `PauseExecution.superstep`, which the runner sets in
+its `except PauseExecution` handler to the same `superstep_idx +
+superstep_offset` the paused StepRecord carries — a slot and its step share
+one address. A nested pause is re-raised as a FRESH `PauseExecution` by the
+GraphNode executor, so the parent addresses it in the parent's own scope and
+the slot keeps the parent-facing node name and answer port (see "GraphNode
+Boundary Addressing"). Settlement never invents execution truth: a resumed
+run still flows through normal `is_resuming` semantics.
 
 ## Resume Payload State
 

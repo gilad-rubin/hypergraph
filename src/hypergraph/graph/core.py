@@ -14,6 +14,7 @@ from hypergraph.graph._conflict import validate_output_conflicts
 from hypergraph.graph._helpers import get_edge_produced_values, sources_of
 from hypergraph.graph.input_spec import InputSpec, _compute_active_scope, _data_only_subgraph, compute_input_spec
 from hypergraph.graph.validation import GraphConfigError, validate_graph
+from hypergraph.limits import ProcessLocalLimiter
 from hypergraph.nodes.base import HyperNode
 
 if TYPE_CHECKING:
@@ -194,6 +195,8 @@ class Graph:
         self._bound: dict[str, Any] = {}
         self._selected: tuple[str, ...] | None = None
         self._default_event_processors: tuple[EventProcessor, ...] = ()
+        self._bound_runner: Any = None
+        self._provider_limit: ProcessLocalLimiter | None = None
         self._nodes = self._build_nodes_dict(nodes)
         self._validate_shared_params()
         self._entrypoints = self._normalize_constructor_entrypoints(entrypoint)
@@ -1134,6 +1137,7 @@ class Graph:
             shared=sorted(self._shared) if self._shared else None,
         )
         new_graph._default_event_processors = self._default_event_processors
+        new_graph._bound_runner = self._bound_runner
 
         if self._bound:
             valid_names = set(new_graph.inputs.all)
@@ -1245,6 +1249,91 @@ class Graph:
     def default_event_processors(self) -> tuple[EventProcessor, ...]:
         """Event processors carried by this graph, merged into every run."""
         return self._default_event_processors
+
+    def with_runner(self, runner: BaseRunner) -> Graph:
+        """Bind a runner to this graph for durable-host serving. Returns new Graph (immutable).
+
+        The binding is metadata only: it does not change graph structure,
+        ``structural_hash``, or direct runner execution. ``serve()`` reads it
+        to decide which runner executes this Definition in the host worker,
+        and clones the runner onto the Run Home's checkpointer — the supplied
+        runner instance is never mutated.
+
+        Args:
+            runner: A runner instance (e.g., ``SyncRunner()``, ``AsyncRunner()``).
+
+        Returns:
+            New Graph carrying the runner binding.
+
+        Raises:
+            TypeError: If ``runner`` is None or not runner-like. ``serve()``
+                performs the strict ``BaseRunner`` check; the graph facade
+                deliberately does not import runners at runtime (issue #264),
+                matching ``GraphNode.with_runner``.
+
+        Example:
+            >>> triage = triage_graph.with_runner(SyncRunner())
+            >>> host = serve(triage, home=RunHome.open("file:./runs.db"))
+        """
+        if runner is None or not hasattr(runner, "run"):
+            raise TypeError(
+                f"with_runner() expects a runner instance, got {type(runner).__name__}. Pass a runner such as SyncRunner() or AsyncRunner()."
+            )
+        new_graph = self._shallow_copy()
+        new_graph._bound_runner = runner
+        return new_graph
+
+    @property
+    def bound_runner(self) -> BaseRunner | None:
+        """The runner bound via ``with_runner()``, or None when unbound (read-only)."""
+        return self._bound_runner
+
+    def with_provider_limit(self, provider_limit: ProcessLocalLimiter) -> Graph:
+        """Cap how many of this graph's function nodes run at once. Returns new Graph (immutable).
+
+        This is **provider-resource admission** — a work budget over external
+        capacity — and never the durable host's active-Run cap
+        (``RunHome.max_active_runs``), which counts Runs a worker executes.
+        The limiter is a shared object: two concurrent Runs of this graph
+        draw on the same permits, which is what a per-call runner budget
+        cannot express.
+
+        The binding is metadata only: it does not change graph structure,
+        ``structural_hash``, or Definition identity. Nested graphs **are**
+        covered: a graph run inside ``as_node()`` inherits this budget, and
+        its own ``with_provider_limit`` composes as a narrower one on top —
+        so moving a node into a nested graph never drops it out of the
+        budget. Waiting for a permit is neither a failure nor a retry
+        attempt.
+
+        Args:
+            provider_limit: A :class:`~hypergraph.limits.ProcessLocalLimiter`.
+
+        Returns:
+            New Graph carrying the provider-resource budget.
+
+        Raises:
+            TypeError: If ``provider_limit`` is not a ``ProcessLocalLimiter``.
+
+        Example:
+            >>> budget = ProcessLocalLimiter(max_in_flight=4)
+            >>> graph = graph.with_provider_limit(budget)
+        """
+        if not isinstance(provider_limit, ProcessLocalLimiter):
+            raise TypeError(
+                f"with_provider_limit() expects a ProcessLocalLimiter, got {type(provider_limit).__name__}.\n\n"
+                "How to fix:\n"
+                "  Share one limiter across the work that draws on the same external\n"
+                "  capacity: graph.with_provider_limit(ProcessLocalLimiter(max_in_flight=4))"
+            )
+        new_graph = self._shallow_copy()
+        new_graph._provider_limit = provider_limit
+        return new_graph
+
+    @property
+    def provider_limit(self) -> ProcessLocalLimiter | None:
+        """The graph-scope provider budget, or None when unset (read-only)."""
+        return self._provider_limit
 
     @property
     def has_cycles(self) -> bool:

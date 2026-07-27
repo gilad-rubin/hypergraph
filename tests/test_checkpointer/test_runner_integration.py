@@ -154,7 +154,9 @@ class TestRunnerCheckpointIntegration:
         await runner.run(graph, {"x": 7}, workflow_id="wf-cp")
 
         cp = checkpointer.checkpoint("wf-cp")
-        assert cp.values == {"doubled": 14, "tripled": 42}
+        # A checkpoint restores the run: its own inputs, with the folded
+        # step outputs layered over them (`get_state` still folds outputs only).
+        assert cp.values == {"x": 7, "doubled": 14, "tripled": 42}
         assert len(cp.steps) == 2
 
     async def test_exit_durability_flushes_at_end(self, checkpointer):

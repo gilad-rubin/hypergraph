@@ -162,6 +162,111 @@ _Avoid_: Stopped result, skipped run
 - Resuming a **Checkpointed execution** creates a new live execution from persisted state; it does not reconnect to the previous **Execution handle**.
 - A persisted active status describes recorded lifecycle state. It is not proof that a worker is alive and does not grant ownership of that worker.
 
+## Durable host
+
+Vocabulary for the Durable Host V1 program ([PRD 0017](docs/prd/0017-durable-host-v1-program.md); decisions in ADRs 0005–0008 and the [2026-07-23 amendment package](docs/research/2026-07-23-durable-host-amendments.md)). Intent, not shipped behavior, until the ticket tree lands.
+
+**Definition**:
+A root graph bound to its runner and deployment identity, accepted by `serve(...)`. New submission is **graph-first**: it passes the served `Graph` object, which resolves to its Definition by name and structural hash. A name string is never a selector.
+_Avoid_: Registered workflow, catalog entry, app
+
+**Definition identity**:
+The typed tuple `DefinitionId(name, deployment_version, structural_hash)` pinned at first accepted submit. The code hash is recorded for diagnosis only and never decides claim eligibility.
+_Avoid_: Version string (that is only one part), code hash, graph hash
+
+**Host**:
+The Definition-bound object that owns new Run submission, Batch submission, explicit fork, and worker lifecycle. It exposes one RunHomeClient and never copies its verbs.
+_Avoid_: Server, control plane, orchestrator service
+
+**Run Home**:
+The existing checkpointer plus coordination facts in the same transactional store. StepRecords remain the sole execution journal.
+_Avoid_: Second journal, event store, broker state
+
+**RunHomeClient**:
+The single backend-neutral surface for existing work — get, list, watch, stop, rerun, and answer — accepting RunRef or the applicable BatchRef. Constructing one requires no Definition code; it cannot submit new work.
+_Avoid_: Operator wrapper, admin API, app client
+
+**RunRef / BatchRef**:
+Immutable, serializable addresses for one Run or Batch. They expose no liveness, status, result, or control methods, and are never called durable handles.
+_Avoid_: Durable handle (banned per ADR 0004), job token, reconnectable handle
+
+**Start fingerprint**:
+The dedup identity of a submission: complete Definition identity, normalized inputs, effective Batch configuration, and requested start time. Worker identity and submission time are excluded.
+_Avoid_: Idempotency key (callers never manage one), request hash
+
+**Durable Batch**:
+An immutable manifest of unique stable logical item keys, each mapped to one independent child Run, with keyed outcomes and explicit unstarted items. Never a durable parent MapResult array.
+_Avoid_: Persisted MapResult, batch job array
+
+**Logical item key**:
+The caller-chosen stable key naming one requested Batch item; child outcomes are keyed by it regardless of completion order. Chosen by `key_by`, which names one **expanded** input whose JSON-safe scalar value is the key.
+_Avoid_: Item index, result position
+
+**Batch item expansion**:
+Turning one `submit_batch(graph, values, map_over=..., map_mode=...)` call into the manifest, reusing runner map's input-expansion vocabulary and then freezing the result. Durable concurrency comes from Host admission, never a per-call `max_concurrency`; durable failure policy comes from Batch tolerance, never `error_handling`.
+_Avoid_: Fan-out config, batch map (a Batch is not a MapResult)
+
+**Batch item view**:
+`BatchItemView` — the per-item truth for one manifest key: its inert child RunRef, current status and waiting condition, terminal outcome once settled, and whether the child ever started. Exposed as `BatchView.items[item_key]`.
+_Avoid_: Item result, child handle (a RunRef is not a handle)
+
+**Paused child**:
+A Batch child parked on a durable PauseSlot. It is a distinct `paused` Batch count, never folded into `active`, and it holds no active-Run admission slot — `active` means claimed and executing.
+_Avoid_: Blocked item, idle run, waiting child (that is the general condition)
+
+**Answer re-admission**:
+The single transaction in which an accepted answer settles its PauseSlot, persists the resume input, appends the Run `answer` fact and the Batch `child_runnable` fact, and flips the submission from `paused` back to `pending`. There is no state where an accepted answer exists without its run being claimable, or the reverse. Answer-vs-stop and answer-vs-answer resolve only by commit order.
+_Avoid_: Delivering the answer, waking the run, retry (nothing is repeated)
+
+**Batch tolerance**:
+Optional manifest-pinned count and percentage failure thresholds. Either trips only when failure-equivalent children strictly exceed it; the percentage denominator is always the total manifest item count.
+_Avoid_: Error rate, failure policy
+
+**Closed admission**:
+What a tolerance trip does: no pending child of that Batch is ever newly claimed or re-admitted again, including one an answered pause just returned to claim order. A trip is a stop-the-line decision, not an advisory threshold.
+_Avoid_: Paused batch, throttled, soft limit
+
+**Abandoned item**:
+A Batch child that HAD started when closed admission settled it. Terminal and settled, reported as the `abandoned` count/outcome and the durable `child_abandoned` fact. Distinct from an unstarted item, which never began: an abandoned item committed steps and may have landed side effects, so it is the one an operator reconciles before rerunning.
+_Avoid_: Unstarted (it ran), cancelled, orphaned, recovery-exhausted (that is the brake, not tolerance)
+
+**Rerun**:
+Creating a new Run under a new workflow id from a source Run or Batch with its pinned Definition identity and inputs intact, recording `retry_of` lineage. A Batch rerun mints a new immutable Batch manifest with a new BatchRef and explicit Batch lineage, containing new child Runs only for the selected source item keys; it never mutates the source Batch. Never accepts input overrides.
+_Avoid_: Redrive (an SQS dead-letter term), retry (node-owned), resume (continues the same Run)
+
+**Fork**:
+Explicit, compatibility-checked migration of parked work to a different Definition identity, recording `forked_from` lineage and a migration reason. Never shares the rerun operation.
+_Avoid_: Upgrade, in-place migration, redrive
+
+**Recovery-exhausted condition**:
+The coordination condition set when repeated recovery without committed graph progress reaches a Run's pinned recovery cap. It is never a WorkflowStatus, and only rerun revives the work.
+_Avoid_: Failed run, poison status, dead-letter state
+
+**Unknown effect outcome**:
+The surfaced state of a declared external effect that was dispatched but whose settlement was not witnessed. It is never re-dispatched automatically and requires an explicit operator decision.
+_Avoid_: Failed effect, lost effect, retryable error
+
+**Waiting condition**:
+The closed typed vocabulary (`WaitingCondition` enum: `QUEUED`, `SCHEDULED`, `PAUSED`, `VERSION_INCOMPATIBLE`, `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED`) naming why a Run waits, exposed as `RunView.waiting: WaitingCondition | None` and accepted by `RunQuery` filters. Never a free string.
+_Avoid_: Status string, hold reason, parked state
+
+**Durable update sequence**:
+The monotonic per-Run (or per-Batch) sequence assigned to every committed fact in its own transaction. `watch(after=cursor)` resumes from it without gaps; live previews are non-durable and never advance it.
+_Avoid_: Event offset, log position (no OutputLog exists), progress counter
+
+### Relationships
+
+- The **Host** owns new work; the **RunHomeClient** owns existing work. The Host exposes the client but never duplicates its verbs.
+- A process without loaded **Definition** code may use a **RunHomeClient** but can never submit; there is no app-less submit catalog.
+- A **RunRef** or **BatchRef** is always safe to store and pass between processes; an Execution handle never is.
+- Use-existing dedup applies only to **Start fingerprint**-identical nonterminal work; terminal reuse and fingerprint mismatch are distinct typed conflicts.
+- **Rerun** repeats; **fork** migrates. Their lineage relations never merge.
+- A **recovery-exhausted condition** parks a Run without touching Retry budgets, Retry windows, or WorkflowStatus; it surfaces as `WaitingCondition.RECOVERY_EXHAUSTED`, never as an execution status.
+- An **Unknown effect outcome** extends the Unknown attempt outcome rule to declared external effects: ambiguity is surfaced, never resolved by guessing.
+- A **paused child** is in flight, not settled: its Batch reports `settled=False` and its watch stream stays open. `child_paused` / `child_runnable` are lifecycle facts that may repeat (a second interrupt mints a new PauseSlot); only `child_settled`, `child_unstarted`, and a trip's `unstarted_items` account an item for good.
+- **Answer re-admission** resumes the *same* checkpointed Run with only `{response_key: answer}`. Pinned start inputs are never resupplied — strict checkpoint resume would refuse them as an input override.
+- Stopping a **paused child** is a stop, not a duplicate-resolution decision: the Run settles `STOPPED` and the domain question stays unanswered.
+
 ## Materialization
 
 Vocabulary for `hypergraph.materialization` — incremental, declarative tables derived from a source. See [ADR 0001](docs/adr/0001-sync-and-async-derived-table-classes.md) and [ADR 0002](docs/adr/0002-stream-materialization-through-runner-with-sinks.md).

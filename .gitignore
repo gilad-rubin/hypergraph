@@ -64,3 +64,8 @@ viz-dev/
 
 # Superposition delivery scratch / handoffs
 .sp/
+
+# Coverage data (the #342 branch-coverage gate writes these)
+.coverage
+.coverage.*
+htmlcov/

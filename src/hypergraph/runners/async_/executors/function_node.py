@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import inspect
-from contextlib import AbstractAsyncContextManager, nullcontext
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, nullcontext
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.cache_observer import node_cache_observer
 from hypergraph.runners._shared.outputs import wrap_outputs
+from hypergraph.runners._shared.provider_limits import provider_permits
 from hypergraph.runners.async_.superstep import get_concurrency_limiter
 
 if TYPE_CHECKING:
@@ -33,6 +34,13 @@ class AsyncFunctionNodeExecutor:
     Respects the global concurrency limiter for async operations.
     The semaphore is acquired here (at the leaf level) rather than at
     the superstep level, so that nested GraphNodes don't cause deadlock.
+
+    Injected provider-resource budgets (graph and node scope) are held
+    OUTSIDE that semaphore for the whole node execution: a task queueing for
+    external capacity must not also sit on a runner concurrency permit that
+    other nodes could use. ``provider_permits`` hands them over already
+    deduplicated and in the process-wide acquisition order; take them in
+    exactly that order.
     """
 
     async def __call__(
@@ -56,6 +64,26 @@ class AsyncFunctionNodeExecutor:
         Returns:
             Dict mapping output names to their values
         """
+        permits = provider_permits(ctx.provider_limits, node.provider_limit)
+        if not permits:
+            return await self._run_within_concurrency(node, inputs, ctx)
+        # Waiting here is throttling, not failure: it happens outside the
+        # attempt coordinator, so no attempt is reserved and neither the
+        # retry budget nor a per-attempt timeout runs while the permit is
+        # unavailable.
+        async with AsyncExitStack() as stack:
+            for limiter in permits:
+                await stack.enter_async_context(limiter)
+            outputs = await self._run_within_concurrency(node, inputs, ctx)
+        return outputs
+
+    async def _run_within_concurrency(
+        self,
+        node: FunctionNode,
+        inputs: dict[str, Any],
+        ctx: ExecutionContext,
+    ) -> dict[str, Any]:
+        """Apply the runner's max_concurrency permit, then execute."""
         if node.retry is not None or node.timeout is not None:
             # Per-attempt permits (#218): the concurrency budget covers
             # in-flight callable invocation through timeout settlement, while

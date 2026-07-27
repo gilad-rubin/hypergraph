@@ -5,14 +5,30 @@ Module boundaries and dependency rules for `src/hypergraph/`.
 ## Dependency Direction
 
 ```
-nodes  →  graph  →  runners  →  events
-                        ↓
-                     _shared/
+limits ──────┬──────────┬─────────────┐
+             ↓          ↓             ↓
+          nodes  →  graph  →  runners  →  events
+                                 ↓
+                              _shared/
 ```
 
-One-way: downstream modules import upstream, never the reverse. `nodes` knows nothing about `graph`. `graph` knows nothing about `runners`.
+One-way: downstream modules import upstream, never the reverse. `nodes` knows nothing about `graph`. `graph` knows nothing about `runners`. `limits` is a leaf: `nodes`, `graph`, and `runners` all import it, and it imports none of them.
 
 ## Module Boundaries
+
+### limits.py
+
+Injected provider-resource budgets — permit pools over external capacity.
+
+| File | Purpose |
+|------|---------|
+| `limits.py` | `ProcessLocalLimiter` — one permit pool shared by every thread and task in this process |
+
+**Rule**: A leaf module with no Hypergraph imports, so `nodes`, `graph`, and
+`runners` can all depend on it without creating a cycle. Keep the scope in the
+name: this coordinates one process, never a fleet. Provider-resource admission
+is not the durable host's active-Run cap (`RunHome.max_active_runs`); the two
+controls never merge.
 
 ### nodes/
 
@@ -92,6 +108,8 @@ Practical mental model:
 - `cache_observer.py` — Bridge nested hypercache telemetry into Hypergraph events during node execution
 - `caching.py` — Cache key computation and lookup
 - `checkpoint_helpers.py` — Build persisted `StepRecord`s from runtime state
+- `pending_boundaries.py` — Persist a superstep's runnable node boundaries before any sibling dispatches
+- `pause_slots.py` — Project an interrupt occurrence into a durable pause slot and commit it atomically with the `PAUSED` transition (and any still-buffered step records), never before the paused step
 - `event_helpers.py` — Emit lifecycle events
 - `gate_execution.py` — Route/ifelse decision execution
 - `input_normalization.py` — Normalize user inputs for execution
@@ -105,6 +123,7 @@ Practical mental model:
 - `map_resume.py` — Own map-item signature, index, and claim decisions
 - `outputs.py` — Output wrapping, selection, and mapped-output collection
 - `protocols.py` — executor protocols for sync and async runners
+- `provider_limits.py` — Compose the injected provider budgets around one node execution (deduplicated, then ranked into the one process-wide acquisition order), and carry graph-scope budgets across the nested-graph boundary
 - `readiness.py` — Gate activation, readiness, staleness, and result application
 - `results.py` — Public result, status, pause-info, and execution-log types
 - `run_log.py` — always-on `RunLog` collection helpers
@@ -140,6 +159,7 @@ Durability, lineage, and historical inspection for persisted runs.
 | `protocols.py` | Sync write protocol for `SyncRunner` |
 | `serializers.py` | Payload serializers |
 | `_migrate.py` | SQLite schema migrations |
+| `_answer_schema.py` | Render an interrupt's declared `answer_type` as JSON Schema and check settled values against it |
 
 **Rule**: Checkpointing is not just persistence. It participates in resume,
 fork, retry, lineage, and durable-history notebook UX. It is not required for

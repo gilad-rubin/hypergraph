@@ -163,16 +163,50 @@ Every checkpointer implements the same contract, so runners don't need to know w
 | Method | Purpose |
 |---|---|
 | `save_step(record)` | Persist one node's execution atomically. Upserts on `(run_id, superstep, node_name)`. |
-| `create_run(run_id, ...)` | Create or reset a run record at run start. |
+| `create_run(run_id, ..., inputs=None)` | Create or reset a run record at run start, and store the run's graph-boundary inputs. |
 | `update_run_status(run_id, status, ...)` | Update lifecycle status with duration/counts. |
 | `get_state(run_id, superstep=None)` | Fold step values into accumulated state. `None` means latest. |
 | `get_steps(run_id, superstep=None, show_internal=False)` | Public step records through a superstep. Set `show_internal=True` to include retention carriers. |
-| `get_checkpoint(run_id, superstep=None)` | `Checkpoint` (values + steps) for forking — has a default implementation built from `get_state`/`get_steps`. |
+| `get_run_inputs(run_id)` | The graph-boundary values this run started from. Has a default implementation returning `{}`. |
+| `get_checkpoint(run_id, superstep=None)` | `Checkpoint` (values + steps) for restoring — has a default implementation built from `get_run_inputs`, `get_state`, and `get_steps`. |
 | `list_runs(status=None, graph_name=None, since=None, parent_run_id=<omitted>, limit=100)` | List runs with composable filters. Omit `parent_run_id` for all runs; pass `None` for top-level runs only. |
 | `count_runs(status=None, parent_run_id=<omitted>, retry_of=None)` | Count with the same omitted/all versus explicit-`None`/top-level parent filter. |
 | `search_async(query, field=None, limit=20)` | FTS search over step values. Returns `[]` if unsupported. |
 
 `graph_name`, `since`, `status`, and `parent_run_id` compose with AND before `limit` is applied. `since` is inclusive; naive datetimes mean UTC and aware datetimes are normalized to UTC. The same rules apply to SQLite's sync `runs()` adapter.
+
+### Run inputs
+
+`create_run(..., inputs=...)` and `get_run_inputs(run_id)` are how a run's own
+graph-boundary values become restorable. Step records fold node **outputs**,
+so before this the values a run *started* from were the one piece of
+restorable state nothing recorded: a node placed after an interrupt that
+consumed a raw graph input could never be satisfied on resume.
+
+- **Stored first-write-wins.** A resume passes only `{response_key: answer}`,
+  and overwriting the originals with it would destroy the state the resume
+  needs. `SqliteCheckpointer` uses `COALESCE` on `runs.inputs_data`; the
+  in-memory checkpointer mirrors the rule.
+- **Only declared graph inputs are stored** — an interrupt answer is a node
+  output, so a resume payload contributes nothing. A fork or retry inherits
+  the source checkpoint's restored inputs and so is independently restorable
+  in turn.
+- **`get_checkpoint` layers them underneath the folded step values**, so a
+  node output that shadows an input name still wins, exactly as it does live.
+- **Backends need not persist them.** The ABC's `get_run_inputs` returns `{}`
+  by default, and a `create_run` that ignores `inputs=` keeps the pre-existing
+  behavior: the checkpoint then carries only folded step values.
+- **The values must be storable by the checkpointer's serializer.** A live
+  handle passed as a graph input now stops the run at start with a `TypeError`
+  naming the run and the offending input. Pass a storable stand-in and build
+  the object inside a node, or configure a serializer that accepts it
+  (`SqliteCheckpointer(..., serializer=JsonSerializer(lossy=True))`).
+
+```python
+await checkpointer.create_run("wf-1", graph_name="demo", inputs={"x": 5})
+await checkpointer.get_run_inputs("wf-1")   # {"x": 5}
+(await checkpointer.get_checkpoint("wf-1")).values  # inputs, with step values over them
+```
 
 `SqliteCheckpointer` supports runner-managed use across accepted background
 executions. For any other shared backend, follow its documented concurrency
@@ -200,6 +234,8 @@ CheckpointPolicy()
 | `ttl` | `timedelta \| None` | Auto-expire completed runs after this duration. |
 
 **Retry/timeout evidence writes through under every durability mode.** For a node with a [RetryPolicy](nodes.md#retrypolicy) or `timeout=`, attempt reservations/outcomes and the series-closing StepRecord are persisted immediately even under `durability="async"` or `"exit"`: the final attempt outcome, its linked StepRecord, and the series closure must commit atomically, and that invariant takes precedence over buffering. Nodes without retry or timeout buffer normally.
+
+**`durability="exit"` records no [pending node boundaries](#pending-node-boundaries-internal).** A boundary is only meaningful when it can be joined against a mid-run journal to classify it, and `exit` buffers every step to run completion — so under `exit` the boundary write is skipped entirely rather than persisting intent nothing can settle. `sync` and `async` both record boundaries, and both write them through immediately regardless of the mode's StepRecord timing (a buffered boundary would not survive the process death it exists to describe).
 
 **Async durability is best-effort.** With `durability="async"` (the default), step writes happen in background tasks: a failed write does not fail the run — the run still returns `COMPLETED`, and the failure is reported on the result instead. Check `result.checkpoint_ok` (and `result.checkpoint_errors`, a tuple of error strings) to detect gaps in the persisted history:
 
@@ -456,6 +492,152 @@ if open_series is not None:
     # A reservation that never settled is now OUTCOME_UNKNOWN and stays consumed:
     # max_attempts=3 with one stranded attempt leaves remaining == 2.
 ```
+
+## Pending Node Boundaries (Internal)
+
+{% hint style="warning" %}
+Internal recovery persistence. The shapes below are stable for inspection but the write seam is not a public API.
+{% endhint %}
+
+A superstep's `StepRecord`s are written when the superstep finishes. A process that dies mid-superstep — after one sibling ran and before its siblings did — used to leave recovery inferring what was pending from an incomplete record. Before **any** sibling of a superstep can cause external work, the checkpointer now records every runnable sibling as a **pending node boundary**:
+
+```text
+superstep 4 = [fetch_protocol, extract_entities, notify_review]
+boundaries  = intent, written first    # who was runnable
+steps       = the execution journal    # what actually happened
+```
+
+A pending record is intent, never execution truth — it never claims a node ran. Its state is **derived** by joining the journal, so recovery distinguishes three cases without guessing:
+
+| State | Meaning |
+|---|---|
+| `COMMITTED` | A `StepRecord` exists at the same address — the outcome was witnessed (completed, failed, or paused). |
+| `PENDING` | No `StepRecord` and no dispatch mark. Nothing started it, so it is safe to dispatch. |
+| `UNKNOWN_EFFECT` | Marked dispatched with no `StepRecord`. Reserved for declared-effect nodes; recovery never re-dispatches these automatically. |
+
+### Node addressing
+
+One canonical address names one boundary occurrence: `<run_id>:<superstep>:<node_name>` — exactly the tuple `steps` is unique on, so a boundary and its `StepRecord` always agree.
+
+```python
+from hypergraph.checkpointers import node_address
+
+node_address("refund-c-42", 8, "approval")        # 'refund-c-42:8:approval'
+node_address("wf-1/nested", 0, "inner")           # 'wf-1/nested:0:inner'
+```
+
+Only the last two segments are fixed-shape (digits, then a Python identifier), so nested (`wf-1/nested`) and Batch-child (`wf-b:item-7`) run ids survive in the first segment unchanged. A loop's second visit to the same node lands on a later superstep and therefore owns a different address — an interrupted iteration never leaks into the next iteration's identity. A nested graph runs as its own child run, so the parent keeps the parent-facing address for its `GraphNode` while the child records its own boundaries under the child workflow id.
+
+| Type | Fields | Notes |
+|---|---|---|
+| `PendingNode` | `run_id`, `superstep`, `node_name`, `node_type`, `created_at`, `dispatched_at` | Durable intent for one runnable boundary. `dispatched_at` is the declared-effect seam and stays `None` on the boundary-record write path. |
+| `NodeBoundary` | `run_id`, `superstep`, `node_name`, `state`, `node_type`, `created_at`, `dispatched_at`, `step_status` | Recovery view: intent joined with the journal. `.address` renders the canonical address. |
+| `BoundaryState` | `PENDING`, `COMMITTED`, `UNKNOWN_EFFECT` | Enum. Derived on read — never stored. |
+
+Reading them back after a crash:
+
+```python
+for boundary in await checkpointer.get_node_boundaries("wf-1"):
+    print(boundary)
+# NodeBoundary wf-1:0:seed | committed | step: completed
+# NodeBoundary wf-1:1:alpha | pending
+# NodeBoundary wf-1:1:notify_review | pending
+
+# SqliteCheckpointer also exposes the sync mirror:
+checkpointer.get_node_boundaries_sync("wf-1")
+```
+
+**A boundary in an interrupted superstep never reads `COMMITTED`.** `StepRecord`s are committed per superstep, not per node, so a sibling that ran to completion inside the killed superstep has no `StepRecord` and its boundary is derived as `PENDING` — it will be dispatched again on restart. What the record buys is that unfinished siblings stay *visible and named* instead of being inferred from silence. For repeat-safe work the re-dispatch only wastes effort; effectful nodes are the subject of the `dispatched_at` seam.
+
+Boundaries follow their step's retention fate: a pruned `StepRecord` takes its boundary with it, so compaction can never silently re-classify settled work as pending. Checkpointers that do not implement the seam keep working; the runners probe for it (`PendingNodeProtocol` / `SyncPendingNodeProtocol` in `hypergraph.checkpointers.protocols`) instead of requiring it.
+
+## Durable Pause Slots
+
+A pause used to die with the process: the question and its answer port lived only on the in-memory `RunResult`. Now every interrupt occurrence is persisted as a **`PauseSlot`**, committed together with the run's transition to `PAUSED` — **no reader can observe a committed `PAUSED` run without its slot.**
+
+### Three things named "pause"
+
+They are different layers, and `result.pause` vs `run.pause_slot` is the pair most easily confused:
+
+| Name | Lifetime | Where |
+|---|---|---|
+| `PauseExecution` | Control flow — the exception an `InterruptNode` raises to suspend the run | internal (`runners/_shared/state.py`) |
+| [`PauseInfo`](runners.md#pauseinfo) | In-memory — `result.pause` on the `RunResult` this process just produced; gone when the process exits | `hypergraph.PauseInfo` |
+| `PauseSlot` | **Durable** — `run.pause_slot`, readable by any process, carries the question projection, the answer contract, and the settled answer | `hypergraph.PauseSlot` (below) |
+
+One pause produces all three: the node raises `PauseExecution`, the runner reports it as `PauseInfo` on this run's result, and the checkpointer persists it as a `PauseSlot`. Only the slot survives the process, so anything a later process must know — what was asked, which port answers it, which occurrence is current — lives there.
+
+```python
+run = await checkpointer.get_run_async("refund-c-42")
+slot = run.pause_slot                              # durable, or None
+
+slot.pause_id                                      # 'refund-c-42:8:approval'
+slot.response_key                                  # 'approved'
+slot.question                                      # JSON-safe projection, not the live object
+slot.answer_schema                                 # {'type': 'boolean'} — derived from answer_type
+slot.options                                       # ('yes', 'no') — this occurrence's choices
+slot.is_open                                       # True until it is answered
+
+await checkpointer.settle_pause("refund-c-42", pause_id=slot.pause_id, value=True)
+```
+
+| Field | Meaning |
+|---|---|
+| `pause_id` | Node address of the occurrence, `<run_id>:<superstep>:<node_name>` — the same address its paused `StepRecord` carries. A loop's second visit lands on a later superstep, so occurrences never collide. |
+| `run_id`, `superstep`, `node_name` | The addressed occurrence. `node_name` is **parent-facing**: a nested interrupt names the delegating `GraphNode` in this run. |
+| `node_path` | Full display path of the pausing node (`'review/inner_ask'`). |
+| `response_key` | The answer port the settled value enters dataflow through — parent-facing for nested graphs. |
+| `question` | JSON-safe projection: `prompt`, `options`, `evidence`, and a stable `answer_type` name. Evidence that cannot be serialized becomes `{"__unserializable__": "<type>"}` — the live handler payload never enters the journal. |
+| `answer_schema` | The graph-derived answer contract as JSON Schema. |
+| `options` | This occurrence's choices, kept even when they do not constrain the value. |
+| `created_at`, `settled_at`, `answer` | When it was asked, when it was answered, and the settled value (the durable resume input for `response_key`). |
+
+### The answer contract
+
+`answer_schema` is rendered from the `InterruptNode`'s declared `answer_type` — there are **no validator callables**; validation is schema-driven at settlement time.
+
+| Declared `answer_type` | `answer_schema` |
+|---|---|
+| `bool` / `int` / `float` / `str` / `None` | `{"type": "boolean"}` / `"integer"` / `"number"` / `"string"` / `"null"` |
+| `list`, `list[str]`, `tuple`, `set` | `{"type": "array"}` |
+| `dict`, a `TypedDict`, a **dataclass** | `{"type": "object"}` |
+| a `NamedTuple` | `{"type": "array"}` |
+| `Literal[...]`, an `Enum` | `{"enum": [...]}` |
+| `X \| Y` | `{"anyOf": [...]}` |
+| nothing declared (`Any`) | `{}` |
+| anything else | `{"x-hypergraph-unrenderable": "pkg.MyType"}` |
+
+**A settled answer is always the JSON form of the declared type, never the live object.** The answer is durable resume input, so it must survive the journal — `answer_type=Verdict` (a dataclass) is answered with `dataclasses.asdict(verdict)`, not with the instance. Nothing is coerced: a coercion would hand the graph's answer port a different type than it declared.
+
+Three rules keep the stored contract honest:
+
+- **Only expressible types get a constraint, and only one the slot can check.** A dataclass stops at `{"type": "object"}` and does not claim `properties`, because settlement does not check `properties`.
+- **A type the renderer cannot express says so.** Its schema carries `"x-hypergraph-unrenderable"` naming the declared type. That constrains nothing beyond JSON-safety — unknown JSON Schema keywords are ignored — but an operator reading the slot can tell "the renderer gave up on `MyType`" from "the handler declared nothing" (`{}`). An un-renderable type never raises at pause time; a graph that paused before keeps pausing. If such a value is refused, the error names the type and says to send its JSON-safe form.
+- **Occurrence options narrow the schema only when the declared type accepts them.** `answer_type=str` with `options=("billing", "fraud")` becomes `{"type": "string", "enum": ["billing", "fraud"]}`; `answer_type=bool` with display labels `("yes", "no")` keeps `{"type": "boolean"}` and leaves the labels on `slot.options`. An unconstrained contract never narrows — it cannot know whether the declared type accepts the labels.
+
+### Settlement
+
+`settle_pause(run_id, pause_id=..., value=...)` validates one typed value and then compare-and-sets on that exact occurrence, in one transaction with the resume-input write. Three refusals, all raised **before any write** so a refused answer never consumes the occurrence:
+
+| Error | Raised when |
+|---|---|
+| `AnswerRejectedError` | no `pause_id`, an unknown one, a run with no durable pause, a run that is not paused, or a value failing `answer_schema` |
+| `PauseAlreadySettledError` | this occurrence was already answered; the first value wins |
+| `StalePauseError` | a later occurrence is current (`.current_pause_id` names it) |
+
+All three subclass `PauseSettlementError`, which is both a `RuntimeError` and a [`HostError`](host.md) — one `except HostError` around `RunHomeClient` calls catches every durable-host refusal, including these. Reads and settlement have sync mirrors on `SqliteCheckpointer` (`get_pause_slot_sync`, `settle_pause_sync`, `record_pause_sync`); `MemoryCheckpointer` implements the async seam. Checkpointers without the seam keep working — the runners probe for `PauseSlotProtocol` / `SyncPauseSlotProtocol` and fall back to plain step saves plus a `PAUSED` status write, with no durable question.
+
+`record_pause` commits everything it is handed in one transaction, and the paused `StepRecord` is never written after the slot. Under `durability="exit"` the step record is still buffered, so all three facts really are one transaction; under `"sync"`/`"async"` it was already committed by the ordinary per-superstep path, so the atomic unit is slot + `PAUSED`. Either way the invariant holds: a committed `PAUSED` run always has its slot. Re-recording the same `pause_id` is a no-op in every backend — the address *is* the occurrence, so a replay never rewrites what was asked or clears a settlement.
+
+Unlike a node boundary, a pause slot is **not** pruned by retention compaction: a boundary's state is derived from `steps`, but a slot carries the question and the human answer — truth in its own right, not a projection of the journal.
+
+At this layer settlement records durable resume input; it does not itself resume the run. Replaying it is an ordinary run call:
+
+```python
+await runner.run(graph, {slot.response_key: slot.answer}, workflow_id="refund-c-42")
+```
+
+A [`RunHome`](host.md) settles through this same seam but owns the surrounding transaction, so it commits **more** in the same unit of work: the answer plus the submission's re-admission, which is what makes a hosted run continue on its own. See [Answering a Pause](host.md#answering-a-pause).
 
 ## Backend Comparison
 

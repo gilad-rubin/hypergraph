@@ -22,7 +22,17 @@ from hypergraph import (
     WorkflowStoppedError,
     interrupt,
 )
-from hypergraph.checkpointers import Checkpointer, MemoryCheckpointer, SqliteCheckpointer, SqliteRunInspector
+from hypergraph.checkpointers import (
+    BoundaryState,
+    Checkpointer,
+    MemoryCheckpointer,
+    NodeBoundary,
+    PendingNode,
+    Run,
+    SqliteCheckpointer,
+    SqliteRunInspector,
+    node_address,
+)
 from hypergraph.events import RunEndEvent
 from hypergraph.materialization import (
     ErroredRow,
@@ -75,6 +85,13 @@ def _documented_function_defs(section: str) -> dict[str, ast.FunctionDef | ast.A
     code = section.split("```python\n", maxsplit=1)[1].split("\n```", maxsplit=1)[0]
     tree = ast.parse(code)
     return {node.name: node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+def _hypergraph_all() -> tuple[str, ...]:
+    """Root exports, as a tuple (kept out of the assertion for readability)."""
+    import hypergraph
+
+    return tuple(hypergraph.__all__)
 
 
 def _parameter_names(function: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[str, ...]:
@@ -468,6 +485,40 @@ def test_checkpointer_semantics_docs_mirror_high_drift_surfaces() -> None:
     assert "generic `run-...`" in runners
     assert "job-1-fork-a1b2c3" in checkpointers
     assert "nested source" in checkpointers
+
+    # Pending node boundaries: the address format is shared durable
+    # vocabulary (the pause slot reuses it), and the three recovery states
+    # are the whole point of the record.
+    boundaries = _scoped_section(checkpointers, "## Pending Node Boundaries (Internal)")
+    assert "`<run_id>:<superstep>:<node_name>`" in boundaries
+    assert node_address("refund-c-42", 8, "approval") in boundaries
+    assert {state.name for state in BoundaryState} == {"PENDING", "COMMITTED", "UNKNOWN_EFFECT"}
+    for state in BoundaryState:
+        assert f"`{state.name}`" in boundaries
+    assert set(PendingNode.__dataclass_fields__) <= set(NodeBoundary.__dataclass_fields__) | {"state"}
+    for field_name in PendingNode.__dataclass_fields__:
+        assert f"`{field_name}`" in boundaries
+    assert PendingNode.__dataclass_fields__["dispatched_at"].default is None
+    assert "never claims a node ran" in boundaries
+
+    # Durable pause slots: the persisted answer contract is user-visible
+    # state, and the three refusals must stay distinguishable in the docs.
+    from hypergraph.checkpointers import PauseSlot
+    from hypergraph.checkpointers._answer_schema import render_answer_schema
+
+    slots = _scoped_section(checkpointers, "## Durable Pause Slots")
+    assert node_address("refund-c-42", 8, "approval") in slots
+    assert str(render_answer_schema(bool)) in slots
+    for field_name in PauseSlot.__dataclass_fields__:
+        assert f"`{field_name}`" in slots
+    assert "`pause_id`" in slots
+    assert isinstance(inspect.getattr_static(PauseSlot, "pause_id"), property)
+    assert isinstance(inspect.getattr_static(PauseSlot, "is_open"), property)
+    assert Run.__dataclass_fields__["pause_slot"].default is None
+    for error_name in ("AnswerRejectedError", "PauseAlreadySettledError", "StalePauseError", "PauseSettlementError"):
+        assert error_name in slots
+    assert "no validator callables" in slots
+    assert "not** pruned by retention" in slots
 
 
 def test_inspect_mode_docs_mirror_public_contract() -> None:
@@ -891,3 +942,235 @@ def test_retry_docs_pin_public_contract() -> None:
     assert "RetryWindowExpiredError" in errors_api
     assert issubclass(AttemptTimeoutError, TimeoutError)
     assert issubclass(RetryWindowExpiredError, TimeoutError)
+
+
+def test_durable_host_docs_pin_public_contract() -> None:
+    """The Tier 1 local host surface stays in lockstep with its reference page."""
+    from hypergraph import (
+        BaseRunner,
+        BatchCommandReceipt,
+        BatchItemView,
+        BatchRef,
+        BatchSubmitReceipt,
+        BatchTolerance,
+        BatchUpdate,
+        BatchView,
+        CommandReceipt,
+        DefinitionId,
+        Graph,
+        RunHome,
+        RunHomeClient,
+        RunQuery,
+        RunRef,
+        RunUpdate,
+        RunView,
+        SubmitReceipt,
+        WaitingCondition,
+        serve,
+    )
+
+    host_api = _read("docs/06-api-reference/host.md")
+    docs_index = _read("docs/README.md")
+
+    # Reference page is indexed and documents the ownership seam.
+    assert "06-api-reference/host.md" in docs_index
+    assert "host.submit_sync" in host_api
+    assert "WorkerLockError" in host_api
+    assert "WaitingCondition" in host_api
+
+    # Ticket 03: identity/dedup/rerun/fork surface is documented.
+    assert "DefinitionId" in host_api
+    assert "accepts=" in host_api
+    assert "WorkflowIdConflictError" in host_api
+    assert "ForkCompatibilityError" in host_api
+    assert "RerunError" in host_api
+    assert "client.rerun" in host_api
+    assert "host.fork" in host_api
+    assert "rerun_sync" in host_api
+    assert "fork_sync" in host_api
+
+    # Ticket 04: durable stop, recovery brake, and client.list surface.
+    assert "client.stop" in host_api
+    assert "stop_sync" in host_api
+    assert "CommandReceipt" in host_api
+    assert "client.list" in host_api
+    assert "list_sync" in host_api
+    assert "RunQuery" in host_api
+    assert "recovery_cap" in host_api
+    assert "RECOVERY_EXHAUSTED" in host_api
+
+    # Ticket 05: durable Batch surface — manifest, keyed outcomes, bseq.
+    assert "submit_batch" in host_api
+    assert "submit_batch_sync" in host_api
+    assert "BatchRef" in host_api
+    assert "BatchSubmitReceipt" in host_api
+    assert "BatchCommandReceipt" in host_api
+    assert "BatchView" in host_api
+    assert "BatchUpdate" in host_api
+    assert "BatchTolerance" in host_api
+    assert "unstarted_items" in host_api
+    assert "bseq" in host_api
+
+    # Ticket 13: durable pause answers — one occurrence, three refusals.
+    assert "client.answer" in host_api
+    assert "answer_sync" in host_api
+    assert "get_run_slot" in host_api
+    assert "AnswerRejectedError" in host_api
+    assert "PauseAlreadySettledError" in host_api
+    assert "StalePauseError" in host_api
+    assert "pause_id" in host_api
+    assert tuple(inspect.signature(RunHomeClient.answer).parameters) == ("self", "ref", "pause_id", "value")
+    assert tuple(inspect.signature(RunHomeClient.answer_sync).parameters) == tuple(inspect.signature(RunHomeClient.answer).parameters)
+    assert tuple(inspect.signature(RunHomeClient.get_run_slot).parameters) == ("self", "ref")
+    assert tuple(inspect.signature(RunHomeClient.get_run_slot_sync).parameters) == ("self", "ref")
+
+    # Ticket 14: scheduled pause answers — one occurrence, one value, one due
+    # time, plus opaque command provenance. No recurrence surface.
+    assert "client.schedule_answer" in host_api
+    assert "schedule_answer_sync" in host_api
+    assert "due_at" in host_api
+    assert "source_ref" in host_api
+    assert tuple(inspect.signature(RunHomeClient.schedule_answer).parameters) == ("self", "ref", "pause_id", "value", "due_at", "source_ref")
+    assert tuple(inspect.signature(RunHomeClient.schedule_answer_sync).parameters) == tuple(
+        inspect.signature(RunHomeClient.schedule_answer).parameters
+    )
+
+    # Definition binding and runner cloning signatures.
+    assert tuple(inspect.signature(Graph.with_runner).parameters) == ("self", "runner")
+    assert isinstance(Graph.bound_runner, property)
+    assert tuple(inspect.signature(BaseRunner.with_checkpointer).parameters) == ("self", "checkpointer")
+    assert tuple(inspect.signature(BaseRunner.has_active_run).parameters) == ("self", "workflow_id")
+
+    # RunHome.open / serve / submit / fork / client verb signatures.
+    assert tuple(inspect.signature(RunHome.open).parameters) == ("uri", "policy", "serializer", "max_active_runs")
+    assert tuple(inspect.signature(serve).parameters) == ("graphs", "home", "deployment_version", "accepts")
+    from hypergraph.host import Host
+
+    # Graph-first submission (#342): the served Graph object IS the selector,
+    # resolved by its own pinned identity. A Definition-name string is not.
+    assert tuple(inspect.signature(Host.submit).parameters) == (
+        "self",
+        "graph",
+        "values",
+        "workflow_id",
+        "start_at",
+        "source_ref",
+        "recovery_cap",
+    )
+    assert tuple(inspect.signature(Host.submit_sync).parameters) == tuple(inspect.signature(Host.submit).parameters)
+    # Batch submission reuses runner map's expansion vocabulary and freezes
+    # it into the manifest; key_by names the input that IS the item key.
+    # Deliberately absent: max_concurrency (Host admission owns durable
+    # concurrency) and error_handling (BatchTolerance owns durable failure).
+    assert tuple(inspect.signature(Host.submit_batch).parameters) == (
+        "self",
+        "graph",
+        "values",
+        "map_over",
+        "map_mode",
+        "key_by",
+        "workflow_id",
+        "tolerance",
+        "start_at",
+        "source_ref",
+        "recovery_cap",
+    )
+    assert tuple(inspect.signature(Host.submit_batch_sync).parameters) == tuple(inspect.signature(Host.submit_batch).parameters)
+    assert tuple(inspect.signature(Host.fork).parameters) == ("self", "ref", "into", "reason", "source_ref")
+    assert tuple(inspect.signature(Host.fork_sync).parameters) == tuple(inspect.signature(Host.fork).parameters)
+    assert tuple(inspect.signature(Host.work_forever).parameters) == ("self", "worker_id", "poll_interval", "drain_timeout")
+    assert tuple(inspect.signature(RunHomeClient.get).parameters) == ("self", "ref")
+    assert tuple(inspect.signature(RunHomeClient.get_sync).parameters) == ("self", "ref")
+    assert tuple(inspect.signature(RunHomeClient.watch).parameters) == ("self", "ref", "after", "poll_interval")
+    # rerun takes item_keys for the Batch form and never an input override.
+    # source_ref is audit provenance, recorded on the new submission like
+    # submit/stop/fork record it — never a work-definition input.
+    assert tuple(inspect.signature(RunHomeClient.rerun).parameters) == ("self", "ref", "item_keys", "source_ref")
+    assert tuple(inspect.signature(RunHomeClient.rerun_sync).parameters) == tuple(inspect.signature(RunHomeClient.rerun).parameters)
+    assert tuple(inspect.signature(RunHomeClient.stop).parameters) == ("self", "ref", "info", "source_ref")
+    assert tuple(inspect.signature(RunHomeClient.stop_sync).parameters) == tuple(inspect.signature(RunHomeClient.stop).parameters)
+    assert tuple(inspect.signature(RunHomeClient.list).parameters) == ("self", "query")
+    assert tuple(inspect.signature(RunHomeClient.list_sync).parameters) == tuple(inspect.signature(RunHomeClient.list).parameters)
+
+    # Inert refs and read models: identity only, typed waiting vocabulary.
+    assert tuple(RunRef.__dataclass_fields__) == ("home", "run_id")
+    assert tuple(SubmitReceipt.__dataclass_fields__) == ("run_ref", "workflow_id", "duplicate")
+    assert tuple(CommandReceipt.__dataclass_fields__) == ("run_ref", "verb", "duplicate")
+    assert tuple(RunQuery.__dataclass_fields__) == ("definition", "status", "waiting", "older_than", "limit", "batch")
+    assert tuple(DefinitionId.__dataclass_fields__) == ("name", "deployment_version", "structural_hash")
+    assert tuple(RunView.__dataclass_fields__) == (
+        "run_ref",
+        "workflow_id",
+        "definition_name",
+        "status",
+        "waiting",
+        "definition_id",
+        "retry_of",
+        "forked_from",
+    )
+    assert tuple(RunUpdate.__dataclass_fields__) == ("cursor", "durable", "kind", "payload", "timestamp")
+
+    # Batch surface: inert ref, receipts, tolerance, keyed view, updates.
+    assert tuple(BatchRef.__dataclass_fields__) == ("home", "batch_id")
+    assert tuple(BatchSubmitReceipt.__dataclass_fields__) == ("batch_ref", "workflow_id", "duplicate")
+    assert tuple(BatchCommandReceipt.__dataclass_fields__) == ("batch_ref", "verb", "duplicate")
+    assert tuple(BatchTolerance.__dataclass_fields__) == ("max_failed", "max_failed_percent")
+    assert tuple(BatchView.__dataclass_fields__) == (
+        "batch_ref",
+        "workflow_id",
+        "definition_id",
+        "counts",
+        "items",
+        "outcomes",
+        "unstarted_items",
+        "abandoned_items",
+        "settled",
+        "tolerance_tripped",
+        "retry_of",
+    )
+    assert tuple(BatchItemView.__dataclass_fields__) == ("item_key", "run_ref", "workflow_id", "status", "waiting", "outcome", "started")
+    assert tuple(BatchUpdate.__dataclass_fields__) == ("cursor", "durable", "kind", "payload", "timestamp")
+    assert {member.name for member in WaitingCondition} == {
+        "QUEUED",
+        "SCHEDULED",
+        "PAUSED",
+        "VERSION_INCOMPATIBLE",
+        "ADMISSION_LIMITED",
+        "RECOVERY_EXHAUSTED",
+    }
+    for verb in ("stop", "result", "status"):
+        assert not hasattr(RunRef, verb), f"RunRef must stay inert; found {verb}"
+        assert not hasattr(BatchRef, verb), f"BatchRef must stay inert; found {verb}"
+
+    # The prototype and reference page agree on the typed waiting vocabulary.
+    prototype = _read("docs/prd/durable-host-v1-decision-prototype.md")
+    for member in WaitingCondition:
+        assert f"WaitingCondition.{member.name}" in prototype or member.name in host_api
+
+    # Ticket 12: the two admission controls are documented, and never as one.
+    from hypergraph import ProcessLocalLimiter
+
+    assert "max_active_runs" in host_api
+    assert "ADMISSION_LIMITED" in host_api
+    assert "ProcessLocalLimiter" in host_api
+    assert "provider_limit" in host_api
+    assert isinstance(RunHome.max_active_runs, property)
+    assert RunHome.max_active_runs.fset is not None, "the active-Run cap must be tunable at runtime"
+    assert tuple(inspect.signature(Graph.with_provider_limit).parameters) == ("self", "provider_limit")
+    assert isinstance(Graph.provider_limit, property)
+    assert tuple(inspect.signature(ProcessLocalLimiter.__init__).parameters) == ("self", "max_in_flight")
+    nodes_api = _read("docs/06-api-reference/nodes.md")
+    graph_api = _read("docs/06-api-reference/graph.md")
+    assert "## ProcessLocalLimiter" in nodes_api
+    assert "with_provider_limit" in graph_api
+    # The permit budget must never be spelled like a runner concurrency option.
+    assert "max_concurrent" not in nodes_api
+    assert "max_concurrent" not in host_api
+    # The provider budget names its sibling controls instead of leaving the
+    # reader to guess how @stateful(max_concurrency=...) relates to it.
+    assert "### Related concurrency controls" in nodes_api
+    assert "@stateful(max_concurrency=...)" in nodes_api
+    # Excluded overflow strategies stay out of the public surface AND the docs.
+    for excluded in ("cancel_oldest", "cancel_newest", "admission_key"):
+        assert excluded not in host_api
+        assert excluded not in " ".join(_hypergraph_all())

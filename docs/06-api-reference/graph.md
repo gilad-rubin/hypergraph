@@ -684,6 +684,42 @@ SyncRunner().run(instrumented, {"x": 1})  # spans exported, no call-site wiring
 **Raises:**
 - `TypeError` - If an argument is not an `EventProcessor`.
 
+### `with_provider_limit(provider_limit) -> Graph`
+
+Cap how many of this graph's function nodes execute at once, process-wide.
+Returns a new Graph (immutable pattern).
+
+This is **provider-resource admission** — a work budget over external
+capacity — never the durable host's active-Run cap
+([`RunHome.max_active_runs`](host.md#host-work-admission)). The limiter is a
+shared object, so two concurrent Runs of this graph draw on the same
+permits; that is what a per-call runner budget cannot express.
+
+```python
+from hypergraph import ProcessLocalLimiter
+
+budget = ProcessLocalLimiter(max_in_flight=4)
+limited = graph.with_provider_limit(budget)
+limited.provider_limit is budget          # True
+limited.structural_hash == graph.structural_hash  # True — metadata only
+```
+
+The binding changes no structure, so `structural_hash` — and therefore
+durable-host Definition identity — is untouched. Nested graphs **are**
+covered: a graph run inside `as_node()` inherits this budget, and a budget
+the nested graph declares itself composes as a narrower one on top. Moving a
+node into a nested graph therefore never drops it out of the budget. Waiting
+for a permit is neither a failure nor a retry attempt. See
+[ProcessLocalLimiter](nodes.md#processlocallimiter).
+
+**Args:**
+- `provider_limit`: A `ProcessLocalLimiter`.
+
+**Returns:** New Graph carrying the provider-resource budget
+
+**Raises:**
+- `TypeError` - If `provider_limit` is not a `ProcessLocalLimiter`.
+
 ### `as_node(*, name=None, namespaced=False, runner=None, complete_on_stop=False) -> GraphNode`
 
 Wrap graph as a node for composition. Returns a new GraphNode.

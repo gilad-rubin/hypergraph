@@ -10,8 +10,10 @@ from hypergraph.runners._shared.results import ErrorHandling, MapResult, RunResu
 from hypergraph.runners._shared.state import RunnerCapabilities
 
 if TYPE_CHECKING:
+    from hypergraph.checkpointers.base import Checkpointer
     from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
+    from hypergraph.runners._shared.stop import _ActiveWorkflows
 
 
 class BaseRunner(ABC):
@@ -25,6 +27,58 @@ class BaseRunner(ABC):
     - run(): execute a graph once
     - map(): execute a graph multiple times with different inputs
     """
+
+    if TYPE_CHECKING:
+        # Declared for the type checker only. Runners with a checkpointer
+        # seam (Sync/Async) define these in __init__; DaftRunner never does,
+        # which is why every use below probes ``self.__dict__`` first
+        # instead of trusting the declaration.
+        _checkpointer_instance: Checkpointer | None
+        _active_workflows: _ActiveWorkflows
+        _executors: dict[type[Any], Any]
+
+        def stop(self, workflow_id: str, *, info: Any = None) -> None:
+            """Declared for typing; real runners define it, Daft has none."""
+
+    def with_checkpointer(self, checkpointer: Checkpointer) -> BaseRunner:
+        """Return a shallow clone of this runner bound to ``checkpointer``.
+
+        The supplied runner is never mutated: the clone gets its own
+        workflow registry, so in-process duplicate-active protection stays
+        per-instance, and its executor wiring is rebuilt against the clone
+        (GraphNode executors capture their runner — sharing the original's
+        executors would run nested child workflows against the wrong
+        checkpointer and live registry). Used by ``serve()`` to bind
+        Definition runners to a Run Home.
+
+        Raises:
+            TypeError: If this runner class has no checkpointer seam
+                (e.g. ``DaftRunner``) and cannot serve durable runs.
+        """
+        import copy
+
+        if "_checkpointer_instance" not in self.__dict__:
+            raise TypeError(f"{type(self).__name__} does not support checkpointer binding; it cannot execute durable runs in a host worker.")
+        new_runner = copy.copy(self)
+        new_runner._checkpointer_instance = checkpointer
+        if "_active_workflows" in new_runner.__dict__:
+            from hypergraph.runners._shared.stop import _ActiveWorkflows
+
+            new_runner._active_workflows = _ActiveWorkflows()
+        build_executors = getattr(new_runner, "_build_executors", None)
+        if build_executors is not None:
+            new_runner._executors = build_executors()
+        return new_runner
+
+    def has_active_run(self, workflow_id: str) -> bool:
+        """True while a run with this workflow_id is live (``stop()`` would land).
+
+        Runners without a live registry return False.
+        """
+        active = self.__dict__.get("_active_workflows")
+        if active is None:
+            return False
+        return active.has(workflow_id)
 
     @property
     @abstractmethod

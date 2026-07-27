@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Any
 
 from hypergraph._utils import format_duration_ms, plural
+from hypergraph.exceptions import HostError
 
 
 def _utcnow() -> datetime:
@@ -21,6 +22,287 @@ class StepStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     PAUSED = "paused"
+
+
+# === Durable node addressing ===
+#
+# One canonical address names one node-boundary occurrence inside one run:
+# ``<run_id>:<superstep>:<node_name>``. It is the same tuple ``steps`` is
+# unique on, so a boundary and its StepRecord always agree. Every durable
+# record that must name "this node, this occurrence" uses it — pending node
+# boundaries today, pause slots next.
+#
+# Nesting: a nested graph runs as its own child run, so its boundaries carry
+# the child ``run_id``. The parent's own boundary for the delegating
+# ``GraphNode`` keeps the parent-facing address, exactly like the parent's
+# StepRecord for that node.
+#
+# The last two segments stay unambiguous: node names are Python identifiers
+# and the superstep is digits, while run ids may contain ``/`` (nested
+# children) and ``:`` (Batch children are ``<batch_workflow_id>:<item_key>``).
+# A reader therefore splits from the RIGHT — but no parser ships until
+# something under ``src/`` actually needs to read an address back.
+
+NODE_ADDRESS_SEPARATOR = ":"
+
+
+def node_address(run_id: str, superstep: int, node_name: str) -> str:
+    """Canonical durable address of one node-boundary occurrence.
+
+    A loop's second visit to the same node lands on a later superstep and
+    therefore gets a different address — occurrences never collide.
+    """
+    return f"{run_id}{NODE_ADDRESS_SEPARATOR}{superstep}{NODE_ADDRESS_SEPARATOR}{node_name}"
+
+
+class BoundaryState(Enum):
+    """Recovery classification of one node boundary — never a guess.
+
+    ``COMMITTED`` — a StepRecord exists for the address; the journal
+    witnessed the outcome (completed, failed, or paused).
+    ``PENDING`` — the boundary was recorded as runnable and no StepRecord
+    settled it. Nothing dispatched it, so it is safe to dispatch.
+    ``UNKNOWN_EFFECT`` — reserved for declared-effect nodes (PRD 0014): the
+    boundary was marked dispatched and never settled, so recovery must not
+    dispatch it again automatically.
+    """
+
+    PENDING = "pending"
+    COMMITTED = "committed"
+    UNKNOWN_EFFECT = "unknown_effect"
+
+
+def derive_boundary_state(step_status: StepStatus | None, dispatched_at: datetime | None) -> BoundaryState:
+    """Classify one boundary by joining recorded intent with the journal.
+
+    The single definition of the cascade — every backend calls this instead
+    of re-deriving it, so a fourth state means editing exactly one place.
+
+    A StepRecord of any status is a witnessed settlement; its absence with no
+    dispatch mark is safe pending work; its absence WITH a dispatch mark is an
+    unknown effect (PRD 0014).
+    """
+    if step_status is not None:
+        return BoundaryState.COMMITTED
+    if dispatched_at is not None:
+        return BoundaryState.UNKNOWN_EFFECT
+    return BoundaryState.PENDING
+
+
+@dataclass(frozen=True)
+class PendingNode:
+    """Durable *intent*: one runnable node boundary in one superstep.
+
+    Written for every runnable sibling before the first sibling of that
+    superstep dispatches, so process death between siblings cannot forget the
+    unfinished ones. A pending record never claims a node ran — StepRecords
+    remain the sole execution journal.
+
+    ``dispatched_at`` is the declared-effect seam (PRD 0014) and stays
+    ``None`` on the boundary-record write path: only effect reservation, made
+    before a provider call, may mark a boundary dispatched.
+    """
+
+    run_id: str
+    superstep: int
+    node_name: str
+    node_type: str | None = None
+    created_at: datetime = field(default_factory=_utcnow)
+    dispatched_at: datetime | None = None
+
+    @property
+    def address(self) -> str:
+        """Canonical durable address of this boundary."""
+        return node_address(self.run_id, self.superstep, self.node_name)
+
+    def __repr__(self) -> str:
+        return f"PendingNode {self.address}"
+
+
+@dataclass(frozen=True)
+class NodeBoundary:
+    """Recovery view of one node boundary: intent joined with the journal.
+
+    ``state`` is derived, never stored: a boundary is ``COMMITTED`` exactly
+    when its StepRecord exists. ``dispatched_at`` stays ``None`` until
+    declared-effect reservation (PRD 0014) sets it.
+    """
+
+    run_id: str
+    superstep: int
+    node_name: str
+    state: BoundaryState
+    node_type: str | None = None
+    created_at: datetime | None = None
+    dispatched_at: datetime | None = None
+    step_status: StepStatus | None = None
+
+    @property
+    def address(self) -> str:
+        """Canonical durable address of this boundary."""
+        return node_address(self.run_id, self.superstep, self.node_name)
+
+    def __repr__(self) -> str:
+        parts = [f"NodeBoundary {self.address}", self.state.value]
+        if self.step_status is not None:
+            parts.append(f"step: {self.step_status.value}")
+        return " | ".join(parts)
+
+
+@dataclass(frozen=True)
+class RunTotals:
+    """The three run-level counters a status transition may carry.
+
+    They always travel together — a status write that knows the duration
+    knows the node and error counts too — so they travel as one value
+    instead of as three parallel keyword arguments through every write path.
+
+    ``None`` on a field means "leave the stored value alone", exactly the
+    per-field semantics ``update_run_status`` has always had.
+    """
+
+    duration_ms: float | None = None
+    node_count: int | None = None
+    error_count: int | None = None
+
+
+#: The "record nothing new" totals — a status transition that carries no counters.
+NO_RUN_TOTALS = RunTotals()
+
+
+@dataclass(frozen=True)
+class PauseSlot:
+    """Durable record of ONE interrupt occurrence (PRD 0010).
+
+    Before this record existed, pause truth died with the process: the
+    question and its answer port lived only on the in-memory ``RunResult``.
+    The slot and the run's transition to ``PAUSED`` are one commit, and the
+    paused StepRecord is never written after them, so a committed ``PAUSED``
+    run is never missing its question (see ``record_pause``).
+
+    ``pause_id`` is the node address of the occurrence
+    (``<run_id>:<superstep>:<node_name>``) — a loop's second visit lands on a
+    later superstep and therefore owns a different id.
+
+    ``node_name`` is the **parent-facing** node: for a nested interrupt it is
+    the delegating ``GraphNode`` in this run, exactly like the paused
+    StepRecord. ``node_path`` keeps the full ``graphnode/inner`` display path,
+    and the child run records its own slot under the child workflow id.
+
+    ``question`` is a JSON-safe projection (prompt / options / evidence /
+    answer-type name) — the live handler payload never enters the journal.
+    ``answer_schema`` is the graph-derived answer contract as JSON Schema,
+    describing the JSON *form* of the declared ``answer_type`` — a settled
+    answer is durable resume input, so it is always JSON-safe. An empty
+    schema means nothing was declared; a schema carrying
+    ``"x-hypergraph-unrenderable"`` names a declared type the renderer could
+    not express. Both constrain nothing beyond JSON-safety (see
+    ``checkpointers/_answer_schema.py``).
+
+    ``answer`` is the settled value — the durable resume input for
+    ``response_key``. It is meaningful only once ``settled_at`` is set.
+    """
+
+    run_id: str
+    superstep: int
+    node_name: str
+    response_key: str
+    question: dict[str, Any] = field(default_factory=dict)
+    answer_schema: dict[str, Any] = field(default_factory=dict)
+    options: tuple[str, ...] | None = None
+    node_path: str | None = None
+    created_at: datetime = field(default_factory=_utcnow)
+    settled_at: datetime | None = None
+    answer: Any = None
+
+    @property
+    def pause_id(self) -> str:
+        """Canonical durable id of this interrupt occurrence."""
+        return node_address(self.run_id, self.superstep, self.node_name)
+
+    @property
+    def is_open(self) -> bool:
+        """Whether this occurrence is still waiting for an answer."""
+        return self.settled_at is None
+
+    def __repr__(self) -> str:
+        state = "open" if self.is_open else "settled"
+        return f"PauseSlot {self.pause_id} | {state} | answers {self.response_key!r}"
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-serializable dict with only primitive types."""
+        return {
+            "pause_id": self.pause_id,
+            "run_id": self.run_id,
+            "superstep": self.superstep,
+            "node_name": self.node_name,
+            "node_path": self.node_path,
+            "response_key": self.response_key,
+            "question": self.question,
+            "answer_schema": self.answer_schema,
+            "options": None if self.options is None else list(self.options),
+            "created_at": self.created_at.isoformat(),
+            "settled_at": self.settled_at.isoformat() if self.settled_at else None,
+            "answer": self.answer,
+        }
+
+
+class PauseSettlementError(HostError, RuntimeError):
+    """Base class for refusals to settle a durable pause occurrence.
+
+    Every subclass is raised BEFORE any write: a refused answer never
+    consumes the occurrence, so the slot the caller observed stays exactly
+    as it was.
+
+    These refusals reach callers through ``RunHomeClient.answer``, so they
+    are ``HostError``\\ s: one ``except HostError`` around client calls
+    catches every durable-host refusal. ``RuntimeError`` is kept in the
+    bases so existing ``except RuntimeError`` clauses still match.
+    """
+
+
+class AnswerRejectedError(PauseSettlementError):
+    """The answer did not name an answerable occurrence, or failed its schema.
+
+    Raised for a missing/unknown ``pause_id``, a run with no durable pause, a
+    run that is no longer paused, and a value that fails the slot's
+    ``answer_schema``. The current slot stays open — the caller may correct
+    the value and answer the same occurrence again.
+    """
+
+    def __init__(self, run_id: str, message: str, *, pause_id: str | None = None, issues: tuple[str, ...] = ()) -> None:
+        self.run_id = run_id
+        self.pause_id = pause_id
+        self.issues = issues
+        super().__init__(message)
+
+
+class PauseAlreadySettledError(PauseSettlementError):
+    """This exact occurrence was already answered; the first value wins.
+
+    A durable pause is settled once. The second caller learns that the
+    decision is already made rather than silently overwriting it.
+    """
+
+    def __init__(self, run_id: str, pause_id: str, message: str) -> None:
+        self.run_id = run_id
+        self.pause_id = pause_id
+        super().__init__(message)
+
+
+class StalePauseError(PauseSettlementError):
+    """The named occurrence has been superseded by a later pause.
+
+    A loop that pauses twice produces two occurrences. An answer armed
+    against the first one must never settle the second — it is a different
+    question.
+    """
+
+    def __init__(self, run_id: str, pause_id: str, current_pause_id: str, message: str) -> None:
+        self.run_id = run_id
+        self.pause_id = pause_id
+        self.current_pause_id = current_pause_id
+        super().__init__(message)
 
 
 class AttemptStatus(Enum):
@@ -230,7 +512,13 @@ class StepRecord:
 
 @dataclass
 class Run:
-    """Run metadata record."""
+    """Run metadata record.
+
+    ``pause_slot`` carries the run's most recent durable interrupt occurrence
+    and is populated by the single-run reads (``get_run_async`` /
+    ``get_run``); list views leave it ``None`` — read a specific run's slot
+    with ``get_pause_slot(run_id)``.
+    """
 
     id: str
     status: WorkflowStatus
@@ -246,6 +534,7 @@ class Run:
     config: dict[str, Any] | None = None
     created_at: datetime = field(default_factory=_utcnow)
     completed_at: datetime | None = None
+    pause_slot: PauseSlot | None = None
 
     def __repr__(self) -> str:
         parts = [f"Run: {self.id}"]
@@ -294,6 +583,7 @@ class Run:
             "config": self.config,
             "created_at": self.created_at.isoformat(),
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "pause_slot": self.pause_slot.to_dict() if self.pause_slot is not None else None,
         }
 
 

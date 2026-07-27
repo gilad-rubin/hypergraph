@@ -11,6 +11,7 @@ from hypergraph.runners._shared.results import PauseInfo, RunLog
 if TYPE_CHECKING:
     from hypergraph.checkpointers.base import Checkpointer
     from hypergraph.events.processor import EventProcessor
+    from hypergraph.limits import ProcessLocalLimiter
 
 CheckpointErrorSink = Callable[[str], None]
 
@@ -33,6 +34,12 @@ class PauseExecution(BaseException):
         stopped: Whether a cooperative stop was also requested when the
             pause propagated.
         span_id: Span of the interrupt node, set by the superstep.
+        superstep: Resume-offset superstep index this pause landed on, set
+            by the runner where the paused StepRecord is built. It is what
+            addresses the durable pause slot (PRD 0010), so the slot and the
+            paused step share one address. ``None`` until the runner sets
+            it — a nested delegation re-raises a FRESH ``PauseExecution``,
+            which the parent runner then addresses in its own scope.
     """
 
     def __init__(
@@ -45,6 +52,7 @@ class PauseExecution(BaseException):
         self.partial_state = partial_state
         self.stopped = stopped
         self.span_id: str | None = None
+        self.superstep: int | None = None
         super().__init__(f"Paused at {pause_info.node_name}")
 
 
@@ -98,6 +106,14 @@ class ExecutionContext:
     process-local ones. ``superstep_offset`` (per-run resume offset) plus
     ``superstep`` (current index, set per superstep) give attempt reservations
     the same superstep numbering StepRecords use.
+
+    ``provider_limits`` carries the graph-scope provider-resource budgets
+    (``graph.with_provider_limit``) to the function-node executors,
+    outermost first. These are shared process-local permit pools over
+    EXTERNAL capacity — never the durable host's active-Run cap. A nested
+    graph inherits the enclosing graph's budgets and composes its own on
+    top, so a node covered by a budget stays covered when it moves inside
+    ``as_node()``.
     """
 
     event_processors: list[EventProcessor] | None = None
@@ -115,6 +131,7 @@ class ExecutionContext:
     checkpointer: Checkpointer | None = None
     superstep_offset: int = 0
     superstep: int = 0
+    provider_limits: tuple[ProcessLocalLimiter, ...] = ()
 
 
 @dataclass

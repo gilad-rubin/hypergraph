@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from hypergraph.checkpointers.types import StepStatus
+from hypergraph.checkpointers.types import RunTotals, StepStatus
 from hypergraph.exceptions import (
     ExecutionError,
     MissingInputError,
@@ -94,6 +94,7 @@ from hypergraph.runners._shared.validation import (
 from hypergraph.runners._shared.value_resolution import (
     build_resume_validation_values,
     collect_inputs_for_node,
+    start_inputs_for_run,
     warn_on_bind_overrides,
 )
 from hypergraph.runners.base import BaseRunner
@@ -568,6 +569,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     retry_of=run_lineage.retry_of,
                     retry_index=run_lineage.retry_index,
                     config=run_config,
+                    inputs=start_inputs_for_run(graph, normalized_values, resume_checkpoint),
                 )
                 run_row_created = True
         except BaseException as error:
@@ -736,20 +738,24 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         status=RunStatus.PAUSED.value,
                     )
                 if has_checkpointer:
-                    for record in step_buffer:
-                        await checkpointer.save_step(record)
-                    from hypergraph.checkpointers.types import WorkflowStatus
                     from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
+                    from hypergraph.runners._shared.pause_slots import commit_pause_async
 
                     _, step_offset = checkpoint_offsets(resume_checkpoint)
                     step_count = step_offset + collector.step_count
                     error_count = collector.failed_step_count
-                    await checkpointer.update_run_status(
+                    # The durable pause slot, whatever step records are still
+                    # buffered, and the PAUSED transition commit as ONE unit,
+                    # and the paused step is never written after the slot: no
+                    # reader ever sees a committed paused run whose question
+                    # is missing (PRD 0010).
+                    await commit_pause_async(
+                        checkpointer,
+                        graph,
                         workflow_id,
-                        WorkflowStatus.PAUSED,
-                        duration_ms=total_duration_ms,
-                        node_count=step_count,
-                        error_count=error_count,
+                        pause,
+                        step_buffer,
+                        RunTotals(total_duration_ms, step_count, error_count),
                     )
                 if dispatcher is not None and _parent_span_id is None:
                     await self._shutdown_dispatcher_async(dispatcher)

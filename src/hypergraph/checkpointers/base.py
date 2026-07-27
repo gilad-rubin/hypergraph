@@ -4,19 +4,25 @@ from __future__ import annotations
 
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
+from hypergraph.checkpointers._answer_schema import validate_answer
 from hypergraph.checkpointers.types import (
     TERMINAL_ATTEMPT_STATUSES,
+    AnswerRejectedError,
     AttemptError,
     AttemptLedgerError,
     AttemptRecord,
     AttemptSeries,
     AttemptStatus,
     Checkpoint,
+    PauseAlreadySettledError,
+    PauseSlot,
     Run,
+    StalePauseError,
     StepRecord,
     WorkflowStatus,
 )
@@ -165,6 +171,116 @@ def _check_close_request(series: AttemptSeries, status: AttemptStatus, step_reco
         )
 
 
+# === Durable pause settlement (PRD 0010) ===
+#
+# One decision cascade, shared by every backend, so Memory and SQLite cannot
+# disagree about which of the three refusals a caller earns. Everything here
+# runs BEFORE any write: a refused answer never consumes the occurrence.
+
+
+def _check_settlement(
+    *,
+    run_id: str,
+    pause_id: str | None,
+    current: PauseSlot | None,
+    known_pause_ids: Collection[str],
+    run_status: WorkflowStatus | None,
+    value: Any,
+) -> PauseSlot:
+    """Validate one settlement request; returns the slot it may settle.
+
+    Ordered so each refusal is the most specific truth available: a
+    superseded occurrence is *stale* even when the run has since settled,
+    and an already-answered occurrence reports the decision that was made
+    rather than "not paused".
+    """
+    if current is None:
+        raise AnswerRejectedError(
+            run_id,
+            f"Run {run_id!r} has no durable pause to answer.\n\n"
+            "How to fix:\n"
+            "  Answer a run whose status is PAUSED; read its occurrence with\n"
+            "  get_pause_slot(run_id) (or run.pause_slot) and pass that pause_id.",
+        )
+    if pause_id is None:
+        raise AnswerRejectedError(
+            run_id,
+            f"An answer for run {run_id!r} must name the pause occurrence it answers.\n\n"
+            f"Current pause_id: {current.pause_id!r}\n\n"
+            "How to fix:\n"
+            "  Pass pause_id=slot.pause_id from the slot you observed, so a stale\n"
+            "  answer cannot settle a later pause.",
+            pause_id=None,
+        )
+    if pause_id != current.pause_id:
+        if pause_id in known_pause_ids:
+            raise StalePauseError(
+                run_id,
+                pause_id,
+                current.pause_id,
+                f"Pause {pause_id!r} was superseded: run {run_id!r} is now at {current.pause_id!r}.\n\n"
+                "How to fix:\n"
+                "  Re-read the current occurrence (get_pause_slot(run_id)) and answer\n"
+                "  that question; a later pause is a different question.",
+            )
+        raise AnswerRejectedError(
+            run_id,
+            f"Unknown pause_id {pause_id!r} for run {run_id!r}.\n\n"
+            f"Current pause_id: {current.pause_id!r}\n\n"
+            "How to fix:\n"
+            "  Pass the pause_id from the slot you observed on this run.",
+            pause_id=pause_id,
+        )
+    if current.settled_at is not None:
+        raise PauseAlreadySettledError(
+            run_id,
+            pause_id,
+            f"Pause {pause_id!r} was already answered at {current.settled_at.isoformat()}; the first answer wins.\n\n"
+            "How to fix:\n"
+            "  Read the settled answer with get_pause_slot(run_id).answer. To ask\n"
+            "  again, let the graph loop to a new pause occurrence.",
+        )
+    if run_status is not WorkflowStatus.PAUSED:
+        actual = run_status.value if run_status is not None else "missing"
+        raise AnswerRejectedError(
+            run_id,
+            f"Run {run_id!r} is {actual}, not paused; its pause {pause_id!r} cannot be answered.\n\n"
+            "How to fix:\n"
+            "  Answer only a run whose status is PAUSED. A stopped or completed run\n"
+            "  is settled work — repeat it with client.rerun().",
+            pause_id=pause_id,
+        )
+    issues = validate_answer(current.answer_schema, value)
+    if issues:
+        detail = "\n".join(f"  -> {issue}" for issue in issues)
+        options = f"\nOccurrence options: {list(current.options)}" if current.options else ""
+        raise AnswerRejectedError(
+            run_id,
+            f"Answer for pause {pause_id!r} does not satisfy its answer schema.\n\n"
+            f"Schema: {current.answer_schema}{options}\n"
+            f"{detail}\n\n"
+            "How to fix:\n"
+            "  Send the JSON form of the interrupt handler's declared answer_type — a\n"
+            "  settled answer is durable resume input, so a domain object travels as\n"
+            "  its JSON projection (dataclasses.asdict(value)), never as the live\n"
+            "  instance. The pause stays open — the corrected value can answer it.",
+            pause_id=pause_id,
+            issues=issues,
+        )
+    return current
+
+
+def _lost_settlement_race(run_id: str, pause_id: str) -> PauseAlreadySettledError:
+    """The compare-and-set matched no open row: another answer committed first."""
+    return PauseAlreadySettledError(
+        run_id,
+        pause_id,
+        f"Pause {pause_id!r} was answered by a concurrent caller that committed first; the first answer wins.\n\n"
+        "How to fix:\n"
+        "  Read the settled answer with get_pause_slot(run_id).answer.",
+    )
+
+
 def _normalize_since(value: datetime) -> datetime:
     """Return an aware UTC boundary for run-list filtering."""
     if value.tzinfo is None or value.utcoffset() is None:
@@ -266,11 +382,17 @@ class Checkpointer(ABC):
         retry_of: str | None = None,
         retry_index: int | None = None,
         config: dict[str, Any] | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> Run:
         """Create or reset a run record (upsert). Called by runner at run start.
 
         If a run with this ID already exists, reset it to ACTIVE status.
         This allows re-running with the same workflow_id after interruption.
+
+        ``inputs`` are this run's graph-boundary values, stored first-write-
+        wins so a resume (which supplies only the interrupt answer) cannot
+        overwrite them. Backends that do not persist them simply ignore the
+        argument and keep returning ``{}`` from ``get_run_inputs``.
         """
         ...
 
@@ -308,15 +430,34 @@ class Checkpointer(ABC):
         """Get step records through a superstep, hiding internal carriers by default."""
         ...
 
-    async def get_checkpoint(self, run_id: str, *, superstep: int | None = None) -> Checkpoint:
-        """Get a checkpoint for forking runs.
+    async def get_run_inputs(self, run_id: str) -> dict[str, Any]:
+        """The graph-boundary values this run started from.
 
-        Default implementation calls get_state + get_steps.
+        Backends that do not persist run inputs return ``{}``; a checkpoint
+        then carries only folded step values, as it did before run inputs
+        became durable.
         """
+        return {}
+
+    async def get_checkpoint(self, run_id: str, *, superstep: int | None = None) -> Checkpoint:
+        """Get a checkpoint for restoring a run — resume, fork, or retry.
+
+        A checkpoint is the whole restorable state of a run, which is the
+        run's own graph-boundary inputs with the folded step values layered
+        over them. ``get_state`` deliberately folds node OUTPUTS only; that
+        is the execution journal's projection, not a restore point. Without
+        the inputs underneath, a node consuming a raw graph input after an
+        interrupt could never be satisfied on resume — it would silently not
+        execute while the run still reported COMPLETED.
+
+        Step values win on a name collision, exactly as they do live: a node
+        output that shadows an input name is the newer value.
+        """
+        inputs = await self.get_run_inputs(run_id)
         values = await self.get_state(run_id, superstep=superstep)
         steps = await self.get_steps(run_id, superstep=superstep)
         return Checkpoint(
-            values=values,
+            values={**inputs, **values},
             steps=steps,
             source_run_id=run_id,
             source_superstep=superstep,

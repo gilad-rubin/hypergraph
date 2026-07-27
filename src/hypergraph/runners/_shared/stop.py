@@ -113,6 +113,11 @@ class _ActiveWorkflows:
         if reservation is not None:
             reservation.signal.set(info=info)
 
+    def has(self, workflow_id: str) -> bool:
+        """True while this registry holds a live reservation for the id."""
+        with self._lock:
+            return workflow_id in self._reservations
+
     def _bind(
         self,
         reservation: _WorkflowReservation,

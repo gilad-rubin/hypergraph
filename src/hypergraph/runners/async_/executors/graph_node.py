@@ -10,6 +10,7 @@ from hypergraph.exceptions import IncompatibleRunnerError
 from hypergraph.runners._shared._inspect import current_inspection
 from hypergraph.runners._shared.outputs import collect_as_lists
 from hypergraph.runners._shared.protocols import CheckpointErrorSinkRunner
+from hypergraph.runners._shared.provider_limits import current_graph_limits
 from hypergraph.runners._shared.results import PauseInfo, RunResult, RunStatus
 from hypergraph.runners._shared.state import PauseExecution
 from hypergraph.runners._shared.state_restore import (
@@ -22,6 +23,35 @@ if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
     from hypergraph.runners._shared.state import ExecutionContext, GraphState
     from hypergraph.runners.async_.runner import AsyncRunner
+
+
+def _provider_budget_sources(node: GraphNode) -> list[str]:
+    """Every provider budget a nested run of ``node`` would have to take.
+
+    Walks the nested graph tree because a budget one level down is just as
+    unreachable from a synchronous delegated runner as one declared here.
+    """
+    from hypergraph.nodes.graph_node import GraphNode as _GraphNode
+
+    sources: list[str] = []
+    if current_graph_limits():
+        sources.append("an enclosing graph's with_provider_limit(...)")
+
+    seen: set[int] = set()
+    pending: list[tuple[Any, str]] = [(node.graph, node.graph.name or node.name)]
+    while pending:
+        graph, path = pending.pop()
+        if id(graph) in seen:
+            continue
+        seen.add(id(graph))
+        if graph.provider_limit is not None:
+            sources.append(f"{path}.with_provider_limit(...)")
+        for inner in graph.iter_nodes():
+            if getattr(inner, "provider_limit", None) is not None:
+                sources.append(f"@node(provider_limit=...) on {path}/{inner.name}")
+            if isinstance(inner, _GraphNode):
+                pending.append((inner.graph, f"{path}/{inner.name}"))
+    return sources
 
 
 class AsyncGraphNodeExecutor:
@@ -201,6 +231,33 @@ class AsyncGraphNodeExecutor:
                 node_name=node.name,
                 capability="checkpoint_error_sink",
             )
+
+        # A synchronous delegated runner executes inline on this event-loop
+        # thread, and no synchronous runner can honor a provider budget from
+        # there: SyncRunner would have to block the loop to wait for a permit
+        # (the tasks holding permits could then never release one), and a
+        # translating runner such as DaftRunner never takes these permits at
+        # all. Refuse up front — the alternative surfaces only under
+        # contention, so the same graph passes in dev and fails under load.
+        if not runner.capabilities.returns_coroutine:
+            budgets = _provider_budget_sources(node)
+            if budgets:
+                listed = "\n".join(f"    - {source}" for source in budgets)
+                raise IncompatibleRunnerError(
+                    f"GraphNode {node.name!r} delegates to {type(runner).__name__}, a synchronous runner, "
+                    f"but its nested graph runs under a provider-resource budget. AsyncRunner calls a "
+                    f"synchronous runner inline on the event-loop thread, where a permit can neither be "
+                    f"waited for (blocking the loop is a hang, not a wait) nor be quietly skipped.\n\n"
+                    f"Budgets in force:\n{listed}\n\n"
+                    f"How to fix:\n"
+                    f"  - Drop the runner= override so AsyncRunner runs the nested graph itself and\n"
+                    f"    takes each permit with 'async with' (the usual answer).\n"
+                    f"  - Or remove the budgets listed above from this branch.\n"
+                    f"  - Or move the quota into the shared component that talks to the provider and\n"
+                    f"    acquire it at the exact scarce call, which works under any runner.",
+                    node_name=node.name,
+                    capability="provider_limit",
+                )
 
         if map_config:
             _, mode, error_handling = map_config

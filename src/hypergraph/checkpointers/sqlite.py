@@ -25,6 +25,8 @@ from hypergraph.checkpointers.base import (
     _check_recordable_outcome,
     _check_reservation,
     _check_run_exists,
+    _check_settlement,
+    _lost_settlement_race,
     _new_attempt_series_id,
     _normalize_since,
     _require_series,
@@ -34,6 +36,7 @@ from hypergraph.checkpointers.base import (
 from hypergraph.checkpointers.presenters import render_checkpointer_explorer_html
 from hypergraph.checkpointers.serializers import JsonSerializer, Serializer
 from hypergraph.checkpointers.types import (
+    NO_RUN_TOTALS,
     AttemptError,
     AttemptLedgerError,
     AttemptRecord,
@@ -42,12 +45,17 @@ from hypergraph.checkpointers.types import (
     Checkpoint,
     LineageRow,
     LineageView,
+    NodeBoundary,
+    PauseSlot,
+    PendingNode,
     Run,
     RunTable,
+    RunTotals,
     StepRecord,
     StepStatus,
     StepTable,
     WorkflowStatus,
+    derive_boundary_state,
 )
 
 # Explicit column lists for SELECT queries — avoids column-order bugs after migration
@@ -70,6 +78,47 @@ _PUBLIC_STEP_FILTER_WITH_ALIAS = (
 )
 _RETENTION_ROW_COLS = "id, step_index, superstep, node_name, values_data, created_at, completed_at, attempt_series_id"
 _DELETE_BATCH_SIZE = 500
+# Two binds per row plus the run id — stays under the 999-variable floor.
+_PENDING_DELETE_BATCH_SIZE = 400
+
+# === Pending node boundaries (PRD 0013) ===
+#
+# Intent is recorded before the first sibling of a superstep dispatches;
+# the boundary's state is DERIVED by outer-joining the execution journal, so
+# the table can never claim a node ran.
+# ``DO NOTHING`` on conflict: the address IS the boundary occurrence, so a
+# re-record (a history-less run restarting fresh at superstep 0) must not
+# rewrite when it first became pending — and must never clear a
+# ``dispatched_at`` that PRD 0014 will write before a provider call.
+_PENDING_NODE_UPSERT_SQL = """
+    INSERT INTO pending_nodes (run_id, superstep, node_name, node_type, created_at, dispatched_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(run_id, superstep, node_name) DO NOTHING
+"""
+_NODE_BOUNDARY_SELECT_SQL = """
+    SELECT p.run_id, p.superstep, p.node_name, p.node_type, p.created_at, p.dispatched_at, s.status
+    FROM pending_nodes AS p
+    LEFT JOIN steps AS s
+      ON s.run_id = p.run_id AND s.superstep = p.superstep AND s.node_name = p.node_name
+    WHERE p.run_id = ?
+    ORDER BY p.superstep, p.node_name
+"""
+# === Durable pause slots (PRD 0010) ===
+#
+# One row per interrupt occurrence, keyed by its node address, written in the
+# SAME transaction as the paused step's records and the runs-row transition to
+# 'paused'. ``DO NOTHING`` on conflict: the address IS the occurrence, so a
+# replayed pause must not rewrite when it was asked nor clear a settlement.
+# ``rowid DESC`` is commit order, which is occurrence order — the newest row is
+# the current pause.
+_PAUSE_SLOT_COLS = "pause_id, run_id, superstep, node_name, node_path, response_key, question, answer_schema, options, created_at, settled_at, answer"
+_PAUSE_SLOT_INSERT_SQL = f"INSERT INTO pause_slots ({_PAUSE_SLOT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(pause_id) DO NOTHING"
+_PAUSE_SLOT_CURRENT_SQL = f"SELECT {_PAUSE_SLOT_COLS} FROM pause_slots WHERE run_id = ? ORDER BY rowid DESC LIMIT 1"
+_PAUSE_SLOT_BY_ID_SQL = f"SELECT {_PAUSE_SLOT_COLS} FROM pause_slots WHERE run_id = ? AND pause_id = ?"
+_PAUSE_SLOT_IDS_SQL = "SELECT pause_id FROM pause_slots WHERE run_id = ?"
+# Compare-and-set: a competing answer that lost the race matches 0 rows, so the
+# first settlement wins and the loser gets a truthful refusal.
+_PAUSE_SLOT_SETTLE_SQL = "UPDATE pause_slots SET settled_at = ?, answer = ? WHERE pause_id = ? AND settled_at IS NULL"
 _STEP_UPSERT_SQL = """
     INSERT INTO steps (
         run_id, superstep, node_name, step_index, status,
@@ -280,6 +329,142 @@ def _parse_dt(value: str | None) -> datetime | None:
     if value.endswith("Z"):
         value = value[:-1] + "+00:00"
     return datetime.fromisoformat(value)
+
+
+def _row_to_node_boundary(row: Sequence[Any]) -> NodeBoundary:
+    """Build a :class:`NodeBoundary` from the intent-joined-journal row.
+
+    This backend only shapes the row; the state cascade itself lives in
+    :func:`derive_boundary_state` so both backends cannot drift.
+    """
+    dispatched_at = _parse_dt(row[5])
+    step_status = StepStatus(row[6]) if row[6] is not None else None
+    return NodeBoundary(
+        run_id=row[0],
+        superstep=row[1],
+        node_name=row[2],
+        state=derive_boundary_state(step_status, dispatched_at),
+        node_type=row[3],
+        created_at=_parse_dt(row[4]),
+        dispatched_at=dispatched_at,
+        step_status=step_status,
+    )
+
+
+def _pause_slot_insert_params(slot: PauseSlot) -> tuple[Any, ...]:
+    return (
+        slot.pause_id,
+        slot.run_id,
+        slot.superstep,
+        slot.node_name,
+        slot.node_path,
+        slot.response_key,
+        json.dumps(slot.question),
+        json.dumps(slot.answer_schema),
+        None if slot.options is None else json.dumps(list(slot.options)),
+        slot.created_at.isoformat(),
+        slot.settled_at.isoformat() if slot.settled_at is not None else None,
+        None if slot.settled_at is None else json.dumps(slot.answer),
+    )
+
+
+def _row_to_pause_slot(row: Sequence[Any]) -> PauseSlot:
+    options = json.loads(row[8]) if row[8] is not None else None
+    settled_at = _parse_dt(row[10])
+    created_at = _parse_dt(row[9])
+    return PauseSlot(
+        run_id=row[1],
+        superstep=int(row[2]),
+        node_name=row[3],
+        node_path=row[4],
+        response_key=row[5],
+        question=json.loads(row[6]),
+        answer_schema=json.loads(row[7]),
+        options=None if options is None else tuple(options),
+        created_at=created_at if created_at is not None else datetime.now(timezone.utc),
+        settled_at=settled_at,
+        # The answer column is only meaningful once settled; an unsettled row
+        # must never present a decoded value.
+        answer=json.loads(row[11]) if settled_at is not None and row[11] is not None else None,
+    )
+
+
+def _run_status_update(status: WorkflowStatus, totals: RunTotals) -> tuple[str, list[Any]]:
+    """Build the runs-row SET clause and params for one status transition.
+
+    Shared so the plain status write and the atomic pause commit cannot drift
+    about which columns a transition touches.
+    """
+    completed_at = (
+        datetime.now(timezone.utc).isoformat()
+        if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.PARTIAL, WorkflowStatus.STOPPED}
+        else None
+    )
+    sets = ["status = ?", "completed_at = ?"]
+    params: list[Any] = [status.value, completed_at]
+    if totals.duration_ms is not None:
+        sets.append("duration_ms = ?")
+        params.append(totals.duration_ms)
+    if totals.node_count is not None:
+        sets.append("node_count = ?")
+        params.append(totals.node_count)
+    if totals.error_count is not None:
+        sets.append("error_count = ?")
+        params.append(totals.error_count)
+    return f"UPDATE runs SET {', '.join(sets)} WHERE id = ?", params
+
+
+def _deserialize_run_inputs(serializer: Any, row: Sequence[Any] | None) -> dict[str, Any]:
+    """Decode a stored ``runs.inputs_data`` blob; ``{}`` when absent."""
+    if row is None or row[0] is None:
+        return {}
+    return dict(serializer.deserialize(row[0]) or {})
+
+
+def _serialize_run_inputs(serializer: Any, run_id: str, inputs: dict[str, Any] | None) -> Any:
+    """Encode a run's graph-boundary inputs, naming what refused to encode.
+
+    Run inputs became durable so a checkpoint can restore them, which turns
+    them into a persisted record rather than a live call argument. The bare
+    ``TypeError`` the serializer raises for one ("Object of type Client is
+    not JSON serializable") names neither the run, nor the input, nor the
+    rule, so a caller cannot tell that the value was refused for being a
+    graph INPUT — node outputs have always had to serialize, graph inputs
+    did not.
+
+    The failure is re-raised as the same type with the offending names, the
+    run they belong to, and the two ways out. Re-encoding key by key to find
+    them runs only on the failing path.
+    """
+    if not inputs:
+        return None
+    try:
+        return serializer.serialize(inputs)
+    except TypeError as error:
+        raise TypeError(_run_inputs_type_error(serializer, run_id, inputs, error)) from error
+
+
+def _run_inputs_type_error(serializer: Any, run_id: str, inputs: dict[str, Any], error: TypeError) -> str:
+    """The message for graph inputs the checkpointer cannot store."""
+    offenders = [f"{name} ({type(value).__name__})" for name, value in inputs.items() if not _encodes(serializer, name, value)]
+    return (
+        f"Run {run_id!r} cannot start: a checkpointed run stores its graph inputs, and "
+        f"{', '.join(offenders) if offenders else str(error)} cannot be stored by this checkpointer's serializer.\n\n"
+        "Hypergraph persists a run's graph-boundary inputs so a checkpoint can restore them — a node placed after an "
+        "interrupt has no other way to read a raw graph input when the run resumes.\n\n"
+        "How to fix:\n"
+        "  Pass a storable stand-in as the graph input (an id, a config dict) and build the live object inside a node; or\n"
+        "  give the checkpointer a serializer that accepts it, e.g. SqliteCheckpointer(..., serializer=JsonSerializer(lossy=True))."
+    )
+
+
+def _encodes(serializer: Any, name: str, value: Any) -> bool:
+    """Whether this one input survives the serializer on its own."""
+    try:
+        serializer.serialize({name: value})
+    except TypeError:
+        return False
+    return True
 
 
 def _lineage_parent_id(run: Run) -> str | None:
@@ -530,6 +715,20 @@ class SqliteCheckpointer(Checkpointer):
             self._async_txn_lock = asyncio.Lock()
         return self._async_txn_lock
 
+    # === Run-mutation hooks (no-op in base) ===
+    #
+    # Called INSIDE the write transaction, before commit, on every run
+    # mutation path (create_run/save_step/update_run_status, sync and async).
+    # The base implementation is a no-op so plain-checkpointer behavior is
+    # unchanged; RunHome (hypergraph.host) overrides these to append
+    # run_updates rows in the same transaction as the run mutation.
+
+    def _after_run_mutation_sync(self, db: Any, run_id: str, kind: str, payload: dict[str, Any]) -> None:
+        """Hook after a sync run mutation (no-op in the base checkpointer)."""
+
+    async def _after_run_mutation(self, run_id: str, kind: str, payload: dict[str, Any]) -> None:
+        """Hook after an async run mutation (no-op in the base checkpointer)."""
+
     # === Write ===
 
     def _step_upsert_params(self, record: StepRecord) -> tuple[Any, ...]:
@@ -561,7 +760,307 @@ class SqliteCheckpointer(Checkpointer):
         async with self._txn_lock():
             await self._db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
             await self._apply_retention_policy_async(record.run_id)
+            await self._after_run_mutation(
+                record.run_id,
+                "step",
+                {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
+            )
             await self._db.commit()
+
+    # === Pending node boundaries (PRD 0013) ===
+
+    @staticmethod
+    def _pending_node_params(boundary: PendingNode) -> tuple[Any, ...]:
+        return (
+            boundary.run_id,
+            boundary.superstep,
+            boundary.node_name,
+            boundary.node_type,
+            boundary.created_at.isoformat(),
+            boundary.dispatched_at.isoformat() if boundary.dispatched_at is not None else None,
+        )
+
+    async def record_pending_nodes(self, boundaries: Sequence[PendingNode]) -> None:
+        """Durably record a superstep's runnable node boundaries as pending.
+
+        Writes through immediately whatever ``CheckpointPolicy.durability``
+        says about StepRecord timing: a buffered boundary would not survive
+        the process death it exists to describe. One transaction covers the
+        whole batch, so a superstep's siblings become attributable together
+        or not at all.
+        """
+        if not boundaries:
+            return
+        await self._ensure_db()
+        async with self._txn_lock():
+            await self._db.executemany(_PENDING_NODE_UPSERT_SQL, [self._pending_node_params(b) for b in boundaries])
+            await self._db.commit()
+
+    async def get_node_boundaries(self, run_id: str) -> list[NodeBoundary]:
+        """Recovery view: every recorded boundary of a run, state derived."""
+        await self._ensure_db()
+        async with self._txn_lock():
+            cursor = await self._db.execute(_NODE_BOUNDARY_SELECT_SQL, (run_id,))
+            rows = await cursor.fetchall()
+        return [_row_to_node_boundary(row) for row in rows]
+
+    def record_pending_nodes_sync(self, boundaries: Sequence[PendingNode]) -> None:
+        """Sync mirror of :meth:`record_pending_nodes`."""
+        if not boundaries:
+            return
+        with self._sync_lock:
+            db = self._sync_db()
+            db.executemany(_PENDING_NODE_UPSERT_SQL, [self._pending_node_params(b) for b in boundaries])
+            db.commit()
+
+    def get_node_boundaries_sync(self, run_id: str) -> list[NodeBoundary]:
+        """Sync mirror of :meth:`get_node_boundaries`."""
+        with self._sync_lock:
+            db = self._sync_db()
+            rows = db.execute(_NODE_BOUNDARY_SELECT_SQL, (run_id,)).fetchall()
+        return [_row_to_node_boundary(row) for row in rows]
+
+    # === Durable pause slots (PRD 0010) ===
+
+    async def record_pause(
+        self,
+        slot: PauseSlot,
+        *,
+        step_records: Sequence[StepRecord] = (),
+        totals: RunTotals = NO_RUN_TOTALS,
+    ) -> None:
+        """Commit the pause slot, any buffered step records, and ``PAUSED``.
+
+        ONE ``BEGIN IMMEDIATE`` transaction covers everything handed to this
+        call. What that buys depends on ``CheckpointPolicy.durability``, so
+        state the guarantee precisely rather than claiming three writes are
+        always one:
+
+        - ``durability="exit"`` buffers the paused StepRecord to run exit, so
+          it arrives here in ``step_records`` and genuinely commits with the
+          slot and the status.
+        - ``durability="sync"``/``"async"`` already committed the paused
+          StepRecord through the ordinary per-superstep path, so
+          ``step_records`` is empty and the atomic unit is slot + ``PAUSED``.
+
+        In both modes the step record is ``<=`` the slot and never after it,
+        which is the invariant PRD 0010 requires: **no reader can observe a
+        committed ``PAUSED`` run without its slot.** The write is immediate
+        whatever durability says about StepRecord timing — a buffered pause
+        slot would not survive the process death it exists to describe.
+
+        First record wins per address (``ON CONFLICT(pause_id) DO NOTHING``):
+        a replayed occurrence leaves the WHOLE stored row alone.
+        """
+        await self._ensure_db()
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                for record in step_records:
+                    await self._db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
+                if step_records:
+                    await self._apply_retention_policy_async(slot.run_id)
+                await self._db.execute(_PAUSE_SLOT_INSERT_SQL, _pause_slot_insert_params(slot))
+                sql, params = _run_status_update(WorkflowStatus.PAUSED, totals)
+                await self._db.execute(sql, [*params, slot.run_id])
+                for record in step_records:
+                    await self._after_run_mutation(
+                        record.run_id,
+                        "step",
+                        {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
+                    )
+                await self._after_run_mutation(
+                    slot.run_id,
+                    "status",
+                    {"status": WorkflowStatus.PAUSED.value, "pause_id": slot.pause_id},
+                )
+                await self._db.commit()
+            except BaseException:
+                await self._rollback_async()
+                raise
+
+    async def get_pause_slot(self, run_id: str, *, pause_id: str | None = None) -> PauseSlot | None:
+        """The run's current pause occurrence, or a named earlier one."""
+        await self._ensure_db()
+        async with self._txn_lock():
+            if pause_id is None:
+                cursor = await self._db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,))
+            else:
+                cursor = await self._db.execute(_PAUSE_SLOT_BY_ID_SQL, (run_id, pause_id))
+            row = await cursor.fetchone()
+        return _row_to_pause_slot(row) if row is not None else None
+
+    async def _read_settlement_inputs(self, run_id: str) -> tuple[PauseSlot | None, list[str], WorkflowStatus | None]:
+        """The three facts ``_check_settlement`` decides on, read in one place.
+
+        Caller owns the surrounding transaction. Shared by ``settle_pause``
+        and by the durable host's scheduled-answer write (ticket 14), so a
+        timer is admitted against exactly the occurrence state a human answer
+        would be — there is no second view of "which pause is current".
+        """
+        cursor = await self._db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,))
+        row = await cursor.fetchone()
+        current = _row_to_pause_slot(row) if row is not None else None
+        ids_cursor = await self._db.execute(_PAUSE_SLOT_IDS_SQL, (run_id,))
+        known = [str(item[0]) for item in await ids_cursor.fetchall()]
+        run_cursor = await self._db.execute("SELECT status FROM runs WHERE id = ?", (run_id,))
+        run_row = await run_cursor.fetchone()
+        return current, known, WorkflowStatus(run_row[0]) if run_row is not None else None
+
+    def _read_settlement_inputs_sync(self, db: Any, run_id: str) -> tuple[PauseSlot | None, list[str], WorkflowStatus | None]:
+        """Sync mirror of :meth:`_read_settlement_inputs`."""
+        row = db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,)).fetchone()
+        current = _row_to_pause_slot(row) if row is not None else None
+        known = [str(item[0]) for item in db.execute(_PAUSE_SLOT_IDS_SQL, (run_id,)).fetchall()]
+        run_row = db.execute("SELECT status FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return current, known, WorkflowStatus(run_row[0]) if run_row is not None else None
+
+    async def _settle_pause_in_txn(self, run_id: str, *, pause_id: str | None, value: Any) -> PauseSlot:
+        """THE settlement body, inside a transaction the CALLER owns.
+
+        Reads the occurrence, runs the shared refusal cascade, performs the
+        compare-and-set on ``settled_at IS NULL``, writes the resume input,
+        and appends the durable ``answer`` fact — but neither begins nor
+        commits: it is extracted so a caller that must commit MORE than the
+        settlement (the durable host's scheduled answer commits the timer's
+        recorded outcome with it) still takes exactly this path instead of
+        re-deriving the CAS. Every refusal is raised before any write, so a
+        caller may catch one and keep writing in the same transaction.
+        """
+        current, known, run_status = await self._read_settlement_inputs(run_id)
+        slot = _check_settlement(
+            run_id=run_id,
+            pause_id=pause_id,
+            current=current,
+            known_pause_ids=known,
+            run_status=run_status,
+            value=value,
+        )
+        settled_at = datetime.now(timezone.utc)
+        result = await self._db.execute(
+            _PAUSE_SLOT_SETTLE_SQL,
+            (settled_at.isoformat(), json.dumps(value), slot.pause_id),
+        )
+        if result.rowcount != 1:
+            raise _lost_settlement_race(run_id, slot.pause_id)
+        await self._after_run_mutation(
+            run_id,
+            "answer",
+            {"pause_id": slot.pause_id, "response_key": slot.response_key},
+        )
+        return replace(slot, settled_at=settled_at, answer=value)
+
+    async def settle_pause(self, run_id: str, *, pause_id: str | None = None, value: Any) -> PauseSlot:
+        """Validate one typed value, then atomically settle the named occurrence.
+
+        The whole cascade — read the current occurrence, check the schema,
+        compare-and-set on ``settled_at IS NULL``, write the resume input,
+        and append the durable ``answer`` fact — runs in ONE ``BEGIN
+        IMMEDIATE`` transaction. A rejected value raises before any write and
+        leaves the occurrence open; a second settle of the same occurrence
+        loses to the first.
+
+        This is THE settlement path for every answer, human or scheduled: a
+        durable host timer fires through the same
+        :meth:`_settle_pause_in_txn` body, so the two can never diverge about
+        who won a race (ADR 0008).
+        """
+        await self._ensure_db()
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                slot = await self._settle_pause_in_txn(run_id, pause_id=pause_id, value=value)
+                await self._db.commit()
+                return slot
+            except BaseException:
+                await self._rollback_async()
+                raise
+
+    def record_pause_sync(
+        self,
+        slot: PauseSlot,
+        *,
+        step_records: Sequence[StepRecord] = (),
+        totals: RunTotals = NO_RUN_TOTALS,
+    ) -> None:
+        """Sync mirror of :meth:`record_pause`."""
+        with self._sync_lock:
+            db = self._sync_db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                for record in step_records:
+                    db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
+                if step_records:
+                    self._apply_retention_policy_sync(slot.run_id)
+                db.execute(_PAUSE_SLOT_INSERT_SQL, _pause_slot_insert_params(slot))
+                sql, params = _run_status_update(WorkflowStatus.PAUSED, totals)
+                db.execute(sql, [*params, slot.run_id])
+                for record in step_records:
+                    self._after_run_mutation_sync(
+                        db,
+                        record.run_id,
+                        "step",
+                        {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
+                    )
+                self._after_run_mutation_sync(
+                    db,
+                    slot.run_id,
+                    "status",
+                    {"status": WorkflowStatus.PAUSED.value, "pause_id": slot.pause_id},
+                )
+                db.commit()
+            except BaseException:
+                self._rollback_sync(db)
+                raise
+
+    def get_pause_slot_sync(self, run_id: str, *, pause_id: str | None = None) -> PauseSlot | None:
+        """Sync mirror of :meth:`get_pause_slot`."""
+        with self._sync_lock:
+            db = self._sync_db()
+            if pause_id is None:
+                row = db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,)).fetchone()
+            else:
+                row = db.execute(_PAUSE_SLOT_BY_ID_SQL, (run_id, pause_id)).fetchone()
+        return _row_to_pause_slot(row) if row is not None else None
+
+    def _settle_pause_in_txn_sync(self, db: Any, run_id: str, *, pause_id: str | None, value: Any) -> PauseSlot:
+        """Sync mirror of :meth:`_settle_pause_in_txn`; caller owns the transaction."""
+        current, known, run_status = self._read_settlement_inputs_sync(db, run_id)
+        slot = _check_settlement(
+            run_id=run_id,
+            pause_id=pause_id,
+            current=current,
+            known_pause_ids=known,
+            run_status=run_status,
+            value=value,
+        )
+        settled_at = datetime.now(timezone.utc)
+        result = db.execute(
+            _PAUSE_SLOT_SETTLE_SQL,
+            (settled_at.isoformat(), json.dumps(value), slot.pause_id),
+        )
+        if result.rowcount != 1:
+            raise _lost_settlement_race(run_id, slot.pause_id)
+        self._after_run_mutation_sync(
+            db,
+            run_id,
+            "answer",
+            {"pause_id": slot.pause_id, "response_key": slot.response_key},
+        )
+        return replace(slot, settled_at=settled_at, answer=value)
+
+    def settle_pause_sync(self, run_id: str, *, pause_id: str | None = None, value: Any) -> PauseSlot:
+        """Sync mirror of :meth:`settle_pause`."""
+        with self._sync_lock:
+            db = self._sync_db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                slot = self._settle_pause_in_txn_sync(db, run_id, pause_id=pause_id, value=value)
+                db.commit()
+                return slot
+            except BaseException:
+                self._rollback_sync(db)
+                raise
 
     async def create_run(
         self,
@@ -574,18 +1073,28 @@ class SqliteCheckpointer(Checkpointer):
         retry_of: str | None = None,
         retry_index: int | None = None,
         config: dict[str, Any] | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> Run:
-        """Create or reset a run record (upsert)."""
+        """Create or reset a run record (upsert).
+
+        ``inputs`` are the run's graph-boundary values. They are written
+        once, on the first creation of this run id, and every later upsert
+        leaves them alone (``COALESCE``): a resume passes only the interrupt
+        answer, and overwriting the original inputs with it would destroy
+        the very state resume needs. See ``get_checkpoint``.
+        """
         await self._ensure_db()
         now = datetime.now(timezone.utc)
         config_json = json.dumps(config) if config is not None else None
+        inputs_blob = _serialize_run_inputs(self._serializer, run_id, inputs)
         async with self._txn_lock():
             await self._db.execute(
-                "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config, inputs_data) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, duration_ms = NULL, node_count = 0, "
                 "error_count = 0, completed_at = NULL, parent_run_id = ?, forked_from = ?, "
-                "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?",
+                "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?, "
+                "inputs_data = COALESCE(runs.inputs_data, ?)",
                 (
                     run_id,
                     WorkflowStatus.ACTIVE.value,
@@ -597,6 +1106,7 @@ class SqliteCheckpointer(Checkpointer):
                     retry_of,
                     retry_index,
                     config_json,
+                    inputs_blob,
                     WorkflowStatus.ACTIVE.value,
                     graph_name or "",
                     parent_run_id,
@@ -605,8 +1115,10 @@ class SqliteCheckpointer(Checkpointer):
                     retry_of,
                     retry_index,
                     config_json,
+                    inputs_blob,
                 ),
             )
+            await self._after_run_mutation(run_id, "run_started", {"graph_name": graph_name or ""})
             await self._db.commit()
         return Run(
             id=run_id,
@@ -632,35 +1144,31 @@ class SqliteCheckpointer(Checkpointer):
     ) -> None:
         """Update run status with optional stats."""
         await self._ensure_db()
-        completed_at = (
-            datetime.now(timezone.utc).isoformat()
-            if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.PARTIAL, WorkflowStatus.STOPPED}
-            else None
-        )
-
-        # Build SET clause dynamically based on what's provided
-        sets = ["status = ?", "completed_at = ?"]
-        params: list[Any] = [status.value, completed_at]
-
-        if duration_ms is not None:
-            sets.append("duration_ms = ?")
-            params.append(duration_ms)
-        if node_count is not None:
-            sets.append("node_count = ?")
-            params.append(node_count)
-        if error_count is not None:
-            sets.append("error_count = ?")
-            params.append(error_count)
-
-        params.append(run_id)
+        sql, params = _run_status_update(status, RunTotals(duration_ms, node_count, error_count))
         async with self._txn_lock():
-            await self._db.execute(
-                f"UPDATE runs SET {', '.join(sets)} WHERE id = ?",
-                params,
-            )
+            await self._db.execute(sql, [*params, run_id])
+            await self._after_run_mutation(run_id, "status", {"status": status.value})
             await self._db.commit()
 
     # === Read ===
+
+    async def get_run_inputs(self, run_id: str) -> dict[str, Any]:
+        """The graph-boundary values this run started from.
+
+        Empty for a run created before this column existed, which is exactly
+        the legacy case ``build_resume_validation_values`` still tolerates.
+        """
+        await self._ensure_db()
+        async with self._txn_lock():
+            cursor = await self._db.execute("SELECT inputs_data FROM runs WHERE id = ?", (run_id,))
+            row = await cursor.fetchone()
+        return _deserialize_run_inputs(self._serializer, row)
+
+    def get_run_inputs_sync(self, run_id: str) -> dict[str, Any]:
+        """Sync mirror of ``get_run_inputs``."""
+        with self._sync_lock:
+            row = self._sync_db().execute("SELECT inputs_data FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return _deserialize_run_inputs(self._serializer, row)
 
     async def get_state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:
         """Compute state by folding step values in timestamp execution order."""
@@ -734,7 +1242,7 @@ class SqliteCheckpointer(Checkpointer):
         return new_workflow_id, checkpoint
 
     async def get_run_async(self, run_id: str) -> Run | None:
-        """Get run metadata."""
+        """Get run metadata, including the run's current pause occurrence."""
         await self._ensure_db()
         async with self._txn_lock():
             cursor = await self._db.execute(
@@ -744,7 +1252,12 @@ class SqliteCheckpointer(Checkpointer):
             row = await cursor.fetchone()
             if row is None:
                 return None
-            return self._row_to_run(row)
+            run = self._row_to_run(row)
+            slot_cursor = await self._db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,))
+            slot_row = await slot_cursor.fetchone()
+        if slot_row is not None:
+            run.pause_slot = _row_to_pause_slot(slot_row)
+        return run
 
     async def list_runs(
         self,
@@ -1254,14 +1767,18 @@ class SqliteCheckpointer(Checkpointer):
             return StepTable(self._row_to_step(row) for row in cursor.fetchall())
 
     def get_run(self, run_id: str) -> Run | None:
-        """Get run metadata synchronously."""
+        """Get run metadata synchronously, including its current pause occurrence."""
         with self._sync_lock:
             db = self._sync_db()
             cursor = db.execute(f"SELECT {_RUNS_COLS} FROM runs WHERE id = ?", (run_id,))
             row = cursor.fetchone()
             if row is None:
                 return None
-            return self._row_to_run(row)
+            run = self._row_to_run(row)
+            slot_row = db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,)).fetchone()
+        if slot_row is not None:
+            run.pause_slot = _row_to_pause_slot(slot_row)
+        return run
 
     def runs(
         self,
@@ -1455,10 +1972,10 @@ class SqliteCheckpointer(Checkpointer):
             }
 
     def checkpoint(self, run_id: str, *, superstep: int | None = None) -> Checkpoint:
-        """Get a checkpoint synchronously."""
+        """Get a checkpoint synchronously — see ``get_checkpoint`` for the model."""
         with self._sync_lock:
             return Checkpoint(
-                values=self.state(run_id, superstep=superstep),
+                values={**self.get_run_inputs_sync(run_id), **self.state(run_id, superstep=superstep)},
                 steps=self.steps(run_id, superstep=superstep),
                 source_run_id=run_id,
                 source_superstep=superstep,
@@ -1512,18 +2029,24 @@ class SqliteCheckpointer(Checkpointer):
         retry_of: str | None = None,
         retry_index: int | None = None,
         config: dict[str, Any] | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> Run:
-        """Create or reset a run record synchronously (upsert)."""
+        """Create or reset a run record synchronously (upsert).
+
+        ``inputs`` follow the same first-write-wins rule as ``create_run``.
+        """
         with self._sync_lock:
             db = self._sync_db()
             now = datetime.now(timezone.utc)
             config_json = json.dumps(config) if config is not None else None
+            inputs_blob = _serialize_run_inputs(self._serializer, run_id, inputs)
             db.execute(
-                "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config, inputs_data) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, duration_ms = NULL, node_count = 0, "
                 "error_count = 0, completed_at = NULL, parent_run_id = ?, forked_from = ?, "
-                "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?",
+                "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?, "
+                "inputs_data = COALESCE(runs.inputs_data, ?)",
                 (
                     run_id,
                     WorkflowStatus.ACTIVE.value,
@@ -1535,6 +2058,7 @@ class SqliteCheckpointer(Checkpointer):
                     retry_of,
                     retry_index,
                     config_json,
+                    inputs_blob,
                     WorkflowStatus.ACTIVE.value,
                     graph_name or "",
                     parent_run_id,
@@ -1543,8 +2067,10 @@ class SqliteCheckpointer(Checkpointer):
                     retry_of,
                     retry_index,
                     config_json,
+                    inputs_blob,
                 ),
             )
+            self._after_run_mutation_sync(db, run_id, "run_started", {"graph_name": graph_name or ""})
             db.commit()
             return Run(
                 id=run_id,
@@ -1565,6 +2091,12 @@ class SqliteCheckpointer(Checkpointer):
             db = self._sync_db()
             db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
             self._apply_retention_policy_sync(record.run_id)
+            self._after_run_mutation_sync(
+                db,
+                record.run_id,
+                "step",
+                {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
+            )
             db.commit()
 
     def _merge_retained_state(self, rows: Sequence[_RetentionRow]) -> dict[str, Any]:
@@ -1638,6 +2170,26 @@ class SqliteCheckpointer(Checkpointer):
             yield list(ids[start : start + _DELETE_BATCH_SIZE])
 
     @staticmethod
+    def _delete_pending_node_batches(
+        rows: Sequence[_RetentionRow],
+    ) -> Iterator[tuple[str, list[Any]]]:
+        """Yield (sql, params) deleting boundary rows for pruned steps.
+
+        A boundary's COMMITTED state is derived from its StepRecord, so a
+        pruned step must take its boundary with it — otherwise retention
+        would silently re-classify settled work as pending. Row-value ``IN``
+        is avoided for old-sqlite portability; the batch size keeps the bind
+        count under the 999-variable floor.
+        """
+        for start in range(0, len(rows), _PENDING_DELETE_BATCH_SIZE):
+            batch = rows[start : start + _PENDING_DELETE_BATCH_SIZE]
+            predicate = " OR ".join("(superstep = ? AND node_name = ?)" for _ in batch)
+            params: list[Any] = []
+            for row in batch:
+                params.extend((row.superstep, row.node_name))
+            yield f"DELETE FROM pending_nodes WHERE run_id = ? AND ({predicate})", params
+
+    @staticmethod
     def _dropped_series_ids(dropped_rows: Sequence[_RetentionRow]) -> list[str]:
         return sorted({row.attempt_series_id for row in dropped_rows if row.attempt_series_id is not None})
 
@@ -1692,6 +2244,8 @@ class SqliteCheckpointer(Checkpointer):
         ids = [row.id for row in dropped_rows]
         for batch in self._delete_step_id_batches(ids):
             await self._db.execute(self._delete_steps_sql(batch), batch)
+        for sql, params in self._delete_pending_node_batches(dropped_rows):
+            await self._db.execute(sql, [run_id, *params])
         for series_batch in self._delete_step_id_batches(self._dropped_series_ids(dropped_rows)):
             records_sql, series_sql = self._delete_closed_series_sql(series_batch)
             await self._db.execute(records_sql, series_batch)
@@ -1721,6 +2275,8 @@ class SqliteCheckpointer(Checkpointer):
             db = self._sync_db()
             for batch in self._delete_step_id_batches(ids):
                 db.execute(self._delete_steps_sql(batch), batch)
+            for sql, params in self._delete_pending_node_batches(dropped_rows):
+                db.execute(sql, [run_id, *params])
             for series_batch in self._delete_step_id_batches(self._dropped_series_ids(dropped_rows)):
                 records_sql, series_sql = self._delete_closed_series_sql(series_batch)
                 db.execute(records_sql, series_batch)
@@ -1771,32 +2327,11 @@ class SqliteCheckpointer(Checkpointer):
         error_count: int | None = None,
     ) -> None:
         """Update run status with optional stats synchronously."""
+        sql, params = _run_status_update(status, RunTotals(duration_ms, node_count, error_count))
         with self._sync_lock:
             db = self._sync_db()
-            completed_at = (
-                datetime.now(timezone.utc).isoformat()
-                if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.PARTIAL, WorkflowStatus.STOPPED}
-                else None
-            )
-
-            sets = ["status = ?", "completed_at = ?"]
-            params: list[Any] = [status.value, completed_at]
-
-            if duration_ms is not None:
-                sets.append("duration_ms = ?")
-                params.append(duration_ms)
-            if node_count is not None:
-                sets.append("node_count = ?")
-                params.append(node_count)
-            if error_count is not None:
-                sets.append("error_count = ?")
-                params.append(error_count)
-
-            params.append(run_id)
-            db.execute(
-                f"UPDATE runs SET {', '.join(sets)} WHERE id = ?",
-                params,
-            )
+            db.execute(sql, [*params, run_id])
+            self._after_run_mutation_sync(db, run_id, "status", {"status": status.value})
             db.commit()
 
     # === Attempt Ledger (sync mirrors) ===

@@ -1,6 +1,12 @@
 # Shared execution authority uses a lease with an epoch
 
-**Status:** Proposed on 2026-07-21, pending maintainer review (wayfinder map ticket). Derived independently by all three clean-room designs and the anchored review (`docs/research/2026-07-21-cleanroom-durable-host-experiment.md`); risk analysis in `docs/research/2026-07-21-durable-host-canon-grill.md`.
+**Status:** Accepted on 2026-07-23 at the durable-host amendment sitting
+(decisions and provenance: `docs/research/2026-07-23-durable-host-amendments.md`;
+delivery contract: `docs/prd/0017-durable-host-v1-program.md`). Amendments
+A6 and A10 folded on 2026-07-24 (Durable Host V1 ticket 01). Derived
+independently by all three clean-room designs and the anchored review
+(`docs/research/2026-07-21-cleanroom-durable-host-experiment.md`); risk
+analysis in `docs/research/2026-07-21-durable-host-canon-grill.md`.
 
 ## Context
 
@@ -34,6 +40,18 @@ performed before it.
   precondition "the caller knows no prior invocation still runs" with:
   **"no prior lease may still commit."** Host re-dispatch is recovery, not a
   node retry; retry budgets, windows, and backoff are untouched.
+- **Recovery has a finite brake (A6).** Each Run pins a recovery-attempt cap
+  at first submit. Re-adoption without committed graph progress sets the
+  coordination condition `recovery_exhausted` — never a `WorkflowStatus` —
+  and reconciliation skips the Run; only `rerun()` into a new Run revives
+  the work. The counter resets only on a committed StepRecord, a durable
+  pause, or a terminal transition.
+- **Effects reserve identity before dispatch (A10).** Every node that may
+  cause an external effect declares that fact, and the Host reserves a
+  durable effect identity before any provider call. An effect whose
+  settlement was not witnessed surfaces `OUTCOME_UNKNOWN` and is never spent
+  again automatically; it requires an explicit operator decision. The
+  declaration and reservation contract is specified in PRD 0014.
 - **Tier boundary.** SQLite (local Run Home) does NOT advertise leases: one
   OS-level exclusive worker lock per Home; epoch fields may exist as private
   schema placeholders. The lease-with-epoch contract is the Postgres
@@ -48,3 +66,5 @@ performed before it.
 - Side-effect nodes still need stable effect identity (PRD 0014); the lease
   guarantees a single authoritative *writer*, not a single physical
   *executor*.
+- Recovery exhaustion gives operators a visible, queryable parking state for
+  poison work without inventing a new execution status.

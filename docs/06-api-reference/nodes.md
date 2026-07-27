@@ -163,6 +163,7 @@ def __init__(
     wait_for: str | tuple[str, ...] | None = None,
     retry: RetryPolicy | None = None,
     timeout: float | None = None,
+    provider_limit: ProcessLocalLimiter | None = None,
 ) -> None: ...
 ```
 
@@ -181,6 +182,7 @@ def __init__(
 - `wait_for`: Ordering-only graph-scope output/emit address(es). Node waits until these values exist and are fresh
 - `retry`: Optional [RetryPolicy](#retrypolicy). Node-owned only — there is no runner, graph, or per-call retry default, and no `retry=True` shorthand. Direct calls stay raw single-shot invocations
 - `timeout`: Optional positive, finite seconds for cooperative cancellation of async functions/generators under `AsyncRunner`. Unsupported runner/callable combinations are rejected before execution. Direct calls stay raw
+- `provider_limit`: Optional [ProcessLocalLimiter](#processlocallimiter) capping how many executions of this node run at once in this process. Direct calls stay raw and take no permit
 
 **Returns:** FunctionNode instance
 
@@ -505,6 +507,7 @@ def node(
     wait_for: str | tuple[str, ...] | None = None,
     retry: RetryPolicy | None = None,
     timeout: float | None = None,
+    provider_limit: ProcessLocalLimiter | None = None,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]: ...
 ```
 
@@ -518,6 +521,7 @@ def node(
 - `wait_for`: Ordering-only graph-scope output/emit address(es). Node won't run until these values exist and are fresh. Must reference an `emit` or `output_name` of another node at the current graph scope
 - `retry`: Optional [RetryPolicy](#retrypolicy) declaring which failures are safe to repeat and with what budget/backoff. See [How to Retry Transient Failures](../05-how-to/retry-transient-failures.md)
 - `timeout`: Optional positive, finite seconds for cooperative per-attempt cancellation of async functions/generators under `AsyncRunner`. See [Bound one async attempt with timeout](../05-how-to/retry-transient-failures.md#bound-one-async-attempt-with-timeout)
+- `provider_limit`: Optional [ProcessLocalLimiter](#processlocallimiter) capping how many executions of this node run at once in this process. Not the durable host's active-Run cap — see [ProcessLocalLimiter](#processlocallimiter)
 
 **Returns:**
 - FunctionNode if source provided (decorator without parens)
@@ -680,6 +684,115 @@ class RetryAfterError(Exception):
 - `retry_after`: Finite delay in seconds, `>= 0`. When a retry may start, this delay is honored **exactly** — no jitter and no `max_delay` cap — but it remains bounded by `max_attempts` and `retry_window`. If the wait cannot end before the series deadline, hypergraph skips the pointless sleep and re-raises the exact underlying exception (never the carrier)
 
 **Raises:** `TypeError` for a non-`Exception` or nested-carrier `error`; `ValueError` for a negative or non-finite `retry_after`.
+
+---
+
+## ProcessLocalLimiter
+
+An injected budget over **external capacity** — how many concurrent calls a
+provider tolerates. The name states its coordination scope: it covers only
+the process that constructed it, and there is no distributed variant in this
+release. It is not the durable host's active-Run cap
+([`RunHome.max_active_runs`](host.md#host-work-admission)), which counts
+Runs a worker executes.
+
+```python
+from hypergraph import ProcessLocalLimiter, node
+
+quota = ProcessLocalLimiter(max_in_flight=2)
+
+@node(output_name="summary", provider_limit=quota)
+async def summarize(doc: str) -> str:
+    return await client.generate(doc)
+```
+
+### Signature
+
+```python
+class ProcessLocalLimiter:
+    def __init__(self, max_in_flight: int) -> None: ...
+
+    max_in_flight: int   # permits this limiter was built with (read-only)
+    in_flight: int       # permits held right now (read-only)
+
+    def __enter__(self) -> ProcessLocalLimiter: ...        # blocks the thread
+    async def __aenter__(self) -> ProcessLocalLimiter: ... # suspends the task
+```
+
+**Args:**
+
+- `max_in_flight` (required): Permit count, an `int >= 1`. Anything else is a `ValueError`.
+
+### Semantics
+
+- **Three scopes, one object.** Acquire it inside a shared **component** at
+  the exact scarce call (usually the right owner of a provider quota); pass
+  it as `@node(provider_limit=...)` for **node** scope; or bind it with
+  `graph.with_provider_limit(...)` for **graph** scope. A graph budget
+  covers nested graphs too, so a node stays covered when it moves inside
+  `as_node()`.
+- **Shared across runs.** A limiter is a long-lived object, so two
+  concurrent Runs of the same graph draw on the same permits.
+- **Work budget vs quota.** Node and graph scope hold the permit for the
+  whole node execution, retry backoff included. They compose as narrower
+  limits around a component quota; they never replace it. The pools are not
+  reentrant, so acquiring the same one twice on a path deadlocks —
+  Hypergraph collapses a graph and node budget that are literally the same
+  object to one permit.
+- **Composition is deadlock-free.** When a node needs several *different*
+  limiters, the runner takes them in one process-wide order (the order the
+  limiters were constructed in), not in scope order. That is what lets two
+  graphs name the same two budgets at opposite scopes — `alpha` on the
+  graph and `beta` on the node in one, reversed in the other — without each
+  holding the permit the other is waiting for. If you acquire several
+  limiters by hand, take them in that same order.
+- **Never a failure, never an attempt.** Waiting for a permit happens
+  outside the attempt coordinator: it reserves no attempt, consumes no
+  `RetryPolicy` budget, and runs down no `timeout`. Under the durable host
+  a Run parked on a permit is still executing and still holds its slot.
+- **One pool, one queue.** `with limiter:` blocks the calling thread;
+  `async with limiter:` suspends the task. Both draw on the same permits
+  and queue in the same arrival order, so neither kind can starve the
+  other.
+- **Direct calls stay raw.** `node(...)` and `node.func(...)` take no permit.
+
+> **`with limiter:` never runs on an event-loop thread.** Blocking a loop
+> thread also stops the tasks holding the permits from releasing them, so the
+> wait could never end. `ProcessLocalLimiter` raises a `RuntimeError` naming
+> the fix instead of hanging. This bites exactly one way: a **sync** node
+> function that does `with self._quota:` while running under `AsyncRunner`,
+> because sync callables execute inline on the loop thread. Make the node
+> `async` and use `async with self._quota:`, move the blocking call out with
+> `asyncio.to_thread(...)`, or declare the budget as
+> `@node(provider_limit=...)` / `graph.with_provider_limit(...)` and let the
+> runner take the permit for you (it always takes it correctly for the
+> runner in use).
+>
+> The one place the runner cannot take it for you is
+> `as_node(runner=SyncRunner())` (or any other synchronous runner) under
+> `AsyncRunner`: the nested run happens inline on the loop thread, so a
+> permit there could only be waited for by blocking the loop. That
+> combination raises `IncompatibleRunnerError` at the boundary — before the
+> nested run starts, and whether or not the permit happens to be free — so
+> it cannot pass in development and hang under load. Drop the `runner=`
+> override, drop the budget from that branch, or own the quota in the
+> component.
+
+### Related concurrency controls
+
+Three different budgets, three different owners — pick by what is scarce:
+
+| Control | Scope | Owns |
+|---|---|---|
+| `ProcessLocalLimiter` | process-wide, shared across runs | an external provider's concurrency |
+| [`AsyncRunner(max_concurrency=...)`](runners.md#concurrency-control) | one `run()`/`map()` call | how much of *this* call runs at once |
+| [`@stateful(max_concurrency=...)`](runners.md#stateful) | one Daft worker replica | how many rows a `@daft.cls` instance handles at once |
+
+`ProcessLocalLimiter` and `@stateful(max_concurrency=...)` express the same
+idea — a component-scoped budget around a shared resource — at two layers:
+`@stateful` is Daft's own per-replica control, lowered into the Daft
+execution plan, and it applies only under `DaftRunner`. `ProcessLocalLimiter`
+is the runner-independent one and is what `SyncRunner`/`AsyncRunner` honor.
 
 ---
 

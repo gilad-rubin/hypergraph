@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def detect_schema_version(conn: Any) -> int:
@@ -14,7 +14,8 @@ def detect_schema_version(conn: Any) -> int:
         0 — empty database (no tables)
         3 — v3 schema (pre attempt ledger)
         4 — v4 schema (attempt ledger tables, false cross-store FKs)
-        5 — current v5 schema (cross-store lineage columns carry no FK)
+        5 — v5 schema (cross-store lineage columns carry no FK)
+        6 — current v6 schema (durable-host coordination + pending node boundaries)
     """
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
@@ -25,8 +26,8 @@ def detect_schema_version(conn: Any) -> int:
     return 0
 
 
-def create_v5_schema(conn: Any) -> None:
-    """Create a fresh v5 schema on an empty database."""
+def create_v6_schema(conn: Any) -> None:
+    """Create a fresh v6 schema on an empty database."""
     conn.execute(_CREATE_RUNS)
     conn.execute(_CREATE_STEPS)
     conn.execute(_CREATE_ATTEMPT_SERIES)
@@ -34,10 +35,15 @@ def create_v5_schema(conn: Any) -> None:
     _create_indexes(conn)
     _create_attempt_indexes(conn)
     _create_fts(conn)
+    _ensure_v6_objects(conn)
 
     conn.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
     conn.execute("INSERT INTO _schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
     conn.commit()
+
+
+# Backward-compatible alias: the fresh-create entry point used before v6.
+create_v5_schema = create_v6_schema
 
 
 def ensure_schema(conn: Any) -> None:
@@ -47,21 +53,28 @@ def ensure_schema(conn: Any) -> None:
     if version == SCHEMA_VERSION:
         _ensure_v3_columns(conn)
         _ensure_v4_objects(conn)
+        _ensure_v6_objects(conn)
         return
     if version == 0:
-        create_v5_schema(conn)
+        create_v6_schema(conn)
         return
     if version == 2:
         _migrate_v2_to_v3(conn)
         _migrate_v3_to_v4(conn)
         _migrate_v4_to_v5(conn)
+        _migrate_v5_to_v6(conn)
         return
     if version == 3:
         _migrate_v3_to_v4(conn)
         _migrate_v4_to_v5(conn)
+        _migrate_v5_to_v6(conn)
         return
     if version == 4:
         _migrate_v4_to_v5(conn)
+        _migrate_v5_to_v6(conn)
+        return
+    if version == 5:
+        _migrate_v5_to_v6(conn)
         return
     raise ValueError(f"Unsupported database schema version {version} (current: {SCHEMA_VERSION}). Please upgrade hypergraph.")
 
@@ -88,9 +101,16 @@ CREATE TABLE IF NOT EXISTS runs (
     fork_superstep INTEGER,
     retry_of TEXT REFERENCES runs(id),
     retry_index INTEGER,
-    config TEXT
+    config TEXT,
+    inputs_data BLOB
 )
 """
+
+# The run's graph-boundary inputs, serialized once at first creation and
+# never rewritten. Step values fold only node OUTPUTS, so without this a
+# resumed run could not restore the values it originally started from and a
+# node consuming a raw graph input after an interrupt could never execute.
+_RUNS_ADDED_COLUMNS = (("inputs_data", "inputs_data BLOB"),)
 
 _CREATE_STEPS = """
 CREATE TABLE IF NOT EXISTS steps (
@@ -319,3 +339,298 @@ def _create_fts(conn: Any) -> None:
             VALUES ('delete', old.id, old.node_name, old.error);
         END
     """)
+
+
+# === v6: durable-host coordination tables ===
+#
+# These tables are additive and inert for plain checkpointer use: nothing
+# writes to them outside the durable host (hypergraph.host). A submission row
+# is durable intent recorded BEFORE execution; the runs row is created later
+# by the executing runner. run_updates is the per-Run durable sequence that
+# RunHomeClient.watch replays; host_commands is the durable control channel
+# (the host's stop and scheduled-answer verbs write it); host_settings holds Home-scoped
+# coordination settings every process that opens the store agrees on.
+
+_CREATE_HOST_SUBMISSIONS = """
+CREATE TABLE IF NOT EXISTS host_submissions (
+    workflow_id TEXT PRIMARY KEY,
+    definition_name TEXT NOT NULL,
+    def_version TEXT NOT NULL DEFAULT '',
+    def_struct_hash TEXT NOT NULL DEFAULT '',
+    inputs_json TEXT NOT NULL,
+    start_at TEXT,
+    state TEXT NOT NULL DEFAULT 'pending',
+    recovery_attempts INTEGER NOT NULL DEFAULT 0,
+    recovery_cap INTEGER NOT NULL DEFAULT 3,
+    source_ref TEXT,
+    created_at TEXT NOT NULL,
+    claimed_at TEXT,
+    finished_at TEXT,
+    fingerprint TEXT,
+    compat_state TEXT NOT NULL DEFAULT 'compatible',
+    retry_of TEXT,
+    -- The rerun ordinal N in the accepted id "<retry_of>-retry-N", allocated
+    -- inside the acceptance transaction. Persisted so the id and the runs
+    -- row's retry_index can never be recomputed into disagreement (a live
+    -- COUNT of executed retries depends on execution order; this does not).
+    retry_index INTEGER,
+    forked_from TEXT,
+    fork_reason TEXT,
+    -- Retained for schema compatibility; the recovery brake no longer reads
+    -- it (progress resets now happen at commit time via _after_run_mutation).
+    last_progress_step_count INTEGER NOT NULL DEFAULT 0,
+    -- Batch membership (ticket 05): set on child submissions only. item_key
+    -- is the logical manifest key; the child workflow id stays
+    -- "<batch_workflow_id>:<item_key>".
+    batch_id TEXT,
+    item_key TEXT,
+    -- WHICH claim of this submission is current. Every claim bumps it, so a
+    -- claimant carries an identity — not just the state name 'claimed' —
+    -- that its release can compare against. claimed_at cannot serve: the
+    -- store clock is millisecond-grained, and park -> answer -> re-claim
+    -- fits inside one millisecond, so two successive claims of one
+    -- submission can share a timestamp.
+    claim_seq INTEGER NOT NULL DEFAULT 0
+)
+"""
+
+_CREATE_RUN_UPDATES = """
+CREATE TABLE IF NOT EXISTS run_updates (
+    run_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, seq)
+)
+"""
+
+# ``source_ref`` is opaque caller provenance for audit only (ADR 0005 A11 /
+# PRD 0017 US58-59): nothing authenticates on it and no dedup predicate reads
+# it. ``pause_id``/``due_at``/``outcome`` belong to the ONE scheduled verb
+# Hypergraph has (ticket 14 / ADR 0008): a scheduled *pause answer*. They are
+# deliberately pause-shaped rather than a generic scheduler — there is no
+# recurrence, no cron expression, and no caller-chosen verb.
+_CREATE_HOST_COMMANDS = """
+CREATE TABLE IF NOT EXISTS host_commands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    verb TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    source_ref TEXT,
+    created_at TEXT NOT NULL,
+    applied_at TEXT,
+    -- Scheduled pause answers only (verb = 'schedule_answer'):
+    pause_id TEXT,
+    due_at TEXT,
+    outcome TEXT
+)
+"""
+
+# Batch tables (ticket 05): host_batches is the immutable manifest pinned at
+# acceptance (identity, items, tolerance, start intent, fingerprint);
+# batch_updates is the per-Batch durable sequence (bseq) that
+# RunHomeClient.watch(batch_ref) replays — same gap-free discipline as
+# run_updates. Children are ordinary host_submissions rows linked by
+# host_submissions.batch_id. host_batches.retry_of (ticket 06) records Batch
+# lineage when an item-scoped rerun mints a new manifest from a source Batch.
+_CREATE_HOST_BATCHES = """
+CREATE TABLE IF NOT EXISTS host_batches (
+    batch_id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL UNIQUE,
+    definition_name TEXT NOT NULL,
+    def_version TEXT NOT NULL DEFAULT '',
+    def_struct_hash TEXT NOT NULL DEFAULT '',
+    items_json TEXT NOT NULL,
+    tolerance_json TEXT,
+    start_at TEXT,
+    fingerprint TEXT NOT NULL,
+    source_ref TEXT,
+    created_at TEXT NOT NULL,
+    retry_of TEXT
+)
+"""
+
+_CREATE_BATCH_UPDATES = """
+CREATE TABLE IF NOT EXISTS batch_updates (
+    batch_id TEXT NOT NULL,
+    bseq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    item_key TEXT,
+    payload TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (batch_id, bseq)
+)
+"""
+
+# Home-scoped coordination settings (ticket 12): one row per setting, shared by
+# every process that opens this store. `max_active_runs` lives here rather than
+# on a Python object because the worker that enforces the cap and the operator
+# that tunes or reads it are usually different processes holding different
+# RunHome instances — a per-instance attribute would make them disagree.
+# NULL value means "explicitly unset" (unlimited), which is also what a missing
+# row means.
+_CREATE_HOST_SETTINGS = """
+CREATE TABLE IF NOT EXISTS host_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at TEXT
+)
+"""
+
+
+# Pending node boundaries (ticket 08 / PRD 0013). This is a CORE checkpointer
+# table, not a host-only one: any checkpointed run records the superstep's
+# runnable node boundaries here before the first sibling dispatches, so a
+# process death between siblings cannot forget the unfinished ones.
+#
+# The primary key is exactly the tuple ``steps`` is unique on, so recovery
+# joins boundary intent against the execution journal with no guessing:
+# a matching steps row means committed; no steps row and no dispatched_at
+# means pending; dispatched_at without a steps row is reserved for declared
+# effects (PRD 0014) and nothing sets it yet.
+#
+# Deliberately NO foreign key to runs(id): a claimed run lost before its
+# first committed step has its history-less runs row deleted and restarts
+# fresh (see host RunHome._delete_history_less_run). Boundary intent is not
+# execution history and must never block that reset.
+_CREATE_PENDING_NODES = """
+CREATE TABLE IF NOT EXISTS pending_nodes (
+    run_id TEXT NOT NULL,
+    superstep INTEGER NOT NULL,
+    node_name TEXT NOT NULL,
+    node_type TEXT,
+    created_at TEXT NOT NULL,
+    dispatched_at TEXT,
+    PRIMARY KEY (run_id, superstep, node_name)
+)
+"""
+
+
+def _ensure_pending_node_objects(conn: Any) -> None:
+    """Ensure the pending node-boundary table exists (safe idempotent guard)."""
+    conn.execute(_CREATE_PENDING_NODES)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_nodes_run ON pending_nodes(run_id, superstep)")
+
+
+# Durable pause slots (ticket 13 / PRD 0010). Like pending_nodes this is a
+# CORE checkpointer table, not a host-only one: any checkpointed run that
+# pauses writes its occurrence here in the SAME transaction as the paused
+# step's records and the runs-row transition to 'paused'.
+#
+# The primary key is the node address `<run_id>:<superstep>:<node_name>`, so a
+# loop's repeated pauses own distinct rows and settlement can compare-and-set
+# on the exact occurrence a caller observed. `settled_at IS NULL` is the CAS
+# guard; `answer` holds the settled value as the durable resume input for
+# `response_key`.
+#
+# Deliberately NO foreign key to runs(id), for the same reason pending_nodes
+# has none: a history-less claimed run may have its runs row deleted and
+# restart fresh, and durable pause truth must never block that reset.
+#
+# Pause slots are NOT pruned by retention compaction. Unlike a node boundary
+# (whose state is DERIVED from steps), a slot carries the question and the
+# human answer — user-visible truth in its own right, not a projection of the
+# journal.
+_CREATE_PAUSE_SLOTS = """
+CREATE TABLE IF NOT EXISTS pause_slots (
+    pause_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    superstep INTEGER NOT NULL,
+    node_name TEXT NOT NULL,
+    node_path TEXT,
+    response_key TEXT NOT NULL,
+    question TEXT NOT NULL DEFAULT '{}',
+    answer_schema TEXT NOT NULL DEFAULT '{}',
+    options TEXT,
+    created_at TEXT NOT NULL,
+    settled_at TEXT,
+    answer TEXT
+)
+"""
+
+
+def _ensure_pause_slot_objects(conn: Any) -> None:
+    """Ensure the durable pause-slot table exists (safe idempotent guard)."""
+    conn.execute(_CREATE_PAUSE_SLOTS)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pause_slots_run ON pause_slots(run_id)")
+
+
+def _create_host_indexes(conn: Any) -> None:
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_host_submissions_state ON host_submissions(state)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_host_submissions_definition ON host_submissions(definition_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_host_submissions_batch ON host_submissions(batch_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_host_commands_run ON host_commands(run_id, id)")
+    # The due-row scan (ticket 14) reads unapplied rows of one verb in id
+    # order; the same shape ``start_at`` eligibility uses for delayed starts.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_host_commands_due ON host_commands(verb, applied_at, due_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_host_batches_workflow ON host_batches(workflow_id)")
+
+
+# Columns appended to host_submissions after the initial v6 cut (tickets
+# 03/04/05). The v6 DDL above already carries them; this guarded ALTER list
+# migrates dev databases that were created at v6 before the columns existed.
+_HOST_SUBMISSIONS_ADDED_COLUMNS = (
+    ("fingerprint", "fingerprint TEXT"),
+    ("compat_state", "compat_state TEXT NOT NULL DEFAULT 'compatible'"),
+    ("retry_of", "retry_of TEXT"),
+    ("retry_index", "retry_index INTEGER"),
+    ("forked_from", "forked_from TEXT"),
+    ("fork_reason", "fork_reason TEXT"),
+    ("last_progress_step_count", "last_progress_step_count INTEGER NOT NULL DEFAULT 0"),
+    ("batch_id", "batch_id TEXT"),
+    ("item_key", "item_key TEXT"),
+    ("claim_seq", "claim_seq INTEGER NOT NULL DEFAULT 0"),
+)
+
+# Columns appended to host_batches after its initial cut (ticket 06). The v6
+# DDL above already carries it; this guarded ALTER migrates dev databases
+# that were created at v6 before the column existed.
+_HOST_BATCHES_ADDED_COLUMNS = (("retry_of", "retry_of TEXT"),)
+
+# Columns appended to host_commands after its initial cut (ticket 14, the
+# scheduled pause answer). Same guarded-ALTER discipline as above.
+_HOST_COMMANDS_ADDED_COLUMNS = (
+    ("pause_id", "pause_id TEXT"),
+    ("due_at", "due_at TEXT"),
+    ("outcome", "outcome TEXT"),
+)
+
+
+def _add_missing_columns(conn: Any, table: str, columns: tuple[tuple[str, str], ...]) -> None:
+    """ALTER in every one of ``columns`` the table does not already carry."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, ddl in columns:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
+def _ensure_v6_objects(conn: Any) -> None:
+    """Ensure v6 tables exist (safe idempotent guard).
+
+    Covers the durable-host coordination tables and the core pending
+    node-boundary and pause-slot tables. Every ``ensure_schema`` path reaches
+    this, so dev databases created at an earlier v6 cut pick the new objects
+    up in place.
+    """
+    conn.execute(_CREATE_HOST_SUBMISSIONS)
+    conn.execute(_CREATE_RUN_UPDATES)
+    conn.execute(_CREATE_HOST_COMMANDS)
+    conn.execute(_CREATE_HOST_BATCHES)
+    conn.execute(_CREATE_BATCH_UPDATES)
+    conn.execute(_CREATE_HOST_SETTINGS)
+    _add_missing_columns(conn, "runs", _RUNS_ADDED_COLUMNS)
+    _add_missing_columns(conn, "host_submissions", _HOST_SUBMISSIONS_ADDED_COLUMNS)
+    _add_missing_columns(conn, "host_batches", _HOST_BATCHES_ADDED_COLUMNS)
+    _add_missing_columns(conn, "host_commands", _HOST_COMMANDS_ADDED_COLUMNS)
+    _create_host_indexes(conn)
+    _ensure_pending_node_objects(conn)
+    _ensure_pause_slot_objects(conn)
+    conn.commit()
+
+
+def _migrate_v5_to_v6(conn: Any) -> None:
+    """In-place migration from schema v5 to v6 (adds host coordination tables)."""
+    _ensure_v6_objects(conn)
+    conn.execute("UPDATE _schema_version SET version = 6")
+    conn.commit()

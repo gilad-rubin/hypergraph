@@ -21,7 +21,12 @@ from hypergraph.runners._shared.event_metadata import (
 from hypergraph.runners._shared.handles import AsyncHandle, AsyncRunEventHandle, _launch_async_execution
 from hypergraph.runners._shared.input_normalization import runner_option_names
 from hypergraph.runners._shared.outputs import SELECT_UNSET
+from hypergraph.runners._shared.pending_boundaries import (
+    record_superstep_boundaries_async,
+    supports_pending_boundaries,
+)
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
+from hypergraph.runners._shared.provider_limits import compose_graph_limits, current_graph_limits, pop_graph_limits, push_graph_limits
 from hypergraph.runners._shared.results import MapResult, RunResult
 from hypergraph.runners._shared.scheduling import (
     ExecutionFrontier,
@@ -115,7 +120,17 @@ class AsyncRunner(AsyncRunnerTemplate):
         self._show_progress = show_progress
         self._active_workflows = _ActiveWorkflows()
         self._background_tasks: set[asyncio.Task[Any]] = set()
-        self._executors: dict[type[HyperNode], AsyncNodeExecutor] = {
+        self._executors = self._build_executors()
+
+    def _build_executors(self) -> dict[type[HyperNode], AsyncNodeExecutor]:
+        """Construct node executors bound to THIS runner instance.
+
+        Extracted from ``__init__`` so ``with_checkpointer()`` can rebind a
+        clone's executors: ``AsyncGraphNodeExecutor`` captures its runner, and
+        a shallow copy would keep delegating nested GraphNode child workflows
+        to the ORIGINAL runner (wrong checkpointer, wrong live registry).
+        """
+        return {
             FunctionNode: AsyncFunctionNodeExecutor(),
             GraphNode: AsyncGraphNodeExecutor(self),
             IfElseNode: AsyncIfElseNodeExecutor(),
@@ -477,6 +492,9 @@ class AsyncRunner(AsyncRunnerTemplate):
         # Checkpointer setup — deterministic node ordering for index assignment
         checkpointer = self._checkpointer_instance
         has_checkpointer = checkpointer is not None and workflow_id is not None
+        # The probe answers None itself, so pass the active checkpointer (or
+        # None) exactly as SyncRunner does — one call, no extra null guard.
+        persist_boundaries = supports_pending_boundaries(checkpointer if has_checkpointer else None, sync=False)
         # When resuming, offset counters so new steps don't overwrite prior ones
         from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
 
@@ -486,6 +504,14 @@ class AsyncRunner(AsyncRunnerTemplate):
 
         signal = get_stop_signal()
         assert signal is not None, "run template must install a workflow stop signal"
+
+        # Graph-scope provider budgets: this graph's own, composed onto any an
+        # enclosing graph already holds, and published so a nested graph run
+        # inherits them (a node must stay covered by the parent's budget when
+        # it moves inside as_node()). Identity comparison: compose returns the
+        # inherited tuple unchanged when this graph adds nothing to push.
+        graph_limits = compose_graph_limits(graph.provider_limit)
+        limits_token = push_graph_limits(graph_limits) if graph_limits is not current_graph_limits() else None
 
         try:
             superstep_idx = 0
@@ -504,6 +530,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                 emit_fn=dispatcher.emit if dispatcher.active else None,
                 checkpointer=checkpointer if has_checkpointer else None,
                 superstep_offset=superstep_offset,
+                provider_limits=graph_limits,
             )
 
             while frontier.has_pending_components():
@@ -556,6 +583,16 @@ class AsyncRunner(AsyncRunnerTemplate):
                     if isinstance(graph._nodes.get(name), GraphNode)
                 }
 
+                # Durable intent BEFORE the first sibling can cause external
+                # work — never a side effect of the first one finishing.
+                if persist_boundaries:
+                    await record_superstep_boundaries_async(
+                        checkpointer,  # type: ignore[arg-type]  # probe_seam proved the pending-node seam
+                        workflow_id,  # type: ignore[arg-type]
+                        superstep_idx + superstep_offset,
+                        ready_nodes,
+                    )
+
                 superstep_error: BaseException | None = None
                 attempted_node_names: tuple[str, ...] | None = None
                 node_errors: dict[str, BaseException] | None = None
@@ -579,6 +616,12 @@ class AsyncRunner(AsyncRunnerTemplate):
                 except PauseExecution as pause:
                     if pause.partial_state is not None:
                         state = pause.partial_state
+                    # Address the occurrence in THIS run's scope: the same
+                    # resume-offset index the paused StepRecord carries, so
+                    # the durable pause slot and its step share one address
+                    # (PRD 0010). A nested pause is re-raised fresh by the
+                    # GraphNode executor and is addressed here, parent-facing.
+                    pause.superstep = superstep_idx + superstep_offset
                     # Save step records before propagating the pause.
                     # The interrupt node gets a "paused" status record.
                     if has_checkpointer:
@@ -664,6 +707,8 @@ class AsyncRunner(AsyncRunnerTemplate):
             # Reset concurrency limiter only if we set it
             if token is not None:
                 reset_concurrency_limiter(token)
+            if limits_token is not None:
+                pop_graph_limits(limits_token)
 
         # Propagate stopped flag to the template layer
         state.stopped = signal.is_set

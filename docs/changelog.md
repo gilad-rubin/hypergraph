@@ -4,6 +4,58 @@
 
 ### Changed
 
+- **BREAKING (Durable Host API): new work is graph-first, and Batch
+  submission speaks runner-map vocabulary.** `host.submit()`,
+  `host.submit_batch()`, and `host.fork(into=...)` now take the served
+  `Graph` object instead of a Definition-name string; the Host resolves it by
+  the graph's own pinned identity (name **and** `structural_hash`), so the
+  code you hold a reference to is the code that runs. An unserved or
+  structurally drifted graph raises the new `UnservedGraphError` at the call
+  site instead of being accepted and parked; a bare string raises
+  `TypeError`. `submit_batch()` replaces its mapping-of-item-key-to-inputs
+  `items=` parameter with `values` plus `map_over` / `map_mode` / `key_by` —
+  the same input-expansion vocabulary as `runner.map()`, frozen into the same
+  immutable manifest. `key_by` names one expanded input whose JSON-safe
+  scalar value is the logical item key; missing, empty, non-scalar, or
+  duplicate keys raise the new `ItemKeyError` before anything is written.
+  Runner map's `max_concurrency` and `error_handling` are deliberately not
+  carried over: durable concurrency is Host admission and durable failure
+  policy is `BatchTolerance`. There is no `host.map()` — it would promise an
+  immediate `MapResult` where a durable Batch returns a receipt.
+
+- **BREAKING (checkpointers): a checkpointed run now stores its graph inputs,
+  so those inputs must be storable.** Step records fold node *outputs*, which
+  left the values a run started from unrecorded — a node placed after an
+  interrupt that consumed a raw graph input could never be satisfied on
+  resume. `create_run()` / `create_run_sync()` therefore take a new
+  `inputs=` keyword and `SqliteCheckpointer` persists it to `runs.inputs_data`
+  first-write-wins (a resume carries only the answer port and must not clobber
+  the originals). Three consequences:
+
+  - **A graph input the serializer cannot encode now fails the run at start.**
+    Previously only node outputs went through the serializer, so a live client
+    or connection handle passed as a graph input ran fine; it now raises
+    `TypeError` naming the run and the offending input. Pass a storable
+    stand-in and build the object inside a node, or configure a serializer
+    that accepts it (`SqliteCheckpointer(..., serializer=JsonSerializer(lossy=True))`).
+  - **`Checkpoint.values` gained the run's own inputs**, layered *underneath*
+    the folded step values (a node output shadowing an input name still wins).
+    Code that treated `Checkpoint.values` as "node outputs only" now sees more
+    keys.
+  - **`create_run` / `create_run_sync` gained a parameter.** Third-party
+    checkpointers that do not accept `inputs=` must add it; ignoring the
+    argument and keeping the inherited `get_run_inputs()` (which returns `{}`)
+    preserves the previous behavior exactly. There is no capability probe —
+    the ABC and the protocol both declare the parameter, and
+    `docs/06-api-reference/checkpointers.md` documents it.
+
+  This also **inverts two resume refusals**, deliberately. Resuming a
+  checkpoint whose source run consumed a graph input no later node reproduces
+  used to raise `MissingInputError`, because the value genuinely was not
+  available; it now restores the input and does real work
+  (`test_checkpoint_resume_restores_a_source_run_input`, async and sync). The
+  guard itself is unchanged and still fires for a genuinely absent seed.
+
 - **BREAKING (durable record content): raw exception text no longer enters
   durable or telemetry surfaces.** Previously `str(exception)` flowed
   verbatim through `NodeErrorEvent.error` → `RunLog` / checkpoint
@@ -21,6 +73,30 @@
   `FailureEvidence.diagnostic`.
 
 ### Added
+
+- **Independently paused Batch children now continue when answered** —
+  answering a durable pause no longer just stores resume input; settlement,
+  the persisted answer, the Run `answer` fact, the new Batch
+  `child_runnable` fact, and the submission's `paused → pending` transition
+  all commit in **one** transaction, so an accepted answer and a claimable
+  run are never separable by process death. A worker then resumes the *same*
+  checkpointed workflow id with only `{response_key: answer}` — never the
+  pinned start inputs, which strict checkpoint resume refuses as an input
+  override — and the answer routes the rest of the graph normally, including
+  looping to a second interrupt (a new `pause_id`, parked again).
+  `BatchView` gains a distinct **`paused`** count (`active` now means
+  claimed and executing) and a `paused` child holds **no** active-Run
+  admission slot, so siblings keep running while items wait on people.
+  `BatchView.items` is new: one `BatchItemView` per manifest key carrying the
+  child's inert `RunRef`, current status and waiting condition, terminal
+  outcome, and whether it ever started — the address you answer or stop an
+  individual item through. Batch watch gains the `child_paused` and
+  `child_runnable` lifecycle facts (repeatable; only `child_settled`,
+  `child_unstarted`, `child_abandoned`, and a trip's `unstarted_items` /
+  `abandoned_items` account an item for good). Stopping a paused child is a stop, not a duplicate-resolution
+  decision: the run settles `STOPPED` with the domain question unanswered.
+  Answer-vs-stop and answer-vs-answer races resolve only by commit order, so
+  a doubly-answered item can never continue twice.
 
 - **Persisted HyperTable Materialization Branches** —
   `HyperTable.attach(name, graph=..., outputs=...)` records a complete alternate

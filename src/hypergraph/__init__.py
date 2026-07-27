@@ -3,9 +3,14 @@
 from hypergraph._repr import get_display_mode, set_display_mode
 from hypergraph.cache import CacheBackend, DiskCache, InMemoryCache
 from hypergraph.checkpointers import (
+    AnswerRejectedError,
     Checkpointer,
     CheckpointPolicy,
+    PauseAlreadySettledError,
+    PauseSettlementError,
+    PauseSlot,
     SqliteCheckpointer,
+    StalePauseError,
 )
 from hypergraph.diagnostics import (
     Diagnostic,
@@ -55,6 +60,36 @@ from hypergraph.exceptions import (
     get_failure_evidence,
 )
 from hypergraph.graph import Graph, GraphConfigError, InputSpec
+from hypergraph.host import (
+    AlreadyTerminalError,
+    BatchCommandReceipt,
+    BatchItemView,
+    BatchRef,
+    BatchSubmitReceipt,
+    BatchTolerance,
+    BatchUpdate,
+    BatchView,
+    CommandReceipt,
+    DefinitionId,
+    ForkCompatibilityError,
+    Host,
+    HostError,
+    ItemKeyError,
+    RerunError,
+    RunHome,
+    RunHomeClient,
+    RunQuery,
+    RunRef,
+    RunUpdate,
+    RunView,
+    SubmitReceipt,
+    UnservedGraphError,
+    WaitingCondition,
+    WorkerLockError,
+    WorkflowIdConflictError,
+    serve,
+)
+from hypergraph.limits import ProcessLocalLimiter
 from hypergraph.nodes import (
     END,
     FunctionNode,
@@ -112,6 +147,8 @@ __all__ = [
     "END",
     "RetryPolicy",
     "RetryAfterError",
+    # Provider-resource admission (never the host active-Run cap)
+    "ProcessLocalLimiter",
     # Graph
     "Graph",
     "InputSpec",
@@ -193,6 +230,40 @@ __all__ = [
     "Checkpointer",
     "CheckpointPolicy",
     "SqliteCheckpointer",
+    # Durable host (Tier 1 local host)
+    "serve",
+    "Host",
+    "RunHome",
+    "RunHomeClient",
+    "RunRef",
+    "SubmitReceipt",
+    "CommandReceipt",
+    "RunView",
+    "RunUpdate",
+    "RunQuery",
+    "WaitingCondition",
+    "HostError",
+    "WorkerLockError",
+    "AlreadyTerminalError",
+    "DefinitionId",
+    "WorkflowIdConflictError",
+    "ForkCompatibilityError",
+    "RerunError",
+    "UnservedGraphError",
+    "ItemKeyError",
+    "BatchRef",
+    "BatchSubmitReceipt",
+    "BatchCommandReceipt",
+    "BatchView",
+    "BatchItemView",
+    "BatchUpdate",
+    "BatchTolerance",
+    # Durable pause slots (PRD 0010)
+    "PauseSlot",
+    "PauseSettlementError",
+    "AnswerRejectedError",
+    "PauseAlreadySettledError",
+    "StalePauseError",
     # Display
     "set_display_mode",
     "get_display_mode",

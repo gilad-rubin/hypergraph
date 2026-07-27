@@ -670,6 +670,15 @@ results = runner.map(graph, {"text": texts}, map_over="text")
 The class must support zero-argument construction (`__init__()` with no
 required args) so Daft can re-create it on each worker.
 
+`@stateful(max_concurrency=...)` is a **component-scoped budget** — the same
+idea as a [`ProcessLocalLimiter`](nodes.md#processlocallimiter), one layer
+down. It is Daft's own per-replica control, lowered into the Daft plan by
+`@daft.cls`, and it applies only under `DaftRunner`. `ProcessLocalLimiter` is
+the runner-independent one: it is what `SyncRunner` and `AsyncRunner` honor,
+and it caps concurrency across every run in the process rather than within a
+worker replica. See
+[Related concurrency controls](nodes.md#related-concurrency-controls).
+
 ### daft_node(..., batch=True)
 
 Use `hypergraph.integrations.daft.node` for vectorized `@daft.func.batch`
@@ -863,6 +872,16 @@ Concurrency limits are shared across:
 - All items in `map()` calls
 
 This prevents overwhelming external services when processing large batches.
+
+`max_concurrency` is a budget for **one call**: a second concurrent
+`run()`/`map()` gets its own. To cap external capacity across every run in
+the process — a provider's concurrency limit — inject a shared
+[`ProcessLocalLimiter`](nodes.md#processlocallimiter) at component, node, or
+graph scope instead. The two compose: the provider budget is taken first,
+so a node queueing for external capacity never sits on a `max_concurrency`
+permit another node could use. See
+[Related concurrency controls](nodes.md#related-concurrency-controls) for
+which budget owns what.
 
 ### map()
 
@@ -1143,6 +1162,13 @@ class PauseInfo:
 
 An interrupt has one answer slot. Multi-field questions return one structured
 answer model rather than multiple response keys.
+
+`PauseInfo` is **in-memory only** — it describes the pause this process just
+produced and is gone when the process exits. The durable counterpart is
+`run.pause_slot`, a
+[`PauseSlot`](checkpointers.md#durable-pause-slots), which any process can read
+and answer. See [Three things named "pause"](checkpointers.md#three-things-named-pause)
+for how `PauseExecution`, `PauseInfo`, and `PauseSlot` relate.
 
 ### Convenience Properties
 

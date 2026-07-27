@@ -19,7 +19,12 @@ from hypergraph.runners._shared.event_metadata import (
 from hypergraph.runners._shared.handles import SyncHandle, _launch_sync_execution
 from hypergraph.runners._shared.input_normalization import runner_option_names
 from hypergraph.runners._shared.outputs import SELECT_UNSET
+from hypergraph.runners._shared.pending_boundaries import (
+    record_superstep_boundaries_sync,
+    supports_pending_boundaries,
+)
 from hypergraph.runners._shared.protocols import NodeExecutor
+from hypergraph.runners._shared.provider_limits import compose_graph_limits, current_graph_limits, pop_graph_limits, push_graph_limits
 from hypergraph.runners._shared.results import MapResult, RunResult
 from hypergraph.runners._shared.scheduling import ExecutionFrontier, compute_execution_scope
 from hypergraph.runners._shared.state import ExecutionContext, GraphState, RunnerCapabilities
@@ -93,7 +98,17 @@ class SyncRunner(SyncRunnerTemplate):
         self._checkpointer_instance = checkpointer
         self._show_progress = show_progress
         self._active_workflows = _ActiveWorkflows()
-        self._executors: dict[type[HyperNode], NodeExecutor] = {
+        self._executors = self._build_executors()
+
+    def _build_executors(self) -> dict[type[HyperNode], NodeExecutor]:
+        """Construct node executors bound to THIS runner instance.
+
+        Extracted from ``__init__`` so ``with_checkpointer()`` can rebind a
+        clone's executors: ``SyncGraphNodeExecutor`` captures its runner, and
+        a shallow copy would keep delegating nested GraphNode child workflows
+        to the ORIGINAL runner (wrong checkpointer, wrong live registry).
+        """
+        return {
             FunctionNode: SyncFunctionNodeExecutor(),
             GraphNode: SyncGraphNodeExecutor(self),
             IfElseNode: SyncIfElseNodeExecutor(),
@@ -356,6 +371,7 @@ class SyncRunner(SyncRunnerTemplate):
         # Checkpointer setup — template already validated the protocol,
         # so we just check if checkpointing is active for this run
         sync_cp = self._checkpointer_instance if (self._checkpointer_instance and workflow_id) else None
+        persist_boundaries = supports_pending_boundaries(sync_cp, sync=True)
         # When resuming, offset counters so new steps don't overwrite prior ones
         from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
 
@@ -364,6 +380,11 @@ class SyncRunner(SyncRunnerTemplate):
 
         signal = get_stop_signal()
         assert signal is not None, "run template must install a workflow stop signal"
+
+        # Graph-scope provider budgets: this graph's own, composed onto any an
+        # enclosing graph already holds. A node must stay covered by the
+        # parent's budget when it moves inside as_node().
+        graph_limits = compose_graph_limits(graph.provider_limit)
 
         superstep_idx = 0
         frontier = ExecutionFrontier.from_scope(scope, max_iterations)
@@ -381,7 +402,13 @@ class SyncRunner(SyncRunnerTemplate):
             emit_fn=dispatcher.emit if dispatcher.active else None,
             checkpointer=sync_cp,
             superstep_offset=superstep_offset,
+            provider_limits=graph_limits,
         )
+
+        # Published last, so a nested graph run inherits them. Identity
+        # comparison: compose returns the inherited tuple unchanged when this
+        # graph adds nothing, and then there is nothing to push.
+        limits_token = push_graph_limits(graph_limits) if graph_limits is not current_graph_limits() else None
 
         try:
             while frontier.has_pending_components():
@@ -429,6 +456,16 @@ class SyncRunner(SyncRunnerTemplate):
                     for name in ready_node_names
                     if isinstance(graph._nodes.get(name), GraphNode)
                 }
+
+                # Durable intent BEFORE the first sibling can cause external
+                # work — never a side effect of the first one finishing.
+                if persist_boundaries:
+                    record_superstep_boundaries_sync(
+                        sync_cp,  # type: ignore[arg-type]  # probe_seam proved the pending-node seam
+                        workflow_id,  # type: ignore[arg-type]
+                        superstep_idx + superstep_offset,
+                        ready_nodes,
+                    )
 
                 superstep_error: BaseException | None = None
                 attempted_node_names: tuple[str, ...] | None = None
@@ -486,6 +523,8 @@ class SyncRunner(SyncRunnerTemplate):
             # Expose cooperative-stop truth even when execution exits early.
             state.stopped = signal.is_set
             state.stop_info = signal.info
+            if limits_token is not None:
+                pop_graph_limits(limits_token)
 
         return state
 

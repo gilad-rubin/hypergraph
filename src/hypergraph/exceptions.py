@@ -429,6 +429,18 @@ class AttemptOutcomeUnknownError(Exception):
         )
 
 
+class HostError(Exception):
+    """Base class for durable-host errors.
+
+    Defined here rather than in ``hypergraph/host/errors.py`` — which
+    re-exports it as the canonical import — because durable-host errors are
+    also raised from layers BELOW the host: a pause settlement refused inside
+    a checkpointer surfaces through ``RunHomeClient.answer``, so
+    ``except HostError`` must catch it. ``hypergraph.exceptions`` is the only
+    module every layer can import without a cycle.
+    """
+
+
 class WorkflowForkError(Exception):
     """Raised when fork arguments are invalid for the requested workflow."""
 

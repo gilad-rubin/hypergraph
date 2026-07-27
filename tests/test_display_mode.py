@@ -166,6 +166,8 @@ def _instance_factories() -> dict[str, object]:
         StepTable,
         WorkflowStatus,
     )
+    from hypergraph.host.refs import RunRef
+    from hypergraph.host.views import BatchItemView, WaitingCondition
     from hypergraph.runners._shared.results import MapLog, MapResult, NodeRecord, RunLog, RunResult, RunStatus
 
     step = StepRecord(run_id="r", superstep=0, node_name="a", index=0, status=StepStatus.COMPLETED, input_versions={})
@@ -201,6 +203,15 @@ def _instance_factories() -> dict[str, object]:
             [LineageRow(lane="", run=run, depth=0, is_selected=True)],
             selected_run_id="r-1",
             root_run_id="r-1",
+        ),
+        "hypergraph.host.views.BatchItemView": lambda: BatchItemView(
+            item_key="protocol-17",
+            run_ref=RunRef(home="file:runs.db", run_id="drop-1:protocol-17"),
+            workflow_id="drop-1:protocol-17",
+            status=None,
+            waiting=WaitingCondition.PAUSED,
+            outcome=None,
+            started=True,
         ),
     }
 

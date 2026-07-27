@@ -919,8 +919,8 @@ class TestSearch:
 
 
 class TestMigration:
-    def test_fresh_db_gets_v5_schema(self, tmp_path):
-        """A new database gets v5 schema automatically."""
+    def test_fresh_db_gets_v6_schema(self, tmp_path):
+        """A new database gets v6 schema automatically."""
         cp = SqliteCheckpointer(str(tmp_path / "fresh.db"))
         # Trigger sync schema creation
         assert cp.runs() == []
@@ -933,10 +933,62 @@ class TestMigration:
         assert "steps" in tables
         assert "attempt_series" in tables
         assert "attempt_records" in tables
+        # v6 durable-host coordination tables
+        assert "host_submissions" in tables
+        assert "run_updates" in tables
+        assert "host_commands" in tables
         assert "_schema_version" in tables
+        # v6 pending node boundaries (ticket 08): a core checkpointer table,
+        # keyed on exactly the tuple `steps` is unique on.
+        assert "pending_nodes" in tables
+        boundary_cols = [row[1] for row in conn.execute("PRAGMA table_info(pending_nodes)").fetchall()]
+        assert boundary_cols == ["run_id", "superstep", "node_name", "node_type", "created_at", "dispatched_at"]
+        boundary_pk = [row[1] for row in conn.execute("PRAGMA table_info(pending_nodes)").fetchall() if row[5]]
+        assert boundary_pk == ["run_id", "superstep", "node_name"]
+
+        # v6 host_submissions columns (ticket 02 coordination + ticket 03
+        # identity/fingerprint/lineage).
+        submission_cols = {row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()}
+        assert {
+            "workflow_id",
+            "definition_name",
+            "def_version",
+            "def_struct_hash",
+            "inputs_json",
+            "start_at",
+            "state",
+            "recovery_attempts",
+            "recovery_cap",
+            "source_ref",
+            "created_at",
+            "claimed_at",
+            "finished_at",
+            "fingerprint",
+            "compat_state",
+            "retry_of",
+            "forked_from",
+            "fork_reason",
+        } <= submission_cols
+
+        # v6 host_commands columns: the durable control channel plus the
+        # scheduled pause answer's occurrence, due time, and fire outcome
+        # (ticket 14). source_ref is opaque audit provenance on every verb.
+        command_cols = {row[1] for row in conn.execute("PRAGMA table_info(host_commands)").fetchall()}
+        assert command_cols == {
+            "id",
+            "run_id",
+            "verb",
+            "payload",
+            "source_ref",
+            "created_at",
+            "applied_at",
+            "pause_id",
+            "due_at",
+            "outcome",
+        }
 
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 5
+        assert version == 6
         conn.close()
 
     def test_migration_idempotent(self, tmp_path):
@@ -950,7 +1002,101 @@ class TestMigration:
         ensure_schema(conn)
         ensure_schema(conn)  # Second time should be a no-op
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 5
+        assert version == 6
+        conn.close()
+
+    def test_v6_db_gains_pending_nodes_in_place(self, tmp_path):
+        """A v6 database predating ticket 08 gains the boundary table.
+
+        Dev databases created at the earlier v6 cut have no `pending_nodes`;
+        the guarded create runs on every ensure_schema path, so reopening is
+        enough and existing rows are untouched.
+        """
+        import sqlite3
+
+        from hypergraph.checkpointers._migrate import ensure_schema
+
+        db_path = str(tmp_path / "predating.db")
+        conn = sqlite3.connect(db_path)
+        ensure_schema(conn)
+        conn.execute("INSERT INTO runs (id, graph_name, status, created_at) VALUES ('r-1', 'g', 'active', '2026-01-01T00:00:00Z')")
+        conn.execute("DROP TABLE pending_nodes")
+        conn.commit()
+        conn.close()
+
+        conn = sqlite3.connect(db_path)
+        try:
+            ensure_schema(conn)
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            assert "pending_nodes" in tables
+            assert conn.execute("SELECT COUNT(*) FROM pending_nodes").fetchone()[0] == 0
+            assert [row[0] for row in conn.execute("SELECT id FROM runs").fetchall()] == ["r-1"]
+            assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 6
+        finally:
+            conn.close()
+
+    def test_v6_db_gains_ticket03_columns_in_place(self, tmp_path):
+        """A v6 database predating the ticket-03 columns migrates in place.
+
+        Dev databases created at v6 before fingerprint/compat/lineage columns
+        existed get them via guarded ALTERs; existing rows are preserved with
+        defaults.
+        """
+        import sqlite3
+
+        from hypergraph.checkpointers._migrate import ensure_schema
+
+        db_path = str(tmp_path / "early-v6.db")
+        conn = sqlite3.connect(db_path)
+        ensure_schema(conn)  # real v6 schema
+        # Simulate a v6 database created before the ticket-03 columns existed.
+        for column in ("fingerprint", "compat_state", "retry_of", "forked_from", "fork_reason"):
+            conn.execute(f"ALTER TABLE host_submissions DROP COLUMN {column}")
+        conn.execute(
+            "INSERT INTO host_submissions (workflow_id, definition_name, inputs_json, created_at) VALUES ('wf-legacy', 'dbl', '{}', '2026-07-24T00:00:00+00:00')"
+        )
+        conn.commit()
+
+        ensure_schema(conn)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()}
+        assert {"fingerprint", "compat_state", "retry_of", "forked_from", "fork_reason"} <= cols
+        row = conn.execute("SELECT compat_state, fingerprint, retry_of FROM host_submissions WHERE workflow_id = 'wf-legacy'").fetchone()
+        assert row == ("compatible", None, None)
+        ensure_schema(conn)  # idempotent on the migrated database
+        conn.close()
+
+    def test_v6_db_gains_ticket14_command_columns_in_place(self, tmp_path):
+        """A v6 database predating scheduled answers migrates in place.
+
+        Dev databases created at v6 before pause_id/due_at/outcome existed get
+        them via guarded ALTERs; existing command rows keep their values and
+        read back NULL for the new columns.
+        """
+        import sqlite3
+
+        from hypergraph.checkpointers._migrate import ensure_schema
+
+        db_path = str(tmp_path / "early-v6-commands.db")
+        conn = sqlite3.connect(db_path)
+        ensure_schema(conn)  # real v6 schema
+        # Simulate a v6 database created before the ticket-14 columns existed
+        # (and therefore before the due-row index that spans them).
+        conn.execute("DROP INDEX idx_host_commands_due")
+        for column in ("pause_id", "due_at", "outcome"):
+            conn.execute(f"ALTER TABLE host_commands DROP COLUMN {column}")
+        conn.execute(
+            "INSERT INTO host_commands (run_id, verb, payload, source_ref, created_at) VALUES ('wf-legacy', 'stop', '{}', 'console', '2026-07-24T00:00:00+00:00')"
+        )
+        conn.commit()
+
+        ensure_schema(conn)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(host_commands)").fetchall()}
+        assert {"pause_id", "due_at", "outcome"} <= cols
+        row = conn.execute("SELECT verb, source_ref, pause_id, due_at, outcome FROM host_commands WHERE run_id = 'wf-legacy'").fetchone()
+        assert row == ("stop", "console", None, None, None)
+        indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='host_commands'").fetchall()}
+        assert "idx_host_commands_due" in indexes  # columns land before the index that spans them
+        ensure_schema(conn)  # idempotent on the migrated database
         conn.close()
 
     def test_unknown_schema_version_raises(self, tmp_path):

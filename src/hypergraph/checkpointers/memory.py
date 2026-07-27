@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
@@ -16,20 +17,27 @@ from hypergraph.checkpointers.base import (
     _check_recordable_outcome,
     _check_reservation,
     _check_run_exists,
+    _check_settlement,
     _new_attempt_series_id,
     _normalize_since,
     _require_series,
     _require_started,
 )
 from hypergraph.checkpointers.types import (
+    NO_RUN_TOTALS,
     AttemptError,
     AttemptRecord,
     AttemptSeries,
     AttemptStatus,
+    NodeBoundary,
+    PauseSlot,
+    PendingNode,
     Run,
+    RunTotals,
     StepRecord,
     StepStatus,
     WorkflowStatus,
+    derive_boundary_state,
 )
 
 _BASELINE_NODE_NAME = "__retained_state__"
@@ -52,14 +60,119 @@ class MemoryCheckpointer(Checkpointer):
     def __init__(self) -> None:
         super().__init__()
         self._runs: dict[str, Run] = {}
+        #: run_id -> the graph-boundary values that run started from.
+        self._run_inputs: dict[str, dict[str, Any]] = {}
         self._steps: dict[str, dict[tuple[int, str], StepRecord]] = {}
         self._attempt_series: dict[str, AttemptSeries] = {}
         self._attempt_records: dict[str, dict[int, AttemptRecord]] = {}
+        self._pending_nodes: dict[str, dict[tuple[int, str], PendingNode]] = {}
+        # Insertion-ordered per run: the LAST entry is the current occurrence.
+        self._pause_slots: dict[str, list[PauseSlot]] = {}
 
     async def save_step(self, record: StepRecord) -> None:
         run_steps = self._steps.setdefault(record.run_id, {})
         run_steps[(record.superstep, record.node_name)] = record
         self._apply_retention_policy(record.run_id)
+
+    # === Pending node boundaries (PRD 0013) ===
+
+    async def record_pending_nodes(self, boundaries: Sequence[PendingNode]) -> None:
+        """Record a superstep's runnable node boundaries as pending intent.
+
+        First record wins per address: a re-record must not rewrite when the
+        boundary first became pending, nor clear a dispatch mark.
+        """
+        for boundary in boundaries:
+            run_boundaries = self._pending_nodes.setdefault(boundary.run_id, {})
+            run_boundaries.setdefault((boundary.superstep, boundary.node_name), boundary)
+
+    async def get_node_boundaries(self, run_id: str) -> list[NodeBoundary]:
+        """Recovery view: every recorded boundary of a run, state derived.
+
+        The cascade itself lives in :func:`derive_boundary_state` so this
+        backend and SQLite cannot drift apart.
+        """
+        run_steps = self._steps.get(run_id, {})
+        run_boundaries = self._pending_nodes.get(run_id, {})
+        views: list[NodeBoundary] = []
+        for key in sorted(run_boundaries):
+            boundary = run_boundaries[key]
+            step = run_steps.get(key)
+            step_status = step.status if step is not None else None
+            views.append(
+                NodeBoundary(
+                    run_id=boundary.run_id,
+                    superstep=boundary.superstep,
+                    node_name=boundary.node_name,
+                    state=derive_boundary_state(step_status, boundary.dispatched_at),
+                    node_type=boundary.node_type,
+                    created_at=boundary.created_at,
+                    dispatched_at=boundary.dispatched_at,
+                    step_status=step_status,
+                )
+            )
+        return views
+
+    # === Durable pause slots (PRD 0010) ===
+
+    async def record_pause(
+        self,
+        slot: PauseSlot,
+        *,
+        step_records: Sequence[StepRecord] = (),
+        totals: RunTotals = NO_RUN_TOTALS,
+    ) -> None:
+        """Commit the pause slot, any buffered step records, and ``PAUSED``.
+
+        Memory has no transaction to open, so atomicity here is structural:
+        every write below is a plain dict assignment and the body contains no
+        ``await`` — including the status flip, which goes through the same
+        non-async ``_apply_run_status`` that ``update_run_status`` uses. There
+        is therefore no suspension point at which another coroutine could
+        observe a half-written pause. Keep it that way: introducing an
+        ``await`` here reintroduces the window. The status flip is last,
+        mirroring the SQLite ordering.
+
+        First record wins per address, exactly like SQLite's
+        ``ON CONFLICT(pause_id) DO NOTHING``: a replayed occurrence leaves the
+        WHOLE stored row alone, question included.
+        """
+        for record in step_records:
+            run_steps = self._steps.setdefault(record.run_id, {})
+            run_steps[(record.superstep, record.node_name)] = record
+        if step_records:
+            self._apply_retention_policy(slot.run_id)
+        occurrences = self._pause_slots.setdefault(slot.run_id, [])
+        if not any(item.pause_id == slot.pause_id for item in occurrences):
+            occurrences.append(slot)
+        self._apply_run_status(slot.run_id, WorkflowStatus.PAUSED, totals)
+
+    async def get_pause_slot(self, run_id: str, *, pause_id: str | None = None) -> PauseSlot | None:
+        """The run's current pause occurrence, or a named earlier one."""
+        occurrences = self._pause_slots.get(run_id, [])
+        if not occurrences:
+            return None
+        if pause_id is None:
+            return occurrences[-1]
+        return next((slot for slot in occurrences if slot.pause_id == pause_id), None)
+
+    async def settle_pause(self, run_id: str, *, pause_id: str | None = None, value: Any) -> PauseSlot:
+        """Validate one typed value, then settle the named occurrence."""
+        occurrences = self._pause_slots.get(run_id, [])
+        current = occurrences[-1] if occurrences else None
+        run = self._runs.get(run_id)
+        _check_settlement(
+            run_id=run_id,
+            pause_id=pause_id,
+            current=current,
+            known_pause_ids=[slot.pause_id for slot in occurrences],
+            run_status=run.status if run is not None else None,
+            value=value,
+        )
+        assert current is not None  # _check_settlement raises otherwise
+        settled = replace(current, settled_at=datetime.now(timezone.utc), answer=value)
+        occurrences[-1] = settled
+        return settled
 
     async def create_run(
         self,
@@ -72,9 +185,14 @@ class MemoryCheckpointer(Checkpointer):
         retry_of: str | None = None,
         retry_index: int | None = None,
         config: dict[str, Any] | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> Run:
         existing = self._runs.get(run_id)
         created_at = existing.created_at if existing is not None else datetime.now(timezone.utc)
+        # First write wins, mirroring the SQLite COALESCE: a resume passes
+        # only the interrupt answer and must not clobber the originals.
+        if inputs and run_id not in self._run_inputs:
+            self._run_inputs[run_id] = dict(inputs)
         run = Run(
             id=run_id,
             status=WorkflowStatus.ACTIVE,
@@ -103,6 +221,15 @@ class MemoryCheckpointer(Checkpointer):
         node_count: int | None = None,
         error_count: int | None = None,
     ) -> None:
+        self._apply_run_status(run_id, status, RunTotals(duration_ms, node_count, error_count))
+
+    def _apply_run_status(self, run_id: str, status: WorkflowStatus, totals: RunTotals) -> None:
+        """Write one status transition. Deliberately NOT a coroutine.
+
+        ``record_pause`` needs a status flip with no suspension point in it;
+        sharing this body is what keeps that guarantee structural without
+        duplicating the transition's column semantics.
+        """
         existing = self._runs.get(run_id)
         if existing is None:
             raise ValueError(f"Unknown run_id: {run_id!r}")
@@ -110,15 +237,19 @@ class MemoryCheckpointer(Checkpointer):
         self._runs[run_id] = replace(
             existing,
             status=status,
-            duration_ms=duration_ms if duration_ms is not None else existing.duration_ms,
-            node_count=node_count if node_count is not None else existing.node_count,
-            error_count=error_count if error_count is not None else existing.error_count,
+            duration_ms=totals.duration_ms if totals.duration_ms is not None else existing.duration_ms,
+            node_count=totals.node_count if totals.node_count is not None else existing.node_count,
+            error_count=totals.error_count if totals.error_count is not None else existing.error_count,
             completed_at=(
                 datetime.now(timezone.utc)
                 if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.PARTIAL, WorkflowStatus.STOPPED}
                 else None
             ),
         )
+
+    async def get_run_inputs(self, run_id: str) -> dict[str, Any]:
+        """The graph-boundary values this run started from."""
+        return dict(self._run_inputs.get(run_id, {}))
 
     async def get_state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:
         state: dict[str, Any] = {}
@@ -146,7 +277,13 @@ class MemoryCheckpointer(Checkpointer):
         return sorted(records, key=_step_sort_key)
 
     async def get_run_async(self, run_id: str) -> Run | None:
-        return self._runs.get(run_id)
+        run = self._runs.get(run_id)
+        if run is None:
+            return None
+        occurrences = self._pause_slots.get(run_id)
+        if not occurrences:
+            return run
+        return replace(run, pause_slot=occurrences[-1])
 
     async def list_runs(
         self,
@@ -335,6 +472,18 @@ class MemoryCheckpointer(Checkpointer):
             if record.status is AttemptStatus.STARTED:
                 records[number] = replace(record, status=AttemptStatus.OUTCOME_UNKNOWN, completed_at=now)
 
+    def _prune_pending_nodes_for_dropped(self, run_id: str, dropped: list[StepRecord]) -> None:
+        """A boundary follows its StepRecord's retention fate.
+
+        COMMITTED is derived from the journal, so keeping a boundary whose
+        step was pruned would silently re-classify settled work as pending.
+        """
+        run_boundaries = self._pending_nodes.get(run_id)
+        if not run_boundaries:
+            return
+        for record in dropped:
+            run_boundaries.pop((record.superstep, record.node_name), None)
+
     def _prune_attempt_series_for_dropped(self, dropped: list[StepRecord]) -> None:
         """Closed attempt history follows its linked StepRecord's retention fate."""
         for record in dropped:
@@ -372,6 +521,7 @@ class MemoryCheckpointer(Checkpointer):
             )
             retained = [*([baseline] if baseline is not None else []), *kept]
             self._steps[run_id] = {(record.superstep, record.node_name): record for record in retained}
+            self._prune_pending_nodes_for_dropped(run_id, dropped)
             self._prune_attempt_series_for_dropped(dropped)
             return
 
@@ -389,6 +539,7 @@ class MemoryCheckpointer(Checkpointer):
             baseline = _make_baseline_record(run_id, dropped, baseline_superstep=cutoff - 1)
             retained = [*([baseline] if baseline is not None else []), *kept]
             self._steps[run_id] = {(record.superstep, record.node_name): record for record in retained}
+            self._prune_pending_nodes_for_dropped(run_id, dropped)
             self._prune_attempt_series_for_dropped(dropped)
 
 
