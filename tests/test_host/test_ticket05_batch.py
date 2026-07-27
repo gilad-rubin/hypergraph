@@ -599,9 +599,11 @@ class TestUnstartedItems:
     async def test_stop_unknown_and_settled_batch_errors(self, home):
         host, served = serve_graphs(_sync_graph("ingest"), home=home)
         unknown = BatchRef(home=home.uri, batch_id="b-nope")
-        with pytest.raises(HostError, match="no such batch"):
+        with pytest.raises(HostError) as excinfo:
             await host.client.stop(unknown)
-        with pytest.raises(HostError, match="no such batch"):
+        # Names the id it could not find, and what to do about it.
+        assert "b-nope" in str(excinfo.value) and "How to fix:" in str(excinfo.value)
+        with pytest.raises(HostError, match="no batch with that id"):
             host.client.stop_sync(unknown)
 
         receipt = await submit_keyed(host, served["ingest"], {"a": {"x": 1}}, workflow_id="drop-9")

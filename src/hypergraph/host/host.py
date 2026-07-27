@@ -514,7 +514,12 @@ class Host:
     @staticmethod
     def _serialize_inputs(values: dict[str, Any]) -> str:
         if not isinstance(values, dict):
-            raise TypeError(f"submit() values must be a dict, got {type(values).__name__}.")
+            raise TypeError(
+                f"submit() values must be a dict of graph input names to values, got {type(values).__name__} ({values!r}).\n\n"
+                "How to fix: pass the graph's boundary inputs by name — "
+                "host.submit(graph, {'work_item_id': 'w1'}). A positional or sequence value cannot be "
+                "matched to an input name."
+            )
         return json.dumps(values)
 
     def _receipt(self, workflow_id: str, created: bool) -> SubmitReceipt:

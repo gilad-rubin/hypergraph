@@ -505,7 +505,12 @@ def resolve_batch_stop(
     worker's next scan.
     """
     if batch_row is None:
-        raise HostError(f"Cannot stop batch {batch_id!r}: no such batch in this Run Home.")
+        raise HostError(
+            f"Cannot stop batch {batch_id!r}: this Run Home has no batch with that id.\n\n"
+            "How to fix: stop the BatchRef that submit_batch() returned on THIS host "
+            "(receipt.batch_ref), or check the workflow_id you passed. A BatchRef is inert — it "
+            "carries no connection, so one made against another Run Home resolves to nothing here."
+        )
     batch = row_to_batch(batch_row)
     unsettled = tuple(str(workflow_id) for workflow_id, state, status in child_rows if not is_child_settled(state, status))
     if not unsettled:

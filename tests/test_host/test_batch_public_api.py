@@ -108,6 +108,18 @@ class TestGraphFirstSubmission:
         with pytest.raises(TypeError, match="graph-first"):
             await host.submit_batch("ingest", {"work_item_id": ["w"]}, map_over="work_item_id", key_by="work_item_id", workflow_id="d")
 
+    async def test_non_dict_values_say_what_a_values_dict_is(self, home):
+        """`values` names graph inputs; a bare sequence cannot be matched to one."""
+        host = serve(ingestion_graph(), home=home, deployment_version="v1")
+
+        with pytest.raises(TypeError) as excinfo:
+            await host.submit(ingestion_graph(), ["w"])  # type: ignore[arg-type]
+
+        message = str(excinfo.value)
+        assert "must be a dict" in message and "got list" in message
+        assert "How to fix:" in message
+        assert await host.client.list(RunQuery()) == []
+
 
 # === 2. Public surface budget: two new-work verbs, no map, no selectors ===
 
