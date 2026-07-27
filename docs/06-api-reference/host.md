@@ -309,21 +309,23 @@ async for update in client.watch(receipt.batch_ref, after=cursor):
 `child_paused` and `child_runnable` are **lifecycle** facts, not
 end-of-stream facts: a child can pause, be answered, resume, and pause again
 at a second interrupt, appending a new pair each time. Only `child_settled`,
-`child_unstarted`, and the trip's `unstarted_items` account an item for
-good.
+`child_unstarted`, `child_abandoned`, and the trip's `unstarted_items` /
+`abandoned_items` account an item for good.
 
 A Batch watch terminates once **every manifest child is accounted** —
-settled, unstarted, or recovery-exhausted — and every committed fact has
-been delivered. Stopping a Batch does **not** end its stream: `stopped` is a
-durable control fact appended *before* the child stop commands it writes,
-and each of those commits its own `child_unstarted` fact afterwards. The
-stream accounts **every manifest item exactly once**, so a detached watcher
-never has to read the view to learn an outcome: settled children by their
-`child_settled` fact (parked children included), items a tolerance trip
-closed admission on by the `tolerance_tripped` payload's `unstarted_items`,
-and any other item that ends unstarted — a stopped Batch's child, or one a
+settled, unstarted, abandoned, or recovery-exhausted — and every committed
+fact has been delivered. Stopping a Batch does **not** end its stream:
+`stopped` is a durable control fact appended *before* the child stop
+commands it writes, and each of those commits its own `child_unstarted`
+fact afterwards. The stream accounts **every manifest item exactly once**,
+so a detached watcher never has to read the view to learn an outcome:
+settled children by their `child_settled` fact (parked children included),
+items a tolerance trip closed admission on by the `tolerance_tripped`
+payload's `unstarted_items` and `abandoned_items`, and any item that
+reaches closed admission afterwards — a stopped Batch's child, or one a
 crash returned to pending after the trip — by its own `child_unstarted`
-fact. `get(batch_ref)` is still the keyed view.
+fact if it never started, or `child_abandoned` if it had. `get(batch_ref)`
+is still the keyed view.
 Reconnecting from a stored cursor replays with no gaps and no repeats,
 across process restarts, with no graph code. A `BatchRef` unknown to the
 Home terminates immediately with no updates. `client.get_sync(batch_ref)`

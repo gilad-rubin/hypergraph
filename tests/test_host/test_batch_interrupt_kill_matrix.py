@@ -20,11 +20,12 @@ Two invariants every boundary asserts:
 - **No accepted answer is lost, and no child is left permanently
   unclaimable.** A restart either re-asks an unanswered question or
   continues an answered one.
-- **No duplicate deterministic effect for the answered item.** The
+- **One accepted answer is applied once, and routes one way.** The
   append-only ledger records each create/replace/archive; every boundary
-  asserts that the target item's entries are exactly the one effect its
-  answer chose (see ``assert_effects_once`` for what is deliberately NOT
-  claimed about concurrently-killed siblings).
+  asserts the target item's entries are exactly the single effect its
+  answer chose. That is a claim about re-admission and routing, NOT a
+  general exactly-once claim for external effects — see
+  ``assert_answer_applied_once`` for exactly what is and is not asserted.
 
 Boundary 6 kills *between* the routed decision and the terminal effect
 node, deliberately: replaying a node that was killed mid-effect is the
@@ -200,23 +201,29 @@ def assert_clean_siblings(view):
     assert view.outcomes["work-clean-b"] == "completed"
 
 
-def assert_effects_once(ledger: str, target_effect: str, *siblings: str):
-    """THE duplicate-effect falsifier, scoped to what the Host guarantees.
+def assert_answer_applied_once(ledger: str, target_effect: str, *siblings: str):
+    """The falsifier for what the Host actually owns, claimed exactly.
 
-    The **resumed item** must act exactly once and only as decided: one
-    accepted answer re-admits its child exactly once, so no kill anywhere
-    in the sequence can make the domain act twice on one human decision,
-    nor fabricate an outcome nobody chose. That is #342's claim, and it is
-    asserted exactly — every ledger entry naming the target item must be
-    the single expected effect.
+    THE CLAIM, in full: **one accepted answer re-admits its child exactly
+    once and routes it down exactly one branch.** So at every boundary
+    below, the target item's ledger entries are the single effect its
+    answer chose — never one decision applied twice, never a branch nobody
+    chose. That is a statement about the re-admission and routing boundary,
+    which the Host owns end to end.
 
-    The clean **siblings** are asserted present, not exactly-once. They
-    execute concurrently with a kill aimed at the target, and the fixture's
-    ledger write is a plain file append inside an ordinary node — not a
-    declared effect. A kill between that append and the node's checkpoint
-    re-executes the node on restart, so exactly-once for an undeclared side
-    effect is outside the pending-boundary / effect-identity authorization
-    (PRDs 0013, 0014) and this suite deliberately does not claim it.
+    Two things this deliberately does NOT claim:
+
+    - **Exactly-once external effects, in general.** The ledger append is a
+      plain file write inside an ordinary node, not a declared effect, so
+      it is not atomic with that node's checkpoint. A kill landing between
+      the two re-executes the node on restart. No boundary here stages that
+      kill — boundary 6 stops one node short of the effect on purpose —
+      because effect identity is out of scope for issue #342 (PRDs 0013,
+      0014). What survives a kill *mid-effect* is not asserted anywhere in
+      this file, and must not be read into these ledger assertions.
+    - **Exactly-once for the clean siblings.** They execute concurrently
+      with a kill aimed at the target and are asserted PRESENT, not
+      counted, for the same reason.
     """
     recorded = read_ledger(ledger)
     assert [entry for entry in recorded if TARGET_ITEM in entry] == [target_effect], recorded
@@ -252,7 +259,7 @@ class TestBoundary1BeforePauseCommit:
             assert slots is not None and slots.answer == answer_value("create_new")
         finally:
             await home.close()
-        assert_effects_once(ledger, f"created:{TARGET_ITEM}", "created:work-clean-a", "created:work-clean-b")
+        assert_answer_applied_once(ledger, f"created:{TARGET_ITEM}", "created:work-clean-a", "created:work-clean-b")
 
 
 # === Boundary 2: after the pause commit ===
@@ -285,7 +292,7 @@ class TestBoundary2AfterPauseCommit:
             assert_clean_siblings(view)
         finally:
             await home.close()
-        assert_effects_once(ledger, f"replaced:{TARGET_ITEM}:3143", "created:work-clean-a", "created:work-clean-b")
+        assert_answer_applied_once(ledger, f"replaced:{TARGET_ITEM}:3143", "created:work-clean-a", "created:work-clean-b")
 
 
 # === Boundary 3: after answer settlement, before any claim ===
@@ -319,7 +326,7 @@ class TestBoundary3AfterAnswerBeforeClaim:
             assert_clean_siblings(view)
         finally:
             await home.close()
-        assert_effects_once(ledger, f"archived:{TARGET_ITEM}:77", "created:work-clean-a", "created:work-clean-b")
+        assert_answer_applied_once(ledger, f"archived:{TARGET_ITEM}:77", "created:work-clean-a", "created:work-clean-b")
 
 
 # === Boundary 4: after the answer, inside the worker's release window ===
@@ -376,7 +383,7 @@ class TestBoundary4AfterAnswerBeforeRelease:
             assert kinds.count("child_paused") == 1
         finally:
             await home.close()
-        assert_effects_once(ledger, f"archived:{TARGET_ITEM}:91", "created:work-clean-a", "created:work-clean-b")
+        assert_answer_applied_once(ledger, f"archived:{TARGET_ITEM}:91", "created:work-clean-a", "created:work-clean-b")
 
 
 # === Boundary 5: after the claim, before the resumed execution ===
@@ -415,7 +422,7 @@ class TestBoundary5AfterClaimBeforeResume:
             assert_clean_siblings(view)
         finally:
             await home.close()
-        assert_effects_once(ledger, f"replaced:{TARGET_ITEM}:5", "created:work-clean-a", "created:work-clean-b")
+        assert_answer_applied_once(ledger, f"replaced:{TARGET_ITEM}:5", "created:work-clean-a", "created:work-clean-b")
 
 
 # === Boundary 6: during the resumed execution ===
@@ -456,7 +463,7 @@ class TestBoundary6DuringResumedRun:
             assert_clean_siblings(view)
         finally:
             await home.close()
-        assert_effects_once(ledger, f"replaced:{TARGET_ITEM}:42", "created:work-clean-a", "created:work-clean-b")
+        assert_answer_applied_once(ledger, f"replaced:{TARGET_ITEM}:42", "created:work-clean-a", "created:work-clean-b")
 
 
 # === Boundary 7: after the terminal commit, before the Batch observation ===
@@ -510,7 +517,7 @@ class TestBoundary7AfterTerminalBeforeObservation:
             assert len(kinds) == 1
         finally:
             await home.close()
-        assert_effects_once(ledger, f"created:{TARGET_ITEM}", "created:work-clean-a", "created:work-clean-b")
+        assert_answer_applied_once(ledger, f"created:{TARGET_ITEM}", "created:work-clean-a", "created:work-clean-b")
 
 
 # === Cross-boundary: a paused child is never silently dropped ===
