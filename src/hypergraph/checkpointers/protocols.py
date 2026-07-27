@@ -80,6 +80,7 @@ class SyncCheckpointerProtocol(Protocol):
         retry_of: str | None = None,
         retry_index: int | None = None,
         config: dict | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> Run: ...
 
     def save_step_sync(self, record: StepRecord) -> None: ...
