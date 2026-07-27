@@ -24,7 +24,9 @@ try:
 except ImportError:  # pragma: no cover - Windows only
     fcntl = None  # type: ignore[assignment]
 
-# Process-local fallback registry for :memory: Homes (keyed by home identity).
+# Process-local fallback registry for :memory: Homes, keyed by the token each
+# Home mints for itself at construction (never by `id()`, which a freed Home
+# hands straight to the next allocation).
 _memory_locks: set[int] = set()
 _memory_locks_guard = threading.Lock()
 
@@ -41,7 +43,7 @@ class _WorkerLock:
     @classmethod
     def for_home(cls, home: RunHome) -> _WorkerLock:
         if home._is_memory:
-            return cls(None, id(home))
+            return cls(None, home._memory_lock_token)
         path = home.path
         if path.startswith("file:"):
             path = path[len("file:") :]

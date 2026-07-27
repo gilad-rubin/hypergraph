@@ -13,6 +13,7 @@ checkpoint durability ``"sync"`` and rejects ``"exit"`` policies.
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 from collections.abc import Collection, Sequence
@@ -108,6 +109,12 @@ if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Checkpoint, PauseSlot, Run
 
 logger = logging.getLogger("hypergraph.host")
+
+#: Worker-lock identity for in-memory Homes, minted once per Home. ``id()``
+#: cannot serve: it is unique only among LIVE objects, so a freed Home hands
+#: its id to the next allocation and two logically distinct Homes would share
+#: one entry in the worker-lock registry. A token is never reused.
+_memory_lock_tokens = itertools.count()
 
 _SUBMISSION_COLS = (
     "workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
@@ -387,6 +394,7 @@ class RunHome(SqliteCheckpointer):
             ttl=policy.ttl if policy is not None else None,
         )
         super().__init__(path, policy=effective_policy, serializer=serializer)
+        self._memory_lock_token: int | None = next(_memory_lock_tokens) if self._is_memory else None
         if not isinstance(max_active_runs, _Unset):
             # Explicit argument writes through; omitting it adopts whatever the
             # store already holds (see the `max_active_runs` property).

@@ -15,6 +15,7 @@ nothing but time to the falsification.
 
 from __future__ import annotations
 
+import gc
 import json
 
 import pytest
@@ -294,7 +295,7 @@ class TestBatchAcceptanceProjections:
 
 
 class TestTheWorkerLockOnAnInMemoryHome:
-    """A memory Home has no file to flock, so it locks by object identity.
+    """A memory Home has no file to flock, so it locks on its own token.
 
     Worth its own test: every other suite runs against a file-backed Home,
     so the in-memory branch of the lock is only ever reached here — and it
@@ -324,13 +325,27 @@ class TestTheWorkerLockOnAnInMemoryHome:
         again.release()
 
     def test_two_memory_homes_lock_independently(self):
-        # Both Homes stay referenced for the whole test on purpose: the
-        # memory key is `id(home)`, which is unique only among LIVE objects,
-        # so dropping one mid-test can hand its key to the next allocation.
-        home_a, home_b = RunHome.open(":memory:"), RunHome.open(":memory:")
-        one, two = _WorkerLock.for_home(home_a), _WorkerLock.for_home(home_b)
+        one = _WorkerLock.for_home(RunHome.open(":memory:"))
+        two = _WorkerLock.for_home(RunHome.open(":memory:"))
         one.acquire()
-        two.acquire()
+        two.acquire()  # a different Home, so a different lock: no refusal
         one.release()
         two.release()
-        assert home_a is not home_b
+
+    def test_a_freed_home_never_hands_its_key_to_the_next_one(self):
+        """The reason the key is a minted token and not ``id(home)``.
+
+        A worker holds its Home for its whole life, but nothing stops an
+        operator process from opening short-lived Homes beside it — and
+        CPython hands a freed object's id straight to the next allocation,
+        so an id-keyed registry would let one of those inherit a live
+        worker's lock entry.
+        """
+        keys = []
+        for _ in range(1000):
+            home = RunHome.open(":memory:")
+            keys.append(_WorkerLock.for_home(home)._memory_key)
+            del home
+            gc.collect()
+
+        assert len(set(keys)) == len(keys)
