@@ -198,6 +198,18 @@ filterwarnings = [
     "ignore:The numpy.linalg.linalg has been made private:DeprecationWarning:daft.pickle.cloudpickle",
 ]
 
+[tool.coverage.run]
+# Branch coverage, because the gates that matter here are refusals and early
+# returns — a statement-only number calls a never-taken `if` covered.
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
 [tool.mypy]
 # Typecheck gate for the PEP 561 promise (py.typed ships with this gate; issue #254).
 # Run with: uv run mypy  (CI runs the same command on Python 3.10, the floor).

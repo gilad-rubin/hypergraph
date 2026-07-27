@@ -35,6 +35,35 @@ CI runs `pytest -W error` (all warnings become errors). Plain `uv run pytest` do
 
 The `-W 'ignore::pytest.PytestUnraisableExceptionWarning'` suppresses GC-triggered cleanup warnings from `__del__` methods (sockets, event loops). These are non-deterministic and not real bugs. **Important**: `filterwarnings` in `pyproject.toml` does NOT suppress these — pytest's `collect_unraisable` hook fires after the `catch_warnings` context manager exits, so only global `-W` flags from the CLI take effect.
 
+### Coverage
+
+`pytest-cov` is not installed; measure with `coverage` directly. Branch
+coverage and `show_missing` come from `[tool.coverage.*]` in
+`pyproject.toml`, so the command only has to name a source and a scope:
+
+```bash
+uv run coverage run --source=src/hypergraph/host -m pytest tests/test_host -n0
+```
+```bash
+uv run coverage report --fail-under=90
+```
+
+**`-n0` is not optional.** `coverage run` measures the process it starts.
+Under the default `-n auto`, every test executes in an xdist worker
+*subprocess* that coverage never sees, so a parallel run reports a small
+fraction of the truth (~18% for the host package) and reports it as a
+number, not as an error. Serial is slower and honest.
+
+Two things are still outside any number this produces, and neither is a
+reason to relax the gate:
+
+- The kill matrix spawns real worker child processes
+  (`tests/test_host/_kill_worker.py`). Their execution is not measured
+  either; what the numbers cover is the parent-side code, which every
+  other suite also exercises.
+- Coverage says a line ran, never that anything asserted on it. It is a
+  floor for finding untested branches, not evidence of behavior.
+
 ## Test Patterns
 
 ### Unit: Test Node Functions Directly
