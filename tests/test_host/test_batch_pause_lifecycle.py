@@ -23,6 +23,7 @@ from hypergraph import (
 )
 from hypergraph.checkpointers.types import (
     AnswerRejectedError,
+    PauseSlot,
     StalePauseError,
     WorkflowStatus,
 )
@@ -45,6 +46,12 @@ from tests.test_host._ingestion_fixture import (
 aiosqlite = pytest.importorskip("aiosqlite")
 
 pytestmark = pytest.mark.host_batch_interrupt
+
+
+async def _paused_facts(home, receipt) -> int:
+    """How many ``child_paused`` rows this Batch's durable sequence carries."""
+    updates = await home._read_batch_updates(receipt.batch_ref.batch_id)
+    return [kind for _seq, kind, _payload, _at in updates].count("child_paused")
 
 
 # === 1. A paused child holds no active-Run slot ===
@@ -70,6 +77,48 @@ class TestPausedChildHoldsNoSlot:
         # Nonterminal: the child is not settled, so neither is the Batch.
         assert view.settled is False
         assert (await home._get_submission(item.workflow_id))["state"] == "paused"
+
+    async def test_a_park_that_moved_nothing_publishes_no_child_paused_fact(self, home, ledger):
+        """The two occurrence facts are symmetric: no transition, no fact.
+
+        ``child_runnable`` was already conditional on the re-admission
+        compare-and-set matching; ``child_paused`` was appended whether the
+        park moved the submission or not. A Batch stream would then carry a
+        state change that never happened — and an accounting consumer that
+        pairs pauses with answers would go permanently out of step.
+        """
+        graph = ingestion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await submit_ids(host, graph, ["work-dup-1"], "drop-symmetry")
+        client = host.client
+        workflow_id = "drop-symmetry:work-dup-1"
+
+        task = asyncio.create_task(host.work_forever("w-342-park"))
+        await batch_where(client, receipt.batch_ref, lambda v: len(paused_items(v)) == 1)
+        host.shutdown()
+        await asyncio.wait_for(task, timeout=25)
+
+        assert (await home._get_submission(workflow_id))["state"] == "paused"
+        assert await _paused_facts(home, receipt) == 1
+
+        # A pause commit the park cannot act on: the submission is already
+        # parked, so its compare-and-set on 'claimed' matches nothing. The
+        # occurrence is a NEW pause id, so the repeat-occurrence dedupe is
+        # not what has to suppress the fact — the park's own result is.
+        await home.record_pause(
+            PauseSlot(
+                run_id=workflow_id,
+                superstep=9,
+                node_name="review_duplicate",
+                node_path="review_duplicate",
+                response_key="duplicate_decision",
+                question={"prompt": "again?"},
+                answer_schema={},
+            )
+        )
+
+        assert (await home._get_submission(workflow_id))["state"] == "paused"
+        assert await _paused_facts(home, receipt) == 1
 
     async def test_a_paused_child_is_stoppable_not_terminal(self, home, ledger):
         graph = ingestion_graph()

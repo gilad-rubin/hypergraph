@@ -567,8 +567,7 @@ class RunHome(SqliteCheckpointer):
             self._reset_recovery_attempts_sync(db, run_id)
         if kind == "status" and payload.get("status") in _TERMINAL_STATUS_VALUES:
             self._append_child_settled_sync(db, run_id, payload["status"])
-        elif kind == "status" and payload.get("status") == WorkflowStatus.PAUSED.value:
-            self._park_submission_sync(db, run_id)
+        elif kind == "status" and payload.get("status") == WorkflowStatus.PAUSED.value and self._park_submission_sync(db, run_id):
             self._append_occurrence_fact_sync(db, run_id, payload.get("pause_id"), kind=PAUSED_UPDATE_KIND)
 
     async def _after_run_mutation(self, run_id: str, kind: str, payload: dict[str, Any]) -> None:
@@ -580,15 +579,14 @@ class RunHome(SqliteCheckpointer):
             )
         if kind == "status" and payload.get("status") in _TERMINAL_STATUS_VALUES:
             await self._append_child_settled(run_id, payload["status"])
-        elif kind == "status" and payload.get("status") == WorkflowStatus.PAUSED.value:
-            await self._park_submission(run_id)
+        elif kind == "status" and payload.get("status") == WorkflowStatus.PAUSED.value and await self._park_submission(run_id):
             await self._append_occurrence_fact(run_id, payload.get("pause_id"), kind=PAUSED_UPDATE_KIND)
 
-    def _park_submission_sync(self, db: Any, run_id: str) -> None:
+    def _park_submission_sync(self, db: Any, run_id: str) -> bool:
         """Sync mirror of ``_park_submission``."""
-        db.execute(PARK_SUBMISSION_SQL, (SUBMISSION_STATE_PAUSED, run_id))
+        return bool(db.execute(PARK_SUBMISSION_SQL, (SUBMISSION_STATE_PAUSED, run_id)).rowcount == 1)
 
-    async def _park_submission(self, run_id: str) -> None:
+    async def _park_submission(self, run_id: str) -> bool:
         """Park a claimed submission, INSIDE the pause transaction.
 
         THE pause transition. It commits with the pause slot, the ``PAUSED``
@@ -602,8 +600,15 @@ class RunHome(SqliteCheckpointer):
 
         Compare-and-set on ``claimed`` so it is once-only and never disturbs
         a submission some other path already moved.
+
+        Returns True when this call performed the transition — the same
+        shape ``_readmit_answered_pause`` returns, and for the same reason:
+        the ``child_paused`` fact is published only by a park that really
+        parked something, so the two occurrence facts stay symmetric and a
+        Batch stream never carries a state change that did not happen.
         """
-        await self._db.execute(PARK_SUBMISSION_SQL, (SUBMISSION_STATE_PAUSED, run_id))
+        result = await self._db.execute(PARK_SUBMISSION_SQL, (SUBMISSION_STATE_PAUSED, run_id))
+        return bool(result.rowcount == 1)
 
     # === batch_updates appends (same-transaction as Batch facts) ===
 
