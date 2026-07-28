@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 from collections.abc import Awaitable, Callable, Mapping
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph import Graph
+from hypergraph._thread_settle import to_thread_settled
 from hypergraph.graph import GraphConfigError
 from hypergraph.materialization._fingerprint import compute_node_definition_hash
 from hypergraph.materialization._hypertable_viz import render_hypertable
@@ -372,21 +371,13 @@ class HyperTable:
         ``thread_safe`` stores run the step on a worker thread so their
         synchronous IO cannot stall the event loop; other stores run it
         inline, preserving thread affinity. An off-loop step always SETTLES
-        before control returns — a worker thread cannot be interrupted, so on
-        cancellation we wait for it rather than let the caller observe
-        cancellation while the store is still mutating."""
+        before control returns (see ``to_thread_settled``) — a worker thread
+        cannot be interrupted, so on cancellation we wait for it rather than
+        let the caller observe cancellation while the store is still
+        mutating."""
         if not self._store.thread_safe:
             return _run_write_step(step)
-        task = asyncio.ensure_future(asyncio.to_thread(_run_write_step, step))
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            if not task.done():
-                with contextlib.suppress(asyncio.CancelledError):
-                    await asyncio.wait([task])
-            if task.done() and not task.cancelled():
-                task.exception()  # retrieved: settling must not log as unretrieved
-            raise
+        return await to_thread_settled(_run_write_step, step)
 
     async def _drive_async(self, operation: WriteOperation) -> Any:
         """Execute the same write plan; runner actions are awaited and the

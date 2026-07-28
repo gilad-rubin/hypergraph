@@ -76,9 +76,11 @@ class _AsyncWaiter:
 def _reject_blocking_the_event_loop() -> None:
     """Refuse to park a thread that is running an event loop.
 
-    ``with limiter:`` blocks the calling thread. Sync callables run inline on
-    the loop thread under ``AsyncRunner``, so blocking there also stops every
-    task that holds a permit from ever releasing it: the wait cannot end.
+    ``with limiter:`` blocks the calling thread. Blocking a loop thread also
+    stops every task that holds a permit from ever releasing it: the wait
+    cannot end. (Sync node bodies under ``AsyncRunner`` run on worker
+    threads, so they park legitimately — this guard bites code that really
+    is on a loop thread, such as async code taking the sync form.)
     Detection is exact and costs one call — ``get_running_loop()`` raises
     unless this very thread is driving a loop — and it only runs on the path
     that was about to block, so an uncontended acquire is untouched.
@@ -93,9 +95,6 @@ def _reject_blocking_the_event_loop() -> None:
         "This is a hang, not a wait.\n\n"
         "How to fix:\n"
         "  - In async code, take the permit with 'async with limiter:'.\n"
-        "  - In a SYNC node under AsyncRunner, make the node async and use\n"
-        "    'async with limiter:', or move the blocking work off the loop with\n"
-        "    asyncio.to_thread(...).\n"
         "  - Or declare the budget as @node(provider_limit=...) or\n"
         "    graph.with_provider_limit(...) and let the runner take it for you."
     )
@@ -150,8 +149,9 @@ class ProcessLocalLimiter:
 
     Threads and tasks share ONE arrival-ordered queue, so neither kind can
     starve the other. ``with limiter:`` blocks a thread that is not running
-    an event loop; on a loop thread it raises instead of hanging (use
-    ``async with limiter:`` there).
+    an event loop (including the worker thread a sync node body runs on
+    under ``AsyncRunner``); on a loop thread it raises instead of hanging
+    (use ``async with limiter:`` there).
 
     Args:
         max_in_flight: Number of permits, an ``int >= 1``.

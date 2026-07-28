@@ -6,6 +6,7 @@ import inspect
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, nullcontext
 from typing import TYPE_CHECKING, Any
 
+from hypergraph._thread_settle import to_thread_settled
 from hypergraph.runners._shared.cache_observer import node_cache_observer
 from hypergraph.runners._shared.outputs import wrap_outputs
 from hypergraph.runners._shared.provider_limits import provider_permits
@@ -26,10 +27,22 @@ class AsyncFunctionNodeExecutor:
     """Executes FunctionNode asynchronously.
 
     Handles:
-    - Sync functions (called directly)
-    - Async functions (awaited)
-    - Sync generators (accumulated to list)
-    - Async generators (accumulated to list)
+    - Sync functions (run on a worker thread via ``to_thread_settled``)
+    - Async functions (awaited on the event loop)
+    - Sync generators (consumed to a list inside the worker thread)
+    - Async generators (accumulated to list on the event loop)
+
+    A plain ``def`` body never runs on the event loop: it is dispatched
+    through ``asyncio.to_thread``, so blocking IO or CPU work in one node
+    cannot stall concurrent work in the same run. The dispatch is settled —
+    cancellation (including a ``node.timeout`` deadline) drains the worker
+    thread before the failure surfaces, never abandoning a body mid-write.
+    A corollary: a sync body hung in a C call defeats the timeout's
+    promptness (the failure waits for settle), which is still strictly
+    better than the body blocking the loop so the timeout could not fire at
+    all. ``asyncio.to_thread`` copies the calling context, so ContextVar
+    reads (cache observer, span refs, limiters) work in-thread; ContextVar
+    writes made in the thread do not propagate back.
 
     Respects the global concurrency limiter for async operations.
     The semaphore is acquired here (at the leaf level) rather than at
@@ -132,16 +145,53 @@ class AsyncFunctionNodeExecutor:
             node_span_id=ctx.parent_span_id or "",
         ):
 
-            async def invoke() -> Any:
-                result = node.func(**func_inputs)
+            def invoke_sync() -> Any:
+                """The whole sync invocation, on the worker thread.
 
-                # Await if coroutine
+                The call AND, for a generator, the consumption run here —
+                a generator body is user code too. ``StopIteration`` is
+                caught on THIS side of the thread boundary: raised through
+                the task into an awaiting coroutine it would surface as a
+                bare ``RuntimeError`` far from the offending frame.
+                """
+                try:
+                    result = node.func(**func_inputs)
+                    if inspect.isgenerator(result):
+                        return list(result)
+                    return result
+                except StopIteration as stop:
+                    raise RuntimeError(f"Node '{node.name}' raised StopIteration") from stop
+
+            async def invoke() -> Any:
+                # async def (and async gen) bodies belong to the event loop:
+                # exactly the pre-thread-dispatch path.
+                if inspect.iscoroutinefunction(node.func) or inspect.isasyncgenfunction(node.func):
+                    result = node.func(**func_inputs)
+
+                    # Await if coroutine
+                    if inspect.iscoroutine(result):
+                        result = await result
+
+                    # Generators are consumed inside the observer scope (and
+                    # inside the attempt, so a failing generator body counts
+                    # as a failed attempt) to preserve inner-cache telemetry.
+                    if inspect.isasyncgen(result):
+                        return [item async for item in result]
+                    if inspect.isgenerator(result):
+                        return list(result)
+                    return result
+
+                # Sync bodies leave the loop; the runner permit stays held by
+                # this coroutine for the duration (threaded work is real
+                # in-flight work).
+                result = await to_thread_settled(invoke_sync)
+
+                # A sync callable may still hand back awaitables (an unmarked
+                # async callable object, a factory returning a coroutine).
+                # Creating them in the thread ran no user body; consume them
+                # on the loop as before.
                 if inspect.iscoroutine(result):
                     result = await result
-
-                # Generators are consumed inside the observer scope (and
-                # inside the attempt, so a failing generator body counts as a
-                # failed attempt) to preserve inner-cache telemetry.
                 if inspect.isasyncgen(result):
                     return [item async for item in result]
                 if inspect.isgenerator(result):

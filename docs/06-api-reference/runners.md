@@ -28,7 +28,8 @@ All four methods on `SyncRunner` and `AsyncRunner` accept keyword-only
 
 ## SyncRunner
 
-Sequential execution for synchronous graphs.
+Sequential execution for synchronous graphs. Fully inline: every node body
+runs on the calling thread.
 
 `SyncRunner` is not built for interrupts or HITL flows. If a graph contains
 `InterruptNode`s, `SyncRunner` raises `IncompatibleRunnerError`; use
@@ -744,6 +745,18 @@ Start Daft's dashboard and set `DAFT_DASHBOARD_URL` before running, or call
 ## AsyncRunner
 
 Concurrent execution with async support.
+
+**Execution threads:** a plain `def` node body runs on a worker thread
+(dispatched via `asyncio.to_thread`), so blocking IO or CPU work in one node
+never stalls concurrent work in the same run; an `async def` body runs on the
+event loop. Sync generator bodies are consumed inside the worker thread too.
+The dispatch is settled: a worker thread cannot be interrupted, so a
+cancelled sync node is drained — the body runs to completion — before the
+cancellation surfaces, never abandoned mid-write. Threads come from the
+loop's default executor, a pool shared with every other `asyncio.to_thread`
+user in the process. ContextVar reads made inside the body observe the
+caller's values; ContextVar writes made in the thread do not propagate back.
+(`SyncRunner` is fully inline: every node body runs on the calling thread.)
 
 ```python
 import asyncio

@@ -759,14 +759,15 @@ class ProcessLocalLimiter:
 > **`with limiter:` never runs on an event-loop thread.** Blocking a loop
 > thread also stops the tasks holding the permits from releasing them, so the
 > wait could never end. `ProcessLocalLimiter` raises a `RuntimeError` naming
-> the fix instead of hanging. This bites exactly one way: a **sync** node
-> function that does `with self._quota:` while running under `AsyncRunner`,
-> because sync callables execute inline on the loop thread. Make the node
-> `async` and use `async with self._quota:`, move the blocking call out with
-> `asyncio.to_thread(...)`, or declare the budget as
-> `@node(provider_limit=...)` / `graph.with_provider_limit(...)` and let the
-> runner take the permit for you (it always takes it correctly for the
-> runner in use).
+> the fix instead of hanging. A **sync** node function that does
+> `with self._quota:` is *not* that case: under `AsyncRunner` a sync body
+> runs on a worker thread (see [AsyncRunner](runners.md#asyncrunner)), so
+> the wait legitimately blocks that worker while the loop keeps releasing
+> permits. The guard bites code that really is on a loop thread — `async`
+> code taking the sync form — where the fix is `async with self._quota:`,
+> or declare the budget as `@node(provider_limit=...)` /
+> `graph.with_provider_limit(...)` and let the runner take the permit for
+> you (it always takes it correctly for the runner in use).
 >
 > The one place the runner cannot take it for you is
 > `as_node(runner=SyncRunner())` (or any other synchronous runner) under

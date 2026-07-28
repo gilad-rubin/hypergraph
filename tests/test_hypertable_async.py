@@ -117,6 +117,44 @@ async def test_cancelled_write_settles_before_cancellation_surfaces(tmp_path) ->
 
 
 @pytest.mark.asyncio
+async def test_second_cancel_during_write_drain_still_settles(tmp_path) -> None:
+    """A second CancelledError arriving while a cancelled write is DRAINING
+    must restart the wait — never surface while the store thread is still
+    mutating. (Guards the drain loop in ``to_thread_settled``.)"""
+    started = threading.Event()
+    proceed = threading.Event()
+    finished = threading.Event()
+
+    class ParkedStore(LanceDBStore):
+        thread_safe = True
+
+        def write_rows(self, *args, **kwargs):
+            started.set()
+            proceed.wait(15)
+            result = super().write_rows(*args, **kwargs)
+            finished.set()
+            return result
+
+    table = Graph([clean, count_words]).as_table(identity="doc_id", store=ParkedStore(str(tmp_path / "s")), runner=AsyncRunner())
+    task = asyncio.create_task(table.insert(doc_id="d1", text="Hello World"))
+    assert await asyncio.to_thread(started.wait, 15)
+
+    task.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    task.cancel()  # lands inside the drain wait
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not task.done(), "second cancel escaped the drain while the store thread was parked"
+
+    proceed.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert finished.is_set(), "cancellation surfaced while the store write was still running"
+
+
+@pytest.mark.asyncio
 async def test_async_insert_update_set_delete(table) -> None:
     """AsyncRunner-bound tables expose awaitable mutations with derived outputs."""
 

@@ -639,26 +639,25 @@ class TestProviderLimiterPrimitive:
             assert limiter.in_flight == 1
         assert limiter.in_flight == 0
 
-    async def test_a_sync_node_that_blocks_on_a_permit_under_asyncrunner_says_so(self):
-        """The documented trap: sync callables run inline on the loop thread."""
+    async def test_a_sync_node_waiting_for_a_permit_does_not_block_asyncrunner(self):
+        """A sync node waits in a worker while the loop frees its permit."""
         quota = ProcessLocalLimiter(max_in_flight=1)
+        started = threading.Event()
 
         @node(output_name="out")
         def call_provider(x: int) -> int:
+            started.set()
             with quota:  # component-scope pattern, but from a SYNC node
                 return x + 1
 
         graph = Graph([call_provider], name="loopblock")
         async with quota:
-            with pytest.raises(Exception) as excinfo:  # noqa: B017 - the chain is the assertion
-                await AsyncRunner().run(graph, {"x": 1})
+            run_task = asyncio.create_task(AsyncRunner().run(graph, {"x": 1}))
+            assert await asyncio.to_thread(started.wait, 15)
+            assert not run_task.done()
 
-        chain: list[str] = []
-        error: BaseException | None = excinfo.value
-        while error is not None:
-            chain.append(str(error))
-            error = error.__cause__
-        assert any("running an event loop" in text for text in chain), chain
+        result = await asyncio.wait_for(run_task, timeout=15)
+        assert result["out"] == 2
 
     async def test_a_cancelled_waiter_never_leaks_its_permit(self):
         limiter = ProcessLocalLimiter(max_in_flight=1)
