@@ -87,21 +87,30 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         *,
         extra_attributes: Mapping[str, str | int | float | bool] | None = None,
         tracer_provider: Any | None = None,
+        set_success_status: bool = False,
+        enrich_openinference: bool = False,
     ) -> None:
         """Create an OTel export processor.
 
         Args:
             tracer_name: Name passed to ``get_tracer`` on the resolved provider.
             extra_attributes: Attributes merged onto **every** span this
-                processor creates — run root spans (``graph …``/``map …``) and
-                node spans alike. All spans rather than the root only: it is
-                cheap, and lets backends filter on any span. Hypergraph's own
-                span attributes win on key collisions.
+                processor creates — graph, map, mapped-item, and node spans
+                alike. All spans rather than the root only: it is cheap, and
+                lets backends filter on any span. Hypergraph's own span
+                attributes win on key collisions.
             tracer_provider: OTel ``TracerProvider`` to write spans to. When
                 ``None`` (default), the tracer is looked up on the global
                 provider exactly as before. When provided, spans go only to
                 this provider — the global tracer provider is neither
                 consulted nor modified.
+            set_success_status: Set ``StatusCode.OK`` for genuinely completed
+                runs and nodes. Disabled by default, as recommended for OTel
+                instrumentation libraries.
+            enrich_openinference: Add OpenInference ``graph.node.*``
+                containment attributes and ``openinference.span.kind=CHAIN``.
+                Disabled by default because not every Hypergraph workflow is
+                an AI chain.
         """
         _require_opentelemetry()
         from opentelemetry import context as otel_context
@@ -114,15 +123,57 @@ class OpenTelemetryProcessor(TypedEventProcessor):
             self._tracer = tracer_provider.get_tracer(tracer_name)
         else:
             self._tracer = trace.get_tracer(tracer_name)
-        self._extra_attributes: dict[str, Any] = dict(extra_attributes) if extra_attributes else {}
+        self._extra_attributes: dict[str, Any] = {
+            key: value
+            for key, value in (extra_attributes or {}).items()
+            if key != "hypergraph.span.role" and not key.startswith("hypergraph.nested.")
+        }
         self._Link = Link
         self._Status = Status
         self._StatusCode = StatusCode
+        self._set_success_status = set_success_status
+        self._enrich_openinference = enrich_openinference
         self._spans: dict[str, Any] = {}
         self._contexts: dict[str, Any] = {}
         self._tokens: dict[str, Any] = {}
+        # Absorbed run ids are aliases, never owners of spans, contexts, or
+        # ambient tokens.  Owner metadata is keyed only by physical span id.
+        self._aliases: dict[str, str] = {}
+        self._absorbed_run: dict[str, str] = {}
+        self._nested_outcome: dict[str, str] = {}
+        self._logical_ids: dict[str, str] = {}
+        self._collapse_candidates: set[str] = set()
         self._workflow_span_contexts: OrderedDict[str, Any] = OrderedDict()
         self._workflow_span_contexts_lock = Lock()
+
+    def _owner_id(self, span_id: str | None) -> str | None:
+        if span_id is None:
+            return None
+        return self._aliases.get(span_id, span_id)
+
+    def _span_for(self, span_id: str | None) -> Any | None:
+        owner_id = self._owner_id(span_id)
+        return self._spans.get(owner_id) if owner_id is not None else None
+
+    def _context_for(self, span_id: str | None) -> Any | None:
+        owner_id = self._owner_id(span_id)
+        return self._contexts.get(owner_id) if owner_id is not None else None
+
+    def _oi_attrs(self, logical_id: str, parent_span_id: str | None) -> dict[str, Any]:
+        if not self._enrich_openinference:
+            return {}
+        parent_id = self._owner_id(parent_span_id)
+        return {
+            "openinference.span.kind": "CHAIN",
+            "graph.node.id": logical_id,
+            "graph.node.name": logical_id,
+            "graph.node.parent_id": self._logical_ids.get(parent_id) if parent_id else None,
+        }
+
+    def _release_aliases(self, owner_id: str) -> None:
+        run_id = self._absorbed_run.pop(owner_id, None)
+        if run_id is not None:
+            self._aliases.pop(run_id, None)
 
     # -- Ambient context activation -------------------------------------------
     #
@@ -201,7 +252,8 @@ class OpenTelemetryProcessor(TypedEventProcessor):
                 self._workflow_span_contexts.popitem(last=False)
 
     def on_run_start(self, event: RunStartEvent) -> None:
-        parent_ctx = self._contexts.get(event.parent_span_id) if event.parent_span_id else None
+        parent_owner = self._owner_id(event.parent_span_id)
+        parent_ctx = self._context_for(event.parent_span_id)
         links = []
         lineage_kind = _lineage_kind(event)
         source_workflow_id = event.retry_of or event.forked_from or (event.workflow_id if event.is_resume else None)
@@ -215,10 +267,43 @@ class OpenTelemetryProcessor(TypedEventProcessor):
                     )
                 )
 
-        name = f"{'map' if event.is_map else 'graph'} {event.graph_name}"
+        # Structurally collapse the first child run of each live ordinary node.
+        if parent_owner is not None and parent_owner in self._collapse_candidates and parent_owner not in self._absorbed_run:
+            span = self._spans[parent_owner]
+            self._collapse_candidates.discard(parent_owner)
+            self._aliases[event.span_id] = parent_owner
+            self._absorbed_run[parent_owner] = event.span_id
+            role = "map" if event.is_map else "graph"
+            _set_attrs(
+                span,
+                {
+                    "hypergraph.span.role": role,
+                    "hypergraph.nested.graph_name": event.graph_name,
+                    "hypergraph.nested.run_id": event.run_id,
+                    "hypergraph.nested.workflow_id": event.workflow_id,
+                    "hypergraph.is_map": event.is_map,
+                    "hypergraph.map_size": event.map_size,
+                    "hypergraph.parent_workflow_id": event.parent_workflow_id,
+                    "hypergraph.forked_from": event.forked_from,
+                    "hypergraph.fork_superstep": event.fork_superstep,
+                    "hypergraph.retry_of": event.retry_of,
+                    "hypergraph.retry_index": event.retry_index,
+                    "hypergraph.is_resume": event.is_resume,
+                },
+            )
+            for link in links:
+                span.add_link(link.context, link.attributes)
+            self._add_lineage_events(span, event)
+            return
+
+        graph_name = event.graph_name or "graph"
+        name = f"{graph_name}.item" if event.item_index is not None else graph_name
+        role = "map" if event.is_map and event.item_index is None else "graph"
         attributes = {
             **self._extra_attributes,
             **_base_attrs(event),
+            **self._oi_attrs(name, event.parent_span_id),
+            "hypergraph.span.role": role,
             "hypergraph.graph_name": event.graph_name,
             "hypergraph.is_map": event.is_map,
             "hypergraph.map_size": event.map_size,
@@ -236,9 +321,13 @@ class OpenTelemetryProcessor(TypedEventProcessor):
             links=links,
         )
         self._spans[event.span_id] = span
+        self._logical_ids[event.span_id] = name
         self._contexts[event.span_id] = self._trace.set_span_in_context(span)
         self._attach_ambient(event.span_id)
 
+        self._add_lineage_events(span, event)
+
+    def _add_lineage_events(self, span: Any, event: RunStartEvent) -> None:
         if event.is_resume:
             span.add_event(
                 "hypergraph.resume",
@@ -266,9 +355,35 @@ class OpenTelemetryProcessor(TypedEventProcessor):
             )
 
     def on_run_end(self, event: RunEndEvent) -> None:
+        owner_id = self._aliases.pop(event.span_id, None)
+        if owner_id is not None:
+            span = self._spans.get(owner_id)
+            if span is None:
+                return
+            outcome = event.status.value
+            self._nested_outcome[owner_id] = outcome
+            _set_attrs(
+                span,
+                {
+                    "hypergraph.nested.duration_ms": event.duration_ms,
+                    "hypergraph.nested.outcome": outcome,
+                    "hypergraph.run.outcome": outcome,
+                    "hypergraph.batch.total_items": event.batch_total_items,
+                    "hypergraph.batch.completed_items": event.batch_completed_items,
+                    "hypergraph.batch.failed_items": event.batch_failed_items,
+                    "hypergraph.batch.paused_items": event.batch_paused_items,
+                    "hypergraph.batch.stopped_items": event.batch_stopped_items,
+                    "hypergraph.batch.restored_items": event.batch_restored_items,
+                    "hypergraph.batch.outcome": event.batch_outcome,
+                },
+            )
+            if event.workflow_id is not None:
+                self._remember_workflow_context(event.workflow_id, span.get_span_context())
+            return
         self._detach_ambient(event.span_id)
         span = self._spans.pop(event.span_id, None)
         self._contexts.pop(event.span_id, None)
+        self._logical_ids.pop(event.span_id, None)
         if span is None:
             return
 
@@ -287,8 +402,9 @@ class OpenTelemetryProcessor(TypedEventProcessor):
                 "hypergraph.batch.outcome": event.batch_outcome,
             },
         )
-        if event.error:
+        if event.status.value == "failed" or event.error:
             span.set_status(self._Status(self._StatusCode.ERROR, event.error))
+        if event.error:
             span.add_event(
                 "exception",
                 attributes=_clean_attrs(
@@ -297,20 +413,24 @@ class OpenTelemetryProcessor(TypedEventProcessor):
                     }
                 ),
             )
+        elif self._set_success_status and event.status.value == "completed":
+            span.set_status(self._Status(self._StatusCode.OK))
         if event.workflow_id is not None:
             self._remember_workflow_context(event.workflow_id, span.get_span_context())
         span.end()
 
     def on_node_start(self, event: NodeStartEvent) -> None:
-        parent_ctx = self._contexts.get(event.parent_span_id) if event.parent_span_id else None
+        parent_ctx = self._context_for(event.parent_span_id)
         span = self._tracer.start_span(
-            name=f"node {event.node_name}",
+            name=event.node_name,
             context=parent_ctx,
             attributes={
                 k: v
                 for k, v in {
                     **self._extra_attributes,
                     **_base_attrs(event),
+                    **self._oi_attrs(event.node_name, event.parent_span_id),
+                    "hypergraph.span.role": "node",
                     "hypergraph.node_name": event.node_name,
                     "hypergraph.graph_name": event.graph_name,
                     "hypergraph.superstep": event.superstep,
@@ -319,12 +439,14 @@ class OpenTelemetryProcessor(TypedEventProcessor):
             },
         )
         self._spans[event.span_id] = span
+        self._logical_ids[event.span_id] = event.node_name
+        self._collapse_candidates.add(event.span_id)
         self._contexts[event.span_id] = self._trace.set_span_in_context(span)
         self._attach_ambient(event.span_id)
 
     def on_node_attempt_start(self, event: NodeAttemptStartEvent) -> None:
         """Attempt start = span event on the single logical node span."""
-        span = self._spans.get(event.parent_span_id) if event.parent_span_id else None
+        span = self._span_for(event.parent_span_id)
         if span is None:
             return
         span.add_event(
@@ -348,7 +470,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         Only the terminal escaping failure (``NodeErrorEvent``) sets error
         status on the logical node span.
         """
-        span = self._spans.get(event.parent_span_id) if event.parent_span_id else None
+        span = self._span_for(event.parent_span_id)
         if span is None:
             return
         span.add_event(
@@ -375,8 +497,10 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         self._detach_ambient(event.span_id)
         span = self._spans.pop(event.span_id, None)
         self._contexts.pop(event.span_id, None)
+        self._collapse_candidates.discard(event.span_id)
         if span is None:
             return
+        self._release_aliases(event.span_id)
         _set_attrs(
             span,
             {
@@ -385,6 +509,10 @@ class OpenTelemetryProcessor(TypedEventProcessor):
                 "hypergraph.superstep": event.superstep,
             },
         )
+        if self._set_success_status and (event.span_id not in self._nested_outcome or self._nested_outcome[event.span_id] == "completed"):
+            span.set_status(self._Status(self._StatusCode.OK))
+        self._nested_outcome.pop(event.span_id, None)
+        self._logical_ids.pop(event.span_id, None)
         span.end()
 
     def on_node_error(self, event: NodeErrorEvent) -> None:
@@ -396,8 +524,12 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         self._detach_ambient(event.span_id)
         span = self._spans.pop(event.span_id, None)
         self._contexts.pop(event.span_id, None)
+        self._collapse_candidates.discard(event.span_id)
         if span is None:
             return
+        self._release_aliases(event.span_id)
+        self._nested_outcome.pop(event.span_id, None)
+        self._logical_ids.pop(event.span_id, None)
         _set_attrs(
             span,
             {
@@ -420,7 +552,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         span.end()
 
     def on_superstep_start(self, event: SuperstepStartEvent) -> None:
-        span = self._spans.get(event.parent_span_id) if event.parent_span_id else None
+        span = self._span_for(event.parent_span_id)
         if span is None:
             return
         span.add_event(
@@ -435,7 +567,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         )
 
     def on_route_decision(self, event: RouteDecisionEvent) -> None:
-        target_span = self._spans.get(event.node_span_id) or (self._spans.get(event.parent_span_id) if event.parent_span_id else None)  # type: ignore[arg-type]
+        target_span = self._span_for(event.node_span_id) or self._span_for(event.parent_span_id)  # type: ignore[arg-type]
         if target_span is None:
             return
         decision = event.decision if isinstance(event.decision, str) else ",".join(event.decision)
@@ -453,7 +585,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         )
 
     def on_cache_hit(self, event: CacheHitEvent) -> None:
-        span = self._spans.get(event.span_id)
+        span = self._span_for(event.span_id)
         if span is None:
             return
         span.add_event(
@@ -468,7 +600,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         )
 
     def on_interrupt(self, event: InterruptEvent) -> None:
-        span = self._spans.get(event.span_id) or (self._spans.get(event.parent_span_id) if event.parent_span_id else None)
+        span = self._span_for(event.span_id) or self._span_for(event.parent_span_id)
         if span is None:
             return
         span.add_event(
@@ -491,11 +623,15 @@ class OpenTelemetryProcessor(TypedEventProcessor):
             # the node's context copy died with its task (drop the token).
             self._detach_ambient_if_current(event.span_id)
             paused_span = self._spans.pop(event.span_id)
+            self._collapse_candidates.discard(event.span_id)
+            self._release_aliases(event.span_id)
+            self._nested_outcome.pop(event.span_id, None)
+            self._logical_ids.pop(event.span_id, None)
             self._contexts.pop(event.span_id, None)
             paused_span.end()
 
     def on_stop_requested(self, event: StopRequestedEvent) -> None:
-        span = self._spans.get(event.span_id) or (self._spans.get(event.parent_span_id) if event.parent_span_id else None)
+        span = self._span_for(event.span_id) or self._span_for(event.parent_span_id)
         if span is None:
             return
         span.add_event(
@@ -514,6 +650,8 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         # escaping the run template). Detach newest-first, and only where this
         # execution unit owns the attach — cross-context leftovers died with
         # their task's context copy and are dropped.
+        self._aliases.clear()
+        self._absorbed_run.clear()
         for span_id in reversed(list(self._tokens)):
             self._detach_ambient_if_current(span_id)
         self._tokens.clear()
@@ -521,3 +659,6 @@ class OpenTelemetryProcessor(TypedEventProcessor):
             span.end()
         self._spans.clear()
         self._contexts.clear()
+        self._collapse_candidates.clear()
+        self._nested_outcome.clear()
+        self._logical_ids.clear()
