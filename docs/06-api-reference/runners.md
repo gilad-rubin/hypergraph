@@ -790,7 +790,6 @@ async def run(
     entrypoint: str | None = None,
     max_iterations: int | None = None,
     max_concurrency: int | None = None,
-    max_concurrency_exempt: Collection[str] | None = None,
     inspect: bool = False,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
@@ -814,7 +813,6 @@ Execute a graph asynchronously.
 - `entrypoint` - Runtime entrypoint overrides are not supported. Configure entrypoints on the graph via `Graph(..., entrypoint=...)` or `graph.with_entrypoint(...)`.
 - `max_iterations` - Max local iterations per cyclic execution region (SCC) (default: 1000)
 - `max_concurrency` - Max parallel node executions (default: unlimited); when provided, it must be at least `1`.
-- `max_concurrency_exempt` - Node names that limit does **not** gate, for nodes whose in-flight capacity is governed by an external budget (a provider lane, a rate limiter, a pool the node waits on). Unknown names are inert. Nested graphs inherit the limit and its exemptions together.
 - `inspect` - Capture shallow successful-node inputs and outputs for live and settled inspection. Defaults to `False`; `.inspect()` still returns a degraded view from always-on facts.
 - `error_handling` - How to handle node execution errors:
   - `"raise"` (default): Re-raise the original exception. Clean traceback, no wrapper.
@@ -885,22 +883,6 @@ permit another node could use. See
 [Related concurrency controls](nodes.md#related-concurrency-controls) for
 which budget owns what.
 
-When a node's capacity is *already* owned by such an external budget, exempt it
-from the runner's limit instead of letting it compete for a permit it does not
-need:
-
-```python
-result = await runner.run(
-    graph,
-    {"pages": pages},
-    max_concurrency=16,          # structural: how much work is in flight
-    max_concurrency_exempt=["embed_page"],  # its own lane already bounds it
-)
-```
-
-Without the exemption, cheap externally-bounded work queues behind expensive
-waiters that hold permits while they block.
-
 ### map()
 
 ```python
@@ -916,7 +898,6 @@ async def map(
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     entrypoint: str | None = None,
     max_concurrency: int | None = None,
-    max_concurrency_exempt: Collection[str] | None = None,
     inspect: bool = False,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
@@ -937,8 +918,7 @@ Execute graph multiple times concurrently.
 - `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)` before execution.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `entrypoint` - Runtime entrypoint overrides are not supported.
-- `max_concurrency` - Shared limit across all executions; when provided, it must be at least `1`. It also bounds the item worker pool, so it caps fan-out even for exempt nodes.
-- `max_concurrency_exempt` - Node names that limit does **not** gate (see [`run()`](#run)); installed with the batch's limiter, so every item inherits it.
+- `max_concurrency` - Shared limit across all executions; when provided, it must be at least `1`.
 - `inspect` - Capture shallow successful-node inputs and outputs for live and settled inspection. Defaults to `False`.
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
@@ -991,7 +971,6 @@ def start_run(
     entrypoint: str | None = None,
     max_iterations: int | None = None,
     max_concurrency: int | None = None,
-    max_concurrency_exempt: Collection[str] | None = None,
     inspect: bool = False,
     event_processors: list[EventProcessor] | None = None,
     show_progress: bool | None = None,
@@ -1012,7 +991,6 @@ def start_map(
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     entrypoint: str | None = None,
     max_concurrency: int | None = None,
-    max_concurrency_exempt: Collection[str] | None = None,
     inspect: bool = False,
     event_processors: list[EventProcessor] | None = None,
     show_progress: bool | None = None,

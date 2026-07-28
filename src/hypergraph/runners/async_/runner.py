@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Collection
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import ExecutionError, InfiniteLoopError
@@ -85,18 +84,6 @@ class AsyncRunner(AsyncRunnerTemplate):
     - Supports both sync and async nodes
     - Human-in-the-loop via InterruptNode (pause and resume)
 
-    ``max_concurrency`` is a structural budget: it bounds how much work this
-    run keeps in flight, including inside nested graphs. ``max_concurrency_exempt``
-    lists node names it deliberately does not gate — for nodes whose in-flight
-    capacity is already governed by an EXTERNAL budget (a provider lane, a rate
-    limiter, a connection pool the node waits on itself). Exempting those keeps
-    cheap, externally-bounded work from queueing behind expensive waiters that
-    hold permits while they block::
-
-        await runner.run(graph, max_concurrency=16, max_concurrency_exempt=["fetch_quote"])
-
-    Nested graphs inherit the limit and its exemptions together.
-
     Example:
         >>> from hypergraph import Graph, node, AsyncRunner
         >>> @node(output_name="doubled")
@@ -174,7 +161,6 @@ class AsyncRunner(AsyncRunnerTemplate):
         entrypoint: str | None = None,
         max_iterations: int | None = None,
         max_concurrency: int | None = None,
-        max_concurrency_exempt: Collection[str] | None = None,
         inspect: bool = False,
         event_processors: list[EventProcessor] | None = None,
         show_progress: bool | None = None,
@@ -214,7 +200,6 @@ class AsyncRunner(AsyncRunnerTemplate):
                 entrypoint=entrypoint,
                 max_iterations=max_iterations,
                 max_concurrency=max_concurrency,
-                max_concurrency_exempt=max_concurrency_exempt,
                 inspect=inspect,
                 error_handling="continue",
                 event_processors=[handle, *(event_processors or [])],
@@ -244,7 +229,6 @@ class AsyncRunner(AsyncRunnerTemplate):
         entrypoint: str | None = None,
         max_iterations: int | None = None,
         max_concurrency: int | None = None,
-        max_concurrency_exempt: Collection[str] | None = None,
         inspect: bool = False,
         event_processors: list[EventProcessor] | None = None,
         show_progress: bool | None = None,
@@ -262,7 +246,6 @@ class AsyncRunner(AsyncRunnerTemplate):
             entrypoint: Optional explicit cycle entrypoint.
             max_iterations: Maximum iterations for cyclic graphs.
             max_concurrency: Maximum number of nodes executing concurrently.
-            max_concurrency_exempt: Node names that run outside that limit.
             inspect: Capture node inputs/outputs for live and settled inspection.
             event_processors: Optional processors for execution events.
             show_progress: Override runner-level progress display.
@@ -321,7 +304,6 @@ class AsyncRunner(AsyncRunnerTemplate):
                         entrypoint=entrypoint,
                         max_iterations=max_iterations,
                         max_concurrency=max_concurrency,
-                        max_concurrency_exempt=max_concurrency_exempt,
                         inspect=inspect,
                         error_handling="continue",
                         event_processors=event_processors,
@@ -361,7 +343,6 @@ class AsyncRunner(AsyncRunnerTemplate):
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_concurrency: int | None = None,
-        max_concurrency_exempt: Collection[str] | None = None,
         inspect: bool = False,
         event_processors: list[EventProcessor] | None = None,
         show_progress: bool | None = None,
@@ -419,7 +400,6 @@ class AsyncRunner(AsyncRunnerTemplate):
                         on_missing=on_missing,
                         entrypoint=entrypoint,
                         max_concurrency=max_concurrency,
-                        max_concurrency_exempt=max_concurrency_exempt,
                         inspect=inspect,
                         error_handling="continue",
                         event_processors=event_processors,
@@ -480,7 +460,6 @@ class AsyncRunner(AsyncRunnerTemplate):
         max_iterations: int,
         max_concurrency: int | None,
         *,
-        max_concurrency_exempt: Collection[str] | None = None,
         dispatcher: EventDispatcher,
         run_id: str,
         run_span_id: str,
@@ -501,13 +480,12 @@ class AsyncRunner(AsyncRunnerTemplate):
         state = initialize_state(graph, values, checkpoint=checkpoint)
         scope = compute_execution_scope(graph)
 
-        # Set up concurrency limiter only at top level (when none exists).
-        # Nested graphs inherit the parent's semaphore AND its exemptions via
-        # the ContextVar — they travel as one value, never half of one.
+        # Set up concurrency limiter only at top level (when none exists)
+        # Nested graphs inherit the parent's semaphore via ContextVar
         existing_limiter = get_concurrency_limiter()
         if existing_limiter is None and max_concurrency is not None:
             semaphore = asyncio.Semaphore(max_concurrency)
-            token = set_concurrency_limiter(semaphore, exempt=max_concurrency_exempt)
+            token = set_concurrency_limiter(semaphore)
         else:
             token = None
 
@@ -862,10 +840,10 @@ class AsyncRunner(AsyncRunnerTemplate):
         """Return currently active shared concurrency limiter, if any."""
         return get_concurrency_limiter()
 
-    def _set_concurrency_limiter(self, max_concurrency: int, exempt: Collection[str] | None = None) -> Any:
+    def _set_concurrency_limiter(self, max_concurrency: int) -> Any:
         """Create and register a shared semaphore for nested async execution."""
         semaphore = asyncio.Semaphore(max_concurrency)
-        return set_concurrency_limiter(semaphore, exempt=exempt)
+        return set_concurrency_limiter(semaphore)
 
     def _reset_concurrency_limiter(self, token: Any) -> None:
         """Reset shared concurrency limiter using context token."""
