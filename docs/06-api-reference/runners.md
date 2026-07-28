@@ -782,6 +782,8 @@ class AsyncRunner:
         cache: CacheBackend | None = None,
         checkpointer: Checkpointer | None = None,
         show_progress: bool = False,
+        max_concurrency: int | None = None,
+        event_processors: list[EventProcessor] | None = None,
     ) -> None: ...
 ```
 
@@ -789,6 +791,8 @@ class AsyncRunner:
 - `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`.
 - `checkpointer` — Optional checkpointer for persistent run history. For `run()`, enables strict lineage semantics, generic IDs for fresh/retry runs, and source-derived IDs for `fork_from`. For `map()`, persistence is enabled when `workflow_id` is provided. Requires `SqliteCheckpointer` or any `Checkpointer` implementation.
 - `show_progress` — If `True`, automatically attaches a Rich progress processor to `run()` and `map()` calls — unless a `RichProgressProcessor` is already carried by the graph or passed via `event_processors`. Per-call `show_progress` overrides this default.
+- `max_concurrency` — Default maximum number of concurrently executing nodes. A per-call `max_concurrency` overrides it.
+- `event_processors` — Processors added to every `run()` and `map()` call. Per-call processors append to these defaults rather than replacing them.
 
 ### run()
 

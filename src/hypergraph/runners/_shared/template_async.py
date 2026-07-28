@@ -263,6 +263,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
+        if max_concurrency is None:
+            max_concurrency = getattr(self, "_max_concurrency", None)
+        if _parent_span_id is None and _parent_run_id is None:
+            event_processors = [*getattr(self, "_event_processors", ()), *(event_processors or [])]
         if not isinstance(inspect, bool):
             raise TypeError(
                 f"inspect must be a bool, got {type(inspect).__name__}.\n\n"
@@ -942,6 +946,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
+        if max_concurrency is None:
+            max_concurrency = getattr(self, "_max_concurrency", None)
+        if _parent_span_id is None and _parent_run_id is None:
+            event_processors = [*getattr(self, "_event_processors", ()), *(event_processors or [])]
         if not isinstance(inspect, bool):
             raise TypeError(
                 f"inspect must be a bool, got {type(inspect).__name__}.\n\n"

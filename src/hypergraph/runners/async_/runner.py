@@ -101,6 +101,8 @@ class AsyncRunner(AsyncRunnerTemplate):
         cache: CacheBackend | None = None,
         checkpointer: Checkpointer | None = None,
         show_progress: bool = False,
+        max_concurrency: int | None = None,
+        event_processors: list[EventProcessor] | None = None,
     ):
         """Initialize AsyncRunner with its node executors.
 
@@ -114,10 +116,16 @@ class AsyncRunner(AsyncRunnerTemplate):
                 to every run() and map() call — unless one is already carried
                 by the graph or passed via event_processors. Can be
                 overridden per-call.
+            max_concurrency: Default maximum number of nodes executing
+                concurrently. A per-call value overrides this default.
+            event_processors: Processors added to every run and map call.
+                Per-call processors are appended to these defaults.
         """
         self._cache = cache
         self._checkpointer_instance = checkpointer
         self._show_progress = show_progress
+        self._max_concurrency = max_concurrency
+        self._event_processors = list(event_processors or [])
         self._active_workflows = _ActiveWorkflows()
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._executors = self._build_executors()

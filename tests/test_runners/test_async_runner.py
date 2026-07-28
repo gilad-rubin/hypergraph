@@ -5,6 +5,8 @@ import asyncio
 import pytest
 
 from hypergraph import Graph, node
+from hypergraph.events.processor import EventProcessor
+from hypergraph.events.types import Event
 from hypergraph.exceptions import MissingInputError
 from hypergraph.nodes.gate import END, route
 from hypergraph.runners import AsyncRunner, RunStatus
@@ -342,6 +344,56 @@ class TestAsyncRunnerRun:
             ["r1_start", "r1_end", "r2_start", "r2_end"],
             ["r2_start", "r2_end", "r1_start", "r1_end"],
         )
+
+    async def test_constructor_max_concurrency_is_the_default_and_call_overrides_it(self):
+        active = 0
+        peak = 0
+
+        async def observe() -> int:
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            resume = asyncio.Event()
+            asyncio.get_running_loop().call_soon(resume.set)
+            await resume.wait()
+            active -= 1
+            return 1
+
+        @node(output_name="a")
+        async def first() -> int:
+            return await observe()
+
+        @node(output_name="b")
+        async def second() -> int:
+            return await observe()
+
+        graph = Graph([first, second])
+        runner = AsyncRunner(max_concurrency=1)
+
+        await runner.run(graph)
+        assert peak == 1
+
+        peak = 0
+        await runner.run(graph, max_concurrency=2)
+        assert peak == 2
+
+    async def test_constructor_event_processors_merge_with_call_processors(self):
+        class Recorder(EventProcessor):
+            def __init__(self) -> None:
+                self.events: list[Event] = []
+
+            def on_event(self, event: Event) -> None:
+                self.events.append(event)
+
+        carried = Recorder()
+        call_site = Recorder()
+        runner = AsyncRunner(event_processors=[carried])
+
+        await runner.run(Graph([double]), {"x": 2}, event_processors=[call_site])
+
+        assert carried.events
+        assert call_site.events
+        assert [type(event) for event in carried.events] == [type(event) for event in call_site.events]
 
     async def test_concurrency_one_is_sequential(self):
         """max_concurrency=1 forces sequential execution."""
@@ -699,6 +751,31 @@ class TestAsyncRunnerMap:
             and execution_order[index + 1][1:] == ("end",)
             for index in range(0, len(execution_order), 2)
         )
+
+    async def test_map_uses_constructor_max_concurrency_and_call_override(self):
+        active = 0
+        peak = 0
+
+        @node(output_name="result")
+        async def track(x: int) -> int:
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            resume = asyncio.Event()
+            asyncio.get_running_loop().call_soon(resume.set)
+            await resume.wait()
+            active -= 1
+            return x
+
+        runner = AsyncRunner(max_concurrency=1)
+        graph = Graph([track])
+
+        await runner.map(graph, {"x": [1, 2]}, map_over="x")
+        assert peak == 1
+
+        peak = 0
+        await runner.map(graph, {"x": [1, 2]}, map_over="x", max_concurrency=2)
+        assert peak == 2
 
     async def test_map_with_async_nodes(self):
         """Map works with async nodes."""
