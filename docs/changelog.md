@@ -14,11 +14,12 @@
   remains at the existing keys and nested run identity/duration/outcome moves
   to `hypergraph.nested.*`. Eventless delegation and checkpoint-restored
   children have no run to collapse and remain `role=node`. Collapsed lineage
-  links are added post-creation (and therefore cannot affect head sampling),
-  requiring OTel API/SDK/HTTP exporter >=1.24. Although the upstream changelog
-  attributes `Span.add_link` to 1.23.0, the published 1.23.0 API and SDK
-  artifacts do not contain it; 1.24.0 is the first released version that
-  implements it. Success remains `UNSET` by default;
+  links are added post-creation, and the final collapsed role and nested/map/
+  lineage attributes are likewise known only after creation; none can affect
+  head sampling. This requires OTel API/SDK/HTTP exporter >=1.24. Although the
+  upstream changelog attributes `Span.add_link` to 1.23.0, the published 1.23.0
+  API and SDK artifacts do not contain it; 1.24.0 is the first released version
+  that implements it. Success remains `UNSET` by default;
   `set_success_status=True` opts into `OK` only for genuine completion.
   `enrich_openinference=True` opts into `CHAIN` plus Hypergraph's documented
   logical-name containment interpretation of `graph.node.*`; it is not an

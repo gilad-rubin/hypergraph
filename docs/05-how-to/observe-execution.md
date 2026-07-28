@@ -190,7 +190,10 @@ On a collapsed span, outer node identity stays at `graph_name`, `run_id`,
 `workflow_id`, and `duration_ms`; inner values are under
 `hypergraph.nested.*`. Batch and lineage attributes remain at their existing
 keys. A collapsed run's resume/fork/retry links are added after span creation,
-so they remain queryable but cannot influence head sampling. Eventless
+so they remain queryable but cannot influence head sampling. The same is true
+of the collapsed `graph`/`map` role and nested/map/lineage attributes: the
+owner span starts as a node before the processor observes its child run. Use
+tail sampling when those final attributes must influence retention. Eventless
 delegation and a checkpoint-restored GraphNode emit no child run: their
 uncollapsed span stays `role=node` with no `nested.*`, and ambient context is
 still restored normally.

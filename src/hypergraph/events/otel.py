@@ -126,7 +126,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         self._extra_attributes: dict[str, Any] = {
             key: value
             for key, value in (extra_attributes or {}).items()
-            if key != "hypergraph.span.role" and not key.startswith("hypergraph.nested.")
+            if key not in {"hypergraph.span.role", "hypergraph.node_name"} and not key.startswith("hypergraph.nested.")
         }
         self._Link = Link
         self._Status = Status
@@ -500,6 +500,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         self._collapse_candidates.discard(event.span_id)
         if span is None:
             return
+        absorbed_run = event.span_id in self._absorbed_run
         self._release_aliases(event.span_id)
         _set_attrs(
             span,
@@ -509,7 +510,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
                 "hypergraph.superstep": event.superstep,
             },
         )
-        if self._set_success_status and (event.span_id not in self._nested_outcome or self._nested_outcome[event.span_id] == "completed"):
+        if self._set_success_status and (not absorbed_run or self._nested_outcome.get(event.span_id) == "completed"):
             span.set_status(self._Status(self._StatusCode.OK))
         self._nested_outcome.pop(event.span_id, None)
         self._logical_ids.pop(event.span_id, None)

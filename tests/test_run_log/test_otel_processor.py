@@ -530,6 +530,42 @@ class TestOTelProcessor:
             "restored_items": 1,
         }
 
+    def test_success_opt_in_requires_absorbed_run_completion(self):
+        from hypergraph.events.otel import OpenTelemetryProcessor
+        from hypergraph.events.types import NodeEndEvent, NodeStartEvent, RunStartEvent
+
+        processor = OpenTelemetryProcessor(
+            tracer_provider=self.provider,
+            set_success_status=True,
+        )
+        processor.on_node_start(
+            NodeStartEvent(
+                run_id="outer",
+                span_id="owner",
+                node_name="nested",
+                graph_name="outer",
+            )
+        )
+        processor.on_run_start(
+            RunStartEvent(
+                run_id="inner",
+                span_id="alias",
+                parent_span_id="owner",
+                graph_name="inner",
+            )
+        )
+        processor.on_node_end(
+            NodeEndEvent(
+                run_id="outer",
+                span_id="owner",
+                node_name="nested",
+                graph_name="outer",
+            )
+        )
+
+        span = next(span for span in self.exporter.get_finished_spans() if span.name == "nested")
+        assert span.status.status_code == StatusCode.UNSET
+
     def test_failed_run_without_error_projection_is_still_error(self):
         from hypergraph.events.otel import OpenTelemetryProcessor
         from hypergraph.events.types import RunEndEvent, RunStartEvent, RunStatus
@@ -670,6 +706,7 @@ class TestOTelProcessor:
             enrich_openinference=True,
             extra_attributes={
                 "hypergraph.span.role": "spoofed",
+                "hypergraph.node_name": "spoofed",
                 "hypergraph.nested.graph_name": "spoofed",
             },
         )
@@ -681,7 +718,9 @@ class TestOTelProcessor:
         root = next(span for span in spans if span.name == "honest")
         leaf = next(span for span in spans if span.name == "nested")
         assert root.attributes["hypergraph.span.role"] == "graph"
+        assert "hypergraph.node_name" not in root.attributes
         assert leaf.attributes["hypergraph.span.role"] == "graph"
+        assert leaf.attributes["hypergraph.node_name"] == "nested"
         assert leaf.attributes["hypergraph.nested.graph_name"] == "true-inner"
         assert root.attributes["openinference.span.kind"] == "CHAIN"
         assert leaf.attributes["graph.node.parent_id"] == "honest"
