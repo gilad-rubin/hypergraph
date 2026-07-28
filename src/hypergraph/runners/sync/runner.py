@@ -108,11 +108,15 @@ class SyncRunner(SyncRunnerTemplate):
         a shallow copy would keep delegating nested GraphNode child workflows
         to the ORIGINAL runner (wrong checkpointer, wrong live registry).
         """
+        from hypergraph.materialization._node import MaterializationNode
+        from hypergraph.runners.sync.executors.materialization_node import SyncMaterializationNodeExecutor
+
         return {
             FunctionNode: SyncFunctionNodeExecutor(),
             GraphNode: SyncGraphNodeExecutor(self),
             IfElseNode: SyncIfElseNodeExecutor(),
             RouteNode: SyncRouteNodeExecutor(),
+            MaterializationNode: SyncMaterializationNodeExecutor(),
         }
 
     def stop(self, workflow_id: str, *, info: Any = None) -> None:

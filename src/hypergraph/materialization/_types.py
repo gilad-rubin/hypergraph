@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict
+
 from hypergraph.runners import PauseInfo
 
 
@@ -41,6 +43,74 @@ class RowReceipt:
     status: RowStatus
     pause: PauseInfo | None = None
     error: str | None = None
+
+    @property
+    def paused(self) -> bool:
+        return self.status is RowStatus.WAITING
+
+    @property
+    def completed(self) -> bool:
+        return self.status is RowStatus.COMPLETE
+
+    @property
+    def failed(self) -> bool:
+        return self.status is RowStatus.ERROR
+
+
+class MaterializationQuestion(BaseModel):
+    """JSON-safe structural question carried by a materialization receipt."""
+
+    model_config = ConfigDict(frozen=True)
+
+    prompt: str
+    options: tuple[Any, ...] | None
+    evidence: tuple[Any, ...]
+    answer_type: str
+
+
+class MaterializationPause(BaseModel):
+    """JSON-safe pause information carried by a materialization receipt."""
+
+    model_config = ConfigDict(frozen=True)
+
+    node_name: str
+    value: MaterializationQuestion
+    response_key: str
+
+
+class MaterializationReceipt(BaseModel):
+    """Checkpoint-safe receipt emitted by a HyperTable materialization node."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    outcome: WriteOutcome
+    status: RowStatus
+    pause: MaterializationPause | None = None
+    error: str | None = None
+
+    @classmethod
+    def from_row_receipt(cls, receipt: RowReceipt) -> MaterializationReceipt:
+        pause = None
+        if receipt.pause is not None:
+            question = receipt.pause.value
+            pause = MaterializationPause(
+                node_name=receipt.pause.node_name,
+                response_key=receipt.pause.response_key,
+                value=MaterializationQuestion(
+                    prompt=str(question.prompt),
+                    options=None if question.options is None else tuple(question.options),
+                    evidence=tuple(question.evidence),
+                    answer_type=_stable_answer_type(question.answer_type),
+                ),
+            )
+        return cls(
+            id=receipt.id,
+            outcome=receipt.outcome,
+            status=receipt.status,
+            pause=pause,
+            error=receipt.error,
+        )
 
     @property
     def paused(self) -> bool:

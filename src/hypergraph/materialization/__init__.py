@@ -8,6 +8,7 @@ from hypergraph.materialization._table import Table
 from hypergraph.materialization._table_store import TableStore, validate_store
 from hypergraph.materialization._types import (
     ErroredRow,
+    MaterializationReceipt,
     RecipeDrift,
     RowReceipt,
     RowStatus,
@@ -27,6 +28,7 @@ __all__ = [
     "TableStore",
     "validate_store",
     "ErroredRow",
+    "MaterializationReceipt",
     "RecipeDrift",
     "RowReceipt",
     "RowStatus",

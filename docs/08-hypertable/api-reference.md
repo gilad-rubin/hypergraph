@@ -142,6 +142,12 @@ class RowReceipt:
 `pause` is present only for `WAITING`; `error` is present only for `ERROR`.
 The three boolean properties deliberately match `RunResult` serving code.
 
+### `MaterializationReceipt`
+
+`HyperTable.as_node()` emits the frozen Pydantic counterpart of `RowReceipt`.
+Its enum fields and normalized pause question survive the default JSON
+checkpointer and restore as typed values.
+
 ### `TableReceipt`
 
 ```python
@@ -182,6 +188,27 @@ class TableReceipt:
 
 When the table uses `AsyncRunner`, each write returns the documented value
 through a coroutine.
+
+### `as_node(*, name=None, output_name="receipt") -> HyperNode`
+
+Return a graph node that inserts and derives one row. Its named inputs are the
+table identity followed by the recipe's source columns in table-spec order;
+the adapter never generates identity. Ordinary graph wiring supplies upstream
+values, and constants use the enclosing graph's existing binding surface:
+
+```python
+workflow = Graph([
+    resolve_version,
+    protocols.as_node(
+        name="materialize_protocol",
+        output_name="materialization",
+    ),
+    publish_protocol,
+]).bind(active=False)
+```
+
+The single output is a checkpoint-safe `MaterializationReceipt`. Recipe and
+child-grain events propagate through the enclosing Run's event processors.
 
 ### `insert(**row) -> RowReceipt`
 

@@ -138,12 +138,16 @@ class AsyncRunner(AsyncRunnerTemplate):
         a shallow copy would keep delegating nested GraphNode child workflows
         to the ORIGINAL runner (wrong checkpointer, wrong live registry).
         """
+        from hypergraph.materialization._node import MaterializationNode
+        from hypergraph.runners.async_.executors.materialization_node import AsyncMaterializationNodeExecutor
+
         return {
             FunctionNode: AsyncFunctionNodeExecutor(),
             GraphNode: AsyncGraphNodeExecutor(self),
             IfElseNode: AsyncIfElseNodeExecutor(),
             RouteNode: AsyncRouteNodeExecutor(),
             InterruptNode: AsyncInterruptNodeExecutor(),
+            MaterializationNode: AsyncMaterializationNodeExecutor(),
         }
 
     def stop(self, workflow_id: str, *, info: Any = None) -> None:

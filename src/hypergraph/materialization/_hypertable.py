@@ -46,6 +46,7 @@ from hypergraph.materialization._writes import (
 if TYPE_CHECKING:
     from hypergraph.materialization._branches import MaterializationBranch
     from hypergraph.materialization._table_store import TableStore
+    from hypergraph.nodes import HyperNode
     from hypergraph.runners import BaseRunner
 
 
@@ -342,7 +343,14 @@ class HyperTable:
 
     # --- Shared helpers ---
 
-    def _drive_sync(self, operation: WriteOperation) -> Any:
+    def _drive_sync(
+        self,
+        operation: WriteOperation,
+        *,
+        event_processors: list[Any] | None = None,
+        parent_span_id: str | None = None,
+        parent_run_id: str | None = None,
+    ) -> Any:
         """Execute one shared write plan with a synchronous runner."""
         try:
             action = next(operation)
@@ -351,7 +359,15 @@ class HyperTable:
         while True:
             if isinstance(action, RunGraph):
                 try:
-                    response = self._runner.run(action.graph, **action.input_values())
+                    nested_options: dict[str, Any] = {"event_processors": event_processors}
+                    if parent_span_id is not None:
+                        nested_options["_parent_span_id"] = parent_span_id
+                        nested_options["_parent_run_id"] = parent_run_id
+                    response = self._runner.run(
+                        action.graph,
+                        **nested_options,
+                        **action.input_values(),
+                    )
                 except Exception as error:
                     try:
                         action = operation.throw(error)
@@ -379,7 +395,14 @@ class HyperTable:
             return _run_write_step(step)
         return await to_thread_settled(_run_write_step, step)
 
-    async def _drive_async(self, operation: WriteOperation) -> Any:
+    async def _drive_async(
+        self,
+        operation: WriteOperation,
+        *,
+        event_processors: list[Any] | None = None,
+        parent_span_id: str | None = None,
+        parent_run_id: str | None = None,
+    ) -> Any:
         """Execute the same write plan; runner actions are awaited and the
         segments between yields — where all the plan's store IO happens —
         run under the store's execution policy (see _run_write_step_async)."""
@@ -389,7 +412,15 @@ class HyperTable:
         while True:
             if isinstance(action, RunGraph):
                 try:
-                    response = await self._runner.run(action.graph, **action.input_values())
+                    nested_options: dict[str, Any] = {"event_processors": event_processors}
+                    if parent_span_id is not None:
+                        nested_options["_parent_span_id"] = parent_span_id
+                        nested_options["_parent_run_id"] = parent_run_id
+                    response = await self._runner.run(
+                        action.graph,
+                        **nested_options,
+                        **action.input_values(),
+                    )
                 except Exception as error:
                     done, action = await self._run_write_step_async(partial(operation.throw, error))
                     if done:
@@ -815,6 +846,17 @@ class HyperTable:
             return self._insert_async(operation, single=single)
         receipt = self._drive_sync(operation)
         return receipt.receipts[0] if single else receipt
+
+    def as_node(
+        self,
+        *,
+        name: str | None = None,
+        output_name: str = "receipt",
+    ) -> HyperNode:
+        """Return a node that inserts and derives one identity-bearing source row."""
+        from hypergraph.materialization._node import MaterializationNode
+
+        return MaterializationNode(self, name=name, output_name=output_name)
 
     async def _insert_async(self, operation: WriteOperation, *, single: bool) -> RowReceipt | TableReceipt:
         receipt = await self._drive_async(operation)
