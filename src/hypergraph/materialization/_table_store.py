@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -15,6 +15,22 @@ RowPredicate = Sequence[tuple[str, RowOperator, Any]]
 
 class TableStore(ABC):
     """Abstract storage backend for HyperTable."""
+
+    thread_safe: ClassVar[bool] = False
+    """May this store's methods be called from arbitrary threads?
+
+    ``False`` (the default): the store may keep thread-affine state — a
+    sqlite3 connection, an unsynchronized cache — and HyperTable performs all
+    store IO inline on the calling thread, exactly as before this flag existed.
+
+    ``True``: the store guarantees its methods are safe to invoke from
+    changing worker threads. One write operation still issues its store calls
+    one at a time, but separate concurrent operations may overlap, and
+    ``open()`` may run on a different thread than later calls. An
+    async-runner HyperTable uses the guarantee to run write-plan store IO off
+    the event loop, so a slow synchronous store client (boto3, a REST SDK)
+    cannot stall every other coroutine in the process.
+    """
 
     @abstractmethod
     def open(self, spec: Any, children: list[Any]) -> dict[str, list[str]]:

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Mapping
+import asyncio
+import contextlib
+from collections.abc import Awaitable, Callable, Mapping
+from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph import Graph
@@ -69,6 +72,18 @@ def _where_predicate(where: Any) -> list[tuple[str, str, Any]]:
     if isinstance(where, dict):
         return [(key, "eq", value) for key, value in where.items()]
     return list(where)
+
+
+def _run_write_step(step: Callable[[], Any]) -> tuple[bool, Any]:
+    """Run one write-plan step, catching StopIteration on this side of any
+    thread boundary: raised through a future into the awaiting coroutine it
+    would surface as "RuntimeError: coroutine raised StopIteration" instead
+    of completion. Returns (done, value): the plan's return value when the
+    generator finished, else the value the step produced."""
+    try:
+        return False, step()
+    except StopIteration as complete:
+        return True, complete.value
 
 
 class ChildTable:
@@ -351,28 +366,49 @@ class HyperTable:
             except StopIteration as complete:
                 return complete.value
 
-    async def _drive_async(self, operation: WriteOperation) -> Any:
-        """Execute the same write plan; only the runner action is awaited."""
+    async def _run_write_step_async(self, step: Callable[[], Any]) -> tuple[bool, Any]:
+        """One write-plan step under the store's execution policy.
+
+        ``thread_safe`` stores run the step on a worker thread so their
+        synchronous IO cannot stall the event loop; other stores run it
+        inline, preserving thread affinity. An off-loop step always SETTLES
+        before control returns — a worker thread cannot be interrupted, so on
+        cancellation we wait for it rather than let the caller observe
+        cancellation while the store is still mutating."""
+        if not self._store.thread_safe:
+            return _run_write_step(step)
+        task = asyncio.ensure_future(asyncio.to_thread(_run_write_step, step))
         try:
-            action = next(operation)
-        except StopIteration as complete:
-            return complete.value
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if not task.done():
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.wait([task])
+            if task.done() and not task.cancelled():
+                task.exception()  # retrieved: settling must not log as unretrieved
+            raise
+
+    async def _drive_async(self, operation: WriteOperation) -> Any:
+        """Execute the same write plan; runner actions are awaited and the
+        segments between yields — where all the plan's store IO happens —
+        run under the store's execution policy (see _run_write_step_async)."""
+        done, action = await self._run_write_step_async(partial(next, operation))
+        if done:
+            return action
         while True:
             if isinstance(action, RunGraph):
                 try:
                     response = await self._runner.run(action.graph, **action.input_values())
                 except Exception as error:
-                    try:
-                        action = operation.throw(error)
-                    except StopIteration as complete:
-                        return complete.value
+                    done, action = await self._run_write_step_async(partial(operation.throw, error))
+                    if done:
+                        return action
                     continue
             else:
                 raise TypeError(f"unsupported write effect: {type(action).__name__}")
-            try:
-                action = operation.send(response)
-            except StopIteration as complete:
-                return complete.value
+            done, action = await self._run_write_step_async(partial(operation.send, response))
+            if done:
+                return action
 
     def recipe_drift(self) -> RecipeDrift:
         """Which stored rows were derived under something other than today's recipe.
@@ -760,7 +796,8 @@ class HyperTable:
         return self._write_planner.set_rows(tuple(_where_predicate(where)), fields)
 
     async def _set_async(self, where: Any, fields: dict[str, Any]) -> int:
-        return self._write_planner.set_rows(tuple(_where_predicate(where)), fields)
+        _done, value = await self._run_write_step_async(partial(self._write_planner.set_rows, tuple(_where_predicate(where)), fields))
+        return value
 
     @staticmethod
     def _insert_items(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
@@ -808,7 +845,8 @@ class HyperTable:
         return self._write_planner.delete(identity_value)
 
     async def _delete_async(self, identity_value: str) -> None:
-        self._write_planner.delete(identity_value)
+        # The cascade delete is one store-IO step; same execution policy.
+        await self._run_write_step_async(partial(self._write_planner.delete, identity_value))
 
     def sync(self, items: list[dict[str, Any]]) -> TableReceipt | Awaitable[TableReceipt]:
         """Reconcile: insert new, update changed, delete missing, skip unchanged.
