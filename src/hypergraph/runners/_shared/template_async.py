@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Collection
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -146,6 +146,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         max_iterations: int,
         max_concurrency: int | None,
         *,
+        max_concurrency_exempt: Collection[str] | None = None,
         dispatcher: EventDispatcher,
         run_id: str,
         run_span_id: str,
@@ -220,8 +221,12 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         ...
 
     @abstractmethod
-    def _set_concurrency_limiter(self, max_concurrency: int) -> Any:
-        """Set shared concurrency limiter and return reset token."""
+    def _set_concurrency_limiter(self, max_concurrency: int, exempt: Collection[str] | None = None) -> Any:
+        """Set shared concurrency limiter and return reset token.
+
+        ``exempt`` names nodes the limiter does not gate; it rides with the
+        semaphore so nested execution inherits both or neither.
+        """
         ...
 
     @abstractmethod
@@ -239,6 +244,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         entrypoint: str | None = None,
         max_iterations: int | None = None,
         max_concurrency: int | None = None,
+        max_concurrency_exempt: Collection[str] | None = None,
         inspect: bool = False,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
@@ -612,6 +618,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     normalized_values,
                     max_iter,
                     max_concurrency,
+                    max_concurrency_exempt=max_concurrency_exempt,
                     dispatcher=dispatcher,
                     run_id=run_id,
                     run_span_id=run_span_id,
@@ -926,6 +933,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_concurrency: int | None = None,
+        max_concurrency_exempt: Collection[str] | None = None,
         inspect: bool = False,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
@@ -1157,7 +1165,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             completed_by_signature, completed_legacy_by_index = index_completed_child_runs(completed_runs, workflow_id)
 
             existing_limiter = self._get_concurrency_limiter()
-            token = self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
+            token = (
+                self._set_concurrency_limiter(max_concurrency, max_concurrency_exempt)
+                if existing_limiter is None and max_concurrency is not None
+                else None
+            )
             map_stop_signal = get_stop_signal()
         except BaseException as error:
             try:
@@ -1245,6 +1257,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     on_missing=on_missing,
                     entrypoint=entrypoint,
                     max_concurrency=max_concurrency,
+                    max_concurrency_exempt=max_concurrency_exempt,
                     inspect=owns_inspection,
                     error_handling="continue",
                     event_processors=event_processors,
@@ -1511,6 +1524,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_concurrency: int | None = None,
+        max_concurrency_exempt: Collection[str] | None = None,
         error_handling: ErrorHandling = "raise",
         **input_values: Any,
     ) -> AsyncIterator[tuple[int, RunResult]]:
@@ -1560,7 +1574,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         # nodes/nested graphs, so max_concurrency is a global budget — matching
         # map()'s invariant rather than only limiting the worker count.
         existing_limiter = self._get_concurrency_limiter()
-        token = self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
+        token = (
+            self._set_concurrency_limiter(max_concurrency, max_concurrency_exempt)
+            if existing_limiter is None and max_concurrency is not None
+            else None
+        )
 
         # maxsize bounds buffered completed results; a full queue blocks workers
         # on put() — that is the backpressure that pauses production.
@@ -1587,6 +1605,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         on_missing=on_missing,
                         entrypoint=entrypoint,
                         max_concurrency=max_concurrency,
+                        max_concurrency_exempt=max_concurrency_exempt,
                         error_handling="continue",
                         show_progress=False,
                         _validation_ctx=ctx,

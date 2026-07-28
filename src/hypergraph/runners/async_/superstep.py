@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Collection
+from contextlib import AbstractAsyncContextManager, nullcontext
 from contextvars import ContextVar
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import (
@@ -46,18 +48,46 @@ if TYPE_CHECKING:
     from hypergraph.graph import Graph
     from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 
+
+@dataclass(frozen=True, slots=True)
+class ConcurrencyLimiter:
+    """The run's shared in-flight budget, plus the nodes it deliberately skips.
+
+    ``exempt`` names nodes whose in-flight capacity is already governed by an
+    EXTERNAL budget — a provider lane, a rate limiter, a connection pool the
+    node itself waits on. Such a node takes no runner permit, so cheap,
+    externally-bounded work never queues behind expensive waiters that sit on
+    permits while they block.
+
+    The limiter travels as ONE value: a nested graph inherits the semaphore and
+    the exemptions together or not at all.
+    """
+
+    semaphore: asyncio.Semaphore
+    exempt: frozenset[str] = frozenset()
+
+    def scope_for(self, node_name: str) -> AbstractAsyncContextManager[Any]:
+        """The permit scope one node execution runs inside."""
+        return nullcontext() if node_name in self.exempt else self.semaphore
+
+
 # Context variable for concurrency limiting across nested graphs
-_concurrency_limiter: ContextVar[asyncio.Semaphore | None] = ContextVar("_concurrency_limiter", default=None)
+_concurrency_limiter: ContextVar[ConcurrencyLimiter | None] = ContextVar("_concurrency_limiter", default=None)
 
 
-def get_concurrency_limiter() -> asyncio.Semaphore | None:
+def get_concurrency_limiter() -> ConcurrencyLimiter | None:
     """Get the current concurrency limiter."""
     return _concurrency_limiter.get()
 
 
-def set_concurrency_limiter(semaphore: asyncio.Semaphore | None) -> Any:
+def set_concurrency_limiter(
+    semaphore: asyncio.Semaphore | None,
+    *,
+    exempt: Collection[str] | None = None,
+) -> Any:
     """Set the concurrency limiter and return a token for reset."""
-    return _concurrency_limiter.set(semaphore)
+    limiter = ConcurrencyLimiter(semaphore, frozenset(exempt or ())) if semaphore is not None else None
+    return _concurrency_limiter.set(limiter)
 
 
 def reset_concurrency_limiter(token: Any) -> None:

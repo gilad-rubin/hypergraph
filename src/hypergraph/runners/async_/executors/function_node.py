@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, nullcontext
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.cache_observer import node_cache_observer
@@ -16,10 +17,14 @@ if TYPE_CHECKING:
     from hypergraph.runners._shared.state import ExecutionContext, GraphState
 
 
-def _attempt_concurrency_scope() -> AbstractAsyncContextManager[Any]:
-    """One in-flight-invocation permit (#218); no limiter means no gate."""
-    semaphore = get_concurrency_limiter()
-    return semaphore if semaphore is not None else nullcontext()
+def _concurrency_scope(node_name: str) -> AbstractAsyncContextManager[Any]:
+    """One in-flight-invocation permit (#218); no limiter means no gate.
+
+    A node the limiter exempts takes no permit at all — its capacity is
+    someone else's budget (see ``ConcurrencyLimiter.exempt``).
+    """
+    limiter = get_concurrency_limiter()
+    return limiter.scope_for(node_name) if limiter is not None else nullcontext()
 
 
 class AsyncFunctionNodeExecutor:
@@ -34,6 +39,9 @@ class AsyncFunctionNodeExecutor:
     Respects the global concurrency limiter for async operations.
     The semaphore is acquired here (at the leaf level) rather than at
     the superstep level, so that nested GraphNodes don't cause deadlock.
+    Both acquisition paths — the plain one below and the per-attempt one the
+    retry/timeout coordinator drives — go through ``_concurrency_scope``, so a
+    node's exemption holds whether or not it declares retry or timeout.
 
     Injected provider-resource budgets (graph and node scope) are held
     OUTSIDE that semaphore for the whole node execution: a task queueing for
@@ -88,15 +96,11 @@ class AsyncFunctionNodeExecutor:
             # Per-attempt permits (#218): the concurrency budget covers
             # in-flight callable invocation through timeout settlement, while
             # backoff sleeps hold no permit. The attempt coordinator acquires
-            # the limiter around each attempt via _attempt_concurrency_scope.
+            # the limiter around each attempt via _concurrency_scope.
             return await self._execute(node, inputs, ctx)
 
-        semaphore = get_concurrency_limiter()
-
-        if semaphore:
-            async with semaphore:
-                return await self._execute(node, inputs, ctx)
-        return await self._execute(node, inputs, ctx)
+        async with _concurrency_scope(node.name):
+            return await self._execute(node, inputs, ctx)
 
     async def _execute(
         self,
@@ -177,7 +181,7 @@ class AsyncFunctionNodeExecutor:
                     checkpointer=ctx.checkpointer,
                     run_id=ctx.workflow_id,
                     scheduled_superstep=ctx.superstep_offset + ctx.superstep,
-                    attempt_scope=_attempt_concurrency_scope,
+                    attempt_scope=partial(_concurrency_scope, node.name),
                     events=events,
                 )
 
