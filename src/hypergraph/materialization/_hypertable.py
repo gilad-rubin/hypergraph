@@ -550,6 +550,12 @@ class HyperTable:
         return self._source_graph
 
     @property
+    def store(self) -> TableStore:
+        """The table's analyzed public storage boundary."""
+        self._ensure_analyzed()
+        return self._store
+
+    @property
     def child_table_names(self) -> tuple[str, ...]:
         """The child (mapped) tables' physical names, in declaration order.
 

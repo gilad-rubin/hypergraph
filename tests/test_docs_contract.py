@@ -224,6 +224,7 @@ def test_hypertable_docs_pin_graph_backed_receipt_contract() -> None:
     assert parameters["page_max_concurrency"].default == 16
     assert parameters["on_error"].default == "raise"
     assert parameters["name"].default is None
+    assert isinstance(HyperTable.store, property)
 
     attach_parameters = inspect.signature(HyperTable.attach).parameters
     assert tuple(attach_parameters) == ("self", "name", "graph", "outputs")

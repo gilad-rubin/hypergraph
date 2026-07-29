@@ -32,7 +32,10 @@ Graphs containing interrupts require `AsyncRunner`. Using the default runner
 fails on first derivation with `IncompatibleRunnerError` and names the fix.
 
 The returned object is a `HyperTable`. Its `graph` property exposes the graph
-artifact and `table_name` exposes the physical root name.
+artifact, `table_name` exposes the physical root name, and `store` exposes the
+analyzed `TableStore` boundary for application-owned catalog or maintenance
+operations. Accessing `store` opens the table schema first; callers do not need
+to invoke private analysis methods.
 
 ## Materialization Branches
 
