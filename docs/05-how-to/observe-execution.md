@@ -136,7 +136,7 @@ stays local on `RunResult.error` and `get_failure_evidence(...)`. See
 
 ### Tag Spans and Keep the Global Tracer Untouched
 
-`OpenTelemetryProcessor` accepts two constructor options for embedding
+`OpenTelemetryProcessor` accepts constructor options for embedding
 hypergraph telemetry inside a host platform:
 
 ```python
@@ -148,26 +148,62 @@ provider = TracerProvider()  # private provider — configure exporters yourself
 processor = OpenTelemetryProcessor(
     extra_attributes={"deployment.environment": "staging"},
     tracer_provider=provider,
+    set_success_status=False,
+    enrich_openinference=False,
 )
 ```
 
 - `extra_attributes` is merged onto **every** span the processor creates —
-  run root spans (`graph …`/`map …`) and node spans alike. All spans rather
+  run roots and node spans alike. All spans rather
   than the root only: it is cheap, and lets backends filter on any span.
   Hypergraph's own attributes win on key collisions.
 - `tracer_provider` writes spans on the provider you pass instead of the
   global one. The global tracer provider is neither consulted nor modified —
   a host can keep its provider fully private. With the default `None`, the
   tracer is looked up on the global provider exactly as before.
+- `set_success_status=True` explicitly marks genuinely completed spans `OK`.
+  The default is `False`, following the OTel instrumentation-library rule;
+  paused, stopped, partial, and failed work is never marked `OK`.
+- `enrich_openinference=True` adds `openinference.span.kind=CHAIN` and
+  `graph.node.*`. This is Hypergraph's opt-in interpretation: `graph.node.id`
+  and `.name` are the logical graph/node name, while `.parent_id` is the
+  containing logical graph/node name (not an OTel span id, workflow id, or DAG
+  edge). OpenInference does not itself guarantee this mapping.
 
-Typical hierarchy:
+Span names use user vocabulary; structure is in `hypergraph.span.role`:
 
 ```text
-graph outer
-└── node inner
-    └── graph inner
-        └── node double
+outer                       role=graph
+└── inner                   role=graph, node_name=inner
+    └── double              role=node
 ```
+
+The first child run of each live ordinary node is structurally collapsed into
+that node's physical span. This applies independently per owner and at every
+nesting depth. A nested map therefore uses the owner as `role=map`, followed
+by stable `<graph>.item` item spans. `role=node` selects ordinary node work
+only; `role=graph|map` includes collapsed GraphNodes. To select every node
+execution, ordinary and collapsed, filter for the presence of
+`hypergraph.node_name`.
+
+On a collapsed span, outer node identity stays at `graph_name`, `run_id`,
+`workflow_id`, and `duration_ms`; inner values are under
+`hypergraph.nested.*`. Batch and lineage attributes remain at their existing
+keys. A collapsed run's resume/fork/retry links are added after span creation,
+so they remain queryable but cannot influence head sampling. The same is true
+of the collapsed `graph`/`map` role and nested/map/lineage attributes: the
+owner span starts as a node before the processor observes its child run. Use
+tail sampling when those final attributes must influence retention. Eventless
+delegation and a checkpoint-restored GraphNode emit no child run: their
+uncollapsed span stays `role=node` with no `nested.*`, and ambient context is
+still restored normally.
+
+Migration from prefixed spans has four breaking parts: names no longer have
+`graph `/`map `/`node ` prefixes; nested GraphNodes produce one span instead
+of two; the identity keys on that span now mean the outer node and inner
+identity moved to `nested.*`; and OTel API, SDK, and HTTP exporter now require
+at least 1.24 for post-creation lineage links. Extra attributes cannot spoof
+Hypergraph-owned role, identity, or nested attributes.
 
 ### Ambient Context: Third-Party Telemetry Nests Under Node Spans
 
@@ -197,8 +233,8 @@ SyncRunner().run(Graph([call_llm], name="rag"), {"prompt": "hi"},
 ```
 
 ```text
-graph rag
-└── node call_llm
+rag
+└── call_llm
     └── ChatCompletion        ← nested under the node, same trace
 ```
 
@@ -237,10 +273,10 @@ runner.run(Graph([do_work]), {"x": 5})
 Mapped work uses a parent `map` span plus child graph spans per item:
 
 ```text
-map evaluate_batch
-├── graph evaluate_batch   item_index=0
-├── graph evaluate_batch   item_index=1
-└── graph evaluate_batch   item_index=2
+evaluate_batch                    role=map
+├── evaluate_batch.item   item_index=0
+├── evaluate_batch.item   item_index=1
+└── evaluate_batch.item   item_index=2
 ```
 
 Parent `map` spans export aggregate outcome attributes instead of vague blobs:

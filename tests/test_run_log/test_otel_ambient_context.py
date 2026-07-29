@@ -84,7 +84,7 @@ class TestNodeBodyNesting:
 
         assert result.completed
         spans = exporter.get_finished_spans()
-        node_span = _by_name(spans, "node double")
+        node_span = _by_name(spans, "double")
         inner = _by_name(spans, "inner-llm-call")
         assert inner.parent is not None
         assert inner.parent.span_id == node_span.context.span_id
@@ -109,7 +109,7 @@ class TestNodeBodyNesting:
 
         assert result.completed
         spans = exporter.get_finished_spans()
-        node_span = _by_name(spans, "node double")
+        node_span = _by_name(spans, "double")
         inner = _by_name(spans, "inner-llm-call")
         assert inner.parent is not None
         assert inner.parent.span_id == node_span.context.span_id
@@ -142,7 +142,7 @@ class TestPreexistingRootNotInherited:
         assert result.completed
         spans = exporter.get_finished_spans()
         host_root = _by_name(spans, "host-root")
-        node_span = _by_name(spans, "node call_llm")
+        node_span = _by_name(spans, "call_llm")
         inner = _by_name(spans, "ChatCompletion")
         # Nested under the node — NOT a sibling hanging off the host root.
         assert inner.parent.span_id == node_span.context.span_id
@@ -187,7 +187,7 @@ class TestConcurrentIsolation:
 
         assert results.completed
         spans = exporter.get_finished_spans()
-        node_by_item = {s.attributes["hypergraph.item_index"]: s for s in spans if s.name == "node double"}
+        node_by_item = {s.attributes["hypergraph.item_index"]: s for s in spans if s.name == "double"}
         assert sorted(node_by_item) == [0, 1]
         inner_by_x = {s.attributes["test.x"]: s for s in spans if s.name == "inner-llm-call"}
         assert sorted(inner_by_x) == [10, 20]
@@ -232,8 +232,8 @@ class TestConcurrentIsolation:
 
         assert result.completed
         spans = exporter.get_finished_spans()
-        assert _by_name(spans, "inner-a").parent.span_id == _by_name(spans, "node branch_a").context.span_id
-        assert _by_name(spans, "inner-b").parent.span_id == _by_name(spans, "node branch_b").context.span_id
+        assert _by_name(spans, "inner-a").parent.span_id == _by_name(spans, "branch_a").context.span_id
+        assert _by_name(spans, "inner-b").parent.span_id == _by_name(spans, "branch_b").context.span_id
 
 
 @requires_otel
@@ -265,10 +265,10 @@ class TestSingleTrace:
 
         assert result.completed
         spans = exporter.get_finished_spans()
-        assert {s.name for s in spans} == {"graph one_trace", "node double", "inner-llm-call"}
+        assert {s.name for s in spans} == {"one_trace", "double", "inner-llm-call"}
         trace_ids = {s.context.trace_id for s in spans}
         assert len(trace_ids) == 1, f"run fragmented into {len(trace_ids)} traces"
-        assert _by_name(spans, "inner-llm-call").parent.span_id == _by_name(spans, "node double").context.span_id
+        assert _by_name(spans, "inner-llm-call").parent.span_id == _by_name(spans, "double").context.span_id
 
 
 @requires_otel
@@ -337,8 +337,84 @@ class TestFailureDetach:
         assert result.paused
         assert otel_context.get_current() == before
         _assert_no_detach_failures(caplog)
-        run_span = _by_name(exporter.get_finished_spans(), "graph pause_flow")
+        run_span = _by_name(exporter.get_finished_spans(), "pause_flow")
         assert dict(run_span.attributes)["hypergraph.run.outcome"] == "paused"
+
+    @pytest.mark.parametrize("runner_type", [SyncRunner, AsyncRunner])
+    def test_nested_graph_success_restores_caller_context(self, runner_type, caplog):
+        from hypergraph.events.otel import OpenTelemetryProcessor
+
+        provider, exporter = _local_provider()
+
+        @node(output_name="y")
+        def increment(x: int) -> int:
+            return x + 1
+
+        inner = Graph([increment], name="inner")
+        graph = Graph([inner.as_node(name="nested")], name="outer")
+        before = otel_context.get_current()
+        with caplog.at_level(logging.ERROR, logger="opentelemetry.context"):
+            result = (
+                asyncio.run(runner_type().run(graph, {"x": 1}, event_processors=[OpenTelemetryProcessor(tracer_provider=provider)]))
+                if runner_type is AsyncRunner
+                else runner_type().run(graph, {"x": 1}, event_processors=[OpenTelemetryProcessor(tracer_provider=provider)])
+            )
+        assert result.completed
+        assert otel_context.get_current() == before
+        _assert_no_detach_failures(caplog)
+        spans = exporter.get_finished_spans()
+        owner = _by_name(spans, "nested")
+        assert owner.attributes["hypergraph.span.role"] == "graph"
+        assert _by_name(spans, "increment").parent.span_id == owner.context.span_id
+        assert len(spans) == 3
+
+    @pytest.mark.parametrize("runner_type", [SyncRunner, AsyncRunner])
+    def test_nested_graph_terminal_failure_restores_caller_context(self, runner_type, caplog):
+        from hypergraph.events.otel import OpenTelemetryProcessor
+
+        provider, exporter = _local_provider()
+
+        @node(output_name="y")
+        def fail(x: int) -> int:
+            raise ValueError("nested boom")
+
+        graph = Graph([Graph([fail], name="inner").as_node(name="nested")], name="outer")
+        before = otel_context.get_current()
+        with caplog.at_level(logging.ERROR, logger="opentelemetry.context"), pytest.raises(ValueError, match="nested boom"):
+            if runner_type is AsyncRunner:
+                asyncio.run(runner_type().run(graph, {"x": 1}, event_processors=[OpenTelemetryProcessor(tracer_provider=provider)]))
+            else:
+                runner_type().run(graph, {"x": 1}, event_processors=[OpenTelemetryProcessor(tracer_provider=provider)])
+        assert otel_context.get_current() == before
+        _assert_no_detach_failures(caplog)
+        spans = exporter.get_finished_spans()
+        owner = _by_name(spans, "nested")
+        assert owner.attributes["hypergraph.span.role"] == "graph"
+        assert _by_name(spans, "fail").parent.span_id == owner.context.span_id
+        assert len(spans) == 3
+
+    async def test_async_nested_pause_restores_caller_context(self, caplog):
+        from hypergraph.events.otel import OpenTelemetryProcessor
+
+        provider, exporter = _local_provider()
+
+        @interrupt(answer_name="decision")
+        def approval(draft: str) -> StringQuestion:
+            return StringQuestion(prompt="Approve?", evidence=(draft,))
+
+        graph = Graph([Graph([approval], name="inner").as_node(name="nested")], name="outer")
+        before = otel_context.get_current()
+        with caplog.at_level(logging.ERROR, logger="opentelemetry.context"):
+            result = await AsyncRunner().run(graph, {"draft": "v1"}, event_processors=[OpenTelemetryProcessor(tracer_provider=provider)])
+        assert result.paused
+        assert otel_context.get_current() == before
+        _assert_no_detach_failures(caplog)
+        spans = exporter.get_finished_spans()
+        owner = _by_name(spans, "nested")
+        assert owner.attributes["hypergraph.span.role"] == "graph"
+        assert owner.attributes["hypergraph.run.outcome"] == "paused"
+        assert _by_name(spans, "approval").parent.span_id == owner.context.span_id
+        assert len(spans) == 3
 
 
 @requires_otel

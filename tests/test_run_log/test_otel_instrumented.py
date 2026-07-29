@@ -91,9 +91,9 @@ class TestTracerProvider:
 
         assert result.completed
         local_names = [s.name for s in local_exporter.get_finished_spans()]
-        assert "graph private" in local_names
-        assert "node double" in local_names
-        assert "node triple" in local_names
+        assert "private" in local_names
+        assert "double" in local_names
+        assert "triple" in local_names
 
         # The global provider recorded ZERO spans from this run …
         assert witness_exporter.get_finished_spans() == ()
@@ -114,8 +114,8 @@ class TestTracerProvider:
 
         assert result.completed
         names = [s.name for s in witness_exporter.get_finished_spans()]
-        assert "graph global_path" in names
-        assert "node double" in names
+        assert "global_path" in names
+        assert "double" in names
 
 
 @requires_otel
@@ -135,7 +135,7 @@ class TestExtraAttributes:
 
         spans = exporter.get_finished_spans()
         names = {s.name for s in spans}
-        assert {"graph tagged", "node double", "node triple", "map tagged_map", "graph tagged_map"} <= names
+        assert {"tagged", "double", "triple", "tagged_map", "tagged_map.item"} <= names
         for span in spans:
             attrs = dict(span.attributes)
             assert attrs["sp.resolution"] == "res-A", f"missing on {span.name}"
@@ -168,7 +168,7 @@ class TestExtraAttributes:
 
         SyncRunner().run(Graph([double], name="honest"), {"x": 2}, event_processors=[processor])
 
-        root = next(s for s in exporter.get_finished_spans() if s.name == "graph honest")
+        root = next(s for s in exporter.get_finished_spans() if s.name == "honest")
         assert dict(root.attributes)["hypergraph.graph_name"] == "honest"
 
 
@@ -233,7 +233,7 @@ class TestOTLPWire:
             thread.join(timeout=10)
             server.server_close()
 
-        root_spans = [s for s in _wire_spans(bodies) if s.name == "graph wire" and _is_root(s)]
+        root_spans = [s for s in _wire_spans(bodies) if s.name == "wire" and _is_root(s)]
         assert len(root_spans) == 1, f"expected exactly one root span on the wire, got {len(root_spans)}"
         attributes = {kv.key: kv.value for kv in root_spans[0].attributes}
         assert "sp.resolution" in attributes, f"sp.resolution missing on the wire; keys: {sorted(attributes)}"
