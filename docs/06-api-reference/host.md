@@ -164,6 +164,7 @@ receipt = await host.submit_batch(
     identity="doc_id",
     schema=IngestionItem,
     exclusive_by="doc_id",
+    admission_units="page_count",
     workflow_id="schneider-drop-43",
 )
 ```
@@ -172,6 +173,10 @@ Every item field must be a graph boundary input, every required boundary
 input must be present, and the resulting mapping must be JSON-serializable.
 These checks, `schema` validation, and identity validation all happen before
 acceptance.
+
+`admission_units` optionally names a positive-integer item field. The Host
+validates and freezes that cost on each child submission; the immutable
+manifest also pins the field name, so reruns preserve the same accounting.
 
 `submit_batch` speaks the same **input-expansion vocabulary as runner map**
 — `values` plus `map_over` (one name or a sequence) and `map_mode`
@@ -870,6 +875,31 @@ RunHome.open("file:./runs.db", max_active_runs=4)     # sets the cap to 4
 RunHome.open("file:./runs.db", max_active_runs=None)  # sets it to unlimited
 RunHome.open("file:./runs.db")                        # adopts the stored cap
 ```
+
+For differently sized Runs, `max_admission_units` adds a durable weighted
+budget while `max_active_runs` remains an independent safety cap:
+
+```python
+home = RunHome.open(
+    "file:./runs.db",
+    max_active_runs=128,
+    max_admission_units=64,
+)
+```
+
+The oldest eligible submissions reserve their persisted costs. Normal work
+fits within the budget, except that at least two non-oversized Runs may be
+admitted to keep the worker useful. An item whose cost exceeds the budget is
+never rejected: it waits until it can run alone. Pausing releases the
+reservation; answering returns the Run to ordinary FIFO admission. Because
+usage is derived from durable `claimed` submissions, another process and a
+restarted worker reconstruct the same reservations without a process-local
+ledger. Set `max_admission_units=None` for unlimited weighted admission.
+
+For a memory ceiling, configure this single page-denominated budget as the
+minimum of the utilization-derived page target and the page count that fits
+the available-memory estimate. Input JSON or source-file bytes are not used
+as a proxy for resident parsed-page memory.
 
 Over-limit work **waits in claim order** — oldest submission first, ties
 broken by insertion order so the ordering is total. It is never rejected and

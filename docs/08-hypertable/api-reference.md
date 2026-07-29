@@ -9,6 +9,7 @@ table = graph.as_table(
     identity="upload_id",
     store=LanceDBStore("./data"),
     runner=AsyncRunner(),
+    page_max_concurrency=16,
     on_error="store",
     name="uploads",
 )
@@ -19,6 +20,9 @@ Parameters:
 - `identity: str` — public entity-key column.
 - `store: TableStore` — opened lazily on first use.
 - `runner` — execution policy. Defaults to `SyncRunner()`.
+- `page_max_concurrency: int` — maximum independent child-page graphs in
+  flight for one parent mutation. Defaults to `16`; synchronous runners
+  preserve the same results but execute child pages serially.
 - `on_error: Literal["raise", "store"]` — raise immediately or persist a
   typed row error. Defaults to `"raise"`.
 - `name: str | None` — physical root table name. The default derives from the

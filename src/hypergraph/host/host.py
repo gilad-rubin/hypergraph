@@ -226,6 +226,7 @@ class Host:
         identity: str,
         schema: type[BaseModel] | None,
         exclusive_by: str | None,
+        admission_units: str | None,
         workflow_id: str,
         tolerance: BatchTolerance | None,
         start_at: datetime | str | None,
@@ -246,6 +247,8 @@ class Host:
         definition = self._require_definition(graph)
         if exclusive_by is not None and (not isinstance(exclusive_by, str) or not exclusive_by):
             raise ValueError(f"submit_batch() exclusive_by must name a graph port, got {exclusive_by!r}.")
+        if admission_units is not None and (not isinstance(admission_units, str) or not admission_units):
+            raise ValueError(f"submit_batch() admission_units must name an item field, got {admission_units!r}.")
         if isinstance(values, Mapping):
             if map_over is None:
                 raise TypeError("submit_batch() mapping-form values require map_over; typed item sequences do not.")
@@ -274,6 +277,12 @@ class Host:
                         "The durable lock must have a key before the Run is admitted."
                     )
                 _item_key(inputs[exclusive_by], identity=exclusive_by, index=index)
+        if admission_units is not None:
+            for index, (_, inputs_json) in enumerate(pairs):
+                inputs = json.loads(inputs_json)
+                value = inputs.get(admission_units)
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise ValueError(f"submit_batch() item {index} admission_units={admission_units!r} must be an int >= 1; got {value!r}.")
         start_at_iso = _normalize_start_at(start_at)
         tolerance_json = json.dumps(tolerance.to_dict()) if tolerance is not None else None
         fingerprint = batch_fingerprint(
@@ -282,6 +291,7 @@ class Host:
             tolerance,
             start_at_iso,
             exclusive_by,
+            admission_units,
         )
         return definition, pairs, start_at_iso, tolerance_json, fingerprint
 
@@ -295,6 +305,7 @@ class Host:
         map_mode: MapMode = "zip",
         schema: type[BaseModel] | None = None,
         exclusive_by: str | None = None,
+        admission_units: str | None = None,
         workflow_id: str,
         tolerance: BatchTolerance | None = None,
         start_at: datetime | str | None = None,
@@ -375,6 +386,7 @@ class Host:
             identity=identity,
             schema=schema,
             exclusive_by=exclusive_by,
+            admission_units=admission_units,
             workflow_id=workflow_id,
             tolerance=tolerance,
             start_at=start_at,
@@ -391,6 +403,7 @@ class Host:
             source_ref=source_ref,
             recovery_cap=recovery_cap,
             exclusive_by=exclusive_by,
+            admission_units=admission_units,
         )
         created, row = await self._home._submit_batch(request)
         return BatchSubmitReceipt(
@@ -409,6 +422,7 @@ class Host:
         map_mode: MapMode = "zip",
         schema: type[BaseModel] | None = None,
         exclusive_by: str | None = None,
+        admission_units: str | None = None,
         workflow_id: str,
         tolerance: BatchTolerance | None = None,
         start_at: datetime | str | None = None,
@@ -424,6 +438,7 @@ class Host:
             identity=identity,
             schema=schema,
             exclusive_by=exclusive_by,
+            admission_units=admission_units,
             workflow_id=workflow_id,
             tolerance=tolerance,
             start_at=start_at,
@@ -440,6 +455,7 @@ class Host:
             source_ref=source_ref,
             recovery_cap=recovery_cap,
             exclusive_by=exclusive_by,
+            admission_units=admission_units,
         )
         created, row = self._home._submit_batch_sync(request)
         return BatchSubmitReceipt(

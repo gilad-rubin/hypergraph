@@ -77,6 +77,7 @@ def batch_fingerprint(
     tolerance: BatchTolerance | None,
     start_at: str | None,
     exclusive_by: str | None = None,
+    admission_units: str | None = None,
 ) -> str:
     """Hash the canonical start document for one Batch submission.
 
@@ -103,6 +104,8 @@ def batch_fingerprint(
     # unsettled manifest accepted before upgrade still deduplicates.
     if exclusive_by is not None:
         document["exclusive_by"] = exclusive_by
+    if admission_units is not None:
+        document["admission_units"] = admission_units
     return hashlib.sha256(canonical_json(document).encode("utf-8")).hexdigest()
 
 
@@ -116,6 +119,7 @@ def batch_mismatch_aspect(
     tolerance_json: str | None,
     start_at: str | None,
     exclusive_by: str | None = None,
+    admission_units: str | None = None,
 ) -> str:
     """Name which Batch fingerprint aspect differs from the stored manifest.
 
@@ -135,4 +139,6 @@ def batch_mismatch_aspect(
         return "tolerance"
     if existing["exclusive_by"] != exclusive_by:
         return "exclusive_by"
+    if existing.get("admission_units") != admission_units:
+        return "admission_units"
     return "start_at"

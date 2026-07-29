@@ -20,4 +20,13 @@ class RunGraph:
         return dict(self.inputs)
 
 
-WriteOperation = Generator[RunGraph, Any, Any]
+@dataclass(frozen=True, slots=True)
+class RunOperations:
+    """Drive independent child-page write plans under one bounded window."""
+
+    operations: tuple[WriteOperation, ...]
+    max_concurrency: int
+
+
+WriteAction = RunGraph | RunOperations
+WriteOperation = Generator[WriteAction, Any, Any]

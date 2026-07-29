@@ -219,8 +219,9 @@ def test_hypertable_docs_pin_graph_backed_receipt_contract() -> None:
     human = _read("docs/03-patterns/07-human-in-the-loop.md")
 
     parameters = inspect.signature(Graph.as_table).parameters
-    assert tuple(parameters) == ("self", "identity", "store", "runner", "on_error", "name")
+    assert tuple(parameters) == ("self", "identity", "store", "runner", "page_max_concurrency", "on_error", "name")
     assert parameters["runner"].default is None
+    assert parameters["page_max_concurrency"].default == 16
     assert parameters["on_error"].default == "raise"
     assert parameters["name"].default is None
 
@@ -1042,7 +1043,13 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert tuple(inspect.signature(BaseRunner.has_active_run).parameters) == ("self", "workflow_id")
 
     # RunHome.open / serve / submit / fork / client verb signatures.
-    assert tuple(inspect.signature(RunHome.open).parameters) == ("uri", "policy", "serializer", "max_active_runs")
+    assert tuple(inspect.signature(RunHome.open).parameters) == (
+        "uri",
+        "policy",
+        "serializer",
+        "max_active_runs",
+        "max_admission_units",
+    )
     assert tuple(inspect.signature(serve).parameters) == ("graphs", "home", "deployment_version", "accepts")
     from hypergraph.host import Host
 
@@ -1071,6 +1078,7 @@ def test_durable_host_docs_pin_public_contract() -> None:
         "map_mode",
         "schema",
         "exclusive_by",
+        "admission_units",
         "workflow_id",
         "tolerance",
         "start_at",
@@ -1158,6 +1166,8 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert "provider_limit" in host_api
     assert isinstance(RunHome.max_active_runs, property)
     assert RunHome.max_active_runs.fset is not None, "the active-Run cap must be tunable at runtime"
+    assert isinstance(RunHome.max_admission_units, property)
+    assert RunHome.max_admission_units.fset is not None, "the weighted budget must be tunable at runtime"
     assert tuple(inspect.signature(Graph.with_provider_limit).parameters) == ("self", "provider_limit")
     assert isinstance(Graph.provider_limit, property)
     assert tuple(inspect.signature(ProcessLocalLimiter.__init__).parameters) == ("self", "max_in_flight")

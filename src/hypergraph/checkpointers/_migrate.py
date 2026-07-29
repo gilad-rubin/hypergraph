@@ -395,7 +395,8 @@ CREATE TABLE IF NOT EXISTS host_submissions (
     -- cross-Batch exclusion lock. The current key follows committed node
     -- output while item_key remains the immutable manifest identity.
     exclusive_by TEXT,
-    exclusive_key TEXT
+    exclusive_key TEXT,
+    admission_cost INTEGER NOT NULL DEFAULT 1
 )
 """
 
@@ -463,7 +464,8 @@ CREATE TABLE IF NOT EXISTS host_batches (
     source_ref TEXT,
     created_at TEXT NOT NULL,
     retry_of TEXT,
-    exclusive_by TEXT
+    exclusive_by TEXT,
+    admission_units TEXT
 )
 """
 
@@ -599,6 +601,7 @@ _HOST_SUBMISSIONS_ADDED_COLUMNS = (
     ("claim_seq", "claim_seq INTEGER NOT NULL DEFAULT 0"),
     ("exclusive_by", "exclusive_by TEXT"),
     ("exclusive_key", "exclusive_key TEXT"),
+    ("admission_cost", "admission_cost INTEGER NOT NULL DEFAULT 1"),
 )
 
 # Columns appended to host_batches after its initial cut (ticket 06). The v6
@@ -607,6 +610,7 @@ _HOST_SUBMISSIONS_ADDED_COLUMNS = (
 _HOST_BATCHES_ADDED_COLUMNS = (
     ("retry_of", "retry_of TEXT"),
     ("exclusive_by", "exclusive_by TEXT"),
+    ("admission_units", "admission_units TEXT"),
 )
 
 # Columns appended to host_commands after its initial cut (ticket 14, the

@@ -1494,6 +1494,7 @@ class Graph:
         identity: str,
         store: TableStore,
         runner: BaseRunner | None = None,
+        page_max_concurrency: int = 16,
         on_error: Literal["raise", "store"] = "raise",
         name: str | None = None,
     ) -> HyperTable:
@@ -1509,6 +1510,7 @@ class Graph:
             identity=identity,
             store=store,
             runner=runner,
+            page_max_concurrency=page_max_concurrency,
             on_error=on_error,
             name=name,
         )

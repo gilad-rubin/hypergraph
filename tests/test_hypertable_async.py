@@ -155,6 +155,144 @@ async def test_second_cancel_during_write_drain_still_settles(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("configured_window", "expected"), [(None, 16), (4, 4)])
+async def test_child_pages_fill_the_configured_fanout_window(tmp_path, configured_window, expected) -> None:
+    """Independent child pages run concurrently; the default window is 16."""
+    active = 0
+    high_water = 0
+    filled = asyncio.Event()
+    release = asyncio.Event()
+
+    @node(output_name="pages")
+    def split(text: str) -> list[dict[str, object]]:
+        return [{"page_id": str(index), "body": f"{text}-{index}"} for index in range(20)]
+
+    @node(output_name="embedding")
+    async def embed(body: str) -> str:
+        nonlocal active, high_water
+        active += 1
+        high_water = max(high_water, active)
+        if active >= expected:
+            filled.set()
+        try:
+            await release.wait()
+            return body.upper()
+        finally:
+            active -= 1
+
+    pages = Graph([embed], name="page")
+    graph = Graph([split, pages.as_node().map_over("pages", identity="page_id")])
+    kwargs = {} if configured_window is None else {"page_max_concurrency": configured_window}
+    table = graph.as_table(
+        identity="doc_id",
+        store=LanceDBStore(str(tmp_path / "fanout")),
+        runner=AsyncRunner(),
+        **kwargs,
+    )
+
+    task = asyncio.create_task(table.insert(doc_id="d1", text="page"))
+    await asyncio.wait_for(filled.wait(), timeout=5)
+    assert high_water == expected
+    release.set()
+    await asyncio.wait_for(task, timeout=10)
+    assert len(table.child("page").rows(parent="d1")) == 20
+
+
+@pytest.mark.asyncio
+async def test_child_page_failure_cancels_and_drains_the_window(tmp_path) -> None:
+    """One failed page cannot leave sibling child graphs running after insert returns."""
+    active = 0
+    started = 0
+    high_water = 0
+    window_filled = asyncio.Event()
+    never = asyncio.Event()
+
+    @node(output_name="pages")
+    def split(text: str) -> list[dict[str, str]]:
+        return [{"page_id": str(index), "body": f"{text}-{index}"} for index in range(8)]
+
+    @node(output_name="embedding")
+    async def embed(body: str) -> str:
+        nonlocal active, high_water, started
+        active += 1
+        started += 1
+        high_water = max(high_water, active)
+        if started == 4:
+            window_filled.set()
+        try:
+            await window_filled.wait()
+            if body.endswith("-0"):
+                raise RuntimeError("page failed")
+            await never.wait()
+            return body
+        finally:
+            active -= 1
+
+    pages = Graph([embed], name="page")
+    table = Graph([split, pages.as_node().map_over("pages", identity="page_id")]).as_table(
+        identity="doc_id",
+        store=LanceDBStore(str(tmp_path / "failed-fanout")),
+        runner=AsyncRunner(),
+        page_max_concurrency=4,
+    )
+
+    with pytest.raises(RuntimeError, match="page failed"):
+        await asyncio.wait_for(table.insert(doc_id="d1", text="page"), timeout=5)
+    assert active == 0
+    assert high_water == 4
+    assert started < 8, "failure must cancel queued pages rather than draining the whole input"
+
+
+@pytest.mark.asyncio
+async def test_second_cancel_cannot_interrupt_child_window_drain(tmp_path) -> None:
+    """Repeated caller cancellation cannot return while a sibling is settling."""
+    both_started = asyncio.Event()
+    sibling_settling = asyncio.Event()
+    sibling_settled = asyncio.Event()
+    proceed = asyncio.Event()
+    started = 0
+
+    @node(output_name="pages")
+    def split(text: str) -> list[dict[str, str]]:
+        return [{"page_id": str(index), "body": f"{text}-{index}"} for index in range(2)]
+
+    @node(output_name="embedding")
+    async def embed(body: str) -> str:
+        nonlocal started
+        started += 1
+        if started == 2:
+            both_started.set()
+        await both_started.wait()
+        if body.endswith("-0"):
+            raise RuntimeError("page failed")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            sibling_settling.set()
+            await proceed.wait()
+            sibling_settled.set()
+            raise
+
+    pages = Graph([embed], name="page")
+    table = Graph([split, pages.as_node().map_over("pages", identity="page_id")]).as_table(
+        identity="doc_id",
+        store=LanceDBStore(str(tmp_path / "repeated-cancel")),
+        runner=AsyncRunner(),
+        page_max_concurrency=2,
+    )
+    task = asyncio.create_task(table.insert(doc_id="d1", text="page"))
+    await asyncio.wait_for(sibling_settling.wait(), timeout=5)
+
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    proceed.set()
+    with pytest.raises(RuntimeError, match="page failed"):
+        await asyncio.wait_for(task, timeout=5)
+    assert sibling_settled.is_set()
+
+
+@pytest.mark.asyncio
 async def test_async_insert_update_set_delete(table) -> None:
     """AsyncRunner-bound tables expose awaitable mutations with derived outputs."""
 

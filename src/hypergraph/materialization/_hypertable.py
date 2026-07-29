@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable, Mapping
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
@@ -34,7 +36,7 @@ from hypergraph.materialization._types import (
     WaitingRow,
     deserialize_question,
 )
-from hypergraph.materialization._write_actions import RunGraph, WriteOperation
+from hypergraph.materialization._write_actions import RunGraph, RunOperations, WriteOperation
 from hypergraph.materialization._writes import WritePlanner
 from hypergraph.materialization._writes import (
     dedup_child_rows as _dedup_child_rows,
@@ -220,6 +222,7 @@ class HyperTable:
         identity: str,
         store: TableStore,
         runner: BaseRunner | None = None,
+        page_max_concurrency: int = 16,
         on_error: Literal["raise", "store"] = "raise",
         name: str | None = None,
     ) -> None:
@@ -236,6 +239,11 @@ class HyperTable:
                 "How to fix: pass on_error='raise' for immediate failures or "
                 "on_error='store' for typed errored rows."
             )
+        if isinstance(page_max_concurrency, bool) or not isinstance(page_max_concurrency, int) or page_max_concurrency < 1:
+            raise GraphConfigError(
+                f"HyperTable page_max_concurrency must be an int >= 1; got {page_max_concurrency!r}.\n\n"
+                "How to fix: pass page_max_concurrency=16 (the default), or another positive child-page window."
+            )
         if not isinstance(graph, Graph):
             raise TypeError(
                 "HyperTable requires a Graph, not a node list.\n\n"
@@ -248,6 +256,7 @@ class HyperTable:
         self._on_error = on_error
         self._name = name
         self._runner = runner
+        self._page_max_concurrency = page_max_concurrency
         self._components = dict(graph._bound)
         graph_nodes = list(graph.nodes.values()) if isinstance(graph.nodes, dict) else []
         if not graph_nodes:
@@ -304,6 +313,7 @@ class HyperTable:
             self._components,
             self._on_error,
             self._provenance_obj,
+            page_max_concurrency=self._page_max_concurrency,
         )
 
     @property
@@ -374,6 +384,16 @@ class HyperTable:
                     except StopIteration as complete:
                         return complete.value
                     continue
+            elif isinstance(action, RunOperations):
+                response = [
+                    self._drive_sync(
+                        child,
+                        event_processors=event_processors,
+                        parent_span_id=parent_span_id,
+                        parent_run_id=parent_run_id,
+                    )
+                    for child in action.operations
+                ]
             else:
                 raise TypeError(f"unsupported write effect: {type(action).__name__}")
             try:
@@ -426,6 +446,30 @@ class HyperTable:
                     if done:
                         return action
                     continue
+            elif isinstance(action, RunOperations):
+                semaphore = asyncio.Semaphore(action.max_concurrency)
+
+                async def drive_child(child: WriteOperation, semaphore: asyncio.Semaphore = semaphore) -> Any:
+                    async with semaphore:
+                        return await self._drive_async(
+                            child,
+                            event_processors=event_processors,
+                            parent_span_id=parent_span_id,
+                            parent_run_id=parent_run_id,
+                        )
+
+                tasks = [asyncio.create_task(drive_child(child)) for child in action.operations]
+                try:
+                    response = await asyncio.gather(*tasks)
+                except BaseException:
+                    for task in tasks:
+                        task.cancel()
+                    drain = asyncio.ensure_future(asyncio.gather(*tasks, return_exceptions=True))
+                    while not drain.done():
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await asyncio.shield(drain)
+                    drain.result()
+                    raise
             else:
                 raise TypeError(f"unsupported write effect: {type(action).__name__}")
             done, action = await self._run_write_step_async(partial(operation.send, response))

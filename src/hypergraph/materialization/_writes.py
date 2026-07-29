@@ -35,7 +35,7 @@ from hypergraph.materialization._types import (
     deserialize_question,
     serialize_question,
 )
-from hypergraph.materialization._write_actions import RunGraph, WriteOperation, _Predicate
+from hypergraph.materialization._write_actions import RunGraph, RunOperations, WriteOperation, _Predicate
 from hypergraph.runners import PauseInfo
 
 
@@ -138,6 +138,8 @@ class WritePlanner:
         components: Mapping[str, Any],
         on_error: Literal["raise", "store"],
         provenance: Provenance,
+        *,
+        page_max_concurrency: int = 16,
     ):
         self._graph = graph
         self._store = store
@@ -146,6 +148,7 @@ class WritePlanner:
         self._components = dict(components)
         self._on_error = on_error
         self._provenance = provenance
+        self._page_max_concurrency = page_max_concurrency
         self._recipe_column_ready: set[str] = set()
         self._journal = RecipeJournal(store)
         self._answer_graphs: dict[tuple[str, ...], Graph] = {}
@@ -689,103 +692,65 @@ class WritePlanner:
             provenances=provenances,
         )
 
-    def _insert_children_items(
+    def _insert_child_item(
         self,
         parent_id: Any,
-        child_items: list[Any],
+        raw_item: Any,
         child_spec: TableSpec,
-        child_gens: _ChildGenerations,
+        bound_graph: Graph,
+        write_gen: int,
     ) -> Generator[RunGraph, Any, None]:
-        if child_spec.child_graph is None:
+        child_item = normalize_to_dict(raw_item)
+        child_identity = child_item.get(child_spec.identity, "")
+        child_inputs = {
+            column.name: child_item[column.name]
+            for column in child_spec.columns
+            if column.role == "source" and column.content_key and column.name in child_item
+        }
+        fingerprint = self._provenance.child_fingerprint(child_inputs, child_spec)
+        existing_rows = self._read_rows(
+            child_spec.name,
+            (
+                ("_parent_id", "eq", parent_id),
+                (child_spec.identity, "eq", child_identity),
+            ),
+        )
+        existing = max(existing_rows, key=lambda row: row.get("_write_gen", 0)) if existing_rows else None
+        if existing is not None and existing.get("_row_fingerprint") == fingerprint and existing.get("_status") in (None, "complete"):
+            if self._provenance.row_missing_stamp(existing, RECIPE_COLUMN):
+                bumped = self._stamp_existing_row(
+                    child_spec.name,
+                    existing,
+                    write_gen,
+                    child_spec,
+                    normalize_values=False,
+                )
+            else:
+                bumped = dict(existing)
+                bumped["_write_gen"] = write_gen
+            self._store.write_rows(child_spec.name, [bumped])
             return
-        # Allocated before any write in this batch: strictly greater than every
-        # physical row currently in the child table, so cleanup (which deletes
-        # older generations) removes every stale row and no tie can survive.
-        write_gen = child_gens.for_table(child_spec.name)
-        bound_graph = self._bind_child_components(child_spec.child_graph)
-        for raw_item in child_items:
-            child_item = normalize_to_dict(raw_item)
-            child_identity = child_item.get(child_spec.identity, "")
-            child_inputs = {
-                column.name: child_item[column.name]
-                for column in child_spec.columns
-                if column.role == "source" and column.content_key and column.name in child_item
-            }
-            fingerprint = self._provenance.child_fingerprint(child_inputs, child_spec)
-            existing_rows = self._read_rows(
-                child_spec.name,
-                (
-                    ("_parent_id", "eq", parent_id),
-                    (child_spec.identity, "eq", child_identity),
-                ),
-            )
-            existing = max(existing_rows, key=lambda row: row.get("_write_gen", 0)) if existing_rows else None
-            if existing is not None and existing.get("_row_fingerprint") == fingerprint and existing.get("_status") in (None, "complete"):
-                if self._provenance.row_missing_stamp(existing, RECIPE_COLUMN):
-                    bumped = self._stamp_existing_row(
-                        child_spec.name,
-                        existing,
-                        write_gen,
-                        child_spec,
-                        normalize_values=False,
-                    )
-                else:
-                    bumped = dict(existing)
-                    bumped["_write_gen"] = write_gen
-                self._store.write_rows(child_spec.name, [bumped])
-                continue
 
-            row: dict[str, Any] | None = None
-            if existing is not None and existing.get("_status") in (None, "complete"):
-                try:
-                    reconciled = yield from self._reconcile(child_item, existing, child_spec)
-                except Exception as error:
-                    if self._on_error == "raise":
-                        raise
-                    row = self._build_child_action(
-                        child_spec,
-                        child_item,
-                        child_identity,
-                        parent_id,
-                        fingerprint,
-                        write_gen,
-                        status="error",
-                        error=f"{type(error).__name__}: {error}",
-                    )
-                    self._store.write_rows(child_spec.name, [row])
-                    continue
-                if isinstance(reconciled, ReconcileResult):
-                    row = self._build_child_action(
-                        child_spec,
-                        child_item,
-                        child_identity,
-                        parent_id,
-                        fingerprint,
-                        write_gen,
-                        status="complete",
-                        error=None,
-                        outputs=reconciled.output_values(),
-                        provenances=reconciled.provenance_values(),
-                    )
-
-            if row is None:
-                try:
-                    child_outputs = _run_values((yield RunGraph(bound_graph, child_inputs)))
-                except Exception as error:
-                    if self._on_error == "raise":
-                        raise
-                    row = self._build_child_action(
-                        child_spec,
-                        child_item,
-                        child_identity,
-                        parent_id,
-                        fingerprint,
-                        write_gen,
-                        status="error",
-                        error=f"{type(error).__name__}: {error}",
-                    )
-                    self._store.write_rows(child_spec.name, [row])
-                    continue
+        row: dict[str, Any] | None = None
+        if existing is not None and existing.get("_status") in (None, "complete"):
+            try:
+                reconciled = yield from self._reconcile(child_item, existing, child_spec)
+            except Exception as error:
+                if self._on_error == "raise":
+                    raise
+                row = self._build_child_action(
+                    child_spec,
+                    child_item,
+                    child_identity,
+                    parent_id,
+                    fingerprint,
+                    write_gen,
+                    status="error",
+                    error=f"{type(error).__name__}: {error}",
+                )
+                self._store.write_rows(child_spec.name, [row])
+                return
+            if isinstance(reconciled, ReconcileResult):
                 row = self._build_child_action(
                     child_spec,
                     child_item,
@@ -795,10 +760,59 @@ class WritePlanner:
                     write_gen,
                     status="complete",
                     error=None,
-                    outputs=child_outputs,
-                    provenances=self._child_provenances(child_spec, {**child_item, **child_outputs}),
+                    outputs=reconciled.output_values(),
+                    provenances=reconciled.provenance_values(),
                 )
-            self._store.write_rows(child_spec.name, [row])
+
+        if row is None:
+            try:
+                child_outputs = _run_values((yield RunGraph(bound_graph, child_inputs)))
+            except Exception as error:
+                if self._on_error == "raise":
+                    raise
+                row = self._build_child_action(
+                    child_spec,
+                    child_item,
+                    child_identity,
+                    parent_id,
+                    fingerprint,
+                    write_gen,
+                    status="error",
+                    error=f"{type(error).__name__}: {error}",
+                )
+                self._store.write_rows(child_spec.name, [row])
+                return
+            row = self._build_child_action(
+                child_spec,
+                child_item,
+                child_identity,
+                parent_id,
+                fingerprint,
+                write_gen,
+                status="complete",
+                error=None,
+                outputs=child_outputs,
+                provenances=self._child_provenances(child_spec, {**child_item, **child_outputs}),
+            )
+        self._store.write_rows(child_spec.name, [row])
+
+    def _insert_children_items(
+        self,
+        parent_id: Any,
+        child_items: list[Any],
+        child_spec: TableSpec,
+        child_gens: _ChildGenerations,
+    ) -> WriteOperation:
+        if child_spec.child_graph is None:
+            return
+        # Allocated before any write in this batch: strictly greater than every
+        # physical row currently in the child table, so cleanup (which deletes
+        # older generations) removes every stale row and no tie can survive.
+        write_gen = child_gens.for_table(child_spec.name)
+        bound_graph = self._bind_child_components(child_spec.child_graph)
+        operations = tuple(self._insert_child_item(parent_id, item, child_spec, bound_graph, write_gen) for item in child_items)
+        if operations:
+            yield RunOperations(operations, self._page_max_concurrency)
 
     def _insert_children(
         self,

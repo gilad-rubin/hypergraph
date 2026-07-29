@@ -345,6 +345,7 @@ class _PlannedBatchRerun:
     items: list[tuple[str, str]]
     tolerance_json: str | None
     exclusive_by: str | None
+    admission_units: str | None
     fingerprint: str
     batch_retry_of: str
     child_retry_of: dict[str, str]
@@ -458,8 +459,10 @@ def _plan_batch_rerun(
             tolerance,
             None,
             batch["exclusive_by"],
+            batch["admission_units"],
         ),
         exclusive_by=batch["exclusive_by"],
+        admission_units=batch["admission_units"],
         batch_retry_of=batch["batch_id"],
         # Each new child records retry_of against its SOURCE child's
         # workflow id — lineage names the run it repeats, not the item key.
@@ -867,6 +870,7 @@ class RunHomeClient:
                 fingerprint=plan.fingerprint,
                 tolerance_json=plan.tolerance_json,
                 exclusive_by=plan.exclusive_by,
+                admission_units=plan.admission_units,
                 # A repeat starts now, never on the source's past schedule.
                 start_at=None,
                 source_ref=source_ref,
@@ -900,6 +904,7 @@ class RunHomeClient:
             retry_of=ref.run_id,
             exclusive_by=submission["exclusive_by"],
             exclusive_key=submission["exclusive_key"],
+            admission_cost=int(submission["admission_cost"]),
         )
         workflow_id = row["workflow_id"]
         return SubmitReceipt(run_ref=RunRef(home=self._home.uri, run_id=workflow_id), workflow_id=workflow_id, duplicate=not created)
@@ -928,6 +933,7 @@ class RunHomeClient:
                 fingerprint=plan.fingerprint,
                 tolerance_json=plan.tolerance_json,
                 exclusive_by=plan.exclusive_by,
+                admission_units=plan.admission_units,
                 # A repeat starts now, never on the source's past schedule.
                 start_at=None,
                 source_ref=source_ref,
@@ -969,6 +975,7 @@ class RunHomeClient:
             retry_of=ref.run_id,
             exclusive_by=submission["exclusive_by"],
             exclusive_key=submission["exclusive_key"],
+            admission_cost=int(submission["admission_cost"]),
         )
         workflow_id = row["workflow_id"]
         return SubmitReceipt(run_ref=RunRef(home=self._home.uri, run_id=workflow_id), workflow_id=workflow_id, duplicate=not created)

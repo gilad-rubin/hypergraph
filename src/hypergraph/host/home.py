@@ -126,7 +126,7 @@ _SUBMISSION_COLS = (
     "workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
     "start_at, state, recovery_attempts, recovery_cap, source_ref, created_at, claimed_at, finished_at, "
     "fingerprint, compat_state, retry_of, retry_index, forked_from, fork_reason, last_progress_step_count, batch_id, item_key, claim_seq, "
-    "exclusive_by, exclusive_key"
+    "exclusive_by, exclusive_key, admission_cost"
 )
 _SUBMISSION_PLACEHOLDERS = ", ".join("?" for _ in _SUBMISSION_COLS.split(", "))
 _SELECT_SUBMISSION = f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE workflow_id = ?"
@@ -157,6 +157,7 @@ _DELETE_EXCLUSIVE_LOCK_SQL = "DELETE FROM host_exclusive_locks WHERE workflow_id
 # it hold different RunHome objects (often in different processes), and a
 # process-local cap would make them disagree about the same queue.
 _MAX_ACTIVE_RUNS_KEY = "max_active_runs"
+_MAX_ADMISSION_UNITS_KEY = "max_admission_units"
 _SELECT_SETTING_SQL = "SELECT value FROM host_settings WHERE key = ?"
 _UPSERT_SETTING_SQL = (
     "INSERT INTO host_settings (key, value, updated_at) VALUES (?, ?, ?) "
@@ -302,6 +303,15 @@ def _slots_left(cap_row: tuple[Any, ...] | None, count_row: tuple[Any, ...] | No
     return cap - (int(count_row[0]) if count_row else 0)
 
 
+def _weighted_admission_fits(budget: int, claimed_count: int, claimed_units: int, cost: int) -> bool:
+    """Whether the FIFO head may reserve ``cost`` under page admission."""
+    if claimed_count == 1 and claimed_units > budget:
+        return False  # the one oversized document runs alone
+    if cost > budget:
+        return claimed_count == 0
+    return claimed_count < 2 or claimed_units + cost <= budget
+
+
 def _row_to_submission(row: tuple[Any, ...]) -> dict[str, Any]:
     return dict(zip(_SUBMISSION_COLS.split(", "), row, strict=True))
 
@@ -393,6 +403,7 @@ class RunHome(SqliteCheckpointer):
         policy: CheckpointPolicy | None = None,
         serializer: Any = None,
         max_active_runs: int | None | _Unset = _UNSET,
+        max_admission_units: int | None | _Unset = _UNSET,
     ):
         if policy is not None and policy.durability == "exit":
             raise ValueError(
@@ -410,6 +421,8 @@ class RunHome(SqliteCheckpointer):
             # Explicit argument writes through; omitting it adopts whatever the
             # store already holds (see the `max_active_runs` property).
             self.max_active_runs = max_active_runs
+        if not isinstance(max_admission_units, _Unset):
+            self.max_admission_units = max_admission_units
 
     @classmethod
     def open(
@@ -419,6 +432,7 @@ class RunHome(SqliteCheckpointer):
         policy: CheckpointPolicy | None = None,
         serializer: Any = None,
         max_active_runs: int | None | _Unset = _UNSET,
+        max_admission_units: int | None | _Unset = _UNSET,
     ) -> RunHome:
         """Open (or create) a Run Home at ``uri``.
 
@@ -435,7 +449,13 @@ class RunHome(SqliteCheckpointer):
                 store that was never configured is unlimited. Tunable later
                 via the ``max_active_runs`` attribute.
         """
-        return cls(uri, policy=policy, serializer=serializer, max_active_runs=max_active_runs)
+        return cls(
+            uri,
+            policy=policy,
+            serializer=serializer,
+            max_active_runs=max_active_runs,
+            max_admission_units=max_admission_units,
+        )
 
     @property
     def uri(self) -> str:
@@ -482,6 +502,22 @@ class RunHome(SqliteCheckpointer):
             db.execute(_UPSERT_SETTING_SQL, (_MAX_ACTIVE_RUNS_KEY, None if value is None else str(value), _now_iso()))
             db.commit()
 
+    @property
+    def max_admission_units(self) -> int | None:
+        """Home-scoped weighted admission budget; None leaves it unlimited."""
+        with self._sync_lock:
+            row = self._sync_db().execute(_SELECT_SETTING_SQL, (_MAX_ADMISSION_UNITS_KEY,)).fetchone()
+        return _cap_from_row(row)
+
+    @max_admission_units.setter
+    def max_admission_units(self, value: int | None) -> None:
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
+            raise ValueError(f"max_admission_units must be an int >= 1, or None for unlimited; got {value!r}.")
+        with self._sync_lock:
+            db = self._sync_db()
+            db.execute(_UPSERT_SETTING_SQL, (_MAX_ADMISSION_UNITS_KEY, None if value is None else str(value), _now_iso()))
+            db.commit()
+
     # === Store-authoritative time ===
 
     async def _store_now(self) -> str:
@@ -516,20 +552,59 @@ class RunHome(SqliteCheckpointer):
         slot. Pending (queued, scheduled, version-incompatible), exhausted,
         and finished submissions are not claimed and hold none.
         """
+        now_iso = await self._store_now()
         await self._ensure_db()
         async with self._txn_lock():
             free = await self._free_admission_slots()
-        return free is not None and free <= 0
+            if free is not None and free <= 0:
+                return True
+            budget_cursor = await self._db.execute(_SELECT_SETTING_SQL, (_MAX_ADMISSION_UNITS_KEY,))
+            budget = _cap_from_row(await budget_cursor.fetchone())
+            if budget is None:
+                return False
+            pending_cursor = await self._db.execute(
+                "SELECT s.admission_cost FROM host_submissions s "
+                "LEFT JOIN host_exclusive_locks l ON l.exclusive_by = s.exclusive_by AND l.exclusive_key = s.exclusive_key "
+                f"WHERE s.state = 'pending' AND s.compat_state = 'compatible' AND {_due_clause('s.start_at', null_is_due=True)} "
+                "AND (s.exclusive_key IS NULL OR l.workflow_id IS NULL OR l.workflow_id = s.workflow_id) "
+                "AND (s.batch_id IS NULL OR NOT EXISTS ("
+                f"SELECT 1 FROM batch_updates bu WHERE bu.batch_id = s.batch_id AND bu.kind = '{TRIP_UPDATE_KIND}'"
+                ")) ORDER BY s.created_at, s.rowid LIMIT 1",
+                (now_iso,),
+            )
+            pending = await pending_cursor.fetchone()
+            if pending is None:
+                return False
+            usage_cursor = await self._db.execute("SELECT COUNT(*), COALESCE(SUM(admission_cost), 0) FROM host_submissions WHERE state = 'claimed'")
+            count, units = await usage_cursor.fetchone()
+        return not _weighted_admission_fits(budget, int(count), int(units), int(pending[0]))
 
     def _admission_is_full_sync(self) -> bool:
         """Sync mirror of ``_admission_is_full``."""
         with self._sync_lock:
             db = self._sync_db()
             cap_row = db.execute(_SELECT_SETTING_SQL, (_MAX_ACTIVE_RUNS_KEY,)).fetchone()
-            if _cap_from_row(cap_row) is None:  # uncapped is never full
-                return False
             free = _slots_left(cap_row, db.execute(_ACTIVE_RUN_COUNT_SQL).fetchone())
-        return free is not None and free <= 0
+            if free is not None and free <= 0:
+                return True
+            budget = _cap_from_row(db.execute(_SELECT_SETTING_SQL, (_MAX_ADMISSION_UNITS_KEY,)).fetchone())
+            if budget is None:
+                return False
+            now_iso = str(db.execute(_STORE_NOW_SQL).fetchone()[0])
+            pending = db.execute(
+                "SELECT s.admission_cost FROM host_submissions s "
+                "LEFT JOIN host_exclusive_locks l ON l.exclusive_by = s.exclusive_by AND l.exclusive_key = s.exclusive_key "
+                f"WHERE s.state = 'pending' AND s.compat_state = 'compatible' AND {_due_clause('s.start_at', null_is_due=True)} "
+                "AND (s.exclusive_key IS NULL OR l.workflow_id IS NULL OR l.workflow_id = s.workflow_id) "
+                "AND (s.batch_id IS NULL OR NOT EXISTS ("
+                f"SELECT 1 FROM batch_updates bu WHERE bu.batch_id = s.batch_id AND bu.kind = '{TRIP_UPDATE_KIND}'"
+                ")) ORDER BY s.created_at, s.rowid LIMIT 1",
+                (now_iso,),
+            ).fetchone()
+            if pending is None:
+                return False
+            count, units = db.execute("SELECT COUNT(*), COALESCE(SUM(admission_cost), 0) FROM host_submissions WHERE state = 'claimed'").fetchone()
+        return not _weighted_admission_fits(budget, int(count), int(units), int(pending[0]))
 
     async def _free_admission_slots(self) -> int | None:
         """Slots left under the active-Run cap; None when uncapped.
@@ -930,6 +1005,7 @@ class RunHome(SqliteCheckpointer):
         item_key: str | None = None,
         exclusive_by: str | None = None,
         exclusive_key: str | None = None,
+        admission_cost: int = 1,
     ) -> tuple[bool, dict[str, Any]]:
         """Insert one submission plus its 'submitted' update, atomically.
 
@@ -1021,6 +1097,7 @@ class RunHome(SqliteCheckpointer):
                         0,  # claim_seq: no claim has been handed out yet
                         exclusive_by,
                         exclusive_key,
+                        admission_cost,
                     ),
                 )
                 self._append_run_update_sync(
@@ -1056,6 +1133,7 @@ class RunHome(SqliteCheckpointer):
         item_key: str | None = None,
         exclusive_by: str | None = None,
         exclusive_key: str | None = None,
+        admission_cost: int = 1,
     ) -> tuple[bool, dict[str, Any]]:
         """Async mirror of ``_submit_sync``."""
         await self._ensure_db()
@@ -1131,6 +1209,7 @@ class RunHome(SqliteCheckpointer):
                         0,  # claim_seq: no claim has been handed out yet
                         exclusive_by,
                         exclusive_key,
+                        admission_cost,
                     ),
                 )
                 await self._append_run_update(
@@ -1738,8 +1817,18 @@ class RunHome(SqliteCheckpointer):
                 )
                 submissions = [_row_to_submission(row) for row in await cursor.fetchall()]
                 free_slots = await self._free_admission_slots()
+                budget_cursor = await self._db.execute(_SELECT_SETTING_SQL, (_MAX_ADMISSION_UNITS_KEY,))
+                admission_budget = _cap_from_row(await budget_cursor.fetchone())
+                usage_cursor = await self._db.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(admission_cost), 0) FROM host_submissions WHERE state = 'claimed'"
+                )
+                usage_row = await usage_cursor.fetchone()
+                claimed_count = int(usage_row[0])
+                claimed_units = int(usage_row[1])
+                oversized_active = admission_budget is not None and claimed_count == 1 and claimed_units > admission_budget
                 tripped = await self._tripped_batch_ids({s["batch_id"] for s in submissions if s["batch_id"] is not None})
                 claimed: list[dict[str, Any]] = []
+                admission_blocked = False
                 for submission in submissions:
                     if submission["batch_id"] in tripped:
                         # A tripped Batch has CLOSED ADMISSION: no pending
@@ -1789,6 +1878,7 @@ class RunHome(SqliteCheckpointer):
                         # order is the scan order, so the oldest waiting
                         # submission takes the next freed slot.
                         continue
+                    acquired_exclusive = False
                     if submission["exclusive_key"] is not None:
                         lock = await self._db.execute(
                             _INSERT_EXCLUSIVE_LOCK_SQL,
@@ -1799,7 +1889,8 @@ class RunHome(SqliteCheckpointer):
                                 now_iso,
                             ),
                         )
-                        if lock.rowcount != 1:
+                        acquired_exclusive = lock.rowcount == 1
+                        if not acquired_exclusive:
                             owner = await self._db.execute(
                                 "SELECT workflow_id FROM host_exclusive_locks WHERE exclusive_by = ? AND exclusive_key = ?",
                                 (submission["exclusive_by"], submission["exclusive_key"]),
@@ -1807,6 +1898,22 @@ class RunHome(SqliteCheckpointer):
                             owner_row = await owner.fetchone()
                             if owner_row is None or owner_row[0] != submission["workflow_id"]:
                                 continue
+                    cost = int(submission["admission_cost"])
+                    if admission_budget is not None:
+                        fits_units = (
+                            not admission_blocked
+                            and not oversized_active
+                            and _weighted_admission_fits(admission_budget, claimed_count, claimed_units, cost)
+                        )
+                        if not fits_units:
+                            # Weighted admission remains FIFO. In particular,
+                            # an oversized head drains the queue until it can
+                            # run alone rather than starving behind smaller
+                            # items that happen to fit.
+                            admission_blocked = True
+                            if acquired_exclusive:
+                                await self._db.execute(_DELETE_EXCLUSIVE_LOCK_SQL, (submission["workflow_id"],))
+                            continue
                     result = await self._db.execute(
                         "UPDATE host_submissions SET state = 'claimed', claimed_at = ?, claim_seq = claim_seq + 1 "
                         "WHERE workflow_id = ? AND state = 'pending'",
@@ -1821,6 +1928,9 @@ class RunHome(SqliteCheckpointer):
                         claimed.append(submission)
                         if free_slots is not None:
                             free_slots -= 1
+                        claimed_count += 1
+                        claimed_units += cost
+                        oversized_active = cost > admission_budget if admission_budget is not None else False
                 await self._db.commit()
                 return claimed
             except BaseException:
