@@ -150,9 +150,7 @@ receipt.duplicate          # True when an identical nonterminal Batch existed
 ```
 
 Callers that already hold per-item records can submit them without
-transposing into parallel collections. Optional `schema` is a Pydantic model
-validated per item before any durable write; persisted inputs remain plain
-mappings:
+transposing into parallel collections. Persisted inputs remain plain mappings:
 
 ```python
 receipt = await host.submit_batch(
@@ -162,21 +160,18 @@ receipt = await host.submit_batch(
         {"doc_id": "d-18", "pdf_uri": "papers/18.pdf", "page_count": 5},
     ],
     identity="doc_id",
-    schema=IngestionItem,
-    exclusive_by="doc_id",
-    admission_units="page_count",
+    admission_cost="page_count",
     workflow_id="schneider-drop-43",
 )
 ```
 
 Every item field must be a graph boundary input, every required boundary
 input must be present, and the resulting mapping must be JSON-serializable.
-These checks, `schema` validation, and identity validation all happen before
-acceptance.
+These checks and identity validation all happen before acceptance.
 
-`admission_units` optionally names a positive-integer item field. The Host
-validates and freezes that cost on each child submission; the immutable
-manifest also pins the field name, so reruns preserve the same accounting.
+`admission_cost` optionally names a positive-integer item field. The Host
+validates and freezes that cost on each child submission; reruns preserve
+the stored accounting. When omitted, every child costs one unit.
 
 `submit_batch` speaks the same **input-expansion vocabulary as runner map**
 — `values` plus `map_over` (one name or a sequence) and `map_mode`
@@ -195,15 +190,6 @@ scalar (a non-empty `str`, or an `int`), unique across the manifest;
 missing, empty, non-scalar (including `bool`, `float`, and `None`), or
 duplicate keys raise `ItemKeyError` before anything is written. Expanding to
 zero items is a `ValueError` — an empty Batch is not a Batch.
-
-`exclusive_by` optionally names a graph port whose JSON-safe scalar value is
-a durable, cross-Batch exclusion key. Only one Run of the served Definition
-may own a key at a time; different keys still run concurrently. If a
-committed node output changes that port (for example duplicate resolution
-maps an alias to a canonical `doc_id`), the checkpoint atomically records the
-new desired key and releases the old one. The runner waits to acquire the new
-key before entering another superstep. A crash cannot bypass that wait:
-restart admission reacquires the committed desired key before replay.
 
 **One transaction** persists all of it — the manifest row (Definition
 identity, item keys with pinned inputs, the tolerance declaration, the
@@ -226,7 +212,6 @@ synchronous mirror.
 
 Dedup mirrors `submit`, over a start fingerprint covering the pinned
 Definition identity, the normalized manifest, the pinned tolerance,
-`exclusive_by`, and
 `start_at`. Resubmitting the same `workflow_id`:
 
 - **fingerprint-identical and nonterminal** → the existing receipt with

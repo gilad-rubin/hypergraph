@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import pytest_asyncio
 
 from hypergraph import Graph, RunHome, RunRef, SyncRunner, node, serve
+from hypergraph.host.errors import WorkflowIdConflictError
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -32,7 +35,7 @@ async def _submit(host, graph, costs, workflow_id="batch"):
         graph,
         [{"doc_id": index, "page_count": cost} for index, cost in enumerate(costs, 1)],
         identity="doc_id",
-        admission_units="page_count",
+        admission_cost="page_count",
         workflow_id=workflow_id,
     )
 
@@ -51,6 +54,33 @@ def _claimed_costs(home):
 
 
 class TestPageAdmissionContract:
+    async def test_cost_field_config_is_pinned_for_dedup_and_batch_rerun(self, home):
+        host, graph = _host(home)
+        items = [{"doc_id": 1, "page_count": 20}]
+        source = await _submit(host, graph, [20], workflow_id="rerun-cost")
+        child = (await _claim(home, host))[0]
+        await host._execute_submission(child)
+        rerun = await host.client.rerun(source.batch_ref)
+
+        batch = await home._get_batch(rerun.batch_ref.batch_id)
+        assert batch["admission_cost"] == "page_count"
+        assert home._get_submission_sync(f"{rerun.workflow_id}:1")["admission_cost"] == 20
+        manifest = home._sync_db().execute(
+            "SELECT payload FROM batch_updates WHERE batch_id = ? AND kind = 'manifest'",
+            (rerun.batch_ref.batch_id,),
+        ).fetchone()[0]
+        assert json.loads(manifest)["admission_cost"] == "page_count"
+
+        await host.submit_batch(graph, items, identity="doc_id", workflow_id="dedup-cost")
+        with pytest.raises(WorkflowIdConflictError, match="admission_cost differs"):
+            await host.submit_batch(
+                graph,
+                items,
+                identity="doc_id",
+                admission_cost="page_count",
+                workflow_id="dedup-cost",
+            )
+
     async def test_cost_field_is_validated_once_and_persisted(self, home):
         host, graph = _host(home)
         home.max_admission_units = 64
@@ -59,13 +89,21 @@ class TestPageAdmissionContract:
         assert home.max_admission_units == 64
         assert [row[0] for row in home._sync_db().execute("SELECT admission_cost FROM host_submissions ORDER BY rowid")] == [3, 20]
 
+        await host.submit_batch(
+            graph,
+            [{"doc_id": 3, "page_count": 99}],
+            identity="doc_id",
+            workflow_id="default-cost",
+        )
+        assert home._get_submission_sync("default-cost:3")["admission_cost"] == 1
+
         for bad in (0, -1, True, 1.5, "2"):
-            with pytest.raises(ValueError, match="admission_units"):
+            with pytest.raises(ValueError, match="admission_cost"):
                 await host.submit_batch(
                     graph,
                     [{"doc_id": 99, "page_count": bad}],
                     identity="doc_id",
-                    admission_units="page_count",
+                    admission_cost="page_count",
                     workflow_id=f"bad-{bad!r}",
                 )
 
@@ -100,38 +138,6 @@ class TestPageAdmissionContract:
 
         await home._release_submission(first[0]["workflow_id"], first[0]["claim_seq"])
         assert [row["item_key"] for row in await _claim(home, host)] == ["2", "3"]
-
-    async def test_exclusive_head_does_not_hide_later_work_that_fits(self, home):
-        host, graph = _host(home)
-        home.max_admission_units = 6
-        await host.submit_batch(
-            graph,
-            [
-                {"doc_id": 1, "page_count": 2, "key": "owned"},
-                {"doc_id": 2, "page_count": 3, "key": "other"},
-            ],
-            identity="doc_id",
-            exclusive_by="key",
-            admission_units="page_count",
-            workflow_id="active",
-        )
-        assert [row["admission_cost"] for row in await _claim(home, host)] == [2, 3]
-        await host.submit_batch(
-            graph,
-            [
-                {"doc_id": 3, "page_count": 2, "key": "owned"},
-                {"doc_id": 4, "page_count": 1, "key": "free"},
-            ],
-            identity="doc_id",
-            exclusive_by="key",
-            admission_units="page_count",
-            workflow_id="waiting",
-        )
-
-        claimed = await _claim(home, host)
-
-        assert [row["item_key"] for row in claimed] == ["4"]
-        assert sum(_claimed_costs(home)) == 6
 
     async def test_pause_release_and_answer_reacquire_use_durable_claimed_rows(self, home):
         host, graph = _host(home)

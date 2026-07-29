@@ -18,6 +18,7 @@ What this file falsifies:
 
 from __future__ import annotations
 
+import inspect
 import json
 
 import pytest
@@ -135,6 +136,43 @@ class TestGraphFirstSubmission:
 
 
 class TestPublicSurfaceBudget:
+    async def test_batch_signature_has_only_optional_admission_cost(self, home):
+        host = serve(ingestion_graph(), home=home, deployment_version="v1")
+        signature = inspect.signature(host.submit_batch)
+
+        assert "admission_cost" in signature.parameters
+        assert signature.parameters["admission_cost"].default is None
+        assert "schema" not in signature.parameters
+        assert "exclusive_by" not in signature.parameters
+        with pytest.raises(TypeError, match="unexpected keyword argument 'schema'"):
+            await host.submit_batch(
+                ingestion_graph(),
+                [{"work_item_id": "a"}],
+                identity="work_item_id",
+                workflow_id="schema-refused",
+                schema=dict,
+            )
+        with pytest.raises(TypeError, match="unexpected keyword argument 'exclusive_by'"):
+            host.submit_batch_sync(
+                ingestion_graph(),
+                [{"work_item_id": "a"}],
+                identity="work_item_id",
+                workflow_id="exclusive-refused",
+                exclusive_by="work_item_id",
+            )
+
+    async def test_structural_item_mappings_are_validated_without_a_schema(self, home):
+        graph = expansion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+
+        for workflow_id, items, match in (
+            ("missing-input", [{"tenant": "acme"}], "missing required graph input"),
+            ("unknown-input", [{"work_item_id": "a", "surprise": True}], "unknown graph input"),
+            ("non-json", [{"work_item_id": "a", "tenant": object()}], "JSON-serializable"),
+        ):
+            with pytest.raises((TypeError, ValueError), match=match):
+                await host.submit_batch(graph, items, identity="work_item_id", workflow_id=workflow_id)
+
     async def test_the_host_has_exactly_two_new_work_verbs_and_no_map(self, home):
         host = serve(ingestion_graph(), home=home, deployment_version="v1")
 

@@ -76,8 +76,7 @@ def batch_fingerprint(
     items: dict[str, Any],
     tolerance: BatchTolerance | None,
     start_at: str | None,
-    exclusive_by: str | None = None,
-    admission_units: str | None = None,
+    admission_cost: str | None = None,
 ) -> str:
     """Hash the canonical start document for one Batch submission.
 
@@ -100,12 +99,10 @@ def batch_fingerprint(
         "tolerance": tolerance.to_dict() if tolerance is not None else None,
         "start_at": start_at,
     }
-    # Preserve pre-#354 fingerprints for Batches without exclusivity so an
-    # unsettled manifest accepted before upgrade still deduplicates.
-    if exclusive_by is not None:
-        document["exclusive_by"] = exclusive_by
-    if admission_units is not None:
-        document["admission_units"] = admission_units
+    # Keep the established fingerprint for default-cost Batches while making
+    # an explicit field-name configuration part of start identity.
+    if admission_cost is not None:
+        document["admission_cost"] = admission_cost
     return hashlib.sha256(canonical_json(document).encode("utf-8")).hexdigest()
 
 
@@ -118,8 +115,7 @@ def batch_mismatch_aspect(
     items_canonical: str,
     tolerance_json: str | None,
     start_at: str | None,
-    exclusive_by: str | None = None,
-    admission_units: str | None = None,
+    admission_cost: str | None = None,
 ) -> str:
     """Name which Batch fingerprint aspect differs from the stored manifest.
 
@@ -137,8 +133,6 @@ def batch_mismatch_aspect(
         return "items"
     if existing["tolerance_json"] != tolerance_json:
         return "tolerance"
-    if existing["exclusive_by"] != exclusive_by:
-        return "exclusive_by"
-    if existing.get("admission_units") != admission_units:
-        return "admission_units"
+    if existing["admission_cost"] != admission_cost:
+        return "admission_cost"
     return "start_at"

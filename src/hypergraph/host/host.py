@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from hypergraph.host._batch_store import BatchAcceptance, DefinitionPin
 from hypergraph.host._bus import _BusEventProcessor, _PreviewBus, _register_bus
-from hypergraph.host.batch import BatchTolerance, MapMode, _item_key, expand_batch_items, freeze_batch_items
+from hypergraph.host.batch import BatchTolerance, MapMode, expand_batch_items, freeze_batch_items
 from hypergraph.host.client import RunHomeClient
 from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import ForkCompatibilityError, HostError, UnservedGraphError
@@ -38,8 +38,6 @@ from hypergraph.host.views import SUBMISSION_STATE_FINISHED, SUBMISSION_STATE_PA
 from hypergraph.host.worker import _drain, _WorkerLock
 
 if TYPE_CHECKING:
-    from pydantic import BaseModel
-
     from hypergraph.graph import Graph
     from hypergraph.runners.base import BaseRunner
 
@@ -224,9 +222,7 @@ class Host:
         map_over: str | Sequence[str] | None,
         map_mode: MapMode,
         identity: str,
-        schema: type[BaseModel] | None,
-        exclusive_by: str | None,
-        admission_units: str | None,
+        admission_cost: str | None,
         workflow_id: str,
         tolerance: BatchTolerance | None,
         start_at: datetime | str | None,
@@ -245,10 +241,8 @@ class Host:
             raise TypeError(f"submit_batch() tolerance must be a BatchTolerance or None, got {type(tolerance).__name__}.")
         _validate_recovery_cap(recovery_cap)
         definition = self._require_definition(graph)
-        if exclusive_by is not None and (not isinstance(exclusive_by, str) or not exclusive_by):
-            raise ValueError(f"submit_batch() exclusive_by must name a graph port, got {exclusive_by!r}.")
-        if admission_units is not None and (not isinstance(admission_units, str) or not admission_units):
-            raise ValueError(f"submit_batch() admission_units must name an item field, got {admission_units!r}.")
+        if admission_cost is not None and (not isinstance(admission_cost, str) or not admission_cost):
+            raise ValueError(f"submit_batch() admission_cost must name an item field, got {admission_cost!r}.")
         if isinstance(values, Mapping):
             if map_over is None:
                 raise TypeError("submit_batch() mapping-form values require map_over; typed item sequences do not.")
@@ -258,7 +252,7 @@ class Host:
                 map_mode=map_mode,
                 identity=identity,
                 graph=graph,
-                schema=schema,
+                schema=None,
             )
         else:
             if map_over is not None:
@@ -267,22 +261,13 @@ class Host:
                     f"{type(values).__name__} values ({values!r}).\n\nHow to fix:\n  Remove map_over and pass a sequence "
                     "of per-item mappings, or transpose the values into a mapping of input collections."
                 )
-            pairs = freeze_batch_items(values, identity=identity, graph=graph, schema=schema)
-        if exclusive_by is not None:
+            pairs = freeze_batch_items(values, identity=identity, graph=graph, schema=None)
+        if admission_cost is not None:
             for index, (_, inputs_json) in enumerate(pairs):
                 inputs = json.loads(inputs_json)
-                if exclusive_by not in inputs:
-                    raise ValueError(
-                        f"submit_batch() item {index} has no initial value for exclusive_by={exclusive_by!r}. "
-                        "The durable lock must have a key before the Run is admitted."
-                    )
-                _item_key(inputs[exclusive_by], identity=exclusive_by, index=index)
-        if admission_units is not None:
-            for index, (_, inputs_json) in enumerate(pairs):
-                inputs = json.loads(inputs_json)
-                value = inputs.get(admission_units)
+                value = inputs.get(admission_cost)
                 if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-                    raise ValueError(f"submit_batch() item {index} admission_units={admission_units!r} must be an int >= 1; got {value!r}.")
+                    raise ValueError(f"submit_batch() item {index} admission_cost={admission_cost!r} must be an int >= 1; got {value!r}.")
         start_at_iso = _normalize_start_at(start_at)
         tolerance_json = json.dumps(tolerance.to_dict()) if tolerance is not None else None
         fingerprint = batch_fingerprint(
@@ -290,8 +275,7 @@ class Host:
             {key: json.loads(inputs_json) for key, inputs_json in pairs},
             tolerance,
             start_at_iso,
-            exclusive_by,
-            admission_units,
+            admission_cost,
         )
         return definition, pairs, start_at_iso, tolerance_json, fingerprint
 
@@ -303,9 +287,7 @@ class Host:
         identity: str,
         map_over: str | Sequence[str] | None = None,
         map_mode: MapMode = "zip",
-        schema: type[BaseModel] | None = None,
-        exclusive_by: str | None = None,
-        admission_units: str | None = None,
+        admission_cost: str | None = None,
         workflow_id: str,
         tolerance: BatchTolerance | None = None,
         start_at: datetime | str | None = None,
@@ -384,9 +366,7 @@ class Host:
             map_over=map_over,
             map_mode=map_mode,
             identity=identity,
-            schema=schema,
-            exclusive_by=exclusive_by,
-            admission_units=admission_units,
+            admission_cost=admission_cost,
             workflow_id=workflow_id,
             tolerance=tolerance,
             start_at=start_at,
@@ -402,8 +382,8 @@ class Host:
             start_at=start_at_iso,
             source_ref=source_ref,
             recovery_cap=recovery_cap,
-            exclusive_by=exclusive_by,
-            admission_units=admission_units,
+            admission_cost=admission_cost,
+            child_admission_costs={key: 1 if admission_cost is None else int(json.loads(inputs_json)[admission_cost]) for key, inputs_json in pairs},
         )
         created, row = await self._home._submit_batch(request)
         return BatchSubmitReceipt(
@@ -420,9 +400,7 @@ class Host:
         identity: str,
         map_over: str | Sequence[str] | None = None,
         map_mode: MapMode = "zip",
-        schema: type[BaseModel] | None = None,
-        exclusive_by: str | None = None,
-        admission_units: str | None = None,
+        admission_cost: str | None = None,
         workflow_id: str,
         tolerance: BatchTolerance | None = None,
         start_at: datetime | str | None = None,
@@ -436,9 +414,7 @@ class Host:
             map_over=map_over,
             map_mode=map_mode,
             identity=identity,
-            schema=schema,
-            exclusive_by=exclusive_by,
-            admission_units=admission_units,
+            admission_cost=admission_cost,
             workflow_id=workflow_id,
             tolerance=tolerance,
             start_at=start_at,
@@ -454,8 +430,8 @@ class Host:
             start_at=start_at_iso,
             source_ref=source_ref,
             recovery_cap=recovery_cap,
-            exclusive_by=exclusive_by,
-            admission_units=admission_units,
+            admission_cost=admission_cost,
+            child_admission_costs={key: 1 if admission_cost is None else int(json.loads(inputs_json)[admission_cost]) for key, inputs_json in pairs},
         )
         created, row = self._home._submit_batch_sync(request)
         return BatchSubmitReceipt(

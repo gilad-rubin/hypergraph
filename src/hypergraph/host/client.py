@@ -344,12 +344,11 @@ class _PlannedBatchRerun:
     definition_id: DefinitionId
     items: list[tuple[str, str]]
     tolerance_json: str | None
-    exclusive_by: str | None
-    admission_units: str | None
+    admission_cost: str | None
     fingerprint: str
     batch_retry_of: str
     child_retry_of: dict[str, str]
-    child_exclusive_keys: dict[str, str]
+    child_admission_costs: dict[str, int]
 
 
 def _valid_item_keys(manifest: dict[str, Any], limit: int = 20) -> str:
@@ -458,20 +457,14 @@ def _plan_batch_rerun(
             {key: json.loads(value) for key, value in pairs},
             tolerance,
             None,
-            batch["exclusive_by"],
-            batch["admission_units"],
+            batch["admission_cost"],
         ),
-        exclusive_by=batch["exclusive_by"],
-        admission_units=batch["admission_units"],
+        admission_cost=batch["admission_cost"],
         batch_retry_of=batch["batch_id"],
         # Each new child records retry_of against its SOURCE child's
         # workflow id — lineage names the run it repeats, not the item key.
         child_retry_of={key: str(child_rows[key][0]["workflow_id"]) for key in selected},
-        child_exclusive_keys={
-            key: str(child_rows[key][0]["exclusive_key"])
-            for key in selected
-            if child_rows[key][0]["exclusive_key"] is not None
-        },
+        child_admission_costs={key: int(child_rows[key][0]["admission_cost"]) for key in selected},
     )
 
 
@@ -869,14 +862,13 @@ class RunHomeClient:
                 items=tuple(plan.items),
                 fingerprint=plan.fingerprint,
                 tolerance_json=plan.tolerance_json,
-                exclusive_by=plan.exclusive_by,
-                admission_units=plan.admission_units,
+                admission_cost=plan.admission_cost,
                 # A repeat starts now, never on the source's past schedule.
                 start_at=None,
                 source_ref=source_ref,
                 batch_retry_of=plan.batch_retry_of,
                 child_retry_of=plan.child_retry_of,
-                child_exclusive_keys=plan.child_exclusive_keys,
+                child_admission_costs=plan.child_admission_costs,
             )
             created, row = await self._home._submit_batch(request)
             return BatchSubmitReceipt(
@@ -902,8 +894,6 @@ class RunHomeClient:
             source_ref,
             fingerprint=start_fingerprint(definition_id, inputs_json, None),
             retry_of=ref.run_id,
-            exclusive_by=submission["exclusive_by"],
-            exclusive_key=submission["exclusive_key"],
             admission_cost=int(submission["admission_cost"]),
         )
         workflow_id = row["workflow_id"]
@@ -932,14 +922,13 @@ class RunHomeClient:
                 items=tuple(plan.items),
                 fingerprint=plan.fingerprint,
                 tolerance_json=plan.tolerance_json,
-                exclusive_by=plan.exclusive_by,
-                admission_units=plan.admission_units,
+                admission_cost=plan.admission_cost,
                 # A repeat starts now, never on the source's past schedule.
                 start_at=None,
                 source_ref=source_ref,
                 batch_retry_of=plan.batch_retry_of,
                 child_retry_of=plan.child_retry_of,
-                child_exclusive_keys=plan.child_exclusive_keys,
+                child_admission_costs=plan.child_admission_costs,
             )
             created, row = self._home._submit_batch_sync(request)
             return BatchSubmitReceipt(
@@ -973,8 +962,6 @@ class RunHomeClient:
             source_ref,
             fingerprint=start_fingerprint(definition_id, inputs_json, None),
             retry_of=ref.run_id,
-            exclusive_by=submission["exclusive_by"],
-            exclusive_key=submission["exclusive_key"],
             admission_cost=int(submission["admission_cost"]),
         )
         workflow_id = row["workflow_id"]
