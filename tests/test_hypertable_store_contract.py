@@ -84,3 +84,33 @@ def test_validate_store_opens_minimal_table() -> None:
     store = RecordingStore()
     assert validate_store(store) is store
     assert store.opened == [("__validate_store", [])]
+
+
+def test_unsupported_store_compare_and_set_fails_loudly() -> None:
+    class UnsupportedStore(TableStore):
+        def open(self, spec, children):
+            return {}
+
+        def count(self, table_name):
+            return 0
+
+        def read_rows(self, table_name, where=None, *, limit=None):
+            return []
+
+        def read_one(self, table_name, identity_column, identity_value):
+            return None
+
+        def write_rows(self, table_name, rows):
+            return None
+
+        def delete_rows(self, table_name, where):
+            return 0
+
+        def max_write_gen(self, table_name):
+            return 0
+
+        def evolve_schema(self, table_name, new_columns):
+            return []
+
+    with pytest.raises(NotImplementedError, match="atomic compare_and_set"):
+        UnsupportedStore().compare_and_set("items", "item_id", "i1", {}, {"state": "claimed"}, {})

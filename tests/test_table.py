@@ -17,10 +17,32 @@ on disk — same physical columns, same write semantics):
 - no runner ceremony: a Table needs no ``with_runner`` — it derives nothing.
 """
 
+import hashlib
+import json
+import multiprocessing
+
+import numpy as np
 import pytest
 
 from hypergraph import Graph, GraphConfigError
 from hypergraph.materialization import LanceDBStore, Table
+
+
+def _contend_cas_in_process(store_path, barrier, index, queue):
+    table = Table(identity="upload_id", store=LanceDBStore(store_path))
+    barrier.wait()
+    owner = f"worker-{index}"
+    queue.put(
+        (
+            owner,
+            table.compare_and_set(
+                "u1",
+                expected={"state": "pending"},
+                state="claimed",
+                owner=owner,
+            ),
+        )
+    )
 
 
 @pytest.fixture()
@@ -54,6 +76,58 @@ def test_update_is_the_explicit_change_verb(table):
     table.update("u1", name="a-renamed.pdf")
     assert table.get("u1")["name"] == "a-renamed.pdf"
     assert table.count() == 1
+
+
+def test_compare_and_set_has_one_cross_instance_winner(tmp_path):
+    store_path = str(tmp_path / "cas")
+    seed = Table(identity="upload_id", store=LanceDBStore(store_path))
+    seed.append(upload_id="u1", state="pending")
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    queue = context.Queue()
+    processes = [
+        context.Process(
+            target=_contend_cas_in_process,
+            args=(store_path, barrier, index, queue),
+        )
+        for index in range(2)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=20)
+        assert process.exitcode == 0
+        process.close()
+    results = [queue.get(timeout=5) for _ in processes]
+    queue.close()
+    queue.join_thread()
+
+    winners = [owner for owner, won in results if won]
+    assert len(winners) == 1
+    authoritative = Table(identity="upload_id", store=LanceDBStore(store_path))
+    assert authoritative.get("u1") == {"upload_id": "u1", "state": "claimed", "owner": winners[0]}
+    physical = LanceDBStore(store_path).read_rows("upload")
+    assert len(physical) == 1
+    assert len({row["_write_gen"] for row in physical}) == len(physical)
+
+
+def test_compare_and_set_false_on_missing_or_mismatched_row(table):
+    table.append(upload_id="u1", state="pending")
+    assert table.compare_and_set("missing", expected={"state": "pending"}, state="claimed") is False
+    assert table.compare_and_set("u1", expected={"state": "other"}, state="claimed") is False
+    assert table.compare_and_set("u1", expected={"staet": None}, state="claimed") is False
+    assert table.get("u1")["state"] == "pending"
+
+
+def test_compare_and_set_fingerprint_matches_normalized_persisted_values(tmp_path):
+    store = LanceDBStore(str(tmp_path))
+    table = Table(identity="upload_id", store=store)
+    table.append(upload_id="u1", state="pending")
+    assert table.compare_and_set("u1", expected={"state": "pending"}, count=np.int64(2))
+    row = store.read_one("upload", "upload_id", "u1")
+    public = {"upload_id": "u1", "state": "pending", "count": 2}
+    expected = hashlib.sha256(json.dumps(public, sort_keys=True, default=repr).encode()).hexdigest()
+    assert row["_row_fingerprint"] == expected
 
 
 def test_multiple_identities_filter_and_delete(table):

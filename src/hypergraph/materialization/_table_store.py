@@ -91,6 +91,25 @@ class TableStore(ABC):
     def max_write_gen(self, table_name: str) -> int:
         """Return the highest write generation currently persisted."""
 
+    def compare_and_set(
+        self,
+        table_name: str,
+        identity_column: str,
+        identity_value: Any,
+        expected: dict[str, Any],
+        changes: dict[str, Any],
+        new_columns: dict[str, pa.DataType],
+    ) -> bool:
+        """Atomically update one row when all expected values match.
+
+        The comparison and mutation must be one backend-serialized operation,
+        including schema evolution and allocation of a unique ``_write_gen``.
+        Implementations that cannot provide that guarantee must leave this
+        method unsupported; a check-then-write fallback would violate the
+        contract.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support atomic compare_and_set")
+
     @abstractmethod
     def evolve_schema(self, table_name: str, new_columns: dict[str, pa.DataType]) -> list[str]:
         """Add columns and return the table's column names.

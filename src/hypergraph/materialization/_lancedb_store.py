@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +13,17 @@ import lancedb
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from hypergraph.materialization._schema import TableSpec
+from hypergraph.materialization._provenance import normalize_value
+from hypergraph.materialization._schema import TableSpec, is_internal_column
 from hypergraph.materialization._table_store import RowPredicate, TableStore
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - LanceDB local storage is POSIX in CI
+    fcntl = None  # type: ignore[assignment]
+
+_CAS_LOCKS: dict[str, threading.Lock] = {}
+_CAS_LOCKS_GUARD = threading.Lock()
 
 _PC_OPS = {
     "eq": pc.equal,
@@ -65,7 +77,13 @@ def _build_lance_filter(where: RowPredicate) -> str:
 
 
 class LanceDBStore(TableStore):
-    """LanceDB-backed TableStore implementation."""
+    """LanceDB-backed TableStore implementation.
+
+    Row CAS is serialized across threads and processes sharing a local
+    filesystem path by a process mutex plus POSIX ``flock``. The guarantee
+    applies to contenders using ``compare_and_set`` and relies on the shared
+    filesystem honoring advisory locks; ordinary writes do not join it.
+    """
 
     def __init__(self, path: str):
         # Construction is zero-I/O: only the path is recorded. ``lancedb.connect``
@@ -239,6 +257,47 @@ class LanceDBStore(TableStore):
         if len(at) == 0:
             return 0
         return pc.max(at.column("_write_gen")).as_py()
+
+    def compare_and_set(
+        self,
+        table_name: str,
+        identity_column: str,
+        identity_value: Any,
+        expected: dict[str, Any],
+        changes: dict[str, Any],
+        new_columns: dict[str, pa.DataType],
+    ) -> bool:
+        """Perform a process-safe CAS using the store location's advisory lock."""
+        if fcntl is None:
+            raise NotImplementedError("LanceDBStore compare_and_set requires POSIX flock")
+        lock_path = str(self._path.resolve() / f".{table_name}.cas.lock")
+        with _CAS_LOCKS_GUARD:
+            process_lock = _CAS_LOCKS.setdefault(lock_path, threading.Lock())
+        with process_lock:
+            Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                existing = self.read_one(table_name, identity_column, identity_value)
+                if existing is None or any(
+                    name not in existing or normalize_value(existing[name]) != normalize_value(value) for name, value in expected.items()
+                ):
+                    return False
+                if new_columns:
+                    self.evolve_schema(table_name, new_columns)
+                write_gen = self.max_write_gen(table_name) + 1
+                row = {name: normalize_value(value) for name, value in existing.items()}
+                row.update({name: normalize_value(value) for name, value in changes.items()})
+                public_row = {name: value for name, value in row.items() if not is_internal_column(name)}
+                payload = json.dumps(public_row, sort_keys=True, default=repr).encode()
+                row["_row_fingerprint"] = hashlib.sha256(payload).hexdigest()
+                row["_write_gen"] = write_gen
+                self.write_rows(table_name, [row])
+                self.delete_rows(table_name, [(identity_column, "eq", identity_value), ("_write_gen", "lt", write_gen)])
+                return True
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
 
     def search(
         self,

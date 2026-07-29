@@ -67,14 +67,17 @@ class Table:
         )
 
     def _evolve(self, item: dict[str, Any]) -> None:
+        additions = self._new_columns(item)
+        if additions:
+            self._store.evolve_schema(self.table_name, additions)
+
+    def _new_columns(self, item: dict[str, Any]) -> dict[str, Any]:
         known = set(self._store.column_names(self.table_name))
-        additions = {
+        return {
             name: python_type_to_arrow(type(value) if value is not None else str)
             for name, value in item.items()
             if name not in known and name != self._identity
         }
-        if additions:
-            self._store.evolve_schema(self.table_name, additions)
 
     def append(self, *args: Any, **kwargs: Any) -> RowReceipt | TableReceipt:
         """Append rows whose identities are absent; existing identities are skipped."""
@@ -120,6 +123,26 @@ class Table:
             [(self._identity, "eq", identity_value), ("_write_gen", "lt", write_gen)],
         )
         return RowReceipt(str(identity_value), WriteOutcome.UPDATED, RowStatus.COMPLETE)
+
+    def compare_and_set(self, identity_value: str, expected: dict[str, Any] | None = None, **changes: Any) -> bool:
+        """Atomically apply ``changes`` when the row matches ``expected``.
+
+        The store, rather than this wrapper, owns the compare-and-write critical
+        section. Unsupported stores therefore fail loudly instead of silently
+        degrading to a racy read followed by a write.
+        """
+        if self._identity in changes or any(is_internal_column(name) for name in changes):
+            raise ValueError("compare_and_set changes cannot replace the identity or internal columns")
+        normalized_changes = {name: normalize_value(value) for name, value in changes.items()}
+        new_columns = self._new_columns({self._identity: identity_value, **normalized_changes})
+        return self._store.compare_and_set(
+            self.table_name,
+            self._identity,
+            identity_value,
+            expected or {},
+            normalized_changes,
+            new_columns,
+        )
 
     def delete(self, identity_value: str) -> None:
         self._store.delete_rows(self.table_name, [(self._identity, "eq", identity_value)])
