@@ -96,6 +96,14 @@ def test_derived_rows_stamp_the_recipe_fingerprint(tmp_path):
     assert {row[RECIPE_COLUMN] for row in raw} == {stamp}
 
 
+def test_recipe_fingerprint_is_public_and_includes_bound_recipe_values(tmp_path):
+    loud = _table(tmp_path / "loud", "loud")
+    quiet = _table(tmp_path / "quiet", "quiet")
+
+    assert len(loud.recipe_fingerprint()) == 64
+    assert loud.recipe_fingerprint() != quiet.recipe_fingerprint()
+
+
 def test_stamp_is_internal_and_stripped_from_public_rows(tmp_path):
     table = _table(tmp_path, "loud")
     table.insert(doc_id="d1", text="hello")

@@ -476,6 +476,15 @@ class HyperTable:
             if done:
                 return action
 
+    def recipe_fingerprint(self) -> str:
+        """Return the current recipe-only fingerprint for this table.
+
+        The fingerprint includes node definitions, component configurations,
+        and bound plain values, but never source-row input values.
+        """
+        self._ensure_analyzed()
+        return self._provenance_policy.current_recipe_fingerprint()
+
     def recipe_drift(self) -> RecipeDrift:
         """Which stored rows were derived under something other than today's recipe.
 
