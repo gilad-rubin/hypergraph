@@ -199,7 +199,7 @@ An immutable manifest of unique stable logical item keys, each mapped to one ind
 _Avoid_: Persisted MapResult, batch job array
 
 **Logical item key**:
-The caller-chosen stable key naming one requested Batch item; child outcomes are keyed by it regardless of completion order. Chosen by `key_by`, which names one **expanded** input whose JSON-safe scalar value is the key.
+The caller-chosen stable key naming one requested Batch item; child outcomes are keyed by it regardless of completion order. Chosen by `identity`, which names one **expanded** input whose JSON-safe scalar value is the key.
 _Avoid_: Item index, result position
 
 **Batch item expansion**:

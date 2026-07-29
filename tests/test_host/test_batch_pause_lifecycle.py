@@ -261,7 +261,7 @@ class TestLoopingOccurrences:
             graph,
             {"work_item_id": ["work-loop"]},
             map_over="work_item_id",
-            key_by="work_item_id",
+            identity="work_item_id",
             workflow_id="drop-loop",
         )
         client = host.client

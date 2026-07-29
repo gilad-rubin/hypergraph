@@ -60,7 +60,7 @@ ABANDONED_UPDATE_KIND = "child_abandoned"
 
 BATCH_COLS = (
     "batch_id, workflow_id, definition_name, def_version, def_struct_hash, "
-    "items_json, tolerance_json, start_at, fingerprint, source_ref, created_at, retry_of"
+    "items_json, tolerance_json, start_at, fingerprint, source_ref, created_at, retry_of, exclusive_by"
 )
 BATCH_PLACEHOLDERS = ", ".join("?" for _ in BATCH_COLS.split(", "))
 
@@ -170,8 +170,10 @@ class BatchAcceptance:
     start_at: str | None = None
     source_ref: str | None = None
     recovery_cap: int = 3
+    exclusive_by: str | None = None
     batch_retry_of: str | None = None
     child_retry_of: Mapping[str, str] = field(default_factory=dict)
+    child_exclusive_keys: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def items_map(self) -> dict[str, Any]:
@@ -193,6 +195,7 @@ class BatchAcceptance:
             self.source_ref,
             now,
             self.batch_retry_of,
+            self.exclusive_by,
         )
 
     def manifest_fact(self, workflow_id: str) -> dict[str, Any]:
@@ -206,6 +209,7 @@ class BatchAcceptance:
             "start_at": self.start_at,
             "source_ref": self.source_ref,
             "retry_of": self.batch_retry_of,
+            "exclusive_by": self.exclusive_by,
         }
 
     def child_specs(self, workflow_id: str) -> tuple[ChildSpec, ...]:
@@ -242,6 +246,10 @@ class BatchAcceptance:
             self.batch_id,
             spec.item_key,
             0,  # claim_seq: no claim has been handed out yet
+            self.exclusive_by,
+            self.child_exclusive_keys.get(spec.item_key)
+            if self.exclusive_by is not None and spec.item_key in self.child_exclusive_keys
+            else (None if self.exclusive_by is None else str(json.loads(spec.inputs_json)[self.exclusive_by])),
         )
 
     def child_submitted_fact(self, spec: ChildSpec) -> dict[str, Any]:
@@ -339,6 +347,7 @@ def resolve_batch_reuse(
                 items_canonical=canonical_json(request.items_map),
                 tolerance_json=request.tolerance_json,
                 start_at=request.start_at,
+                exclusive_by=request.exclusive_by,
             ),
         )
     return existing

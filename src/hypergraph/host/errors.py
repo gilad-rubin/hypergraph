@@ -137,7 +137,7 @@ class UnservedGraphError(HostError):
 
 
 class ItemKeyError(HostError):
-    """``submit_batch(..., key_by=...)`` could not derive stable item identity.
+    """``submit_batch(..., identity=...)`` could not derive stable item identity.
 
     A durable Batch item key must be a JSON-safe scalar that names one
     logical item for the life of the manifest, so restart and out-of-order
@@ -146,8 +146,8 @@ class ItemKeyError(HostError):
     replaced by a generated map index.
     """
 
-    def __init__(self, key_by: str, message: str) -> None:
-        self.key_by = key_by
+    def __init__(self, identity: str, message: str) -> None:
+        self.identity = identity
         self.message = message
         super().__init__(message)
 

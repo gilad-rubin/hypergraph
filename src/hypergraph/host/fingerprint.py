@@ -71,7 +71,13 @@ def fingerprint_mismatch_aspect(
     return "start_at"
 
 
-def batch_fingerprint(definition: DefinitionId, items: dict[str, Any], tolerance: BatchTolerance | None, start_at: str | None) -> str:
+def batch_fingerprint(
+    definition: DefinitionId,
+    items: dict[str, Any],
+    tolerance: BatchTolerance | None,
+    start_at: str | None,
+    exclusive_by: str | None = None,
+) -> str:
     """Hash the canonical start document for one Batch submission.
 
     The fingerprint covers the complete pinned Definition identity, the
@@ -93,6 +99,10 @@ def batch_fingerprint(definition: DefinitionId, items: dict[str, Any], tolerance
         "tolerance": tolerance.to_dict() if tolerance is not None else None,
         "start_at": start_at,
     }
+    # Preserve pre-#354 fingerprints for Batches without exclusivity so an
+    # unsettled manifest accepted before upgrade still deduplicates.
+    if exclusive_by is not None:
+        document["exclusive_by"] = exclusive_by
     return hashlib.sha256(canonical_json(document).encode("utf-8")).hexdigest()
 
 
@@ -105,6 +115,7 @@ def batch_mismatch_aspect(
     items_canonical: str,
     tolerance_json: str | None,
     start_at: str | None,
+    exclusive_by: str | None = None,
 ) -> str:
     """Name which Batch fingerprint aspect differs from the stored manifest.
 
@@ -122,4 +133,6 @@ def batch_mismatch_aspect(
         return "items"
     if existing["tolerance_json"] != tolerance_json:
         return "tolerance"
+    if existing["exclusive_by"] != exclusive_by:
+        return "exclusive_by"
     return "start_at"

@@ -141,13 +141,37 @@ receipt = await host.submit_batch(
     ingest,                                    # the served Graph object
     {"work_item_id": ["protocol-17", "protocol-18"], "reviewer": "ops"},
     map_over="work_item_id",                   # which inputs expand per item
-    key_by="work_item_id",                     # which expanded input names the item
+    identity="work_item_id",                   # which expanded input names the item
     workflow_id="schneider-drop-42",
     tolerance=BatchTolerance(max_failed=2, max_failed_percent=25),  # optional
 )
 receipt.batch_ref          # BatchRef — inert, JSON-serializable address
 receipt.duplicate          # True when an identical nonterminal Batch existed
 ```
+
+Callers that already hold per-item records can submit them without
+transposing into parallel collections. Optional `schema` is a Pydantic model
+validated per item before any durable write; persisted inputs remain plain
+mappings:
+
+```python
+receipt = await host.submit_batch(
+    ingest,
+    [
+        {"doc_id": "d-17", "pdf_uri": "papers/17.pdf", "page_count": 8},
+        {"doc_id": "d-18", "pdf_uri": "papers/18.pdf", "page_count": 5},
+    ],
+    identity="doc_id",
+    schema=IngestionItem,
+    exclusive_by="doc_id",
+    workflow_id="schneider-drop-43",
+)
+```
+
+Every item field must be a graph boundary input, every required boundary
+input must be present, and the resulting mapping must be JSON-serializable.
+These checks, `schema` validation, and identity validation all happen before
+acceptance.
 
 `submit_batch` speaks the same **input-expansion vocabulary as runner map**
 — `values` plus `map_over` (one name or a sequence) and `map_mode`
@@ -159,13 +183,22 @@ deliberately absent: durable concurrency comes from
 `max_concurrency`, and durable failure policy comes from `tolerance`, not
 `error_handling`.
 
-`key_by` names one **expanded** input whose value is the logical item key —
+`identity` names one **expanded** input whose value is the logical item key —
 the identity every count, outcome, and durable fact is reported under. It
 must be a name in `map_over`, and each item's value must be a JSON-safe
 scalar (a non-empty `str`, or an `int`), unique across the manifest;
 missing, empty, non-scalar (including `bool`, `float`, and `None`), or
 duplicate keys raise `ItemKeyError` before anything is written. Expanding to
 zero items is a `ValueError` — an empty Batch is not a Batch.
+
+`exclusive_by` optionally names a graph port whose JSON-safe scalar value is
+a durable, cross-Batch exclusion key. Only one Run of the served Definition
+may own a key at a time; different keys still run concurrently. If a
+committed node output changes that port (for example duplicate resolution
+maps an alias to a canonical `doc_id`), the checkpoint atomically records the
+new desired key and releases the old one. The runner waits to acquire the new
+key before entering another superstep. A crash cannot bypass that wait:
+restart admission reacquires the committed desired key before replay.
 
 **One transaction** persists all of it — the manifest row (Definition
 identity, item keys with pinned inputs, the tolerance declaration, the
@@ -187,7 +220,8 @@ their Batch membership recorded. `host.submit_batch_sync(...)` is the
 synchronous mirror.
 
 Dedup mirrors `submit`, over a start fingerprint covering the pinned
-Definition identity, the normalized manifest, the pinned tolerance, and
+Definition identity, the normalized manifest, the pinned tolerance,
+`exclusive_by`, and
 `start_at`. Resubmitting the same `workflow_id`:
 
 - **fingerprint-identical and nonterminal** → the existing receipt with
@@ -983,7 +1017,7 @@ brake counts **progressless re-adoptions**:
 |---|---|
 | `WorkerLockError` | a second worker starts on the same Run Home |
 | `UnservedGraphError` | `submit`, `submit_batch`, or `fork(into=…)` names a `Graph` this host does not serve, or one whose `structural_hash` drifted from the served Definition |
-| `ItemKeyError` | `submit_batch` `key_by` names an input outside `map_over`, or an item's key is missing, empty, non-scalar, or duplicated |
+| `ItemKeyError` | `submit_batch` `identity` names an input outside `map_over`, or an item's key is missing, empty, non-scalar, or duplicated |
 | `AlreadyTerminalError` | a terminal `workflow_id` is reused for submit, submit_batch, or stop (including a fully settled Batch) |
 | `WorkflowIdConflictError` | a nonterminal `workflow_id` is reused with a different start fingerprint (Run or Batch), or a Batch id collides with existing work |
 | `ForkCompatibilityError` | `host.fork()` targets a structurally incompatible Definition |

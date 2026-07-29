@@ -286,7 +286,7 @@ class TestAtomicAcceptance:
     async def test_item_and_argument_validation(self, home):
         """Refusals on the runner-shaped submission surface (issue #342).
 
-        Item identity is now derived by ``key_by`` from an expanded input
+        Item identity is now derived by ``identity`` from an expanded input
         rather than supplied as a mapping key, so the empty / non-scalar /
         duplicate refusals moved onto the expanded values and raise the
         typed ``ItemKeyError``. The argument-level refusals (workflow_id,
@@ -298,11 +298,11 @@ class TestAtomicAcceptance:
         with pytest.raises(ValueError, match="an empty Batch is not a Batch"):
             await submit_keyed(host, graph, {}, workflow_id="b-empty")
         with pytest.raises(TypeError, match="values must be a Mapping"):
-            await host.submit_batch(graph, [("a", 1)], map_over="item", key_by="item", workflow_id="b-list")
+            await host.submit_batch(graph, [("a", 1)], map_over="item", identity="item", workflow_id="b-list")
         with pytest.raises(ItemKeyError, match="empty"):
             await submit_keyed(host, graph, {"": {"x": 1}}, workflow_id="b-key")
         with pytest.raises(ItemKeyError, match="a float"):
-            await host.submit_batch(graph, {"item": [1.5], "x": [1]}, map_over=["item", "x"], key_by="item", workflow_id="b-key2")
+            await host.submit_batch(graph, {"item": [1.5], "x": [1]}, map_over=["item", "x"], identity="item", workflow_id="b-key2")
         with pytest.raises(TypeError, match="JSON-serializable"):
             await submit_keyed(host, graph, {"a": {"x": object()}}, workflow_id="b-ser")
         with pytest.raises(ValueError, match="workflow_id"):
@@ -312,7 +312,7 @@ class TestAtomicAcceptance:
         with pytest.raises(UnservedGraphError, match="not served by this host"):
             await submit_keyed(host, _sync_graph("nope"), {"a": {"x": 1}}, workflow_id="b-def")
         with pytest.raises(ItemKeyError, match="duplicate item key"):
-            await host.submit_batch(graph, {"item": ["a", "a"], "x": [1, 2]}, map_over=["item", "x"], key_by="item", workflow_id="b-dup")
+            await host.submit_batch(graph, {"item": ["a", "a"], "x": [1, 2]}, map_over=["item", "x"], identity="item", workflow_id="b-dup")
         # Every refusal happened before acceptance: nothing was written.
         assert home._sync_db().execute("SELECT COUNT(*) FROM host_batches").fetchone()[0] == 0
 

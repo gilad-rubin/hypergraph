@@ -146,6 +146,7 @@ class TestConflictMessagesNameTheRightAspect:
         "items_json": json.dumps({"a": {"x": 1}}),
         "tolerance_json": None,
         "start_at": None,
+        "exclusive_by": None,
     }
 
     @pytest.mark.parametrize(
@@ -165,6 +166,17 @@ class TestConflictMessagesNameTheRightAspect:
             start_at=start_at,
         )
         assert aspect == expected
+
+    def test_a_batch_with_changed_exclusivity_names_the_contract(self):
+        aspect = batch_mismatch_aspect(
+            self.BATCH_ROW,
+            **self.SAME_PIN,
+            items_canonical=canonical_json({"a": {"x": 1}}),
+            tolerance_json=None,
+            start_at=None,
+            exclusive_by="doc_id",
+        )
+        assert aspect == "exclusive_by"
 
     def test_a_batch_with_a_changed_definition_names_identity(self):
         aspect = batch_mismatch_aspect(

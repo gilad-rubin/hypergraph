@@ -390,7 +390,22 @@ CREATE TABLE IF NOT EXISTS host_submissions (
     -- store clock is millisecond-grained, and park -> answer -> re-claim
     -- fits inside one millisecond, so two successive claims of one
     -- submission can share a timestamp.
-    claim_seq INTEGER NOT NULL DEFAULT 0
+    claim_seq INTEGER NOT NULL DEFAULT 0,
+    -- Optional graph port whose latest committed value owns a durable
+    -- cross-Batch exclusion lock. The current key follows committed node
+    -- output while item_key remains the immutable manifest identity.
+    exclusive_by TEXT,
+    exclusive_key TEXT
+)
+"""
+
+_CREATE_HOST_EXCLUSIVE_LOCKS = """
+CREATE TABLE IF NOT EXISTS host_exclusive_locks (
+    exclusive_by TEXT NOT NULL,
+    exclusive_key TEXT NOT NULL,
+    workflow_id TEXT NOT NULL UNIQUE,
+    acquired_at TEXT NOT NULL,
+    PRIMARY KEY (exclusive_by, exclusive_key)
 )
 """
 
@@ -447,7 +462,8 @@ CREATE TABLE IF NOT EXISTS host_batches (
     fingerprint TEXT NOT NULL,
     source_ref TEXT,
     created_at TEXT NOT NULL,
-    retry_of TEXT
+    retry_of TEXT,
+    exclusive_by TEXT
 )
 """
 
@@ -581,12 +597,17 @@ _HOST_SUBMISSIONS_ADDED_COLUMNS = (
     ("batch_id", "batch_id TEXT"),
     ("item_key", "item_key TEXT"),
     ("claim_seq", "claim_seq INTEGER NOT NULL DEFAULT 0"),
+    ("exclusive_by", "exclusive_by TEXT"),
+    ("exclusive_key", "exclusive_key TEXT"),
 )
 
 # Columns appended to host_batches after its initial cut (ticket 06). The v6
 # DDL above already carries it; this guarded ALTER migrates dev databases
 # that were created at v6 before the column existed.
-_HOST_BATCHES_ADDED_COLUMNS = (("retry_of", "retry_of TEXT"),)
+_HOST_BATCHES_ADDED_COLUMNS = (
+    ("retry_of", "retry_of TEXT"),
+    ("exclusive_by", "exclusive_by TEXT"),
+)
 
 # Columns appended to host_commands after its initial cut (ticket 14, the
 # scheduled pause answer). Same guarded-ALTER discipline as above.
@@ -619,6 +640,7 @@ def _ensure_v6_objects(conn: Any) -> None:
     conn.execute(_CREATE_HOST_BATCHES)
     conn.execute(_CREATE_BATCH_UPDATES)
     conn.execute(_CREATE_HOST_SETTINGS)
+    conn.execute(_CREATE_HOST_EXCLUSIVE_LOCKS)
     _add_missing_columns(conn, "runs", _RUNS_ADDED_COLUMNS)
     _add_missing_columns(conn, "host_submissions", _HOST_SUBMISSIONS_ADDED_COLUMNS)
     _add_missing_columns(conn, "host_batches", _HOST_BATCHES_ADDED_COLUMNS)

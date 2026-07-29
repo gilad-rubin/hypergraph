@@ -52,7 +52,7 @@ class TestSyncSubmission:
                 graph,
                 {"work_item_id": ["work-a", "work-dup-b"]},
                 map_over="work_item_id",
-                key_by="work_item_id",
+                identity="work_item_id",
                 workflow_id="drop-sync",
             )
             view = RunHomeClient(run_home).get_sync(receipt.batch_ref)
@@ -78,7 +78,7 @@ class TestSyncAnswerSettlement:
                 graph,
                 {"work_item_id": ["work-dup-1"]},
                 map_over="work_item_id",
-                key_by="work_item_id",
+                identity="work_item_id",
                 workflow_id="drop-sync-answer",
             )
             async with worker(host):

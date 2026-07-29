@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from hypergraph.host._batch_store import BatchAcceptance, DefinitionPin
 from hypergraph.host._bus import _BusEventProcessor, _PreviewBus, _register_bus
-from hypergraph.host.batch import BatchTolerance, MapMode, expand_batch_items
+from hypergraph.host.batch import BatchTolerance, MapMode, _item_key, expand_batch_items, freeze_batch_items
 from hypergraph.host.client import RunHomeClient
 from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import ForkCompatibilityError, HostError, UnservedGraphError
@@ -38,6 +38,8 @@ from hypergraph.host.views import SUBMISSION_STATE_FINISHED, SUBMISSION_STATE_PA
 from hypergraph.host.worker import _drain, _WorkerLock
 
 if TYPE_CHECKING:
+    from pydantic import BaseModel
+
     from hypergraph.graph import Graph
     from hypergraph.runners.base import BaseRunner
 
@@ -217,11 +219,13 @@ class Host:
     def _prepare_batch(
         self,
         graph: Graph,
-        values: Mapping[str, Any],
+        values: Mapping[str, Any] | Sequence[Mapping[str, Any]],
         *,
-        map_over: str | Sequence[str],
+        map_over: str | Sequence[str] | None,
         map_mode: MapMode,
-        key_by: str,
+        identity: str,
+        schema: type[BaseModel] | None,
+        exclusive_by: str | None,
         workflow_id: str,
         tolerance: BatchTolerance | None,
         start_at: datetime | str | None,
@@ -240,7 +244,36 @@ class Host:
             raise TypeError(f"submit_batch() tolerance must be a BatchTolerance or None, got {type(tolerance).__name__}.")
         _validate_recovery_cap(recovery_cap)
         definition = self._require_definition(graph)
-        pairs = expand_batch_items(values, map_over=map_over, map_mode=map_mode, key_by=key_by)
+        if exclusive_by is not None and (not isinstance(exclusive_by, str) or not exclusive_by):
+            raise ValueError(f"submit_batch() exclusive_by must name a graph port, got {exclusive_by!r}.")
+        if isinstance(values, Mapping):
+            if map_over is None:
+                raise TypeError("submit_batch() mapping-form values require map_over; typed item sequences do not.")
+            pairs = expand_batch_items(
+                values,
+                map_over=map_over,
+                map_mode=map_mode,
+                identity=identity,
+                graph=graph,
+                schema=schema,
+            )
+        else:
+            if map_over is not None:
+                raise TypeError(
+                    f"submit_batch() runner-shaped values must be a Mapping when map_over is present; got "
+                    f"{type(values).__name__} values ({values!r}).\n\nHow to fix:\n  Remove map_over and pass a sequence "
+                    "of per-item mappings, or transpose the values into a mapping of input collections."
+                )
+            pairs = freeze_batch_items(values, identity=identity, graph=graph, schema=schema)
+        if exclusive_by is not None:
+            for index, (_, inputs_json) in enumerate(pairs):
+                inputs = json.loads(inputs_json)
+                if exclusive_by not in inputs:
+                    raise ValueError(
+                        f"submit_batch() item {index} has no initial value for exclusive_by={exclusive_by!r}. "
+                        "The durable lock must have a key before the Run is admitted."
+                    )
+                _item_key(inputs[exclusive_by], identity=exclusive_by, index=index)
         start_at_iso = _normalize_start_at(start_at)
         tolerance_json = json.dumps(tolerance.to_dict()) if tolerance is not None else None
         fingerprint = batch_fingerprint(
@@ -248,17 +281,20 @@ class Host:
             {key: json.loads(inputs_json) for key, inputs_json in pairs},
             tolerance,
             start_at_iso,
+            exclusive_by,
         )
         return definition, pairs, start_at_iso, tolerance_json, fingerprint
 
     async def submit_batch(
         self,
         graph: Graph,
-        values: Mapping[str, Any],
+        values: Mapping[str, Any] | Sequence[Mapping[str, Any]],
         *,
-        map_over: str | Sequence[str],
+        identity: str,
+        map_over: str | Sequence[str] | None = None,
         map_mode: MapMode = "zip",
-        key_by: str,
+        schema: type[BaseModel] | None = None,
+        exclusive_by: str | None = None,
         workflow_id: str,
         tolerance: BatchTolerance | None = None,
         start_at: datetime | str | None = None,
@@ -274,7 +310,7 @@ class Host:
                 ingestion_graph,
                 {"work_item_id": work_item_ids},
                 map_over="work_item_id",
-                key_by="work_item_id",
+                identity="work_item_id",
                 workflow_id=batch_id,
             )
 
@@ -315,7 +351,7 @@ class Host:
             map_mode: ``"zip"`` (parallel iteration, the default) or
                 ``"product"`` (cartesian), exactly as ``runner.map`` reads
                 it.
-            key_by: Required. Names one expanded input whose per-item
+            identity: Required. Names one expanded input whose per-item
                 JSON-safe scalar value becomes the logical item key. Missing,
                 empty, non-scalar, and duplicate keys are refused before
                 acceptance (``ItemKeyError``) — a generated map index is
@@ -336,7 +372,9 @@ class Host:
             values,
             map_over=map_over,
             map_mode=map_mode,
-            key_by=key_by,
+            identity=identity,
+            schema=schema,
+            exclusive_by=exclusive_by,
             workflow_id=workflow_id,
             tolerance=tolerance,
             start_at=start_at,
@@ -352,6 +390,7 @@ class Host:
             start_at=start_at_iso,
             source_ref=source_ref,
             recovery_cap=recovery_cap,
+            exclusive_by=exclusive_by,
         )
         created, row = await self._home._submit_batch(request)
         return BatchSubmitReceipt(
@@ -363,11 +402,13 @@ class Host:
     def submit_batch_sync(
         self,
         graph: Graph,
-        values: Mapping[str, Any],
+        values: Mapping[str, Any] | Sequence[Mapping[str, Any]],
         *,
-        map_over: str | Sequence[str],
+        identity: str,
+        map_over: str | Sequence[str] | None = None,
         map_mode: MapMode = "zip",
-        key_by: str,
+        schema: type[BaseModel] | None = None,
+        exclusive_by: str | None = None,
         workflow_id: str,
         tolerance: BatchTolerance | None = None,
         start_at: datetime | str | None = None,
@@ -380,7 +421,9 @@ class Host:
             values,
             map_over=map_over,
             map_mode=map_mode,
-            key_by=key_by,
+            identity=identity,
+            schema=schema,
+            exclusive_by=exclusive_by,
             workflow_id=workflow_id,
             tolerance=tolerance,
             start_at=start_at,
@@ -396,6 +439,7 @@ class Host:
             start_at=start_at_iso,
             source_ref=source_ref,
             recovery_cap=recovery_cap,
+            exclusive_by=exclusive_by,
         )
         created, row = self._home._submit_batch_sync(request)
         return BatchSubmitReceipt(
@@ -734,7 +778,17 @@ class Host:
         if asyncio.iscoroutinefunction(run_fn):
             await run_fn(definition.graph, inputs, **run_kwargs)
         else:
-            await asyncio.to_thread(run_fn, definition.graph, inputs, **run_kwargs)
+            cancellation, cancellation_token = self._home._register_sync_wait_cancellation()
+            try:
+                await asyncio.to_thread(run_fn, definition.graph, inputs, **run_kwargs)
+            except asyncio.CancelledError:
+                # ``to_thread`` cancellation cannot kill the worker thread.
+                # Fence only an exclusion waiter; ordinary sync-node crash
+                # semantics remain at-least-once and are re-adopted.
+                cancellation.set()
+                raise
+            finally:
+                self._home._clear_sync_wait_cancellation(cancellation_token)
         # Release the claim only after the run came back: a cancelled or
         # crashed execution leaves the submission claimed for the restart
         # scan. The release settles THIS claim (`row["claim_seq"]`) or

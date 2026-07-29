@@ -82,7 +82,7 @@ async def submitted(world):
         graph,
         {"work_item_id": ITEMS},
         map_over="work_item_id",
-        key_by="work_item_id",
+        identity="work_item_id",
         workflow_id=BATCH_ID,
     )
     await home.close()

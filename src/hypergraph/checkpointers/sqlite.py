@@ -758,14 +758,26 @@ class SqliteCheckpointer(Checkpointer):
         """Save a step with upsert semantics."""
         await self._ensure_db()
         async with self._txn_lock():
-            await self._db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
-            await self._apply_retention_policy_async(record.run_id)
-            await self._after_run_mutation(
-                record.run_id,
-                "step",
-                {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
-            )
-            await self._db.commit()
+            try:
+                await self._db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
+                await self._apply_retention_policy_async(record.run_id)
+                await self._after_run_mutation(
+                    record.run_id,
+                    "step",
+                    {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
+                )
+                await self._before_step_commit(record)
+                await self._db.commit()
+            except BaseException:
+                await self._rollback_async()
+                raise
+        await self._after_step_commit(record)
+
+    async def _before_step_commit(self, record: StepRecord) -> None:
+        """Subclass hook for mutations that must commit atomically with a step."""
+
+    async def _after_step_commit(self, record: StepRecord) -> None:
+        """Subclass hook that may delay the runner after a committed step."""
 
     # === Pending node boundaries (PRD 0013) ===
 
@@ -1609,10 +1621,17 @@ class SqliteCheckpointer(Checkpointer):
                 cursor = await self._db.execute(_ATTEMPT_SERIES_CLOSE_SQL, (now.isoformat(), step_record.superstep, series_id))
                 self._check_settled_exactly_one(cursor.rowcount, f"Attempt series {series_id!r}")
                 await self._apply_retention_policy_async(step_record.run_id)
+                await self._after_run_mutation(
+                    step_record.run_id,
+                    "step",
+                    {"node_name": step_record.node_name, "superstep": step_record.superstep, "status": step_record.status.value},
+                )
+                await self._before_step_commit(step_record)
                 await self._db.commit()
             except BaseException:
                 await self._rollback_async()
                 raise
+        await self._after_step_commit(step_record)
 
     async def resolve_stranded_attempts(self, series_id: str) -> list[AttemptRecord]:
         await self._ensure_db()
@@ -2089,15 +2108,27 @@ class SqliteCheckpointer(Checkpointer):
         """Save a step with upsert semantics synchronously."""
         with self._sync_lock:
             db = self._sync_db()
-            db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
-            self._apply_retention_policy_sync(record.run_id)
-            self._after_run_mutation_sync(
-                db,
-                record.run_id,
-                "step",
-                {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
-            )
-            db.commit()
+            try:
+                db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
+                self._apply_retention_policy_sync(record.run_id)
+                self._after_run_mutation_sync(
+                    db,
+                    record.run_id,
+                    "step",
+                    {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
+                )
+                self._before_step_commit_sync(db, record)
+                db.commit()
+            except BaseException:
+                self._rollback_sync(db)
+                raise
+        self._after_step_commit_sync(record)
+
+    def _before_step_commit_sync(self, db: Any, record: StepRecord) -> None:
+        """Sync subclass hook for mutations that commit with a step."""
+
+    def _after_step_commit_sync(self, record: StepRecord) -> None:
+        """Sync subclass hook that may delay after a committed step."""
 
     def _merge_retained_state(self, rows: Sequence[_RetentionRow]) -> dict[str, Any]:
         state: dict[str, Any] = {}
@@ -2521,10 +2552,18 @@ class SqliteCheckpointer(Checkpointer):
                 cursor = db.execute(_ATTEMPT_SERIES_CLOSE_SQL, (now.isoformat(), step_record.superstep, series_id))
                 self._check_settled_exactly_one(cursor.rowcount, f"Attempt series {series_id!r}")
                 self._apply_retention_policy_sync(step_record.run_id)
+                self._after_run_mutation_sync(
+                    db,
+                    step_record.run_id,
+                    "step",
+                    {"node_name": step_record.node_name, "superstep": step_record.superstep, "status": step_record.status.value},
+                )
+                self._before_step_commit_sync(db, step_record)
                 db.commit()
             except BaseException:
                 self._rollback_sync(db)
                 raise
+        self._after_step_commit_sync(step_record)
 
     def resolve_stranded_attempts_sync(self, series_id: str) -> list[AttemptRecord]:
         with self._sync_lock:

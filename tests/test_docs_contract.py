@@ -1059,16 +1059,18 @@ def test_durable_host_docs_pin_public_contract() -> None:
     )
     assert tuple(inspect.signature(Host.submit_sync).parameters) == tuple(inspect.signature(Host.submit).parameters)
     # Batch submission reuses runner map's expansion vocabulary and freezes
-    # it into the manifest; key_by names the input that IS the item key.
+    # it into the manifest; identity names the input that IS the item key.
     # Deliberately absent: max_concurrency (Host admission owns durable
     # concurrency) and error_handling (BatchTolerance owns durable failure).
     assert tuple(inspect.signature(Host.submit_batch).parameters) == (
         "self",
         "graph",
         "values",
+        "identity",
         "map_over",
         "map_mode",
-        "key_by",
+        "schema",
+        "exclusive_by",
         "workflow_id",
         "tolerance",
         "start_at",

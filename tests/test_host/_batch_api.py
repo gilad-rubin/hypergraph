@@ -2,14 +2,14 @@
 
 Issue #342 removed the public mapping-of-item-key-to-inputs submission
 shape: ``submit_batch`` now takes runner-shaped values plus ``map_over`` /
-``map_mode`` / ``key_by``, and freezes the expansion into the same immutable
+``map_mode`` / ``identity``, and freezes the expansion into the same immutable
 manifest. The Batch machinery the ticket-03/05/06 suites pin — atomic
 acceptance, keyed outcomes, tolerance, stop, subset rerun, SIGKILL recovery
 — is unchanged, so those suites keep their scenarios and come through the
 new door instead.
 
 ``keyed_values`` is the adapter: it transposes ``{"p-0": {"x": 0}, ...}``
-into ``{"item": ["p-0", ...], "x": [0, ...]}`` with ``key_by="item"``, so
+into ``{"item": ["p-0", ...], "x": [0, ...]}`` with ``identity="item"``, so
 every existing item key and per-item input survives verbatim. The graphs in
 those suites declare an ``item: str`` input for exactly this reason — a
 value no node consumes would raise an unrecognized-input warning, which the
@@ -53,7 +53,7 @@ def keyed_values(items: Mapping[str, Mapping[str, Any]]) -> tuple[dict[str, list
     """Transpose a keyed manifest into runner-shaped ``(values, map_over)``.
 
     Manifest order is the caller's mapping order, exactly as before: it is
-    the order ``key_by`` freezes and the order keyed outcomes report in.
+    the order ``identity`` freezes and the order keyed outcomes report in.
     """
     keys = list(items)
     params = list(dict.fromkeys(name for value in items.values() for name in value))
@@ -66,10 +66,10 @@ def keyed_values(items: Mapping[str, Mapping[str, Any]]) -> tuple[dict[str, list
 def submit_keyed(host, graph, items: Mapping[str, Mapping[str, Any]], **kwargs):
     """``host.submit_batch`` for a keyed manifest (async)."""
     values, map_over = keyed_values(items)
-    return host.submit_batch(graph, values, map_over=map_over, key_by=ITEM_KEY_INPUT, **kwargs)
+    return host.submit_batch(graph, values, map_over=map_over, identity=ITEM_KEY_INPUT, **kwargs)
 
 
 def submit_keyed_sync(host, graph, items: Mapping[str, Mapping[str, Any]], **kwargs):
     """``host.submit_batch_sync`` for a keyed manifest."""
     values, map_over = keyed_values(items)
-    return host.submit_batch_sync(graph, values, map_over=map_over, key_by=ITEM_KEY_INPUT, **kwargs)
+    return host.submit_batch_sync(graph, values, map_over=map_over, identity=ITEM_KEY_INPUT, **kwargs)

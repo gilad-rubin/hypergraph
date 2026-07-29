@@ -15,9 +15,14 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+from pydantic import BaseModel
 
 from hypergraph.host.errors import ItemKeyError
+
+if TYPE_CHECKING:
+    from hypergraph.graph import Graph
 
 #: Map expansion modes, verbatim from ``runner.map`` — Batch reuses the
 #: input-expansion vocabulary and nothing else from it (PRD 0017: durable
@@ -120,7 +125,7 @@ def normalize_map_over(map_over: str | Sequence[str]) -> list[str]:
             f"submit_batch() map_over must name inputs, not map them: got a {type(map_over).__name__} "
             f"({map_over!r}). Per-item values belong in `values`.\n\n"
             f"How to fix: pass {_MAP_OVER_EXAMPLE}, and put the collections in values — "
-            "submit_batch(graph, {'work_item_id': [...]}, map_over='work_item_id', key_by='work_item_id')."
+            "submit_batch(graph, {'work_item_id': [...]}, map_over='work_item_id', identity='work_item_id')."
         )
     else:
         try:
@@ -154,30 +159,30 @@ def normalize_map_over(map_over: str | Sequence[str]) -> list[str]:
     return names
 
 
-def _require_key_input(key_by: str, map_over: Sequence[str]) -> None:
-    """``key_by`` must name an EXPANDED input, not a broadcast one.
+def _require_identity_input(identity: str, map_over: Sequence[str]) -> None:
+    """``identity`` must name an EXPANDED input, not a broadcast one.
 
     A broadcast input holds the same value for every item, so it can only
     ever produce one key for the whole manifest. Refusing it here names the
     real mistake instead of reporting a duplicate-key collision the caller
     then has to decode.
     """
-    if not isinstance(key_by, str) or not key_by:
+    if not isinstance(identity, str) or not identity:
         raise ValueError(
-            f"submit_batch() requires key_by to name one expanded input, got {key_by!r}.\n\n"
-            "How to fix: pass key_by='work_item_id'. Durable Batch items need a stable logical key so "
+            f"submit_batch() requires identity to name one item input, got {identity!r}.\n\n"
+            "How to fix: pass identity='work_item_id'. Durable Batch items need a stable logical key so "
             "restart and out-of-order completion never make an item anonymous."
         )
-    if key_by not in map_over:
+    if identity not in map_over:
         raise ItemKeyError(
-            key_by,
-            f"submit_batch() key_by={key_by!r} does not name an expanded input; map_over expands {list(map_over)!r}.\n\n"
+            identity,
+            f"submit_batch() identity={identity!r} does not name an expanded input; map_over expands {list(map_over)!r}.\n\n"
             "How to fix: name one of the map_over inputs. A broadcast input has the same value for every "
             "item, so it cannot identify one.",
         )
 
 
-def _item_key(value: Any, *, key_by: str, index: int) -> str:
+def _item_key(value: Any, *, identity: str, index: int) -> str:
     """Project one expanded per-item value into its logical item key.
 
     Accepts the JSON-safe scalars that stay stable as durable identity:
@@ -190,8 +195,8 @@ def _item_key(value: Any, *, key_by: str, index: int) -> str:
     if isinstance(value, str):
         if not value:
             raise ItemKeyError(
-                key_by,
-                f"submit_batch() item {index} has an empty {key_by!r}; a logical item key must name the item.\n\n"
+                identity,
+                f"submit_batch() item {index} has an empty {identity!r}; a logical item key must name the item.\n\n"
                 "How to fix: give every expanded item a non-empty key value.",
             )
         return value
@@ -199,8 +204,8 @@ def _item_key(value: Any, *, key_by: str, index: int) -> str:
         return str(value)
     kind = "missing" if value is None else f"a {type(value).__name__}"
     raise ItemKeyError(
-        key_by,
-        f"submit_batch() item {index} has {kind} {key_by!r} ({value!r}); a logical item key must be a "
+        identity,
+        f"submit_batch() item {index} has {kind} {identity!r} ({value!r}); a logical item key must be a "
         "JSON-safe scalar (a non-empty str, or an int).\n\n"
         "How to fix: expand an input whose per-item value already identifies the item — an id column, "
         "not a payload. Composite identity needs an explicit key projection computed before submission; "
@@ -213,7 +218,9 @@ def expand_batch_items(
     *,
     map_over: str | Sequence[str],
     map_mode: MapMode,
-    key_by: str,
+    identity: str,
+    graph: Graph,
+    schema: type[BaseModel] | None = None,
 ) -> list[tuple[str, str]]:
     """Expand runner-shaped values into the immutable keyed manifest.
 
@@ -231,7 +238,7 @@ def expand_batch_items(
             reads it.
         map_mode: ``"zip"`` (parallel iteration) or ``"product"``
             (cartesian), exactly as ``runner.map`` reads it.
-        key_by: The expanded input whose per-item scalar value becomes the
+        identity: The expanded input whose per-item scalar value becomes the
             logical item key.
 
     Returns:
@@ -244,7 +251,7 @@ def expand_batch_items(
         ValueError: Empty/duplicate ``map_over``, a non-name ``map_over``
             entry, an unknown ``map_mode``, a ``map_over`` input missing
             from ``values``, unequal zip lengths, or an empty expansion.
-        ItemKeyError: ``key_by`` names a broadcast input, or an item's key
+        ItemKeyError: ``identity`` names a broadcast input, or an item's key
             is missing, empty, non-scalar, or duplicated.
     """
     from hypergraph.runners._shared.map_inputs import generate_map_inputs
@@ -253,10 +260,10 @@ def expand_batch_items(
         raise TypeError(
             f"submit_batch() values must be a Mapping of input name to value, got {type(values).__name__} ({values!r}).\n\n"
             "How to fix: pass the same runner-shaped dict runner.map takes — "
-            "submit_batch(graph, {'work_item_id': [...]}, map_over='work_item_id', key_by='work_item_id')."
+            "submit_batch(graph, {'work_item_id': [...]}, map_over='work_item_id', identity='work_item_id')."
         )
     names = normalize_map_over(map_over)
-    _require_key_input(key_by, names)
+    _require_identity_input(identity, names)
     if map_mode not in ("zip", "product"):
         raise ValueError(
             f"submit_batch() map_mode must be 'zip' or 'product', got {map_mode!r}.\n\n"
@@ -279,7 +286,32 @@ def expand_batch_items(
             "treat 'nothing to do' as a decision your code makes, not a durable Batch with no children. "
             "An accepted Batch pins its manifest forever, so an empty one could never be filled in later."
         )
-    return _freeze_manifest(expanded, key_by=key_by)
+    return _validate_and_freeze_manifest(expanded, identity=identity, graph=graph, schema=schema)
+
+
+def freeze_batch_items(
+    items: Sequence[Mapping[str, Any]],
+    *,
+    identity: str,
+    graph: Graph,
+    schema: type[BaseModel] | None = None,
+) -> list[tuple[str, str]]:
+    """Validate and freeze one mapping per durable child Run."""
+    if isinstance(items, (str, bytes, bytearray)) or not isinstance(items, Sequence):
+        raise TypeError(
+            f"submit_batch() items must be a sequence of mappings, got {type(items).__name__} ({items!r}).\n\n"
+            "How to fix: pass [{'doc_id': 'd1', ...}, {'doc_id': 'd2', ...}]."
+        )
+    if not items:
+        raise ValueError("submit_batch() items cannot be empty; submit only when there is durable work to accept.")
+    normalized: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, Mapping):
+            raise TypeError(
+                f"submit_batch() item {index} must be a Mapping of graph inputs, got {type(item).__name__} ({item!r})."
+            )
+        normalized.append(dict(item))
+    return _validate_and_freeze_manifest(normalized, identity=identity, graph=graph, schema=schema)
 
 
 def _is_json_safe(value: Any) -> bool:
@@ -291,15 +323,51 @@ def _is_json_safe(value: Any) -> bool:
     return True
 
 
-def _freeze_manifest(expanded: list[dict[str, Any]], *, key_by: str) -> list[tuple[str, str]]:
+def _validate_item_fields(graph: Graph, item: dict[str, Any], *, index: int) -> None:
+    expected = set(graph.inputs.all)
+    unknown = sorted(set(item) - expected)
+    if unknown:
+        raise ValueError(
+            f"submit_batch() item {index} has unknown graph input field(s): {unknown}. Expected fields: {sorted(expected)}.\n\n"
+            "How to fix:\n  Remove fields that are not graph boundary inputs, or add the intended input to the graph."
+        )
+    missing = sorted(set(graph.inputs.required) - set(item))
+    if missing:
+        raise ValueError(
+            f"submit_batch() item {index} is missing required graph input field(s): {missing}. Provided fields: {sorted(item)}.\n\n"
+            "How to fix:\n  Supply every required graph boundary input in this item."
+        )
+
+
+def _validate_and_freeze_manifest(
+    expanded: list[dict[str, Any]],
+    *,
+    identity: str,
+    graph: Graph,
+    schema: type[BaseModel] | None,
+) -> list[tuple[str, str]]:
+    if not isinstance(identity, str) or not identity:
+        raise ValueError(f"submit_batch() requires identity to name one item input, got {identity!r}.")
+    if schema is not None and (not isinstance(schema, type) or not issubclass(schema, BaseModel)):
+        raise TypeError(f"submit_batch() schema must be a Pydantic BaseModel type or None, got {schema!r}.")
+    validated: list[dict[str, Any]] = []
+    for index, item in enumerate(expanded):
+        _validate_item_fields(graph, item, index=index)
+        value = item if schema is None else schema.model_validate(item).model_dump(mode="json")
+        _validate_item_fields(graph, value, index=index)
+        validated.append(value)
+    return _freeze_manifest(validated, identity=identity)
+
+
+def _freeze_manifest(expanded: list[dict[str, Any]], *, identity: str) -> list[tuple[str, str]]:
     """Key and serialize expanded items, refusing duplicates before acceptance."""
     seen: dict[str, int] = {}
     pairs: list[tuple[str, str]] = []
     for index, item in enumerate(expanded):
-        key = _item_key(item.get(key_by), key_by=key_by, index=index)
+        key = _item_key(item.get(identity), identity=identity, index=index)
         if key in seen:
             raise ItemKeyError(
-                key_by,
+                identity,
                 f"submit_batch() duplicate item key {key!r}: expanded items {seen[key]} and {index} both key to it.\n\n"
                 "How to fix: every logical item key must be unique — two child Runs cannot claim to be the same "
                 "item. De-duplicate the expanded collection, or key on an input that is distinct per item.",

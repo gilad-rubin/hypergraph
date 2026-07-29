@@ -9,7 +9,7 @@ What this file falsifies:
 3. Runner-shaped ``zip`` / ``product`` expansion freezes the expected
    manifest, and mutating the caller's collection afterwards cannot change
    it.
-4. ``key_by`` derives stable identity from an expanded input, and never
+4. ``identity`` derives stable identity from an expanded input, and never
    falls back to a generated map index.
 5. Every submission refusal names the input, the supplied value, and a
    literal fix — before anything is accepted.
@@ -47,6 +47,16 @@ from tests.test_host._ingestion_fixture import (
 aiosqlite = pytest.importorskip("aiosqlite")
 
 pytestmark = pytest.mark.host_batch_interrupt
+
+
+def expansion_graph() -> Graph:
+    """A graph whose boundary declares every expansion-test input."""
+
+    @node(output_name="expanded")
+    def expand(work_item_id: str, tenant: str = "", shard: int = 0) -> str:
+        return f"{tenant}:{work_item_id}:{shard}"
+
+    return Graph([expand], name="expand").with_runner(AsyncRunner())
 
 
 # === 1. Served Graph objects submit; unserved Graphs fail immediately ===
@@ -106,7 +116,7 @@ class TestGraphFirstSubmission:
         with pytest.raises(TypeError, match="graph-first"):
             await host.submit("ingest", {"work_item_id": "w"})
         with pytest.raises(TypeError, match="graph-first"):
-            await host.submit_batch("ingest", {"work_item_id": ["w"]}, map_over="work_item_id", key_by="work_item_id", workflow_id="d")
+            await host.submit_batch("ingest", {"work_item_id": ["w"]}, map_over="work_item_id", identity="work_item_id", workflow_id="d")
 
     async def test_non_dict_values_say_what_a_values_dict_is(self, home):
         """`values` names graph inputs; a bare sequence cannot be matched to one."""
@@ -154,7 +164,7 @@ class TestPublicSurfaceBudget:
 
 class TestRunnerShapedExpansion:
     async def test_zip_expansion_freezes_the_expected_manifest(self, home):
-        graph = ingestion_graph()
+        graph = expansion_graph()
         host = serve(graph, home=home, deployment_version="v1")
         ids = ["work-a", "work-b", "work-c"]
 
@@ -162,7 +172,7 @@ class TestRunnerShapedExpansion:
             graph,
             {"work_item_id": ids, "tenant": "acme"},
             map_over="work_item_id",
-            key_by="work_item_id",
+            identity="work_item_id",
             workflow_id="drop-zip",
         )
 
@@ -172,7 +182,7 @@ class TestRunnerShapedExpansion:
         assert manifest["work-b"] == {"work_item_id": "work-b", "tenant": "acme"}
 
     async def test_product_expansion_crosses_both_inputs(self, home):
-        graph = ingestion_graph()
+        graph = expansion_graph()
         host = serve(graph, home=home, deployment_version="v1")
 
         receipt = await host.submit_batch(
@@ -180,7 +190,7 @@ class TestRunnerShapedExpansion:
             {"work_item_id": ["w1", "w2"], "shard": [7]},
             map_over=["work_item_id", "shard"],
             map_mode="product",
-            key_by="work_item_id",
+            identity="work_item_id",
             workflow_id="drop-product",
         )
 
@@ -189,7 +199,7 @@ class TestRunnerShapedExpansion:
 
     async def test_a_product_that_repeats_a_key_is_refused_not_silently_merged(self, home):
         """The cartesian cross must still yield distinct logical identity."""
-        graph = ingestion_graph()
+        graph = expansion_graph()
         host = serve(graph, home=home, deployment_version="v1")
 
         with pytest.raises(ItemKeyError, match="duplicate item key"):
@@ -198,7 +208,7 @@ class TestRunnerShapedExpansion:
                 {"work_item_id": ["w1", "w2"], "shard": [0, 1]},
                 map_over=["work_item_id", "shard"],
                 map_mode="product",
-                key_by="work_item_id",
+                identity="work_item_id",
                 workflow_id="drop-product-dup",
             )
 
@@ -219,26 +229,26 @@ class TestRunnerShapedExpansion:
         call = lambda **kw: host.submit_batch(graph, workflow_id="d", **kw)  # noqa: E731
 
         with pytest.raises(ValueError, match="map_over"):
-            await call(values={"work_item_id": []}, map_over=[], key_by="work_item_id")
+            await call(values={"work_item_id": []}, map_over=[], identity="work_item_id")
         with pytest.raises(ValueError, match="not in values"):
-            await call(values={"other": [1]}, map_over="work_item_id", key_by="work_item_id")
+            await call(values={"other": [1]}, map_over="work_item_id", identity="work_item_id")
         with pytest.raises(ValueError, match="map_mode"):
-            await call(values={"work_item_id": ["a"]}, map_over="work_item_id", map_mode="cross", key_by="work_item_id")
+            await call(values={"work_item_id": ["a"]}, map_over="work_item_id", map_mode="cross", identity="work_item_id")
         with pytest.raises(ValueError, match="equal lengths"):
             await call(
                 values={"work_item_id": ["a", "b"], "shard": [1]},
                 map_over=["work_item_id", "shard"],
-                key_by="work_item_id",
+                identity="work_item_id",
             )
         with pytest.raises(ValueError, match="an empty Batch is not a Batch"):
-            await call(values={"work_item_id": []}, map_over="work_item_id", key_by="work_item_id")
+            await call(values={"work_item_id": []}, map_over="work_item_id", identity="work_item_id")
 
 
-# === 4. key_by: stable identity, refused before acceptance ===
+# === 4. identity: stable item keys, refused before acceptance ===
 
 
-class TestKeyByIdentity:
-    async def test_key_by_reuses_the_mapped_scalar_as_the_item_key(self, home):
+class TestIdentity:
+    async def test_identity_reuses_the_mapped_scalar_as_the_item_key(self, home):
         graph = ingestion_graph()
         host = serve(graph, home=home, deployment_version="v1")
 
@@ -256,7 +266,7 @@ class TestKeyByIdentity:
             graph,
             {"work_item_id": [17, 18]},
             map_over="work_item_id",
-            key_by="work_item_id",
+            identity="work_item_id",
             workflow_id="drop-int",
         )
         view = await host.client.get(receipt.batch_ref)
@@ -278,11 +288,11 @@ class TestKeyByIdentity:
         host = serve(graph, home=home, deployment_version="v1")
 
         with pytest.raises(ItemKeyError, match=match):
-            await host.submit_batch(graph, values, map_over="work_item_id", key_by="work_item_id", workflow_id="drop-bad")
+            await host.submit_batch(graph, values, map_over="work_item_id", identity="work_item_id", workflow_id="drop-bad")
         # Refused before acceptance: no Batch, no children.
         assert await host.client.list(RunQuery()) == []
 
-    async def test_a_broadcast_key_by_is_refused_as_the_wrong_input(self, home):
+    async def test_a_broadcast_identity_is_refused_as_the_wrong_input(self, home):
         graph = ingestion_graph()
         host = serve(graph, home=home, deployment_version="v1")
 
@@ -291,14 +301,14 @@ class TestKeyByIdentity:
                 graph,
                 {"work_item_id": ["a", "b"], "tenant": "acme"},
                 map_over="work_item_id",
-                key_by="tenant",
+                identity="tenant",
                 workflow_id="drop-broadcast",
             )
 
-    async def test_key_by_is_required(self, home):
+    async def test_identity_is_required(self, home):
         graph = ingestion_graph()
         host = serve(graph, home=home, deployment_version="v1")
-        with pytest.raises(TypeError, match="key_by"):
+        with pytest.raises(TypeError, match="identity"):
             await host.submit_batch(graph, {"work_item_id": ["a"]}, map_over="work_item_id", workflow_id="drop-nokey")
 
 
@@ -315,18 +325,18 @@ class TestRefusalsAreActionable:
 
     #: (kwargs that fail, exception type, a phrase naming the supplied value).
     REFUSALS = [
-        ({"values": {"work_item_id": ["a"]}, "map_over": 7, "key_by": "work_item_id"}, TypeError, "int"),
-        ({"values": {"work_item_id": ["a"]}, "map_over": {"work_item_id": ["a"]}, "key_by": "work_item_id"}, TypeError, "dict"),
-        ({"values": {"work_item_id": ["a"]}, "map_over": [], "key_by": "work_item_id"}, ValueError, "empty sequence"),
-        ({"values": {"work_item_id": ["a"]}, "map_over": ["work_item_id", ""], "key_by": "work_item_id"}, ValueError, "''"),
-        ({"values": {"work_item_id": ["a"]}, "map_over": ["work_item_id", "work_item_id"], "key_by": "work_item_id"}, ValueError, "more than once"),
-        ({"values": [("work_item_id", ["a"])], "map_over": "work_item_id", "key_by": "work_item_id"}, TypeError, "list"),
-        ({"values": {"work_item_id": ["a"]}, "map_over": "work_item_id", "map_mode": "cross", "key_by": "work_item_id"}, ValueError, "'cross'"),
-        ({"values": {"other": [1]}, "map_over": "work_item_id", "key_by": "work_item_id"}, ValueError, "not in values"),
-        ({"values": {"work_item_id": []}, "map_over": "work_item_id", "key_by": "work_item_id"}, ValueError, "zero items"),
-        ({"values": {"work_item_id": ["a"], "blob": object()}, "map_over": "work_item_id", "key_by": "work_item_id"}, TypeError, "blob"),
-        ({"values": {"work_item_id": ["a"], "t": "x"}, "map_over": "work_item_id", "key_by": "t"}, ItemKeyError, "does not name an expanded input"),
-        ({"values": {"work_item_id": ["a", "a"]}, "map_over": "work_item_id", "key_by": "work_item_id"}, ItemKeyError, "duplicate item key"),
+        ({"values": {"work_item_id": ["a"]}, "map_over": 7, "identity": "work_item_id"}, TypeError, "int"),
+        ({"values": {"work_item_id": ["a"]}, "map_over": {"work_item_id": ["a"]}, "identity": "work_item_id"}, TypeError, "dict"),
+        ({"values": {"work_item_id": ["a"]}, "map_over": [], "identity": "work_item_id"}, ValueError, "empty sequence"),
+        ({"values": {"work_item_id": ["a"]}, "map_over": ["work_item_id", ""], "identity": "work_item_id"}, ValueError, "''"),
+        ({"values": {"work_item_id": ["a"]}, "map_over": ["work_item_id", "work_item_id"], "identity": "work_item_id"}, ValueError, "more than once"),
+        ({"values": [("work_item_id", ["a"])], "map_over": "work_item_id", "identity": "work_item_id"}, TypeError, "list"),
+        ({"values": {"work_item_id": ["a"]}, "map_over": "work_item_id", "map_mode": "cross", "identity": "work_item_id"}, ValueError, "'cross'"),
+        ({"values": {"other": [1]}, "map_over": "work_item_id", "identity": "work_item_id"}, ValueError, "not in values"),
+        ({"values": {"work_item_id": []}, "map_over": "work_item_id", "identity": "work_item_id"}, ValueError, "zero items"),
+        ({"values": {"work_item_id": ["a"], "blob": object()}, "map_over": "work_item_id", "identity": "work_item_id"}, ValueError, "blob"),
+        ({"values": {"work_item_id": ["a"], "t": "x"}, "map_over": "work_item_id", "identity": "t"}, ItemKeyError, "does not name an expanded input"),
+        ({"values": {"work_item_id": ["a", "a"]}, "map_over": "work_item_id", "identity": "work_item_id"}, ItemKeyError, "duplicate item key"),
     ]
 
     @pytest.mark.parametrize(("kwargs", "error", "supplied"), REFUSALS, ids=[str(i) for i in range(len(REFUSALS))])
@@ -386,7 +396,7 @@ class TestFreshWorld:
                 graph,
                 {"work_item_id": work_item_ids},
                 map_over="work_item_id",
-                key_by="work_item_id",
+                identity="work_item_id",
                 workflow_id="schneider-drop-42",
             )
             client = host.client

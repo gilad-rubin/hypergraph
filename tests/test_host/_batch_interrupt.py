@@ -83,7 +83,7 @@ async def submit_ids(host, graph, ids, workflow_id, **kwargs):
         graph,
         {"work_item_id": list(ids)},
         map_over="work_item_id",
-        key_by="work_item_id",
+        identity="work_item_id",
         workflow_id=workflow_id,
         **kwargs,
     )

@@ -13,10 +13,13 @@ checkpoint durability ``"sync"`` and rejects ``"exit"`` policies.
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
 import logging
+import threading
 from collections.abc import Collection, Sequence
+from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -31,6 +34,7 @@ from hypergraph.checkpointers.types import (
     AnswerRejectedError,
     PauseAlreadySettledError,
     StalePauseError,
+    StepRecord,
     WorkflowStatus,
 )
 from hypergraph.host._batch_store import (
@@ -95,6 +99,7 @@ from hypergraph.host._pause_lifecycle import (
     scheduled_answer_fact,
     scheduled_answer_row,
 )
+from hypergraph.host.batch import _item_key
 from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import AlreadyTerminalError, HostError, WorkflowIdConflictError
 from hypergraph.host.fingerprint import fingerprint_mismatch_aspect
@@ -115,11 +120,13 @@ logger = logging.getLogger("hypergraph.host")
 #: its id to the next allocation and two logically distinct Homes would share
 #: one entry in the worker-lock registry. A token is never reused.
 _memory_lock_tokens = itertools.count()
+_sync_wait_cancellation: ContextVar[threading.Event | None] = ContextVar("host_sync_wait_cancellation", default=None)
 
 _SUBMISSION_COLS = (
     "workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
     "start_at, state, recovery_attempts, recovery_cap, source_ref, created_at, claimed_at, finished_at, "
-    "fingerprint, compat_state, retry_of, retry_index, forked_from, fork_reason, last_progress_step_count, batch_id, item_key, claim_seq"
+    "fingerprint, compat_state, retry_of, retry_index, forked_from, fork_reason, last_progress_step_count, batch_id, item_key, claim_seq, "
+    "exclusive_by, exclusive_key"
 )
 _SUBMISSION_PLACEHOLDERS = ", ".join("?" for _ in _SUBMISSION_COLS.split(", "))
 _SELECT_SUBMISSION = f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE workflow_id = ?"
@@ -141,6 +148,10 @@ _CLAIM_BATCH = 16
 # ones this worker owns end to end. Both the claim gate and the view read
 # this same definition so "holds a slot" never means two different things.
 _ACTIVE_RUN_COUNT_SQL = "SELECT COUNT(*) FROM host_submissions WHERE state = 'claimed'"
+_INSERT_EXCLUSIVE_LOCK_SQL = (
+    "INSERT OR IGNORE INTO host_exclusive_locks (exclusive_by, exclusive_key, workflow_id, acquired_at) VALUES (?, ?, ?, ?)"
+)
+_DELETE_EXCLUSIVE_LOCK_SQL = "DELETE FROM host_exclusive_locks WHERE workflow_id = ?"
 # The active-Run cap is a Home-scoped fact in the store, not a per-instance
 # Python attribute: the worker enforcing it and the operator tuning or reading
 # it hold different RunHome objects (often in different processes), and a
@@ -839,6 +850,11 @@ class RunHome(SqliteCheckpointer):
         closed = db.execute(SELECT_PENDING_CLOSEOUT, (batch_id,)).fetchall()
         unstarted, abandoned = split_closeout(closed)
         db.execute(
+            "DELETE FROM host_exclusive_locks WHERE workflow_id IN "
+            "(SELECT workflow_id FROM host_submissions WHERE batch_id = ? AND state = 'pending')",
+            (batch_id,),
+        )
+        db.execute(
             CLOSE_PENDING_CHILDREN,
             (_now_iso(), batch_id),
         )
@@ -865,6 +881,11 @@ class RunHome(SqliteCheckpointer):
             return
         pending_cursor = await self._db.execute(SELECT_PENDING_CLOSEOUT, (batch_id,))
         unstarted, abandoned = split_closeout(await pending_cursor.fetchall())
+        await self._db.execute(
+            "DELETE FROM host_exclusive_locks WHERE workflow_id IN "
+            "(SELECT workflow_id FROM host_submissions WHERE batch_id = ? AND state = 'pending')",
+            (batch_id,),
+        )
         await self._db.execute(
             CLOSE_PENDING_CHILDREN,
             (_now_iso(), batch_id),
@@ -907,6 +928,8 @@ class RunHome(SqliteCheckpointer):
         recovery_cap: int = 3,
         batch_id: str | None = None,
         item_key: str | None = None,
+        exclusive_by: str | None = None,
+        exclusive_key: str | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         """Insert one submission plus its 'submitted' update, atomically.
 
@@ -996,6 +1019,8 @@ class RunHome(SqliteCheckpointer):
                         batch_id,
                         item_key,
                         0,  # claim_seq: no claim has been handed out yet
+                        exclusive_by,
+                        exclusive_key,
                     ),
                 )
                 self._append_run_update_sync(
@@ -1029,6 +1054,8 @@ class RunHome(SqliteCheckpointer):
         recovery_cap: int = 3,
         batch_id: str | None = None,
         item_key: str | None = None,
+        exclusive_by: str | None = None,
+        exclusive_key: str | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         """Async mirror of ``_submit_sync``."""
         await self._ensure_db()
@@ -1102,6 +1129,8 @@ class RunHome(SqliteCheckpointer):
                         batch_id,
                         item_key,
                         0,  # claim_seq: no claim has been handed out yet
+                        exclusive_by,
+                        exclusive_key,
                     ),
                 )
                 await self._append_run_update(
@@ -1704,8 +1733,8 @@ class RunHome(SqliteCheckpointer):
                     # two submissions accepted inside the same microsecond
                     # would otherwise be ordered arbitrarily, and "over-limit
                     # work waits in claim order" would be undefined for them.
-                    "ORDER BY created_at, rowid LIMIT ?",
-                    (now_iso, limit),
+                    "ORDER BY created_at, rowid",
+                    (now_iso,),
                 )
                 submissions = [_row_to_submission(row) for row in await cursor.fetchall()]
                 free_slots = await self._free_admission_slots()
@@ -1724,6 +1753,7 @@ class RunHome(SqliteCheckpointer):
                             (now_iso, submission["workflow_id"]),
                         )
                         if result.rowcount == 1:
+                            await self._db.execute(_DELETE_EXCLUSIVE_LOCK_SQL, (submission["workflow_id"],))
                             # A9: this item settles AFTER the trip fact
                             # already listed its items, so it gets its own
                             # durable row in the SAME transaction as the
@@ -1752,11 +1782,31 @@ class RunHome(SqliteCheckpointer):
                             (submission["workflow_id"],),
                         )
                         continue
+                    if len(claimed) >= limit:
+                        continue
                     if free_slots is not None and free_slots <= 0:
                         # Over the active-Run cap: leave it pending. Claim
                         # order is the scan order, so the oldest waiting
                         # submission takes the next freed slot.
                         continue
+                    if submission["exclusive_key"] is not None:
+                        lock = await self._db.execute(
+                            _INSERT_EXCLUSIVE_LOCK_SQL,
+                            (
+                                submission["exclusive_by"],
+                                submission["exclusive_key"],
+                                submission["workflow_id"],
+                                now_iso,
+                            ),
+                        )
+                        if lock.rowcount != 1:
+                            owner = await self._db.execute(
+                                "SELECT workflow_id FROM host_exclusive_locks WHERE exclusive_by = ? AND exclusive_key = ?",
+                                (submission["exclusive_by"], submission["exclusive_key"]),
+                            )
+                            owner_row = await owner.fetchone()
+                            if owner_row is None or owner_row[0] != submission["workflow_id"]:
+                                continue
                     result = await self._db.execute(
                         "UPDATE host_submissions SET state = 'claimed', claimed_at = ?, claim_seq = claim_seq + 1 "
                         "WHERE workflow_id = ? AND state = 'pending'",
@@ -1834,11 +1884,138 @@ class RunHome(SqliteCheckpointer):
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
                 result = await self._db.execute(RELEASE_SUBMISSION_SQL, (SUBMISSION_STATE_FINISHED, _now_iso(), workflow_id, claim_seq))
+                if result.rowcount == 1:
+                    await self._db.execute(_DELETE_EXCLUSIVE_LOCK_SQL, (workflow_id,))
                 await self._db.commit()
                 return bool(result.rowcount == 1)
             except BaseException:
                 await self._rollback_async()
                 raise
+
+    async def _before_step_commit(self, record: StepRecord) -> None:
+        """Checkpoint an exclusion-key remap in the step transaction."""
+        if not record.values:
+            return
+        cursor = await self._db.execute(
+            "SELECT exclusive_by, exclusive_key FROM host_submissions WHERE workflow_id = ?",
+            (record.run_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None or row[0] is None or row[0] not in record.values:
+            return
+        new_key = _item_key(record.values[row[0]], identity=row[0], index=0)
+        if new_key == row[1]:
+            return
+        # Release-old and persist the desired key atomically with the
+        # checkpoint. If new is busy, restart sees the desired key and claim
+        # admission reacquires it before replay can enter another superstep.
+        await self._db.execute(_DELETE_EXCLUSIVE_LOCK_SQL, (record.run_id,))
+        await self._db.execute("UPDATE host_submissions SET exclusive_key = ? WHERE workflow_id = ?", (new_key, record.run_id))
+        await self._db.execute(_INSERT_EXCLUSIVE_LOCK_SQL, (row[0], new_key, record.run_id, _now_iso()))
+
+    async def _after_step_commit(self, record: StepRecord) -> None:
+        """Wait for the committed desired key before another superstep."""
+        if not record.values:
+            return
+        while True:
+            await self._ensure_db()
+            async with self._txn_lock():
+                cursor = await self._db.execute(
+                    "SELECT exclusive_by, exclusive_key FROM host_submissions WHERE workflow_id = ?",
+                    (record.run_id,),
+                )
+                row = await cursor.fetchone()
+                if row is None or row[0] is None or row[0] not in record.values:
+                    return
+                owner = await self._db.execute(
+                    "SELECT workflow_id FROM host_exclusive_locks WHERE exclusive_by = ? AND exclusive_key = ?",
+                    (row[0], row[1]),
+                )
+                owner_row = await owner.fetchone()
+                if owner_row is not None and owner_row[0] == record.run_id:
+                    return
+                stop = await self._db.execute(
+                    "SELECT applied_at FROM host_commands WHERE run_id = ? AND verb = ? ORDER BY id DESC LIMIT 1",
+                    (record.run_id, STOP_VERB),
+                )
+                stop_row = await stop.fetchone()
+                if stop_row is not None:
+                    if stop_row[0] is not None:
+                        return
+                else:
+                    try:
+                        await self._db.execute(_INSERT_EXCLUSIVE_LOCK_SQL, (row[0], row[1], record.run_id, _now_iso()))
+                        await self._db.commit()
+                    except BaseException:
+                        await self._rollback_async()
+                        raise
+            await asyncio.sleep(0.01)
+
+    def _before_step_commit_sync(self, db: Any, record: StepRecord) -> None:
+        """Sync mirror of ``_before_step_commit``."""
+        if not record.values:
+            return
+        row = db.execute(
+            "SELECT exclusive_by, exclusive_key FROM host_submissions WHERE workflow_id = ?",
+            (record.run_id,),
+        ).fetchone()
+        if row is None or row[0] is None or row[0] not in record.values:
+            return
+        new_key = _item_key(record.values[row[0]], identity=row[0], index=0)
+        if new_key == row[1]:
+            return
+        db.execute(_DELETE_EXCLUSIVE_LOCK_SQL, (record.run_id,))
+        db.execute("UPDATE host_submissions SET exclusive_key = ? WHERE workflow_id = ?", (new_key, record.run_id))
+        db.execute(_INSERT_EXCLUSIVE_LOCK_SQL, (row[0], new_key, record.run_id, _now_iso()))
+
+    def _after_step_commit_sync(self, record: StepRecord) -> None:
+        """Sync mirror of ``_after_step_commit``."""
+        if not record.values:
+            return
+        import time
+
+        while True:
+            with self._sync_lock:
+                db = self._sync_db()
+                row = db.execute(
+                    "SELECT exclusive_by, exclusive_key FROM host_submissions WHERE workflow_id = ?",
+                    (record.run_id,),
+                ).fetchone()
+                if row is None or row[0] is None or row[0] not in record.values:
+                    return
+                cancellation = _sync_wait_cancellation.get()
+                if cancellation is not None and cancellation.is_set():
+                    raise asyncio.CancelledError
+                owner = db.execute(
+                    "SELECT workflow_id FROM host_exclusive_locks WHERE exclusive_by = ? AND exclusive_key = ?",
+                    (row[0], row[1]),
+                ).fetchone()
+                if owner is not None and owner[0] == record.run_id:
+                    return
+                stop = db.execute(
+                    "SELECT applied_at FROM host_commands WHERE run_id = ? AND verb = ? ORDER BY id DESC LIMIT 1",
+                    (record.run_id, STOP_VERB),
+                ).fetchone()
+                if stop is not None:
+                    if stop[0] is not None:
+                        return
+                else:
+                    try:
+                        db.execute(_INSERT_EXCLUSIVE_LOCK_SQL, (row[0], row[1], record.run_id, _now_iso()))
+                        db.commit()
+                    except BaseException:
+                        self._rollback_sync(db)
+                        raise
+            time.sleep(0.01)
+
+    def _register_sync_wait_cancellation(self) -> tuple[threading.Event, Token[threading.Event | None]]:
+        """Register the fence a cancelled ``to_thread`` execution sets."""
+        event = threading.Event()
+        return event, _sync_wait_cancellation.set(event)
+
+    def _clear_sync_wait_cancellation(self, token: Token[threading.Event | None]) -> None:
+        """Restore the caller context after ``to_thread`` copied its fence."""
+        _sync_wait_cancellation.reset(token)
 
     async def _reset_unstarted_run(self, run_id: str) -> bool:
         """Delete a runs row that carries zero execution history.
@@ -1945,6 +2122,10 @@ class RunHome(SqliteCheckpointer):
                         "UPDATE host_submissions SET state = 'pending', claimed_at = NULL, recovery_attempts = ? WHERE workflow_id = ?",
                         (attempts, workflow_id),
                     )
+                await self._db.execute(
+                    "DELETE FROM host_exclusive_locks WHERE workflow_id IN "
+                    "(SELECT workflow_id FROM host_submissions WHERE state IN ('finished', 'exhausted'))"
+                )
                 # A new worker (possibly a new deployment) re-evaluates
                 # version compatibility from scratch.
                 await self._db.execute(
@@ -2365,6 +2546,7 @@ class RunHome(SqliteCheckpointer):
                     "UPDATE host_submissions SET state = ?, finished_at = ? WHERE workflow_id = ? AND state = ?",
                     (SUBMISSION_STATE_FINISHED, _now_iso(), workflow_id, SUBMISSION_STATE_PAUSED),
                 )
+                await self._db.execute(_DELETE_EXCLUSIVE_LOCK_SQL, (workflow_id,))
                 # Emits the run update, the child_settled Batch fact, and any
                 # tolerance trip — the same fan-out every terminal transition
                 # gets, in this transaction.
@@ -2416,6 +2598,7 @@ class RunHome(SqliteCheckpointer):
                     (now, workflow_id),
                 )
                 if result.rowcount == 1:
+                    await self._db.execute(_DELETE_EXCLUSIVE_LOCK_SQL, (workflow_id,))
                     # Only a real transition emits, so a Batch item is never
                     # accounted twice by the stream.
                     await self._append_child_unstarted(workflow_id)
