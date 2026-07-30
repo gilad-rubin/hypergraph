@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from hypergraph.viz._simplify import EdgeRef, redundant_edge_keys
+from hypergraph.viz._simplify import EdgeRef, shortcut_edge_keys
 from hypergraph.viz.ir_schema import CURRENT_SCHEMA_VERSION, GraphIR, IRSchemaError
 from hypergraph.viz.renderer.scope import resolve_expanded_entrypoints
 
@@ -307,7 +307,7 @@ def simplify_transitive_edges(scene_edges: list[dict[str, Any]]) -> list[dict[st
     survive intact for the next expansion.
 
     Classification lives here; the reachability decision lives in
-    ``_simplify.redundant_edge_keys``. The JS twin is
+    ``_simplify.shortcut_edge_keys``. The JS twin is
     ``simplifyTransitiveEdges`` in ``assets/scene_builder.js``.
     """
     refs = []
@@ -331,7 +331,7 @@ def simplify_transitive_edges(scene_edges: list[dict[str, Any]]) -> list[dict[st
             )
         )
 
-    dropped = redundant_edge_keys(refs)
+    dropped = shortcut_edge_keys(refs)
     return [edge for edge in scene_edges if edge["id"] not in dropped]
 
 

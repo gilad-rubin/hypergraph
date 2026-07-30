@@ -1,7 +1,10 @@
-"""Transitive-edge simplification in the scene builders.
+"""Shortcut-edge simplification in the scene builders.
 
-``simplify=True`` (the default) drops data edges a longer visible path already
-implies: with ``fetch → parse → render``, a direct ``fetch → render`` is noise.
+``simplify=True`` (the default) hides data edges that take a short way past a
+route the diagram already draws: with ``fetch → parse → render``, a direct
+``fetch → render`` is a shortcut. Not "redundant" — ``render`` really does read
+``fetch``'s output, and hiding that costs the reader a real fact. Only the
+*ordering* is already carried by the longer route.
 
 These tests pin the invariants that make the reduction safe to have on by
 default — cycles survive, control/ordering semantics survive, and nothing gets
@@ -60,7 +63,7 @@ class TestShortcutRemoval:
         assert visible_pairs(build_initial_scene(ir)) == visible_pairs(build_initial_scene(ir, simplify=True))
 
     def test_chain_without_shortcut_is_untouched(self) -> None:
-        """A pure chain has nothing redundant — simplify must be a no-op."""
+        """A pure chain has no shortcuts — simplify must be a no-op."""
         graph = make_chain_graph()
         assert visible_pairs(scene_for_state(graph, simplify=True)) == visible_pairs(scene_for_state(graph, simplify=False))
 
@@ -77,7 +80,7 @@ class TestShortcutRemoval:
         assert ("fetch", "data_fetch_raw") in visible_pairs(scene, edge_type="output")
 
     def test_two_hop_shortcut_is_dropped(self) -> None:
-        """Redundancy is transitive over any path length, not just 2 hops."""
+        """A shortcut is a shortcut over any path length, not just 2 hops."""
 
         @node(output_name="a_out")
         def a(seed: int) -> int:
@@ -365,7 +368,9 @@ class TestToolbarToggle:
 
     def _click_simplify(self, page) -> None:
         version = page.evaluate("window.__hypergraphVizDebug.version")
-        page.get_by_role("button", name="Show Redundant Edges").or_(page.get_by_role("button", name="Simplify Edges")).first.click()
+        # One stable accessible name in both states — the button is a toggle,
+        # not two buttons, so the label names the thing rather than the next action.
+        page.get_by_role("button", name="Simplify Graph").click()
         page.wait_for_function(
             f"window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > {version} && window.__hypergraphVizReady === true",
             timeout=10000,

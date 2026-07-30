@@ -56,7 +56,7 @@
         <//>
         <${TooltipButton} onClick=${props.onToggleInputs} tooltip=${props.showInputs ? "Hide Inputs" : "Show Inputs"} isActive=${props.showInputs} theme=${props.theme}><${Icons.ExternalInputs} /><//>
         <${TooltipButton} onClick=${props.onToggleTypes} tooltip=${props.showTypes ? "Hide Types" : "Show Types"} isActive=${props.showTypes} theme=${props.theme}><${Icons.Type} /><//>
-        <${TooltipButton} onClick=${props.onToggleSimplify} tooltip=${props.simplify ? "Show Redundant Edges" : "Simplify Edges"} isActive=${props.simplify} theme=${props.theme}><${Icons.Simplify} /><//>
+        <${TooltipButton} onClick=${props.onToggleSimplify} tooltip="Simplify Graph" isActive=${props.simplify} theme=${props.theme}><${Icons.Simplify} /><//>
         <div className=${'h-px my-1 ' + (props.theme === 'light' ? 'bg-slate-200' : 'bg-slate-700')}></div>
         <${TooltipButton} onClick=${props.onToggleTheme} tooltip=${props.theme === 'dark' ? "Switch to Light Theme" : "Switch to Dark Theme"} theme=${props.theme}>
           ${props.theme === 'dark' ? html`<${Icons.Sun} />` : html`<${Icons.Moon} />`}

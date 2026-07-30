@@ -1,17 +1,25 @@
-"""Transitive reduction of visible graph edges — the ``simplify`` option.
+"""Hiding shortcut edges — the ``simplify`` option.
 
-``A ──▶ B ──▶ C`` plus a direct ``A ──▶ C`` draws a shortcut that adds no
-reachability information, so the direct edge is dropped and the reader follows
+``A ──▶ B ──▶ C`` plus a direct ``A ──▶ C``: that direct edge is a **shortcut**
+past a route the diagram already draws, so it is hidden and the reader follows
 the chain instead.
+
+"Shortcut", never "redundant". The edge is a real dependency — ``C`` genuinely
+reads ``A``'s output — and hiding it genuinely costs the reader that fact. What
+is true is only that the *ordering* it implies is already carried by the longer
+route. Naming it "redundant" would claim it carries nothing, which is false and
+would invite widening the rule until real information disappears.
+
+(The underlying algorithm is a transitive reduction, if you know the term.)
 
 This module is the single derivation authority for that decision. Three
 consumers share it so the interactive widget, the Python scene oracle and the
-Mermaid exporter never disagree about which edges are redundant:
+Mermaid exporter never disagree about which edges are shortcuts:
 
 1. ``scene_builder.py`` — React Flow scene edges (and, via the twin
    ``simplifyTransitiveEdges`` in ``assets/scene_builder.js``, the browser).
 2. ``mermaid.py`` — resolved Mermaid edge lines.
-3. Tests, which assert against :func:`redundant_edge_keys` directly.
+3. Tests, which assert against :func:`shortcut_edge_keys` directly.
 
 Callers own edge identity and edge classification; this module only answers
 "is this edge implied by a longer path?".
@@ -28,7 +36,7 @@ class EdgeRef:
     """One edge, as the reduction needs to see it.
 
     Attributes:
-        key: Caller-owned identity returned in the redundant set.
+        key: Caller-owned identity returned in the shortcut set.
         source: Resolved source node id.
         target: Resolved target node id.
         removable: True only for plain data edges the caller is willing to
@@ -63,13 +71,13 @@ class EdgeRef:
     traversable: bool = True
 
 
-def redundant_edge_keys(edges: Iterable[EdgeRef]) -> set[Hashable]:
+def shortcut_edge_keys(edges: Iterable[EdgeRef]) -> set[Hashable]:
     """Return the keys of removable edges that a longer path already implies.
 
     Reachability is preserved: because every dropped edge is justified by a
     path through the kept graph, no node loses its last connection.
 
-    Callers must pass the edges that are *currently visible*. Redundancy is a
+    Callers must pass the edges that are *currently visible*. Being a shortcut is a
     property of the rendered view, not of the graph definition — an edge that
     is a shortcut while a container is collapsed can be the only path once that
     container expands.
@@ -92,13 +100,13 @@ def redundant_edge_keys(edges: Iterable[EdgeRef]) -> set[Hashable]:
             continue
         adjacency.setdefault(edge.source, set()).add(edge.target)
 
-    redundant: set[Hashable] = set()
+    shortcuts: set[Hashable] = set()
     for edge in edges:
         if not edge.removable or edge.source == edge.target:
             continue
         if _has_indirect_path(adjacency, edge.source, edge.target):
-            redundant.add(edge.key)
-    return redundant
+            shortcuts.add(edge.key)
+    return shortcuts
 
 
 def _has_indirect_path(adjacency: dict[str, set[str]], source: str, target: str) -> bool:

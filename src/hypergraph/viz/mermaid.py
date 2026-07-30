@@ -29,7 +29,7 @@ from hypergraph.viz._common import (
     is_node_visible,
 )
 from hypergraph.viz._mermaid_core import MermaidDiagram, _MermaidIdAllocator, _sanitize_id
-from hypergraph.viz._simplify import EdgeRef, redundant_edge_keys
+from hypergraph.viz._simplify import EdgeRef, shortcut_edge_keys
 from hypergraph.viz.renderer._format import format_type
 from hypergraph.viz.renderer.nodes import (
     build_input_groups,
@@ -270,7 +270,7 @@ def _simplify_rendered_edges(rendered: list[_RenderedEdge]) -> list[_RenderedEdg
         )
         for index, edge in enumerate(rendered)
     ]
-    dropped = redundant_edge_keys(refs)
+    dropped = shortcut_edge_keys(refs)
     return [edge for index, edge in enumerate(rendered) if index not in dropped]
 
 

@@ -147,7 +147,7 @@ The IR carries all expansion-rewriting information eagerly:
    - Rendered with dashed style
 
 4. **Transitive reduction** (`simplify`, default ON, both modes)
-   - `viz/_simplify.py::redundant_edge_keys` is the ONE authority for "is this
+   - `viz/_simplify.py::shortcut_edge_keys` is the ONE authority for "is this
      edge implied by a longer path?". Three consumers share it: `scene_builder.py`,
      `assets/scene_builder.js` (twin `simplifyTransitiveEdges`), `mermaid.py`.
      Never re-derive the reachability walk in a new call site.
