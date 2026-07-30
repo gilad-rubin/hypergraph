@@ -317,13 +317,17 @@ def simplify_transitive_edges(scene_edges: list[dict[str, Any]]) -> list[dict[st
         data = edge.get("data") or {}
         edge_type = data.get("edgeType")
         is_back_edge = bool(data.get("forceFeedback"))
+        is_exclusive = bool(data.get("exclusive"))
         refs.append(
             EdgeRef(
                 key=edge["id"],
                 source=edge["source"],
                 target=edge["target"],
-                removable=edge_type == "data" and not data.get("exclusive") and not is_back_edge,
-                traversable=edge_type in DATA_FLOW_EDGE_TYPES and not is_back_edge,
+                removable=edge_type == "data" and not is_exclusive and not is_back_edge,
+                # Exclusive arms are excluded from the path graph too, not just
+                # from the candidates: an arm only carries its value when its
+                # branch is taken, so it must not imply away an unconditional edge.
+                traversable=edge_type in DATA_FLOW_EDGE_TYPES and not is_back_edge and not is_exclusive,
             )
         )
 

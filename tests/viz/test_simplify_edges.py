@@ -179,6 +179,21 @@ class TestSimplifyTransitiveEdgesUnit:
         ]
         assert len(simplify_transitive_edges(edges)) == 3
 
+    def test_exclusive_arm_cannot_imply_away_an_unconditional_edge(self) -> None:
+        """An arm carries its value only when its branch is taken, so it must
+        be barred from the path graph, not merely from the candidates.
+
+        ``A ⇢ B`` (arm) + ``B → C`` must not hide an unconditional ``A → C``:
+        on the other branch that shortcut is the only route to C.
+        """
+        edges = [
+            self._edge("A", "B", exclusive=True),
+            self._edge("B", "C"),
+            self._edge("A", "C"),
+        ]
+        kept = {(e["source"], e["target"]) for e in simplify_transitive_edges(edges)}
+        assert kept == {("A", "B"), ("B", "C"), ("A", "C")}
+
     def test_self_loop_survives(self) -> None:
         assert simplify_transitive_edges([self._edge("acc", "acc")]) == [self._edge("acc", "acc")]
 
@@ -255,6 +270,58 @@ class TestMermaidAlignment:
         arrows = self._arrows(Graph(nodes=[a, b, c], name="cyc", entrypoint="a"))
         assert {("a", "b"), ("b", "c"), ("c", "a")} <= arrows
         assert ("a", "c") not in arrows
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js not installed")
+class TestJsHardening:
+    """Failure modes the JS twin can have but the Python one structurally
+    cannot, so the shared parity fixtures would never surface them."""
+
+    def _run(self, edges: list[dict]) -> dict:
+        script = (
+            "const fs=require('fs');"
+            f"eval(fs.readFileSync({str(REPO_ROOT / 'src/hypergraph/viz/assets/derivation.js')!r},'utf-8'));"
+            f"eval(fs.readFileSync({str(REPO_ROOT / 'src/hypergraph/viz/assets/scene_builder.js')!r},'utf-8'));"
+            f"const edges={json.dumps(edges)};"
+            "const kept=globalThis.HypergraphSceneBuilder.simplifyTransitiveEdges(edges)"
+            ".map(e=>[e.source,e.target]);"
+            "process.stdout.write(JSON.stringify({kept, polluted: ({}).__hg_probe !== undefined}));"
+        )
+        proc = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=15)
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(proc.stdout)
+
+    def _edge(self, source: str, target: str, **data: object) -> dict:
+        payload: dict = {"edgeType": "data"}
+        payload.update(data)
+        return {"id": f"{source}__{target}", "source": source, "target": target, "data": payload, "hidden": False}
+
+    def test_node_named_proto_does_not_crash_or_pollute(self) -> None:
+        """``__proto__`` is a legal Python identifier, so it can reach the JS
+        side as a node id. On a plain object literal the adjacency write throws
+        and blanks the canvas; null-prototype maps keep it an ordinary key."""
+        result = self._run(
+            [
+                self._edge("__proto__", "b"),
+                self._edge("b", "c"),
+                self._edge("__proto__", "c"),
+                self._edge("x", "__hg_probe"),
+            ]
+        )
+        assert not result["polluted"]
+        assert ["__proto__", "c"] not in result["kept"]  # still correctly reduced
+        assert ["__proto__", "b"] in result["kept"]
+
+    def test_exclusive_arm_cannot_imply_away_an_unconditional_edge(self) -> None:
+        """The JS twin must bar exclusive arms from the path graph too."""
+        result = self._run(
+            [
+                self._edge("A", "B", exclusive=True),
+                self._edge("B", "C"),
+                self._edge("A", "C"),
+            ]
+        )
+        assert sorted(result["kept"]) == [["A", "B"], ["A", "C"], ["B", "C"]]
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js not installed")

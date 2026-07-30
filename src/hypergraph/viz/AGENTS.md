@@ -155,11 +155,19 @@ The IR carries all expansion-rewriting information eagerly:
      that widens either silently deletes real information:
      - Only **plain data** edges are removal candidates. Control, ordering,
        input, output, start/end and mutex (`exclusive`) edges never get dropped.
-     - The path graph is the **data-flow spine only** (`data` + `output`, plus
-       inert `input`). Control/ordering edges must NOT justify a removal — a
-       gate's `gate ⇢ target` means "may run", so letting it stand in for
-       `producer → target` leaves the consumer with no visible data source.
-       `tests/test_frozen_baselines` (`gated.mmd`) is the regression guard.
+     - The path graph is the **unconditional data-flow spine only** (`data` +
+       `output`, plus inert `input`). Only an edge that *always* carries a value
+       may justify a removal, because the reader must be able to trust the
+       surviving path. Two exclusions, same reasoning one level apart:
+       control/ordering (`gate ⇢ target` means "may run", so standing in for
+       `producer → target` leaves the consumer with no visible data source) and
+       `exclusive` arms (an arm carries its value only on its branch, so it must
+       not hide an unconditional edge that is the sole route on the other
+       branch). Being a non-candidate is NOT enough — an edge barred from
+       removal must also be barred from the path graph unless it is
+       unconditional. `tests/test_frozen_baselines` (`gated.mmd`) guards the
+       control case; `test_simplify_edges.py` guards the exclusive case in both
+       twins.
    - Back edges are excluded from the path graph, or the reduction eats cycles.
      Mermaid has no `is_back_edge` field of its own; it calls
      `renderer/scope.py::find_back_edges` (also the source of
@@ -167,6 +175,12 @@ The IR carries all expansion-rewriting information eagerly:
    - Runs on the **assembled scene**, after expansion rewriting: an edge that is
      a shortcut while a container is collapsed can be the only path once it
      expands. Hidden edges are neither path segments nor candidates.
+   - JS-only hazard: node ids come from user-authored Python names and
+     `__proto__` is a legal Python identifier, so every id-keyed map in
+     `assets/*.js` must be `Object.create(null)`. A plain `{}` resolves
+     `map['__proto__']` to `Object.prototype` and the write throws, blanking the
+     canvas. The Python twin uses dicts and cannot fail this way, so shared
+     parity fixtures will never catch it — test the JS side directly.
 
 5. **Exclusive (mutex) data edges** (both modes)
    - When two producers in different branches of an exclusive gate

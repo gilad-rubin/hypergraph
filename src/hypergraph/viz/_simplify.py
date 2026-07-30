@@ -36,14 +36,22 @@ class EdgeRef:
             START/END edges are scaffolding; mutex (``exclusive``) arms are
             alternatives rather than a chain plus a shortcut. All pass ``False``
             and can only ever act as path segments.
-        traversable: True only for edges on the **data-flow spine** — the
-            edges that actually carry a value from one node to the next. Two
+        traversable: True only for edges on the **unconditional data-flow
+            spine** — edges that always carry a value from one node to the
+            next. Only such an edge can justify dropping another, because the
+            reader has to be able to trust the surviving path. Three
             exclusions matter:
 
             - Control and ordering edges. A gate's dotted ``gate ⇢ archive``
               means "archive may run", not "archive receives this value", so it
               cannot justify dropping ``deliver → archive``: the reader would
               be left with no indication that ``archive`` consumes anything.
+            - Mutex (``exclusive``) arms, for the same reason one level down.
+              An arm carries its value only when its branch is taken, so
+              ``A ⇢ B`` (arm) plus ``B → C`` must not hide an unconditional
+              ``A → C``: on the other branch that shortcut is the only route.
+              Being a non-candidate for removal is not enough — an exclusive
+              edge must also not act as a path segment.
             - Back edges. In a cycle every edge is reachable "the long way
               round", so leaving them in would let the reduction eat the loop.
     """

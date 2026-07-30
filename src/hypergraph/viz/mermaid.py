@@ -242,12 +242,15 @@ class _RenderedEdge:
 
     @property
     def traversable(self) -> bool:
-        """On the data-flow spine, so it may justify dropping a shortcut.
+        """On the *unconditional* data-flow spine, so it may justify dropping
+        a shortcut.
 
         Control and ordering edges are excluded: a gate's dotted arrow means
-        "may run", not "receives this value".
+        "may run", not "receives this value". Exclusive arms are excluded for
+        the same reason — an arm carries its value only when its branch is
+        taken, so it must not imply away an unconditional edge.
         """
-        return self.kind in ("data", "output") and not self.is_back_edge
+        return self.kind in ("data", "output") and not self.is_back_edge and not self.exclusive
 
 
 def _simplify_rendered_edges(rendered: list[_RenderedEdge]) -> list[_RenderedEdge]:
