@@ -265,7 +265,12 @@ async def test_as_node_propagates_inner_recipe_events_to_outer_processors(tmp_pa
         event_processors=[processor],
     )
 
-    assert [row["indexed_text"] for row in table.child("page").rows(parent="v1")] == ["ONE", "TWO"]
+    # Sorted: the two mapped items run concurrently under AsyncRunner and
+    # `rows()` reads the store back in physical write order, which no API
+    # promises to match item order. Asserting a fixed order failed on Python
+    # 3.13, whose task scheduling completes the items the other way round.
+    # What this test is actually about is event propagation, below.
+    assert sorted(row["indexed_text"] for row in table.child("page").rows(parent="v1")) == ["ONE", "TWO"]
     starts = [event for event in processor.events if isinstance(event, NodeStartEvent)]
     assert any(event.node_name == "materialize_protocol" for event in starts)
     assert any(event.node_name == "split_pages" and event.graph_name == "protocol_recipe" for event in starts)
