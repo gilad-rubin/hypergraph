@@ -307,9 +307,7 @@ def freeze_batch_items(
     normalized: list[dict[str, Any]] = []
     for index, item in enumerate(items):
         if not isinstance(item, Mapping):
-            raise TypeError(
-                f"submit_batch() item {index} must be a Mapping of graph inputs, got {type(item).__name__} ({item!r})."
-            )
+            raise TypeError(f"submit_batch() item {index} must be a Mapping of graph inputs, got {type(item).__name__} ({item!r}).")
         normalized.append(dict(item))
     return _validate_and_freeze_manifest(normalized, identity=identity, graph=graph, schema=schema)
 

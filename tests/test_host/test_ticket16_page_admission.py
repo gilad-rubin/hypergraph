@@ -65,10 +65,14 @@ class TestPageAdmissionContract:
         batch = await home._get_batch(rerun.batch_ref.batch_id)
         assert batch["admission_cost"] == "page_count"
         assert home._get_submission_sync(f"{rerun.workflow_id}:1")["admission_cost"] == 20
-        manifest = home._sync_db().execute(
-            "SELECT payload FROM batch_updates WHERE batch_id = ? AND kind = 'manifest'",
-            (rerun.batch_ref.batch_id,),
-        ).fetchone()[0]
+        manifest = (
+            home._sync_db()
+            .execute(
+                "SELECT payload FROM batch_updates WHERE batch_id = ? AND kind = 'manifest'",
+                (rerun.batch_ref.batch_id,),
+            )
+            .fetchone()[0]
+        )
         assert json.loads(manifest)["admission_cost"] == "page_count"
 
         await host.submit_batch(graph, items, identity="doc_id", workflow_id="dedup-cost")

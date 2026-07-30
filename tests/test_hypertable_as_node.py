@@ -216,21 +216,33 @@ def test_as_node_hashes_include_the_table_recipe(tmp_path) -> None:
 
     lower_transform = lower.with_name("transform")
     upper_transform = upper.with_name("transform")
-    lower_node = Graph([lower_transform]).as_table(
-        identity="version_id",
-        store=LanceDBStore(str(tmp_path / "lower")),
-        runner=SyncRunner(),
-    ).as_node()
-    upper_node = Graph([upper_transform]).as_table(
-        identity="version_id",
-        store=LanceDBStore(str(tmp_path / "upper")),
-        runner=SyncRunner(),
-    ).as_node()
-    deeper_node = Graph([lower_transform, decorate]).as_table(
-        identity="version_id",
-        store=LanceDBStore(str(tmp_path / "deeper")),
-        runner=SyncRunner(),
-    ).as_node()
+    lower_node = (
+        Graph([lower_transform])
+        .as_table(
+            identity="version_id",
+            store=LanceDBStore(str(tmp_path / "lower")),
+            runner=SyncRunner(),
+        )
+        .as_node()
+    )
+    upper_node = (
+        Graph([upper_transform])
+        .as_table(
+            identity="version_id",
+            store=LanceDBStore(str(tmp_path / "upper")),
+            runner=SyncRunner(),
+        )
+        .as_node()
+    )
+    deeper_node = (
+        Graph([lower_transform, decorate])
+        .as_table(
+            identity="version_id",
+            store=LanceDBStore(str(tmp_path / "deeper")),
+            runner=SyncRunner(),
+        )
+        .as_node()
+    )
 
     assert lower_node.definition_hash != upper_node.definition_hash
     assert lower_node.structural_signature != deeper_node.structural_signature
@@ -242,9 +254,7 @@ async def test_as_node_propagates_inner_recipe_events_to_outer_processors(tmp_pa
     table = Graph(
         [split_pages, page_recipe.as_node().map_over("pages", identity="page_id")],
         name="protocol_recipe",
-    ).as_table(
-        identity="version_id", store=LanceDBStore(str(tmp_path / "table")), runner=AsyncRunner()
-    )
+    ).as_table(identity="version_id", store=LanceDBStore(str(tmp_path / "table")), runner=AsyncRunner())
     processor = ListProcessor()
 
     await AsyncRunner().run(
@@ -261,11 +271,7 @@ async def test_as_node_propagates_inner_recipe_events_to_outer_processors(tmp_pa
     assert any(event.node_name == "split_pages" and event.graph_name == "protocol_recipe" for event in starts)
     assert any(event.node_name == "index_page" and event.graph_name == "page_recipe" for event in starts)
     materialization_start = next(event for event in starts if event.node_name == "materialize_protocol")
-    inner_start = next(
-        event
-        for event in processor.events
-        if isinstance(event, RunStartEvent) and event.graph_name == "protocol_recipe"
-    )
+    inner_start = next(event for event in processor.events if isinstance(event, RunStartEvent) and event.graph_name == "protocol_recipe")
     assert inner_start.parent_span_id == materialization_start.span_id
     assert inner_start.parent_workflow_id == "ingest-v1"
     assert processor.shutdown_count == 1
