@@ -22,15 +22,24 @@ class AsyncMaterializationNodeExecutor:
     ) -> dict[str, Any]:
         del state
         operation = node.table._write_planner.insert([node.map_inputs_to_params(inputs)])
-        options = {
-            "event_processors": ctx.event_processors,
-            "parent_span_id": ctx.parent_span_id,
-            "parent_run_id": ctx.workflow_id,
-        }
+        # Passed as explicit keywords rather than **options: unpacking a dict
+        # collapses the values into one union type, which mypy cannot match
+        # against _drive_async's per-keyword annotations.
         if node.table._is_async_runner():
-            receipt = await node.table._drive_async(operation, **options)
+            receipt = await node.table._drive_async(
+                operation,
+                event_processors=ctx.event_processors,
+                parent_span_id=ctx.parent_span_id,
+                parent_run_id=ctx.workflow_id,
+            )
         else:
-            receipt = await to_thread_settled(node.table._drive_sync, operation, **options)
+            receipt = await to_thread_settled(
+                node.table._drive_sync,
+                operation,
+                event_processors=ctx.event_processors,
+                parent_span_id=ctx.parent_span_id,
+                parent_run_id=ctx.workflow_id,
+            )
         row_receipt = receipt.receipts[0]
         assert isinstance(row_receipt, RowReceipt)
         return {node.outputs[0]: MaterializationReceipt.from_row_receipt(row_receipt)}

@@ -216,21 +216,33 @@ def test_as_node_hashes_include_the_table_recipe(tmp_path) -> None:
 
     lower_transform = lower.with_name("transform")
     upper_transform = upper.with_name("transform")
-    lower_node = Graph([lower_transform]).as_table(
-        identity="version_id",
-        store=LanceDBStore(str(tmp_path / "lower")),
-        runner=SyncRunner(),
-    ).as_node()
-    upper_node = Graph([upper_transform]).as_table(
-        identity="version_id",
-        store=LanceDBStore(str(tmp_path / "upper")),
-        runner=SyncRunner(),
-    ).as_node()
-    deeper_node = Graph([lower_transform, decorate]).as_table(
-        identity="version_id",
-        store=LanceDBStore(str(tmp_path / "deeper")),
-        runner=SyncRunner(),
-    ).as_node()
+    lower_node = (
+        Graph([lower_transform])
+        .as_table(
+            identity="version_id",
+            store=LanceDBStore(str(tmp_path / "lower")),
+            runner=SyncRunner(),
+        )
+        .as_node()
+    )
+    upper_node = (
+        Graph([upper_transform])
+        .as_table(
+            identity="version_id",
+            store=LanceDBStore(str(tmp_path / "upper")),
+            runner=SyncRunner(),
+        )
+        .as_node()
+    )
+    deeper_node = (
+        Graph([lower_transform, decorate])
+        .as_table(
+            identity="version_id",
+            store=LanceDBStore(str(tmp_path / "deeper")),
+            runner=SyncRunner(),
+        )
+        .as_node()
+    )
 
     assert lower_node.definition_hash != upper_node.definition_hash
     assert lower_node.structural_signature != deeper_node.structural_signature
@@ -242,9 +254,7 @@ async def test_as_node_propagates_inner_recipe_events_to_outer_processors(tmp_pa
     table = Graph(
         [split_pages, page_recipe.as_node().map_over("pages", identity="page_id")],
         name="protocol_recipe",
-    ).as_table(
-        identity="version_id", store=LanceDBStore(str(tmp_path / "table")), runner=AsyncRunner()
-    )
+    ).as_table(identity="version_id", store=LanceDBStore(str(tmp_path / "table")), runner=AsyncRunner())
     processor = ListProcessor()
 
     await AsyncRunner().run(
@@ -255,17 +265,18 @@ async def test_as_node_propagates_inner_recipe_events_to_outer_processors(tmp_pa
         event_processors=[processor],
     )
 
-    assert [row["indexed_text"] for row in table.child("page").rows(parent="v1")] == ["ONE", "TWO"]
+    # Sorted: the two mapped items run concurrently under AsyncRunner and
+    # `rows()` reads the store back in physical write order, which no API
+    # promises to match item order. Asserting a fixed order failed on Python
+    # 3.13, whose task scheduling completes the items the other way round.
+    # What this test is actually about is event propagation, below.
+    assert sorted(row["indexed_text"] for row in table.child("page").rows(parent="v1")) == ["ONE", "TWO"]
     starts = [event for event in processor.events if isinstance(event, NodeStartEvent)]
     assert any(event.node_name == "materialize_protocol" for event in starts)
     assert any(event.node_name == "split_pages" and event.graph_name == "protocol_recipe" for event in starts)
     assert any(event.node_name == "index_page" and event.graph_name == "page_recipe" for event in starts)
     materialization_start = next(event for event in starts if event.node_name == "materialize_protocol")
-    inner_start = next(
-        event
-        for event in processor.events
-        if isinstance(event, RunStartEvent) and event.graph_name == "protocol_recipe"
-    )
+    inner_start = next(event for event in processor.events if isinstance(event, RunStartEvent) and event.graph_name == "protocol_recipe")
     assert inner_start.parent_span_id == materialization_start.span_id
     assert inner_start.parent_workflow_id == "ingest-v1"
     assert processor.shutdown_count == 1
