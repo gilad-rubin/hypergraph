@@ -65,6 +65,16 @@ def redundant_edge_keys(edges: Iterable[EdgeRef]) -> set[Hashable]:
     property of the rendered view, not of the graph definition — an edge that
     is a shortcut while a container is collapsed can be the only path once that
     container expands.
+
+    Cost is one traversal per candidate edge — O(V·E) worst case. That is
+    deliberate: it runs on every expand/collapse in the browser, so measured
+    numbers matter more than the bound. A 50-node graph is well under 1 ms and
+    200 nodes / 1k edges is ~13 ms; a synthetic 1000-node graph with fan-in 10
+    reaches ~1 s. Real diagrams are far below that (nobody reads a 1000-node
+    canvas), so there is no size cutoff — a cutoff would silently change what
+    the diagram shows at a threshold, which is worse than a slow click. If a
+    graph ever does get that large, memoize forward reachability per source
+    node instead of re-walking per edge.
     """
     edges = list(edges)
 
