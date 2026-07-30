@@ -297,3 +297,57 @@ def find_internal_producer_for_output(
                     return producer
 
     return None
+
+
+def find_back_edges(flat_graph: nx.DiGraph) -> set[tuple[str, str]]:
+    """Return the set of execution-subgraph edges that close a cycle.
+
+    Mirrors the legacy DFS-based back-edge detector. Synthetic edges
+    (input/data/start/end) and edges touching synthetic nodes are
+    excluded — they don't participate in cycle closure.
+
+    Shared by ``ir_builder`` (stamps ``IREdge.is_back_edge``) and
+    ``mermaid`` (excludes back edges from the ``simplify`` path graph, so
+    the reduction cannot eat a cycle).
+    """
+    SYNTHETIC_PREFIXES = ("input_", "input_group_", "data_")
+    SYNTHETIC_NODES = {"__start__", "__end__"}
+
+    def is_synthetic(node_id: str) -> bool:
+        return node_id in SYNTHETIC_NODES or node_id.startswith(SYNTHETIC_PREFIXES)
+
+    adjacency: dict[str, list[tuple[str, tuple[str, str]]]] = {}
+    for src, tgt, attrs in flat_graph.edges(data=True):
+        if attrs.get("edge_type", "data") not in ("data", "control", "ordering"):
+            continue
+        if is_synthetic(src) or is_synthetic(tgt):
+            continue
+        adjacency.setdefault(src, []).append((tgt, (src, tgt)))
+
+    WHITE, GREY, BLACK = 0, 1, 2
+    color: dict[str, int] = {}
+    back: set[tuple[str, str]] = set()
+
+    def dfs(start: str) -> None:
+        stack: list[tuple[str, int]] = [(start, 0)]
+        color[start] = GREY
+        while stack:
+            node, idx = stack[-1]
+            children = adjacency.get(node, ())
+            if idx < len(children):
+                stack[-1] = (node, idx + 1)
+                tgt, edge_key = children[idx]
+                state = color.get(tgt, WHITE)
+                if state == GREY:
+                    back.add(edge_key)
+                elif state == WHITE:
+                    color[tgt] = GREY
+                    stack.append((tgt, 0))
+            else:
+                color[node] = BLACK
+                stack.pop()
+
+    for node in adjacency:
+        if color.get(node, WHITE) == WHITE:
+            dfs(node)
+    return back

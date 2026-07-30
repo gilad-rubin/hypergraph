@@ -124,6 +124,15 @@ def test_public_docs_track_current_api_contracts() -> None:
     assert "Dagre" in inspect.getdoc(Graph.visualize)
     assert "Kiwi" not in inspect.getdoc(Graph.visualize)
 
+    # `simplify` must stay on by default and stay identical across the
+    # interactive widget and the Mermaid exporter — a diagram and its text
+    # export disagreeing about which edges exist is the drift to catch.
+    assert inspect.signature(Graph.visualize).parameters["simplify"].default is True
+    assert inspect.signature(Graph.to_mermaid).parameters["simplify"].default is True
+    assert "simplify=True" in graph_visualize
+    assert "simplify=True" in visualize
+    assert "simplify" in _section(visualize, "## Mermaid Text Diagrams")
+
     assert tuple(inspect.signature(Graph.as_node).parameters) == (
         "self",
         "name",

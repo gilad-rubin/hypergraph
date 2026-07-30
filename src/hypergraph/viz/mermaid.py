@@ -13,6 +13,7 @@ Usage:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import networkx as nx
@@ -28,6 +29,7 @@ from hypergraph.viz._common import (
     is_node_visible,
 )
 from hypergraph.viz._mermaid_core import MermaidDiagram, _MermaidIdAllocator, _sanitize_id
+from hypergraph.viz._simplify import EdgeRef, redundant_edge_keys
 from hypergraph.viz.renderer._format import format_type
 from hypergraph.viz.renderer.nodes import (
     build_input_groups,
@@ -37,6 +39,7 @@ from hypergraph.viz.renderer.nodes import (
 )
 from hypergraph.viz.renderer.scope import (
     compute_container_entrypoints,
+    find_back_edges,
     find_internal_producer_for_output,
     resolve_expanded_entrypoints,
 )
@@ -214,19 +217,76 @@ def _format_node(safe_id: str, label: str, node_type: str) -> str:
 # =============================================================================
 
 
+@dataclass(frozen=True)
+class _RenderedEdge:
+    """One emitted Mermaid edge line plus the facts ``simplify`` needs.
+
+    ``source``/``target`` are the *resolved* node ids (post expansion
+    rewriting), matching the ids the interactive scene builder uses, so both
+    pipelines reduce the same graph. ``kind`` also drives ``linkStyle``
+    targeting for ordering edges.
+    """
+
+    line: str
+    kind: str  # "data" | "output" | "control" | "ordering" | "input" | "start" | "end"
+    source: str
+    target: str
+    exclusive: bool = False
+    is_back_edge: bool = False
+
+    @property
+    def removable(self) -> bool:
+        """Only plain data edges may be dropped — an ``output`` edge is the
+        structural producer→DATA link, and dropping it would orphan the pill."""
+        return self.kind == "data" and not self.exclusive and not self.is_back_edge
+
+    @property
+    def traversable(self) -> bool:
+        """On the *unconditional* data-flow spine, so it may justify dropping
+        a shortcut.
+
+        Control and ordering edges are excluded: a gate's dotted arrow means
+        "may run", not "receives this value". Exclusive arms are excluded for
+        the same reason — an arm carries its value only when its branch is
+        taken, so it must not imply away an unconditional edge.
+        """
+        return self.kind in ("data", "output") and not self.is_back_edge and not self.exclusive
+
+
+def _simplify_rendered_edges(rendered: list[_RenderedEdge]) -> list[_RenderedEdge]:
+    """Drop rendered data edges a longer path already implies.
+
+    Mermaid's INPUT / START / END edges are inert for this purpose — nothing
+    points into ``__start__`` or out of ``__end__``, and nothing produces an
+    INPUT — so only the flow edges built here need to enter the path graph.
+    """
+    refs = [
+        EdgeRef(
+            key=index,
+            source=edge.source,
+            target=edge.target,
+            removable=edge.removable,
+            traversable=edge.traversable,
+        )
+        for index, edge in enumerate(rendered)
+    ]
+    dropped = redundant_edge_keys(refs)
+    return [edge for index, edge in enumerate(rendered) if index not in dropped]
+
+
 def _render_merged_edges(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
     container_entrypoints: dict[str, tuple[str, ...]],
     exclusive_data_edges: set[tuple[str, str, str]],
+    back_edges: set[tuple[str, str]],
     id_allocator: _MermaidIdAllocator,
-) -> list[tuple[str, str]]:
+) -> list[_RenderedEdge]:
     """Render edges in merged output mode (no DATA intermediaries).
 
-    Mirrors the interactive renderer's merged-output edge derivation. Returns
-    a list of ``(line, kind)`` tuples where kind ∈ {"data", "control", "ordering"}.
+    Mirrors the interactive renderer's merged-output edge derivation.
     """
-    out: list[tuple[str, str]] = []
+    out: list[_RenderedEdge] = []
     output_to_producer = build_output_to_producer_map(
         flat_graph,
         expansion_state,
@@ -260,7 +320,15 @@ def _render_merged_edges(
             if edge_key in seen_edges:
                 continue
             seen_edges.add(edge_key)
-            out.append((_format_control_edge(source, actual_target, label, id_allocator), "control"))
+            out.append(
+                _RenderedEdge(
+                    _format_control_edge(source, actual_target, label, id_allocator),
+                    "control",
+                    source,
+                    actual_target,
+                    is_back_edge=(source, target) in back_edges,
+                )
+            )
             continue
 
         if edge_type == "ordering":
@@ -271,7 +339,15 @@ def _render_merged_edges(
             if edge_key in seen_edges:
                 continue
             seen_edges.add(edge_key)
-            out.append((_format_ordering_edge(source, target, value_name, id_allocator), "ordering"))
+            out.append(
+                _RenderedEdge(
+                    _format_ordering_edge(source, target, value_name, id_allocator),
+                    "ordering",
+                    source,
+                    target,
+                    is_back_edge=(source, target) in back_edges,
+                )
+            )
             continue
 
         # Data edges
@@ -301,7 +377,16 @@ def _render_merged_edges(
                 continue
             seen_edges.add(edge_key)
             is_exclusive = (source, target, value_name) in exclusive_data_edges
-            out.append((_format_edge(actual_source, actual_target, None, exclusive=is_exclusive, id_allocator=id_allocator), "data"))
+            out.append(
+                _RenderedEdge(
+                    _format_edge(actual_source, actual_target, None, exclusive=is_exclusive, id_allocator=id_allocator),
+                    "data",
+                    actual_source,
+                    actual_target,
+                    exclusive=is_exclusive,
+                    is_back_edge=(source, target) in back_edges,
+                )
+            )
 
     return out
 
@@ -311,14 +396,14 @@ def _render_separate_edges(
     expansion_state: dict[str, bool],
     container_entrypoints: dict[str, tuple[str, ...]],
     exclusive_data_edges: set[tuple[str, str, str]],
+    back_edges: set[tuple[str, str]],
     id_allocator: _MermaidIdAllocator,
-) -> list[tuple[str, str]]:
+) -> list[_RenderedEdge]:
     """Render edges in separate output mode (with DATA intermediaries).
 
-    Mirrors the interactive renderer's separate-output edge derivation. Returns
-    a list of ``(line, kind)`` tuples where kind ∈ {"data", "control", "ordering"}.
+    Mirrors the interactive renderer's separate-output edge derivation.
     """
-    out: list[tuple[str, str]] = []
+    out: list[_RenderedEdge] = []
     output_to_producer = build_output_to_producer_map(
         flat_graph,
         expansion_state,
@@ -343,7 +428,9 @@ def _render_separate_edges(
             edge_key = (id_allocator.get(node_id), id_allocator.get(data_id))
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
-                out.append((_format_edge(node_id, data_id, None, id_allocator=id_allocator), "data"))
+                # "output", not "data": the structural producer→DATA link is
+                # never a removal candidate (it would orphan the DATA pill).
+                out.append(_RenderedEdge(_format_edge(node_id, data_id, None, id_allocator=id_allocator), "output", node_id, data_id))
 
     # DATA → consumer edges + control/ordering edges
     for source, target, edge_data in flat_graph.edges(data=True):
@@ -387,14 +474,31 @@ def _render_separate_edges(
                 if edge_key not in seen_edges:
                     seen_edges.add(edge_key)
                     is_exclusive = (source, target, value_name) in exclusive_data_edges
-                    out.append((_format_edge(data_id, actual_target, value_name, exclusive=is_exclusive, id_allocator=id_allocator), "data"))
+                    out.append(
+                        _RenderedEdge(
+                            _format_edge(data_id, actual_target, value_name, exclusive=is_exclusive, id_allocator=id_allocator),
+                            "data",
+                            data_id,
+                            actual_target,
+                            exclusive=is_exclusive,
+                            is_back_edge=(source, target) in back_edges,
+                        )
+                    )
 
         elif edge_type == "ordering":
             value_name = value_names[0] if value_names else ""
             edge_key = (id_allocator.get(source), id_allocator.get(target), f"ord_{value_name}")  # type: ignore[assignment]
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
-                out.append((_format_ordering_edge(source, target, value_name, id_allocator), "ordering"))
+                out.append(
+                    _RenderedEdge(
+                        _format_ordering_edge(source, target, value_name, id_allocator),
+                        "ordering",
+                        source,
+                        target,
+                        is_back_edge=(source, target) in back_edges,
+                    )
+                )
 
         elif edge_type == "control":
             actual_target = _resolve_control_target(
@@ -410,7 +514,15 @@ def _render_separate_edges(
             edge_key = (id_allocator.get(source), id_allocator.get(actual_target), label or "")  # type: ignore[assignment]
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
-                out.append((_format_control_edge(source, actual_target, label, id_allocator), "control"))
+                out.append(
+                    _RenderedEdge(
+                        _format_control_edge(source, actual_target, label, id_allocator),
+                        "control",
+                        source,
+                        actual_target,
+                        is_back_edge=(source, target) in back_edges,
+                    )
+                )
 
     return out
 
@@ -696,6 +808,7 @@ def to_mermaid(
     depth: int = 0,
     show_types: bool = True,
     separate_outputs: bool = False,
+    simplify: bool = True,
     direction: str = "TD",
     colors: dict[str, dict[str, str]] | None = None,
 ) -> MermaidDiagram:
@@ -709,6 +822,8 @@ def to_mermaid(
         depth: How many levels of nested graphs to expand (default: 0)
         show_types: Whether to show type annotations in labels
         separate_outputs: Whether to render outputs as separate DATA nodes
+        simplify: Hide data edges a longer path already implies — given
+            ``A → B → C``, a direct ``A → C`` is dropped (default: True)
         direction: Flowchart direction — "TD", "TB", "LR", "RL", "BT"
         colors: Custom color overrides per node class, e.g.
             {"function": {"fill": "#fff", "stroke": "#000"}}
@@ -873,26 +988,19 @@ def to_mermaid(
             edge_pairs.append((_format_edge(input_node_id, tgt, None, id_allocator=id_allocator), "input"))
 
     exclusive_data_edges = compute_exclusive_data_edges(flat_graph)
-    if separate_outputs:
-        edge_pairs.extend(
-            _render_separate_edges(
-                flat_graph,
-                expansion_state,
-                container_entrypoints,
-                exclusive_data_edges,
-                id_allocator,
-            )
-        )
-    else:
-        edge_pairs.extend(
-            _render_merged_edges(
-                flat_graph,
-                expansion_state,
-                container_entrypoints,
-                exclusive_data_edges,
-                id_allocator,
-            )
-        )
+    back_edges = find_back_edges(flat_graph)
+    render_edges = _render_separate_edges if separate_outputs else _render_merged_edges
+    rendered = render_edges(
+        flat_graph,
+        expansion_state,
+        container_entrypoints,
+        exclusive_data_edges,
+        back_edges,
+        id_allocator,
+    )
+    if simplify:
+        rendered = _simplify_rendered_edges(rendered)
+    edge_pairs.extend((edge.line, edge.kind) for edge in rendered)
 
     edge_pairs.extend((line, "end") for line in _render_end_edges(flat_graph, expansion_state, id_allocator))
 

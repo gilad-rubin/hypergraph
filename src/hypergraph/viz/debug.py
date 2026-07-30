@@ -597,6 +597,7 @@ async def _extract_debug_data_async(
     separate_outputs: bool = False,
     show_inputs: bool = True,
     show_bounded_inputs: bool = False,
+    simplify: bool = True,
     headless: bool = True,
     timeout: int = 5000,
 ) -> RenderedDebugData:
@@ -619,6 +620,7 @@ async def _extract_debug_data_async(
         separate_outputs=separate_outputs,
         show_inputs=show_inputs,
         show_bounded_inputs=show_bounded_inputs,
+        simplify=simplify,
         filepath=temp_path,
         _debug_overlays=True,
     )
@@ -652,6 +654,7 @@ def _extract_debug_data_sync(
     separate_outputs: bool = False,
     show_inputs: bool = True,
     show_bounded_inputs: bool = False,
+    simplify: bool = True,
     headless: bool = True,
     timeout: int = 5000,
 ) -> RenderedDebugData:
@@ -674,6 +677,7 @@ def _extract_debug_data_sync(
         separate_outputs=separate_outputs,
         show_inputs=show_inputs,
         show_bounded_inputs=show_bounded_inputs,
+        simplify=simplify,
         filepath=temp_path,
         _debug_overlays=True,
     )
@@ -745,6 +749,7 @@ def _run_async_extract_in_thread(
     separate_outputs: bool,
     show_inputs: bool,
     show_bounded_inputs: bool,
+    simplify: bool,
     headless: bool,
     timeout: int,
 ) -> RenderedDebugData:
@@ -771,6 +776,7 @@ def _run_async_extract_in_thread(
                     separate_outputs=separate_outputs,
                     show_inputs=show_inputs,
                     show_bounded_inputs=show_bounded_inputs,
+                    simplify=simplify,
                     headless=headless,
                     timeout=timeout,
                 )
@@ -804,6 +810,7 @@ def extract_debug_data(
     separate_outputs: bool = False,
     show_inputs: bool | None = None,
     show_bounded_inputs: bool = False,
+    simplify: bool = True,
     show_external_inputs: bool | None = None,
     headless: bool = True,
     timeout: int = 5000,
@@ -823,6 +830,8 @@ def extract_debug_data(
         show_inputs: Show INPUT/INPUT_GROUP nodes (default: True)
         show_bounded_inputs: Show bound INPUT/INPUT_GROUP nodes when show_inputs=True
             (default: False)
+        simplify: Hide data edges a longer path implies, matching what the widget
+            renders (default: True). Pass False to inspect every declared edge.
         show_external_inputs: Deprecated alias for show_inputs
         headless: Run browser in headless mode (default: True)
         timeout: Max time to wait for layout in ms (default: 5000)
@@ -870,6 +879,7 @@ def extract_debug_data(
             separate_outputs=separate_outputs,
             show_inputs=show_inputs,
             show_bounded_inputs=show_bounded_inputs,
+            simplify=simplify,
             headless=headless,
             timeout=timeout,
         )
@@ -881,6 +891,7 @@ def extract_debug_data(
             separate_outputs=separate_outputs,
             show_inputs=show_inputs,
             show_bounded_inputs=show_bounded_inputs,
+            simplify=simplify,
             headless=headless,
             timeout=timeout,
         )

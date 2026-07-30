@@ -146,7 +146,43 @@ The IR carries all expansion-rewriting information eagerly:
    - `edge_type="ordering"` in NetworkX graph
    - Rendered with dashed style
 
-4. **Exclusive (mutex) data edges** (both modes)
+4. **Transitive reduction** (`simplify`, default ON, both modes)
+   - `viz/_simplify.py::redundant_edge_keys` is the ONE authority for "is this
+     edge implied by a longer path?". Three consumers share it: `scene_builder.py`,
+     `assets/scene_builder.js` (twin `simplifyTransitiveEdges`), `mermaid.py`.
+     Never re-derive the reachability walk in a new call site.
+   - Two invariants make it safe to default on. Both are load-bearing; a change
+     that widens either silently deletes real information:
+     - Only **plain data** edges are removal candidates. Control, ordering,
+       input, output, start/end and mutex (`exclusive`) edges never get dropped.
+     - The path graph is the **unconditional data-flow spine only** (`data` +
+       `output`, plus inert `input`). Only an edge that *always* carries a value
+       may justify a removal, because the reader must be able to trust the
+       surviving path. Two exclusions, same reasoning one level apart:
+       control/ordering (`gate ⇢ target` means "may run", so standing in for
+       `producer → target` leaves the consumer with no visible data source) and
+       `exclusive` arms (an arm carries its value only on its branch, so it must
+       not hide an unconditional edge that is the sole route on the other
+       branch). Being a non-candidate is NOT enough — an edge barred from
+       removal must also be barred from the path graph unless it is
+       unconditional. `tests/test_frozen_baselines` (`gated.mmd`) guards the
+       control case; `test_simplify_edges.py` guards the exclusive case in both
+       twins.
+   - Back edges are excluded from the path graph, or the reduction eats cycles.
+     Mermaid has no `is_back_edge` field of its own; it calls
+     `renderer/scope.py::find_back_edges` (also the source of
+     `IREdge.is_back_edge`) to get the same answer.
+   - Runs on the **assembled scene**, after expansion rewriting: an edge that is
+     a shortcut while a container is collapsed can be the only path once it
+     expands. Hidden edges are neither path segments nor candidates.
+   - JS-only hazard: node ids come from user-authored Python names and
+     `__proto__` is a legal Python identifier, so every id-keyed map in
+     `assets/*.js` must be `Object.create(null)`. A plain `{}` resolves
+     `map['__proto__']` to `Object.prototype` and the write throws, blanking the
+     canvas. The Python twin uses dicts and cannot fail this way, so shared
+     parity fixtures will never catch it — test the JS side directly.
+
+5. **Exclusive (mutex) data edges** (both modes)
    - When two producers in different branches of an exclusive gate
      (`@ifelse`, or `@route` with `multi_target=False`) feed the same input,
      each contributing edge is tagged with `data.exclusive=True`.
@@ -204,6 +240,7 @@ Generates a scrollable gallery of all notebook visualizations with DialKit contr
 ## Test Coverage Pointers
 
 - `tests/viz/test_scene_builder.py` — Python scene builder against the IR oracle
+- `tests/viz/test_simplify_edges.py` — `simplify` reduction + Python/JS/Mermaid alignment
 - `tests/viz/test_derivation_js.py` — drives `node` to run `derivation.js` directly
 - `tests/viz/test_viz_modules_js.py` — module smoke tests for the split assets
 - `tests/viz/test_scope_aware_visibility.py`
@@ -215,6 +252,7 @@ Generates a scrollable gallery of all notebook visualizations with DialKit contr
 - `src/hypergraph/viz/ir_schema.py` — `GraphIR` / `IRNode` / `IREdge` / `IRExternalInput` dataclasses
 - `src/hypergraph/viz/renderer/ir_builder.py` — `build_graph_ir(flat_graph)`
 - `src/hypergraph/viz/scene_builder.py` — Python scene builder and test oracle
+- `src/hypergraph/viz/_simplify.py` — `simplify` transitive-reduction authority
 - `src/hypergraph/viz/assets/scene_builder.js` — JS twin
 - `src/hypergraph/viz/renderer/__init__.py` — explicit Python scene + metadata compatibility helper
 - `src/hypergraph/viz/widget.py` — compact IR payload used by the HTML widget path

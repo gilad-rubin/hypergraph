@@ -1015,7 +1015,7 @@ How to fix:
 
 Shared params are omitted from the interactive input lane and from INPUT/INPUT_GROUP rendering, and are rendered as a `%% shared state: messages` comment in Mermaid output.
 
-### `visualize(*, depth=0, theme="auto", show_types=True, separate_outputs=False, show_inputs=None, show_bounded_inputs=False, show_external_inputs=None, filepath=None)`
+### `visualize(*, depth=0, theme="auto", show_types=True, separate_outputs=False, show_inputs=None, show_bounded_inputs=False, simplify=True, show_external_inputs=None, filepath=None)`
 
 Render an interactive visualization of the graph.
 
@@ -1032,6 +1032,7 @@ graph.visualize(filepath="graph.html")     # Save standalone HTML
 - `separate_outputs` (bool): Render outputs as separate DATA nodes instead of direct edges. Default: False.
 - `show_inputs` (bool | None): Show INPUT/INPUT_GROUP nodes. `None` uses the renderer default.
 - `show_bounded_inputs` (bool): Include bound INPUT/INPUT_GROUP nodes when `show_inputs=True`. If `show_inputs=False`, the input lane stays hidden. Default: False.
+- `simplify` (bool): Hide data edges a longer path already implies — with `A → B → C`, a direct `A → C` is dropped. Control, ordering, cycle and mutex-branch edges are never dropped. Toggleable from the widget toolbar. Default: True.
 - `show_external_inputs` (bool | None): Deprecated alias for `show_inputs`.
 - `filepath` (str | None): Save to HTML file instead of displaying inline. Default: None.
 

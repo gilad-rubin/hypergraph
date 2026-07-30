@@ -20,6 +20,10 @@
   // field must banner instead of silently mis-routing START/control edges.
   var SUPPORTED_SCHEMA_VERSION = '4';
 
+  // Mirror of scene_builder.py:DATA_FLOW_EDGE_TYPES — the edge types that
+  // carry a value, and so the only ones the `simplify` path graph walks.
+  var DATA_FLOW_EDGE_TYPES = Object.assign(Object.create(null), { data: true, output: true, input: true });
+
   function isSchemaSupported(ir) {
     return !!ir && ir.schema_version === SUPPORTED_SCHEMA_VERSION;
   }
@@ -342,7 +346,77 @@
 
     addStartEndNodesAndEdges(ir, sceneNodes, sceneEdges, parentMap, expansionState, visibleIds);
 
+    if (opts.simplify !== false) {
+      sceneEdges = simplifyTransitiveEdges(sceneEdges);
+    }
+
     return { nodes: sceneNodes, edges: sceneEdges };
+  }
+
+  // Drop data edges that a longer visible path already implies —
+  // `A ──▶ B ──▶ C` plus a direct `A ──▶ C` renders the shortcut as noise.
+  // Twin of scene_builder.py:simplify_transitive_edges + _simplify.py; see
+  // those docstrings for why only data edges are dropped and why the path
+  // graph is restricted to the data-flow spine.
+  function simplifyTransitiveEdges(sceneEdges) {
+    // Object.create(null) throughout: node ids come from user-authored Python
+    // names, and `__proto__` is a legal Python identifier. On a normal object
+    // literal `adjacency['__proto__']` resolves to Object.prototype, so the
+    // assignment below throws and blanks the canvas. The Python twin uses
+    // dicts and has never had this failure mode.
+    var adjacency = Object.create(null);
+    for (var i = 0; i < sceneEdges.length; i++) {
+      var e = sceneEdges[i];
+      if (e.hidden) continue;
+      var eData = e.data || {};
+      if (!DATA_FLOW_EDGE_TYPES[eData.edgeType]) continue;
+      // Exclusive arms are excluded from the path graph too, not just from the
+      // candidates below: an arm only carries its value when its branch is
+      // taken, so it must not imply away an unconditional edge.
+      if (eData.forceFeedback || eData.exclusive) continue;
+      if (!adjacency[e.source]) adjacency[e.source] = Object.create(null);
+      adjacency[e.source][e.target] = true;
+    }
+
+    var dropped = Object.create(null);
+    for (var j = 0; j < sceneEdges.length; j++) {
+      var edge = sceneEdges[j];
+      var data = edge.data || {};
+      if (edge.hidden || data.edgeType !== 'data') continue;
+      if (data.exclusive || data.forceFeedback) continue;
+      if (edge.source === edge.target) continue;
+      if (hasIndirectPath(adjacency, edge.source, edge.target)) dropped[edge.id] = true;
+    }
+
+    return sceneEdges.filter(function (e) { return !dropped[e.id]; });
+  }
+
+  // True if `target` is reachable from `source` without ever taking the
+  // direct `source -> target` edge.
+  function hasIndirectPath(adjacency, source, target) {
+    var stack = [];
+    var seen = Object.create(null);
+    var direct = adjacency[source] || Object.create(null);
+    for (var first in direct) {
+      if (!Object.prototype.hasOwnProperty.call(direct, first)) continue;
+      if (first === target) continue;
+      stack.push(first);
+      seen[first] = true;
+    }
+    while (stack.length > 0) {
+      var current = stack.pop();
+      if (current === target) return true;
+      var successors = adjacency[current] || {};
+      for (var next in successors) {
+        if (!Object.prototype.hasOwnProperty.call(successors, next)) continue;
+        if (current === source && next === target) continue; // edge under test
+        if (!seen[next]) {
+          seen[next] = true;
+          stack.push(next);
+        }
+      }
+    }
+    return false;
   }
 
   function syntheticNode(id, nodeType, label) {
@@ -430,6 +504,7 @@
 
   global.HypergraphSceneBuilder = {
     buildInitialScene: buildInitialScene,
+    simplifyTransitiveEdges: simplifyTransitiveEdges,
     isSchemaSupported: isSchemaSupported,
     SUPPORTED_SCHEMA_VERSION: SUPPORTED_SCHEMA_VERSION,
   };

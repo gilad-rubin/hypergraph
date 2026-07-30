@@ -31,6 +31,7 @@ graph.visualize(
     separate_outputs=False,    # Render outputs as separate DATA nodes
     show_inputs=True,          # Show INPUT/INPUT_GROUP nodes
     show_bounded_inputs=False, # Include bound inputs when INPUT nodes are shown
+    simplify=True,             # Hide data edges a longer path already implies
     filepath=None,             # Save to HTML file instead of displaying
 )
 ```
@@ -88,6 +89,51 @@ graph.bind(model="gpt-4o").visualize(show_bounded_inputs=True)
 
 Bound inputs are hidden by default so the visualization focuses on the values a caller still needs to provide. Turn this on when you want bound values to appear in the root input lane as INPUT/INPUT_GROUP nodes. If `show_inputs=False`, the widget hides the whole input lane, so `show_bounded_inputs` has no visible effect.
 
+### `simplify` — Hide redundant shortcut edges
+
+```python
+graph.visualize(simplify=False)   # show every data edge
+```
+
+Consider three nodes where `render` reads both `parse`'s output and, directly, `fetch`'s:
+
+```python
+@node(output_name="raw")
+def fetch(url: str) -> str: ...
+
+@node(output_name="parsed")
+def parse(raw: str) -> str: ...
+
+@node(output_name="page")
+def render(parsed: str, raw: str) -> str: ...
+```
+
+There are three data edges, but `fetch → render` is a shortcut past a path that
+already exists:
+
+| `simplify=True` (default) | `simplify=False` |
+| --- | --- |
+| `fetch → parse → render` | `fetch → parse → render` plus `fetch → render` |
+
+The shortcut adds no reachability information, so hiding it removes a crossing
+line without changing what the diagram says about ordering. Toggle it live from
+the widget toolbar (the three-dots-with-a-bypass button); `to_mermaid()` takes
+the same flag, so both exporters agree.
+
+Turn it **off** when you are auditing which values each node actually consumes —
+`simplify=True` tells you `render` runs after `fetch`, but not that it reads
+`fetch`'s output directly. Pair `simplify=False` with `separate_outputs=True`
+for a full value-provenance view.
+
+Never dropped, so a diagram is always safe to read for ordering and control:
+
+- **Control and ordering edges** — a gate's dotted `gate ⇢ archive` means
+  "archive may run", which no data path implies.
+- **Cycle (feedback) edges** — in a loop every edge is reachable the long way
+  round, so simplification never eats a cycle.
+- **Mutually exclusive branch arms** — two arms of an `@ifelse`/`@route` feeding
+  one consumer are alternatives, not a chain plus a shortcut.
+
 ### `filepath` — Save to HTML
 
 ```python
@@ -131,7 +177,7 @@ All JavaScript dependencies (React, React Flow, Dagre layout) are bundled with h
 `graph.to_mermaid()` returns a `MermaidDiagram` — a text-based Mermaid flowchart instead of the interactive widget. Useful anywhere Markdown renders Mermaid (GitHub, GitBook) or in plain terminals with no notebook:
 
 ```python
-diagram = graph.to_mermaid()   # accepts the same depth/show_types/separate_outputs as .visualize()
+diagram = graph.to_mermaid()   # accepts the same depth/show_types/separate_outputs/simplify as .visualize()
 diagram                        # renders inline in Jupyter/VS Code via a text/vnd.mermaid MIME type
 print(diagram)                 # raw Mermaid source, works anywhere
 diagram.source                 # the raw string directly

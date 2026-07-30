@@ -36,6 +36,7 @@ def render_graph(
     separate_outputs: bool = False,
     show_inputs: bool = True,
     show_bounded_inputs: bool = False,
+    simplify: bool = True,
     debug_overlays: bool = False,
 ) -> dict[str, Any]:
     """Convert a flattened NetworkX graph to a React Flow scene + metadata.
@@ -51,6 +52,7 @@ def render_graph(
         separate_outputs=separate_outputs,
         show_inputs=show_inputs,
         show_bounded_inputs=show_bounded_inputs,
+        simplify=simplify,
     )
 
     return {
@@ -65,6 +67,7 @@ def render_graph(
             "separate_outputs": separate_outputs,
             "show_inputs": show_inputs,
             "show_bounded_inputs": show_bounded_inputs,
+            "simplify": simplify,
             "debug_overlays": debug_overlays,
             # Routing maps consumed by viz.js (`routingData` in
             # `assets/viz.js`). They feed compound dagre layout for

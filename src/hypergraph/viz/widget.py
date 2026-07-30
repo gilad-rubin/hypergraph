@@ -64,6 +64,7 @@ def visualize(
     separate_outputs: bool = False,
     show_inputs: bool | None = None,
     show_bounded_inputs: bool = False,
+    simplify: bool = True,
     show_external_inputs: bool | None = None,
     filepath: str | None = None,
     _debug_overlays: bool = False,
@@ -78,6 +79,9 @@ def visualize(
         separate_outputs: Whether to render outputs as separate DATA nodes.
         show_inputs: Whether to show INPUT/INPUT_GROUP nodes.
         show_bounded_inputs: Whether to include bound INPUT/INPUT_GROUP nodes.
+        simplify: Hide data edges a longer path already implies — with
+            ``A → B → C``, a direct ``A → C`` is dropped (default: True).
+            Toggleable in the widget toolbar.
         show_external_inputs: Deprecated alias for ``show_inputs``.
         filepath: Path to save standalone HTML (default: display in notebook).
         _debug_overlays: Internal metadata-only diagnostic flag; it does not
@@ -109,6 +113,7 @@ def visualize(
         separate_outputs=separate_outputs,
         show_inputs=show_inputs,
         show_bounded_inputs=show_bounded_inputs,
+        simplify=simplify,
         filepath=filepath,
         _debug_overlays=_debug_overlays,
     )
@@ -124,6 +129,7 @@ def render_flat_graph(
     separate_outputs: bool = False,
     show_inputs: bool = True,
     show_bounded_inputs: bool = False,
+    simplify: bool = True,
     filepath: str | None = None,
     _debug_overlays: bool = False,
 ) -> _VizCellOutput | None:
@@ -158,6 +164,7 @@ def render_flat_graph(
             "separate_outputs": separate_outputs,
             "show_inputs": show_inputs,
             "show_bounded_inputs": show_bounded_inputs,
+            "simplify": simplify,
             "debug_overlays": _debug_overlays,
         },
     }

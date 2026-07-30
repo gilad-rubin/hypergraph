@@ -325,8 +325,22 @@ class TestRenderGraph:
         assert input_ids == {"input_user_input"}
         assert all(source != "input_messages" for source, _ in input_edges)
 
-    def test_keeps_dag_dependencies_without_transitive_pruning(self):
-        """DAG visualization should keep all declared/inferred dependencies."""
+    def test_keeps_dag_dependencies_when_simplify_is_off(self):
+        """``simplify=False`` keeps every declared/inferred dependency —
+        pruning must be opt-out, never an artifact of the render pipeline."""
+        graph = Graph(nodes=[step_a, step_b, step_c, step_d])
+        result = render_graph(graph.to_flat_graph(), simplify=False)
+
+        edge_pairs = {(edge["source"], edge["target"]) for edge in result["edges"]}
+
+        assert ("step_a", "step_b") in edge_pairs
+        assert ("step_b", "step_c") in edge_pairs
+        assert ("step_c", "step_d") in edge_pairs
+        assert ("step_b", "step_d") in edge_pairs
+
+    def test_prunes_transitive_dag_dependency_by_default(self):
+        """``simplify`` defaults on: ``step_b → step_d`` is implied by
+        ``step_b → step_c → step_d``, so the shortcut is dropped."""
         graph = Graph(nodes=[step_a, step_b, step_c, step_d])
         result = render_graph(graph.to_flat_graph())
 
@@ -335,7 +349,7 @@ class TestRenderGraph:
         assert ("step_a", "step_b") in edge_pairs
         assert ("step_b", "step_c") in edge_pairs
         assert ("step_c", "step_d") in edge_pairs
-        assert ("step_b", "step_d") in edge_pairs
+        assert ("step_b", "step_d") not in edge_pairs
 
     def test_start_node_for_explicit_entrypoint(self):
         """Configured entrypoints get a synthetic START node and edge."""

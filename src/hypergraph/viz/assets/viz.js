@@ -70,6 +70,8 @@
     var showTypes = typState[0], setShowTypes = typState[1];
     var inputsState = useState(props.initialShowInputs);
     var showInputs = inputsState[0], setShowInputs = inputsState[1];
+    var simplifyState = useState(props.initialSimplify);
+    var simplify = simplifyState[0], setSimplify = simplifyState[1];
     var showBoundedInputs = !!props.initialShowBoundedInputs;
 
     var padState = useState(EDGE_ENDPOINT_PADDING);
@@ -89,6 +91,10 @@
       root.__hypergraphVizReady = false;
       setShowInputs(function(p) { return typeof v === 'boolean' ? v : !p; });
     }, []);
+    var onToggleSimplify = useCallback(function(v) {
+      root.__hypergraphVizReady = false;
+      setSimplify(function(p) { return typeof v === 'boolean' ? v : !p; });
+    }, []);
 
     // Render options hook for tests and dev gallery
     useEffect(function() {
@@ -97,6 +103,7 @@
         if (Object.prototype.hasOwnProperty.call(opts, 'separateOutputs')) onToggleSep(!!opts.separateOutputs);
         if (Object.prototype.hasOwnProperty.call(opts, 'showTypes')) onToggleTyp(!!opts.showTypes);
         if (Object.prototype.hasOwnProperty.call(opts, 'showInputs')) onToggleInputs(!!opts.showInputs);
+        if (Object.prototype.hasOwnProperty.call(opts, 'simplify')) onToggleSimplify(!!opts.simplify);
         if (Object.prototype.hasOwnProperty.call(opts, 'endpointPadding')) {
           root.__hypergraphVizReady = false;
           setEndpointPadding(Number(opts.endpointPadding));
@@ -120,7 +127,7 @@
         delete root.__hypergraphVizSetRenderOptions;
         root.removeEventListener('message', onMessage);
       };
-    }, [onToggleSep, onToggleTyp, onToggleInputs, setEndpointPadding, setRanksep]);
+    }, [onToggleSep, onToggleTyp, onToggleInputs, onToggleSimplify, setEndpointPadding, setRanksep]);
 
     var detState = useState(function() { return detectHostTheme(); });
     var detectedTheme = detState[0], setDetectedTheme = detState[1];
@@ -206,8 +213,9 @@
         separateOutputs: separateOutputs,
         showInputs: showInputs,
         showBoundedInputs: showBoundedInputs,
+        simplify: simplify,
       });
-    }, [expansionState, separateOutputs, showInputs, showBoundedInputs, ir]);
+    }, [expansionState, separateOutputs, showInputs, showBoundedInputs, simplify, ir]);
 
     var schemaMismatch = scene && scene.schemaVersionMismatch ? scene.schemaVersionMismatch : null;
 
@@ -358,8 +366,8 @@
       return Array.from(expansionState.entries()).filter(function(e) { return !e[1]; }).map(function(e) { return e[0]; }).sort().join(',');
     }, [expansionState]);
     var renderModeKey = useMemo(function() {
-      return 'sep:' + (separateOutputs ? '1' : '0') + '|types:' + (showTypes ? '1' : '0') + '|inputs:' + (showInputs ? '1' : '0');
-    }, [separateOutputs, showTypes, showInputs]);
+      return 'sep:' + (separateOutputs ? '1' : '0') + '|types:' + (showTypes ? '1' : '0') + '|inputs:' + (showInputs ? '1' : '0') + '|simp:' + (simplify ? '1' : '0');
+    }, [separateOutputs, showTypes, showInputs, simplify]);
     var refreshKey = useMemo(function() { return expansionKey + '|' + renderModeKey; }, [expansionKey, renderModeKey]);
     var prevRefresh = useRef(null);
     useEffect(function() {
@@ -444,7 +452,8 @@
           <${CustomControls} theme=${theme} onToggleTheme=${toggleTheme} separateOutputs=${separateOutputs}
             onToggleSeparate=${function() { onToggleSep(); }} showTypes=${showTypes}
             onToggleTypes=${function() { onToggleTyp(); }} showInputs=${showInputs}
-            onToggleInputs=${function() { onToggleInputs(); }} onFitView=${fitWithFixedPadding} />
+            onToggleInputs=${function() { onToggleInputs(); }} simplify=${simplify}
+            onToggleSimplify=${function() { onToggleSimplify(); }} onFitView=${fitWithFixedPadding} />
           ${root.__hypergraph_debug_viz ? html`
             <${DevLayoutControls} theme=${theme} endpointPadding=${endpointPadding} ranksep=${ranksep}
               onChangePadding=${function(v) { root.__hypergraphVizReady = false; setEndpointPadding(v); }}
@@ -482,6 +491,7 @@
           initialSeparateOutputs=${Boolean(initialData.meta && initialData.meta.separate_outputs)}
           initialShowTypes=${Boolean((initialData.meta && initialData.meta.show_types) !== false)}
           initialShowInputs=${Boolean((initialData.meta && initialData.meta.show_inputs) !== false)}
+          initialSimplify=${Boolean((initialData.meta && initialData.meta.simplify) !== false)}
           initialShowBoundedInputs=${Boolean(initialData.meta && initialData.meta.show_bounded_inputs)} />
       <//>
     `);

@@ -1700,6 +1700,7 @@ class Graph:
         separate_outputs: bool = False,
         show_inputs: bool | None = None,
         show_bounded_inputs: bool = False,
+        simplify: bool = True,
         show_external_inputs: bool | None = None,
         filepath: str | None = None,
     ) -> Any:
@@ -1716,6 +1717,9 @@ class Graph:
             show_inputs: Whether to show INPUT/INPUT_GROUP nodes (default: True)
             show_bounded_inputs: Whether to include bound INPUT/INPUT_GROUP nodes
                 when show_inputs=True
+            simplify: Hide data edges that a longer path already implies — given
+                ``A → B → C``, a direct ``A → C`` is dropped (default: True).
+                Toggleable from the widget toolbar.
             show_external_inputs: Deprecated alias for show_inputs
             filepath: Path to save HTML file (default: None, display in notebook)
 
@@ -1751,6 +1755,7 @@ class Graph:
             separate_outputs=separate_outputs,
             show_inputs=show_inputs,
             show_bounded_inputs=show_bounded_inputs,
+            simplify=simplify,
             filepath=filepath,
         )
 
@@ -1760,6 +1765,7 @@ class Graph:
         depth: int = 0,
         show_types: bool = True,
         separate_outputs: bool = False,
+        simplify: bool = True,
         direction: str = "TD",
         colors: dict[str, dict[str, str]] | None = None,
     ) -> Any:
@@ -1773,6 +1779,8 @@ class Graph:
             depth: How many levels of nested graphs to expand (default: 0)
             show_types: Whether to show type annotations in labels
             separate_outputs: Whether to render outputs as separate DATA nodes
+            simplify: Hide data edges that a longer path already implies — given
+                ``A → B → C``, a direct ``A → C`` is dropped (default: True)
             direction: Flowchart direction — "TD", "TB", "LR", "RL", "BT"
             colors: Custom color overrides per node class, e.g.
                 ``{"function": {"fill": "#fff", "stroke": "#000"}}``
@@ -1792,6 +1800,7 @@ class Graph:
             depth=depth,
             show_types=show_types,
             separate_outputs=separate_outputs,
+            simplify=simplify,
             direction=direction,
             colors=colors,
         )
