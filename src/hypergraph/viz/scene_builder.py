@@ -10,8 +10,17 @@ from __future__ import annotations
 
 from typing import Any
 
+from hypergraph.viz._simplify import EdgeRef, redundant_edge_keys
 from hypergraph.viz.ir_schema import CURRENT_SCHEMA_VERSION, GraphIR, IRSchemaError
 from hypergraph.viz.renderer.scope import resolve_expanded_entrypoints
+
+# Scene edge types that carry a value from one node to the next. Only these
+# form the path graph the ``simplify`` reduction walks: ``control`` /
+# ``ordering`` express "may run" / "runs after", which never implies that a
+# value arrived, and ``start`` / ``end`` are boundary scaffolding. In
+# separate-outputs mode the spine runs producer ─output▶ DATA ─data▶ consumer,
+# so ``output`` belongs here even though it is never itself removable.
+DATA_FLOW_EDGE_TYPES = frozenset({"data", "output", "input"})
 
 
 def build_initial_scene(
@@ -21,6 +30,7 @@ def build_initial_scene(
     separate_outputs: bool = False,
     show_inputs: bool = True,
     show_bounded_inputs: bool = False,
+    simplify: bool = True,
 ) -> dict[str, Any]:
     """Build a React Flow scene (nodes + edges) for the IR's initial state."""
     if ir.schema_version != CURRENT_SCHEMA_VERSION:
@@ -282,7 +292,43 @@ def build_initial_scene(
 
     _add_start_end_nodes_and_edges(ir, scene_nodes, scene_edges, parent_map, expansion_state, visible_ids)
 
+    if simplify:
+        scene_edges = simplify_transitive_edges(scene_edges)
+
     return {"nodes": scene_nodes, "edges": scene_edges}
+
+
+def simplify_transitive_edges(scene_edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop scene data edges that a longer visible path already implies.
+
+    Runs on the assembled scene (post expansion-rewriting) so redundancy is
+    judged against what is actually on screen. Hidden edges belong to collapsed
+    scopes: they are neither path segments nor removal candidates, so they
+    survive intact for the next expansion.
+
+    Classification lives here; the reachability decision lives in
+    ``_simplify.redundant_edge_keys``. The JS twin is
+    ``simplifyTransitiveEdges`` in ``assets/scene_builder.js``.
+    """
+    refs = []
+    for edge in scene_edges:
+        if edge.get("hidden"):
+            continue
+        data = edge.get("data") or {}
+        edge_type = data.get("edgeType")
+        is_back_edge = bool(data.get("forceFeedback"))
+        refs.append(
+            EdgeRef(
+                key=edge["id"],
+                source=edge["source"],
+                target=edge["target"],
+                removable=edge_type == "data" and not data.get("exclusive") and not is_back_edge,
+                traversable=edge_type in DATA_FLOW_EDGE_TYPES and not is_back_edge,
+            )
+        )
+
+    dropped = redundant_edge_keys(refs)
+    return [edge for edge in scene_edges if edge["id"] not in dropped]
 
 
 def _add_start_end_nodes_and_edges(

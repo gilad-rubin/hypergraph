@@ -146,7 +146,29 @@ The IR carries all expansion-rewriting information eagerly:
    - `edge_type="ordering"` in NetworkX graph
    - Rendered with dashed style
 
-4. **Exclusive (mutex) data edges** (both modes)
+4. **Transitive reduction** (`simplify`, default ON, both modes)
+   - `viz/_simplify.py::redundant_edge_keys` is the ONE authority for "is this
+     edge implied by a longer path?". Three consumers share it: `scene_builder.py`,
+     `assets/scene_builder.js` (twin `simplifyTransitiveEdges`), `mermaid.py`.
+     Never re-derive the reachability walk in a new call site.
+   - Two invariants make it safe to default on. Both are load-bearing; a change
+     that widens either silently deletes real information:
+     - Only **plain data** edges are removal candidates. Control, ordering,
+       input, output, start/end and mutex (`exclusive`) edges never get dropped.
+     - The path graph is the **data-flow spine only** (`data` + `output`, plus
+       inert `input`). Control/ordering edges must NOT justify a removal — a
+       gate's `gate ⇢ target` means "may run", so letting it stand in for
+       `producer → target` leaves the consumer with no visible data source.
+       `tests/test_frozen_baselines` (`gated.mmd`) is the regression guard.
+   - Back edges are excluded from the path graph, or the reduction eats cycles.
+     Mermaid has no `is_back_edge` field of its own; it calls
+     `renderer/scope.py::find_back_edges` (also the source of
+     `IREdge.is_back_edge`) to get the same answer.
+   - Runs on the **assembled scene**, after expansion rewriting: an edge that is
+     a shortcut while a container is collapsed can be the only path once it
+     expands. Hidden edges are neither path segments nor candidates.
+
+5. **Exclusive (mutex) data edges** (both modes)
    - When two producers in different branches of an exclusive gate
      (`@ifelse`, or `@route` with `multi_target=False`) feed the same input,
      each contributing edge is tagged with `data.exclusive=True`.
@@ -204,6 +226,7 @@ Generates a scrollable gallery of all notebook visualizations with DialKit contr
 ## Test Coverage Pointers
 
 - `tests/viz/test_scene_builder.py` — Python scene builder against the IR oracle
+- `tests/viz/test_simplify_edges.py` — `simplify` reduction + Python/JS/Mermaid alignment
 - `tests/viz/test_derivation_js.py` — drives `node` to run `derivation.js` directly
 - `tests/viz/test_viz_modules_js.py` — module smoke tests for the split assets
 - `tests/viz/test_scope_aware_visibility.py`
@@ -215,6 +238,7 @@ Generates a scrollable gallery of all notebook visualizations with DialKit contr
 - `src/hypergraph/viz/ir_schema.py` — `GraphIR` / `IRNode` / `IREdge` / `IRExternalInput` dataclasses
 - `src/hypergraph/viz/renderer/ir_builder.py` — `build_graph_ir(flat_graph)`
 - `src/hypergraph/viz/scene_builder.py` — Python scene builder and test oracle
+- `src/hypergraph/viz/_simplify.py` — `simplify` transitive-reduction authority
 - `src/hypergraph/viz/assets/scene_builder.js` — JS twin
 - `src/hypergraph/viz/renderer/__init__.py` — explicit Python scene + metadata compatibility helper
 - `src/hypergraph/viz/widget.py` — compact IR payload used by the HTML widget path

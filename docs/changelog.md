@@ -96,6 +96,26 @@
 
 ### Added
 
+- **Visualizations hide edges a longer path already implies (`simplify`,
+  default on).** Given `A → B → C`, a direct `A → C` data edge is a shortcut
+  past a route the diagram already draws, so it is dropped: the same
+  reachability, one less crossing line. Accepted by `Graph.visualize()`,
+  `Graph.to_mermaid()`, `HyperTable.visualize()`, `render_graph()` and
+  `extract_debug_data()`, and toggleable live from the widget toolbar. Pass
+  `simplify=False` (or click the toolbar button) to audit which values each node
+  actually consumes — the default tells you `C` runs after `A`, not that `C`
+  reads `A`'s output directly; pair it with `separate_outputs=True` for full
+  value provenance. Only plain data edges are ever dropped, and only a
+  **data-flow** path can justify dropping one: a gate's `gate ⇢ target` means
+  "may run", not "received this value", so control and ordering edges never
+  stand in for a data edge. Cycle/feedback edges and mutually exclusive branch
+  arms are likewise never dropped, reachability is preserved so no node is left
+  disconnected, and the reduction re-runs per expansion state because an edge
+  that is a shortcut while a container is collapsed can be the only path once it
+  expands. One authority (`viz/_simplify.py`) serves the Python scene builder,
+  its JS twin and the Mermaid exporter, so the widget and the text export cannot
+  disagree about which edges exist.
+
 - **Independently paused Batch children now continue when answered** —
   answering a durable pause no longer just stores resume input; settlement,
   the persisted answer, the Run `answer` fact, the new Batch

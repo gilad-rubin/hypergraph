@@ -32,6 +32,7 @@ def scene_for_state(
     expand_all: bool = False,
     separate_outputs: bool = False,
     show_inputs: bool = True,
+    simplify: bool = True,
 ) -> dict:
     """Build a single-state ``{"nodes", "edges"}`` scene via the IR + scene_builder.
 
@@ -48,7 +49,30 @@ def scene_for_state(
         expansion_state=expansion_state,
         separate_outputs=separate_outputs,
         show_inputs=show_inputs,
+        simplify=simplify,
     )
+
+
+def make_shortcut_graph() -> Graph:
+    """``fetch → parse → render`` where ``render`` also reads ``fetch``'s output.
+
+    The direct ``fetch → render`` data edge is implied by the chain, so it is
+    exactly what ``simplify=True`` drops.
+    """
+
+    @node(output_name="raw")
+    def fetch(url: str) -> str:
+        return url
+
+    @node(output_name="parsed")
+    def parse(raw: str) -> str:
+        return raw
+
+    @node(output_name="page")
+    def render(parsed: str, raw: str) -> str:
+        return parsed + raw
+
+    return Graph(nodes=[fetch, parse, render], name="shortcut")
 
 
 def make_nested_container_entrypoint_graph() -> Graph:
