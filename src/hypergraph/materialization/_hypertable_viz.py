@@ -101,7 +101,6 @@ def render_hypertable(
         show_inputs = show_external_inputs
     if show_inputs is None:
         show_inputs = True
-    options.setdefault("depth", 1)
 
     flat_graph = combined.to_flat_graph(extra_edges=extra_edges)
     for (source_id, target_id), field_names in fanout_map_fields(graph, spec, map_over_nodes).items():

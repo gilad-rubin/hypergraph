@@ -205,20 +205,28 @@ def build_initial_scene(
     for ir_edge in ir.edges:
         # Container expansion rewrites: when source/target container is
         # expanded, route the edge to the deepest internal producer/consumer
-        # instead of the container hull.
+        # instead of the container hull. A rewritten endpoint may itself sit
+        # inside a still-collapsed INNER container, so it is resolved up to
+        # its deepest visible ancestor — the edge aggregates to that boundary
+        # instead of vanishing with the hidden node. Several endpoints
+        # resolving to one ancestor collapse to one edge.
         base_sources = [ir_edge.source]
         if expansion_state.get(ir_edge.source) and ir_edge.source_when_expanded:
             expanded_sources = ir_edge.source_when_expanded
             base_sources = list(expanded_sources) if isinstance(expanded_sources, tuple) else [expanded_sources]
-        # A fan-out edge into an expanded container may re-route to several item
-        # -field INPUT pills, so target_when_expanded can be a tuple; emit one
-        # edge per target (mirrors the multi-source fan-out below).
+            base_sources = _resolve_rewritten_endpoints(base_sources, parent_map, expansion_state, visible_ids)
+        # An edge into an expanded container may re-route to several internal
+        # consumers (one value entering a container at more than one node) or,
+        # for identity-mode fan-out, to several item-field INPUT pills — so
+        # target_when_expanded can be a tuple; emit one edge per target
+        # (mirrors the multi-source fan-out below).
         targets = [ir_edge.target]
         if expansion_state.get(ir_edge.target):
             if ir_edge.target_when_expanded:
                 expanded_targets = ir_edge.target_when_expanded
                 targets = list(expanded_targets) if isinstance(expanded_targets, tuple) else [expanded_targets]
             targets = list(resolve_expanded_entrypoints(targets, ir.container_entrypoints, expansion_state))
+            targets = _resolve_rewritten_endpoints(targets, parent_map, expansion_state, visible_ids)
 
         # A data edge can carry multiple value_names (one NetworkX edge per
         # (src,tgt) merges them). Merged-output mode should still render one
@@ -311,6 +319,32 @@ def _collapsed_containers(ir: GraphIR, expansion_state: dict[str, bool]) -> set[
     return {n.id for n in ir.nodes if n.node_type == "GRAPH" and not expansion_state.get(n.id, False)}
 
 
+def _resolve_rewritten_endpoints(
+    endpoints: list[str],
+    parent_map: dict[str, str],
+    expansion_state: dict[str, bool],
+    visible_ids: set[str],
+) -> list[str]:
+    """Walk each rewritten endpoint up to its deepest visible ancestor, keeping
+    order and dropping duplicates. An endpoint with no visible ancestor (or one
+    outside the parent map, e.g. a not-yet-emitted INPUT pill id) is kept as
+    is — the edge then stays hidden exactly as before.
+
+    Only collapse-hiding aggregates: a node hidden by ``hide=True`` walks up to
+    an EXPANDED ancestor, and an edge must never target an expanded container
+    (dagre cannot rank it) — so that resolution is rejected and the edge stays
+    hidden, exactly as it did before endpoints were resolved at all."""
+    resolved: list[str] = []
+    for endpoint in endpoints:
+        visible = _resolve_to_visible(endpoint, parent_map, expansion_state, visible_ids)
+        candidate = visible if visible is not None else endpoint
+        if candidate != endpoint and expansion_state.get(candidate):
+            candidate = endpoint
+        if candidate not in resolved:
+            resolved.append(candidate)
+    return resolved
+
+
 def _collapsed_ports(ir_edge: Any, expansion_state: dict[str, bool], parent_map: dict[str, str]) -> dict[str, str]:
     """The internal entry/exit a boundary edge resolves to, when its container
     endpoint is currently collapsed.
@@ -319,18 +353,25 @@ def _collapsed_ports(ir_edge: Any, expansion_state: dict[str, bool], parent_map:
     internal producer/consumer, which may sit several levels down. Transits are
     recorded between a container's **direct children**, so each port is walked
     back up to the child of the container it belongs to — for ``mid`` an entry
-    of ``mid/deep/inner_a`` is the child ``mid/deep``. A tuple (multi-pill
-    fan-out) is left unresolved on purpose — see ``simplify_transitive_edges``.
+    of ``mid/deep/inner_a`` is the child ``mid/deep``. A multi-producer source
+    tuple is left unresolved on purpose — no single child definitely emits the
+    value. A multi-consumer target tuple still resolves when every consumer
+    sits under the SAME direct child (the value provably arrives there);
+    consumers spread across children stay unresolved — see
+    ``simplify_transitive_edges``.
     """
     ports: dict[str, str] = {}
     if not expansion_state.get(ir_edge.source) and isinstance(ir_edge.source_when_expanded, str):
         child = _direct_child_of(ir_edge.source, ir_edge.source_when_expanded, parent_map)
         if child is not None:
             ports["exit"] = child
-    if not expansion_state.get(ir_edge.target) and isinstance(ir_edge.target_when_expanded, str):
-        child = _direct_child_of(ir_edge.target, ir_edge.target_when_expanded, parent_map)
-        if child is not None:
-            ports["entry"] = child
+    if not expansion_state.get(ir_edge.target) and ir_edge.target_when_expanded:
+        expanded = ir_edge.target_when_expanded
+        expanded_targets = expanded if isinstance(expanded, tuple) else (expanded,)
+        children = {_direct_child_of(ir_edge.target, target, parent_map) for target in expanded_targets}
+        only_child = next(iter(children)) if len(children) == 1 else None
+        if only_child is not None:
+            ports["entry"] = only_child
     return ports
 
 
@@ -399,12 +440,21 @@ def simplify_transitive_edges(
         edge_type = data.get("edgeType")
         is_back_edge = bool(data.get("forceFeedback"))
         is_exclusive = bool(data.get("exclusive"))
+        # An INPUT pill edge targets the collapsed box AS A BOX, never an
+        # in-port. The drawn line ends at the hull, so the reader's question
+        # is only "does this value reach the box?" — answered by the phantom
+        # in-port → box links below — and, ending at the bare box id (a sink
+        # in the path graph), the edge can never stand in for a transit.
+        target = edge["target"] if edge_type == "input" else port(edge["target"], edge["id"], "in")
         refs.append(
             EdgeRef(
                 key=edge["id"],
                 source=port(edge["source"], edge["id"], "out"),
-                target=port(edge["target"], edge["id"], "in"),
-                removable=edge_type == "data" and not is_exclusive and not is_back_edge,
+                target=target,
+                # Input edges are candidates too: one input feeding a chain
+                # keeps only its EARLIEST consumer(s) — every later edge is a
+                # shortcut past a route the diagram already draws.
+                removable=edge_type in ("data", "input") and not is_exclusive and not is_back_edge,
                 # Exclusive arms are excluded from the path graph too, not just
                 # from the candidates: an arm only carries its value when its
                 # branch is taken, so it must not imply away an unconditional edge.
@@ -425,6 +475,19 @@ def simplify_transitive_edges(
                     traversable=True,
                 )
             )
+
+    # Path-only links from every delivered-to in-port to its box, so "reaches
+    # the box" means exactly "some visible edge delivers into the box". The
+    # bare box id has no outgoing path links, so these can never manufacture a
+    # pass-through — they only answer input-edge candidacy.
+    seen_ports: set[str] = set()
+    for ref in list(refs):
+        port_id = ref.target
+        if port_id in seen_ports or "\x00in\x00" not in port_id:
+            continue
+        seen_ports.add(port_id)
+        container = port_id.split("\x00", 1)[0]
+        refs.append(EdgeRef(key=("\x00boxin", port_id), source=port_id, target=container, removable=False, traversable=True))
 
     dropped = shortcut_edge_keys(refs)
     return [edge for edge in scene_edges if edge["id"] not in dropped]
@@ -571,6 +634,14 @@ def _merge_inputs_for_state(
                 if resolved not in targets:
                     targets.append(resolved)
         owner_container = _visible_owner(ext.deepest_owner, parent_map, expansion_state)
+        # A real external input is part of the graph's contract, so collapsing
+        # the container that owns it must not erase it: the pill hoists to its
+        # deepest VISIBLE ancestor (owner_container) and its edges aggregate to
+        # the collapsed boundary. Only map-fed pills disappear with their
+        # container — they project a fan-out edge that re-attaches to the
+        # container hull while it is collapsed, so keeping the pill would draw
+        # the same value twice.
+        hidden = _input_hidden(ext.deepest_owner, parent_map, expansion_state) if ext.map_fed else False
         # map_fed and is_bound style the pill; owner_container decides where it
         # nests. Merging across any of them would change what the pill means.
         key = (frozenset(targets), ext.is_bound, bool(ext.map_fed), owner_container)
@@ -587,14 +658,14 @@ def _merge_inputs_for_state(
                 "owner_container": owner_container,
                 "deepest_owner": ext.deepest_owner,
                 "targets": list(targets),
-                "hidden": _input_hidden(ext.deepest_owner, parent_map, expansion_state),
+                "hidden": hidden,
             }
             continue
         bucket["params"].extend(ext.params)
         bucket["segments"].extend(segments)
         bucket["type_hints"].extend(ext.type_hints)
         # A merged pill is hidden only when every constituent is.
-        bucket["hidden"] = bucket["hidden"] and _input_hidden(ext.deepest_owner, parent_map, expansion_state)
+        bucket["hidden"] = bucket["hidden"] and hidden
 
     merged: list[dict[str, Any]] = []
     for key in order:

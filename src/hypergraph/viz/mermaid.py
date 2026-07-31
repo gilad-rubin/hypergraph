@@ -31,7 +31,11 @@ from hypergraph.viz._common import (
 from hypergraph.viz._mermaid_core import MermaidDiagram, _MermaidIdAllocator, _sanitize_id
 from hypergraph.viz._simplify import EdgeRef, shortcut_edge_keys
 from hypergraph.viz.renderer._format import format_type
-from hypergraph.viz.renderer.ir_builder import compute_container_transits, resolve_boundary_ports
+from hypergraph.viz.renderer.ir_builder import (
+    compute_container_transits,
+    find_internal_consumers,
+    resolve_boundary_ports,
+)
 from hypergraph.viz.renderer.nodes import (
     build_input_groups,
     get_start_targets,
@@ -243,9 +247,11 @@ class _RenderedEdge:
 
     @property
     def removable(self) -> bool:
-        """Only plain data edges may be dropped — an ``output`` edge is the
-        structural producer→DATA link, and dropping it would orphan the pill."""
-        return self.kind == "data" and not self.exclusive and not self.is_back_edge
+        """Plain data edges and INPUT pill edges may be dropped — one input
+        feeding a chain keeps only its earliest consumer(s). An ``output``
+        edge is the structural producer→DATA link, and dropping it would
+        orphan the pill."""
+        return self.kind in ("data", "input") and not self.exclusive and not self.is_back_edge
 
     @property
     def traversable(self) -> bool:
@@ -257,7 +263,7 @@ class _RenderedEdge:
         the same reason — an arm carries its value only when its branch is
         taken, so it must not imply away an unconditional edge.
         """
-        return self.kind in ("data", "output") and not self.is_back_edge and not self.exclusive
+        return self.kind in ("data", "output", "input") and not self.is_back_edge and not self.exclusive
 
 
 def _simplify_rendered_edges(
@@ -265,16 +271,20 @@ def _simplify_rendered_edges(
     collapsed_containers: set[str],
     container_transits: dict[str, list[list[str]]],
 ) -> list[_RenderedEdge]:
-    """Drop rendered data edges a longer path already implies.
+    """Drop rendered data and INPUT edges a longer path already implies.
 
-    Mermaid's INPUT / START / END edges are inert for this purpose — nothing
-    points into ``__start__`` or out of ``__end__``, and nothing produces an
-    INPUT — so only the flow edges built here need to enter the path graph.
+    START / END edges stay inert — nothing points into ``__start__`` or out of
+    ``__end__``. INPUT pill edges enter the path graph AND the candidate set:
+    one input feeding a chain keeps only its earliest consumer(s), exactly as
+    in ``scene_builder.simplify_transitive_edges``.
 
     Collapsed containers are split into per-port nodes exactly as in
     ``scene_builder.simplify_transitive_edges``, so the text export and the
     widget agree about which boxes really pass a value through. An
-    unresolvable port becomes a dead end: unverified means "do not hide".
+    unresolvable port becomes a dead end: unverified means "do not hide". An
+    INPUT edge instead targets the box AS A BOX — the drawn line ends at the
+    hull, so its candidacy asks only whether the value reaches the box, which
+    the phantom in-port → box links answer.
     """
 
     def port(node_id: str, index: int, side: str, resolved: str | None) -> str:
@@ -283,11 +293,16 @@ def _simplify_rendered_edges(
         suffix = resolved if resolved is not None else f"?{index}"
         return f"{node_id}\x00{side}\x00{suffix}"
 
+    def ref_target(edge: _RenderedEdge, index: int) -> str:
+        if edge.kind == "input":
+            return edge.target
+        return port(edge.target, index, "in", edge.entry_port)
+
     refs = [
         EdgeRef(
             key=index,
             source=port(edge.source, index, "out", edge.exit_port),
-            target=port(edge.target, index, "in", edge.entry_port),
+            target=ref_target(edge, index),
             removable=edge.removable,
             traversable=edge.traversable,
         )
@@ -304,6 +319,25 @@ def _simplify_rendered_edges(
                     traversable=True,
                 )
             )
+    # Path-only links from every delivered-to in-port to its box, so "reaches
+    # the box" means exactly "some rendered edge delivers into the box". The
+    # bare box id has no outgoing path links, so these can never manufacture a
+    # pass-through — they only answer input-edge candidacy.
+    seen_ports: set[str] = set()
+    for ref in list(refs):
+        port_id = str(ref.target)
+        if port_id in seen_ports or "\x00in\x00" not in port_id:
+            continue
+        seen_ports.add(port_id)
+        refs.append(
+            EdgeRef(
+                key=("\x00boxin", port_id),
+                source=port_id,
+                target=port_id.split("\x00", 1)[0],
+                removable=False,
+                traversable=True,
+            )
+        )
     dropped = shortcut_edge_keys(refs)
     return [edge for index, edge in enumerate(rendered) if index not in dropped]
 
@@ -325,10 +359,6 @@ def _render_merged_edges(
         flat_graph,
         expansion_state,
         use_deepest=True,
-    )
-    param_to_consumers = build_param_to_consumer_map(
-        flat_graph,
-        expansion_state,
     )
     seen_edges: set[tuple[str, str, str]] = set()
 
@@ -394,36 +424,36 @@ def _render_merged_edges(
                 expansion_state,
                 output_to_producer,
             )
-            actual_target = _resolve_data_target(
+            actual_targets = _resolve_data_targets(
                 target,
                 value_name,
                 flat_graph,
                 expansion_state,
-                param_to_consumers,
                 container_entrypoints,
             )
-            if actual_source is None or actual_target is None:
+            if actual_source is None:
                 continue
-            if actual_source == actual_target:
-                continue
-            edge_key = (id_allocator.get(actual_source), id_allocator.get(actual_target), value_name)
-            if edge_key in seen_edges:
-                continue
-            seen_edges.add(edge_key)
-            is_exclusive = (source, target, value_name) in exclusive_data_edges
-            exit_port, entry_port = resolve_boundary_ports(flat_graph, source, target, value_names or [value_name])
-            out.append(
-                _RenderedEdge(
-                    _format_edge(actual_source, actual_target, None, exclusive=is_exclusive, id_allocator=id_allocator),
-                    "data",
-                    actual_source,
-                    actual_target,
-                    exclusive=is_exclusive,
-                    is_back_edge=(source, target) in back_edges,
-                    exit_port=exit_port,
-                    entry_port=entry_port,
+            for resolved_target in actual_targets:
+                if actual_source == resolved_target:
+                    continue
+                edge_key = (id_allocator.get(actual_source), id_allocator.get(resolved_target), value_name)
+                if edge_key in seen_edges:
+                    continue
+                seen_edges.add(edge_key)
+                is_exclusive = (source, target, value_name) in exclusive_data_edges
+                exit_port, entry_port = resolve_boundary_ports(flat_graph, source, target, value_names or [value_name])
+                out.append(
+                    _RenderedEdge(
+                        _format_edge(actual_source, resolved_target, None, exclusive=is_exclusive, id_allocator=id_allocator),
+                        "data",
+                        actual_source,
+                        resolved_target,
+                        exclusive=is_exclusive,
+                        is_back_edge=(source, target) in back_edges,
+                        exit_port=exit_port,
+                        entry_port=entry_port,
+                    )
                 )
-            )
 
     return out
 
@@ -445,10 +475,6 @@ def _render_separate_edges(
         flat_graph,
         expansion_state,
         use_deepest=True,
-    )
-    param_to_consumers = build_param_to_consumer_map(
-        flat_graph,
-        expansion_state,
     )
     seen_edges: set[tuple[str, ...]] = set()
 
@@ -493,34 +519,32 @@ def _render_separate_edges(
                 )
                 if actual_source is None:
                     continue
-                actual_target = _resolve_data_target(
+                actual_targets = _resolve_data_targets(
                     target,
                     value_name,
                     flat_graph,
                     expansion_state,
-                    param_to_consumers,
                     container_entrypoints,
                 )
-                if actual_target is None:
-                    continue
                 source_attrs = flat_graph.nodes.get(actual_source, {})
                 if is_internal_gate_output(actual_source, value_name, source_attrs):
                     continue
                 data_id = f"data_{actual_source}_{value_name}"
-                edge_key = (id_allocator.get(data_id), id_allocator.get(actual_target))
-                if edge_key not in seen_edges:
-                    seen_edges.add(edge_key)
-                    is_exclusive = (source, target, value_name) in exclusive_data_edges
-                    out.append(
-                        _RenderedEdge(
-                            _format_edge(data_id, actual_target, value_name, exclusive=is_exclusive, id_allocator=id_allocator),
-                            "data",
-                            data_id,
-                            actual_target,
-                            exclusive=is_exclusive,
-                            is_back_edge=(source, target) in back_edges,
+                for resolved_target in actual_targets:
+                    edge_key = (id_allocator.get(data_id), id_allocator.get(resolved_target))
+                    if edge_key not in seen_edges:
+                        seen_edges.add(edge_key)
+                        is_exclusive = (source, target, value_name) in exclusive_data_edges
+                        out.append(
+                            _RenderedEdge(
+                                _format_edge(data_id, resolved_target, value_name, exclusive=is_exclusive, id_allocator=id_allocator),
+                                "data",
+                                data_id,
+                                resolved_target,
+                                exclusive=is_exclusive,
+                                is_back_edge=(source, target) in back_edges,
+                            )
                         )
-                    )
 
         elif edge_type == "ordering":
             value_name = value_names[0] if value_names else ""
@@ -665,34 +689,55 @@ def _resolve_data_source(
     return actual_source
 
 
-def _resolve_data_target(
+def _resolve_data_targets(
     target: str,
     value_name: str,
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
-    param_to_consumers: dict[str, list[str]],
     container_entrypoints: dict[str, tuple[str, ...]],
-) -> str | None:
-    """Resolve actual target for a data edge, entering expanded containers."""
-    actual_target = target
+) -> list[str]:
+    """Resolve actual target(s) for a data edge, entering expanded containers.
+
+    One incoming value can enter a container at several internal consumers, so
+    an edge into an EXPANDED container fans out to every one of them — the twin
+    of the scene builders' tuple ``target_when_expanded``, resolved by the same
+    authority (``ir_builder.find_internal_consumers``), so a consumer already
+    fed by an INTERNAL producer of the value never receives the boundary edge.
+    A consumer that sits inside a still-collapsed inner container resolves up
+    to that visible boundary instead of silently dropping the edge."""
     target_attrs = flat_graph.nodes.get(target, {})
     if target_attrs.get("node_type") == "GRAPH" and expansion_state.get(target, False) and value_name:
-        consumers = param_to_consumers.get(value_name, [])
-        internal = [c for c in consumers if c != target and is_descendant_of(c, target, flat_graph)]
-        if internal:
-            actual_target = internal[0]
-        else:
+        internal = list(find_internal_consumers(target, value_name, flat_graph))
+        if not internal:
             entrypoints = resolve_expanded_entrypoints(
                 (target,),
                 container_entrypoints,
                 expansion_state,
             )
-            if not entrypoints:
-                return None
-            actual_target = entrypoints[0]
-    if not is_node_visible(actual_target, flat_graph, expansion_state):
+            internal = [entrypoints[0]] if entrypoints else []
+        resolved: list[str] = []
+        for candidate in internal:
+            visible = _visible_ancestor(candidate, flat_graph, expansion_state)
+            if visible is not None and visible not in resolved:
+                resolved.append(visible)
+        return resolved
+    if not is_node_visible(target, flat_graph, expansion_state):
+        return []
+    return [target]
+
+
+def _visible_ancestor(node_id: str, flat_graph: nx.DiGraph, expansion_state: dict[str, bool]) -> str | None:
+    """Walk up from ``node_id`` to the first currently-visible node.
+
+    Only collapse-hiding aggregates: a node hidden by ``hide=True`` walks up
+    to an EXPANDED ancestor, which is never a legitimate edge target — the
+    edge is dropped instead, exactly as before."""
+    current: str | None = node_id
+    while current is not None and not is_node_visible(current, flat_graph, expansion_state):
+        current = flat_graph.nodes.get(current, {}).get("parent")
+    if current is not None and current != node_id and expansion_state.get(current):
         return None
-    return actual_target
+    return current
 
 
 def _get_control_label(
@@ -859,8 +904,10 @@ def to_mermaid(
         depth: How many levels of nested graphs to expand (default: 0)
         show_types: Whether to show type annotations in labels
         separate_outputs: Whether to render outputs as separate DATA nodes
-        simplify: Hide data edges a longer path already implies — given
-            ``A → B → C``, a direct ``A → C`` is dropped (default: True)
+        simplify: Hide data and input edges a longer path already implies —
+            given ``A → B → C``, a direct ``A → C`` is dropped, and an input
+            feeding the whole chain keeps only its earliest consumer
+            (default: True)
         direction: Flowchart direction — "TD", "TB", "LR", "RL", "BT"
         colors: Custom color overrides per node class, e.g.
             {"function": {"fill": "#fff", "stroke": "#000"}}
@@ -1006,6 +1053,7 @@ def to_mermaid(
     edge_pairs: list[tuple[str, str]] = []
     edge_pairs.extend((line, "start") for line in _render_start_edges(start_targets, id_allocator))
 
+    input_rendered: list[_RenderedEdge] = []
     for group in input_groups:
         params = group["params"]
         if len(params) == 1:
@@ -1022,7 +1070,14 @@ def to_mermaid(
             container_entrypoints,
         )
         for tgt in targets:
-            edge_pairs.append((_format_edge(input_node_id, tgt, None, id_allocator=id_allocator), "input"))
+            input_rendered.append(
+                _RenderedEdge(
+                    _format_edge(input_node_id, tgt, None, id_allocator=id_allocator),
+                    "input",
+                    input_node_id,
+                    tgt,
+                )
+            )
 
     exclusive_data_edges = compute_exclusive_data_edges(flat_graph)
     back_edges = find_back_edges(flat_graph)
@@ -1035,12 +1090,17 @@ def to_mermaid(
         back_edges,
         id_allocator,
     )
+    # Input edges enter the reduction with the flow edges (an input feeding a
+    # chain keeps only its earliest consumer), then emit first so the text
+    # keeps its historical section order.
+    combined = input_rendered + rendered
     if simplify:
         collapsed_containers = {
             node_id for node_id, attrs in flat_graph.nodes(data=True) if attrs.get("node_type") == "GRAPH" and not expansion_state.get(node_id, False)
         }
-        rendered = _simplify_rendered_edges(rendered, collapsed_containers, compute_container_transits(flat_graph))
-    edge_pairs.extend((edge.line, edge.kind) for edge in rendered)
+        combined = _simplify_rendered_edges(combined, collapsed_containers, compute_container_transits(flat_graph))
+    edge_pairs.extend((edge.line, edge.kind) for edge in combined if edge.kind == "input")
+    edge_pairs.extend((edge.line, edge.kind) for edge in combined if edge.kind != "input")
 
     edge_pairs.extend((line, "end") for line in _render_end_edges(flat_graph, expansion_state, id_allocator))
 

@@ -173,15 +173,16 @@ class TestWorkflowDepth0:
         assert issues == {}, f"Edge connection issues:\n{format_issues(issues)}"
 
     def test_workflow_depth0_structure(self, page):
-        """Collapsed workflow should have expected node count."""
+        """Collapsed workflow keeps its contract input on the boundary."""
         graph = make_workflow()
         nodes, edges = extract_geometries(page, graph, depth=0)
 
-        # At depth=0: preprocess (collapsed), analyze
-        # Internal-only inputs are hidden when the container is collapsed.
+        # At depth=0: preprocess (collapsed), analyze — plus the graph's own
+        # unbound input, whose pill hoists to the collapsed boundary rather
+        # than vanishing with the container internals.
         assert len(nodes) >= 2, f"Expected at least 2 nodes, got {len(nodes)}: {list(nodes.keys())}"
-        assert not any(node_id.startswith("input_") for node_id in nodes), f"Unexpected input nodes in collapsed view: {list(nodes.keys())}"
-        assert len(edges) >= 1, f"Expected at least 1 edge, got {len(edges)}"
+        assert "input_text" in nodes, f"'text' is an unbound graph input; its pill must survive the collapse: {list(nodes.keys())}"
+        assert len(edges) >= 2, f"Expected the data edge plus the aggregated input edge, got {len(edges)}"
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
@@ -265,14 +266,18 @@ class TestOuterDepth0:
         assert issues == {}, f"Edge connection issues:\n{format_issues(issues)}"
 
     def test_outer_depth0_structure(self, page):
-        """All-collapsed outer should have minimal nodes."""
+        """All-collapsed outer keeps its contract inputs on the boundary."""
         graph = make_outer()
         nodes, edges = extract_geometries(page, graph, depth=0)
 
-        # At depth=0: middle (collapsed), log_result
-        # Internal-only inputs are hidden when the container is collapsed.
+        # At depth=0: middle (collapsed), log_result — plus the graph's own
+        # unbound input, whose pill hoists to the collapsed boundary rather
+        # than vanishing with the container internals.
         assert len(nodes) >= 2, f"Expected at least 2 nodes, got {len(nodes)}: {list(nodes.keys())}"
-        assert not any(node_id.startswith("input_") for node_id in nodes), f"Unexpected input nodes in collapsed view: {list(nodes.keys())}"
+        assert "input_x" in nodes, f"'x' is an unbound graph input; its pill must survive the collapse: {list(nodes.keys())}"
+        assert any(edge.source_id == "input_x" and edge.target_id == "middle" for edge in edges), (
+            "the pill's edge aggregates to the collapsed container"
+        )
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
@@ -299,13 +304,15 @@ class TestOuterDepth1:
         # Hierarchical IDs: middle/inner and middle/validate
         assert "middle/inner" in node_ids or "middle/validate" in node_ids, f"Expected middle/inner or middle/validate in nodes: {node_ids}"
 
-    def test_outer_depth1_internal_inputs_hidden(self, page):
-        """Internal-only inputs are hidden when inner is collapsed."""
+    def test_outer_depth1_internal_inputs_follow_the_visible_boundary(self, page):
+        """With inner collapsed the pill's edge lands on the inner hull."""
         graph = make_outer()
         nodes, edges = extract_geometries(page, graph, depth=1)
 
-        input_edges = [edge for edge in edges if edge.source_id.startswith("input_")]
-        assert not input_edges, f"Internal-only inputs should be hidden when inner is collapsed.\nEdges: {[e.id for e in input_edges]}"
+        input_targets = {edge.target_id for edge in edges if edge.source_id.startswith("input_")}
+        assert "middle/inner" in input_targets, (
+            f"'x' feeds a node inside collapsed inner; its edge aggregates to the boundary. Input edges target: {input_targets}"
+        )
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")

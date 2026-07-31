@@ -116,13 +116,24 @@ helper from ``tests/viz/conftest.py``. In the browser, App calls
 
 The IR carries all expansion-rewriting information eagerly:
 - ``IREdge.source_when_expanded`` / ``target_when_expanded`` re-route
-  edges to the deepest internal producer/consumer when a container is expanded.
+  edges to the deepest internal producer / EVERY internal consumer when a
+  container is expanded — one value can enter a container at several nodes, so
+  ``target_when_expanded`` is a tuple whenever more than one consumer reads it.
+  A rewritten endpoint that sits inside a still-collapsed inner container is
+  resolved up to its deepest visible ancestor in the scene builders (edges
+  aggregate to the boundary rather than vanishing), and endpoints sharing an
+  ancestor dedup to one edge.
   An identity-mode fan-out edge (``HyperTable.visualize``) re-routes instead to
   the mapped item's field INPUT pill(s) — ``segment_pages ──pages──▶ [page_text]
-  ──▶ embed_page`` — so ``target_when_expanded`` may be a tuple of pill ids, and
-  each such pill is flagged ``IRExternalInput.map_fed`` (styled distinctly, not
-  as a free-floating external input). Falls back to the container entrypoint
+  ──▶ embed_page`` — so ``target_when_expanded`` may also be a tuple of pill ids,
+  and each such pill is flagged ``IRExternalInput.map_fed`` (styled distinctly,
+  not as a free-floating external input). Falls back to the container entrypoint
   when the mapped item has no matching field (e.g. ``list[str]``).
+- INPUT pills hoist, never hide: an external input owned by a collapsed
+  container surfaces at its deepest VISIBLE ancestor with its edge aggregated
+  to the collapsed hull — a graph's contract inputs must survive any collapse.
+  Only ``map_fed`` pills disappear with their container (the container-level
+  fan-out edge represents the same value while collapsed).
 - ``IREdge.is_back_edge`` marks DFS back-edges so feedback routing survives
   arbitrary expansion changes.
 - ``IRNode.outputs[i].internal_only`` flags outputs whose consumers all
@@ -153,8 +164,13 @@ The IR carries all expansion-rewriting information eagerly:
      Never re-derive the reachability walk in a new call site.
    - Two invariants make it safe to default on. Both are load-bearing; a change
      that widens either silently deletes real information:
-     - Only **plain data** edges are removal candidates. Control, ordering,
-       input, output, start/end and mutex (`exclusive`) edges never get dropped.
+     - Only **plain data** and **INPUT pill** edges are removal candidates.
+       Control, ordering, output, start/end and mutex (`exclusive`) edges never
+       get dropped. An input feeding a chain keeps only its EARLIEST
+       consumer(s); an input edge into a *collapsed* container is judged
+       box-level — it drops when any other visible route delivers into that
+       box (phantom in-port→box path links, added in both scene-builder twins
+       and Mermaid) — while data edges into the same box stay port-strict.
      - The path graph is the **unconditional data-flow spine only** (`data` +
        `output`, plus inert `input`). Only an edge that *always* carries a value
        may justify a removal, because the reader must be able to trust the

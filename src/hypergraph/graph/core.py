@@ -1767,8 +1767,10 @@ class Graph:
             show_inputs: Whether to show INPUT/INPUT_GROUP nodes (default: True)
             show_bounded_inputs: Whether to include bound INPUT/INPUT_GROUP nodes
                 when show_inputs=True
-            simplify: Hide data edges that a longer path already implies — given
-                ``A → B → C``, a direct ``A → C`` is dropped (default: True).
+            simplify: Hide data and input edges that a longer path already
+                implies — given ``A → B → C``, a direct ``A → C`` is dropped,
+                and an input feeding the whole chain keeps only its earliest
+                consumer (default: True).
                 Toggleable from the widget toolbar.
             show_external_inputs: Deprecated alias for show_inputs
             filepath: Path to save HTML file (default: None, display in notebook)
@@ -1829,8 +1831,10 @@ class Graph:
             depth: How many levels of nested graphs to expand (default: 0)
             show_types: Whether to show type annotations in labels
             separate_outputs: Whether to render outputs as separate DATA nodes
-            simplify: Hide data edges that a longer path already implies — given
-                ``A → B → C``, a direct ``A → C`` is dropped (default: True)
+            simplify: Hide data and input edges that a longer path already
+                implies — given ``A → B → C``, a direct ``A → C`` is dropped,
+                and an input feeding the whole chain keeps only its earliest
+                consumer (default: True)
             direction: Flowchart direction — "TD", "TB", "LR", "RL", "BT"
             colors: Custom color overrides per node class, e.g.
                 ``{"function": {"fill": "#fff", "stroke": "#000"}}``

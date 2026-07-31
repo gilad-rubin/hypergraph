@@ -385,7 +385,7 @@ class TestDoubleNestedEdgeRouting:
     """Tests for edge routing in doubly-nested graphs (depth=1 with 2-level nesting)."""
 
     def test_outer_depth1_input_routes_to_inner(self, page, temp_html_file):
-        """Test outer at depth=1: internal-only inputs are hidden when inner is collapsed."""
+        """Test outer at depth=1: the pill's edge lands on the collapsed inner hull."""
         outer = make_outer()
         render_to_page(page, outer, depth=1, temp_path=temp_html_file)
 
@@ -408,7 +408,9 @@ class TestDoubleNestedEdgeRouting:
 
         assert inner_top is not None, "inner node not found at depth=1"
         input_edges = [edge_id for edge_id in result.get("edgeIds", []) if "input_x" in edge_id]
-        assert not input_edges, f"Internal-only inputs should be hidden when their owner container is collapsed.\nFound input edges: {input_edges}"
+        assert any("input_x__middle/inner" in edge_id for edge_id in input_edges), (
+            f"'x' feeds a node inside collapsed inner; its edge aggregates to the boundary.\nFound input edges: {input_edges}"
+        )
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")

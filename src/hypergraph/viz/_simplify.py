@@ -39,11 +39,13 @@ class EdgeRef:
         key: Caller-owned identity returned in the shortcut set.
         source: Resolved source node id.
         target: Resolved target node id.
-        removable: True only for plain data edges the caller is willing to
-            drop. Structural producer→DATA (``output``) edges, INPUT edges and
-            START/END edges are scaffolding; mutex (``exclusive``) arms are
-            alternatives rather than a chain plus a shortcut. All pass ``False``
-            and can only ever act as path segments.
+        removable: True only for edges the caller is willing to drop: plain
+            data edges, and INPUT pill edges (one input feeding a chain keeps
+            only its earliest consumer(s)). Structural producer→DATA
+            (``output``) edges and START/END edges are scaffolding; mutex
+            (``exclusive``) arms are alternatives rather than a chain plus a
+            shortcut. Those pass ``False`` and can only ever act as path
+            segments.
         traversable: True only for edges on the **unconditional data-flow
             spine** — edges that always carry a value from one node to the
             next. Only such an edge can justify dropping another, because the
