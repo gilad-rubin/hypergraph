@@ -36,7 +36,7 @@ inference applies **producer shadow-elimination**:
 
 ## Constructor
 
-### `Graph(nodes, *, edges=None, entrypoint=None, name=None, strict_types=False, shared=None)`
+### `Graph(nodes, *, edges=None, entrypoint=None, name=None, strict_types=False, shared=None, trace_io=False)`
 
 Create a graph from nodes.
 

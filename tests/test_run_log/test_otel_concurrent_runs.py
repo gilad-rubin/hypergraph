@@ -242,6 +242,51 @@ class TestConcurrentTopLevelRunsShareOneProcessor:
 
         assert {span.name for span in span_exporter.get_finished_spans()} == {"a", "b", "leaked"}
 
+    def test_a_run_starting_during_the_sweep_is_made_to_wait(self, exporter):
+        """The sweep holds the lifecycle lock, so a starting run cannot slip in.
+
+        Checking the count under the lock but sweeping outside it reopens the
+        original bug in a narrower window: the new run registers its root span
+        into the very dicts the sweep is about to clear. White-box by
+        necessity — the window is invisible from the public surface, so the
+        test wedges itself into the sweep and proves ``on_run_start`` blocks.
+        """
+        from hypergraph.events.otel import OpenTelemetryProcessor
+        from hypergraph.events.types import RunEndEvent, RunStartEvent
+
+        provider, span_exporter = exporter
+        processor = OpenTelemetryProcessor(tracer_provider=provider)
+        processor.on_run_start(RunStartEvent(run_id="a", span_id="ra", graph_name="a"))
+        processor.on_run_end(RunEndEvent(run_id="a", span_id="ra", graph_name="a"))
+
+        sweeping = threading.Event()
+        b_registered = threading.Event()
+
+        class WedgedSpans(dict):
+            """Pauses inside the sweep, giving run B a real chance to race."""
+
+            def values(self):
+                sweeping.set()
+                b_registered.wait(timeout=0.5)
+                return super().values()
+
+        processor._spans = WedgedSpans(processor._spans)
+
+        def start_b():
+            sweeping.wait(timeout=5)
+            processor.on_run_start(RunStartEvent(run_id="b", span_id="rb", graph_name="b"))
+            b_registered.set()
+
+        thread = threading.Thread(target=start_b)
+        thread.start()
+        processor.shutdown()
+        raced = b_registered.is_set()
+        thread.join(timeout=5)
+
+        assert not raced, "on_run_start must block until the sweep finishes"
+        assert "rb" in processor._spans, "B registered after the sweep, so the sweep cannot have cleared it"
+        assert {span.name for span in span_exporter.get_finished_spans()} == {"a"}, "B must still be live"
+
     def test_sequential_runs_still_sweep_on_each_shutdown(self, exporter):
         """Sequential behavior is unchanged: one run in, one full sweep out."""
         from hypergraph.events.otel import OpenTelemetryProcessor

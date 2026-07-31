@@ -184,6 +184,8 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         self._StatusCode = StatusCode
         self._set_success_status = set_success_status
         self._enrich_openinference = enrich_openinference
+        if isinstance(max_payload_chars, bool) or not isinstance(max_payload_chars, int) or max_payload_chars <= 0:
+            raise ValueError(f"max_payload_chars must be a positive integer, got {max_payload_chars!r}.")
         self._redact_errors = redact_errors
         self._redact_payloads = redact_payloads
         self._max_payload_chars = max_payload_chars
@@ -796,23 +798,28 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         Never clears the :meth:`trace_id_for` mapping: callers look up a
         trace id *after* ``run()`` returns, and ``run()`` returns after this.
         """
+        # The sweep runs UNDER the lock, not merely the count check: a run
+        # starting in between would register its root span into the very dicts
+        # the sweep is about to clear, and be torn down exactly like the bug
+        # this method exists to fix. ``on_run_start`` takes the same lock
+        # before it registers anything, so it simply waits out the sweep.
         with self._lifecycle_lock:
             self._live_top_level_runs = max(0, self._live_top_level_runs - 1)
             if self._live_top_level_runs:
                 return
-        # Leftover tokens exist only on abnormal exits (e.g. BaseException
-        # escaping the run template). Detach newest-first, and only where this
-        # execution unit owns the attach — cross-context leftovers died with
-        # their task's context copy and are dropped.
-        self._aliases.clear()
-        self._absorbed_run.clear()
-        for span_id in reversed(list(self._tokens)):
-            self._detach_ambient_if_current(span_id)
-        self._tokens.clear()
-        for span in self._spans.values():
-            span.end()
-        self._spans.clear()
-        self._contexts.clear()
-        self._collapse_candidates.clear()
-        self._nested_outcome.clear()
-        self._logical_ids.clear()
+            # Leftover tokens exist only on abnormal exits (e.g. BaseException
+            # escaping the run template). Detach newest-first, and only where
+            # this execution unit owns the attach — cross-context leftovers
+            # died with their task's context copy and are dropped.
+            self._aliases.clear()
+            self._absorbed_run.clear()
+            for span_id in reversed(list(self._tokens)):
+                self._detach_ambient_if_current(span_id)
+            self._tokens.clear()
+            for span in self._spans.values():
+                span.end()
+            self._spans.clear()
+            self._contexts.clear()
+            self._collapse_candidates.clear()
+            self._nested_outcome.clear()
+            self._logical_ids.clear()

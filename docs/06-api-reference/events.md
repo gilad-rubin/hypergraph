@@ -91,7 +91,7 @@ Emitted when a graph run completes (successfully or not).
 class RunEndEvent(BaseEvent):
     graph_name: str              # Name of the graph
     status: str                  # "completed", "failed", "paused", "partial", or "stopped"
-    error: str | None            # Error message if failed
+    error: str | None            # Privacy-safe error projection if failed (never str(exception))
     duration_ms: float           # Wall-clock duration in milliseconds
     batch_total_items: int | None
     batch_completed_items: int | None

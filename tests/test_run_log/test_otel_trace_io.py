@@ -114,6 +114,18 @@ class TestTraceIoResolution:
             def bad(text: str) -> str:
                 return text
 
+    @pytest.mark.parametrize("bad", ["false", "true", 0, 1, None])
+    def test_graph_trace_io_is_never_coerced(self, bad):
+        """bool("false") is True — coercing would turn capture ON from config."""
+        with pytest.raises(TypeError, match="trace_io must be"):
+            Graph([untraced], trace_io=bad)
+        with pytest.raises(TypeError, match="trace_io must be"):
+            Graph([untraced]).with_trace_io(bad)
+
+    def test_add_nodes_preserves_the_graph_default(self):
+        graph = Graph([untraced], trace_io=True).add_nodes(opted_out)
+        assert graph.trace_io is True
+
     def test_trace_io_does_not_change_graph_identity(self):
         plain = Graph([untraced], name="g")
         traced_graph = Graph([untraced], name="g", trace_io=True)
@@ -192,6 +204,15 @@ class TestPayloadExport:
         assert value.endswith(_TRUNCATION_SUFFIX)
         assert len(value) == 64 + len(_TRUNCATION_SUFFIX)
         assert span.attributes["output.mime_type"] == "text/plain", "a cut JSON document is not JSON"
+
+    @pytest.mark.parametrize("bad", [0, -1, 4096.0, "4096", True])
+    def test_max_payload_chars_must_be_a_positive_int(self, exporter, bad):
+        """A bad cap would otherwise silently drop the span, not just the payload."""
+        from hypergraph.events.otel import OpenTelemetryProcessor
+
+        provider, _ = exporter
+        with pytest.raises(ValueError, match="max_payload_chars must be a positive integer"):
+            OpenTelemetryProcessor(tracer_provider=provider, max_payload_chars=bad)
 
     def test_default_cap_is_four_kib(self, exporter):
         from hypergraph.events.otel import _DEFAULT_MAX_PAYLOAD_CHARS, _TRUNCATION_SUFFIX, OpenTelemetryProcessor
