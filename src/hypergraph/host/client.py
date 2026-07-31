@@ -35,8 +35,11 @@ from hypergraph.host.views import (
     SUBMISSION_STATE_PAUSED,
     TERMINAL_WORKFLOW_STATUSES,
     BatchItemView,
+    BatchOutcome,
     BatchUpdate,
     BatchView,
+    RunFailure,
+    RunOutcome,
     RunQuery,
     RunUpdate,
     RunView,
@@ -217,6 +220,88 @@ def _build_batch_view(
         settled=settled,
         tolerance_tripped=tripped,
         retry_of=batch["retry_of"],
+    )
+
+
+def _started_child_ids(child_rows: dict[str, tuple[dict[str, Any], Run | None]]) -> list[str]:
+    """Workflow ids of children that actually executed.
+
+    Only these have step rows, so only these are worth asking the store
+    about — an unstarted child would cost a placeholder and return nothing.
+    """
+    return [submission["workflow_id"] for submission, run in child_rows.values() if run is not None]
+
+
+def _build_run_outcome(
+    home_uri: str,
+    run_id: str,
+    submission: dict[str, Any] | None,
+    run: Run | None,
+    state: dict[str, Any] | None,
+    failure: tuple[str, str | None, int | None] | None,
+) -> RunOutcome:
+    """Project one run's durable rows into a ``RunOutcome``.
+
+    ``settled`` routes through the SAME predicate as ``BatchView`` and the
+    rerun gate, so a run is never settled for one reader and in flight for
+    another. The returned ref is rebuilt from THIS Home's uri, exactly as
+    ``_build_view`` does: an outcome must never claim a foreign home while
+    carrying rows this Home returned. Outputs appear only once the run is settled AND started:
+    reporting a partial fold mid-flight would hand a caller a result that
+    can still change.
+    """
+    started = run is not None
+    settled = _child_settled(submission, run) if submission is not None else (run is not None and run.status in TERMINAL_WORKFLOW_STATUSES)
+    outputs = (state or {}) if (settled and started) else None
+    run_failure = None
+    if failure is not None and settled:
+        error, node_name, superstep = failure
+        run_failure = RunFailure(error=error, node_name=node_name, superstep=superstep)
+    return RunOutcome(
+        run_ref=RunRef(home=home_uri, run_id=run_id),
+        workflow_id=run_id,
+        status=run.status if run is not None else None,
+        settled=settled,
+        started=started,
+        outputs=outputs,
+        failure=run_failure,
+    )
+
+
+def _build_batch_outcome(
+    batch: dict[str, Any],
+    child_rows: dict[str, tuple[dict[str, Any], Run | None]],
+    home_uri: str,
+    states: dict[str, dict[str, Any]],
+    failures: dict[str, tuple[str, str | None, int | None]],
+) -> BatchOutcome:
+    """Project every child into a ``RunOutcome``, keyed in manifest order.
+
+    A child that never executed maps to None rather than an empty outcome:
+    Hypergraph does not fabricate results for work that did not run, and
+    that has to stay distinguishable from a child that ran and produced
+    nothing (``outputs == {}``).
+    """
+    items: dict[str, RunOutcome | None] = {}
+    for key in json.loads(batch["items_json"]):
+        submission, run = child_rows[key]
+        if run is None:
+            items[key] = None
+            continue
+        workflow_id = submission["workflow_id"]
+        items[key] = _build_run_outcome(
+            home_uri,
+            workflow_id,
+            submission,
+            run,
+            states.get(workflow_id),
+            failures.get(workflow_id),
+        )
+    return BatchOutcome(
+        batch_ref=BatchRef(home=home_uri, batch_id=batch["batch_id"]),
+        workflow_id=batch["workflow_id"],
+        settled=all(_child_settled(submission, run) for submission, run in child_rows.values()),
+        items=items,
     )
 
 
@@ -591,6 +676,89 @@ class RunHomeClient:
         submission = self._home._get_submission_sync(ref.run_id)
         run = self._home.get_run(ref.run_id)
         return _build_view(self._home.uri, ref.run_id, submission, run, admission_full=self._home._admission_is_full_sync())
+
+    async def result(self, ref: RunRef | BatchRef) -> RunOutcome | BatchOutcome | None:
+        """Return what ``ref`` durably produced, or None if unknown.
+
+        Accepts a ``RunRef`` (→ ``RunOutcome``) or a ``BatchRef`` (→
+        ``BatchOutcome`` keyed by logical item key, in manifest order).
+
+        The host worker keeps no ``RunResult``, so outputs are reconstructed
+        from the checkpointer rows that already back resume — the run's steps
+        folded in execution order. No graph code is loaded, and no second
+        store exists. See :class:`~hypergraph.host.views.RunOutcome` for the
+        four states a caller must distinguish (unknown, unsettled,
+        stopped-before-start, ran-and-produced-nothing) and for the two
+        caveats on ``outputs``: they are folded step outputs rather than the
+        graph's declared outputs, and their JSON-safety comes from the Home's
+        default ``JsonSerializer``.
+
+        Failure evidence is the privacy-safe projection the step persisted,
+        never raw exception text — the real message and traceback go to the
+        OpenTelemetry export instead.
+
+        A Batch reads in a bounded number of statements regardless of child
+        count, so 100+ children stay a handful of queries.
+        """
+        if isinstance(ref, BatchRef):
+            batch = await self._home._get_batch(ref.batch_id)
+            if batch is None:
+                return None
+            child_rows = await self._home._batch_child_rows(ref.batch_id)
+            started = _started_child_ids(child_rows)
+            return _build_batch_outcome(
+                batch,
+                child_rows,
+                self._home.uri,
+                await self._home.get_states(started),
+                await self._home.get_step_failures(started),
+            )
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"result() expects a RunRef or BatchRef, got {type(ref).__name__}.")
+        submission = await self._home._get_submission(ref.run_id)
+        run = await self._home.get_run_async(ref.run_id)
+        if submission is None and run is None:
+            return None
+        run_ids = [ref.run_id] if run is not None else []
+        return _build_run_outcome(
+            self._home.uri,
+            ref.run_id,
+            submission,
+            run,
+            (await self._home.get_states(run_ids)).get(ref.run_id),
+            (await self._home.get_step_failures(run_ids)).get(ref.run_id),
+        )
+
+    def result_sync(self, ref: RunRef | BatchRef) -> RunOutcome | BatchOutcome | None:
+        """Sync mirror of ``result``."""
+        if isinstance(ref, BatchRef):
+            batch = self._home._get_batch_sync(ref.batch_id)
+            if batch is None:
+                return None
+            child_rows = self._home._batch_child_rows_sync(ref.batch_id)
+            started = _started_child_ids(child_rows)
+            return _build_batch_outcome(
+                batch,
+                child_rows,
+                self._home.uri,
+                self._home.get_states_sync(started),
+                self._home.get_step_failures_sync(started),
+            )
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"result() expects a RunRef or BatchRef, got {type(ref).__name__}.")
+        submission = self._home._get_submission_sync(ref.run_id)
+        run = self._home.get_run(ref.run_id)
+        if submission is None and run is None:
+            return None
+        run_ids = [ref.run_id] if run is not None else []
+        return _build_run_outcome(
+            self._home.uri,
+            ref.run_id,
+            submission,
+            run,
+            self._home.get_states_sync(run_ids).get(ref.run_id),
+            self._home.get_step_failures_sync(run_ids).get(ref.run_id),
+        )
 
     async def stop(self, ref: RunRef | BatchRef, *, info: Any = None, source_ref: str | None = None) -> CommandReceipt | BatchCommandReceipt:
         """Record a durable stop command for ``ref``.

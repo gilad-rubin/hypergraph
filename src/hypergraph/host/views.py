@@ -6,6 +6,7 @@ condition — it is never a ``WorkflowStatus`` and never enters the run row.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import Enum
@@ -424,3 +425,152 @@ class BatchUpdate:
     kind: str
     payload: dict[str, Any] = field(default_factory=dict)
     timestamp: str = ""
+
+
+@dataclass(frozen=True)
+class RunFailure:
+    """Why a settled Run failed, from durable evidence only.
+
+    ``error`` is the privacy-safe projection the step persisted — an
+    exception type name, a stable ``HG_*`` diagnostic code, and static
+    wording. It is never raw exception message text: Hypergraph does not
+    persist that (see the privacy boundary in
+    ``docs/06-api-reference/errors.md``). The real message, type and
+    traceback are exported to the OpenTelemetry trace instead, so a failure
+    is debugged there and merely *identified* here.
+
+    Attributes:
+        error: Privacy-safe error projection from the first failed step.
+        node_name: Node that raised it, when a step recorded one.
+        superstep: Superstep the failure happened in, when recorded.
+    """
+
+    error: str
+    node_name: str | None = None
+    superstep: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-safe dict of primitives."""
+        return {"error": self.error, "node_name": self.node_name, "superstep": self.superstep}
+
+
+@dataclass(frozen=True)
+class RunOutcome:
+    """What a Run durably produced — outputs or failure — with no graph code.
+
+    Read with ``RunHomeClient.result(run_ref)``. The host worker keeps no
+    ``RunResult``, so this is reconstructed from the same checkpointer rows
+    that back resume: the run's steps folded in execution order.
+
+    Four states a caller must be able to tell apart, and how each reads:
+
+    ==============================  ========  =========  ==========  =======
+    situation                       result()  ``started``  ``settled``  ``outputs``
+    ==============================  ========  =========  ==========  =======
+    never submitted here            ``None``  --         --          --
+    submitted, still in flight      outcome   any        False       ``None``
+    stopped/closed before starting  outcome   False      True        ``None``
+    ran and produced nothing        outcome   True       True        ``{}``
+    ==============================  ========  =========  ==========  =======
+
+    So ``outputs is None`` never means "produced nothing" — that is ``{}``.
+
+    Two honest caveats:
+
+    * ``outputs`` is the run's FOLDED STEP OUTPUTS, not a projection
+      narrowed to the graph's declared outputs. Narrowing needs the
+      ``Graph`` object, and this client is graph-free by contract, so it
+      reports every value the run's steps produced rather than guessing.
+    * The values are JSON-safe because the Run Home's checkpointer defaults
+      to ``JsonSerializer``, which round-trips through ``json``. A Home
+      explicitly configured with ``PickleSerializer`` returns whatever it
+      stored, and ``to_dict()`` falls back to ``repr`` for anything that
+      will not serialize.
+
+    Attributes:
+        run_ref: Inert address of the Run.
+        workflow_id: The Run's workflow id (same as ``run_ref.run_id``).
+        status: The run's ``WorkflowStatus``, or None while it has no runs
+            row (accepted but never started).
+        settled: True when the Run can never change outcome again. A paused
+            Run is NOT settled — an outstanding answer can still change it.
+        started: Whether the Run ever began executing (it has a runs row).
+            False separates "requested but never admitted" from "ran and
+            produced nothing".
+        outputs: Folded step outputs once settled and started, else None.
+        failure: Durable failure evidence when the Run failed, else None.
+    """
+
+    run_ref: RunRef
+    workflow_id: str
+    status: WorkflowStatus | None
+    settled: bool
+    started: bool
+    outputs: dict[str, Any] | None = None
+    failure: RunFailure | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-safe dict of primitives, for transport straight to an API."""
+        return {
+            "workflow_id": self.workflow_id,
+            "status": self.status.value if self.status is not None else None,
+            "settled": self.settled,
+            "started": self.started,
+            "outputs": None if self.outputs is None else json.loads(json.dumps(self.outputs, default=repr)),
+            "failure": self.failure.to_dict() if self.failure is not None else None,
+        }
+
+    def __repr__(self) -> str:
+        status = self.status.value if self.status is not None else ("unstarted" if self.settled else "pending")
+        parts = [f"RunOutcome: {self.workflow_id}", status]
+        if self.outputs is not None:
+            parts.append(f"{len(self.outputs)} values")
+        if self.failure is not None:
+            parts.append(f"error: {self.failure.error[:60]}")
+        return " | ".join(parts)
+
+
+@dataclass(frozen=True)
+class BatchOutcome:
+    """Every child's :class:`RunOutcome`, keyed by logical item key.
+
+    Read with ``RunHomeClient.result(batch_ref)``. One read per Batch, not
+    one per child: the children's outputs and failures are folded in a
+    bounded number of statements, so a 100+ item Batch stays a handful of
+    queries.
+
+    An item whose child never executed maps to ``None`` — Hypergraph never
+    fabricates a result for work that did not run. That is deliberately
+    distinct from a child that ran and produced nothing, which maps to a
+    ``RunOutcome`` with ``outputs == {}``.
+
+    Attributes:
+        batch_ref: Inert address of the Batch.
+        workflow_id: The Batch's caller-chosen workflow id.
+        settled: True when no child is active, paused, or queued.
+        items: Logical item key → ``RunOutcome``, or None for a child that
+            never started, in immutable manifest order.
+    """
+
+    batch_ref: BatchRef
+    workflow_id: str
+    settled: bool
+    items: dict[str, RunOutcome | None] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-safe dict of primitives, for transport straight to an API."""
+        return {
+            "workflow_id": self.workflow_id,
+            "settled": self.settled,
+            "items": {key: None if outcome is None else outcome.to_dict() for key, outcome in self.items.items()},
+        }
+
+    def __repr__(self) -> str:
+        started = sum(1 for outcome in self.items.values() if outcome is not None)
+        return " | ".join(
+            [
+                f"BatchOutcome: {self.workflow_id}",
+                "settled" if self.settled else "in flight",
+                f"{started}/{len(self.items)} items ran",
+            ]
+        )
