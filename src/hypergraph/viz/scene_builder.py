@@ -90,25 +90,28 @@ def build_initial_scene(
 
         scene_nodes.append(scene_node)
 
-    for ext in ir.external_inputs:
-        # Bound external inputs are hidden by default; callers opt in via
-        # show_bounded_inputs=True, independently of the metadata-only
-        # _debug_overlays flag.
-        if ext.is_bound and not show_bounded_inputs:
-            continue
-        # show_inputs=False removes INPUT nodes (and their edges) entirely,
-        # not just hidden — matches the legacy renderer's behavior so
-        # downstream consumers don't see ghost INPUT artifacts.
-        if not show_inputs:
-            continue
-        hidden = _input_hidden(ext.deepest_owner, parent_map, expansion_state)
-        # ownerContainer is the deepest *visible* ancestor of the input's
-        # deepest owner — the container the INPUT visually nests into.
-        # deepestOwnerContainer is the state-independent fact (always the
-        # deepest scope); ownerContainer is per-render.
-        owner_container = _visible_owner(ext.deepest_owner, parent_map, expansion_state)
-        input_node_id = ext.synthetic_id
-        if ext.is_group:
+    # Bound external inputs are hidden by default; callers opt in via
+    # show_bounded_inputs=True, independently of the metadata-only
+    # _debug_overlays flag. show_inputs=False removes INPUT nodes (and their
+    # edges) entirely, not just hidden — matches the legacy renderer so
+    # downstream consumers don't see ghost INPUT artifacts.
+    #
+    # Grouping is a per-state projection of the IR's finest-grained groups:
+    # see _merge_inputs_for_state. ownerContainer is likewise the deepest
+    # *visible* ancestor (per-render), beside deepestOwnerContainer (the
+    # state-independent fact).
+    # Only real graph nodes exist in scene_nodes at this point, which is
+    # exactly the set a consumer can resolve to — INPUT and DATA nodes are
+    # never a graph node's ancestor.
+    node_visible_ids = {n["id"] for n in scene_nodes if not n["hidden"]}
+    input_buckets = (
+        _merge_inputs_for_state(ir, parent_map, expansion_state, node_visible_ids, show_bounded_inputs=show_bounded_inputs) if show_inputs else []
+    )
+    for ext in input_buckets:
+        hidden = ext["hidden"]
+        owner_container = ext["owner_container"]
+        input_node_id = ext["id"]
+        if len(ext["params"]) > 1:
             scene_nodes.append(
                 {
                     "id": input_node_id,
@@ -116,13 +119,13 @@ def build_initial_scene(
                     "position": {"x": 0, "y": 0},
                     "data": {
                         "nodeType": "INPUT_GROUP",
-                        "params": list(ext.params),
-                        "paramTypes": list(ext.type_hints),
-                        "isBound": ext.is_bound,
-                        "mapFed": bool(ext.map_fed),
+                        "params": list(ext["params"]),
+                        "paramTypes": list(ext["type_hints"]),
+                        "isBound": ext["is_bound"],
+                        "mapFed": ext["map_fed"],
                         "ownerContainer": owner_container,
-                        "deepestOwnerContainer": ext.deepest_owner,
-                        "actualTargets": list(ext.consumers),
+                        "deepestOwnerContainer": ext["deepest_owner"],
+                        "actualTargets": list(ext["targets"]),
                     },
                     "sourcePosition": "bottom",
                     "targetPosition": "top",
@@ -137,13 +140,13 @@ def build_initial_scene(
                     "position": {"x": 0, "y": 0},
                     "data": {
                         "nodeType": "INPUT",
-                        "label": ext.params[0],
-                        "typeHint": ext.type_hints[0] if ext.type_hints else None,
-                        "isBound": ext.is_bound,
-                        "mapFed": bool(ext.map_fed),
+                        "label": ext["params"][0],
+                        "typeHint": ext["type_hints"][0] if ext["type_hints"] else None,
+                        "isBound": ext["is_bound"],
+                        "mapFed": ext["map_fed"],
                         "ownerContainer": owner_container,
-                        "deepestOwnerContainer": ext.deepest_owner,
-                        "actualTargets": list(ext.consumers),
+                        "deepestOwnerContainer": ext["deepest_owner"],
+                        "actualTargets": list(ext["targets"]),
                     },
                     "sourcePosition": "bottom",
                     "targetPosition": "top",
@@ -276,18 +279,11 @@ def build_initial_scene(
                     }
                 )
 
-    for ext in ir.external_inputs:
-        if ext.is_bound and not show_bounded_inputs:
-            continue
-        if not show_inputs:
-            continue
-        input_node_id = ext.synthetic_id
-        seen_targets: set[str] = set()
-        for consumer in ext.consumers:
-            target = _resolve_to_visible(consumer, parent_map, expansion_state, visible_ids)  # type: ignore[assignment]
-            if target is None or target in seen_targets:
-                continue
-            seen_targets.add(target)
+    # Same per-state buckets the pills were built from, so an edge can never
+    # point at a pill id the node loop did not emit.
+    for ext in input_buckets:
+        input_node_id = ext["id"]
+        for target in ext["targets"]:
             scene_edges.append(
                 {
                     "id": f"{input_node_id}__{target}",
@@ -528,6 +524,98 @@ def _end_branch_label(branch_data: dict) -> str | None:
             if t == "END":
                 return str(label)
     return None
+
+
+def _merge_inputs_for_state(
+    ir: Any,
+    parent_map: dict[str, str],
+    expansion_state: dict[str, bool],
+    visible_ids: set[str],
+    *,
+    show_bounded_inputs: bool,
+) -> list[dict[str, Any]]:
+    """Project the IR's finest-grained input groups onto the CURRENT state.
+
+    The IR groups inputs by their DEEPEST consumers, which is the only
+    state-independent fact available to it — one IR has to serve every
+    expansion state. But two inputs that enter different nodes inside a
+    COLLAPSED container visibly feed the identical set of boxes, so at that
+    state they are one pill; expand the container and they are genuinely two.
+
+    Grouping is therefore a per-state projection, exactly like
+    ``ownerContainer`` (per-render) beside ``deepestOwnerContainer`` (the
+    state-independent fact). This resolves each group's consumers to their
+    visible ancestors and merges the groups that land on the same targets,
+    so the scene shows what the reader actually sees.
+
+    Returns one bucket per rendered pill, in IR order, carrying the merged
+    params/segments/type hints plus the resolved targets its edges use.
+    """
+    buckets: dict[tuple, dict[str, Any]] = {}
+    order: list[tuple] = []
+    for ext in ir.external_inputs:
+        if ext.is_bound and not show_bounded_inputs:
+            continue
+        targets: list[str] = []
+        for consumer in ext.consumers:
+            target = _resolve_to_visible(consumer, parent_map, expansion_state, visible_ids)
+            if target is None:
+                continue
+            # An input whose only consumer IS the container — a HyperTable's
+            # identity column, say — resolves to the container itself. Once
+            # that container is EXPANDED it is a compound node, and dagre
+            # cannot route an edge to a node that has children ("Cannot set
+            # properties of undefined (setting 'rank')"). Route into the
+            # entrypoint instead, exactly as container-bound data edges do.
+            for resolved in resolve_expanded_entrypoints((target,), ir.container_entrypoints, expansion_state):
+                if resolved not in targets:
+                    targets.append(resolved)
+        owner_container = _visible_owner(ext.deepest_owner, parent_map, expansion_state)
+        # map_fed and is_bound style the pill; owner_container decides where it
+        # nests. Merging across any of them would change what the pill means.
+        key = (frozenset(targets), ext.is_bound, bool(ext.map_fed), owner_container)
+        bucket = buckets.get(key)
+        segments = ext.id_segments if ext.id_segments and len(ext.id_segments) == len(ext.params) else ext.params
+        if bucket is None:
+            order.append(key)
+            buckets[key] = {
+                "params": list(ext.params),
+                "segments": list(segments),
+                "type_hints": list(ext.type_hints),
+                "is_bound": ext.is_bound,
+                "map_fed": bool(ext.map_fed),
+                "owner_container": owner_container,
+                "deepest_owner": ext.deepest_owner,
+                "targets": list(targets),
+                "hidden": _input_hidden(ext.deepest_owner, parent_map, expansion_state),
+            }
+            continue
+        bucket["params"].extend(ext.params)
+        bucket["segments"].extend(segments)
+        bucket["type_hints"].extend(ext.type_hints)
+        # A merged pill is hidden only when every constituent is.
+        bucket["hidden"] = bucket["hidden"] and _input_hidden(ext.deepest_owner, parent_map, expansion_state)
+
+    merged: list[dict[str, Any]] = []
+    for key in order:
+        bucket = buckets[key]
+        # Sort params together with their segments and hints so a merged pill
+        # reads in the same stable order the IR uses for a native group.
+        #
+        # type_hints carries no length invariant (it defaults to an empty
+        # tuple), so pad before pairing: the JS twin reads a missing hint as
+        # null and keeps going, and Python raising where JS renders would be
+        # a divergence the parity harness cannot see.
+        hints = list(bucket["type_hints"])[: len(bucket["params"])]
+        hints += [None] * (len(bucket["params"]) - len(hints))
+        paired = sorted(zip(bucket["params"], bucket["segments"], hints, strict=True))
+        bucket["params"] = [p for p, _, _ in paired]
+        bucket["segments"] = [seg for _, seg, _ in paired]
+        bucket["type_hints"] = [hint for _, _, hint in paired]
+        segs = bucket["segments"]
+        bucket["id"] = f"input_{segs[0]}" if len(segs) == 1 else "input_group_" + "_".join(segs)
+        merged.append(bucket)
+    return merged
 
 
 def _resolve_to_visible(

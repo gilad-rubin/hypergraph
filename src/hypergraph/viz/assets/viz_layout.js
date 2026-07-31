@@ -256,6 +256,27 @@
       if (targetType !== 'PIPELINE') rootInputsWithRootNonPipelineTargets.add(e.source);
     });
 
+    // Dagre cannot RANK an edge whose endpoint is a compound node: it walks
+    // into an entry that only clusters have and dies with "Cannot set
+    // properties of undefined (setting 'rank')". An expanded container with
+    // boundary IO no inner node owns — a mounted HyperTable's identity column
+    // in, its receipt out — produces exactly that edge.
+    //
+    // The scene is not wrong, so it is not rewritten: React Flow draws
+    // container -> consumer correctly, and adjustEdgeEndpoints snaps the
+    // points back onto the real container geometry below. Only the ranking
+    // stands in a descendant for the cluster.
+    function rankProxy(nodeId) {
+      var seen = {};
+      var current = nodeId;
+      while (g.children(current) && g.children(current).length) {
+        if (seen[current]) return current;
+        seen[current] = true;
+        current = g.children(current)[0];
+      }
+      return current;
+    }
+
     layoutEdges.forEach(function(e) {
       var sourceParent = displayParentById.get(e.source);
       var targetParent = displayParentById.get(e.target);
@@ -270,7 +291,15 @@
           weight: ROOT_INPUT_TO_CONTAINER_WEIGHT,
         };
       }
-      g.setEdge(e.source, e.target, edgeLabel, e.id);
+      e._rankSource = rankProxy(e.source);
+      e._rankTarget = rankProxy(e.target);
+      // A cluster-to-own-descendant edge would become a self loop once
+      // proxied; dagre has nothing to rank there, so leave it out.
+      if (e._rankSource === e._rankTarget) {
+        e._skipRank = true;
+        return;
+      }
+      g.setEdge(e._rankSource, e._rankTarget, edgeLabel, e.id);
     });
     dagre.layout(g);
 
@@ -286,8 +315,9 @@
       nodeById.set(n.id, n);
     });
 
+    layoutEdges = layoutEdges.filter(function(e) { return !e._skipRank; });
     layoutEdges.forEach(function(e) {
-      var dagreEdge = g.edge(e.source, e.target, e.id);
+      var dagreEdge = g.edge(e._rankSource, e._rankTarget, e.id);
       if (!dagreEdge || !dagreEdge.points || !dagreEdge.points.length) {
         throw new Error('Dagre did not return routing points for edge ' + (e.id || (e.source + ' -> ' + e.target)));
       }

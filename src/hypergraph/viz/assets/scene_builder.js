@@ -37,6 +37,96 @@
   var routesToEnd = D.routesToEnd;
   var sceneNodeType = D.sceneNodeType;
 
+  // Twin of Python `_merge_inputs_for_state` (viz/scene_builder.py).
+  //
+  // The IR groups inputs by their DEEPEST consumers — the only
+  // state-independent fact one IR can carry for every expansion state. But two
+  // inputs entering different nodes inside a COLLAPSED container visibly feed
+  // the identical set of boxes, so at that state they are one pill; expand the
+  // container and they are genuinely two. Grouping is therefore a per-state
+  // projection, exactly like ownerContainer (per-render) beside
+  // deepestOwnerContainer (the state-independent fact).
+  function mergeInputsForState(ir, parentMap, expansionState, visibleIds, showBoundedInputs, entrypointOverrides) {
+    var externalInputs = ir.external_inputs || [];
+    var buckets = {};
+    var order = [];
+    for (var i = 0; i < externalInputs.length; i++) {
+      var ext = externalInputs[i];
+      if (ext.is_bound && !showBoundedInputs) continue;
+      var consumers = ext.consumers || [];
+      var targets = [];
+      for (var c = 0; c < consumers.length; c++) {
+        var target = resolveToVisible(consumers[c], parentMap, visibleIds);
+        if (!target) continue;
+        // An input whose only consumer IS the container — a HyperTable's
+        // identity column, say — resolves to the container itself. Once that
+        // container is EXPANDED it is a compound node, and dagre cannot route
+        // an edge to a node that has children ("Cannot set properties of
+        // undefined (setting 'rank')"). Route into the entrypoint instead,
+        // exactly as container-bound data edges do.
+        var entered = resolveExpandedEntrypoints(target, entrypointOverrides);
+        for (var ei = 0; ei < entered.length; ei++) {
+          if (targets.indexOf(entered[ei]) === -1) targets.push(entered[ei]);
+        }
+      }
+      var ownerContainer = visibleOwner(ext.deepest_owner, parentMap, expansionState);
+      var params = ext.params || [];
+      var segments = (ext.id_segments && ext.id_segments.length === params.length) ? ext.id_segments : params;
+      var hidden = inputHidden(ext.deepest_owner, parentMap, expansionState);
+      // map_fed and is_bound style the pill; ownerContainer decides where it
+      // nests. Merging across any of them would change what the pill means.
+      var key = JSON.stringify([
+        targets.slice().sort(),
+        !!ext.is_bound,
+        !!ext.map_fed,
+        ownerContainer === undefined ? null : ownerContainer,
+      ]);
+      var bucket = buckets[key];
+      if (!bucket) {
+        order.push(key);
+        buckets[key] = {
+          params: params.slice(),
+          segments: segments.slice(),
+          typeHints: (ext.type_hints || []).slice(),
+          isBound: !!ext.is_bound,
+          mapFed: !!ext.map_fed,
+          ownerContainer: ownerContainer,
+          deepestOwner: ext.deepest_owner,
+          targets: targets,
+          hidden: hidden,
+        };
+        continue;
+      }
+      bucket.params = bucket.params.concat(params);
+      bucket.segments = bucket.segments.concat(segments);
+      bucket.typeHints = bucket.typeHints.concat(ext.type_hints || []);
+      // A merged pill is hidden only when every constituent is.
+      bucket.hidden = bucket.hidden && hidden;
+    }
+
+    var merged = [];
+    for (var o = 0; o < order.length; o++) {
+      var b = buckets[order[o]];
+      // Sort params together with their segments and hints so a merged pill
+      // reads in the same stable order the IR uses for a native group.
+      var paired = [];
+      for (var x = 0; x < b.params.length; x++) {
+        paired.push([b.params[x], b.segments[x], b.typeHints[x] === undefined ? null : b.typeHints[x]]);
+      }
+      paired.sort(function (l, r) {
+        if (l[0] < r[0]) return -1;
+        if (l[0] > r[0]) return 1;
+        return 0;
+      });
+      b.params = paired.map(function (t) { return t[0]; });
+      b.segments = paired.map(function (t) { return t[1]; });
+      b.typeHints = paired.map(function (t) { return t[2]; });
+      b.id = b.segments.length === 1 ? 'input_' + b.segments[0] : 'input_group_' + b.segments.join('_');
+      merged.push(b);
+    }
+    return merged;
+  }
+
   function buildInitialScene(ir, opts) {
     opts = opts || {};
     if (!isSchemaSupported(ir)) {
@@ -119,43 +209,46 @@
       sceneNodes.push(sceneNode);
     }
 
-    var externalInputs = ir.external_inputs || [];
-    for (var k = 0; k < externalInputs.length; k++) {
-      var ext = externalInputs[k];
-      if (ext.is_bound && !showBoundedInputs) continue;
-      // Mirror Python: when show_inputs is off, INPUT nodes (and their
-      // edges) are skipped entirely, not just hidden.
-      if (!showInputs) continue;
-      var hidden = inputHidden(ext.deepest_owner, parentMap, expansionState);
-      var ownerContainer = visibleOwner(ext.deepest_owner, parentMap, expansionState);
-      var params = ext.params || [];
-      var typeHints = ext.type_hints || [];
+    // Only real graph nodes exist in sceneNodes here, which is exactly the
+    // set a consumer can resolve to — INPUT and DATA nodes are never a graph
+    // node's ancestor. Twin of the Python `node_visible_ids`.
+    var nodeVisibleIds = {};
+    for (var nv = 0; nv < sceneNodes.length; nv++) {
+      if (!sceneNodes[nv].hidden) nodeVisibleIds[sceneNodes[nv].id] = true;
+    }
+    // Mirror Python: when show_inputs is off, INPUT nodes (and their edges)
+    // are skipped entirely, not just hidden.
+    var inputBuckets = showInputs
+      ? mergeInputsForState(ir, parentMap, expansionState, nodeVisibleIds, showBoundedInputs, expandedContainerEntrypoints(ir, expansionState))
+      : [];
+    for (var k = 0; k < inputBuckets.length; k++) {
+      var ext = inputBuckets[k];
+      var hidden = ext.hidden;
+      var ownerContainer = ext.ownerContainer;
+      var params = ext.params;
+      var typeHints = ext.typeHints;
       var isGroup = params.length > 1;
-      // ``id_segments`` falls back to ``params`` (leaf names) and mirrors
-      // the Python disambiguator that swaps in the full port address when
-      // suffixes collide between sibling subgraphs (issue #94).
-      var idSegments = (ext.id_segments && ext.id_segments.length === params.length) ? ext.id_segments : params;
-      var inputId = isGroup ? 'input_group_' + idSegments.join('_') : 'input_' + idSegments[0];
+      var inputId = ext.id;
       var data = isGroup
         ? {
             nodeType: 'INPUT_GROUP',
             params: params.slice(),
             paramTypes: typeHints.slice(),
-            isBound: !!ext.is_bound,
-            mapFed: !!ext.map_fed,
+            isBound: !!ext.isBound,
+            mapFed: !!ext.mapFed,
             ownerContainer: ownerContainer,
-            deepestOwnerContainer: ext.deepest_owner,
-            actualTargets: (ext.consumers || []).slice(),
+            deepestOwnerContainer: ext.deepestOwner,
+            actualTargets: ext.targets.slice(),
           }
         : {
             nodeType: 'INPUT',
             label: params[0],
             typeHint: typeHints[0] || null,
-            isBound: !!ext.is_bound,
-            mapFed: !!ext.map_fed,
+            isBound: !!ext.isBound,
+            mapFed: !!ext.mapFed,
             ownerContainer: ownerContainer,
-            deepestOwnerContainer: ext.deepest_owner,
-            actualTargets: (ext.consumers || []).slice(),
+            deepestOwnerContainer: ext.deepestOwner,
+            actualTargets: ext.targets.slice(),
           };
       sceneNodes.push({
         id: inputId,
@@ -336,22 +429,13 @@
       }
     }
 
-    for (var q = 0; q < externalInputs.length; q++) {
-      var ext2 = externalInputs[q];
-      if (ext2.is_bound && !showBoundedInputs) continue;
-      if (!showInputs) continue;
-      var ext2Params = ext2.params || [];
-      var ext2Ids = (ext2.id_segments && ext2.id_segments.length === ext2Params.length) ? ext2.id_segments : ext2Params;
-      var inputNodeId = ext2Params.length > 1
-        ? 'input_group_' + ext2Ids.join('_')
-        : 'input_' + ext2Ids[0];
-      var consumers = ext2.consumers || [];
-      var seenTargets = new Set();
-      for (var r = 0; r < consumers.length; r++) {
-        var consumer = consumers[r];
-        var target = resolveToVisible(consumer, parentMap, visibleIds);
-        if (!target || seenTargets.has(target)) continue;
-        seenTargets.add(target);
+    // Same per-state buckets the pills were built from, so an edge can never
+    // point at a pill id the node loop did not emit.
+    for (var q = 0; q < inputBuckets.length; q++) {
+      var ext2 = inputBuckets[q];
+      var inputNodeId = ext2.id;
+      for (var r = 0; r < ext2.targets.length; r++) {
+        var target = ext2.targets[r];
         sceneEdges.push({
           id: inputNodeId + '__' + target,
           source: inputNodeId,
