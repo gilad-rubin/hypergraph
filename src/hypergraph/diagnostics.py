@@ -1,12 +1,20 @@
-"""Typed, privacy-safe diagnostics for terminal execution failures (#233).
+"""Typed diagnostics for terminal execution failures (#233).
 
 The privacy boundary locked on #187: local object surfaces (the raised
 exception, ``RunResult.error``, ``FailureEvidence.error``) keep the exact
-exception object, while events, checkpoints, serialization, and telemetry
-receive only a safe :class:`Diagnostic` projection — stable codes, exception
-type names, node identity, counts/timing, booleans, and static help. Raw
-inputs, response bodies, exception arguments, stack traces, and arbitrary
-``repr`` never enter a durable record.
+exception object, while **durable** records — checkpoints, StepRecord,
+attempt-ledger rows, RunLog, ``RunResult.to_dict()`` — receive only a safe
+:class:`Diagnostic` projection: stable codes, exception type names, node
+identity, counts/timing, booleans, and static help. Raw inputs, response
+bodies, exception arguments, stack traces, and arbitrary ``repr`` never enter
+a durable record.
+
+In-memory events additionally carry :class:`ErrorDetail`, the *unredacted*
+counterpart (message, type, traceback), for live consumers that must be able
+to debug a failure — chiefly the OpenTelemetry export, which follows the
+ecosystem norm of ``Span.record_exception`` and carries the real message by
+default. ``OpenTelemetryProcessor(redact_errors=True)`` exports the safe
+projection instead. ``ErrorDetail`` is never persisted.
 
 Codes and context field meanings are stable; human wording and additive
 fields may evolve. The wire form carries ``schema="hypergraph.diagnostic/v1"``.
@@ -17,6 +25,7 @@ hypergraph so events, checkpointers, and runners can all project through it.
 
 from __future__ import annotations
 
+import traceback as _traceback
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from typing import Any, Literal
@@ -318,3 +327,47 @@ def safe_error_text(error: BaseException, *, node_name: str | None = None) -> st
     """
     diagnostic = derive_diagnostic(error, node_name=node_name)
     return f"{qualified_type_name(type(error))} [{diagnostic.code}]: {diagnostic.problem}"
+
+
+_MAX_TRACEBACK_CHARS = 16_384
+
+
+@dataclass(frozen=True)
+class ErrorDetail:
+    """The real exception, for live surfaces that must be able to debug it.
+
+    The deliberate counterpart to :func:`safe_error_text`: it carries exactly
+    what the safe projection withholds. Rides in-memory events only
+    (``NodeErrorEvent.error_detail``, ``RunEndEvent.error_detail``) and is
+    never persisted — every durable Hypergraph record keeps the safe
+    projection regardless of what this holds.
+
+    Attributes:
+        message: ``str(exception)`` — the raw message, verbatim.
+        type_name: Canonical ``module.qualname`` exception name.
+        traceback: Formatted traceback, truncated to 16 KiB, or ``None`` when
+            the exception carries no traceback (never raised) or formatting
+            it failed.
+    """
+
+    message: str
+    type_name: str
+    traceback: str | None = None
+
+
+def full_error_detail(error: BaseException) -> ErrorDetail:
+    """Capture the unredacted detail of an exception. Never raises."""
+    try:
+        message = str(error)
+    except Exception:  # pragma: no cover - a __str__ that itself fails
+        message = ""
+    text: str | None = None
+    if error.__traceback__ is not None:
+        try:
+            text = "".join(_traceback.format_exception(type(error), error, error.__traceback__))
+        except Exception:  # pragma: no cover - defensive: formatting is best-effort
+            text = None
+        else:
+            if len(text) > _MAX_TRACEBACK_CHARS:
+                text = text[:_MAX_TRACEBACK_CHARS] + "\n... [truncated]"
+    return ErrorDetail(message=message, type_name=qualified_type_name(type(error)), traceback=text)

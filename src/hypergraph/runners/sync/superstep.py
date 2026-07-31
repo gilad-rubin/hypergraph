@@ -122,6 +122,7 @@ def run_superstep_sync(
                 workflow_id=ctx_base.workflow_id,
                 item_index=ctx_base.item_index,
                 superstep=superstep_idx,
+                inputs=inputs,
             )
             inspection_time_ms = time.perf_counter() * 1000
             if inspection_session is not None:
@@ -176,6 +177,7 @@ def run_superstep_sync(
                         workflow_id=ctx_base.workflow_id,
                         item_index=ctx_base.item_index,
                         superstep=superstep_idx,
+                        outputs=outputs,
                     )
                 )
         else:
@@ -188,6 +190,7 @@ def run_superstep_sync(
                 workflow_id=ctx_base.workflow_id,
                 item_index=ctx_base.item_index,
                 superstep=superstep_idx,
+                inputs=inputs,
             )
             inspection_started_at_ms = time.perf_counter() * 1000
             if inspection_session is not None:
@@ -354,6 +357,7 @@ def run_superstep_sync(
                             workflow_id=ctx_base.workflow_id,
                             item_index=ctx_base.item_index,
                             superstep=superstep_idx,
+                            outputs=outputs,
                         )
                     )
 

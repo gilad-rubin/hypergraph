@@ -1,15 +1,24 @@
 """Durable privacy-boundary tests (#233, red-green item 3 — the graduation).
 
 Local object surfaces (the raised exception, ``RunResult.error``,
-``FailureEvidence.error``) keep the exact exception object. Durable and
-telemetry surfaces (events, RunLog, StepRecord, ``RunResult.to_dict()``,
-attempt-ledger rows, OTel export) receive only safe projections: codes,
-exception type names, node identity, counts/timing, booleans, static help —
-never raw exception message text.
+``FailureEvidence.error``) keep the exact exception object. **Durable**
+surfaces — ``NodeErrorEvent.error`` / ``RunEndEvent.error``, RunLog,
+StepRecord, ``RunResult.to_dict()``, attempt-ledger rows — receive only safe
+projections: codes, exception type names, node identity, counts/timing,
+booleans, static help — never raw exception message text.
 
 RED on master: ``str(exception)`` flows NodeErrorEvent.error -> RunLog /
 StepRecord -> RunResult.to_dict() -> OTel exception.message, so a secret in
 an exception message leaks to every durable surface.
+
+The OTel export is deliberately no longer on that list: it carries the real
+exception message by DEFAULT (the ecosystem norm — standard
+``record_exception`` does — and a scrubbed trace cannot be debugged), and
+``OpenTelemetryProcessor(redact_errors=True)`` is the explicit opt-in that
+restores the scrubbed export for regulated deployments. Both halves are
+pinned below. The in-memory ``event.error_detail`` companion carries the same
+raw detail and is never persisted — see
+``tests/test_run_log/test_otel_error_detail.py``.
 """
 
 from __future__ import annotations
@@ -200,10 +209,11 @@ class TestOTelExportPrivacy:
         )
         self.span_processor.shutdown()
 
-    async def test_otel_export_contains_no_raw_message_text(self, family, make_sqlite):
+    async def test_redacted_otel_export_contains_no_raw_message_text(self, family, make_sqlite):
+        """``redact_errors=True`` is the regulated-deployment guarantee."""
         from hypergraph.events.otel import OpenTelemetryProcessor
 
-        await _run_leaky(family, make_sqlite(), event_processors=[OpenTelemetryProcessor()])
+        await _run_leaky(family, make_sqlite(), event_processors=[OpenTelemetryProcessor(redact_errors=True)])
 
         spans = self.exporter.get_finished_spans()
         assert spans, "the failed run must still export spans"
@@ -215,3 +225,26 @@ class TestOTelExportPrivacy:
                     assert SECRET not in str(value), f"span event attr {key} leaked the secret: {span.name}"
             for key, value in (span.attributes or {}).items():
                 assert SECRET not in str(value), f"span attr {key} leaked the secret: {span.name}"
+
+    async def test_default_otel_export_carries_the_real_message(self, family, make_sqlite):
+        """The deliberate deviation: traces must be debuggable by default."""
+        from hypergraph.events.otel import OpenTelemetryProcessor
+
+        await _run_leaky(family, make_sqlite(), event_processors=[OpenTelemetryProcessor()])
+
+        spans = self.exporter.get_finished_spans()
+        messages = [event.attributes.get("exception.message") for span in spans for event in span.events if event.name == "exception"]
+        assert any(SECRET in (message or "") for message in messages)
+
+    async def test_durable_surfaces_stay_safe_when_otel_exports_detail(self, family, make_sqlite):
+        """Turning on detail for traces must not move the durable boundary."""
+        from hypergraph.events.otel import OpenTelemetryProcessor
+
+        cp = make_sqlite()
+        result = await _run_leaky(family, cp, event_processors=[OpenTelemetryProcessor()])
+
+        assert SECRET not in json.dumps(result.to_dict())
+        assert result.log is not None
+        assert SECRET not in json.dumps(result.log.to_dict())
+        for step in await cp.get_steps("wf-privacy"):
+            assert SECRET not in json.dumps(step.to_dict())
