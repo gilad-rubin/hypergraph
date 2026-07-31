@@ -8,6 +8,7 @@ all 2^N states ahead of time.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 
 import networkx as nx
@@ -55,6 +56,7 @@ def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
     # on the IR below and reused for the entrypoint fallback of edges that
     # enter an expanded container.
     container_entrypoints = compute_container_entrypoints(flat_graph)
+    container_transits = compute_container_transits(flat_graph)
     edges = [
         _build_ir_edge(src, tgt, attrs, flat_graph, exclusive_edges, mutex_groups, back_edges, container_entrypoints)
         for src, tgt, attrs in flat_graph.edges(data=True)
@@ -98,6 +100,7 @@ def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
         configured_entrypoints=configured_entrypoints,
         graph_output_visibility=graph_output_visibility,
         container_entrypoints=container_entrypoints,
+        container_transits=container_transits,
     )
 
 
@@ -479,3 +482,127 @@ def _build_ir_node(node_id: str, attrs: dict, bound_params: set[str], flat_graph
         inputs=inputs,
         branch_data=attrs.get("branch_data"),
     )
+
+
+def resolve_boundary_ports(
+    flat_graph: nx.DiGraph,
+    src: str,
+    tgt: str,
+    value_names: Sequence[str],
+) -> tuple[str | None, str | None]:
+    """The ``(exit, entry)`` direct children a boundary edge leaves from and
+    arrives at, for endpoints that are GRAPH containers.
+
+    ``simplify`` needs these to tell a real pass-through from an assumed one:
+    paired with ``compute_container_transits`` they say whether a
+    collapsed box actually carries this value across. Direct children, not the
+    deepest node, because transits are recorded between direct children.
+
+    The scene builders read the equivalent off
+    ``IREdge.source_when_expanded`` / ``target_when_expanded``; the Mermaid
+    exporter, which has no IR, calls this so both pipelines agree.
+    """
+    exit_port: str | None = None
+    entry_port: str | None = None
+
+    if flat_graph.nodes.get(src, {}).get("node_type") == "GRAPH":
+        for value_name in value_names:
+            producers = _find_deepest_internal_producers(src, value_name, flat_graph)
+            if producers:
+                exit_port = _direct_child(src, producers[0], flat_graph)
+                break
+
+    if flat_graph.nodes.get(tgt, {}).get("node_type") == "GRAPH":
+        for value_name in value_names:
+            consumer = _find_deepest_internal_consumer(tgt, value_name, flat_graph)
+            if consumer is not None:
+                entry_port = _direct_child(tgt, consumer, flat_graph)
+                break
+
+    return exit_port, entry_port
+
+
+def _direct_child(container_id: str, descendant: str, flat_graph: nx.DiGraph) -> str | None:
+    """Walk ``descendant`` up to the direct child of ``container_id``."""
+    current: str | None = descendant
+    for _ in range(len(flat_graph) + 1):
+        if current is None:
+            return None
+        parent = flat_graph.nodes.get(current, {}).get("parent")
+        if parent == container_id:
+            return current
+        current = parent
+    return None
+
+
+def compute_container_transits(flat_graph: nx.DiGraph) -> dict[str, list[list[str]]]:
+    """Which ``[entry, exit]`` pairs a container actually carries a value between.
+
+    A collapsed container is drawn as one box, which tempts every consumer to
+    assume that whatever goes in can come out. That is wrong whenever a
+    container does two unrelated jobs: ``side`` may consume ``doc`` at
+    ``make_thumb`` and emit ``stats`` from ``count_words`` while the two never
+    touch. Treating the box as a pass-through then lets ``simplify`` hide a real
+    ``load → render`` edge and leave the reader following a route that does not
+    exist.
+
+    So this answers the question exactly: for each container, the pairs
+    ``[entry, exit]`` where ``exit`` really is reachable from ``entry`` using
+    only ``data`` edges *inside* that container. Control edges are excluded for
+    the same reason as in the reduction itself — "may run" is not "received the
+    value".
+
+    Only ports a boundary edge actually uses are considered, so the result is
+    bounded by the container's boundary width rather than the square of its
+    child count. That matters: this ships inside every widget payload, and
+    ``tests/viz/test_payload_size.py`` caps per-container growth precisely to
+    stop a precompute like this scaling super-linearly.
+
+    This is the single derivation authority. The IR builder stamps it on
+    ``GraphIR.container_transits``; the scene builders (Python and JS) and the
+    Mermaid exporter consume it. Do not re-derive transits elsewhere.
+    """
+    entries: dict[str, set[str]] = {}
+    exits: dict[str, set[str]] = {}
+    for src, tgt, attrs in flat_graph.edges(data=True):
+        if attrs.get("edge_type", "data") != "data":
+            continue
+        exit_port, entry_port = resolve_boundary_ports(flat_graph, src, tgt, attrs.get("value_names", ()))
+        if exit_port is not None:
+            exits.setdefault(src, set()).add(exit_port)
+        if entry_port is not None:
+            entries.setdefault(tgt, set()).add(entry_port)
+
+    children_of: dict[str, list[str]] = {}
+    for node_id, attrs in flat_graph.nodes(data=True):
+        parent = attrs.get("parent")
+        if parent is not None:
+            children_of.setdefault(parent, []).append(node_id)
+
+    transits: dict[str, list[list[str]]] = {}
+    for container_id, container_entries in entries.items():
+        container_exits = exits.get(container_id)
+        if not container_exits:
+            continue  # nothing leaves: no pair can matter
+        member_set = set(children_of.get(container_id, ()))
+        inner: dict[str, set[str]] = {}
+        for src, tgt, attrs in flat_graph.edges(data=True):
+            if src in member_set and tgt in member_set and attrs.get("edge_type", "data") == "data":
+                inner.setdefault(src, set()).add(tgt)
+
+        pairs: list[list[str]] = []
+        for entry in sorted(container_entries):
+            # Reflexive on purpose: one child that both consumes at the
+            # boundary and produces at it does carry the value across.
+            reached = {entry}
+            stack = [entry]
+            while stack:
+                current = stack.pop()
+                for successor in inner.get(current, ()):
+                    if successor not in reached:
+                        reached.add(successor)
+                        stack.append(successor)
+            pairs.extend([entry, exit_node] for exit_node in sorted(reached & container_exits))
+        if pairs:
+            transits[container_id] = pairs
+    return transits

@@ -31,6 +31,7 @@ from hypergraph.viz._common import (
 from hypergraph.viz._mermaid_core import MermaidDiagram, _MermaidIdAllocator, _sanitize_id
 from hypergraph.viz._simplify import EdgeRef, shortcut_edge_keys
 from hypergraph.viz.renderer._format import format_type
+from hypergraph.viz.renderer.ir_builder import compute_container_transits, resolve_boundary_ports
 from hypergraph.viz.renderer.nodes import (
     build_input_groups,
     get_start_targets,
@@ -233,6 +234,12 @@ class _RenderedEdge:
     target: str
     exclusive: bool = False
     is_back_edge: bool = False
+    # Direct children this edge leaves from / arrives at when its endpoint is a
+    # *collapsed* container, from ``ir_builder.resolve_boundary_ports``. They
+    # let ``simplify`` cross a closed box only where it really carries the
+    # value; see ``_simplify_rendered_edges``.
+    exit_port: str | None = None
+    entry_port: str | None = None
 
     @property
     def removable(self) -> bool:
@@ -253,23 +260,50 @@ class _RenderedEdge:
         return self.kind in ("data", "output") and not self.is_back_edge and not self.exclusive
 
 
-def _simplify_rendered_edges(rendered: list[_RenderedEdge]) -> list[_RenderedEdge]:
+def _simplify_rendered_edges(
+    rendered: list[_RenderedEdge],
+    collapsed_containers: set[str],
+    container_transits: dict[str, list[list[str]]],
+) -> list[_RenderedEdge]:
     """Drop rendered data edges a longer path already implies.
 
     Mermaid's INPUT / START / END edges are inert for this purpose — nothing
     points into ``__start__`` or out of ``__end__``, and nothing produces an
     INPUT — so only the flow edges built here need to enter the path graph.
+
+    Collapsed containers are split into per-port nodes exactly as in
+    ``scene_builder.simplify_transitive_edges``, so the text export and the
+    widget agree about which boxes really pass a value through. An
+    unresolvable port becomes a dead end: unverified means "do not hide".
     """
+
+    def port(node_id: str, index: int, side: str, resolved: str | None) -> str:
+        if node_id not in collapsed_containers:
+            return node_id
+        suffix = resolved if resolved is not None else f"?{index}"
+        return f"{node_id}\x00{side}\x00{suffix}"
+
     refs = [
         EdgeRef(
             key=index,
-            source=edge.source,
-            target=edge.target,
+            source=port(edge.source, index, "out", edge.exit_port),
+            target=port(edge.target, index, "in", edge.entry_port),
             removable=edge.removable,
             traversable=edge.traversable,
         )
         for index, edge in enumerate(rendered)
     ]
+    for container in collapsed_containers:
+        for entry, exit_node in container_transits.get(container, ()):
+            refs.append(
+                EdgeRef(
+                    key=("\x00transit", container, entry, exit_node),
+                    source=f"{container}\x00in\x00{entry}",
+                    target=f"{container}\x00out\x00{exit_node}",
+                    removable=False,
+                    traversable=True,
+                )
+            )
     dropped = shortcut_edge_keys(refs)
     return [edge for index, edge in enumerate(rendered) if index not in dropped]
 
@@ -377,6 +411,7 @@ def _render_merged_edges(
                 continue
             seen_edges.add(edge_key)
             is_exclusive = (source, target, value_name) in exclusive_data_edges
+            exit_port, entry_port = resolve_boundary_ports(flat_graph, source, target, value_names or [value_name])
             out.append(
                 _RenderedEdge(
                     _format_edge(actual_source, actual_target, None, exclusive=is_exclusive, id_allocator=id_allocator),
@@ -385,6 +420,8 @@ def _render_merged_edges(
                     actual_target,
                     exclusive=is_exclusive,
                     is_back_edge=(source, target) in back_edges,
+                    exit_port=exit_port,
+                    entry_port=entry_port,
                 )
             )
 
@@ -999,7 +1036,10 @@ def to_mermaid(
         id_allocator,
     )
     if simplify:
-        rendered = _simplify_rendered_edges(rendered)
+        collapsed_containers = {
+            node_id for node_id, attrs in flat_graph.nodes(data=True) if attrs.get("node_type") == "GRAPH" and not expansion_state.get(node_id, False)
+        }
+        rendered = _simplify_rendered_edges(rendered, collapsed_containers, compute_container_transits(flat_graph))
     edge_pairs.extend((edge.line, edge.kind) for edge in rendered)
 
     edge_pairs.extend((line, "end") for line in _render_end_edges(flat_graph, expansion_state, id_allocator))

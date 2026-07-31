@@ -32,8 +32,12 @@ def test_current_schema_version_pinned() -> None:
     constant in scene_builder.js stays in lockstep with Python.
 
     v4 (#211): ``GraphIR.container_entrypoints`` became the canonical
-    entrypoint authority and both scene builders stopped re-deriving it."""
-    assert CURRENT_SCHEMA_VERSION == "4"
+    entrypoint authority and both scene builders stopped re-deriving it.
+    v5: ``GraphIR.container_transits`` tells ``simplify`` which collapsed
+    containers really carry a value through. Falling back to "a box passes
+    everything" hides real edges under a route that does not exist — a wrong
+    picture, not merely a stale one, so it must degrade loudly."""
+    assert CURRENT_SCHEMA_VERSION == "5"
 
 
 def test_build_graph_ir_emits_current_schema_version() -> None:
@@ -72,7 +76,7 @@ def test_js_scene_builder_returns_mismatch_sentinel_for_future_version() -> None
     )
     assert proc.returncode == 0, proc.stderr
     scene = json.loads(proc.stdout)
-    assert scene.get("schemaVersionMismatch") == {"got": "999", "supported": "4"}
+    assert scene.get("schemaVersionMismatch") == {"got": "999", "supported": "5"}
     # The mismatch-sentinel must short-circuit derivation entirely so the
     # frontend can render the static fallback without dragging in any
     # potentially-stale interpretation of the IR.
@@ -112,7 +116,7 @@ def test_js_scene_builder_degrades_loudly_on_v3_payload_without_container_entryp
     )
     assert proc.returncode == 0, proc.stderr
     scene = json.loads(proc.stdout)
-    assert scene.get("schemaVersionMismatch") == {"got": "3", "supported": "4"}
+    assert scene.get("schemaVersionMismatch") == {"got": "3", "supported": "5"}
     assert scene["nodes"] == []
     assert scene["edges"] == []
 
@@ -139,8 +143,40 @@ def test_js_scene_builder_degrades_loudly_when_schema_version_is_missing() -> No
     assert scene == {
         "nodes": [],
         "edges": [],
-        "schemaVersionMismatch": {"got": None, "supported": "4"},
+        "schemaVersionMismatch": {"got": None, "supported": "5"},
     }
+
+
+def test_python_scene_builder_degrades_loudly_on_v4_payload_without_container_transits() -> None:
+    """Wire-format consequence of v5: a v4 IR has no ``container_transits``,
+    so a v5 scene builder reading it would fall back to "a collapsed box passes
+    everything through" and hide real edges behind routes that do not exist.
+    That is a *wrong* picture, not a stale one, so it must fail loudly."""
+    ir = build_graph_ir(make_simple_graph().to_flat_graph())
+    v4_ir = replace(ir, schema_version="4", container_transits={})
+    with pytest.raises(IRSchemaError, match="schema_version"):
+        build_initial_scene(v4_ir)
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js not installed")
+def test_js_scene_builder_degrades_loudly_on_v4_payload_without_container_transits() -> None:
+    """JS twin: an old saved notebook output must hit the static-fallback
+    banner rather than silently mis-simplify around collapsed containers."""
+    ir_dict = asdict(build_graph_ir(make_simple_graph().to_flat_graph()))
+    del ir_dict["container_transits"]
+    ir_dict["schema_version"] = "4"
+    proc = subprocess.run(
+        [NODE, str(RUNNER), str(REPO_ROOT)],
+        input=json.dumps({"ir": ir_dict, "opts": {}}),
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode == 0, proc.stderr
+    scene = json.loads(proc.stdout)
+    assert scene.get("schemaVersionMismatch") == {"got": "4", "supported": "5"}
+    assert scene["nodes"] == []
+    assert scene["edges"] == []
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js not installed")

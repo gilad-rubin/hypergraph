@@ -166,6 +166,126 @@ class TestSafetyInvariants:
         assert hidden_ids <= {e["id"] for e in reduced["edges"]}
 
 
+def _disconnected_container_graph() -> Graph:
+    """``side`` consumes ``doc`` at one child and emits ``stats`` from another,
+    and the two never touch — so ``load → render`` is the ONLY route carrying
+    the document, collapsed or not."""
+
+    @node(output_name="doc")
+    def load(path: str) -> str:
+        return path
+
+    @node(output_name="thumb")
+    def make_thumb(doc: str) -> str:
+        return doc
+
+    @node(output_name="stats")
+    def count_words(corpus: str) -> int:
+        return 0
+
+    @node(output_name="page")
+    def render(stats: int, doc: str) -> str:
+        return ""
+
+    side = Graph([make_thumb, count_words], name="side")
+    return Graph([load, side.as_node(), render], name="doc_pipeline")
+
+
+def _passthrough_container_graph() -> Graph:
+    """``prep`` genuinely carries the value across (strip_tags → tokenize), so
+    ``fetch → summarize`` really is a shortcut in every state."""
+
+    @node(output_name="raw")
+    def fetch(url: str) -> str:
+        return url
+
+    @node(output_name="clean")
+    def strip_tags(raw: str) -> str:
+        return raw
+
+    @node(output_name="tokens")
+    def tokenize(clean: str) -> list:
+        return []
+
+    @node(output_name="report")
+    def summarize(tokens: list, raw: str) -> str:
+        return ""
+
+    prep = Graph([strip_tags, tokenize], name="prep")
+    return Graph([fetch, prep.as_node(), summarize], name="pipe")
+
+
+class TestCollapsedContainersAreNotAssumedTransparent:
+    """A collapsed container is drawn as one box, which tempts the walk to join
+    every in-edge to every out-edge. That is false when the box does two
+    unrelated jobs, and hiding a real edge behind a route that does not exist
+    is worse than drawing one extra line."""
+
+    def test_disconnected_container_does_not_hide_the_only_route(self) -> None:
+        graph = _disconnected_container_graph()
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"side": False}, simplify=True))
+        assert ("load", "render") in collapsed
+
+    def test_answer_does_not_change_when_the_box_opens(self) -> None:
+        """The edge must not blink in and out as the container is toggled —
+        that flicker was the user-visible symptom."""
+        graph = _disconnected_container_graph()
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"side": False}, simplify=True))
+        expanded = visible_pairs(scene_for_state(graph, expansion_state={"side": True}, simplify=True))
+        assert ("load", "render") in collapsed and ("load", "render") in expanded
+
+    def test_real_passthrough_still_simplifies_when_collapsed(self) -> None:
+        """The precision cuts both ways: a container that DOES carry the value
+        must still justify dropping the shortcut, or simplify stops working."""
+        graph = _passthrough_container_graph()
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"prep": False}, simplify=True))
+        assert ("fetch", "summarize") not in collapsed
+        assert collapsed == {("fetch", "prep"), ("prep", "summarize")}
+
+    def test_nested_container_entry_resolves_to_the_direct_child(self) -> None:
+        """``target_when_expanded`` names the DEEPEST consumer, but transits are
+        recorded between direct children. Without walking the port back up, a
+        two-level nest never matches a transit and nothing simplifies."""
+
+        @node(output_name="seed")
+        def seed_fn(n: int) -> int:
+            return n
+
+        @node(output_name="a1")
+        def inner_a(seed: int) -> int:
+            return seed
+
+        @node(output_name="a2")
+        def inner_b(a1: int) -> int:
+            return a1
+
+        @node(output_name="mid_out")
+        def mid_tail(a2: int) -> int:
+            return a2
+
+        @node(output_name="final")
+        def sink(mid_out: int, seed: int) -> int:
+            return 0
+
+        deep = Graph([inner_a, inner_b], name="deep")
+        mid = Graph([deep.as_node(), mid_tail], name="mid")
+        graph = Graph([seed_fn, mid.as_node(), sink], name="outer")
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"mid": False}, simplify=True))
+        assert ("seed_fn", "sink") not in collapsed
+
+    def test_mermaid_agrees_with_the_scene_on_a_collapsed_container(self) -> None:
+        """Third implementation, same answer — the text export and the widget
+        must never disagree about which edges exist."""
+        graph = _disconnected_container_graph()
+        arrows = {
+            tuple(line.strip().split(" --> "))
+            for line in str(graph.to_mermaid(depth=0, show_types=False)).splitlines()
+            if "-->" in line and "input_" not in line
+        }
+        scene = visible_pairs(scene_for_state(graph, expansion_state={"side": False}, simplify=True))
+        assert arrows == scene
+
+
 class TestSimplifyTransitiveEdgesUnit:
     def _edge(self, source: str, target: str, **data) -> dict:
         payload = {"edgeType": "data"}
@@ -370,7 +490,7 @@ class TestToolbarToggle:
         version = page.evaluate("window.__hypergraphVizDebug.version")
         # One stable accessible name in both states — the button is a toggle,
         # not two buttons, so the label names the thing rather than the next action.
-        page.get_by_role("button", name="Simplify Graph").click()
+        page.get_by_role("button", name="Simplify Edges").click()
         page.wait_for_function(
             f"window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > {version} && window.__hypergraphVizReady === true",
             timeout=10000,

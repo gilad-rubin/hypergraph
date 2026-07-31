@@ -175,6 +175,19 @@ The IR carries all expansion-rewriting information eagerly:
    - Runs on the **assembled scene**, after expansion rewriting: an edge that is
      a shortcut while a container is collapsed can be the only path once it
      expands. Hidden edges are neither path segments nor candidates.
+   - A **collapsed container is never assumed to pass values through.** Drawn as
+     one box it invites joining every in-edge to every out-edge, which is false
+     whenever the container does two unrelated jobs, and then a real edge gets
+     hidden behind a route that does not exist. Each collapsed container is
+     therefore split into per-port path nodes, joined only for the
+     `[entry, exit]` pairs `scope.py::compute_container_transits` (stamped on
+     `GraphIR.container_transits`) says it really carries. Ports come from
+     `IREdge.*_when_expanded` in the scene builders and
+     `ir_builder.resolve_boundary_ports` in Mermaid — both normalized to the
+     container's **direct child**, since transits are recorded between direct
+     children and `*_when_expanded` names the deepest node. An unresolvable port
+     (absent, or a tuple fan-out) becomes a dead end, never a pass-through:
+     unverified means "do not hide".
    - JS-only hazard: node ids come from user-authored Python names and
      `__proto__` is a legal Python identifier, so every id-keyed map in
      `assets/*.js` must be `Object.create(null)`. A plain `{}` resolves

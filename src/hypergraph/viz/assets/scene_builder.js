@@ -18,7 +18,7 @@
   // v4: canonical container_entrypoints field (D14, #211) — this scene
   // builder no longer derives entrypoints, so a v3 payload without the
   // field must banner instead of silently mis-routing START/control edges.
-  var SUPPORTED_SCHEMA_VERSION = '4';
+  var SUPPORTED_SCHEMA_VERSION = '5';
 
   // Mirror of scene_builder.py:DATA_FLOW_EDGE_TYPES — the edge types that
   // carry a value, and so the only ones the `simplify` path graph walks.
@@ -223,6 +223,21 @@
 
     var sceneEdges = [];
     var edgeEntrypointOverrides = expandedContainerEntrypoints(ir, expansionState);
+    // scene-edge id -> {entry, exit} when the edge touches a *collapsed*
+    // container. Kept out of the scene payload: it exists only so `simplify`
+    // can tell a real pass-through from an assumed one. Twin of
+    // scene_builder.py's edge_ports.
+    var edgePorts = Object.create(null);
+    var parentOf = Object.create(null);
+    for (var pm = 0; pm < ir.nodes.length; pm++) {
+      if (ir.nodes[pm].parent) parentOf[ir.nodes[pm].id] = ir.nodes[pm].parent;
+    }
+    var collapsedContainers = Object.create(null);
+    for (var cc = 0; cc < ir.nodes.length; cc++) {
+      if (ir.nodes[cc].node_type === 'GRAPH' && !expansionState[ir.nodes[cc].id]) {
+        collapsedContainers[ir.nodes[cc].id] = true;
+      }
+    }
 
     for (var p = 0; p < ir.edges.length; p++) {
       var irEdge = ir.edges[p];
@@ -268,8 +283,11 @@
             if (separateOutputs && irEdge.edge_type === 'data' && valueName !== null) {
               src = 'data_' + src + '_' + valueName;
             }
+            var edgeId = valueName === null ? src + '__' + tgt : src + '__' + tgt + '__' + valueName;
+            var ports = collapsedPorts(irEdge, expansionState, parentOf);
+            if (ports) edgePorts[edgeId] = ports;
             sceneEdges.push({
-              id: valueName === null ? src + '__' + tgt : src + '__' + tgt + '__' + valueName,
+              id: edgeId,
               source: src,
               target: tgt,
               data: {
@@ -347,7 +365,11 @@
     addStartEndNodesAndEdges(ir, sceneNodes, sceneEdges, parentMap, expansionState, visibleIds);
 
     if (opts.simplify !== false) {
-      sceneEdges = simplifyTransitiveEdges(sceneEdges);
+      sceneEdges = simplifyTransitiveEdges(sceneEdges, {
+        containerTransits: ir.container_transits,
+        edgePorts: edgePorts,
+        collapsedContainers: collapsedContainers,
+      });
     }
 
     return { nodes: sceneNodes, edges: sceneEdges };
@@ -358,13 +380,36 @@
   // Twin of scene_builder.py:simplify_transitive_edges + _simplify.py; see
   // those docstrings for why only data edges are dropped and why the path
   // graph is restricted to the data-flow spine.
-  function simplifyTransitiveEdges(sceneEdges) {
+  function simplifyTransitiveEdges(sceneEdges, options) {
+    var opts = options || {};
+    var transits = opts.containerTransits || Object.create(null);
+    var edgePorts = opts.edgePorts || Object.create(null);
+    var collapsed = opts.collapsedContainers || Object.create(null);
+
+    // Path-graph identity for one end of an edge. Plain nodes keep their id; a
+    // collapsed container becomes an in- or out-port so the walk can only
+    // cross it where a real transit exists. An unresolvable port becomes one
+    // unique to this edge, so nothing joins through it — unverified means
+    // "do not hide".
+    function port(nodeId, edgeId, side) {
+      if (!collapsed[nodeId]) return nodeId;
+      var recorded = edgePorts[edgeId];
+      var resolved = recorded ? recorded[side === 'in' ? 'entry' : 'exit'] : undefined;
+      var suffix = (resolved === undefined || resolved === null) ? '?' + edgeId : resolved;
+      return nodeId + '\u0000' + side + '\u0000' + suffix;
+    }
+
     // Object.create(null) throughout: node ids come from user-authored Python
     // names, and `__proto__` is a legal Python identifier. On a normal object
     // literal `adjacency['__proto__']` resolves to Object.prototype, so the
     // assignment below throws and blanks the canvas. The Python twin uses
     // dicts and has never had this failure mode.
     var adjacency = Object.create(null);
+    function link(from, to) {
+      if (!adjacency[from]) adjacency[from] = Object.create(null);
+      adjacency[from][to] = true;
+    }
+
     for (var i = 0; i < sceneEdges.length; i++) {
       var e = sceneEdges[i];
       if (e.hidden) continue;
@@ -374,8 +419,21 @@
       // candidates below: an arm only carries its value when its branch is
       // taken, so it must not imply away an unconditional edge.
       if (eData.forceFeedback || eData.exclusive) continue;
-      if (!adjacency[e.source]) adjacency[e.source] = Object.create(null);
-      adjacency[e.source][e.target] = true;
+      link(port(e.source, e.id, 'out'), port(e.target, e.id, 'in'));
+    }
+
+    // Join each collapsed container's in-ports to the out-ports it genuinely
+    // reaches. Without these the box is impassable; with all-to-all it would
+    // be assumed transparent. Neither guess — use what the container does.
+    for (var containerId in collapsed) {
+      if (!Object.prototype.hasOwnProperty.call(collapsed, containerId)) continue;
+      var pairs = transits[containerId] || [];
+      for (var t = 0; t < pairs.length; t++) {
+        link(
+          containerId + '\u0000in\u0000' + pairs[t][0],
+          containerId + '\u0000out\u0000' + pairs[t][1]
+        );
+      }
     }
 
     var dropped = Object.create(null);
@@ -385,10 +443,42 @@
       if (edge.hidden || data.edgeType !== 'data') continue;
       if (data.exclusive || data.forceFeedback) continue;
       if (edge.source === edge.target) continue;
-      if (hasIndirectPath(adjacency, edge.source, edge.target)) dropped[edge.id] = true;
+      var from = port(edge.source, edge.id, 'out');
+      var to = port(edge.target, edge.id, 'in');
+      if (from === to) continue;
+      if (hasIndirectPath(adjacency, from, to)) dropped[edge.id] = true;
     }
 
     return sceneEdges.filter(function (e) { return !dropped[e.id]; });
+  }
+
+  // Twin of scene_builder.py:_collapsed_ports. The `*_when_expanded` fields
+  // name the DEEPEST internal producer/consumer, but transits are recorded
+  // between a container's direct children, so each port is walked back up to
+  // the child it belongs to. Arrays (multi-pill fan-out) stay unresolved.
+  function collapsedPorts(irEdge, expansionState, parentOf) {
+    var ports = null;
+    if (!expansionState[irEdge.source] && typeof irEdge.source_when_expanded === 'string') {
+      var exitChild = directChildOf(irEdge.source, irEdge.source_when_expanded, parentOf);
+      if (exitChild !== null) { ports = ports || Object.create(null); ports.exit = exitChild; }
+    }
+    if (!expansionState[irEdge.target] && typeof irEdge.target_when_expanded === 'string') {
+      var entryChild = directChildOf(irEdge.target, irEdge.target_when_expanded, parentOf);
+      if (entryChild !== null) { ports = ports || Object.create(null); ports.entry = entryChild; }
+    }
+    return ports;
+  }
+
+  function directChildOf(containerId, descendant, parentOf) {
+    var current = descendant;
+    var guard = 0;
+    while (current !== undefined && current !== null && guard <= 1000) {
+      var parent = parentOf[current];
+      if (parent === containerId) return current;
+      current = parent;
+      guard++;
+    }
+    return null;
   }
 
   // True if `target` is reachable from `source` without ever taking the
