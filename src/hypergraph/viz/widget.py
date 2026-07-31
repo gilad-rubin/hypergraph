@@ -79,8 +79,10 @@ def visualize(
         separate_outputs: Whether to render outputs as separate DATA nodes.
         show_inputs: Whether to show INPUT/INPUT_GROUP nodes.
         show_bounded_inputs: Whether to include bound INPUT/INPUT_GROUP nodes.
-        simplify: Hide data edges a longer path already implies — with
-            ``A → B → C``, a direct ``A → C`` is dropped (default: True).
+        simplify: Hide data and input edges a longer path already implies —
+            with ``A → B → C``, a direct ``A → C`` is dropped, and an input
+            feeding the whole chain keeps only its earliest consumer
+            (default: True).
             Toggleable in the widget toolbar.
         show_external_inputs: Deprecated alias for ``show_inputs``.
         filepath: Path to save standalone HTML (default: display in notebook).

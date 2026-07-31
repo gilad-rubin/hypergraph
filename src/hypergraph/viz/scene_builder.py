@@ -432,12 +432,21 @@ def simplify_transitive_edges(
         edge_type = data.get("edgeType")
         is_back_edge = bool(data.get("forceFeedback"))
         is_exclusive = bool(data.get("exclusive"))
+        # An INPUT pill edge targets the collapsed box AS A BOX, never an
+        # in-port. The drawn line ends at the hull, so the reader's question
+        # is only "does this value reach the box?" — answered by the phantom
+        # in-port → box links below — and, ending at the bare box id (a sink
+        # in the path graph), the edge can never stand in for a transit.
+        target = edge["target"] if edge_type == "input" else port(edge["target"], edge["id"], "in")
         refs.append(
             EdgeRef(
                 key=edge["id"],
                 source=port(edge["source"], edge["id"], "out"),
-                target=port(edge["target"], edge["id"], "in"),
-                removable=edge_type == "data" and not is_exclusive and not is_back_edge,
+                target=target,
+                # Input edges are candidates too: one input feeding a chain
+                # keeps only its EARLIEST consumer(s) — every later edge is a
+                # shortcut past a route the diagram already draws.
+                removable=edge_type in ("data", "input") and not is_exclusive and not is_back_edge,
                 # Exclusive arms are excluded from the path graph too, not just
                 # from the candidates: an arm only carries its value when its
                 # branch is taken, so it must not imply away an unconditional edge.
@@ -458,6 +467,19 @@ def simplify_transitive_edges(
                     traversable=True,
                 )
             )
+
+    # Path-only links from every delivered-to in-port to its box, so "reaches
+    # the box" means exactly "some visible edge delivers into the box". The
+    # bare box id has no outgoing path links, so these can never manufacture a
+    # pass-through — they only answer input-edge candidacy.
+    seen_ports: set[str] = set()
+    for ref in list(refs):
+        port_id = ref.target
+        if port_id in seen_ports or "\x00in\x00" not in port_id:
+            continue
+        seen_ports.add(port_id)
+        container = port_id.split("\x00", 1)[0]
+        refs.append(EdgeRef(key=("\x00boxin", port_id), source=port_id, target=container, removable=False, traversable=True))
 
     dropped = shortcut_edge_keys(refs)
     return [edge for edge in scene_edges if edge["id"] not in dropped]

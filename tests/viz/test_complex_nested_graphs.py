@@ -4,7 +4,7 @@ from hypergraph import Graph, ifelse, node
 from tests.viz.conftest import scene_for_state
 
 
-def _expanded_edges(graph_or_result, *, separate_outputs: bool = False) -> list[dict]:
+def _expanded_edges(graph_or_result, *, separate_outputs: bool = False, simplify: bool = True) -> list[dict]:
     """Return the visible-edge set when every container is expanded.
 
     Accepts either a :class:`Graph` (preferred) or the legacy
@@ -12,7 +12,7 @@ def _expanded_edges(graph_or_result, *, separate_outputs: bool = False) -> list[
     embedded in ``meta``).
     """
     if hasattr(graph_or_result, "to_flat_graph"):
-        scene = scene_for_state(graph_or_result, expand_all=True, separate_outputs=separate_outputs)
+        scene = scene_for_state(graph_or_result, expand_all=True, separate_outputs=separate_outputs, simplify=simplify)
         return [e for e in scene["edges"] if not e.get("hidden")]
     raise TypeError("_expanded_edges expects a Graph instance")
 
@@ -110,8 +110,11 @@ def make_rag_style_graph() -> Graph:
 
 
 def test_rag_style_query_edges_route_to_internal_nodes_when_expanded() -> None:
+    # simplify=False: this pins the expansion ROUTING (every consumer gets its
+    # edge into the open containers); which of those edges the reduction then
+    # hides is test_simplify_edges.py's contract.
     graph = make_rag_style_graph()
-    edges = _expanded_edges(graph)
+    edges = _expanded_edges(graph, simplify=False)
 
     query_targets = {edge["target"] for edge in edges if edge["source"] == "input_query"}
 

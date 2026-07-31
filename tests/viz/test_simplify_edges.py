@@ -382,6 +382,154 @@ class TestCollapsedContainersAreNotAssumedTransparent:
         assert arrows == scene
 
 
+@node(output_name="pages")
+def select_pages(query: str) -> str:
+    return query
+
+
+@node(output_name="answer")
+def generate(query: str, pages: str) -> str:
+    return query + pages
+
+
+@node(output_name="verdict")
+def judge(query: str, answer: str) -> str:
+    return query + answer
+
+
+@node(output_name="mark")
+def grade(query: str, verdict: str) -> str:
+    return query + verdict
+
+
+def make_input_fanout_graph() -> Graph:
+    """One input feeding an entire chain — the panda review shape.
+
+    ``query`` enters all four nodes, but the chain
+    ``select_pages → generate → judge → grade`` already carries it forward:
+    a reader following the earliest edge reaches every later consumer.
+    """
+    return Graph([select_pages, generate, judge, grade], name="review")
+
+
+class TestInputEdgesSimplify:
+    """``simplify`` applies to INPUT pill edges: only the EARLIEST consumer(s)
+    keep their edge when every later consumer is reachable downstream."""
+
+    def test_input_fanout_keeps_only_the_earliest_consumer(self) -> None:
+        scene = scene_for_state(make_input_fanout_graph(), simplify=True)
+        assert visible_pairs(scene, edge_type="input") == {("input_query", "select_pages")}
+
+    def test_input_fanout_survives_with_simplify_off(self) -> None:
+        scene = scene_for_state(make_input_fanout_graph(), simplify=False)
+        assert visible_pairs(scene, edge_type="input") == {
+            ("input_query", "select_pages"),
+            ("input_query", "generate"),
+            ("input_query", "judge"),
+            ("input_query", "grade"),
+        }
+
+    def test_input_edge_into_a_collapsed_box_is_implied_by_a_delivering_route(self) -> None:
+        """``query → box`` disappears when ``query → select → box`` already
+        delivers into the box. Reaching ANY in-port of a collapsed box counts:
+        the drawn edge ends at the hull, so the reader's question is only
+        whether the value reaches the box, not which inner node it enters."""
+
+        @node(output_name="context")
+        def format_ctx(pages: str) -> str:
+            return pages
+
+        @node(output_name="messages")
+        def assemble(query: str, context: str) -> str:
+            return query + context
+
+        inner = Graph([format_ctx, assemble], name="inner")
+        outer = Graph([select_pages, inner.as_node(name="inner")], name="outer")
+
+        on = scene_for_state(outer, expansion_state={}, simplify=True)
+        off = scene_for_state(outer, expansion_state={}, simplify=False)
+        assert visible_pairs(off, edge_type="input") == {("input_query", "select_pages"), ("input_query", "inner")}
+        assert visible_pairs(on, edge_type="input") == {("input_query", "select_pages")}
+
+    def test_sole_route_into_a_box_survives(self) -> None:
+        """An input edge that is the pill's only route anywhere is never
+        dropped, even when the box has other in-edges."""
+
+        @node(output_name="context")
+        def format_ctx(pages: str) -> str:
+            return pages
+
+        @node(output_name="messages")
+        def assemble(secret: str, context: str) -> str:
+            return secret + context
+
+        inner = Graph([format_ctx, assemble], name="inner")
+        outer = Graph([select_pages, inner.as_node(name="inner")], name="outer")
+
+        scene = scene_for_state(outer, expansion_state={}, simplify=True)
+        assert ("input_secret", "inner") in visible_pairs(scene, edge_type="input")
+
+    def test_control_delivery_does_not_imply_an_input_edge(self) -> None:
+        """A gate's dotted arrow into a node means "may run", never "receives
+        the value" — it cannot justify dropping the input edge."""
+
+        @ifelse(when_true="deliver", when_false="archive")
+        def check(query: str) -> bool:
+            return bool(query)
+
+        @node(output_name="delivered")
+        def deliver(query: str) -> str:
+            return query
+
+        @node(output_name="archived")
+        def archive(query: str) -> str:
+            return query
+
+        graph = Graph([check, deliver, archive], name="gated")
+        scene = scene_for_state(graph, simplify=True)
+        pairs = visible_pairs(scene, edge_type="input")
+        assert ("input_query", "deliver") in pairs
+        assert ("input_query", "archive") in pairs
+
+    def test_expanded_view_reduces_over_the_real_inner_routes(self) -> None:
+        """Once the container opens, the same rule runs on the inner nodes:
+        both inner consumers sit downstream of ``select_pages`` (its ``pages``
+        edge re-routes to ``format_ctx``, which feeds ``assemble``), so only
+        the genuinely earliest consumer keeps its edge."""
+
+        @node(output_name="context")
+        def format_ctx(pages: str, query: str) -> str:
+            return pages + query
+
+        @node(output_name="messages")
+        def assemble(query: str, context: str) -> str:
+            return query + context
+
+        inner = Graph([format_ctx, assemble], name="inner")
+        outer = Graph([select_pages, inner.as_node(name="inner")], name="outer")
+
+        scene = scene_for_state(outer, expansion_state={"inner": True}, simplify=True)
+        assert visible_pairs(scene, edge_type="input") == {("input_query", "select_pages")}
+
+    def test_expanded_earliest_inner_consumer_keeps_its_edge(self) -> None:
+        """An inner consumer NOT reachable from any other consumer keeps its
+        edge after expansion — earliest is judged on the open topology."""
+
+        @node(output_name="context")
+        def prepare(query: str) -> str:
+            return query
+
+        @node(output_name="messages")
+        def assemble(query: str, context: str) -> str:
+            return query + context
+
+        inner = Graph([prepare, assemble], name="inner")
+        outer = Graph([inner.as_node(name="inner")], name="outer")
+
+        scene = scene_for_state(outer, expansion_state={"inner": True}, simplify=True)
+        assert visible_pairs(scene, edge_type="input") == {("input_query", "inner/prepare")}
+
+
 class TestSimplifyTransitiveEdgesUnit:
     def _edge(self, source: str, target: str, **data) -> dict:
         payload = {"edgeType": "data"}
@@ -469,6 +617,19 @@ class TestMermaidAlignment:
         arrows = self._arrows(make_shortcut_graph(), separate_outputs=True)
         assert ("fetch", "data_fetch_raw") in arrows
         assert ("data_fetch_raw", "render") not in arrows
+
+    def test_input_fanout_reduces_like_the_scene(self) -> None:
+        graph = make_input_fanout_graph()
+        arrows = self._arrows(graph)
+        input_arrows = {pair for pair in arrows if pair[0].startswith("input_")}
+        assert input_arrows == {("input_query", "select_pages")}
+        assert self._arrows(graph) == visible_pairs(scene_for_state(graph, simplify=True), edge_type=None)
+
+    def test_input_edge_into_a_collapsed_box_reduces_like_the_scene(self) -> None:
+        graph = make_input_fanout_into_box_graph()
+        arrows = self._arrows(graph)
+        input_arrows = {pair for pair in arrows if pair[0].startswith("input_")}
+        assert input_arrows == {("input_query", "select_pages")}
 
     def test_cycle_survives(self) -> None:
         """Mermaid has no ``is_back_edge`` flag of its own — it calls
@@ -600,12 +761,29 @@ class TestJsHardening:
         assert sorted(result["kept"]) == [["A", "B"], ["A", "C"], ["B", "C"]]
 
 
+def make_input_fanout_into_box_graph() -> Graph:
+    """``query`` feeds ``select_pages`` AND a container that ``select_pages``
+    delivers into — the collapsed-box input-candidacy shape."""
+
+    @node(output_name="context")
+    def format_ctx(pages: str) -> str:
+        return pages
+
+    @node(output_name="messages")
+    def assemble(query: str, context: str) -> str:
+        return query + context
+
+    inner = Graph([format_ctx, assemble], name="inner")
+    return Graph([select_pages, inner.as_node(name="inner")], name="outer")
+
+
 @pytest.mark.skipif(NODE is None, reason="Node.js not installed")
 @pytest.mark.parametrize("simplify", [False, True])
 @pytest.mark.parametrize("separate_outputs", [False, True])
-def test_python_js_simplify_parity(simplify: bool, separate_outputs: bool) -> None:
+@pytest.mark.parametrize("make_graph", [make_shortcut_graph, make_input_fanout_graph, make_input_fanout_into_box_graph])
+def test_python_js_simplify_parity(simplify: bool, separate_outputs: bool, make_graph) -> None:
     """``assets/scene_builder.js`` must reduce identically to its Python twin."""
-    ir = build_graph_ir(make_shortcut_graph().to_flat_graph())
+    ir = build_graph_ir(make_graph().to_flat_graph())
     payload = json.dumps(
         {
             "ir": asdict(ir),
@@ -624,6 +802,9 @@ def test_python_js_simplify_parity(simplify: bool, separate_outputs: bool) -> No
     py_scene = build_initial_scene(ir, separate_outputs=separate_outputs, simplify=simplify)
     js_scene = json.loads(proc.stdout)
     assert visible_pairs(js_scene, edge_type=None) == visible_pairs(py_scene, edge_type=None)
+    if simplify and make_graph is make_input_fanout_graph:
+        # Not merely equal — both twins actually cleaned the fan-out.
+        assert visible_pairs(js_scene, edge_type="input") == {("input_query", "select_pages")}
 
 
 # =============================================================================

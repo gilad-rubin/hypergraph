@@ -164,8 +164,13 @@ The IR carries all expansion-rewriting information eagerly:
      Never re-derive the reachability walk in a new call site.
    - Two invariants make it safe to default on. Both are load-bearing; a change
      that widens either silently deletes real information:
-     - Only **plain data** edges are removal candidates. Control, ordering,
-       input, output, start/end and mutex (`exclusive`) edges never get dropped.
+     - Only **plain data** and **INPUT pill** edges are removal candidates.
+       Control, ordering, output, start/end and mutex (`exclusive`) edges never
+       get dropped. An input feeding a chain keeps only its EARLIEST
+       consumer(s); an input edge into a *collapsed* container is judged
+       box-level — it drops when any other visible route delivers into that
+       box (phantom in-port→box path links, added in both scene-builder twins
+       and Mermaid) — while data edges into the same box stay port-strict.
      - The path graph is the **unconditional data-flow spine only** (`data` +
        `output`, plus inert `input`). Only an edge that *always* carries a value
        may justify a removal, because the reader must be able to trust the

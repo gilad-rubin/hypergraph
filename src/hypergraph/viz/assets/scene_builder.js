@@ -534,6 +534,16 @@
       adjacency[from][to] = true;
     }
 
+    // An INPUT pill edge targets the collapsed box AS A BOX, never an
+    // in-port. The drawn line ends at the hull, so the reader's question is
+    // only "does this value reach the box?" — answered by the phantom
+    // in-port → box links below — and, ending at the bare box id (a sink in
+    // the path graph), the edge can never stand in for a transit.
+    function pathTarget(e) {
+      var eData = e.data || {};
+      return eData.edgeType === 'input' ? e.target : port(e.target, e.id, 'in');
+    }
+
     for (var i = 0; i < sceneEdges.length; i++) {
       var e = sceneEdges[i];
       if (e.hidden) continue;
@@ -543,7 +553,7 @@
       // candidates below: an arm only carries its value when its branch is
       // taken, so it must not imply away an unconditional edge.
       if (eData.forceFeedback || eData.exclusive) continue;
-      link(port(e.source, e.id, 'out'), port(e.target, e.id, 'in'));
+      link(port(e.source, e.id, 'out'), pathTarget(e));
     }
 
     // Join each collapsed container's in-ports to the out-ports it genuinely
@@ -560,15 +570,32 @@
       }
     }
 
+    // Path-only links from every delivered-to in-port to its box, so "reaches
+    // the box" means exactly "some visible edge delivers into the box". The
+    // bare box id has no outgoing path links, so these can never manufacture
+    // a pass-through — they only answer input-edge candidacy.
+    var inMarker = '\u0000in\u0000';
+    for (var pi = 0; pi < sceneEdges.length; pi++) {
+      var pe = sceneEdges[pi];
+      if (pe.hidden) continue;
+      var pePort = pathTarget(pe);
+      var markerAt = pePort.indexOf(inMarker);
+      if (markerAt === -1) continue;
+      link(pePort, pePort.slice(0, markerAt));
+    }
+
     var dropped = Object.create(null);
     for (var j = 0; j < sceneEdges.length; j++) {
       var edge = sceneEdges[j];
       var data = edge.data || {};
-      if (edge.hidden || data.edgeType !== 'data') continue;
+      // Input edges are candidates too: one input feeding a chain keeps only
+      // its EARLIEST consumer(s) — every later edge is a shortcut past a
+      // route the diagram already draws.
+      if (edge.hidden || (data.edgeType !== 'data' && data.edgeType !== 'input')) continue;
       if (data.exclusive || data.forceFeedback) continue;
       if (edge.source === edge.target) continue;
       var from = port(edge.source, edge.id, 'out');
-      var to = port(edge.target, edge.id, 'in');
+      var to = pathTarget(edge);
       if (from === to) continue;
       if (hasIndirectPath(adjacency, from, to)) dropped[edge.id] = true;
     }

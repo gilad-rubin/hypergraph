@@ -312,16 +312,23 @@ class TestInputPositioningInsideContainers:
 
         input_y = input_node.get("y", 0)
         input_height = input_node.get("height", 36)
+        input_x = input_node.get("x", 0)
+        input_width = input_node.get("width", 0)
+        container_left = container.get("x", 0)
+        container_right = container_left + container.get("width", 0)
 
-        # query should NOT be fully inside the container (it has external consumers)
-        # It's OK if it's above or partially overlapping, but should not be contained
+        # query is a root-owned input, so it must not sit INSIDE the
+        # container's rectangle. Sharing the container's Y band while standing
+        # beside it is fine — with `simplify` on, the pill's one surviving
+        # edge feeds a node inside the box, so the layout parks the pill next
+        # to that consumer.
         is_fully_inside_y = container_top <= input_y and (input_y + input_height) <= container_bottom
+        is_fully_inside_x = container_left <= input_x and (input_x + input_width) <= container_right
 
-        # This is a sanity check - query should stay at root level
-        assert not is_fully_inside_y or input_y < container_top, (
-            f"query INPUT should be at ROOT level (outside container), not inside.\n"
-            f"Container top={container_top:.0f}, bottom={container_bottom:.0f}\n"
-            f"INPUT y={input_y:.0f}"
+        assert not (is_fully_inside_x and is_fully_inside_y), (
+            f"query INPUT should be at ROOT level (outside the container rectangle), not inside.\n"
+            f"Container x=[{container_left:.0f}, {container_right:.0f}] y=[{container_top:.0f}, {container_bottom:.0f}]\n"
+            f"INPUT x={input_x:.0f}, y={input_y:.0f}"
         )
 
 

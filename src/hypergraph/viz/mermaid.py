@@ -243,9 +243,11 @@ class _RenderedEdge:
 
     @property
     def removable(self) -> bool:
-        """Only plain data edges may be dropped — an ``output`` edge is the
-        structural producer→DATA link, and dropping it would orphan the pill."""
-        return self.kind == "data" and not self.exclusive and not self.is_back_edge
+        """Plain data edges and INPUT pill edges may be dropped — one input
+        feeding a chain keeps only its earliest consumer(s). An ``output``
+        edge is the structural producer→DATA link, and dropping it would
+        orphan the pill."""
+        return self.kind in ("data", "input") and not self.exclusive and not self.is_back_edge
 
     @property
     def traversable(self) -> bool:
@@ -257,7 +259,7 @@ class _RenderedEdge:
         the same reason — an arm carries its value only when its branch is
         taken, so it must not imply away an unconditional edge.
         """
-        return self.kind in ("data", "output") and not self.is_back_edge and not self.exclusive
+        return self.kind in ("data", "output", "input") and not self.is_back_edge and not self.exclusive
 
 
 def _simplify_rendered_edges(
@@ -265,16 +267,20 @@ def _simplify_rendered_edges(
     collapsed_containers: set[str],
     container_transits: dict[str, list[list[str]]],
 ) -> list[_RenderedEdge]:
-    """Drop rendered data edges a longer path already implies.
+    """Drop rendered data and INPUT edges a longer path already implies.
 
-    Mermaid's INPUT / START / END edges are inert for this purpose — nothing
-    points into ``__start__`` or out of ``__end__``, and nothing produces an
-    INPUT — so only the flow edges built here need to enter the path graph.
+    START / END edges stay inert — nothing points into ``__start__`` or out of
+    ``__end__``. INPUT pill edges enter the path graph AND the candidate set:
+    one input feeding a chain keeps only its earliest consumer(s), exactly as
+    in ``scene_builder.simplify_transitive_edges``.
 
     Collapsed containers are split into per-port nodes exactly as in
     ``scene_builder.simplify_transitive_edges``, so the text export and the
     widget agree about which boxes really pass a value through. An
-    unresolvable port becomes a dead end: unverified means "do not hide".
+    unresolvable port becomes a dead end: unverified means "do not hide". An
+    INPUT edge instead targets the box AS A BOX — the drawn line ends at the
+    hull, so its candidacy asks only whether the value reaches the box, which
+    the phantom in-port → box links answer.
     """
 
     def port(node_id: str, index: int, side: str, resolved: str | None) -> str:
@@ -283,11 +289,16 @@ def _simplify_rendered_edges(
         suffix = resolved if resolved is not None else f"?{index}"
         return f"{node_id}\x00{side}\x00{suffix}"
 
+    def ref_target(edge: _RenderedEdge, index: int) -> str:
+        if edge.kind == "input":
+            return edge.target
+        return port(edge.target, index, "in", edge.entry_port)
+
     refs = [
         EdgeRef(
             key=index,
             source=port(edge.source, index, "out", edge.exit_port),
-            target=port(edge.target, index, "in", edge.entry_port),
+            target=ref_target(edge, index),
             removable=edge.removable,
             traversable=edge.traversable,
         )
@@ -304,6 +315,25 @@ def _simplify_rendered_edges(
                     traversable=True,
                 )
             )
+    # Path-only links from every delivered-to in-port to its box, so "reaches
+    # the box" means exactly "some rendered edge delivers into the box". The
+    # bare box id has no outgoing path links, so these can never manufacture a
+    # pass-through — they only answer input-edge candidacy.
+    seen_ports: set[str] = set()
+    for ref in list(refs):
+        port_id = str(ref.target)
+        if port_id in seen_ports or "\x00in\x00" not in port_id:
+            continue
+        seen_ports.add(port_id)
+        refs.append(
+            EdgeRef(
+                key=("\x00boxin", port_id),
+                source=port_id,
+                target=port_id.split("\x00", 1)[0],
+                removable=False,
+                traversable=True,
+            )
+        )
     dropped = shortcut_edge_keys(refs)
     return [edge for index, edge in enumerate(rendered) if index not in dropped]
 
@@ -1021,6 +1051,7 @@ def to_mermaid(
     edge_pairs: list[tuple[str, str]] = []
     edge_pairs.extend((line, "start") for line in _render_start_edges(start_targets, id_allocator))
 
+    input_rendered: list[_RenderedEdge] = []
     for group in input_groups:
         params = group["params"]
         if len(params) == 1:
@@ -1037,7 +1068,14 @@ def to_mermaid(
             container_entrypoints,
         )
         for tgt in targets:
-            edge_pairs.append((_format_edge(input_node_id, tgt, None, id_allocator=id_allocator), "input"))
+            input_rendered.append(
+                _RenderedEdge(
+                    _format_edge(input_node_id, tgt, None, id_allocator=id_allocator),
+                    "input",
+                    input_node_id,
+                    tgt,
+                )
+            )
 
     exclusive_data_edges = compute_exclusive_data_edges(flat_graph)
     back_edges = find_back_edges(flat_graph)
@@ -1050,12 +1088,17 @@ def to_mermaid(
         back_edges,
         id_allocator,
     )
+    # Input edges enter the reduction with the flow edges (an input feeding a
+    # chain keeps only its earliest consumer), then emit first so the text
+    # keeps its historical section order.
+    combined = input_rendered + rendered
     if simplify:
         collapsed_containers = {
             node_id for node_id, attrs in flat_graph.nodes(data=True) if attrs.get("node_type") == "GRAPH" and not expansion_state.get(node_id, False)
         }
-        rendered = _simplify_rendered_edges(rendered, collapsed_containers, compute_container_transits(flat_graph))
-    edge_pairs.extend((edge.line, edge.kind) for edge in rendered)
+        combined = _simplify_rendered_edges(combined, collapsed_containers, compute_container_transits(flat_graph))
+    edge_pairs.extend((edge.line, edge.kind) for edge in combined if edge.kind == "input")
+    edge_pairs.extend((edge.line, edge.kind) for edge in combined if edge.kind != "input")
 
     edge_pairs.extend((line, "end") for line in _render_end_edges(flat_graph, expansion_state, id_allocator))
 
