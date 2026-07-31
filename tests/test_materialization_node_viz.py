@@ -162,15 +162,27 @@ class TestBoundariesHeld:
         assert stored != graph._nodes["materialize_docs"].node_type
 
     def test_execution_dispatch_keys_on_the_exact_class(self):
-        """Runners select an executor by exact type, not by node_type."""
-        import inspect
+        """Executor selection is an exact-class lookup, so node_type cannot steer it.
 
-        from hypergraph.runners.async_ import superstep as async_superstep
-        from hypergraph.runners.sync import superstep as sync_superstep
+        Asserted behaviorally against the real registries: the exact class
+        resolves, and a subclass does NOT inherit the entry. That second half
+        is what proves the lookup is `registry[type(node)]` rather than an
+        isinstance walk — and therefore that a property can never reroute it.
+        """
+        from hypergraph import AsyncRunner
+        from hypergraph.runners.async_.executors.materialization_node import AsyncMaterializationNodeExecutor
+        from hypergraph.runners.sync.executors.materialization_node import SyncMaterializationNodeExecutor
 
-        for module in (sync_superstep, async_superstep):
-            source = inspect.getsource(module)
-            assert "executors.get(type(node))" in source, f"{module.__name__} must dispatch on the exact class"
+        class Subclassed(MaterializationNode):
+            pass
+
+        for runner, expected in (
+            (SyncRunner(), SyncMaterializationNodeExecutor),
+            (AsyncRunner(), AsyncMaterializationNodeExecutor),
+        ):
+            registry = runner._executors
+            assert isinstance(registry.get(MaterializationNode), expected)
+            assert registry.get(Subclassed) is None, "an exact-class lookup never resolves a subclass"
 
     def test_the_recipe_is_not_executed_as_a_nested_run(self):
         """Sequential behavior pin: mounting still materializes rows itself.
