@@ -112,9 +112,18 @@
   arms are likewise never dropped, reachability is preserved so no node is left
   disconnected, and the reduction re-runs per expansion state because an edge
   that is a shortcut while a container is collapsed can be the only path once it
-  expands. One authority (`viz/_simplify.py`) serves the Python scene builder,
-  its JS twin and the Mermaid exporter, so the widget and the text export cannot
-  disagree about which edges exist.
+  expands. A **collapsed nested graph is never assumed to pass values through**:
+  a container that consumes one value at one child and emits another from an
+  unrelated child carries nothing across, so hiding an edge on that assumption
+  would replace the only true route with a false one. Each collapsed container
+  is crossed only where `GraphIR.container_transits` says it really carries the
+  value, and an unverifiable boundary port is treated as a dead end — hence IR
+  schema v5, which a v4 payload degrades loudly against rather than
+  mis-simplifying. One authority (`viz/_simplify.py`) serves the Python scene
+  builder, its JS twin and the Mermaid exporter, so the widget and the text
+  export cannot disagree about which edges exist. Note the vocabulary: these are
+  **shortcut** edges, never "redundant" — `C` genuinely reads `A`'s output, and
+  only the ordering is already implied.
 
 - **Independently paused Batch children now continue when answered** —
   answering a durable pause no longer just stores resume input; settlement,
