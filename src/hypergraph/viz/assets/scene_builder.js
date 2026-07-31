@@ -72,7 +72,14 @@
       var ownerContainer = visibleOwner(ext.deepest_owner, parentMap, expansionState);
       var params = ext.params || [];
       var segments = (ext.id_segments && ext.id_segments.length === params.length) ? ext.id_segments : params;
-      var hidden = inputHidden(ext.deepest_owner, parentMap, expansionState);
+      // A real external input is part of the graph's contract, so collapsing
+      // the container that owns it must not erase it: the pill hoists to its
+      // deepest VISIBLE ancestor (ownerContainer) and its edges aggregate to
+      // the collapsed boundary. Only map-fed pills disappear with their
+      // container — they project a fan-out edge that re-attaches to the
+      // container hull while it is collapsed, so keeping the pill would draw
+      // the same value twice.
+      var hidden = ext.map_fed ? inputHidden(ext.deepest_owner, parentMap, expansionState) : false;
       // map_fed and is_bound style the pill; ownerContainer decides where it
       // nests. Merging across any of them would change what the pill means.
       var key = JSON.stringify([
@@ -332,6 +339,21 @@
       }
     }
 
+    // Twin of scene_builder.py:_resolve_rewritten_endpoints: a rewritten
+    // endpoint may sit inside a still-collapsed INNER container, so it is
+    // walked up to its deepest visible ancestor — the edge aggregates to that
+    // boundary instead of vanishing with the hidden node. Several endpoints
+    // resolving to one ancestor collapse to one edge.
+    function resolveRewrittenEndpoints(endpoints) {
+      var resolved = [];
+      for (var re = 0; re < endpoints.length; re++) {
+        var visible = resolveToVisible(endpoints[re], parentMap, visibleIds);
+        var candidate = visible === null ? endpoints[re] : visible;
+        if (resolved.indexOf(candidate) === -1) resolved.push(candidate);
+      }
+      return resolved;
+    }
+
     for (var p = 0; p < ir.edges.length; p++) {
       var irEdge = ir.edges[p];
       var baseSources = [irEdge.source];
@@ -339,10 +361,13 @@
         baseSources = Array.isArray(irEdge.source_when_expanded)
           ? irEdge.source_when_expanded.slice()
           : [irEdge.source_when_expanded];
+        baseSources = resolveRewrittenEndpoints(baseSources);
       }
-      // A fan-out edge into an expanded container may re-route to several
-      // item-field INPUT pills, so target_when_expanded can be an array; emit
-      // one edge per target (mirrors the multi-source fan-out below).
+      // An edge into an expanded container may re-route to several internal
+      // consumers (one value entering a container at more than one node) or,
+      // for identity-mode fan-out, to several item-field INPUT pills — so
+      // target_when_expanded can be an array; emit one edge per target
+      // (mirrors the multi-source fan-out below).
       var targets = [irEdge.target];
       if (expansionState[irEdge.target]) {
         if (irEdge.target_when_expanded) {
@@ -356,7 +381,7 @@
             resolveExpandedEntrypoints(targets[rt], edgeEntrypointOverrides)
           );
         }
-        targets = resolvedTargets;
+        targets = resolveRewrittenEndpoints(resolvedTargets);
       }
 
       // A data edge can carry multiple value_names (one NetworkX edge per
@@ -554,16 +579,29 @@
   // Twin of scene_builder.py:_collapsed_ports. The `*_when_expanded` fields
   // name the DEEPEST internal producer/consumer, but transits are recorded
   // between a container's direct children, so each port is walked back up to
-  // the child it belongs to. Arrays (multi-pill fan-out) stay unresolved.
+  // the child it belongs to. A multi-producer source array stays unresolved —
+  // no single child definitely emits the value. A multi-consumer target array
+  // still resolves when every consumer sits under the SAME direct child (the
+  // value provably arrives there); consumers spread across children stay
+  // unresolved.
   function collapsedPorts(irEdge, expansionState, parentOf) {
     var ports = null;
     if (!expansionState[irEdge.source] && typeof irEdge.source_when_expanded === 'string') {
       var exitChild = directChildOf(irEdge.source, irEdge.source_when_expanded, parentOf);
       if (exitChild !== null) { ports = ports || Object.create(null); ports.exit = exitChild; }
     }
-    if (!expansionState[irEdge.target] && typeof irEdge.target_when_expanded === 'string') {
-      var entryChild = directChildOf(irEdge.target, irEdge.target_when_expanded, parentOf);
-      if (entryChild !== null) { ports = ports || Object.create(null); ports.entry = entryChild; }
+    if (!expansionState[irEdge.target] && irEdge.target_when_expanded) {
+      var expandedTargets = Array.isArray(irEdge.target_when_expanded)
+        ? irEdge.target_when_expanded
+        : [irEdge.target_when_expanded];
+      var entryChild = null;
+      var consistent = expandedTargets.length > 0;
+      for (var et = 0; et < expandedTargets.length; et++) {
+        var child = directChildOf(irEdge.target, expandedTargets[et], parentOf);
+        if (child === null || (entryChild !== null && child !== entryChild)) { consistent = false; break; }
+        entryChild = child;
+      }
+      if (consistent && entryChild !== null) { ports = ports || Object.create(null); ports.entry = entryChild; }
     }
     return ports;
   }

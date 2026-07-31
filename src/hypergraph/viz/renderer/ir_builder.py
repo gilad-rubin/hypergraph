@@ -295,9 +295,9 @@ def _build_ir_edge(
     tgt_attrs = flat_graph.nodes.get(tgt, {})
     if tgt_attrs.get("node_type") == "GRAPH":
         for value_name in value_names:
-            internal = _find_deepest_internal_consumer(tgt, value_name, flat_graph)  # type: ignore[assignment]
-            if internal is not None:
-                target_when_expanded = internal  # type: ignore[assignment]
+            internal_consumers = _find_internal_consumers(tgt, value_name, flat_graph)
+            if internal_consumers:
+                target_when_expanded = internal_consumers[0] if len(internal_consumers) == 1 else internal_consumers
                 break
         # Any edge into a container still unresolved here must re-route to the
         # container's entrypoint when the container is expanded, or the scene
@@ -399,13 +399,20 @@ def _find_deepest_internal_producers(container_id: str, value_name: str, flat_gr
     return tuple(node_id for node_id in candidates if _depth_below(node_id, container_id, flat_graph) == max_depth)
 
 
-def _find_deepest_internal_consumer(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> str | None:
-    """Mirror of :func:`_find_deepest_internal_producer` for inputs.
+def _find_internal_consumers(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> tuple[str, ...]:
+    """EVERY internal consumer a boundary value feeds, not just the deepest.
 
-    Applies the exact ``input_name_map`` rename first (the
-    ``map_over`` / ``rename_inputs`` case, e.g. the outer edge carries
-    ``eval_pairs`` but the per-item internal node consumes ``eval_pair``),
-    then falls back to fuzzy substring matching."""
+    One incoming value can enter a container at several nodes — panda's
+    generation graph consumes ``document`` at both its ``@ifelse`` guard and
+    the nested messages graph. Returning only ``max(..., key=depth)`` left
+    every other consumer with no incoming edge once the container expanded.
+
+    Exact name matches are authoritative: each one genuinely reads the value,
+    so each one gets the edge. A consumer already fed by an *internal*
+    producer of the same name is excluded — its value does not cross the
+    boundary. The fuzzy fallback stays single-answer (deepest): a substring
+    match is a guess, and fanning a guess out would draw edges nobody can
+    defend."""
     inner_names = _inner_input_names(container_id, value_name, flat_graph)
     descendants = [
         (node_id, attrs)
@@ -413,14 +420,24 @@ def _find_deepest_internal_consumer(container_id: str, value_name: str, flat_gra
         if _is_descendant(node_id, container_id, flat_graph) and attrs.get("node_type") != "GRAPH"
     ]
 
-    candidates = [node_id for node_id, attrs in descendants if any(inner in attrs.get("inputs", ()) for inner in inner_names)]
+    def fed_internally(node_id: str) -> bool:
+        for pred, _, attrs in flat_graph.in_edges(node_id, data=True):
+            if not _is_descendant(pred, container_id, flat_graph):
+                continue
+            if any(inner in attrs.get("value_names", ()) for inner in inner_names):
+                return True
+        return False
+
+    candidates = [
+        node_id for node_id, attrs in descendants if any(inner in attrs.get("inputs", ()) for inner in inner_names) and not fed_internally(node_id)
+    ]
     if candidates:
-        return max(candidates, key=lambda c: _depth_below(c, container_id, flat_graph))
+        return tuple(candidates)
 
     fuzzy = [node_id for node_id, attrs in descendants for inp in attrs.get("inputs", ()) for inner in inner_names if inp in inner or inner in inp]
     if fuzzy:
-        return max(fuzzy, key=lambda c: _depth_below(c, container_id, flat_graph))
-    return None
+        return (max(fuzzy, key=lambda c: _depth_below(c, container_id, flat_graph)),)
+    return ()
 
 
 def _is_descendant(node_id: str, ancestor_id: str, flat_graph: nx.DiGraph) -> bool:
@@ -507,6 +524,11 @@ def resolve_boundary_ports(
     picking the first would assert a route that may not run. This matches what
     the scene builders already do with a tuple ``*_when_expanded`` — anything
     unresolved becomes a dead end, never a pass-through.
+
+    An entry resolves as long as every internal consumer sits under the SAME
+    direct child — the value provably arrives there. Consumers spread across
+    several children leave the entry unresolved for the same reason as an
+    ambiguous exit: no single child is THE port.
     """
     exit_port: str | None = None
     entry_port: str | None = None
@@ -521,9 +543,11 @@ def resolve_boundary_ports(
 
     if flat_graph.nodes.get(tgt, {}).get("node_type") == "GRAPH":
         for value_name in value_names:
-            consumer = _find_deepest_internal_consumer(tgt, value_name, flat_graph)
-            if consumer is not None:
-                entry_port = _direct_child(tgt, consumer, flat_graph)
+            consumers = _find_internal_consumers(tgt, value_name, flat_graph)
+            if consumers:
+                children = {_direct_child(tgt, consumer, flat_graph) for consumer in consumers}
+                if len(children) == 1:
+                    entry_port = children.pop()
                 break
 
     return exit_port, entry_port

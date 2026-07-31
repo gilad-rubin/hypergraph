@@ -375,14 +375,16 @@ class TestInteractiveCollapseEdgeRouting:
         bad_targets = hidden_targets.intersection(interactive_targets.values())
         assert not bad_targets, f"Collapsed view should not target hidden internal nodes.\nUnexpected targets: {sorted(bad_targets)}"
 
-    def test_internal_input_edges_hidden_after_collapse(self, page, temp_html_file):
-        """Specifically test that input_text edge is hidden after collapse.
+    def test_internal_input_edge_aggregates_after_collapse(self, page, temp_html_file):
+        """Specifically test where the input_text edge lands after collapse.
 
         This is the most direct test of the collapse behavior:
         - At depth=1: input_text -> clean_text (internal) - visible
-        - After collapse: input edge is hidden (not routed to container)
+        - After collapse: input_text -> preprocess (the container hull)
 
-        Internal-only inputs are hidden when their consuming nodes are collapsed.
+        A real external input is part of the graph's contract, so collapsing
+        the container that consumes it re-routes the pill's edge to the
+        boundary instead of erasing it.
         """
         workflow = make_workflow()
         # Render at depth=1 (expanded), click to collapse
@@ -390,10 +392,11 @@ class TestInteractiveCollapseEdgeRouting:
         click_to_collapse_container(page, "preprocess")
         data = extract_edge_routing(page)
 
-        # Inputs that are only used inside a collapsed container are hidden.
         input_edges = [info for info in data["edges"].values() if "input" in info["source"].lower()]
-
-        assert not input_edges, f"Collapsed view should hide internal-only input edges.\nEdges: {data['edges']}"
+        assert input_edges, f"the graph input must survive the collapse.\nEdges: {data['edges']}"
+        assert {info["target"] for info in input_edges} == {"preprocess"}, (
+            f"the pill's edge aggregates to the collapsed container.\nEdges: {data['edges']}"
+        )
 
     def test_output_edge_routes_from_container_after_collapse(self, page, temp_html_file):
         """Specifically test that output edge sources from preprocess after collapse.

@@ -625,31 +625,39 @@ def make_input_group_container_graph() -> Graph:
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestInputVisibilityWhenCollapsed:
-    """Inputs owned by a collapsed container should be hidden."""
+    """Inputs owned by a collapsed container hoist to the visible boundary.
 
-    def test_internal_input_hidden_when_collapsed(self):
-        """Inputs scoped to a collapsed container should not be visible."""
+    A real external input is part of the graph's contract: collapsing the
+    container that consumes it must not erase it from the diagram. The pill
+    surfaces at the deepest visible level and its edge aggregates to the
+    collapsed container's hull.
+    """
+
+    def test_internal_input_aggregates_to_collapsed_boundary(self):
+        """An input consumed only inside a collapsed container still renders,
+        feeding the container itself."""
         from hypergraph.viz import extract_debug_data
 
         graph = make_generation_graph()
         data = extract_debug_data(graph, depth=0, show_inputs=True)
 
         node_ids = {n["id"] for n in data.nodes}
-
-        # system_instructions is only consumed inside prompt_building
-        assert "input_system_instructions" not in node_ids, "input_system_instructions should be hidden when prompt_building is collapsed."
-        # query has external consumers; it should remain visible at root
+        carrying = [node_id for node_id in node_ids if node_id.startswith("input") and "system_instructions" in node_id]
+        assert carrying, f"system_instructions is an unbound graph input; it must survive the collapse. Nodes: {sorted(node_ids)}"
+        # query has external consumers; it stays visible at root as before
         assert "input_query" in node_ids, "input_query should stay visible at root."
 
-    def test_input_group_hidden_when_collapsed(self):
-        """INPUT_GROUP owned by a collapsed container should not be visible."""
+    def test_input_group_aggregates_to_collapsed_boundary(self):
+        """An INPUT_GROUP owned by a collapsed container feeds the container hull."""
         from hypergraph.viz import extract_debug_data
 
         graph = make_input_group_container_graph()
         data = extract_debug_data(graph, depth=0)
 
         node_ids = {n["id"] for n in data.nodes}
-        assert "input_group_alpha_beta" not in node_ids, "input_group_alpha_beta should be hidden when inner is collapsed."
+        assert "input_group_alpha_beta" in node_ids, "alpha/beta are unbound graph inputs; the pill must survive the collapse."
+        edge_pairs = {(e.source, e.target) for e in data.edges}
+        assert ("input_group_alpha_beta", "inner") in edge_pairs, f"the pill's edge aggregates to the collapsed container: {sorted(edge_pairs)}"
 
 
 # =============================================================================

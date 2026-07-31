@@ -595,7 +595,10 @@ class TestRenderGraph:
                 ("ask_user/ask_slack", "ask_user/add_user_message", "data"),
                 ("ask_user/add_user_message", "llm", "data"),
                 ("llm", "should_continue", "data"),
+                # Both children read the incoming messages: the interrupt asks
+                # over them, then add_user_message appends to them.
                 ("llm", "ask_user/ask_slack", "data"),
+                ("llm", "ask_user/add_user_message", "data"),
                 ("should_continue", "ask_user/ask_slack", "control"),
                 ("should_continue", "__end__", "end"),
             },
@@ -614,7 +617,10 @@ class TestRenderGraph:
                 ("ask_user/add_user_message", "llm/llm_step", "data"),
                 ("llm/llm_step", "llm/add_assistant_message", "data"),
                 ("llm/add_assistant_message", "should_continue", "data"),
+                # Both children read the incoming messages: the interrupt asks
+                # over them, then add_user_message appends to them.
                 ("llm/add_assistant_message", "ask_user/ask_slack", "data"),
+                ("llm/add_assistant_message", "ask_user/add_user_message", "data"),
                 ("should_continue", "ask_user/ask_slack", "control"),
                 ("should_continue", "__end__", "end"),
             },
