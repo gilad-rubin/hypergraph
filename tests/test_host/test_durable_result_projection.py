@@ -448,6 +448,30 @@ class TestTransportAndParity:
         assert (await client.result(batch.batch_ref)).to_dict() == client.result_sync(batch.batch_ref).to_dict()
         assert client.result_sync(RunRef(home=home.uri, run_id="nope")) is None
 
+    async def test_returned_refs_name_this_home_not_the_callers(self, home):
+        """An outcome must never claim a foreign home while carrying our rows.
+
+        Refs are inert addresses, so a ref minted against another Home can be
+        handed to this client. Every other builder rebuilds the ref from THIS
+        Home's uri; ``result`` does the same.
+        """
+        host, served = serve_graphs(_chain_graph(), home=home)
+        run = await host.submit(served["chain"], {"x": 4}, workflow_id="wf-home")
+        batch = await submit_keyed(host, served["chain"], {"a": {"x": 1}}, workflow_id="drop-home")
+        async with _worker(host):
+            await _wait_for(lambda: _settled(RunHomeClient(home), run.run_ref))
+            await _wait_for(lambda: _settled(RunHomeClient(home), batch.batch_ref))
+
+        client = RunHomeClient(home)
+        foreign_run = RunRef(home="file:/somewhere/else.db", run_id="wf-home")
+        foreign_batch = BatchRef(home="file:/somewhere/else.db", batch_id=batch.batch_ref.batch_id)
+
+        outcome = await client.result(foreign_run)
+        assert outcome.run_ref.home == home.uri
+        batch_outcome = await client.result(foreign_batch)
+        assert batch_outcome.batch_ref.home == home.uri
+        assert all(item.run_ref.home == home.uri for item in batch_outcome.items.values() if item is not None)
+
     async def test_wrong_ref_type_is_refused(self, home):
         client = RunHomeClient(home)
         with pytest.raises(TypeError, match="expects a RunRef or BatchRef"):

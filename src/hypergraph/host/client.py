@@ -233,7 +233,8 @@ def _started_child_ids(child_rows: dict[str, tuple[dict[str, Any], Run | None]])
 
 
 def _build_run_outcome(
-    ref: RunRef,
+    home_uri: str,
+    run_id: str,
     submission: dict[str, Any] | None,
     run: Run | None,
     state: dict[str, Any] | None,
@@ -243,7 +244,9 @@ def _build_run_outcome(
 
     ``settled`` routes through the SAME predicate as ``BatchView`` and the
     rerun gate, so a run is never settled for one reader and in flight for
-    another. Outputs appear only once the run is settled AND started:
+    another. The returned ref is rebuilt from THIS Home's uri, exactly as
+    ``_build_view`` does: an outcome must never claim a foreign home while
+    carrying rows this Home returned. Outputs appear only once the run is settled AND started:
     reporting a partial fold mid-flight would hand a caller a result that
     can still change.
     """
@@ -255,8 +258,8 @@ def _build_run_outcome(
         error, node_name, superstep = failure
         run_failure = RunFailure(error=error, node_name=node_name, superstep=superstep)
     return RunOutcome(
-        run_ref=ref,
-        workflow_id=ref.run_id,
+        run_ref=RunRef(home=home_uri, run_id=run_id),
+        workflow_id=run_id,
         status=run.status if run is not None else None,
         settled=settled,
         started=started,
@@ -266,7 +269,6 @@ def _build_run_outcome(
 
 
 def _build_batch_outcome(
-    ref: BatchRef,
     batch: dict[str, Any],
     child_rows: dict[str, tuple[dict[str, Any], Run | None]],
     home_uri: str,
@@ -288,14 +290,15 @@ def _build_batch_outcome(
             continue
         workflow_id = submission["workflow_id"]
         items[key] = _build_run_outcome(
-            RunRef(home=home_uri, run_id=workflow_id),
+            home_uri,
+            workflow_id,
             submission,
             run,
             states.get(workflow_id),
             failures.get(workflow_id),
         )
     return BatchOutcome(
-        batch_ref=ref,
+        batch_ref=BatchRef(home=home_uri, batch_id=batch["batch_id"]),
         workflow_id=batch["workflow_id"],
         settled=all(_child_settled(submission, run) for submission, run in child_rows.values()),
         items=items,
@@ -704,7 +707,6 @@ class RunHomeClient:
             child_rows = await self._home._batch_child_rows(ref.batch_id)
             started = _started_child_ids(child_rows)
             return _build_batch_outcome(
-                ref,
                 batch,
                 child_rows,
                 self._home.uri,
@@ -719,7 +721,8 @@ class RunHomeClient:
             return None
         run_ids = [ref.run_id] if run is not None else []
         return _build_run_outcome(
-            ref,
+            self._home.uri,
+            ref.run_id,
             submission,
             run,
             (await self._home.get_states(run_ids)).get(ref.run_id),
@@ -735,7 +738,6 @@ class RunHomeClient:
             child_rows = self._home._batch_child_rows_sync(ref.batch_id)
             started = _started_child_ids(child_rows)
             return _build_batch_outcome(
-                ref,
                 batch,
                 child_rows,
                 self._home.uri,
@@ -750,7 +752,8 @@ class RunHomeClient:
             return None
         run_ids = [ref.run_id] if run is not None else []
         return _build_run_outcome(
-            ref,
+            self._home.uri,
+            ref.run_id,
             submission,
             run,
             self._home.get_states_sync(run_ids).get(ref.run_id),
