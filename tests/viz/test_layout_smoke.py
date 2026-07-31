@@ -19,7 +19,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import pytest
 
@@ -105,6 +105,48 @@ def test_mounted_table_beside_a_sibling_lays_out(depth):
         return str(receipt)
 
     flat = Graph([_table().as_node(name="materialize_docs"), publish], name="ingest").to_flat_graph()
+    _assert_lays_out(flat, depth)
+
+
+class Page(TypedDict):
+    page_id: str
+    text: str
+
+
+@node(output_name="pages")
+def segment(clean_text: str) -> list[Page]:
+    return [Page(page_id="p0", text=clean_text)]
+
+
+@node(output_name="enriched")
+def enrich(text: str) -> str:
+    return text.upper()
+
+
+@node(output_name="embedding")
+def embed(enriched: str) -> list[float]:
+    return [float(len(enriched))]
+
+
+@pytest.mark.parametrize("depth", [0, 1, 2, 3])
+def test_mounted_table_with_map_over_child_grain_lays_out(depth):
+    """The recipe shape panda really mounts: segment, then a mapped child graph.
+
+    The recipe itself contains a ``map_over(..., identity=)`` child (enrich/embed
+    per page), so expanding the table exposes an inner container plus the
+    identity-mode fan-out with its map-fed input pills — a different
+    cluster-edge class from the plain recipes above.
+    """
+    from tests.test_materialization_node_viz import MemoryStore as Store
+
+    page_graph = Graph([enrich, embed], name="page")
+    process_pages = page_graph.as_node(name="process_pages").map_over("pages", identity="page_id", schema=Page)
+    table = Graph([clean, segment, process_pages], name="recipe").as_table(
+        identity="doc_id",
+        store=Store(),
+        runner=SyncRunner(),
+    )
+    flat = Graph([table.as_node(name="materialize_docs")], name="ingest").to_flat_graph()
     _assert_lays_out(flat, depth)
 
 
