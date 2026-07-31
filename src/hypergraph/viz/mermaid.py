@@ -434,10 +434,10 @@ def _render_merged_edges(
             )
             if actual_source is None:
                 continue
-            for actual_target in actual_targets:
-                if actual_source == actual_target:
+            for resolved_target in actual_targets:
+                if actual_source == resolved_target:
                     continue
-                edge_key = (id_allocator.get(actual_source), id_allocator.get(actual_target), value_name)
+                edge_key = (id_allocator.get(actual_source), id_allocator.get(resolved_target), value_name)
                 if edge_key in seen_edges:
                     continue
                 seen_edges.add(edge_key)
@@ -445,10 +445,10 @@ def _render_merged_edges(
                 exit_port, entry_port = resolve_boundary_ports(flat_graph, source, target, value_names or [value_name])
                 out.append(
                     _RenderedEdge(
-                        _format_edge(actual_source, actual_target, None, exclusive=is_exclusive, id_allocator=id_allocator),
+                        _format_edge(actual_source, resolved_target, None, exclusive=is_exclusive, id_allocator=id_allocator),
                         "data",
                         actual_source,
-                        actual_target,
+                        resolved_target,
                         exclusive=is_exclusive,
                         is_back_edge=(source, target) in back_edges,
                         exit_port=exit_port,
@@ -536,17 +536,17 @@ def _render_separate_edges(
                 if is_internal_gate_output(actual_source, value_name, source_attrs):
                     continue
                 data_id = f"data_{actual_source}_{value_name}"
-                for actual_target in actual_targets:
-                    edge_key = (id_allocator.get(data_id), id_allocator.get(actual_target))
+                for resolved_target in actual_targets:
+                    edge_key = (id_allocator.get(data_id), id_allocator.get(resolved_target))
                     if edge_key not in seen_edges:
                         seen_edges.add(edge_key)
                         is_exclusive = (source, target, value_name) in exclusive_data_edges
                         out.append(
                             _RenderedEdge(
-                                _format_edge(data_id, actual_target, value_name, exclusive=is_exclusive, id_allocator=id_allocator),
+                                _format_edge(data_id, resolved_target, value_name, exclusive=is_exclusive, id_allocator=id_allocator),
                                 "data",
                                 data_id,
-                                actual_target,
+                                resolved_target,
                                 exclusive=is_exclusive,
                                 is_back_edge=(source, target) in back_edges,
                             )

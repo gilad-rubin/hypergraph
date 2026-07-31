@@ -279,7 +279,7 @@ def _build_ir_edge(
     so the JS scene_builder can re-route edges on container expansion
     without re-walking the graph."""
     source_when_expanded: str | tuple[str, ...] | None = None
-    target_when_expanded: str | None = None
+    target_when_expanded: str | tuple[str, ...] | None = None
 
     edge_type = attrs.get("edge_type", "data")
     value_names = tuple(attrs.get("value_names", ()))

@@ -362,8 +362,9 @@ def _collapsed_ports(ir_edge: Any, expansion_state: dict[str, bool], parent_map:
         expanded = ir_edge.target_when_expanded
         expanded_targets = expanded if isinstance(expanded, tuple) else (expanded,)
         children = {_direct_child_of(ir_edge.target, target, parent_map) for target in expanded_targets}
-        if len(children) == 1 and None not in children:
-            ports["entry"] = children.pop()
+        only_child = next(iter(children)) if len(children) == 1 else None
+        if only_child is not None:
+            ports["entry"] = only_child
     return ports
 
 
