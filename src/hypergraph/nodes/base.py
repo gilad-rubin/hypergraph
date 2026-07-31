@@ -188,6 +188,16 @@ class HyperNode(ABC):
         return False
 
     @property
+    def trace_io(self) -> bool | None:
+        """Should this node's inputs/output be attached to its trace span?
+
+        Tri-state: ``None`` means "not declared here", so the graph-level
+        ``trace_io`` default decides. Default: ``None``. Override in
+        subclasses that support payload capture.
+        """
+        return None
+
+    @property
     def wait_for(self) -> tuple[str, ...]:
         """Ordering-only graph-scope addresses this node waits for.
 

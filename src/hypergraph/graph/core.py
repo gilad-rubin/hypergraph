@@ -154,6 +154,7 @@ class Graph:
         name: str | None = None,
         strict_types: bool = False,
         shared: str | list[str] | tuple[str, ...] | None = None,
+        trace_io: bool = False,
     ) -> None:
         """Create a graph from nodes.
 
@@ -188,8 +189,15 @@ class Graph:
                 Nodes read the latest value from run state. The user must
                 provide ordering via ``edges`` or ``emit/wait_for``.
                 Shared params are required at ``run()`` time unless bound.
+            trace_io: Default for every node in this graph: attach node inputs
+                and outputs to their observability spans. A node that declares
+                its own ``trace_io=True/False`` overrides this; a node leaving
+                it ``None`` follows this default. Off by default. Metadata
+                only — it does not change graph structure, ``definition_hash``,
+                or anything a durable record stores.
         """
         self.name = name
+        self._trace_io = bool(trace_io)
         self._strict_types = strict_types
         self._shared = self._normalize_shared(shared)
         self._bound: dict[str, Any] = {}
@@ -1334,6 +1342,31 @@ class Graph:
     def provider_limit(self) -> ProcessLocalLimiter | None:
         """The graph-scope provider budget, or None when unset (read-only)."""
         return self._provider_limit
+
+    def with_trace_io(self, trace_io: bool = True) -> Graph:
+        """Set the graph-level input/output span-capture default. Returns new Graph.
+
+        Same precedence as the constructor argument: a node's own explicit
+        ``trace_io`` wins, otherwise this default applies. Metadata only — no
+        effect on structure, ``definition_hash``, or durable records.
+
+        Args:
+            trace_io: The default to apply to nodes that do not declare one.
+
+        Returns:
+            New Graph carrying the default.
+
+        Example:
+            >>> graph = graph.with_trace_io()  # doctest: +SKIP
+        """
+        new_graph = self._shallow_copy()
+        new_graph._trace_io = bool(trace_io)
+        return new_graph
+
+    @property
+    def trace_io(self) -> bool:
+        """The graph-level input/output span-capture default (read-only)."""
+        return self._trace_io
 
     @property
     def has_cycles(self) -> bool:

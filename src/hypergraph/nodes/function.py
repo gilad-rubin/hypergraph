@@ -107,6 +107,7 @@ class FunctionNode(CallableMixin, HyperNode):
     _retry: RetryPolicy | None
     _timeout: float | None
     _provider_limit: ProcessLocalLimiter | None
+    _trace_io: bool | None
 
     def __init__(
         self,
@@ -122,6 +123,7 @@ class FunctionNode(CallableMixin, HyperNode):
         retry: RetryPolicy | None = None,
         timeout: float | None = None,
         provider_limit: ProcessLocalLimiter | None = None,
+        trace_io: bool | None = None,
     ) -> None:
         """Wrap a function as a node.
 
@@ -151,6 +153,14 @@ class FunctionNode(CallableMixin, HyperNode):
                      limiter at the exact scarce call instead. Waiting for a
                      permit is not a failure and spends no retry attempt.
                      Direct calls stay raw and do not acquire it.
+            trace_io: Attach this node's input kwargs and output values to its
+                     observability span, so a trace backend can show them.
+                     Tri-state: ``None`` (default) defers to the graph's
+                     ``trace_io`` default; ``True``/``False`` decide for this
+                     node regardless of the graph. Payloads ride SPANS ONLY —
+                     durable records (RunLog, StepRecord, checkpoints) never
+                     change shape or content. An exporter may refuse them
+                     outright (``OpenTelemetryProcessor(redact_payloads=True)``).
         Warning:
             If the function has a return type annotation but no output_name
             is provided, a warning is emitted. This helps catch cases where
@@ -191,12 +201,16 @@ class FunctionNode(CallableMixin, HyperNode):
                 "  capacity: provider_limit=ProcessLocalLimiter(max_in_flight=4)."
             )
 
+        if trace_io is not None and not isinstance(trace_io, bool):
+            raise TypeError(f"trace_io must be True, False, or None (defer to the graph), got {trace_io!r}.")
+
         self.func = func
         self._cache = cache
         self._hide = hide
         self._retry = retry
         self._timeout = timeout
         self._provider_limit = provider_limit
+        self._trace_io = trace_io
         self._definition_hash = hash_definition(func)
         self._emit = ensure_tuple(emit) if emit else ()
         self._wait_for = ensure_tuple(wait_for) if wait_for else ()
@@ -255,6 +269,11 @@ class FunctionNode(CallableMixin, HyperNode):
     def hide(self) -> bool:
         """Whether this node is hidden from visualization."""
         return self._hide
+
+    @property
+    def trace_io(self) -> bool | None:
+        """Node-level input/output span capture, or None to defer to the graph."""
+        return self._trace_io
 
     @property
     def wait_for(self) -> tuple[str, ...]:
@@ -367,6 +386,7 @@ def node(
     retry: RetryPolicy | None = None,
     timeout: float | None = None,
     provider_limit: ProcessLocalLimiter | None = None,
+    trace_io: bool | None = None,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]:
     """Decorator to wrap a function as a FunctionNode.
 
@@ -401,6 +421,11 @@ def node(
                  provider-resource work budget, never the host's active-Run
                  cap. Waiting for a permit is not a failure and spends no
                  retry attempt. Direct calls stay raw and do not acquire it.
+        trace_io: Attach this node's inputs and output to its observability
+                 span so a trace backend can render them. ``None`` (default)
+                 defers to the graph's ``trace_io``; ``True``/``False`` decide
+                 for this node. Spans only — durable records are unaffected,
+                 and an exporter can refuse payloads outright.
     Returns:
         FunctionNode if source provided, else decorator function.
 
@@ -427,6 +452,7 @@ def node(
             retry=retry,
             timeout=timeout,
             provider_limit=provider_limit,
+            trace_io=trace_io,
         )
         fn_node.__wrapped__ = func  # type: ignore[attr-defined]
         return fn_node

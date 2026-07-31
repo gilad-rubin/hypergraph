@@ -164,6 +164,7 @@ def __init__(
     retry: RetryPolicy | None = None,
     timeout: float | None = None,
     provider_limit: ProcessLocalLimiter | None = None,
+    trace_io: bool | None = None,
 ) -> None: ...
 ```
 
@@ -183,6 +184,7 @@ def __init__(
 - `retry`: Optional [RetryPolicy](#retrypolicy). Node-owned only — there is no runner, graph, or per-call retry default, and no `retry=True` shorthand. Direct calls stay raw single-shot invocations
 - `timeout`: Optional positive, finite seconds for cooperative cancellation of async functions/generators under `AsyncRunner`. Unsupported runner/callable combinations are rejected before execution. Direct calls stay raw
 - `provider_limit`: Optional [ProcessLocalLimiter](#processlocallimiter) capping how many executions of this node run at once in this process. Direct calls stay raw and take no permit
+- `trace_io`: Attach this node's inputs and output to its observability span. Tri-state: `None` (default) defers to the graph's `trace_io`, `True`/`False` decide for this node. Spans only — durable records are unaffected. See [Observe execution](../05-how-to/observe-execution.md#node-inputs-and-outputs-on-spans)
 
 **Returns:** FunctionNode instance
 
@@ -508,6 +510,7 @@ def node(
     retry: RetryPolicy | None = None,
     timeout: float | None = None,
     provider_limit: ProcessLocalLimiter | None = None,
+    trace_io: bool | None = None,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]: ...
 ```
 
@@ -522,6 +525,7 @@ def node(
 - `retry`: Optional [RetryPolicy](#retrypolicy) declaring which failures are safe to repeat and with what budget/backoff. See [How to Retry Transient Failures](../05-how-to/retry-transient-failures.md)
 - `timeout`: Optional positive, finite seconds for cooperative per-attempt cancellation of async functions/generators under `AsyncRunner`. See [Bound one async attempt with timeout](../05-how-to/retry-transient-failures.md#bound-one-async-attempt-with-timeout)
 - `provider_limit`: Optional [ProcessLocalLimiter](#processlocallimiter) capping how many executions of this node run at once in this process. Not the durable host's active-Run cap — see [ProcessLocalLimiter](#processlocallimiter)
+- `trace_io`: Attach this node's inputs and output to its observability span so a trace backend can render them. `None` (default) defers to the graph's `trace_io` default; `True`/`False` decide for this node. Payloads ride spans only — no durable record changes. See [Observe execution](../05-how-to/observe-execution.md#node-inputs-and-outputs-on-spans)
 
 **Returns:**
 - FunctionNode if source provided (decorator without parens)

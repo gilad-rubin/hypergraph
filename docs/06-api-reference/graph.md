@@ -720,6 +720,29 @@ for a permit is neither a failure nor a retry attempt. See
 **Raises:**
 - `TypeError` - If `provider_limit` is not a `ProcessLocalLimiter`.
 
+### `with_trace_io(trace_io=True) -> Graph`
+
+Set the graph-level default for attaching node inputs/outputs to their
+observability spans. Returns a new Graph (immutable pattern). Also available
+as the `Graph(..., trace_io=...)` constructor argument.
+
+```python
+traced = graph.with_trace_io()
+traced.trace_io                              # True
+traced.definition_hash == graph.definition_hash  # True — metadata only
+```
+
+A node's own `@node(trace_io=True/False)` always overrides this default; a
+node that leaves it unset follows the graph. An exporter can refuse payloads
+outright with `OpenTelemetryProcessor(redact_payloads=True)`. Payloads ride
+spans only — no durable record changes shape or content. See
+[Observe execution](../05-how-to/observe-execution.md#node-inputs-and-outputs-on-spans).
+
+**Args:**
+- `trace_io`: The default applied to nodes that do not declare one.
+
+**Returns:** New Graph carrying the default
+
 ### `as_node(*, name=None, namespaced=False, runner=None, complete_on_stop=False) -> GraphNode`
 
 Wrap graph as a node for composition. Returns a new GraphNode.
