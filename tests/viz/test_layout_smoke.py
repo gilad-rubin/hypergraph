@@ -138,3 +138,26 @@ def test_no_edge_targets_an_expanded_container():
 
     offenders = [(edge["source"], edge["target"]) for edge in scene["edges"] if edge["target"] in expanded_containers and not edge["hidden"]]
     assert not offenders, f"edges point at expanded containers, which dagre cannot rank: {offenders}"
+
+
+def test_merge_tolerates_ir_without_type_hints():
+    """``type_hints`` has no length invariant; Python must not raise where JS renders.
+
+    ``IRExternalInput.type_hints`` defaults to an empty tuple, and the JS twin
+    reads a missing hint as null. Python raising on the same payload would be
+    a divergence the parity harness cannot catch, because it only compares
+    payloads both sides survive.
+    """
+    from hypergraph.viz.ir_schema import IRExternalInput
+    from hypergraph.viz.scene_builder import _merge_inputs_for_state
+
+    class _IR:
+        external_inputs = (IRExternalInput(params=("alpha", "beta")),)
+        container_entrypoints: dict = {}
+
+    merged = _merge_inputs_for_state(_IR(), {}, {}, set(), show_bounded_inputs=True)
+
+    assert len(merged) == 1
+    assert merged[0]["params"] == ["alpha", "beta"]
+    assert merged[0]["type_hints"] == [None, None]
+    assert merged[0]["id"] == "input_group_alpha_beta"

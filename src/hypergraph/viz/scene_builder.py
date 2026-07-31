@@ -601,7 +601,14 @@ def _merge_inputs_for_state(
         bucket = buckets[key]
         # Sort params together with their segments and hints so a merged pill
         # reads in the same stable order the IR uses for a native group.
-        paired = sorted(zip(bucket["params"], bucket["segments"], bucket["type_hints"], strict=True))
+        #
+        # type_hints carries no length invariant (it defaults to an empty
+        # tuple), so pad before pairing: the JS twin reads a missing hint as
+        # null and keeps going, and Python raising where JS renders would be
+        # a divergence the parity harness cannot see.
+        hints = list(bucket["type_hints"])[: len(bucket["params"])]
+        hints += [None] * (len(bucket["params"]) - len(hints))
+        paired = sorted(zip(bucket["params"], bucket["segments"], hints, strict=True))
         bucket["params"] = [p for p, _, _ in paired]
         bucket["segments"] = [seg for _, seg, _ in paired]
         bucket["type_hints"] = [hint for _, _, hint in paired]
