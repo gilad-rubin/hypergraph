@@ -39,6 +39,34 @@ class MaterializationNode(HyperNode):
         return self.table._is_async_runner()
 
     @property
+    def node_type(self) -> str:
+        """A mounted table IS its derivation recipe, structurally.
+
+        The recipe is a real graph the table runs per row, so a diagram that
+        draws it as one opaque box hides the pipeline the reader came to see.
+        Reporting ``"GRAPH"`` (with :attr:`nested_graph` below) lets the
+        flat-graph builder expand it like any other container.
+
+        This property is a VISUALIZATION concern only. It never reaches the
+        checkpointer: step and boundary records store ``type(node).__name__``
+        ("MaterializationNode"), not this string, so no durable record changes.
+        Nor does it steer execution — the runners dispatch on
+        ``executors.get(type(node))``, an exact class lookup.
+        """
+        return "GRAPH"
+
+    @property
+    def nested_graph(self) -> Any:
+        """The derivation recipe, so viz can expand this node's interior.
+
+        Structure only: the runner never descends into it. Execution stays
+        with the MaterializationNode executor, which drives the table's own
+        write path (insert, derive, persist) rather than running this graph
+        as a nested run.
+        """
+        return self.table.graph
+
+    @property
     def definition_hash(self) -> str:
         spec = self.table._spec
         assert spec is not None

@@ -217,6 +217,14 @@ workflow = Graph([
 The single output is a checkpoint-safe `MaterializationReceipt`. Recipe and
 child-grain events propagate through the enclosing Run's event processors.
 
+The mounted node **visualizes as a container**, not as one opaque function
+box: it reports `node_type == "GRAPH"` and exposes the table's recipe as its
+`nested_graph`, so `visualize(depth=2)` (or expanding the node in the widget)
+draws the derivation pipeline inside it. This is structure for the diagram
+only — execution still runs the table's own insert-and-derive path, and no
+durable record changes, because step and boundary records store the node's
+class name rather than this property.
+
 ### `insert(**row) -> RowReceipt`
 
 Derive and persist one row. An existing identity converges under current
