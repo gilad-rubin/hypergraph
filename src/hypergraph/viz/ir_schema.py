@@ -155,7 +155,7 @@ class GraphIR:
     # frontends must consume this field, never re-derive it.
     container_entrypoints: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # GRAPH-id -> the ``[entry, exit]`` pairs that container genuinely carries a
-    # value between, from ``renderer/scope.py::compute_container_transits``.
+    # value between, from ``renderer/ir_builder.py::compute_container_transits``.
     # ``simplify`` treats a *collapsed* container as a path segment only for
     # pairs listed here; without it a box that does two unrelated jobs looks
     # like a pass-through and a real edge gets hidden behind a route that does

@@ -117,9 +117,11 @@
   unrelated child carries nothing across, so hiding an edge on that assumption
   would replace the only true route with a false one. Each collapsed container
   is crossed only where `GraphIR.container_transits` says it really carries the
-  value, and an unverifiable boundary port is treated as a dead end — hence IR
-  schema v5, which a v4 payload degrades loudly against rather than
-  mis-simplifying. One authority (`viz/_simplify.py`) serves the Python scene
+  value — by an unconditional internal route, since a mutex arm inside the box
+  is no more of a guarantee than a gate outside it — and an unverifiable
+  boundary port is treated as a dead end. Hence IR schema v5: a v4 payload has
+  no transit data, so both scene builders reject it outright rather than falling
+  back to the old assumption and mis-simplifying. One authority (`viz/_simplify.py`) serves the Python scene
   builder, its JS twin and the Mermaid exporter, so the widget and the text
   export cannot disagree about which edges exist. Note the vocabulary: these are
   **shortcut** edges, never "redundant" — `C` genuinely reads `A`'s output, and

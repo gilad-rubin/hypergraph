@@ -501,6 +501,12 @@ def resolve_boundary_ports(
     The scene builders read the equivalent off
     ``IREdge.source_when_expanded`` / ``target_when_expanded``; the Mermaid
     exporter, which has no IR, calls this so both pipelines agree.
+
+    An **ambiguous** exit stays unresolved. Several deepest producers means a
+    fan-out or mutex output where no single child definitely emits the value;
+    picking the first would assert a route that may not run. This matches what
+    the scene builders already do with a tuple ``*_when_expanded`` — anything
+    unresolved becomes a dead end, never a pass-through.
     """
     exit_port: str | None = None
     entry_port: str | None = None
@@ -509,7 +515,8 @@ def resolve_boundary_ports(
         for value_name in value_names:
             producers = _find_deepest_internal_producers(src, value_name, flat_graph)
             if producers:
-                exit_port = _direct_child(src, producers[0], flat_graph)
+                if len(producers) == 1:
+                    exit_port = _direct_child(src, producers[0], flat_graph)
                 break
 
     if flat_graph.nodes.get(tgt, {}).get("node_type") == "GRAPH":
@@ -548,9 +555,12 @@ def compute_container_transits(flat_graph: nx.DiGraph) -> dict[str, list[list[st
 
     So this answers the question exactly: for each container, the pairs
     ``[entry, exit]`` where ``exit`` really is reachable from ``entry`` using
-    only ``data`` edges *inside* that container. Control edges are excluded for
-    the same reason as in the reduction itself — "may run" is not "received the
-    value".
+    only **unconditional** ``data`` edges *inside* that container. Control edges
+    and mutex (``exclusive``) arms are both excluded, for the same reason as in
+    the reduction itself: "may run" is not "received the value", and a route
+    that exists only on one branch cannot make the box a pass-through. A
+    container whose internal route is conditional must not license hiding an
+    unconditional edge outside it.
 
     Only ports a boundary edge actually uses are considered, so the result is
     bounded by the container's boundary width rather than the square of its
@@ -562,6 +572,8 @@ def compute_container_transits(flat_graph: nx.DiGraph) -> dict[str, list[list[st
     ``GraphIR.container_transits``; the scene builders (Python and JS) and the
     Mermaid exporter consume it. Do not re-derive transits elsewhere.
     """
+    exclusive_edges = compute_exclusive_data_edges(flat_graph)
+
     entries: dict[str, set[str]] = {}
     exits: dict[str, set[str]] = {}
     for src, tgt, attrs in flat_graph.edges(data=True):
@@ -587,8 +599,14 @@ def compute_container_transits(flat_graph: nx.DiGraph) -> dict[str, list[list[st
         member_set = set(children_of.get(container_id, ()))
         inner: dict[str, set[str]] = {}
         for src, tgt, attrs in flat_graph.edges(data=True):
-            if src in member_set and tgt in member_set and attrs.get("edge_type", "data") == "data":
-                inner.setdefault(src, set()).add(tgt)
+            if src not in member_set or tgt not in member_set:
+                continue
+            if attrs.get("edge_type", "data") != "data":
+                continue
+            value_names = attrs.get("value_names", ())
+            if any((src, tgt, value_name) in exclusive_edges for value_name in value_names):
+                continue  # a mutex arm carries its value only on its branch
+            inner.setdefault(src, set()).add(tgt)
 
         pairs: list[list[str]] = []
         for entry in sorted(container_entries):

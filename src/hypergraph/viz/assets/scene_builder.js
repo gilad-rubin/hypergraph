@@ -382,7 +382,22 @@
   // graph is restricted to the data-flow spine.
   function simplifyTransitiveEdges(sceneEdges, options) {
     var opts = options || {};
-    var transits = opts.containerTransits || Object.create(null);
+    // containerTransits arrives straight from JSON.parse, so it still inherits
+    // from Object.prototype — and every prototype member name is a legal Python
+    // identifier, so any of them can arrive as a container id. A container named
+    // `constructor` with no recorded transit reads the `Object` function off the
+    // prototype; its `length` is 1, so the loop below indexes `pairs[0][0]` on
+    // undefined and blanks the canvas. Re-key into a null-prototype map first.
+    // (`__proto__` itself survives JSON.parse as an own property, so it is the
+    // one prototype name a naive lookup happens to get right.)
+    var transits = Object.create(null);
+    var rawTransits = opts.containerTransits;
+    if (rawTransits) {
+      var transitKeys = Object.keys(rawTransits);
+      for (var tk = 0; tk < transitKeys.length; tk++) {
+        transits[transitKeys[tk]] = rawTransits[transitKeys[tk]];
+      }
+    }
     var edgePorts = opts.edgePorts || Object.create(null);
     var collapsed = opts.collapsedContainers || Object.create(null);
 

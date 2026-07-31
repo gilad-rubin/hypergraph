@@ -21,8 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from hypergraph import END, Graph, node, route
-from hypergraph.viz.renderer.ir_builder import build_graph_ir
+from hypergraph import END, Graph, ifelse, node, route
+from hypergraph.viz.renderer.ir_builder import build_graph_ir, compute_container_transits, resolve_boundary_ports
 from hypergraph.viz.scene_builder import build_initial_scene, simplify_transitive_edges
 from hypergraph.viz.widget import visualize
 from tests.viz.conftest import (
@@ -273,6 +273,102 @@ class TestCollapsedContainersAreNotAssumedTransparent:
         collapsed = visible_pairs(scene_for_state(graph, expansion_state={"mid": False}, simplify=True))
         assert ("seed_fn", "sink") not in collapsed
 
+    def test_single_child_container_still_counts_as_a_pass_through(self) -> None:
+        """The reflexive ``[entry, exit]`` pair is load-bearing: when one child
+        both consumes at the boundary and produces at it, the container really
+        does carry the value across. Drop reflexive pairs as "pointless" and
+        every single-child container silently becomes impassable."""
+
+        @node(output_name="raw")
+        def fetch(url: str) -> str:
+            return url
+
+        @node(output_name="clean")
+        def scrub(raw: str) -> str:
+            return raw
+
+        @node(output_name="out")
+        def finish(clean: str, raw: str) -> str:
+            return ""
+
+        graph = Graph([fetch, Graph([scrub], name="one").as_node(), finish], name="reflexive")
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"one": False}, simplify=True))
+        assert collapsed == {("fetch", "one"), ("one", "finish")}
+
+    def test_conditional_internal_route_is_not_a_pass_through(self) -> None:
+        """The unconditional-path rule applies INSIDE a container too. ``box``
+        reaches its exit only through one arm of an ifelse, so it must not
+        license hiding the unconditional ``load → render``.
+
+        Third instance of this bug class: control edges, then mutex arms in the
+        top-level path graph, now mutex arms inside a container.
+        """
+
+        @node(output_name="doc")
+        def load(path: str) -> str:
+            return path
+
+        @node(output_name="mid")
+        def head(doc: str) -> str:
+            return doc
+
+        @ifelse(when_true="left", when_false="right")
+        def pick(mid: str) -> bool:
+            return True
+
+        @node(output_name="tail")
+        def left(mid: str) -> str:
+            return mid
+
+        @node(output_name="tail")
+        def right(mid: str) -> str:
+            return mid
+
+        @node(output_name="page")
+        def render(tail: str, doc: str) -> str:
+            return ""
+
+        box = Graph([head, pick, left, right], name="box", entrypoint="head")
+        graph = Graph([load, box.as_node(), render], name="conditional")
+        assert compute_container_transits(graph.to_flat_graph()).get("box") is None
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"box": False}, simplify=True))
+        assert ("load", "render") in collapsed
+
+    def test_ambiguous_exit_is_unresolved_not_the_first_producer(self) -> None:
+        """Several deepest producers means no single child definitely emits the
+        value. Picking ``producers[0]`` would assert a route that may not run,
+        and would disagree with the scene builders, which treat any tuple
+        ``*_when_expanded`` as unresolved."""
+
+        @node(output_name="doc")
+        def load(path: str) -> str:
+            return path
+
+        @node(output_name="mid")
+        def head(doc: str) -> str:
+            return doc
+
+        @ifelse(when_true="left", when_false="right")
+        def pick(mid: str) -> bool:
+            return True
+
+        @node(output_name="tail")
+        def left(mid: str) -> str:
+            return mid
+
+        @node(output_name="tail")
+        def right(mid: str) -> str:
+            return mid
+
+        @node(output_name="page")
+        def render(tail: str, doc: str) -> str:
+            return ""
+
+        box = Graph([head, pick, left, right], name="box", entrypoint="head")
+        flat = Graph([load, box.as_node(), render], name="amb").to_flat_graph()
+        exit_port, _entry = resolve_boundary_ports(flat, "box", "render", ["tail"])
+        assert exit_port is None
+
     def test_mermaid_agrees_with_the_scene_on_a_collapsed_container(self) -> None:
         """Third implementation, same answer — the text export and the widget
         must never disagree about which edges exist."""
@@ -418,6 +514,63 @@ class TestJsHardening:
         payload: dict = {"edgeType": "data"}
         payload.update(data)
         return {"id": f"{source}__{target}", "source": source, "target": target, "data": payload, "hidden": False}
+
+    @pytest.mark.parametrize("name", ["constructor", "toString", "__proto__"])
+    def test_transit_lookup_ignores_inherited_object_members(self, name: str) -> None:
+        """``containerTransits`` arrives straight from ``JSON.parse``, so it
+        still inherits from ``Object.prototype``. A container whose name is a
+        prototype member and that has *no* recorded transit then reads one off
+        the prototype: ``transits['constructor']`` is the ``Object`` function,
+        whose ``length`` is 1, so the loop indexes ``pairs[0][0]`` on
+        ``undefined`` and the whole canvas goes blank. Every such name is a
+        legal Python identifier and so a legal node id."""
+        edges = [self._edge("a", name), self._edge(name, "c"), self._edge("a", "c")]
+        script = (
+            "const fs=require('fs');"
+            f"eval(fs.readFileSync({str(REPO_ROOT / 'src/hypergraph/viz/assets/derivation.js')!r},'utf-8'));"
+            f"eval(fs.readFileSync({str(REPO_ROOT / 'src/hypergraph/viz/assets/scene_builder.js')!r},'utf-8'));"
+            f"const edges={json.dumps(edges)};"
+            "const ports=Object.create(null);"
+            f"ports[{f'a__{name}'!r}]={{entry:'p/in'}}; ports[{f'{name}__c'!r}]={{exit:'p/out'}};"
+            f"const collapsed=Object.create(null); collapsed[{name!r}]=true;"
+            # No transit recorded for this container -- the payload is about someone else.
+            'const transits=JSON.parse(\'{"other": [["q/in","q/out"]]}\');'
+            "const kept=globalThis.HypergraphSceneBuilder.simplifyTransitiveEdges(edges,"
+            "{containerTransits:transits, edgePorts:ports, collapsedContainers:collapsed})"
+            ".map(e=>e.source+'->'+e.target);"
+            "process.stdout.write(JSON.stringify(kept));"
+        )
+        proc = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=15)
+        assert proc.returncode == 0, proc.stderr
+        kept = json.loads(proc.stdout)
+        # No transit means no verified route through the box, so nothing is hidden.
+        assert sorted(kept) == sorted([f"a->{name}", f"{name}->c", "a->c"])
+
+    def test_transits_for_a_container_named_proto_are_read(self) -> None:
+        """The other half: re-keying must not *lose* a real entry. ``__proto__``
+        survives ``JSON.parse`` as an own property, so its transit is real data
+        and the container is a genuine pass-through."""
+        edges = [self._edge("a", "__proto__"), self._edge("__proto__", "c"), self._edge("a", "c")]
+        script = (
+            "const fs=require('fs');"
+            f"eval(fs.readFileSync({str(REPO_ROOT / 'src/hypergraph/viz/assets/derivation.js')!r},'utf-8'));"
+            f"eval(fs.readFileSync({str(REPO_ROOT / 'src/hypergraph/viz/assets/scene_builder.js')!r},'utf-8'));"
+            f"const edges={json.dumps(edges)};"
+            "const ports=Object.create(null);"
+            "ports['a____proto__']={entry:'p/in'}; ports['__proto____c']={exit:'p/out'};"
+            "const collapsed=Object.create(null); collapsed['__proto__']=true;"
+            'const transits=JSON.parse(\'{"__proto__": [["p/in","p/out"]]}\');'
+            "const kept=globalThis.HypergraphSceneBuilder.simplifyTransitiveEdges(edges,"
+            "{containerTransits:transits, edgePorts:ports, collapsedContainers:collapsed})"
+            ".map(e=>e.source+'->'+e.target);"
+            "process.stdout.write(JSON.stringify(kept));"
+        )
+        proc = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=15)
+        assert proc.returncode == 0, proc.stderr
+        kept = json.loads(proc.stdout)
+        # The transit was read, so the box is a pass-through and a->c is a shortcut.
+        assert "a->c" not in kept
+        assert sorted(kept) == ["__proto__->c", "a->__proto__"]
 
     def test_node_named_proto_does_not_crash_or_pollute(self) -> None:
         """``__proto__`` is a legal Python identifier, so it can reach the JS

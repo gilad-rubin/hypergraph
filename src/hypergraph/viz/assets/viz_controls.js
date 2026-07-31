@@ -35,7 +35,7 @@
     };
     return html`
       <div className="relative" onMouseEnter=${show} onMouseLeave=${hide} onFocus=${show} onBlur=${hide}>
-        <button className=${btn + ' ' + (props.isActive ? active : '')} aria-label=${props.ariaLabel || props.tooltip} onClick=${props.onClick} onKeyDown=${hideOnEscape}>${props.children}</button>
+        <button className=${btn + ' ' + (props.isActive ? active : '')} aria-label=${props.ariaLabel || props.tooltip} aria-pressed=${props.isActive === undefined ? undefined : !!props.isActive} onClick=${props.onClick} onKeyDown=${hideOnEscape}>${props.children}</button>
         ${showTooltip[0] && html`<div role="tooltip" aria-hidden=${!showTooltip[0]} className=${'absolute right-full mr-2 top-1/2 -translate-y-1/2 px-2 py-1 text-xs font-medium rounded shadow-lg whitespace-nowrap pointer-events-none z-50 ' + tip}>
           ${props.tooltip}
           <div className=${'absolute left-full top-1/2 -translate-y-1/2 border-4 border-transparent ' + (isLight ? 'border-l-slate-800' : 'border-l-white')}></div>
