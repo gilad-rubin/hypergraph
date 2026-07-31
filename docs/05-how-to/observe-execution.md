@@ -124,15 +124,78 @@ Intermediate failed attempts never mark the node span as error and never
 close it; only the terminal escaping failure sets error status. A cache hit
 opens no attempts and emits no attempt span events.
 
-### Export Privacy
+### Exception Detail, and Redacting It
 
-Exported spans follow the diagnostics privacy boundary: span error status,
-`exception.message`, and attempt `error_type` attributes carry the safe
-projection — exception type names and stable `hypergraph.diagnostic.code`
-values — never raw exception message text (which can embed secrets; see the
-OTel `exception.message` sensitivity warning). The exact exception object
-stays local on `RunResult.error` and `get_failure_evidence(...)`. See
+Exported spans carry the **real** exception by default: span error status,
+`exception.message`, `exception.type`, and `exception.stacktrace` come from
+the exact raised exception. This matches standard OTel
+`Span.record_exception`, and it is what makes a trace debuggable.
+
+```python
+OpenTelemetryProcessor(redact_errors=True)
+```
+
+turns that off: the export falls back to the privacy-safe projection —
+exception type names and stable `hypergraph.diagnostic.code` values, never
+raw message text (which can embed secrets; see the OTel `exception.message`
+sensitivity warning). Use it where exception text may carry regulated data.
+`exception.type` is unaffected either way; only message text and the
+stacktrace are redacted.
+
+The redaction flag governs the **export only**. Durable Hypergraph records —
+RunLog, StepRecord, checkpoints, the attempt ledger, `RunResult.to_dict()` —
+always store the safe projection, whatever this flag says. The exact
+exception object stays local on `RunResult.error` and
+`get_failure_evidence(...)`; the in-memory `NodeErrorEvent.error_detail` /
+`RunEndEvent.error_detail` fields carry the same raw detail for live
+consumers and are never persisted. See
 [Errors — diagnostic code registry](../06-api-reference/errors.md#diagnostic-code-registry).
+
+### Node Inputs and Outputs on Spans
+
+Off by default. Opt a node in with `@node(trace_io=True)`, or default a whole
+graph with `Graph(..., trace_io=True)` / `graph.with_trace_io()`:
+
+```python
+@node(output_name="answer", trace_io=True)
+def call_llm(prompt: str) -> str: ...
+```
+
+An opted-in node's span carries OpenInference `input.value` /
+`input.mime_type` (the input kwargs) and `output.value` / `output.mime_type`
+(the outputs by name), JSON-serialized, so Phoenix and similar backends
+render them natively.
+
+- **Precedence**: processor kill switch > node explicit > graph default > off.
+  A node's own `trace_io=True`/`False` always beats the graph default;
+  leaving it unset (`None`) follows the graph.
+- **Kill switch**: `OpenTelemetryProcessor(redact_payloads=True)` refuses
+  every payload regardless of node or graph opt-ins.
+- **Caps**: each value is truncated past `max_payload_chars` (default 4096)
+  and then marked `text/plain`, because a cut JSON document is not JSON.
+  Values that serialize as neither JSON nor `repr` are omitted; capture never
+  fails or slows a run.
+- **Boundary**: payloads ride spans only. No durable record changes shape or
+  content because a node opted in.
+
+### One Processor Across Concurrent Runs
+
+A single `OpenTelemetryProcessor` — passed to several `run()` calls, or
+carried by a graph via `with_processors` — is safe under concurrent
+top-level runs. Each run's spans are tracked independently, and the
+processor's span sweep happens when the *last* concurrent run settles, not
+the first.
+
+Link a run back to its trace with `processor.trace_id_for(run_id)`:
+
+```python
+result = runner.run(graph, inputs, event_processors=[processor])
+trace_id = processor.trace_id_for(result.run_id)  # 32-char hex, or None
+```
+
+It is populated when the run's span starts, survives the processor shutdown
+the runner performs before `run()` returns, and is kept for the last 1024
+runs.
 
 ### Tag Spans and Keep the Global Tracer Untouched
 
