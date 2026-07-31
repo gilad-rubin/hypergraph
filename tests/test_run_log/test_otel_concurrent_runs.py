@@ -80,12 +80,28 @@ async def async_fast_step(x: int) -> int:
 
 @pytest.fixture
 def exporter():
-    """An isolated provider/exporter pair — never the global tracer provider."""
+    """An isolated provider/exporter pair AND a clean ambient OTel context.
+
+    Both halves matter. The provider is private so these tests never touch the
+    global one. The empty ambient context is what makes "each top-level run
+    roots its own trace" a meaningful assertion: ``start_span(context=None)``
+    parents under whatever span is ambient, so a span left current by an
+    earlier test in the same worker legitimately merges both runs into ONE
+    trace — that is the documented ambient-nesting feature working, not a bug.
+    Attaching an empty context isolates the test from inherited state and,
+    because detach restores what was there, from leaking its own.
+    """
+    from opentelemetry import context as otel_context
+
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    yield provider, exporter
-    exporter.clear()
+    token = otel_context.attach(otel_context.Context())
+    try:
+        yield provider, exporter
+    finally:
+        otel_context.detach(token)
+        exporter.clear()
 
 
 def _by_name(spans, name):
@@ -143,8 +159,11 @@ class TestConcurrentTopLevelRunsShareOneProcessor:
         )
         _assert_complete_run_tree(spans, "fast_graph", ("async_fast_step",), min_duration_ms=0.0)
 
+        # With no ambient parent span (see the `exporter` fixture), each
+        # top-level run roots its own trace. Under a caller-supplied ambient
+        # span they would legitimately share one — that is ambient nesting.
         trace_ids = {_by_name(spans, name)[0].context.trace_id for name in ("slow_graph", "fast_graph")}
-        assert len(trace_ids) == 2, "concurrent top-level runs must not share a trace"
+        assert len(trace_ids) == 2, "with no ambient parent, concurrent top-level runs root separate traces"
 
     def test_sync_concurrent_runs_in_threads_each_export_a_complete_tree(self, exporter):
         from hypergraph.events.otel import OpenTelemetryProcessor

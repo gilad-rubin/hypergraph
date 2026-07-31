@@ -42,11 +42,24 @@ async def async_double(x: int) -> int:
 
 @pytest.fixture
 def exporter():
+    """Private provider plus an empty ambient context.
+
+    ``start_span(context=None)`` parents under whatever span is ambient, so a
+    span left current by an earlier test in the same worker would put both
+    runs in one trace. That is ambient nesting working as documented, but it
+    makes trace-identity assertions meaningless — so isolate.
+    """
+    from opentelemetry import context as otel_context
+
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    yield provider, exporter
-    exporter.clear()
+    token = otel_context.attach(otel_context.Context())
+    try:
+        yield provider, exporter
+    finally:
+        otel_context.detach(token)
+        exporter.clear()
 
 
 @requires_otel
