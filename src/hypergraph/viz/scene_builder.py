@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from hypergraph.viz._simplify import EdgeRef, redundant_edge_keys
+from hypergraph.viz._simplify import EdgeRef, shortcut_edge_keys
 from hypergraph.viz.ir_schema import CURRENT_SCHEMA_VERSION, GraphIR, IRSchemaError
 from hypergraph.viz.renderer.scope import resolve_expanded_entrypoints
 
@@ -194,6 +194,10 @@ def build_initial_scene(
 
     visible_ids = {n["id"] for n in scene_nodes if not n["hidden"]}
     scene_edges: list[dict[str, Any]] = []
+    # scene-edge id -> (entry it feeds, exit it leaves from) when the edge
+    # touches a *collapsed* container. Kept out of the scene payload: it exists
+    # only so ``simplify`` can tell a real pass-through from an assumed one.
+    edge_ports: dict[str, dict[str, str]] = {}
 
     for ir_edge in ir.edges:
         # Container expansion rewrites: when source/target container is
@@ -227,9 +231,13 @@ def build_initial_scene(
                 for value_name, source in edges_to_emit:
                     if separate_outputs and ir_edge.edge_type == "data" and value_name is not None:
                         source = f"data_{source}_{value_name}"
+                    edge_id = f"{source}__{target}" if value_name is None else f"{source}__{target}__{value_name}"
+                    ports = _collapsed_ports(ir_edge, expansion_state, parent_map)
+                    if ports:
+                        edge_ports[edge_id] = ports
                     scene_edges.append(
                         {
-                            "id": f"{source}__{target}" if value_name is None else f"{source}__{target}__{value_name}",
+                            "id": edge_id,
                             "source": source,
                             "target": target,
                             "data": {
@@ -293,23 +301,100 @@ def build_initial_scene(
     _add_start_end_nodes_and_edges(ir, scene_nodes, scene_edges, parent_map, expansion_state, visible_ids)
 
     if simplify:
-        scene_edges = simplify_transitive_edges(scene_edges)
+        scene_edges = simplify_transitive_edges(
+            scene_edges,
+            container_transits=ir.container_transits,
+            edge_ports=edge_ports,
+            collapsed_containers=_collapsed_containers(ir, expansion_state),
+        )
 
     return {"nodes": scene_nodes, "edges": scene_edges}
 
 
-def simplify_transitive_edges(scene_edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _collapsed_containers(ir: GraphIR, expansion_state: dict[str, bool]) -> set[str]:
+    return {n.id for n in ir.nodes if n.node_type == "GRAPH" and not expansion_state.get(n.id, False)}
+
+
+def _collapsed_ports(ir_edge: Any, expansion_state: dict[str, bool], parent_map: dict[str, str]) -> dict[str, str]:
+    """The internal entry/exit a boundary edge resolves to, when its container
+    endpoint is currently collapsed.
+
+    ``source_when_expanded`` / ``target_when_expanded`` name the *deepest*
+    internal producer/consumer, which may sit several levels down. Transits are
+    recorded between a container's **direct children**, so each port is walked
+    back up to the child of the container it belongs to — for ``mid`` an entry
+    of ``mid/deep/inner_a`` is the child ``mid/deep``. A tuple (multi-pill
+    fan-out) is left unresolved on purpose — see ``simplify_transitive_edges``.
+    """
+    ports: dict[str, str] = {}
+    if not expansion_state.get(ir_edge.source) and isinstance(ir_edge.source_when_expanded, str):
+        child = _direct_child_of(ir_edge.source, ir_edge.source_when_expanded, parent_map)
+        if child is not None:
+            ports["exit"] = child
+    if not expansion_state.get(ir_edge.target) and isinstance(ir_edge.target_when_expanded, str):
+        child = _direct_child_of(ir_edge.target, ir_edge.target_when_expanded, parent_map)
+        if child is not None:
+            ports["entry"] = child
+    return ports
+
+
+def _direct_child_of(container: str, descendant: str, parent_map: dict[str, str]) -> str | None:
+    """Walk ``descendant`` up to the direct child of ``container``; None if it
+    is not inside ``container`` at all."""
+    current: str | None = descendant
+    seen = 0
+    while current is not None and seen <= len(parent_map):
+        parent = parent_map.get(current)
+        if parent == container:
+            return current
+        current = parent
+        seen += 1
+    return None
+
+
+def simplify_transitive_edges(
+    scene_edges: list[dict[str, Any]],
+    *,
+    container_transits: dict[str, list[list[str]]] | None = None,
+    edge_ports: dict[str, dict[str, str]] | None = None,
+    collapsed_containers: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """Drop scene data edges that a longer visible path already implies.
 
-    Runs on the assembled scene (post expansion-rewriting) so redundancy is
+    Runs on the assembled scene (post expansion-rewriting) so shortcut-ness is
     judged against what is actually on screen. Hidden edges belong to collapsed
     scopes: they are neither path segments nor removal candidates, so they
     survive intact for the next expansion.
 
+    A **collapsed container is not assumed to pass values through.** Drawn as
+    one box it tempts the walk to join every in-edge to every out-edge, which
+    is false whenever the box does two unrelated jobs — and hiding a real edge
+    behind a route that does not exist is worse than showing one extra line. So
+    each collapsed container is split into per-port nodes, and an in-port is
+    joined to an out-port only for the ``[entry, exit]`` pairs
+    ``GraphIR.container_transits`` says it really carries. A port that cannot
+    be resolved (no ``*_when_expanded``, or a tuple fan-out) becomes a dead end
+    rather than a pass-through: unverified means "do not hide".
+
     Classification lives here; the reachability decision lives in
-    ``_simplify.redundant_edge_keys``. The JS twin is
+    ``_simplify.shortcut_edge_keys``. The JS twin is
     ``simplifyTransitiveEdges`` in ``assets/scene_builder.js``.
     """
+    edge_ports = edge_ports or {}
+    collapsed_containers = collapsed_containers or set()
+    transits = container_transits or {}
+
+    def port(node_id: str, edge_id: str, side: str) -> str:
+        """Path-graph identity for one end of an edge. Plain nodes keep their
+        id; a collapsed container becomes an in- or out-port so the walk can
+        only cross it where a real transit exists."""
+        if node_id not in collapsed_containers:
+            return node_id
+        resolved = (edge_ports.get(edge_id) or {}).get("entry" if side == "in" else "exit")
+        # Unresolvable -> a port unique to this edge, so nothing joins through it.
+        suffix = resolved if resolved is not None else f"?{edge_id}"
+        return f"{node_id}\x00{side}\x00{suffix}"
+
     refs = []
     for edge in scene_edges:
         if edge.get("hidden"):
@@ -321,8 +406,8 @@ def simplify_transitive_edges(scene_edges: list[dict[str, Any]]) -> list[dict[st
         refs.append(
             EdgeRef(
                 key=edge["id"],
-                source=edge["source"],
-                target=edge["target"],
+                source=port(edge["source"], edge["id"], "out"),
+                target=port(edge["target"], edge["id"], "in"),
                 removable=edge_type == "data" and not is_exclusive and not is_back_edge,
                 # Exclusive arms are excluded from the path graph too, not just
                 # from the candidates: an arm only carries its value when its
@@ -331,7 +416,21 @@ def simplify_transitive_edges(scene_edges: list[dict[str, Any]]) -> list[dict[st
             )
         )
 
-    dropped = redundant_edge_keys(refs)
+    # Path-only links joining each container's in-ports to the out-ports it
+    # genuinely reaches. Never removable — they are not drawn.
+    for container in collapsed_containers:
+        for entry, exit_node in transits.get(container, ()):
+            refs.append(
+                EdgeRef(
+                    key=("\x00transit", container, entry, exit_node),
+                    source=f"{container}\x00in\x00{entry}",
+                    target=f"{container}\x00out\x00{exit_node}",
+                    removable=False,
+                    traversable=True,
+                )
+            )
+
+    dropped = shortcut_edge_keys(refs)
     return [edge for edge in scene_edges if edge["id"] not in dropped]
 
 

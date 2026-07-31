@@ -89,7 +89,7 @@ graph.bind(model="gpt-4o").visualize(show_bounded_inputs=True)
 
 Bound inputs are hidden by default so the visualization focuses on the values a caller still needs to provide. Turn this on when you want bound values to appear in the root input lane as INPUT/INPUT_GROUP nodes. If `show_inputs=False`, the widget hides the whole input lane, so `show_bounded_inputs` has no visible effect.
 
-### `simplify` — Hide redundant shortcut edges
+### `simplify` — Hide shortcut edges
 
 ```python
 graph.visualize(simplify=False)   # show every data edge

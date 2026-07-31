@@ -147,7 +147,7 @@ The IR carries all expansion-rewriting information eagerly:
    - Rendered with dashed style
 
 4. **Transitive reduction** (`simplify`, default ON, both modes)
-   - `viz/_simplify.py::redundant_edge_keys` is the ONE authority for "is this
+   - `viz/_simplify.py::shortcut_edge_keys` is the ONE authority for "is this
      edge implied by a longer path?". Three consumers share it: `scene_builder.py`,
      `assets/scene_builder.js` (twin `simplifyTransitiveEdges`), `mermaid.py`.
      Never re-derive the reachability walk in a new call site.
@@ -175,11 +175,38 @@ The IR carries all expansion-rewriting information eagerly:
    - Runs on the **assembled scene**, after expansion rewriting: an edge that is
      a shortcut while a container is collapsed can be the only path once it
      expands. Hidden edges are neither path segments nor candidates.
-   - JS-only hazard: node ids come from user-authored Python names and
-     `__proto__` is a legal Python identifier, so every id-keyed map in
-     `assets/*.js` must be `Object.create(null)`. A plain `{}` resolves
-     `map['__proto__']` to `Object.prototype` and the write throws, blanking the
-     canvas. The Python twin uses dicts and cannot fail this way, so shared
+   - A **collapsed container is never assumed to pass values through.** Drawn as
+     one box it invites joining every in-edge to every out-edge, which is false
+     whenever the container does two unrelated jobs, and then a real edge gets
+     hidden behind a route that does not exist. Each collapsed container is
+     therefore split into per-port path nodes, joined only for the
+     `[entry, exit]` pairs `ir_builder.py::compute_container_transits` (stamped on
+     `GraphIR.container_transits`) says it really carries. Ports come from
+     `IREdge.*_when_expanded` in the scene builders and
+     `ir_builder.resolve_boundary_ports` in Mermaid — both normalized to the
+     container's **direct child**, since transits are recorded between direct
+     children and `*_when_expanded` names the deepest node. An unresolvable port
+     becomes a dead end, never a pass-through: unverified means "do not hide".
+     Unresolvable covers an absent `*_when_expanded`, a tuple fan-out, AND an
+     exit with several deepest producers — no single child definitely emits the
+     value, so asserting one would assert a route that may not run.
+   - The unconditional-path rule applies **inside** a container as well: the
+     transit walk uses only unconditional inner `data` edges, excluding control
+     edges and mutex arms. A conditional internal route must not make the box
+     look like a pass-through and license hiding an unconditional edge outside
+     it. This is the same rule as for the top-level path graph, and it has now
+     been missed three times (control edges, then mutex arms, then inside
+     containers) — when adding any new conditional edge kind, check every place
+     a path is built, not just the obvious one.
+   - JS-only hazard: node ids come from user-authored Python names, and every
+     `Object.prototype` member name (`__proto__`, `constructor`, `toString`, …)
+     is a legal Python identifier. Every id-keyed map in `assets/*.js` must
+     therefore be `Object.create(null)`, and any map arriving from `JSON.parse`
+     (e.g. `ir.container_transits`) must be re-keyed into one before lookup.
+     Two distinct failures, so test both: writing `map['__proto__']` on a plain
+     `{}` throws and blanks the canvas, while *reading* a missing key such as
+     `map['constructor']` silently returns a function that then gets used as
+     data. The Python twin uses dicts and cannot fail either way, so shared
      parity fixtures will never catch it — test the JS side directly.
 
 5. **Exclusive (mutex) data edges** (both modes)

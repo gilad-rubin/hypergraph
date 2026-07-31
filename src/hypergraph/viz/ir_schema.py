@@ -118,7 +118,13 @@ class IRExternalInput:
 # read by a v4 scene builder — or a v4 payload read by a v3 scene builder that
 # still re-derives with the old self-inclusive rule — must hit the mismatch
 # banner instead of silently mis-routing START/control edges.
-CURRENT_SCHEMA_VERSION = "4"
+# v5: ``GraphIR.container_transits`` tells ``simplify`` which ``[entry, exit]``
+# pairs a collapsed container really carries a value between. A v4 payload has
+# no such field, and a v4 scene builder ignores it — either way the reader
+# falls back to "a box passes everything through", which hides real edges under
+# a route that does not exist. That is a wrong picture rather than a missing
+# one, so it must hit the mismatch banner.
+CURRENT_SCHEMA_VERSION = "5"
 
 
 class IRSchemaError(ValueError):
@@ -148,4 +154,11 @@ class GraphIR:
     # declared child. Computed once by the IR builder; scene builders and
     # frontends must consume this field, never re-derive it.
     container_entrypoints: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # GRAPH-id -> the ``[entry, exit]`` pairs that container genuinely carries a
+    # value between, from ``renderer/ir_builder.py::compute_container_transits``.
+    # ``simplify`` treats a *collapsed* container as a path segment only for
+    # pairs listed here; without it a box that does two unrelated jobs looks
+    # like a pass-through and a real edge gets hidden behind a route that does
+    # not exist. Computed once by the IR builder; never re-derive it.
+    container_transits: dict[str, list[list[str]]] = field(default_factory=dict)
     schema_version: str = CURRENT_SCHEMA_VERSION

@@ -1,7 +1,10 @@
-"""Transitive-edge simplification in the scene builders.
+"""Shortcut-edge simplification in the scene builders.
 
-``simplify=True`` (the default) drops data edges a longer visible path already
-implies: with ``fetch → parse → render``, a direct ``fetch → render`` is noise.
+``simplify=True`` (the default) hides data edges that take a short way past a
+route the diagram already draws: with ``fetch → parse → render``, a direct
+``fetch → render`` is a shortcut. Not "redundant" — ``render`` really does read
+``fetch``'s output, and hiding that costs the reader a real fact. Only the
+*ordering* is already carried by the longer route.
 
 These tests pin the invariants that make the reduction safe to have on by
 default — cycles survive, control/ordering semantics survive, and nothing gets
@@ -18,8 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from hypergraph import END, Graph, node, route
-from hypergraph.viz.renderer.ir_builder import build_graph_ir
+from hypergraph import END, Graph, ifelse, node, route
+from hypergraph.viz.renderer.ir_builder import build_graph_ir, compute_container_transits, resolve_boundary_ports
 from hypergraph.viz.scene_builder import build_initial_scene, simplify_transitive_edges
 from hypergraph.viz.widget import visualize
 from tests.viz.conftest import (
@@ -60,7 +63,7 @@ class TestShortcutRemoval:
         assert visible_pairs(build_initial_scene(ir)) == visible_pairs(build_initial_scene(ir, simplify=True))
 
     def test_chain_without_shortcut_is_untouched(self) -> None:
-        """A pure chain has nothing redundant — simplify must be a no-op."""
+        """A pure chain has no shortcuts — simplify must be a no-op."""
         graph = make_chain_graph()
         assert visible_pairs(scene_for_state(graph, simplify=True)) == visible_pairs(scene_for_state(graph, simplify=False))
 
@@ -77,7 +80,7 @@ class TestShortcutRemoval:
         assert ("fetch", "data_fetch_raw") in visible_pairs(scene, edge_type="output")
 
     def test_two_hop_shortcut_is_dropped(self) -> None:
-        """Redundancy is transitive over any path length, not just 2 hops."""
+        """A shortcut is a shortcut over any path length, not just 2 hops."""
 
         @node(output_name="a_out")
         def a(seed: int) -> int:
@@ -161,6 +164,222 @@ class TestSafetyInvariants:
         reduced = scene_for_state(graph, simplify=True)
         hidden_ids = {e["id"] for e in full["edges"] if e["hidden"]}
         assert hidden_ids <= {e["id"] for e in reduced["edges"]}
+
+
+def _disconnected_container_graph() -> Graph:
+    """``side`` consumes ``doc`` at one child and emits ``stats`` from another,
+    and the two never touch — so ``load → render`` is the ONLY route carrying
+    the document, collapsed or not."""
+
+    @node(output_name="doc")
+    def load(path: str) -> str:
+        return path
+
+    @node(output_name="thumb")
+    def make_thumb(doc: str) -> str:
+        return doc
+
+    @node(output_name="stats")
+    def count_words(corpus: str) -> int:
+        return 0
+
+    @node(output_name="page")
+    def render(stats: int, doc: str) -> str:
+        return ""
+
+    side = Graph([make_thumb, count_words], name="side")
+    return Graph([load, side.as_node(), render], name="doc_pipeline")
+
+
+def _passthrough_container_graph() -> Graph:
+    """``prep`` genuinely carries the value across (strip_tags → tokenize), so
+    ``fetch → summarize`` really is a shortcut in every state."""
+
+    @node(output_name="raw")
+    def fetch(url: str) -> str:
+        return url
+
+    @node(output_name="clean")
+    def strip_tags(raw: str) -> str:
+        return raw
+
+    @node(output_name="tokens")
+    def tokenize(clean: str) -> list:
+        return []
+
+    @node(output_name="report")
+    def summarize(tokens: list, raw: str) -> str:
+        return ""
+
+    prep = Graph([strip_tags, tokenize], name="prep")
+    return Graph([fetch, prep.as_node(), summarize], name="pipe")
+
+
+class TestCollapsedContainersAreNotAssumedTransparent:
+    """A collapsed container is drawn as one box, which tempts the walk to join
+    every in-edge to every out-edge. That is false when the box does two
+    unrelated jobs, and hiding a real edge behind a route that does not exist
+    is worse than drawing one extra line."""
+
+    def test_disconnected_container_does_not_hide_the_only_route(self) -> None:
+        graph = _disconnected_container_graph()
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"side": False}, simplify=True))
+        assert ("load", "render") in collapsed
+
+    def test_answer_does_not_change_when_the_box_opens(self) -> None:
+        """The edge must not blink in and out as the container is toggled —
+        that flicker was the user-visible symptom."""
+        graph = _disconnected_container_graph()
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"side": False}, simplify=True))
+        expanded = visible_pairs(scene_for_state(graph, expansion_state={"side": True}, simplify=True))
+        assert ("load", "render") in collapsed and ("load", "render") in expanded
+
+    def test_real_passthrough_still_simplifies_when_collapsed(self) -> None:
+        """The precision cuts both ways: a container that DOES carry the value
+        must still justify dropping the shortcut, or simplify stops working."""
+        graph = _passthrough_container_graph()
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"prep": False}, simplify=True))
+        assert ("fetch", "summarize") not in collapsed
+        assert collapsed == {("fetch", "prep"), ("prep", "summarize")}
+
+    def test_nested_container_entry_resolves_to_the_direct_child(self) -> None:
+        """``target_when_expanded`` names the DEEPEST consumer, but transits are
+        recorded between direct children. Without walking the port back up, a
+        two-level nest never matches a transit and nothing simplifies."""
+
+        @node(output_name="seed")
+        def seed_fn(n: int) -> int:
+            return n
+
+        @node(output_name="a1")
+        def inner_a(seed: int) -> int:
+            return seed
+
+        @node(output_name="a2")
+        def inner_b(a1: int) -> int:
+            return a1
+
+        @node(output_name="mid_out")
+        def mid_tail(a2: int) -> int:
+            return a2
+
+        @node(output_name="final")
+        def sink(mid_out: int, seed: int) -> int:
+            return 0
+
+        deep = Graph([inner_a, inner_b], name="deep")
+        mid = Graph([deep.as_node(), mid_tail], name="mid")
+        graph = Graph([seed_fn, mid.as_node(), sink], name="outer")
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"mid": False}, simplify=True))
+        assert ("seed_fn", "sink") not in collapsed
+
+    def test_single_child_container_still_counts_as_a_pass_through(self) -> None:
+        """The reflexive ``[entry, exit]`` pair is load-bearing: when one child
+        both consumes at the boundary and produces at it, the container really
+        does carry the value across. Drop reflexive pairs as "pointless" and
+        every single-child container silently becomes impassable."""
+
+        @node(output_name="raw")
+        def fetch(url: str) -> str:
+            return url
+
+        @node(output_name="clean")
+        def scrub(raw: str) -> str:
+            return raw
+
+        @node(output_name="out")
+        def finish(clean: str, raw: str) -> str:
+            return ""
+
+        graph = Graph([fetch, Graph([scrub], name="one").as_node(), finish], name="reflexive")
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"one": False}, simplify=True))
+        assert collapsed == {("fetch", "one"), ("one", "finish")}
+
+    def test_conditional_internal_route_is_not_a_pass_through(self) -> None:
+        """The unconditional-path rule applies INSIDE a container too. ``box``
+        reaches its exit only through one arm of an ifelse, so it must not
+        license hiding the unconditional ``load → render``.
+
+        Third instance of this bug class: control edges, then mutex arms in the
+        top-level path graph, now mutex arms inside a container.
+        """
+
+        @node(output_name="doc")
+        def load(path: str) -> str:
+            return path
+
+        @node(output_name="mid")
+        def head(doc: str) -> str:
+            return doc
+
+        @ifelse(when_true="left", when_false="right")
+        def pick(mid: str) -> bool:
+            return True
+
+        @node(output_name="tail")
+        def left(mid: str) -> str:
+            return mid
+
+        @node(output_name="tail")
+        def right(mid: str) -> str:
+            return mid
+
+        @node(output_name="page")
+        def render(tail: str, doc: str) -> str:
+            return ""
+
+        box = Graph([head, pick, left, right], name="box", entrypoint="head")
+        graph = Graph([load, box.as_node(), render], name="conditional")
+        assert compute_container_transits(graph.to_flat_graph()).get("box") is None
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"box": False}, simplify=True))
+        assert ("load", "render") in collapsed
+
+    def test_ambiguous_exit_is_unresolved_not_the_first_producer(self) -> None:
+        """Several deepest producers means no single child definitely emits the
+        value. Picking ``producers[0]`` would assert a route that may not run,
+        and would disagree with the scene builders, which treat any tuple
+        ``*_when_expanded`` as unresolved."""
+
+        @node(output_name="doc")
+        def load(path: str) -> str:
+            return path
+
+        @node(output_name="mid")
+        def head(doc: str) -> str:
+            return doc
+
+        @ifelse(when_true="left", when_false="right")
+        def pick(mid: str) -> bool:
+            return True
+
+        @node(output_name="tail")
+        def left(mid: str) -> str:
+            return mid
+
+        @node(output_name="tail")
+        def right(mid: str) -> str:
+            return mid
+
+        @node(output_name="page")
+        def render(tail: str, doc: str) -> str:
+            return ""
+
+        box = Graph([head, pick, left, right], name="box", entrypoint="head")
+        flat = Graph([load, box.as_node(), render], name="amb").to_flat_graph()
+        exit_port, _entry = resolve_boundary_ports(flat, "box", "render", ["tail"])
+        assert exit_port is None
+
+    def test_mermaid_agrees_with_the_scene_on_a_collapsed_container(self) -> None:
+        """Third implementation, same answer — the text export and the widget
+        must never disagree about which edges exist."""
+        graph = _disconnected_container_graph()
+        arrows = {
+            tuple(line.strip().split(" --> "))
+            for line in str(graph.to_mermaid(depth=0, show_types=False)).splitlines()
+            if "-->" in line and "input_" not in line
+        }
+        scene = visible_pairs(scene_for_state(graph, expansion_state={"side": False}, simplify=True))
+        assert arrows == scene
 
 
 class TestSimplifyTransitiveEdgesUnit:
@@ -296,6 +515,63 @@ class TestJsHardening:
         payload.update(data)
         return {"id": f"{source}__{target}", "source": source, "target": target, "data": payload, "hidden": False}
 
+    @pytest.mark.parametrize("name", ["constructor", "toString", "__proto__"])
+    def test_transit_lookup_ignores_inherited_object_members(self, name: str) -> None:
+        """``containerTransits`` arrives straight from ``JSON.parse``, so it
+        still inherits from ``Object.prototype``. A container whose name is a
+        prototype member and that has *no* recorded transit then reads one off
+        the prototype: ``transits['constructor']`` is the ``Object`` function,
+        whose ``length`` is 1, so the loop indexes ``pairs[0][0]`` on
+        ``undefined`` and the whole canvas goes blank. Every such name is a
+        legal Python identifier and so a legal node id."""
+        edges = [self._edge("a", name), self._edge(name, "c"), self._edge("a", "c")]
+        script = (
+            "const fs=require('fs');"
+            f"eval(fs.readFileSync({str(REPO_ROOT / 'src/hypergraph/viz/assets/derivation.js')!r},'utf-8'));"
+            f"eval(fs.readFileSync({str(REPO_ROOT / 'src/hypergraph/viz/assets/scene_builder.js')!r},'utf-8'));"
+            f"const edges={json.dumps(edges)};"
+            "const ports=Object.create(null);"
+            f"ports[{f'a__{name}'!r}]={{entry:'p/in'}}; ports[{f'{name}__c'!r}]={{exit:'p/out'}};"
+            f"const collapsed=Object.create(null); collapsed[{name!r}]=true;"
+            # No transit recorded for this container -- the payload is about someone else.
+            'const transits=JSON.parse(\'{"other": [["q/in","q/out"]]}\');'
+            "const kept=globalThis.HypergraphSceneBuilder.simplifyTransitiveEdges(edges,"
+            "{containerTransits:transits, edgePorts:ports, collapsedContainers:collapsed})"
+            ".map(e=>e.source+'->'+e.target);"
+            "process.stdout.write(JSON.stringify(kept));"
+        )
+        proc = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=15)
+        assert proc.returncode == 0, proc.stderr
+        kept = json.loads(proc.stdout)
+        # No transit means no verified route through the box, so nothing is hidden.
+        assert sorted(kept) == sorted([f"a->{name}", f"{name}->c", "a->c"])
+
+    def test_transits_for_a_container_named_proto_are_read(self) -> None:
+        """The other half: re-keying must not *lose* a real entry. ``__proto__``
+        survives ``JSON.parse`` as an own property, so its transit is real data
+        and the container is a genuine pass-through."""
+        edges = [self._edge("a", "__proto__"), self._edge("__proto__", "c"), self._edge("a", "c")]
+        script = (
+            "const fs=require('fs');"
+            f"eval(fs.readFileSync({str(REPO_ROOT / 'src/hypergraph/viz/assets/derivation.js')!r},'utf-8'));"
+            f"eval(fs.readFileSync({str(REPO_ROOT / 'src/hypergraph/viz/assets/scene_builder.js')!r},'utf-8'));"
+            f"const edges={json.dumps(edges)};"
+            "const ports=Object.create(null);"
+            "ports['a____proto__']={entry:'p/in'}; ports['__proto____c']={exit:'p/out'};"
+            "const collapsed=Object.create(null); collapsed['__proto__']=true;"
+            'const transits=JSON.parse(\'{"__proto__": [["p/in","p/out"]]}\');'
+            "const kept=globalThis.HypergraphSceneBuilder.simplifyTransitiveEdges(edges,"
+            "{containerTransits:transits, edgePorts:ports, collapsedContainers:collapsed})"
+            ".map(e=>e.source+'->'+e.target);"
+            "process.stdout.write(JSON.stringify(kept));"
+        )
+        proc = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=15)
+        assert proc.returncode == 0, proc.stderr
+        kept = json.loads(proc.stdout)
+        # The transit was read, so the box is a pass-through and a->c is a shortcut.
+        assert "a->c" not in kept
+        assert sorted(kept) == ["__proto__->c", "a->__proto__"]
+
     def test_node_named_proto_does_not_crash_or_pollute(self) -> None:
         """``__proto__`` is a legal Python identifier, so it can reach the JS
         side as a node id. On a plain object literal the adjacency write throws
@@ -365,7 +641,9 @@ class TestToolbarToggle:
 
     def _click_simplify(self, page) -> None:
         version = page.evaluate("window.__hypergraphVizDebug.version")
-        page.get_by_role("button", name="Show Redundant Edges").or_(page.get_by_role("button", name="Simplify Edges")).first.click()
+        # One stable accessible name in both states — the button is a toggle,
+        # not two buttons, so the label names the thing rather than the next action.
+        page.get_by_role("button", name="Simplify Edges").click()
         page.wait_for_function(
             f"window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > {version} && window.__hypergraphVizReady === true",
             timeout=10000,

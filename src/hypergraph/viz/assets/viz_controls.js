@@ -35,7 +35,7 @@
     };
     return html`
       <div className="relative" onMouseEnter=${show} onMouseLeave=${hide} onFocus=${show} onBlur=${hide}>
-        <button className=${btn + ' ' + (props.isActive ? active : '')} aria-label=${props.ariaLabel || props.tooltip} onClick=${props.onClick} onKeyDown=${hideOnEscape}>${props.children}</button>
+        <button className=${btn + ' ' + (props.isActive ? active : '')} aria-label=${props.ariaLabel || props.tooltip} aria-pressed=${props.isActive === undefined ? undefined : !!props.isActive} onClick=${props.onClick} onKeyDown=${hideOnEscape}>${props.children}</button>
         ${showTooltip[0] && html`<div role="tooltip" aria-hidden=${!showTooltip[0]} className=${'absolute right-full mr-2 top-1/2 -translate-y-1/2 px-2 py-1 text-xs font-medium rounded shadow-lg whitespace-nowrap pointer-events-none z-50 ' + tip}>
           ${props.tooltip}
           <div className=${'absolute left-full top-1/2 -translate-y-1/2 border-4 border-transparent ' + (isLight ? 'border-l-slate-800' : 'border-l-white')}></div>
@@ -56,7 +56,7 @@
         <//>
         <${TooltipButton} onClick=${props.onToggleInputs} tooltip=${props.showInputs ? "Hide Inputs" : "Show Inputs"} isActive=${props.showInputs} theme=${props.theme}><${Icons.ExternalInputs} /><//>
         <${TooltipButton} onClick=${props.onToggleTypes} tooltip=${props.showTypes ? "Hide Types" : "Show Types"} isActive=${props.showTypes} theme=${props.theme}><${Icons.Type} /><//>
-        <${TooltipButton} onClick=${props.onToggleSimplify} tooltip=${props.simplify ? "Show Redundant Edges" : "Simplify Edges"} isActive=${props.simplify} theme=${props.theme}><${Icons.Simplify} /><//>
+        <${TooltipButton} onClick=${props.onToggleSimplify} tooltip="Simplify Edges" isActive=${props.simplify} theme=${props.theme}><${Icons.Simplify} /><//>
         <div className=${'h-px my-1 ' + (props.theme === 'light' ? 'bg-slate-200' : 'bg-slate-700')}></div>
         <${TooltipButton} onClick=${props.onToggleTheme} tooltip=${props.theme === 'dark' ? "Switch to Light Theme" : "Switch to Dark Theme"} theme=${props.theme}>
           ${props.theme === 'dark' ? html`<${Icons.Sun} />` : html`<${Icons.Moon} />`}
