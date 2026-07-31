@@ -475,7 +475,10 @@ Every runner merges carried processors in front of call-site ones:
   **same processor instance** at more than one level (call-site and carried,
   or on both an outer graph and a graph nested inside it) delivers that
   instance the same events more than once — carry stateful processors like
-  `OpenTelemetryProcessor` at exactly one level.
+  `OpenTelemetryProcessor` at exactly one level. Reusing one instance across
+  *separate* runs, concurrent or sequential, is supported:
+  `OpenTelemetryProcessor` tracks each run's spans independently and defers
+  its span sweep until the last concurrent run settles.
 - All entry points participate: `run()`, `map()` (including the top-level map
   span), and `map_iter()` (which delegates through `run()` per item, so
   carried processors observe each item; there is no top-level map span).

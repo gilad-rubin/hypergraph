@@ -201,6 +201,10 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         self._workflow_span_contexts_lock = Lock()
         self._trace_ids: OrderedDict[str, str] = OrderedDict()
         self._trace_ids_lock = Lock()
+        # One shared processor can serve several CONCURRENT top-level runs;
+        # every one of them calls shutdown() when it settles.  See shutdown().
+        self._live_top_level_runs = 0
+        self._lifecycle_lock = Lock()
 
     def _owner_id(self, span_id: str | None) -> str | None:
         if span_id is None:
@@ -351,6 +355,11 @@ class OpenTelemetryProcessor(TypedEventProcessor):
             return self._trace_ids.get(run_id)
 
     def on_run_start(self, event: RunStartEvent) -> None:
+        if event.parent_span_id is None:
+            # A top-level run: the runner will call shutdown() exactly once
+            # for it (the `_parent_span_id is None` gate in the run templates).
+            with self._lifecycle_lock:
+                self._live_top_level_runs += 1
         parent_owner = self._owner_id(event.parent_span_id)
         parent_ctx = self._context_for(event.parent_span_id)
         links = []
@@ -767,7 +776,30 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         )
 
     def shutdown(self) -> None:
-        """End any remaining spans while preserving bounded lineage history."""
+        """Release this top-level run; sweep only when the last one leaves.
+
+        The runners call ``shutdown()`` once per TOP-LEVEL run, so one shared
+        processor (passed to several ``run()`` calls, or carried by a graph
+        via ``Graph.with_processors``) receives one call per concurrent run.
+        Sweeping on the first call is what made a long run export as the
+        short run that finished beside it: the sweep ended the long run's
+        live spans early, cleared the contexts its later node spans needed
+        for parentage, and dropped its run-end attributes.
+
+        So each call releases one live top-level run, and the full sweep runs
+        only once no run is left. Sequential use is unchanged — one run in,
+        one full sweep out. A run that dies without a ``RunEndEvent`` (a
+        ``BaseException`` escaping the run template) still leaves its spans
+        for the sweep, which now happens when the last concurrent sibling
+        settles rather than immediately.
+
+        Never clears the :meth:`trace_id_for` mapping: callers look up a
+        trace id *after* ``run()`` returns, and ``run()`` returns after this.
+        """
+        with self._lifecycle_lock:
+            self._live_top_level_runs = max(0, self._live_top_level_runs - 1)
+            if self._live_top_level_runs:
+                return
         # Leftover tokens exist only on abnormal exits (e.g. BaseException
         # escaping the run template). Detach newest-first, and only where this
         # execution unit owns the attach — cross-context leftovers died with
