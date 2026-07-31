@@ -475,6 +475,70 @@ is `None` while a Run executes or is terminal — including while a running
 Run is queued behind a [provider permit](#provider-resource-admission),
 which is execution, not waiting.
 
+## Reading Results
+
+`client.result(ref)` answers what durable work **produced**. The worker keeps
+no `RunResult`, so outputs are reconstructed from the same checkpointer rows
+that back resume — no graph code, no second store.
+
+```python
+outcome = await client.result(receipt.run_ref)   # RunOutcome | None
+outcome.status                                   # WorkflowStatus | None
+outcome.outputs                                  # dict | None
+outcome.failure                                  # RunFailure | None
+outcome.to_dict()                                # JSON-safe primitives
+```
+
+Four situations a caller must tell apart, and how each reads:
+
+| situation | `result()` | `started` | `settled` | `outputs` |
+| --- | --- | --- | --- | --- |
+| never submitted here | `None` | — | — | — |
+| submitted, still in flight | outcome | any | `False` | `None` |
+| stopped/closed before starting | outcome | `False` | `True` | `None` |
+| ran and produced nothing | outcome | `True` | `True` | `{}` |
+
+So `outputs is None` never means "produced nothing" — that is `{}`.
+`settled` uses the same settled-child rule as `BatchView` and the rerun
+gate, so a Run is never settled for one reader and in flight for another; a
+paused Run is **not** settled, because an outstanding answer can still
+change it.
+
+Two honest caveats on `outputs`:
+
+- They are the run's **folded step outputs**, not a projection narrowed to
+  the graph's declared outputs. Narrowing needs the `Graph` object, and this
+  client is graph-free by contract, so it reports every value the run's
+  steps produced rather than guessing.
+- They are JSON-safe because a Run Home's checkpointer defaults to
+  `JsonSerializer`. A Home explicitly configured with `PickleSerializer`
+  returns whatever it stored; `to_dict()` falls back to `repr` for anything
+  that will not serialize.
+
+`RunFailure` carries the **privacy-safe** projection the step persisted —
+an exception type name, a stable `HG_*` code, and static wording — never
+raw exception message text, which Hypergraph does not persist (see
+[the privacy boundary](errors.md#the-privacy-boundary)). The real message,
+type, and traceback go to the
+[OpenTelemetry export](../05-how-to/observe-execution.md#exception-detail-and-redacting-it)
+instead, so a failure is debugged there and merely identified here.
+
+A `BatchRef` reads every child at once:
+
+```python
+outcome = await client.result(receipt.batch_ref)   # BatchOutcome | None
+outcome.items                                      # item_key -> RunOutcome | None
+```
+
+`items` is keyed by logical item key in **manifest order** — completion
+order never changes result identity. An item whose child never executed maps
+to `None`: Hypergraph does not fabricate results for work that did not run,
+and that stays distinct from a child that ran and produced nothing
+(`outputs == {}`). The whole Batch reads in a bounded number of statements
+regardless of child count, so 100+ children stay a handful of queries.
+
+`result_sync()` is the synchronous mirror.
+
 ## Stopping a Run
 
 `client.stop(ref, info=None)` records a **durable stop command**: the

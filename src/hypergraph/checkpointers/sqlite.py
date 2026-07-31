@@ -7,7 +7,7 @@ import contextlib
 import json
 import threading
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -70,6 +70,9 @@ _STEPS_COLS = (
 _STEP_TIME_ORDER = "COALESCE(completed_at, created_at), created_at, id"
 _STEP_TIME_ORDER_DESC = "COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC"
 _STEP_TIME_ORDER_DESC_WITH_ALIAS = "COALESCE(s.completed_at, s.created_at) DESC, s.created_at DESC, s.id DESC"
+# SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999 on older builds; chunk
+# well under it so a large Batch read never trips the host's sqlite limit.
+_MAX_SQL_VARIABLES = 500
 _RETENTION_BASELINE_NODE_NAME = "__retained_state__"
 _RETENTION_BASELINE_NODE_TYPE = "RetentionBaseline"
 _PUBLIC_STEP_FILTER = f"node_name != '{_RETENTION_BASELINE_NODE_NAME}' AND (node_type IS NULL OR node_type != '{_RETENTION_BASELINE_NODE_TYPE}')"
@@ -366,6 +369,20 @@ def _pause_slot_insert_params(slot: PauseSlot) -> tuple[Any, ...]:
         slot.settled_at.isoformat() if slot.settled_at is not None else None,
         None if slot.settled_at is None else json.dumps(slot.answer),
     )
+
+
+def _collect_first_failures(
+    rows: Iterable[Any],
+    failures: dict[str, tuple[str, str | None, int | None]],
+) -> None:
+    """Keep the FIRST errored step per run — the failure that started it.
+
+    Rows arrive in execution order, so a run's first row is its earliest
+    failure; later ones are downstream fallout of the same collapse.
+    """
+    for run_id, error, node_name, superstep in rows:
+        if run_id not in failures:
+            failures[run_id] = (error, node_name, None if superstep is None else int(superstep))
 
 
 def _row_to_pause_slot(row: Sequence[Any]) -> PauseSlot:
@@ -1204,6 +1221,100 @@ class SqliteCheckpointer(Checkpointer):
                     if values:
                         state.update(values)
             return state
+
+    # -- Batched projection reads ---------------------------------------------
+    #
+    # ``get_state`` answers for ONE run. A Batch result read asks the same
+    # question of every child at once, so these fold many runs in a bounded
+    # number of statements instead of one round trip per child. Same rows,
+    # same fold order, same serializer — no second store, and no second notion
+    # of what a run produced.
+
+    def _chunk_run_ids(self, run_ids: Sequence[str]) -> list[list[str]]:
+        """Split ids into SQLite-variable-safe batches, order preserved."""
+        unique = list(dict.fromkeys(run_ids))
+        return [unique[i : i + _MAX_SQL_VARIABLES] for i in range(0, len(unique), _MAX_SQL_VARIABLES)]
+
+    def _fold_states(self, rows: Iterable[Any]) -> dict[str, dict[str, Any]]:
+        """Fold ``(run_id, values_blob)`` rows exactly as ``get_state`` does."""
+        states: dict[str, dict[str, Any]] = {}
+        for run_id, values_blob in rows:
+            state = states.setdefault(run_id, {})
+            if values_blob is not None:
+                values = self._serializer.deserialize(values_blob)
+                if values:
+                    state.update(values)
+        return states
+
+    async def get_states(self, run_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """Folded state for several runs at once. Runs with no steps are absent."""
+        await self._ensure_db()
+        states: dict[str, dict[str, Any]] = {}
+        for chunk in self._chunk_run_ids(run_ids):
+            placeholders = ",".join("?" * len(chunk))
+            async with self._txn_lock():
+                cursor = await self._db.execute(
+                    f"SELECT run_id, values_data FROM steps WHERE run_id IN ({placeholders}) ORDER BY run_id, {_STEP_TIME_ORDER}",
+                    chunk,
+                )
+                rows = await cursor.fetchall()
+            states.update(self._fold_states(rows))
+        return states
+
+    def get_states_sync(self, run_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """Sync mirror of ``get_states``."""
+        states: dict[str, dict[str, Any]] = {}
+        for chunk in self._chunk_run_ids(run_ids):
+            placeholders = ",".join("?" * len(chunk))
+            with self._sync_lock:
+                rows = (
+                    self._sync_db()
+                    .execute(
+                        f"SELECT run_id, values_data FROM steps WHERE run_id IN ({placeholders}) ORDER BY run_id, {_STEP_TIME_ORDER}",
+                        chunk,
+                    )
+                    .fetchall()
+                )
+            states.update(self._fold_states(rows))
+        return states
+
+    async def get_step_failures(self, run_ids: Sequence[str]) -> dict[str, tuple[str, str | None, int | None]]:
+        """First errored step per run: ``(error, node_name, superstep)``.
+
+        The error text is whatever the step persisted — the privacy-safe
+        projection from ``safe_error_text``, never raw message text.
+        """
+        await self._ensure_db()
+        failures: dict[str, tuple[str, str | None, int | None]] = {}
+        for chunk in self._chunk_run_ids(run_ids):
+            placeholders = ",".join("?" * len(chunk))
+            async with self._txn_lock():
+                cursor = await self._db.execute(
+                    f"SELECT run_id, error, node_name, superstep FROM steps "
+                    f"WHERE run_id IN ({placeholders}) AND error IS NOT NULL ORDER BY run_id, {_STEP_TIME_ORDER}",
+                    chunk,
+                )
+                rows = await cursor.fetchall()
+            _collect_first_failures(rows, failures)
+        return failures
+
+    def get_step_failures_sync(self, run_ids: Sequence[str]) -> dict[str, tuple[str, str | None, int | None]]:
+        """Sync mirror of ``get_step_failures``."""
+        failures: dict[str, tuple[str, str | None, int | None]] = {}
+        for chunk in self._chunk_run_ids(run_ids):
+            placeholders = ",".join("?" * len(chunk))
+            with self._sync_lock:
+                rows = (
+                    self._sync_db()
+                    .execute(
+                        f"SELECT run_id, error, node_name, superstep FROM steps "
+                        f"WHERE run_id IN ({placeholders}) AND error IS NOT NULL ORDER BY run_id, {_STEP_TIME_ORDER}",
+                        chunk,
+                    )
+                    .fetchall()
+                )
+            _collect_first_failures(rows, failures)
+        return failures
 
     async def get_steps(
         self,
