@@ -100,6 +100,7 @@ class RunEndEvent(BaseEvent):
     batch_stopped_items: int | None
     batch_outcome: str | None
     batch_restored_items: int | None
+    error_detail: ErrorDetail | None  # Unredacted failure detail (in-memory only)
 ```
 
 For map parents, `batch_completed_items` remains inclusive of checkpoint-restored successes and `batch_restored_items` reports that subset. OpenTelemetry processors export the same value as `hypergraph.batch.restored_items`. Restored children were skipped, so they do not emit new child execution events.
@@ -121,6 +122,7 @@ class NodeStartEvent(BaseEvent):
     node_name: str               # Name of the node
     graph_name: str              # Graph containing the node
     superstep: int | None        # Zero-indexed superstep, if known
+    trace_inputs: dict | None    # Input kwargs, only when the node opted into trace_io
 ```
 
 ### NodeEndEvent
@@ -135,7 +137,14 @@ class NodeEndEvent(BaseEvent):
     superstep: int | None        # Zero-indexed superstep, if known
     duration_ms: float           # Wall-clock duration in milliseconds
     cached: bool                 # True if result was served from cache
+    trace_outputs: dict | None   # Outputs by name, only when the node opted into trace_io
 ```
+
+`trace_inputs` / `trace_outputs` are present only for nodes that resolve
+`trace_io` on (`@node(trace_io=True)`, or a `Graph(..., trace_io=True)`
+default). They carry live objects for span export and are never persisted —
+no durable record changes shape or content because a node opted in. See
+[Observe execution](../05-how-to/observe-execution.md).
 
 ### NodeAttemptStartEvent
 
@@ -208,12 +217,19 @@ class NodeErrorEvent(BaseEvent):
     error_type: str              # Fully qualified exception type
     superstep: int | None        # Zero-indexed superstep, if known
     diagnostic: Diagnostic | None  # Typed privacy-safe diagnostic
+    error_detail: ErrorDetail | None  # Unredacted failure detail (in-memory only)
 ```
 
 `error` carries the safe projection — exception type name, stable diagnostic
-code, and static wording. Raw exception message text never enters the event
-stream; the exact exception object stays on local surfaces
-(`RunResult.error`, `get_failure_evidence`). See
+code, and static wording — and is what every durable record stores.
+`error_detail` is the unredacted counterpart (`message`, `type_name`,
+`traceback`) for live consumers that must debug the failure; it rides
+in-memory events only and is never persisted. The exact exception object
+still stays on local surfaces (`RunResult.error`, `get_failure_evidence`).
+
+The OpenTelemetry export uses `error_detail` by default, following standard
+`record_exception`; `OpenTelemetryProcessor(redact_errors=True)` exports the
+safe projection instead. See
 [Errors — diagnostic code registry](errors.md#diagnostic-code-registry).
 
 ### RouteDecisionEvent

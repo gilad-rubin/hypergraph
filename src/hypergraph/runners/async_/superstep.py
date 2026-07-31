@@ -140,6 +140,7 @@ async def run_superstep_async(
                 workflow_id=ctx_base.workflow_id,
                 item_index=ctx_base.item_index,
                 superstep=superstep_idx,
+                inputs=inputs,
             )
             inspection_time_ms = time.perf_counter() * 1000
             if inspection_session is not None:
@@ -194,6 +195,7 @@ async def run_superstep_async(
                         workflow_id=ctx_base.workflow_id,
                         item_index=ctx_base.item_index,
                         superstep=superstep_idx,
+                        outputs=outputs,
                     )
                 )
             return node, outputs, input_versions, wait_for_versions, 0.0, True, node_span_id
@@ -207,6 +209,7 @@ async def run_superstep_async(
             workflow_id=ctx_base.workflow_id,
             item_index=ctx_base.item_index,
             superstep=superstep_idx,
+            inputs=inputs,
         )
         inspection_started_at_ms = time.perf_counter() * 1000
         if inspection_session is not None:
@@ -374,6 +377,7 @@ async def run_superstep_async(
                         workflow_id=ctx_base.workflow_id,
                         item_index=ctx_base.item_index,
                         superstep=superstep_idx,
+                        outputs=outputs,
                     )
                 )
 

@@ -40,6 +40,20 @@ def create_dispatcher(
 # ------------------------------------------------------------------
 
 
+def trace_io_enabled(node: HyperNode, graph: Graph) -> bool:
+    """Resolve node/graph ``trace_io``: an explicit node value wins.
+
+    Precedence is node explicit -> graph default -> off. An exporter can
+    still refuse the payloads it receives (the processor-side kill switch),
+    which is deliberately NOT consulted here: the runner does not know which
+    processors are attached, and the capture itself is a shallow dict copy.
+    """
+    declared = getattr(node, "trace_io", None)
+    if declared is not None:
+        return bool(declared)
+    return bool(getattr(graph, "trace_io", False))
+
+
 def build_node_start_event(
     run_id: str,
     run_span_id: str,
@@ -49,8 +63,13 @@ def build_node_start_event(
     workflow_id: str | None = None,
     item_index: int | None = None,
     superstep: int | None = None,
+    inputs: dict[str, Any] | None = None,
 ) -> tuple[str, Any]:
-    """Build a NodeStartEvent. Returns (span_id, event)."""
+    """Build a NodeStartEvent. Returns (span_id, event).
+
+    ``inputs`` is carried on the event only when the node resolves
+    ``trace_io`` on; it feeds span export and never a durable record.
+    """
     from hypergraph.events.types import NodeStartEvent, _generate_span_id
 
     span_id = _generate_span_id()
@@ -63,6 +82,7 @@ def build_node_start_event(
         node_name=node.name,
         graph_name=graph.name,
         superstep=superstep,
+        trace_inputs=dict(inputs) if inputs is not None and trace_io_enabled(node, graph) else None,
     )
     return span_id, event
 
@@ -80,8 +100,13 @@ def build_node_end_event(
     workflow_id: str | None = None,
     item_index: int | None = None,
     superstep: int | None = None,
+    outputs: dict[str, Any] | None = None,
 ) -> Any:
-    """Build a NodeEndEvent."""
+    """Build a NodeEndEvent.
+
+    ``outputs`` is carried on the event only when the node resolves
+    ``trace_io`` on; it feeds span export and never a durable record.
+    """
     from hypergraph.events.types import NodeEndEvent
 
     return NodeEndEvent(
@@ -96,6 +121,7 @@ def build_node_end_event(
         duration_ms=duration_ms,
         cached=cached,
         inner_logs=inner_logs,
+        trace_outputs=dict(outputs) if outputs is not None and trace_io_enabled(node, graph) else None,
     )
 
 
@@ -140,11 +166,13 @@ def build_node_error_event(
 ) -> Any:
     """Build a NodeErrorEvent from the current exception context.
 
-    ``error`` carries the privacy-safe projection — never ``str(exception)``.
-    Events feed durable surfaces (RunLog, checkpoints, OTel export); the exact
-    exception object stays on local surfaces only.
+    ``error`` carries the privacy-safe projection — never ``str(exception)`` —
+    and is what durable surfaces (RunLog, StepRecord, checkpoints, the attempt
+    ledger) store. ``error_detail`` carries the unredacted message, type and
+    traceback for live consumers such as the OTel export; it is never
+    persisted. The exact exception object stays on local surfaces only.
     """
-    from hypergraph.diagnostics import derive_diagnostic, safe_error_text
+    from hypergraph.diagnostics import derive_diagnostic, full_error_detail, safe_error_text
     from hypergraph.events.types import NodeErrorEvent
 
     exc_type, exc_val, _ = sys.exc_info()
@@ -170,6 +198,7 @@ def build_node_error_event(
         error_type=f"{exc_type.__module__}.{exc_type.__qualname__}" if exc_type else "",
         superstep=superstep,
         diagnostic=diagnostic,
+        error_detail=full_error_detail(exc_val) if exc_val is not None else None,
     )
 
 
@@ -264,9 +293,12 @@ def build_run_end_event(
 ) -> Any:
     """Build a RunEndEvent.
 
-    ``error`` carries the privacy-safe projection — never ``str(exception)``.
+    ``error`` carries the privacy-safe projection — never ``str(exception)`` —
+    and is what durable surfaces store. ``error_detail`` carries the
+    unredacted message, type and traceback for live consumers; it is never
+    persisted.
     """
-    from hypergraph.diagnostics import safe_error_text
+    from hypergraph.diagnostics import full_error_detail, safe_error_text
     from hypergraph.events.types import RunEndEvent, RunStatus
 
     duration_ms = (time.time() - start_time) * 1000
@@ -279,6 +311,7 @@ def build_run_end_event(
         graph_name=graph.name,
         status=RunStatus(status) if status is not None else (RunStatus.FAILED if error else RunStatus.COMPLETED),
         error=safe_error_text(error) if error else None,
+        error_detail=full_error_detail(error) if error else None,
         duration_ms=duration_ms,
         batch_total_items=batch_summary.total_items if batch_summary is not None else None,
         batch_completed_items=batch_summary.completed_items if batch_summary is not None else None,

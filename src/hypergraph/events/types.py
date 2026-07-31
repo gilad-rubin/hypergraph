@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal
 
-from hypergraph.diagnostics import Diagnostic
+from hypergraph.diagnostics import Diagnostic, ErrorDetail
 
 
 class RunStatus(Enum):
@@ -92,10 +92,16 @@ class RunStartEvent(BaseEvent):
 class RunEndEvent(BaseEvent):
     """Emitted when a graph run completes.
 
+    ``error`` is the privacy-safe projection durable records store;
+    ``error_detail`` is the unredacted counterpart for live consumers. See
+    :class:`~hypergraph.diagnostics.ErrorDetail`.
+
     Attributes:
         graph_name: Name of the graph that was executed.
         status: Outcome of the run (completed, failed, paused, partial, stopped).
-        error: Error message if status is FAILED.
+        error: Privacy-safe error projection if status is FAILED.
+        error_detail: Unredacted message/type/traceback of the failure, when
+            one was raised. In-memory only — never persisted.
         duration_ms: Wall-clock duration in milliseconds.
         batch_*: Aggregate mapped-item counts for parent map runs.
         batch_outcome: Aggregate mapped-item outcome for parent map runs.
@@ -112,6 +118,7 @@ class RunEndEvent(BaseEvent):
     batch_stopped_items: int | None = None
     batch_outcome: str | None = None
     batch_restored_items: int | None = None
+    error_detail: ErrorDetail | None = None
 
     def __post_init__(self) -> None:
         # Coerce string status values to RunStatus enum
@@ -127,11 +134,15 @@ class NodeStartEvent(BaseEvent):
         node_name: Name of the node.
         graph_name: Name of the graph containing the node.
         superstep: Zero-indexed superstep number, if known.
+        trace_inputs: The node's input kwargs, present ONLY when the node
+            opted into ``trace_io``. Live objects, not copies of their
+            contents — for span export, never for a durable record.
     """
 
     node_name: str = ""
     graph_name: str = ""
     superstep: int | None = None
+    trace_inputs: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +154,9 @@ class NodeEndEvent(BaseEvent):
         graph_name: Name of the graph containing the node.
         duration_ms: Wall-clock duration in milliseconds.
         superstep: Zero-indexed superstep number, if known.
+        trace_outputs: The node's output values by name, present ONLY when
+            the node opted into ``trace_io``. Live objects, not copies of
+            their contents — for span export, never for a durable record.
     """
 
     node_name: str = ""
@@ -151,6 +165,7 @@ class NodeEndEvent(BaseEvent):
     duration_ms: float = 0.0
     cached: bool = False
     inner_logs: tuple = ()  # tuple[RunLog, ...] at runtime; untyped to avoid import
+    trace_outputs: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -254,10 +269,14 @@ class NodeErrorEvent(BaseEvent):
     """Emitted when a node fails with an exception.
 
     Emitted once per logical failure — never for intermediate retry attempts.
-    ``error`` carries the privacy-safe projection (type name, stable code,
-    static problem wording), never raw exception message text; the exact
-    exception object stays on local surfaces (``RunResult.error``,
-    ``get_failure_evidence``).
+
+    Two shapes of the same failure travel together. ``error`` (with
+    ``diagnostic``) is the privacy-safe projection — type name, stable code,
+    static problem wording — and is what durable records store.
+    ``error_detail`` is the unredacted message/type/traceback, for live
+    consumers that must be able to debug the failure; it is never persisted.
+    The exact exception object still stays on local surfaces only
+    (``RunResult.error``, ``get_failure_evidence``).
 
     Attributes:
         node_name: Name of the node.
@@ -266,6 +285,8 @@ class NodeErrorEvent(BaseEvent):
         error_type: Fully qualified exception type name.
         superstep: Zero-indexed superstep number, if known.
         diagnostic: Typed privacy-safe diagnostic, when derivable.
+        error_detail: Unredacted message/type/traceback of the exact
+            exception. In-memory only — never persisted.
     """
 
     node_name: str = ""
@@ -274,6 +295,7 @@ class NodeErrorEvent(BaseEvent):
     error_type: str = ""
     superstep: int | None = None
     diagnostic: Diagnostic | None = None
+    error_detail: ErrorDetail | None = None
 
 
 @dataclass(frozen=True)
