@@ -434,17 +434,7 @@ class TestInputEdgesSimplify:
         delivers into the box. Reaching ANY in-port of a collapsed box counts:
         the drawn edge ends at the hull, so the reader's question is only
         whether the value reaches the box, not which inner node it enters."""
-
-        @node(output_name="context")
-        def format_ctx(pages: str) -> str:
-            return pages
-
-        @node(output_name="messages")
-        def assemble(query: str, context: str) -> str:
-            return query + context
-
-        inner = Graph([format_ctx, assemble], name="inner")
-        outer = Graph([select_pages, inner.as_node(name="inner")], name="outer")
+        outer = make_input_fanout_into_box_graph()
 
         on = scene_for_state(outer, expansion_state={}, simplify=True)
         off = scene_for_state(outer, expansion_state={}, simplify=False)

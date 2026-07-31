@@ -295,7 +295,7 @@ def _build_ir_edge(
     tgt_attrs = flat_graph.nodes.get(tgt, {})
     if tgt_attrs.get("node_type") == "GRAPH":
         for value_name in value_names:
-            internal_consumers = _find_internal_consumers(tgt, value_name, flat_graph)
+            internal_consumers = find_internal_consumers(tgt, value_name, flat_graph)
             if internal_consumers:
                 target_when_expanded = internal_consumers[0] if len(internal_consumers) == 1 else internal_consumers
                 break
@@ -399,7 +399,7 @@ def _find_deepest_internal_producers(container_id: str, value_name: str, flat_gr
     return tuple(node_id for node_id in candidates if _depth_below(node_id, container_id, flat_graph) == max_depth)
 
 
-def _find_internal_consumers(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> tuple[str, ...]:
+def find_internal_consumers(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> tuple[str, ...]:
     """EVERY internal consumer a boundary value feeds, not just the deepest.
 
     One incoming value can enter a container at several nodes — panda's
@@ -417,7 +417,7 @@ def _find_internal_consumers(container_id: str, value_name: str, flat_graph: nx.
     descendants = [
         (node_id, attrs)
         for node_id, attrs in flat_graph.nodes(data=True)
-        if _is_descendant(node_id, container_id, flat_graph) and attrs.get("node_type") != "GRAPH"
+        if _is_descendant(node_id, container_id, flat_graph) and attrs.get("node_type") != "GRAPH" and not attrs.get("hide", False)
     ]
 
     def fed_internally(node_id: str) -> bool:
@@ -543,7 +543,7 @@ def resolve_boundary_ports(
 
     if flat_graph.nodes.get(tgt, {}).get("node_type") == "GRAPH":
         for value_name in value_names:
-            consumers = _find_internal_consumers(tgt, value_name, flat_graph)
+            consumers = find_internal_consumers(tgt, value_name, flat_graph)
             if consumers:
                 children = {_direct_child(tgt, consumer, flat_graph) for consumer in consumers}
                 if len(children) == 1:

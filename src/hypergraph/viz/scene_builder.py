@@ -328,11 +328,18 @@ def _resolve_rewritten_endpoints(
     """Walk each rewritten endpoint up to its deepest visible ancestor, keeping
     order and dropping duplicates. An endpoint with no visible ancestor (or one
     outside the parent map, e.g. a not-yet-emitted INPUT pill id) is kept as
-    is — the edge then stays hidden exactly as before."""
+    is — the edge then stays hidden exactly as before.
+
+    Only collapse-hiding aggregates: a node hidden by ``hide=True`` walks up to
+    an EXPANDED ancestor, and an edge must never target an expanded container
+    (dagre cannot rank it) — so that resolution is rejected and the edge stays
+    hidden, exactly as it did before endpoints were resolved at all."""
     resolved: list[str] = []
     for endpoint in endpoints:
         visible = _resolve_to_visible(endpoint, parent_map, expansion_state, visible_ids)
         candidate = visible if visible is not None else endpoint
+        if candidate != endpoint and expansion_state.get(candidate):
+            candidate = endpoint
         if candidate not in resolved:
             resolved.append(candidate)
     return resolved

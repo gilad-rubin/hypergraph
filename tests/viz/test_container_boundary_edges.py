@@ -139,6 +139,57 @@ class TestMermaidTwinAgrees:
         assert "pick --> gen__build_messages__format_ctx" in text
 
 
+class TestInternallyFedConsumersAreExcluded:
+    """A consumer already fed by an INTERNAL producer of the same name must
+    not receive the boundary edge — in the IR and in Mermaid alike."""
+
+    @staticmethod
+    def _mixed_flat_graph():
+        import networkx as nx
+
+        flat = nx.DiGraph()
+        flat.add_node("pick", node_type="FUNCTION", outputs=("document",), inputs=("raw",))
+        flat.add_node("box", node_type="GRAPH", outputs=(), inputs=("document",))
+        flat.add_node("box/gate", node_type="FUNCTION", parent="box", inputs=("document",), outputs=("ok",))
+        flat.add_node("box/maker", node_type="FUNCTION", parent="box", inputs=(), outputs=("document",))
+        flat.add_node("box/user", node_type="FUNCTION", parent="box", inputs=("document",), outputs=("used",))
+        flat.add_edge("pick", "box", edge_type="data", value_names=["document"])
+        flat.add_edge("box/maker", "box/user", edge_type="data", value_names=["document"])
+        return flat
+
+    def test_ir_builder_excludes_the_internally_fed_consumer(self):
+        from hypergraph.viz.renderer.ir_builder import find_internal_consumers
+
+        assert find_internal_consumers("box", "document", self._mixed_flat_graph()) == ("box/gate",)
+
+    def test_mermaid_excludes_the_internally_fed_consumer(self):
+        from hypergraph.viz.mermaid import _resolve_data_targets
+
+        targets = _resolve_data_targets(
+            "box",
+            "document",
+            self._mixed_flat_graph(),
+            {"box": True},
+            {},
+        )
+        assert targets == ["box/gate"], f"the boundary value must not be drawn into the internally fed consumer: {targets}"
+
+
+class TestHiddenNodesDoNotAggregate:
+    """Only collapse-hiding aggregates to a boundary. A ``hide=True`` node's
+    visible ancestor is an EXPANDED container — never a legitimate edge
+    target (dagre cannot rank an edge into a compound node) — so its edges
+    stay hidden, exactly as before endpoints were resolved at all."""
+
+    def test_edge_to_a_hidden_consumer_stays_hidden_when_expanded(self):
+        from tests.viz.conftest import make_hidden_source_data_dependency_graph
+
+        scene = scene_for_state(make_hidden_source_data_dependency_graph(), expansion_state={"box": True}, simplify=False)
+
+        offenders = [pair for pair in _visible(scene) if pair[1] == "box"]
+        assert not offenders, f"no edge may target the expanded 'box' hull: {offenders}"
+
+
 class TestOuterInputAggregatesToTheCollapsedBoundary:
     def test_pill_and_edge_survive_the_collapse(self):
         """The E.1 shape: an unbound outer input consumed only inside a

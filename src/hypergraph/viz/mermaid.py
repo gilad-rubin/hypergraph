@@ -31,7 +31,11 @@ from hypergraph.viz._common import (
 from hypergraph.viz._mermaid_core import MermaidDiagram, _MermaidIdAllocator, _sanitize_id
 from hypergraph.viz._simplify import EdgeRef, shortcut_edge_keys
 from hypergraph.viz.renderer._format import format_type
-from hypergraph.viz.renderer.ir_builder import compute_container_transits, resolve_boundary_ports
+from hypergraph.viz.renderer.ir_builder import (
+    compute_container_transits,
+    find_internal_consumers,
+    resolve_boundary_ports,
+)
 from hypergraph.viz.renderer.nodes import (
     build_input_groups,
     get_start_targets,
@@ -356,10 +360,6 @@ def _render_merged_edges(
         expansion_state,
         use_deepest=True,
     )
-    param_to_consumers = build_param_to_consumer_map(
-        flat_graph,
-        expansion_state,
-    )
     seen_edges: set[tuple[str, str, str]] = set()
 
     for source, target, edge_data in flat_graph.edges(data=True):
@@ -429,7 +429,6 @@ def _render_merged_edges(
                 value_name,
                 flat_graph,
                 expansion_state,
-                param_to_consumers,
                 container_entrypoints,
             )
             if actual_source is None:
@@ -476,10 +475,6 @@ def _render_separate_edges(
         flat_graph,
         expansion_state,
         use_deepest=True,
-    )
-    param_to_consumers = build_param_to_consumer_map(
-        flat_graph,
-        expansion_state,
     )
     seen_edges: set[tuple[str, ...]] = set()
 
@@ -529,7 +524,6 @@ def _render_separate_edges(
                     value_name,
                     flat_graph,
                     expansion_state,
-                    param_to_consumers,
                     container_entrypoints,
                 )
                 source_attrs = flat_graph.nodes.get(actual_source, {})
@@ -700,20 +694,20 @@ def _resolve_data_targets(
     value_name: str,
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
-    param_to_consumers: dict[str, list[str]],
     container_entrypoints: dict[str, tuple[str, ...]],
 ) -> list[str]:
     """Resolve actual target(s) for a data edge, entering expanded containers.
 
     One incoming value can enter a container at several internal consumers, so
     an edge into an EXPANDED container fans out to every one of them — the twin
-    of the scene builders' tuple ``target_when_expanded``. A consumer that sits
-    inside a still-collapsed inner container resolves up to that visible
-    boundary instead of silently dropping the edge."""
+    of the scene builders' tuple ``target_when_expanded``, resolved by the same
+    authority (``ir_builder.find_internal_consumers``), so a consumer already
+    fed by an INTERNAL producer of the value never receives the boundary edge.
+    A consumer that sits inside a still-collapsed inner container resolves up
+    to that visible boundary instead of silently dropping the edge."""
     target_attrs = flat_graph.nodes.get(target, {})
     if target_attrs.get("node_type") == "GRAPH" and expansion_state.get(target, False) and value_name:
-        consumers = param_to_consumers.get(value_name, [])
-        internal = [c for c in consumers if c != target and is_descendant_of(c, target, flat_graph)]
+        internal = list(find_internal_consumers(target, value_name, flat_graph))
         if not internal:
             entrypoints = resolve_expanded_entrypoints(
                 (target,),
@@ -733,10 +727,16 @@ def _resolve_data_targets(
 
 
 def _visible_ancestor(node_id: str, flat_graph: nx.DiGraph, expansion_state: dict[str, bool]) -> str | None:
-    """Walk up from ``node_id`` to the first currently-visible node."""
+    """Walk up from ``node_id`` to the first currently-visible node.
+
+    Only collapse-hiding aggregates: a node hidden by ``hide=True`` walks up
+    to an EXPANDED ancestor, which is never a legitimate edge target — the
+    edge is dropped instead, exactly as before."""
     current: str | None = node_id
     while current is not None and not is_node_visible(current, flat_graph, expansion_state):
         current = flat_graph.nodes.get(current, {}).get("parent")
+    if current is not None and current != node_id and expansion_state.get(current):
+        return None
     return current
 
 
@@ -904,8 +904,10 @@ def to_mermaid(
         depth: How many levels of nested graphs to expand (default: 0)
         show_types: Whether to show type annotations in labels
         separate_outputs: Whether to render outputs as separate DATA nodes
-        simplify: Hide data edges a longer path already implies — given
-            ``A → B → C``, a direct ``A → C`` is dropped (default: True)
+        simplify: Hide data and input edges a longer path already implies —
+            given ``A → B → C``, a direct ``A → C`` is dropped, and an input
+            feeding the whole chain keeps only its earliest consumer
+            (default: True)
         direction: Flowchart direction — "TD", "TB", "LR", "RL", "BT"
         colors: Custom color overrides per node class, e.g.
             {"function": {"fill": "#fff", "stroke": "#000"}}

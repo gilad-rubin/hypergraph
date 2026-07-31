@@ -343,12 +343,16 @@
     // endpoint may sit inside a still-collapsed INNER container, so it is
     // walked up to its deepest visible ancestor — the edge aggregates to that
     // boundary instead of vanishing with the hidden node. Several endpoints
-    // resolving to one ancestor collapse to one edge.
+    // resolving to one ancestor collapse to one edge. Only collapse-hiding
+    // aggregates: a node hidden by hide=True walks up to an EXPANDED ancestor,
+    // and an edge must never target an expanded container (dagre cannot rank
+    // it) — that resolution is rejected and the edge stays hidden.
     function resolveRewrittenEndpoints(endpoints) {
       var resolved = [];
       for (var re = 0; re < endpoints.length; re++) {
         var visible = resolveToVisible(endpoints[re], parentMap, visibleIds);
         var candidate = visible === null ? endpoints[re] : visible;
+        if (candidate !== endpoints[re] && expansionState[candidate]) candidate = endpoints[re];
         if (resolved.indexOf(candidate) === -1) resolved.push(candidate);
       }
       return resolved;
