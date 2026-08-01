@@ -107,6 +107,15 @@ def build_initial_scene(
     input_buckets = (
         _merge_inputs_for_state(ir, parent_map, expansion_state, node_visible_ids, show_bounded_inputs=show_bounded_inputs) if show_inputs else []
     )
+    # An IR edge may target a pill by its state-independent synthetic id
+    # (identity-mode fan-out re-routes), but per-state merging can fold that
+    # pill into a group with a different id — remap so the edge lands on the
+    # pill node this state actually emits.
+    pill_alias: dict[str, str] = {}
+    for bucket in input_buckets:
+        for member_id in bucket.get("member_ids", ()):
+            if member_id != bucket["id"]:
+                pill_alias[member_id] = bucket["id"]
     for ext in input_buckets:
         hidden = ext["hidden"]
         owner_container = ext["owner_container"]
@@ -227,6 +236,7 @@ def build_initial_scene(
                 targets = list(expanded_targets) if isinstance(expanded_targets, tuple) else [expanded_targets]
             targets = list(resolve_expanded_entrypoints(targets, ir.container_entrypoints, expansion_state))
             targets = _resolve_rewritten_endpoints(targets, parent_map, expansion_state, visible_ids)
+            targets = list(dict.fromkeys(pill_alias.get(target, target) for target in targets))
 
         # A data edge can carry multiple value_names (one NetworkX edge per
         # (src,tgt) merges them). Merged-output mode should still render one
@@ -659,11 +669,13 @@ def _merge_inputs_for_state(
                 "deepest_owner": ext.deepest_owner,
                 "targets": list(targets),
                 "hidden": hidden,
+                "member_ids": [ext.synthetic_id],
             }
             continue
         bucket["params"].extend(ext.params)
         bucket["segments"].extend(segments)
         bucket["type_hints"].extend(ext.type_hints)
+        bucket["member_ids"].append(ext.synthetic_id)
         # A merged pill is hidden only when every constituent is.
         bucket["hidden"] = bucket["hidden"] and hidden
 

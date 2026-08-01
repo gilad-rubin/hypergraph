@@ -21,6 +21,7 @@ from hypergraph.viz._common import (
     disambiguate_external_input_ids,
     external_input_display_name,
     get_expandable_nodes,
+    map_feeds_param,
 )
 from hypergraph.viz.ir_schema import GraphIR, IREdge, IRExternalInput, IRNode
 from hypergraph.viz.renderer._format import format_type
@@ -32,6 +33,7 @@ from hypergraph.viz.renderer.scope import (
     find_back_edges,
     get_deepest_consumers,
     is_output_externally_consumed,
+    map_fed_field_consumers,
 )
 
 
@@ -80,6 +82,7 @@ def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
     # (e.g. ``A.x`` and ``B.x``) get unique ``input_<id>`` ids.
     id_for_param = disambiguate_external_input_ids([list(group["params"]) for group in groups])
     external_inputs = [_build_input_group(group, flat_graph, id_for_param, map_fed_fields) for group in groups]
+    external_inputs = _ensure_map_fed_field_pills(external_inputs, flat_graph, map_fed_fields)
 
     # Re-route each identity-mode fan-out edge, when its mapped container is
     # expanded, into the inner INPUT pill(s) fed by an item field — instead of
@@ -158,6 +161,95 @@ def _mapped_container_for(owner: str | None, field: str, map_fed_fields: dict[st
             return current
         current = flat_graph.nodes.get(current, {}).get("parent")
     return None
+
+
+def _deepest_common_container(consumers: Sequence[str], container: str, flat_graph: nx.DiGraph) -> str:
+    """The deepest container at-or-under ``container`` enclosing every consumer.
+
+    Matches ``compute_deepest_input_scope``'s placement semantics for the
+    synthesized field pills: a field consumed only inside a container nested
+    below the mapped one renders inside that inner container.
+    """
+
+    def chain(node_id: str) -> list[str]:
+        out: list[str] = []
+        current = flat_graph.nodes.get(node_id, {}).get("parent")
+        while current is not None:
+            out.append(current)
+            if current == container:
+                break
+            current = flat_graph.nodes.get(current, {}).get("parent")
+        return out
+
+    chains = [chain(consumer) for consumer in consumers]
+    if not chains or not all(chains):
+        return container
+    for candidate in chains[0]:
+        if all(candidate in c for c in chains):
+            return candidate
+    return container
+
+
+def _ensure_map_fed_field_pills(
+    external_inputs: list[IRExternalInput],
+    flat_graph: nx.DiGraph,
+    map_fed_fields: dict[str, set[str]],
+) -> list[IRExternalInput]:
+    """Give every consumed map-fed item field its own pill INSIDE the mapped container.
+
+    Two gaps close here, both observed on a MOUNTED HyperTable (panda's
+    ingest graph), whose item fields never reach the outer input surface:
+
+    - A field sharing its name with a genuine outer input (``pdf_uri``)
+      previously rode the outer pill straight into the container's interior —
+      an edge runtime never wires (the mapped rows feed it). The outer pill
+      now keeps only the outside consumers (the shared consumer walks exclude
+      map-fed ones), and the field gets its own map-fed pill.
+    - A field with no outer presence at all (``page_markdown`` hidden behind
+      a MaterializationNode boundary) previously had no pill anywhere, so
+      its consumers drew with no incoming edge.
+
+    A pill whose every consumer sat behind a map boundary (the classic
+    single-name ``page_text`` case) is left with no consumers by those same
+    walks — it is dropped here and replaced by the synthesized field pill,
+    which carries the SAME synthetic id when the name is unambiguous.
+    """
+    if not map_fed_fields:
+        return external_inputs
+
+    all_fields = set().union(*map_fed_fields.values())
+    kept: list[IRExternalInput] = []
+    for ext in external_inputs:
+        if not ext.consumers and ext.params and all(external_input_display_name(p) in all_fields for p in ext.params):
+            continue
+        kept.append(ext)
+
+    taken = {ext.synthetic_id for ext in kept}
+    synthesized: list[IRExternalInput] = []
+    for container in sorted(map_fed_fields):
+        for field in sorted(map_fed_fields[container]):
+            consumers = map_fed_field_consumers(container, field, flat_graph)
+            if not consumers:
+                continue
+            param_type = get_param_type(field, flat_graph)
+            if param_type is None:
+                for consumer in consumers:
+                    param_type = flat_graph.nodes[consumer].get("input_types", {}).get(field)
+                    if param_type is not None:
+                        break
+            segment = field if f"input_{field}" not in taken else f"{container.replace('/', '_')}_{field}"
+            pill = IRExternalInput(
+                params=(field,),
+                deepest_owner=_deepest_common_container(consumers, container, flat_graph),
+                consumers=tuple(consumers),
+                type_hints=(format_type(param_type),),
+                is_bound=False,
+                id_segments=(segment,),
+                map_fed=True,
+            )
+            taken.add(pill.synthetic_id)
+            synthesized.append(pill)
+    return [*kept, *synthesized]
 
 
 def _reroute_fanout_edges_to_field_pills(
@@ -294,11 +386,24 @@ def _build_ir_edge(
 
     tgt_attrs = flat_graph.nodes.get(tgt, {})
     if tgt_attrs.get("node_type") == "GRAPH":
+        # Union the EXACT-match consumers of every value this edge carries: a
+        # multi-value boundary edge feeds each value's own consumers, and the
+        # old first-value-wins loop let one value's fuzzy guess (panda:
+        # ``doc_version_id`` substring-matching ``version_id``) swallow the
+        # exact consumers of the values after it (``filename``).
+        exact_union: list[str] = []
         for value_name in value_names:
-            internal_consumers = find_internal_consumers(tgt, value_name, flat_graph)
-            if internal_consumers:
-                target_when_expanded = internal_consumers[0] if len(internal_consumers) == 1 else internal_consumers
-                break
+            for consumer in find_internal_consumers(tgt, value_name, flat_graph, include_fuzzy=False):
+                if consumer not in exact_union:
+                    exact_union.append(consumer)
+        if exact_union:
+            target_when_expanded = exact_union[0] if len(exact_union) == 1 else tuple(exact_union)
+        else:
+            for value_name in value_names:
+                internal_consumers = find_internal_consumers(tgt, value_name, flat_graph)
+                if internal_consumers:
+                    target_when_expanded = internal_consumers[0] if len(internal_consumers) == 1 else internal_consumers
+                    break
         # Any edge into a container still unresolved here must re-route to the
         # container's entrypoint when the container is expanded, or the scene
         # holds an edge into a node the layouter never ranked. Two ways to land
@@ -399,7 +504,7 @@ def _find_deepest_internal_producers(container_id: str, value_name: str, flat_gr
     return tuple(node_id for node_id in candidates if _depth_below(node_id, container_id, flat_graph) == max_depth)
 
 
-def find_internal_consumers(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> tuple[str, ...]:
+def find_internal_consumers(container_id: str, value_name: str, flat_graph: nx.DiGraph, *, include_fuzzy: bool = True) -> tuple[str, ...]:
     """EVERY internal consumer a boundary value feeds, not just the deepest.
 
     One incoming value can enter a container at several nodes — panda's
@@ -408,11 +513,14 @@ def find_internal_consumers(container_id: str, value_name: str, flat_graph: nx.D
     every other consumer with no incoming edge once the container expanded.
 
     Exact name matches are authoritative: each one genuinely reads the value,
-    so each one gets the edge. A consumer already fed by an *internal*
-    producer of the same name is excluded — its value does not cross the
-    boundary. The fuzzy fallback stays single-answer (deepest): a substring
-    match is a guess, and fanning a guess out would draw edges nobody can
-    defend."""
+    so each one gets the edge. Two exclusions, same reason (the value does
+    not cross that boundary): a consumer already fed by an *internal*
+    producer of the same name, and a consumer sitting under a mapped
+    container whose ``map_fields`` supply the name per item. The fuzzy
+    fallback stays single-answer (deepest): a substring match is a guess,
+    and fanning a guess out would draw edges nobody can defend.
+    ``include_fuzzy=False`` skips the fallback so a caller can union exact
+    matches across several value names before settling for a guess."""
     inner_names = _inner_input_names(container_id, value_name, flat_graph)
     descendants = [
         (node_id, attrs)
@@ -428,13 +536,31 @@ def find_internal_consumers(container_id: str, value_name: str, flat_graph: nx.D
                 return True
         return False
 
+    def map_fed_below(node_id: str) -> bool:
+        current = flat_graph.nodes.get(node_id, {}).get("parent")
+        while current is not None and current != container_id:
+            if any(map_feeds_param(current, inner, flat_graph) for inner in inner_names):
+                return True
+            current = flat_graph.nodes.get(current, {}).get("parent")
+        return False
+
     candidates = [
-        node_id for node_id, attrs in descendants if any(inner in attrs.get("inputs", ()) for inner in inner_names) and not fed_internally(node_id)
+        node_id
+        for node_id, attrs in descendants
+        if any(inner in attrs.get("inputs", ()) for inner in inner_names) and not fed_internally(node_id) and not map_fed_below(node_id)
     ]
     if candidates:
         return tuple(candidates)
+    if not include_fuzzy:
+        return ()
 
-    fuzzy = [node_id for node_id, attrs in descendants for inp in attrs.get("inputs", ()) for inner in inner_names if inp in inner or inner in inp]
+    fuzzy = [
+        node_id
+        for node_id, attrs in descendants
+        for inp in attrs.get("inputs", ())
+        for inner in inner_names
+        if (inp in inner or inner in inp) and not map_fed_below(node_id)
+    ]
     if fuzzy:
         return (max(fuzzy, key=lambda c: _depth_below(c, container_id, flat_graph)),)
     return ()

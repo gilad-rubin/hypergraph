@@ -14,6 +14,7 @@ from hypergraph.viz._common import (
     get_parent,
     is_descendant_of,
     is_node_visible,
+    map_feeds_param,
     resolve_port_address_consumers,
 )
 
@@ -78,7 +79,13 @@ def _descend_to_inner_consumers(consumer: str, param: str, flat_graph: nx.DiGrap
     Terminates unconditionally: each recursive call moves to a strict
     descendant container in the finite containment tree, regardless of how
     boundary renames chain or swap names.
+
+    A mapped container whose fan-out edge supplies ``param`` per item
+    (``map_fields``) is a boundary the outer value never crosses — the
+    descent stops there and claims no inner consumer.
     """
+    if map_feeds_param(consumer, param, flat_graph):
+        return []
     attrs = flat_graph.nodes.get(consumer, {})
     if attrs.get("node_type") != "GRAPH":
         return [consumer]
@@ -95,6 +102,29 @@ def _descend_to_inner_consumers(consumer: str, param: str, flat_graph: nx.DiGrap
                         inner_consumers.append(deep_consumer)
                 break
     return inner_consumers or [consumer]
+
+
+def map_fed_field_consumers(container_id: str, field: str, flat_graph: nx.DiGraph) -> list[str]:
+    """The inner consumers a mapped container's item ``field`` feeds.
+
+    The same walk as ``_descend_to_inner_consumers``, but started AT the
+    mapped container for its own field: the map boundary being crossed here
+    is the one the fan-out edge itself crosses, so the map-fed stop applies
+    only to mapped containers nested deeper inside.
+    """
+    attrs = flat_graph.nodes.get(container_id, {})
+    inner_names = (attrs.get("input_name_map") or {}).get(field) or (field,)
+    consumers: list[str] = []
+    for child_id, child_attrs in flat_graph.nodes(data=True):
+        if child_attrs.get("parent") != container_id:
+            continue
+        for inner_name in inner_names:
+            if inner_name in child_attrs.get("inputs", ()):
+                for deep_consumer in _descend_to_inner_consumers(child_id, inner_name, flat_graph):
+                    if deep_consumer not in consumers:
+                        consumers.append(deep_consumer)
+                break
+    return consumers
 
 
 def get_ancestor_chain(node_id: str, flat_graph: nx.DiGraph) -> list[str]:

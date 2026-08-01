@@ -76,11 +76,16 @@ def test_fanout_edge_connects_producer_to_mapped_node(store):
     assert edge.get("is_map") is True
 
 
-def test_without_fix_the_nodes_are_disconnected(store):
-    """Guards the diagnosis: without the injected edge there is no connection.
+def test_flat_graph_synthesizes_fanout_natively(store):
+    """``to_flat_graph()`` alone carries the fan-out edge — no extra_edges needed.
 
-    This is what the bug looked like — the combined graph's auto-wiring produces
-    zero edges between the producer and the mapped node.
+    Historic shape of the bug: the combined graph's auto-wiring produced zero
+    edges between the producer and the mapped node, and only
+    ``HyperTable.visualize``'s injected ``extra_edges`` papered over it — so a
+    table MOUNTED inside another graph (``MaterializationNode.nested_graph``)
+    still drew its fan-out node as an unreachable island. The flatten path now
+    synthesizes the identity-mode fan-out edge itself, with the same
+    ``is_map``/``map_fields`` stamp, at every scope.
     """
     from hypergraph.graph import Graph as _Graph
 
@@ -92,8 +97,12 @@ def test_without_fix_the_nodes_are_disconnected(store):
     nodes.extend(table._map_over_nodes)
     combined = _Graph(nodes, name=table._spec.name)
 
-    G_no_fix = combined.to_flat_graph()  # no extra_edges
-    assert not G_no_fix.has_edge("produce_items", "items_node")
+    G = combined.to_flat_graph()  # no extra_edges
+    assert G.has_edge("produce_items", "items_node")
+    edge = G["produce_items"]["items_node"]
+    assert edge["value_names"] == ["items"]
+    assert edge.get("is_map") is True
+    assert edge.get("map_fields") == ["item_id", "text"]
 
 
 def test_visualize_renders_without_raising(store):
