@@ -258,6 +258,20 @@ class TestBatchOutcome:
         rerun_child = await home._get_submission("drop-labels-retry-1:station-b")
         assert json.loads(rerun_child["inputs_json"]) == {"x": 3}
 
+    async def test_checkpoint_reusing_batch_rerun_inherits_material_outputs(self, home):
+        host, served = serve_graphs(_chain_graph(), home=home)
+        original = await submit_keyed(host, served["chain"], {"a": {"x": 4}}, workflow_id="drop-reused")
+        async with _worker(host):
+            await _wait_for(lambda: _settled(RunHomeClient(home), original.batch_ref))
+
+        retry = await host.client.rerun(original.batch_ref)
+        async with _worker(host):
+            await _wait_for(lambda: _settled(RunHomeClient(home), retry.batch_ref))
+
+        outcome = await host.client.result(retry.batch_ref)
+        assert outcome.items["a"].outputs == {"doubled": 8, "tripled": 24}
+        assert host.client.result_sync(retry.batch_ref).items["a"].outputs == outcome.items["a"].outputs
+
     async def test_items_are_keyed_in_manifest_order(self, home):
         host, served = serve_graphs(_chain_graph(), home=home)
         manifest = {"p-2": {"x": 2}, "p-1": {"x": 1}, "p-3": {"x": 3}}

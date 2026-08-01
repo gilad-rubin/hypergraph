@@ -16,7 +16,7 @@ from contextlib import aclosing
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from difflib import get_close_matches
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from hypergraph.checkpointers.types import PauseSlot, WorkflowStatus
 from hypergraph.host._batch_store import BatchAcceptance, DefinitionPin
@@ -727,13 +727,18 @@ class RunHomeClient:
                 return None
             child_rows = await self._home._batch_child_rows(ref.batch_id)
             started = _started_child_ids(child_rows)
-            return _build_batch_outcome(
+            result = _build_batch_outcome(
                 batch,
                 child_rows,
                 self._home.uri,
                 await self._home.get_states(started),
                 await self._home.get_step_failures(started),
             )
+            items = {
+                key: cast(RunOutcome, await self.result(item.run_ref)) if item is not None and item.outputs == {} else item
+                for key, item in result.items.items()
+            }
+            return replace(result, items=items)
         if not isinstance(ref, RunRef):
             raise TypeError(f"result() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         submission = await self._home._get_submission(ref.run_id)
@@ -786,13 +791,18 @@ class RunHomeClient:
                 return None
             child_rows = self._home._batch_child_rows_sync(ref.batch_id)
             started = _started_child_ids(child_rows)
-            return _build_batch_outcome(
+            result = _build_batch_outcome(
                 batch,
                 child_rows,
                 self._home.uri,
                 self._home.get_states_sync(started),
                 self._home.get_step_failures_sync(started),
             )
+            items = {
+                key: cast(RunOutcome, self.result_sync(item.run_ref)) if item is not None and item.outputs == {} else item
+                for key, item in result.items.items()
+            }
+            return replace(result, items=items)
         if not isinstance(ref, RunRef):
             raise TypeError(f"result() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         submission = self._home._get_submission_sync(ref.run_id)
