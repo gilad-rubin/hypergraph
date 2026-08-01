@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from hypergraph import RUN_READ_STATUS_VALUES, RunHomeReadModel, RunQuery, serve
+from hypergraph import RUN_READ_STATUS_VALUES, HostRuntime, RunHomeReadModel, RunQuery, serve
 from hypergraph.host.views import TERMINAL_STATUS_VALUES
 from tests.test_host._batch_interrupt import batch_where, paused_items, submit_ids, worker
 from tests.test_host._ingestion_fixture import answer_value, ingestion_graph
@@ -117,6 +117,26 @@ async def test_answer_race_never_returns_a_paused_badge_without_an_open_ask(home
 
     assert row is not None
     assert (row.status, row.condition, row.pause) == ("queued", "queued", None)
+
+
+async def test_read_model_consumes_a_host_runtime_owned_client(tmp_path, ledger):
+    """A process that owns its Host reads through the same client, unchanged."""
+    graph = ingestion_graph()
+    runtime = HostRuntime(tmp_path / "runtime.db", deployment_version="v1")
+    try:
+        host = await runtime.serving(graph)
+        receipt = await host.submit(graph, {"work_item_id": "work-clean"}, workflow_id="runtime-read")
+        async for _update in runtime.client.watch(receipt.run_ref):
+            pass
+        row = await RunHomeReadModel(runtime.client).get_run(receipt.run_ref)
+    finally:
+        await runtime.close()
+
+    assert row is not None
+    assert (row.status, row.condition) == ("completed", "completed")
+    assert row.inputs == {"work_item_id": "work-clean"}
+    assert row.started_at is not None and row.settled_at is not None
+    assert row.pause is None
 
 
 def test_sync_read_model_mirrors_pending_run_and_batch(home):

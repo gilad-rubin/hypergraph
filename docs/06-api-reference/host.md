@@ -535,6 +535,10 @@ return [
 ]
 ```
 
+`client` is any `RunHomeClient`; a process that owns its Host passes
+[`HostRuntime.client`](#owning-a-host-process), which opens the Home for
+detached reads without starting a worker.
+
 Each `RunReadModel` carries a closed coarse `status` (`queued`, `running`,
 `paused`, or an exact terminal `WorkflowStatus` value) and the precise Run
 Home `condition` that produced it. For example, scheduled and
