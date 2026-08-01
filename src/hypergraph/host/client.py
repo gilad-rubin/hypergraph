@@ -727,7 +727,7 @@ class RunHomeClient:
                 return None
             child_rows = await self._home._batch_child_rows(ref.batch_id)
             started = _started_child_ids(child_rows)
-            result = _build_batch_outcome(
+            batch_result = _build_batch_outcome(
                 batch,
                 child_rows,
                 self._home.uri,
@@ -736,9 +736,9 @@ class RunHomeClient:
             )
             items = {
                 key: cast(RunOutcome, await self.result(item.run_ref)) if item is not None and item.outputs == {} else item
-                for key, item in result.items.items()
+                for key, item in batch_result.items.items()
             }
-            return replace(result, items=items)
+            return replace(batch_result, items=items)
         if not isinstance(ref, RunRef):
             raise TypeError(f"result() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         submission = await self._home._get_submission(ref.run_id)
@@ -746,7 +746,7 @@ class RunHomeClient:
         if submission is None and run is None:
             return None
         run_ids = [ref.run_id] if run is not None else []
-        result = _build_run_outcome(
+        run_result = _build_run_outcome(
             self._home.uri,
             ref.run_id,
             submission,
@@ -754,8 +754,8 @@ class RunHomeClient:
             (await self._home.get_states(run_ids)).get(ref.run_id),
             (await self._home.get_step_failures(run_ids)).get(ref.run_id),
         )
-        if not result.settled or result.outputs != {}:
-            return result
+        if not run_result.settled or run_result.outputs != {}:
+            return run_result
 
         seen = {ref.run_id}
         current_submission, current_run = submission, run
@@ -764,12 +764,12 @@ class RunHomeClient:
                 current_submission["retry_of"] if current_submission is not None else None
             )
             if not source_id or source_id in seen:
-                return result
+                return run_result
             seen.add(source_id)
             current_submission = await self._home._get_submission(source_id)
             current_run = await self._home.get_run_async(source_id)
             if current_submission is None and current_run is None:
-                return result
+                return run_result
             source_ids = [source_id] if current_run is not None else []
             source = _build_run_outcome(
                 self._home.uri,
@@ -780,8 +780,8 @@ class RunHomeClient:
                 (await self._home.get_step_failures(source_ids)).get(source_id),
             )
             if source.outputs:
-                return replace(result, outputs=source.outputs)
-        return result
+                return replace(run_result, outputs=source.outputs)
+        return run_result
 
     def result_sync(self, ref: RunRef | BatchRef) -> RunOutcome | BatchOutcome | None:
         """Sync mirror of ``result``."""
@@ -791,7 +791,7 @@ class RunHomeClient:
                 return None
             child_rows = self._home._batch_child_rows_sync(ref.batch_id)
             started = _started_child_ids(child_rows)
-            result = _build_batch_outcome(
+            batch_result = _build_batch_outcome(
                 batch,
                 child_rows,
                 self._home.uri,
@@ -800,9 +800,9 @@ class RunHomeClient:
             )
             items = {
                 key: cast(RunOutcome, self.result_sync(item.run_ref)) if item is not None and item.outputs == {} else item
-                for key, item in result.items.items()
+                for key, item in batch_result.items.items()
             }
-            return replace(result, items=items)
+            return replace(batch_result, items=items)
         if not isinstance(ref, RunRef):
             raise TypeError(f"result() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         submission = self._home._get_submission_sync(ref.run_id)
@@ -810,7 +810,7 @@ class RunHomeClient:
         if submission is None and run is None:
             return None
         run_ids = [ref.run_id] if run is not None else []
-        result = _build_run_outcome(
+        run_result = _build_run_outcome(
             self._home.uri,
             ref.run_id,
             submission,
@@ -818,8 +818,8 @@ class RunHomeClient:
             self._home.get_states_sync(run_ids).get(ref.run_id),
             self._home.get_step_failures_sync(run_ids).get(ref.run_id),
         )
-        if not result.settled or result.outputs != {}:
-            return result
+        if not run_result.settled or run_result.outputs != {}:
+            return run_result
 
         seen = {ref.run_id}
         current_submission, current_run = submission, run
@@ -828,12 +828,12 @@ class RunHomeClient:
                 current_submission["retry_of"] if current_submission is not None else None
             )
             if not source_id or source_id in seen:
-                return result
+                return run_result
             seen.add(source_id)
             current_submission = self._home._get_submission_sync(source_id)
             current_run = self._home.get_run(source_id)
             if current_submission is None and current_run is None:
-                return result
+                return run_result
             source_ids = [source_id] if current_run is not None else []
             source = _build_run_outcome(
                 self._home.uri,
@@ -844,8 +844,8 @@ class RunHomeClient:
                 self._home.get_step_failures_sync(source_ids).get(source_id),
             )
             if source.outputs:
-                return replace(result, outputs=source.outputs)
-        return result
+                return replace(run_result, outputs=source.outputs)
+        return run_result
 
     async def stop(self, ref: RunRef | BatchRef, *, info: Any = None, source_ref: str | None = None) -> CommandReceipt | BatchCommandReceipt:
         """Record a durable stop command for ``ref``.
