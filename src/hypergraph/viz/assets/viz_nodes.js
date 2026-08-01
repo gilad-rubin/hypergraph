@@ -146,6 +146,38 @@
         </div>`;
     }
 
+    // ── OUTPUT node ──
+    if (nodeType === 'OUTPUT') {
+      // Synthesized boundary-output anchor: a container output no inner node
+      // produces (a mounted HyperTable's receipt). Same pill language as the
+      // map-fed INPUT pills, emerald output accent; the LAYOUT docks it
+      // straddling the container's bottom border, so it reads as a port of
+      // the box itself. The type name renders in full — it is the pill's one
+      // self-description, so cutting it mid-word ("Materializat…") starves
+      // the reader of exactly the fact that explains the pill.
+      var ownerLeaf = (data.ownerContainer || '').split('/').pop();
+      var portTitle = ownerLeaf
+        ? data.label + ' is produced by the whole ' + ownerLeaf + ' completing — no single inner node emits it'
+        : null;
+      // Inline tones (the START/END pattern): the bundled Tailwind subset is
+      // purged, so emerald utility classes silently no-op here.
+      var outTone = isLight
+        ? { background: '#ECFDF5', borderColor: '#6EE7B7', color: '#047857' }
+        : { background: '#0F172A', borderColor: 'rgba(16, 185, 129, 0.55)', color: '#34D399' };
+      var outTypeTone = { color: isLight ? 'rgba(4, 120, 87, 0.7)' : 'rgba(52, 211, 153, 0.7)' };
+      return html`
+        <div className="w-full h-full relative" style=${wrapStyle}>
+          <div className=${'px-3 py-1.5 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg overflow-hidden' + (isLight ? ' shadow-slate-200' : ' shadow-black/50')}
+               style=${outTone} title=${portTitle}>
+            <span className="shrink-0" style=${{ color: isLight ? '#10B981' : '#34D399' }}>→</span>
+            <span className="text-xs font-mono font-medium shrink-0">${data.label}</span>
+            ${data.showTypes && data.typeHint ? html`<span className="text-xs font-mono whitespace-nowrap shrink-0" style=${outTypeTone}>: ${data.typeHint}</span>` : null}
+          </div>
+          <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${tgtStyle} />
+          <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${srcStyle} />
+        </div>`;
+    }
+
     // ── INPUT_GROUP node ──
     if (nodeType === 'INPUT_GROUP') {
       var params = data.params || [], paramTypes = data.paramTypes || [];

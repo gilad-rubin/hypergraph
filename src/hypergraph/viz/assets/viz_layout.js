@@ -301,6 +301,50 @@
       }
       g.setEdge(e._rankSource, e._rankTarget, edgeLabel, e.id);
     });
+
+    // Rank each synthesized OUTPUT anchor (a mounted table's receipt pill)
+    // below everything inside its container: rank-only, undrawn edges from
+    // the container's visible leaf sinks to the anchor. The anchor has no
+    // drawn in-edge — the receipt has no single inner producer — so without
+    // these dagre would park it at the TOP of the container and the boundary
+    // edge it sources would climb backwards out of the box.
+    var anchorLayoutNodes = layoutNodes.filter(function(n) {
+      return n.data && n.data.nodeType === 'OUTPUT';
+    });
+    if (anchorLayoutNodes.length) {
+      var underContainer = function(nodeId, containerId) {
+        var current = displayParentById.get(nodeId);
+        var hops = 0;
+        while (current && hops <= layoutNodes.length) {
+          if (current === containerId) return true;
+          current = displayParentById.get(current);
+          hops++;
+        }
+        return false;
+      };
+      // One outgoing-edge index up front, so sink detection is a lookup per
+      // node instead of an edge scan per (anchor, node) pair.
+      var outgoingBySource = new Map();
+      layoutEdges.forEach(function(e) {
+        var bucket = outgoingBySource.get(e.source);
+        if (!bucket) { bucket = []; outgoingBySource.set(e.source, bucket); }
+        bucket.push(e.target);
+      });
+      anchorLayoutNodes.forEach(function(anchor) {
+        var containerId = displayParentById.get(anchor.id);
+        if (!containerId) return;
+        layoutNodes.forEach(function(n) {
+          if (n.id === anchor.id) return;
+          if (n.data && n.data.nodeType === 'OUTPUT') return;
+          if (g.children(n.id) && g.children(n.id).length) return; // clusters cannot be ranked
+          if (!underContainer(n.id, containerId)) return;
+          var isSink = !(outgoingBySource.get(n.id) || []).some(function(target) {
+            return target !== anchor.id && underContainer(target, containerId);
+          });
+          if (isSink) g.setEdge(n.id, anchor.id, { minlen: 1 }, 'rank__' + anchor.id + '__' + n.id);
+        });
+      });
+    }
     dagre.layout(g);
 
     var nodeById = new Map();
@@ -313,6 +357,23 @@
         n.height = pos.height || n.height;
       }
       nodeById.set(n.id, n);
+    });
+
+    // Dock each OUTPUT anchor ON its container's bottom border: the pill
+    // straddles the border like a port of the box itself, which is what it
+    // is — the value is produced by the WHOLE container completing, not by
+    // any inner node, so it must not hover inside the box as if fed by magic.
+    anchorLayoutNodes.forEach(function(anchor) {
+      var containerId = displayParentById.get(anchor.id);
+      var container = containerId ? nodeById.get(containerId) : null;
+      if (!container) return;
+      // The pipelineGroup draws its dashed border on the full layout box, so
+      // the container's layout bottom IS the visible border line.
+      anchor.y = container.y + container.height / 2;
+      var margin = anchor.width / 2 + 12;
+      var left = container.x - container.width / 2 + margin;
+      var right = container.x + container.width / 2 - margin;
+      anchor.x = Math.max(left, Math.min(right, anchor.x));
     });
 
     layoutEdges = layoutEdges.filter(function(e) { return !e._skipRank; });
@@ -352,7 +413,9 @@
         var parentPos = nodePositions.get(parentId);
         if (parentPos) pos = { x: absPos.x - parentPos.x, y: absPos.y - parentPos.y };
         nwp.parentNode = parentId;
-        nwp.extent = 'parent';
+        // An OUTPUT anchor is docked STRADDLING its container's bottom
+        // border; a parent extent would clamp it back inside the box.
+        if (!(n.data && n.data.nodeType === 'OUTPUT')) nwp.extent = 'parent';
       }
       return {
         ...nwp, position: pos, width: n.width, height: n.height,

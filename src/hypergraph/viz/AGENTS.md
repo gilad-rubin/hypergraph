@@ -100,7 +100,8 @@ side-effect in the order defined by `FIRST_PARTY_ASSET_NAMES`
 
 - Flat graph containers: `node_type == "GRAPH"`
 - React Flow mapping: `GRAPH` → `PIPELINE`
-- Synthetic nodes: `INPUT`, `INPUT_GROUP`, `DATA`
+- Synthetic nodes: `INPUT`, `INPUT_GROUP`, `DATA`, `OUTPUT` (boundary-output
+  anchor for a container output no descendant produces)
 
 **Invariant**: Container detection must use `node_type == "GRAPH"` in Python and `nodeType == "PIPELINE"` in JS.
 
@@ -129,13 +130,30 @@ The IR carries all expansion-rewriting information eagerly:
   and each such pill is flagged ``IRExternalInput.map_fed`` (styled distinctly,
   not as a free-floating external input). Falls back to the container entrypoint
   when the mapped item has no matching field (e.g. ``list[str]``).
+- A container output NO descendant produces (a mounted HyperTable's receipt:
+  the ``MaterializationNode``'s own output is the whole table's completion)
+  gets a synthesized ``node_type == "OUTPUT"`` anchor pill INSIDE the
+  container (id ``<container>/__output__<name>``), and the boundary edge's
+  ``source_when_expanded`` points at it — an edge's source must be a node;
+  only a COLLAPSED container may stand in as one. The pill follows normal
+  child visibility (hidden while its container chain is collapsed), and
+  ``performCompoundLayout`` ranks it below the container's visible sinks via
+  rank-only, undrawn dagre edges so the boundary edge flows downhill.
+  ``mermaid.py`` synthesizes the same anchors via
+  ``ir_builder.container_output_anchors`` (schema v6).
 - INPUT pills hoist, never hide: an external input owned by a collapsed
   container surfaces at its deepest VISIBLE ancestor with its edge aggregated
   to the collapsed hull — a graph's contract inputs must survive any collapse.
   Only ``map_fed`` pills disappear with their container (the container-level
   fan-out edge represents the same value while collapsed).
 - ``IREdge.is_back_edge`` marks DFS back-edges so feedback routing survives
-  arbitrary expansion changes.
+  arbitrary expansion changes. An *ordering* back edge whose source outputs ∩
+  target inputs ∩ shared-state is non-empty (a routed interrupt's answer
+  returning to its gate) carries that value name as ``IREdge.label`` —
+  ``ir_builder.shared_answer_label``, shared with Mermaid. Feedback edges
+  render their orthogonal channel faithfully (``roundedChannelPath`` in
+  ``viz_edges.js``) instead of ``curveBasis``, which smeared the corners into
+  a wide orbit.
 - ``IRNode.outputs[i].internal_only`` flags outputs whose consumers all
   live in the same container — used to filter ``data.outputs`` on collapsed
   GRAPH containers and to drive ``data.internalOnly`` styling on DATA nodes.

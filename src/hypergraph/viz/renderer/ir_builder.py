@@ -59,11 +59,17 @@ def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
     # enter an expanded container.
     container_entrypoints = compute_container_entrypoints(flat_graph)
     container_transits = compute_container_transits(flat_graph)
+    # ``container -> {output name -> anchor id}`` for boundary outputs no
+    # descendant produces (a mounted HyperTable's receipt). Each gets a
+    # synthesized OUTPUT anchor pill inside the container, so an EXPANDED
+    # container never sources an edge from its own hull.
+    output_anchors = container_output_anchors(flat_graph)
     edges = [
-        _build_ir_edge(src, tgt, attrs, flat_graph, exclusive_edges, mutex_groups, back_edges, container_entrypoints)
+        _build_ir_edge(src, tgt, attrs, flat_graph, exclusive_edges, mutex_groups, back_edges, container_entrypoints, output_anchors)
         for src, tgt, attrs in flat_graph.edges(data=True)
         if src not in hidden_nodes and tgt not in hidden_nodes
     ]
+    nodes.extend(_build_output_anchor_nodes(output_anchors, flat_graph))
     # Use the legacy grouping logic so multi-param consumers collapse into
     # a single INPUT_GROUP. show_bounded_inputs=True here so bound params
     # are shipped in the IR; the frontend filters them per-render.
@@ -357,6 +363,50 @@ def _build_input_group(
     )
 
 
+def container_output_anchors(flat_graph: nx.DiGraph) -> dict[str, dict[str, str]]:
+    """``container_id -> {output name -> anchor node id}`` for GRAPH-node
+    outputs that some edge carries but NO descendant produces.
+
+    A mounted HyperTable is the living case: its receipt is the whole table's
+    completion, so no recipe node emits it. Expanded, such a container would
+    otherwise source the boundary edge from its own hull — an edge must always
+    leave a node, so the IR synthesizes an OUTPUT anchor pill inside the
+    container and rewrites ``source_when_expanded`` to it. Shared with the
+    Mermaid exporter so both pipelines agree on the anchor's existence and id.
+    """
+    anchors: dict[str, dict[str, str]] = {}
+    for src, _tgt, attrs in flat_graph.edges(data=True):
+        if attrs.get("edge_type", "data") != "data":
+            continue
+        if flat_graph.nodes.get(src, {}).get("node_type") != "GRAPH":
+            continue
+        for value_name in attrs.get("value_names", ()):
+            if not value_name or value_name in anchors.get(src, {}):
+                continue
+            if _find_deepest_internal_producers(src, value_name, flat_graph):
+                continue
+            anchors.setdefault(src, {})[value_name] = f"{src}/__output__{value_name}"
+    return anchors
+
+
+def _build_output_anchor_nodes(output_anchors: dict[str, dict[str, str]], flat_graph: nx.DiGraph) -> list[IRNode]:
+    """One OUTPUT IRNode per synthesized anchor, parented inside its container."""
+    nodes: list[IRNode] = []
+    for container_id in sorted(output_anchors):
+        output_types = flat_graph.nodes.get(container_id, {}).get("output_types", {})
+        for value_name in sorted(output_anchors[container_id]):
+            nodes.append(
+                IRNode(
+                    id=output_anchors[container_id][value_name],
+                    node_type="OUTPUT",
+                    parent=container_id,
+                    label=value_name,
+                    outputs=({"name": value_name, "type": format_type(output_types.get(value_name))},),
+                )
+            )
+    return nodes
+
+
 def _build_ir_edge(
     src: str,
     tgt: str,
@@ -366,6 +416,7 @@ def _build_ir_edge(
     mutex_groups: list[list[set[str]]],
     back_edges: set[tuple[str, str]],
     container_entrypoints: dict[str, tuple[str, ...]],
+    output_anchors: dict[str, dict[str, str]] | None = None,
 ) -> IREdge:
     """Pre-compute the source-when-expanded / target-when-expanded rewrites
     so the JS scene_builder can re-route edges on container expansion
@@ -383,6 +434,15 @@ def _build_ir_edge(
             if internal:
                 source_when_expanded = internal[0] if len(internal) == 1 else internal
                 break
+        if source_when_expanded is None:
+            # No descendant produces any carried value (a mounted table's
+            # receipt): source from the synthesized OUTPUT anchor, never the
+            # expanded container's hull.
+            for value_name in value_names:
+                anchor = (output_anchors or {}).get(src, {}).get(value_name)
+                if anchor:
+                    source_when_expanded = anchor
+                    break
 
     tgt_attrs = flat_graph.nodes.get(tgt, {})
     if tgt_attrs.get("node_type") == "GRAPH":
@@ -416,6 +476,12 @@ def _build_ir_edge(
             target_when_expanded = entrypoints[0] if entrypoints else None
 
     label = _branch_label_for_edge(src_attrs, tgt) if edge_type == "control" else None
+    if label is None and edge_type == "ordering" and (src, tgt) in back_edges:
+        # A routed interrupt's answer edge: the interrupt's answer output is
+        # the gate's input, travelling via shared state while this edge orders
+        # the cycle. Naming the value makes the loop read as "the answer comes
+        # back" instead of an anonymous orbit.
+        label = shared_answer_label(src, tgt, flat_graph)
 
     exclusive = edge_type == "data" and any((src, tgt, value_name) in exclusive_edges for value_name in value_names)
     if not exclusive and edge_type == "data" and isinstance(source_when_expanded, tuple) and len(source_when_expanded) > 1:
@@ -436,6 +502,24 @@ def _build_ir_edge(
         exclusive=exclusive,
         is_back_edge=(src, tgt) in back_edges,
     )
+
+
+def shared_answer_label(src: str, tgt: str, flat_graph: nx.DiGraph) -> str | None:
+    """The shared-state value an ordering back edge exists to deliver.
+
+    Non-empty exactly when the source's outputs and the target's inputs meet
+    inside the graph's declared ``shared`` scope — the routed-interrupt shape,
+    where the answer flows via shared state and the declared edge only orders
+    the cycle. Shared with the Mermaid exporter so both pipelines label the
+    same edges.
+    """
+    shared = set(flat_graph.graph.get("shared", ()))
+    if not shared:
+        return None
+    outputs = set(flat_graph.nodes.get(src, {}).get("outputs", ()))
+    inputs = set(flat_graph.nodes.get(tgt, {}).get("inputs", ()))
+    names = sorted(shared & outputs & inputs)
+    return ", ".join(names) if names else None
 
 
 def _branch_label_for_edge(src_attrs: dict, target: str) -> str | None:

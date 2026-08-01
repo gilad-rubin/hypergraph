@@ -202,3 +202,80 @@ def test_multi_value_boundary_edge_unions_exact_consumers(mounted_graph):
     # (exact; page_title is map-fed and must stay excluded);
     # doc_version_id → nothing exact, and its fuzzy match must not win.
     assert set(targets) == {"materialize/build_pages", "materialize/convert"}
+
+
+ANCHOR_ID = "materialize/__output__materialization"
+
+
+def test_receipt_gets_a_synthesized_output_anchor(mounted_graph):
+    """The receipt (``materialization``) has no inner producer — it is the
+    whole table's completion — so the IR synthesizes an OUTPUT anchor pill
+    inside the container and re-sources the boundary edge from it."""
+    ir = build_graph_ir(mounted_graph.to_flat_graph())
+
+    (anchor,) = [n for n in ir.nodes if n.node_type == "OUTPUT"]
+    assert anchor.id == ANCHOR_ID
+    assert anchor.parent == "materialize"
+    assert anchor.label == "materialization"
+
+    (edge,) = [e for e in ir.edges if e.source == "materialize" and e.target == "publish"]
+    assert edge.source_when_expanded == ANCHOR_ID
+
+
+def test_expanded_container_never_sources_the_receipt_from_its_hull(mounted_graph):
+    """An edge's source must be a node; only a COLLAPSED container may stand
+    in as one. Expanded, the receipt edge leaves the anchor pill."""
+    scene = scene_for_state(mounted_graph, expand_all=True)
+    visible_edges = [e for e in scene["edges"] if not e.get("hidden")]
+
+    assert [e for e in visible_edges if e["source"] == "materialize"] == []
+    (receipt,) = [e for e in visible_edges if e["target"] == "publish" and e["source"] != "stage"]
+    assert receipt["source"] == ANCHOR_ID
+
+    (anchor_node,) = [n for n in scene["nodes"] if n["id"] == ANCHOR_ID]
+    assert not anchor_node["hidden"]
+    assert anchor_node["parentNode"] == "materialize"
+    assert anchor_node["data"]["nodeType"] == "OUTPUT"
+
+
+def test_receipt_anchor_stays_hidden_while_collapsed(mounted_graph):
+    """Collapsed keeps the historical picture: the box itself sources the
+    edge and no anchor pill leaks out of it."""
+    scene = scene_for_state(mounted_graph)
+
+    (anchor_node,) = [n for n in scene["nodes"] if n["id"] == ANCHOR_ID]
+    assert anchor_node["hidden"]
+    visible_edges = [e for e in scene["edges"] if not e.get("hidden")]
+    assert ("materialize", "publish") in {(e["source"], e["target"]) for e in visible_edges}
+
+
+def test_receipt_anchor_is_the_value_pill_in_separate_outputs(mounted_graph):
+    """separate_outputs must not interpose a DATA node for an anchor-sourced
+    edge — the anchor already IS the value pill."""
+    scene = scene_for_state(mounted_graph, expand_all=True, separate_outputs=True)
+    visible_edges = [e for e in scene["edges"] if not e.get("hidden")]
+
+    (receipt,) = [e for e in visible_edges if e["target"] == "publish"]
+    assert receipt["source"] == ANCHOR_ID
+    assert not any(n["id"].startswith("data_" + ANCHOR_ID) for n in scene["nodes"])
+
+
+def test_mermaid_receipt_leaves_the_anchor_not_the_subgraph(mounted_graph):
+    """The text export agrees with the widget: expanded, the receipt edge
+    leaves the anchor pill inside the subgraph, never the subgraph id."""
+    mermaid = str(mounted_graph.to_mermaid(depth=2))
+    lines = [line.strip() for line in mermaid.splitlines()]
+
+    assert 'materialize____output__materialization(["materialization: MaterializationReceipt"])' in lines
+    assert "materialize____output__materialization --> publish" in lines
+    assert "materialize --> publish" not in lines
+
+
+def test_mermaid_merged_mode_draws_one_edge_per_pair(mounted_graph):
+    """The widget draws ONE merged edge per (source, target) pair; the text
+    export must not fan a multi-value boundary edge into parallel arrows."""
+    mermaid = str(mounted_graph.to_mermaid(depth=0))
+    lines = [line.strip() for line in mermaid.splitlines()]
+
+    assert lines.count("stage --> materialize") == 1
+    assert lines.count("materialize --> publish") == 1

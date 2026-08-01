@@ -68,11 +68,11 @@
 
   var NODE_TYPE_OFFSETS = {
     PIPELINE: 26, GRAPH: 26, FUNCTION: 14,
-    DATA: 6, INPUT: 6, INPUT_GROUP: 6, BRANCH: 10, START: 6, END: 6,
+    DATA: 6, INPUT: 6, INPUT_GROUP: 6, OUTPUT: 6, BRANCH: 10, START: 6, END: 6,
   };
   var NODE_TYPE_TOP_INSETS = {
     PIPELINE: 0, GRAPH: 0, FUNCTION: 0,
-    DATA: 0, INPUT: 0, INPUT_GROUP: 0, BRANCH: 3, START: 0, END: 0,
+    DATA: 0, INPUT: 0, INPUT_GROUP: 0, OUTPUT: 0, BRANCH: 3, START: 0, END: 0,
   };
   var DEFAULT_OFFSET = 10;
   var DEFAULT_TOP_INSET = 0;
@@ -94,7 +94,16 @@
 
   function calculateDimensions(n) {
     var width = 80, height = 90;
-    if (n.data && (n.data.nodeType === 'DATA' || n.data.nodeType === 'INPUT')) {
+    if (n.data && n.data.nodeType === 'OUTPUT') {
+      // The docked boundary-output pill renders its type IN FULL (its one
+      // self-description), so the width budget uses the real type length.
+      height = 36;
+      var outLabelLen = Math.min((n.data.label || '').length, NODE_LABEL_MAX_CHARS);
+      var outTypeLen = (n.data.showTypes && n.data.typeHint) ? n.data.typeHint.length + 2 : 0;
+      // A wider cap than MAX_NODE_WIDTH: the untruncated type must actually
+      // fit, or the CSS falls back to cutting it mid-word.
+      width = Math.min(420, (outLabelLen + outTypeLen + 2) * CHAR_WIDTH_PX + NODE_BASE_PADDING);
+    } else if (n.data && (n.data.nodeType === 'DATA' || n.data.nodeType === 'INPUT')) {
       height = 36;
       var labelLen = Math.min((n.data.label || '').length, NODE_LABEL_MAX_CHARS);
       var typeLen = (n.data.showTypes && n.data.typeHint) ? Math.min(n.data.typeHint.length, TYPE_HINT_MAX_CHARS) + 2 : 0;
