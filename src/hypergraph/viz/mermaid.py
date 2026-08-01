@@ -371,7 +371,9 @@ def _render_merged_edges(
         expansion_state,
         use_deepest=True,
     )
-    seen_edges: set[tuple[str, str, str]] = set()
+    # Control/ordering keys are 3-tuples; merged data keys are the resolved
+    # (source, target) pair — the widget's one-arrow-per-pair story.
+    seen_edges: set[tuple[str, ...]] = set()
 
     for source, target, edge_data in flat_graph.edges(data=True):
         if not is_node_visible(source, flat_graph, expansion_state):
@@ -457,10 +459,10 @@ def _render_merged_edges(
             for resolved_target in actual_targets:
                 if actual_source == resolved_target:
                     continue
-                edge_key = (id_allocator.get(actual_source), id_allocator.get(resolved_target))
-                if edge_key in seen_edges:
+                pair_key = (id_allocator.get(actual_source), id_allocator.get(resolved_target))
+                if pair_key in seen_edges:
                     continue
-                seen_edges.add(edge_key)
+                seen_edges.add(pair_key)
                 exit_port, entry_port = resolve_boundary_ports(flat_graph, source, target, value_names or [value_name])
                 out.append(
                     _RenderedEdge(

@@ -50,7 +50,10 @@ def build_initial_scene(
             # visible exactly while its container chain is expanded — the same
             # rule as any inner node — so an expanded container never sources
             # an edge from its own hull, and a collapsed one keeps the edge on
-            # the box as before.
+            # the box as before. No ``extent: parent``: the layout DOCKS the
+            # pill straddling the container's bottom border — it is a port of
+            # the box itself, produced by the whole container completing — and
+            # a parent extent would clamp it back inside.
             out = ir_node.outputs[0] if ir_node.outputs else {}
             scene_nodes.append(
                 {
@@ -67,7 +70,6 @@ def build_initial_scene(
                     "targetPosition": "top",
                     "hidden": _ancestor_collapsed(ir_node.id, parent_map, expansion_state),
                     "parentNode": ir_node.parent,
-                    "extent": "parent",
                 }
             )
             continue

@@ -94,7 +94,16 @@
 
   function calculateDimensions(n) {
     var width = 80, height = 90;
-    if (n.data && (n.data.nodeType === 'DATA' || n.data.nodeType === 'INPUT' || n.data.nodeType === 'OUTPUT')) {
+    if (n.data && n.data.nodeType === 'OUTPUT') {
+      // The docked boundary-output pill renders its type IN FULL (its one
+      // self-description), so the width budget uses the real type length.
+      height = 36;
+      var outLabelLen = Math.min((n.data.label || '').length, NODE_LABEL_MAX_CHARS);
+      var outTypeLen = (n.data.showTypes && n.data.typeHint) ? n.data.typeHint.length + 2 : 0;
+      // A wider cap than MAX_NODE_WIDTH: the untruncated type must actually
+      // fit, or the CSS falls back to cutting it mid-word.
+      width = Math.min(420, (outLabelLen + outTypeLen + 2) * CHAR_WIDTH_PX + NODE_BASE_PADDING);
+    } else if (n.data && (n.data.nodeType === 'DATA' || n.data.nodeType === 'INPUT')) {
       height = 36;
       var labelLen = Math.min((n.data.label || '').length, NODE_LABEL_MAX_CHARS);
       var typeLen = (n.data.showTypes && n.data.typeHint) ? Math.min(n.data.typeHint.length, TYPE_HINT_MAX_CHARS) + 2 : 0;

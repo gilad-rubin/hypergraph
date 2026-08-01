@@ -227,3 +227,29 @@ def test_receipt_anchor_ranks_below_the_recipe_and_above_the_consumer():
     inner_ys = [pos["y"] for node_id, pos in positions.items() if node_id.startswith("materialize_docs/") and node_id != anchor_id]
     assert inner_ys and anchor_y > max(inner_ys), (anchor_y, inner_ys)
     assert positions["publish"]["y"] > anchor_y
+
+
+def test_receipt_anchor_docks_on_the_container_bottom_border():
+    """The anchor is a PORT of the box, not an inner node: nothing inside
+    feeds it, so hovering mid-container reads as magic. The layout docks the
+    pill straddling the container's visible bottom border (its center ON the
+    border line), which says "produced by the whole table completing"."""
+
+    @node(output_name="published")
+    def publish(receipt: object) -> str:
+        return str(receipt)
+
+    flat = Graph([_table().as_node(name="materialize_docs"), publish], name="ingest").to_flat_graph()
+    result = _layout(flat, depth=2)
+    assert result["ok"], result.get("error")
+    positions = result["positions"]
+
+    anchor = positions["materialize_docs/__output__receipt"]
+    container = positions["materialize_docs"]
+    # The pipelineGroup draws its dashed border on the full layout box, so
+    # the container's layout bottom IS the visible border line.
+    border_y = container["y"] + container["height"]
+    anchor_center_y = anchor["y"] + anchor["height"] / 2
+    assert abs(anchor_center_y - border_y) <= 2, (anchor_center_y, border_y)
+    # And it must stay horizontally within the box.
+    assert container["x"] <= anchor["x"] and anchor["x"] + anchor["width"] <= container["x"] + container["width"]

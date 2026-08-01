@@ -169,7 +169,10 @@
         // Synthesized boundary-output anchor (a mounted table's receipt):
         // visible exactly while its container chain is expanded — the same
         // rule as any inner node — so an expanded container never sources an
-        // edge from its own hull. Twin of the Python OUTPUT branch.
+        // edge from its own hull. No `extent: parent`: the layout DOCKS the
+        // pill straddling the container's bottom border — it is a port of
+        // the box itself — and a parent extent would clamp it back inside.
+        // Twin of the Python OUTPUT branch.
         var anchorOut = (irNode.outputs && irNode.outputs[0]) || {};
         sceneNodes.push({
           id: irNode.id,
@@ -185,7 +188,6 @@
           targetPosition: 'top',
           hidden: ancestorCollapsed(irNode.id, parentMap, expansionState),
           parentNode: irNode.parent,
-          extent: 'parent',
         });
         continue;
       }
