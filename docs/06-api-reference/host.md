@@ -517,6 +517,47 @@ is `None` while a Run executes or is terminal — including while a running
 Run is queued behind a [provider permit](#provider-resource-admission),
 which is execution, not waiting.
 
+### Serving truthful UI read models
+
+Products that need HTTP or UI rows should build on `RunHomeReadModel`
+instead of translating `RunView` independently:
+
+```python
+from hypergraph import RunHomeReadModel, RunQuery
+
+read = RunHomeReadModel(client)
+rows = await read.list_runs(RunQuery(definition="ingest"))
+
+# A framework-agnostic route is now only serialization plus a domain join.
+return [
+    {**row.to_dict(), "title": titles[row.inputs["document_id"]]}
+    for row in rows
+]
+```
+
+Each `RunReadModel` carries a closed coarse `status` (`queued`, `running`,
+`paused`, or an exact terminal `WorkflowStatus` value) and the precise Run
+Home `condition` that produced it. For example, scheduled and
+version-incompatible work both renders as queued while retaining
+`"scheduled"` or `"version_incompatible"` as its condition. Terminal values
+come from `TERMINAL_STATUS_VALUES`; they are not copied into another enum.
+
+Rows also carry pinned inputs, acceptance/start/settlement timestamps, the
+latest durable fact timestamp, and an open `PauseReadModel` when the Run is
+parked on a person. The pause exposes the graph-authored question unchanged
+(`ask`), its exact durable JSON `answer_schema`, and options when the answer
+is option-shaped, so a new gate needs no read-surface change.
+
+`get_batch(batch_ref)` returns a `BatchReadModel`: the existing Batch census
+plus one `BatchItemReadModel.word` per manifest item. Those words come
+directly from `item_condition()`, and counts come directly from `BatchView`;
+the read layer does not maintain a second bucket ladder. Every model has a
+`to_dict()` of JSON-safe primitives, and every async method has a `_sync`
+mirror. Hypergraph intentionally does not mount an HTTP router: the core has
+no web-framework dependency, and products remain responsible for
+authorization and for deciding which pinned inputs or pause evidence may
+cross their HTTP boundary.
+
 ## Reading Results
 
 `client.result(ref)` answers what durable work **produced**. The worker keeps

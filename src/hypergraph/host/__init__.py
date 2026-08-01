@@ -20,6 +20,14 @@ from hypergraph.host.errors import (
 )
 from hypergraph.host.home import RunHome
 from hypergraph.host.host import Host, SubmitReceipt, serve
+from hypergraph.host.read_models import (
+    RUN_READ_STATUS_VALUES,
+    BatchItemReadModel,
+    BatchReadModel,
+    PauseReadModel,
+    RunHomeReadModel,
+    RunReadModel,
+)
 from hypergraph.host.refs import BatchCommandReceipt, BatchRef, BatchSubmitReceipt, CommandReceipt, RunRef
 from hypergraph.host.runtime import HostRuntime
 from hypergraph.host.views import BatchItemView, BatchUpdate, BatchView, RunQuery, RunUpdate, RunView, WaitingCondition
@@ -28,6 +36,8 @@ __all__ = [
     "AlreadyTerminalError",
     "BatchCommandReceipt",
     "BatchItemView",
+    "BatchItemReadModel",
+    "BatchReadModel",
     "BatchRef",
     "BatchSubmitReceipt",
     "BatchTolerance",
@@ -40,10 +50,14 @@ __all__ = [
     "HostError",
     "HostRuntime",
     "ItemKeyError",
+    "PauseReadModel",
+    "RUN_READ_STATUS_VALUES",
     "RerunError",
     "RunHome",
     "RunHomeClient",
+    "RunHomeReadModel",
     "RunQuery",
+    "RunReadModel",
     "RunRef",
     "RunUpdate",
     "RunView",

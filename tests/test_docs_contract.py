@@ -958,9 +958,12 @@ def test_retry_docs_pin_public_contract() -> None:
 def test_durable_host_docs_pin_public_contract() -> None:
     """The Tier 1 local host surface stays in lockstep with its reference page."""
     from hypergraph import (
+        RUN_READ_STATUS_VALUES,
         BaseRunner,
         BatchCommandReceipt,
+        BatchItemReadModel,
         BatchItemView,
+        BatchReadModel,
         BatchRef,
         BatchSubmitReceipt,
         BatchTolerance,
@@ -970,9 +973,12 @@ def test_durable_host_docs_pin_public_contract() -> None:
         DefinitionId,
         Graph,
         HostRuntime,
+        PauseReadModel,
         RunHome,
         RunHomeClient,
+        RunHomeReadModel,
         RunQuery,
+        RunReadModel,
         RunRef,
         RunUpdate,
         RunView,
@@ -980,6 +986,7 @@ def test_durable_host_docs_pin_public_contract() -> None:
         WaitingCondition,
         serve,
     )
+    from hypergraph.host.views import TERMINAL_STATUS_VALUES
 
     host_api = _read("docs/06-api-reference/host.md")
     docs_index = _read("docs/README.md")
@@ -1011,6 +1018,51 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert "RunQuery" in host_api
     assert "recovery_cap" in host_api
     assert "RECOVERY_EXHAUSTED" in host_api
+
+    # Issue 379: products consume one generic derive-on-read UI projection.
+    assert "RunHomeReadModel" in host_api
+    assert "PauseReadModel" in host_api
+    assert "BatchReadModel" in host_api
+    assert tuple(inspect.signature(RunHomeReadModel.list_runs).parameters) == ("self", "query")
+    assert tuple(inspect.signature(RunHomeReadModel.list_runs_sync).parameters) == ("self", "query")
+    assert tuple(RunReadModel.__dataclass_fields__) == (
+        "run_ref",
+        "workflow_id",
+        "definition_id",
+        "status",
+        "condition",
+        "accepted_at",
+        "started_at",
+        "settled_at",
+        "updated_at",
+        "inputs",
+        "pause",
+        "retry_of",
+        "forked_from",
+    )
+    assert tuple(PauseReadModel.__dataclass_fields__) == (
+        "run_ref",
+        "pause_id",
+        "node_name",
+        "node_path",
+        "response_key",
+        "created_at",
+        "ask",
+        "answer_schema",
+        "options",
+    )
+    assert tuple(BatchReadModel.__dataclass_fields__) == (
+        "batch_ref",
+        "workflow_id",
+        "definition_id",
+        "counts",
+        "items",
+        "settled",
+        "tolerance_tripped",
+        "retry_of",
+    )
+    assert tuple(BatchItemReadModel.__dataclass_fields__) == ("item_key", "run_ref", "workflow_id", "word", "started")
+    assert TERMINAL_STATUS_VALUES <= RUN_READ_STATUS_VALUES
 
     # Ticket 05: durable Batch surface — manifest, keyed outcomes, bseq.
     assert "submit_batch" in host_api

@@ -45,6 +45,7 @@ from hypergraph.host.views import (
     RunView,
     WaitingCondition,
     is_child_settled,
+    item_condition,
 )
 
 if TYPE_CHECKING:
@@ -441,6 +442,26 @@ class _PlannedBatchRerun:
     child_admission_costs: dict[str, int]
 
 
+@dataclass(frozen=True)
+class _RunReadSnapshot:
+    """One atomic-enough joined snapshot for the UI read-model projection.
+
+    Package-private on purpose: products should consume ``RunReadModel``, not
+    rebuild status ladders from Host storage rows. The snapshot keeps the
+    projection one level above this client without making it reach through
+    ``client._home``.
+    """
+
+    view: RunView
+    condition: str
+    inputs: dict[str, Any]
+    accepted_at: datetime | None
+    started_at: datetime | None
+    settled_at: datetime | None
+    updated_at: datetime
+    pause_slot: PauseSlot | None
+
+
 def _valid_item_keys(manifest: dict[str, Any], limit: int = 20) -> str:
     """Render the source manifest's keys as an error's valid-options list."""
     keys = sorted(manifest)
@@ -612,6 +633,74 @@ def _filter_list_rows(
         matched.append((created_at, view))
     matched.sort(key=lambda pair: (pair[0], pair[1].workflow_id), reverse=True)
     return [view for _, view in matched[: query.limit]]
+
+
+def _make_read_snapshot(
+    view: RunView,
+    submission: dict[str, Any] | None,
+    run: Run | None,
+    inputs: dict[str, Any],
+    latest_update: str | None,
+    pause_slot: PauseSlot | None,
+) -> _RunReadSnapshot:
+    """Shape joined storage facts without deriving a UI status word."""
+    accepted_at = _parse_iso(submission["created_at"]) if submission is not None else None
+    started_at = run.created_at if run is not None else None
+    settled_at = run.completed_at if run is not None else None
+    if settled_at is None and submission is not None and submission["finished_at"] is not None:
+        settled_at = _parse_iso(submission["finished_at"])
+    timestamps = [value for value in (accepted_at, started_at, settled_at) if value is not None]
+    if submission is not None and submission["claimed_at"] is not None:
+        timestamps.append(_parse_iso(submission["claimed_at"]))
+    if latest_update is not None:
+        timestamps.append(_parse_iso(latest_update))
+    if pause_slot is not None:
+        timestamps.append(pause_slot.created_at)
+        if pause_slot.settled_at is not None:
+            timestamps.append(pause_slot.settled_at)
+    if not timestamps:  # A known Run always has a submission or runs-row timestamp.
+        raise RuntimeError(f"Run {view.workflow_id!r} has no durable timestamp.")
+    return _RunReadSnapshot(
+        view=view,
+        condition=_read_model_condition(view, submission, run),
+        inputs=dict(inputs),
+        accepted_at=accepted_at,
+        started_at=started_at,
+        settled_at=settled_at,
+        updated_at=max(timestamps),
+        pause_slot=pause_slot,
+    )
+
+
+def _read_model_condition(view: RunView, submission: dict[str, Any] | None, run: Run | None) -> str:
+    """Adapt a Run to THE existing Batch-item condition priority."""
+    outcome = run.status.value if run is not None and run.status in TERMINAL_WORKFLOW_STATUSES else None
+    if submission is not None and submission["state"] == SUBMISSION_STATE_FINISHED and run is not None and outcome is None:
+        outcome = BATCH_OUTCOME_ABANDONED
+    item = BatchItemView(
+        item_key="",
+        run_ref=view.run_ref,
+        workflow_id=view.workflow_id,
+        status=view.status,
+        waiting=view.waiting,
+        outcome=outcome,
+        started=run is not None,
+    )
+    return item_condition(item).removeprefix("waiting: ")
+
+
+def _reconcile_pause_view(view: RunView, slot: PauseSlot | None) -> RunView:
+    """Let the newer pause occurrence prevent a stale parked projection.
+
+    Submission/run rows and the slot are read separately so another process
+    may settle the answer between those reads. A settled or absent slot can
+    never support ``waiting=PAUSED``; the run is back in Host claim order.
+    This one-way reconciliation guarantees a UI never renders a paused badge
+    without the open question needed to act on it.
+    """
+    if view.waiting is WaitingCondition.PAUSED and (slot is None or not slot.is_open):
+        return replace(view, waiting=WaitingCondition.QUEUED)
+    return view
 
 
 class RunHomeClient:
@@ -1056,6 +1145,98 @@ class RunHomeClient:
         _validate_query(query)
         rows = self._home._list_run_rows_sync()
         return _filter_list_rows(self._home.uri, rows, query, admission_full=self._home._admission_is_full_sync())
+
+    async def _read_model_snapshot(self, ref: RunRef) -> _RunReadSnapshot | None:
+        """Joined facts used by ``RunHomeReadModel`` for one Run."""
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"get_run() expects a RunRef, got {type(ref).__name__}.")
+        submission = await self._home._get_submission(ref.run_id)
+        run = await self._home.get_run_async(ref.run_id)
+        view = _build_view(
+            self._home.uri,
+            ref.run_id,
+            submission,
+            run,
+            admission_full=await self._home._admission_is_full(),
+        )
+        if view is None:
+            return None
+        latest = await self._home._latest_run_update_times([view.workflow_id])
+        return await self._snapshot(view, submission, run, latest.get(view.workflow_id))
+
+    def _read_model_snapshot_sync(self, ref: RunRef) -> _RunReadSnapshot | None:
+        """Sync mirror of ``_read_model_snapshot``."""
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"get_run() expects a RunRef, got {type(ref).__name__}.")
+        submission = self._home._get_submission_sync(ref.run_id)
+        run = self._home.get_run(ref.run_id)
+        view = _build_view(
+            self._home.uri,
+            ref.run_id,
+            submission,
+            run,
+            admission_full=self._home._admission_is_full_sync(),
+        )
+        if view is None:
+            return None
+        latest = self._home._latest_run_update_times_sync([view.workflow_id])
+        return self._snapshot_sync(view, submission, run, latest.get(view.workflow_id))
+
+    async def _list_read_model_snapshots(self, query: RunQuery) -> builtins.list[_RunReadSnapshot]:
+        """Joined facts used by ``RunHomeReadModel`` for a filtered Run list."""
+        _validate_query(query)
+        rows = await self._home._list_run_rows()
+        views = _filter_list_rows(self._home.uri, rows, query, admission_full=await self._home._admission_is_full())
+        by_id: dict[str, tuple[dict[str, Any] | None, Run | None]] = {}
+        for submission, run in rows:
+            if submission is not None:
+                by_id[submission["workflow_id"]] = (submission, run)
+            elif run is not None:
+                by_id[run.id] = (None, run)
+        latest = await self._home._latest_run_update_times([view.workflow_id for view in views])
+        return [await self._snapshot(view, *by_id[view.workflow_id], latest.get(view.workflow_id)) for view in views]
+
+    def _list_read_model_snapshots_sync(self, query: RunQuery) -> builtins.list[_RunReadSnapshot]:
+        """Sync mirror of ``_list_read_model_snapshots``."""
+        _validate_query(query)
+        rows = self._home._list_run_rows_sync()
+        views = _filter_list_rows(self._home.uri, rows, query, admission_full=self._home._admission_is_full_sync())
+        by_id: dict[str, tuple[dict[str, Any] | None, Run | None]] = {}
+        for submission, run in rows:
+            if submission is not None:
+                by_id[submission["workflow_id"]] = (submission, run)
+            elif run is not None:
+                by_id[run.id] = (None, run)
+        latest = self._home._latest_run_update_times_sync([view.workflow_id for view in views])
+        return [self._snapshot_sync(view, *by_id[view.workflow_id], latest.get(view.workflow_id)) for view in views]
+
+    async def _snapshot(
+        self,
+        view: RunView,
+        submission: dict[str, Any] | None,
+        run: Run | None,
+        latest_update: str | None,
+    ) -> _RunReadSnapshot:
+        inputs = json.loads(submission["inputs_json"]) if submission is not None else await self._home.get_run_inputs(view.workflow_id)
+        pause_slot = run.pause_slot if run is not None else None
+        if pause_slot is None and view.waiting is WaitingCondition.PAUSED:
+            pause_slot = await self._home.get_pause_slot(view.workflow_id)
+        view = _reconcile_pause_view(view, pause_slot)
+        return _make_read_snapshot(view, submission, run, inputs, latest_update, pause_slot)
+
+    def _snapshot_sync(
+        self,
+        view: RunView,
+        submission: dict[str, Any] | None,
+        run: Run | None,
+        latest_update: str | None,
+    ) -> _RunReadSnapshot:
+        inputs = json.loads(submission["inputs_json"]) if submission is not None else self._home.get_run_inputs_sync(view.workflow_id)
+        pause_slot = run.pause_slot if run is not None else None
+        if pause_slot is None and view.waiting is WaitingCondition.PAUSED:
+            pause_slot = self._home.get_pause_slot_sync(view.workflow_id)
+        view = _reconcile_pause_view(view, pause_slot)
+        return _make_read_snapshot(view, submission, run, inputs, latest_update, pause_slot)
 
     async def rerun(
         self, ref: RunRef | BatchRef, *, item_keys: Sequence[str] | None = None, source_ref: str | None = None
