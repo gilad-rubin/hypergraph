@@ -645,8 +645,8 @@ def _make_read_snapshot(
 ) -> _RunReadSnapshot:
     """Shape joined storage facts without deriving a UI status word."""
     accepted_at = _parse_iso(submission["created_at"]) if submission is not None else None
-    started_at = run.created_at if run is not None else None
-    settled_at = run.completed_at if run is not None else None
+    started_at = view.created_at  # The Run ledger's own timestamps, as the view already reports them.
+    settled_at = view.completed_at
     if settled_at is None and submission is not None and submission["finished_at"] is not None:
         settled_at = _parse_iso(submission["finished_at"])
     timestamps = [value for value in (accepted_at, started_at, settled_at) if value is not None]

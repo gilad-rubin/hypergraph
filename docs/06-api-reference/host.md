@@ -537,7 +537,9 @@ return [
 
 `client` is any `RunHomeClient`; a process that owns its Host passes
 [`HostRuntime.client`](#owning-a-host-process), which opens the Home for
-detached reads without starting a worker.
+detached reads without starting a worker. `list_runs` takes the same
+`RunQuery` as [`client.list`](#listing-runs) and returns its rows in the
+same newest-first order; the read layer never re-sorts.
 
 Each `RunReadModel` carries a closed coarse `status` (`queued`, `running`,
 `paused`, or an exact terminal `WorkflowStatus` value) and the precise Run

@@ -34,7 +34,17 @@ async def test_runs_pauses_and_batch_census_derive_from_one_durable_truth(home, 
     assert pending.pause is None
 
     async with worker(host):
-        view = await batch_where(host.client, receipt.batch_ref, lambda value: len(paused_items(value)) == 1)
+        # Wait for the state the worker cannot leave on its own: both items
+        # accounted — the clean one completed, the duplicate parked on a
+        # person. That fully spends the two-item manifest, so no bucket can
+        # move until someone answers. Waiting only for the first pause stops
+        # while the clean item is still executing, and the later census then
+        # truthfully reports a newer moment than the view it is compared to.
+        view = await batch_where(
+            host.client,
+            receipt.batch_ref,
+            lambda value: len(paused_items(value)) == 1 and value.counts["completed"] == 1,
+        )
         parked_ref = view.items["work-dup-1"].run_ref
 
         parked = await read.get_run(parked_ref)
@@ -63,10 +73,13 @@ async def test_list_runs_keeps_query_order_and_the_closed_status_vocabulary(home
     read = RunHomeReadModel(host.client)
 
     rows = await read.list_runs(RunQuery(definition=graph.name))
+    views = await host.client.list(RunQuery(definition=graph.name))
 
-    # Same deterministic oldest-first order as RunHomeClient.list; workflow
-    # id is the total tie-breaker when one Batch accepted both simultaneously.
-    assert [row.inputs["work_item_id"] for row in rows] == ["work-a", "work-b"]
+    # THE order RunHomeClient.list already produces — newest first, with
+    # workflow id as the total tie-breaker when one Batch accepted both
+    # simultaneously. The read model forwards that order and never re-sorts.
+    assert [row.inputs["work_item_id"] for row in rows] == ["work-b", "work-a"]
+    assert [row.workflow_id for row in rows] == [view.workflow_id for view in views]
     assert all(row.status in RUN_READ_STATUS_VALUES for row in rows)
     assert TERMINAL_STATUS_VALUES <= RUN_READ_STATUS_VALUES
 
