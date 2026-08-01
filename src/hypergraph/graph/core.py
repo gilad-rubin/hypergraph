@@ -145,10 +145,13 @@ def _add_identity_fanout_edges(G: nx.DiGraph, nodes: list[HyperNode], lookup: di
             if G.has_edge(src_id, target_id):
                 # Merge, matching the extra_edges / _add_explicit_data_edges
                 # convention: the mapped node may already have a real edge
-                # from this producer for another value.
+                # from this producer for another value. A non-data edge
+                # (wait_for ordering) is promoted to data — the fan-out IS a
+                # data dependency, and the ordering it carried is implied.
                 existing = G[src_id][target_id].get("value_names", [])
                 G[src_id][target_id]["value_names"] = list(dict.fromkeys([*existing, param]))
                 G[src_id][target_id]["is_map"] = True
+                G[src_id][target_id]["edge_type"] = "data"
             else:
                 G.add_edge(src_id, target_id, edge_type="data", value_names=[param], is_map=True)
             fields = _identity_map_item_fields(map_node, producer)

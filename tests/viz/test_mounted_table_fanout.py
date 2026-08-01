@@ -165,6 +165,30 @@ def test_previously_islanded_field_consumer_gets_its_edge(mounted_graph):
     )
 
 
+def test_fanout_merge_promotes_an_ordering_edge_to_data():
+    """A ``wait_for`` ordering edge from the producer to the mapped node must
+    not survive as a mislabeled ordering edge once the fan-out facts merge in:
+    the fan-out IS a data dependency, so the merged edge reports ``data``."""
+    import tempfile
+
+    from hypergraph.materialization._lancedb_store import LanceDBStore
+
+    store = LanceDBStore(tempfile.mkdtemp() + "/store")
+    derive = Graph([clean_page, page_title], name="derive_page").as_node(name="derive_pages").map_over("pages", identity="page_id", schema=Page)
+    table = Graph(
+        [load_bytes, convert, build_pages, derive],
+        edges=[(build_pages, derive)],
+        name="pages_recipe",
+    ).as_table(identity="doc_version_id", store=store)
+    flat = Graph([table.as_node(name="materialize")], name="outer").to_flat_graph()
+
+    edge = flat["materialize/build_pages"]["materialize/derive_pages"]
+    assert edge["edge_type"] == "data"
+    assert edge.get("is_map") is True
+    assert edge["value_names"] == ["pages"]
+    assert edge.get("map_fields") == ["page_id", "page_text", "source_uri", "doc_name"]
+
+
 def test_multi_value_boundary_edge_unions_exact_consumers(mounted_graph):
     """``stage → materialize`` carries three values; its expanded target is the
     union of every value's EXACT consumers, not the first value's fuzzy guess."""
