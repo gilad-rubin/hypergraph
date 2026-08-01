@@ -322,6 +322,14 @@
         }
         return false;
       };
+      // One outgoing-edge index up front, so sink detection is a lookup per
+      // node instead of an edge scan per (anchor, node) pair.
+      var outgoingBySource = new Map();
+      layoutEdges.forEach(function(e) {
+        var bucket = outgoingBySource.get(e.source);
+        if (!bucket) { bucket = []; outgoingBySource.set(e.source, bucket); }
+        bucket.push(e.target);
+      });
       anchorLayoutNodes.forEach(function(anchor) {
         var containerId = displayParentById.get(anchor.id);
         if (!containerId) return;
@@ -330,8 +338,8 @@
           if (n.data && n.data.nodeType === 'OUTPUT') return;
           if (g.children(n.id) && g.children(n.id).length) return; // clusters cannot be ranked
           if (!underContainer(n.id, containerId)) return;
-          var isSink = !layoutEdges.some(function(e) {
-            return e.source === n.id && e.target !== anchor.id && underContainer(e.target, containerId);
+          var isSink = !(outgoingBySource.get(n.id) || []).some(function(target) {
+            return target !== anchor.id && underContainer(target, containerId);
           });
           if (isSink) g.setEdge(n.id, anchor.id, { minlen: 1 }, 'rank__' + anchor.id + '__' + n.id);
         });

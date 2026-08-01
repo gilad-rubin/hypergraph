@@ -49,8 +49,12 @@ try {
     .map((n) => n.id);
   // Absolute positions (child nodes are parent-relative in the scene) so
   // Python tests can assert rank facts, not merely "it did not crash".
-  const positions = {};
-  const byId = {};
+  // Null-prototype maps: node ids are user-authored Python names, and every
+  // Object.prototype member name is a legal identifier. An ancestor without a
+  // position must not throw — a partially unpositioned layout is exactly what
+  // this runner exists to report.
+  const positions = Object.create(null);
+  const byId = Object.create(null);
   laid.forEach((n) => { byId[n.id] = n; });
   laid.forEach((n) => {
     let x = n.position ? n.position.x : NaN;
@@ -58,8 +62,9 @@ try {
     let parent = n.parentNode;
     let hops = 0;
     while (parent && byId[parent] && hops <= laid.length) {
-      x += byId[parent].position.x;
-      y += byId[parent].position.y;
+      const pp = byId[parent].position;
+      x += pp ? pp.x : NaN;
+      y += pp ? pp.y : NaN;
       parent = byId[parent].parentNode;
       hops++;
     }
