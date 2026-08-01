@@ -229,6 +229,35 @@ class TestFailureEvidence:
 
 
 class TestBatchOutcome:
+    async def test_manifest_only_keys_flow_through_result_watch_and_rerun(self, home):
+        graph = _chain_graph()
+        host = serve(graph, home=home)
+        receipt = await host.submit_batch(
+            graph,
+            [
+                {"case_label": "station-a", "x": 2},
+                {"case_label": "station-b", "x": 3},
+            ],
+            identity="case_label",
+            workflow_id="drop-labels",
+        )
+        async with _worker(host):
+            await _wait_for(lambda: _settled(host.client, receipt.batch_ref))
+
+        view = await host.client.get(receipt.batch_ref)
+        outcome = await host.client.result(receipt.batch_ref)
+        facts = [update async for update in host.client.watch(receipt.batch_ref) if update.durable]
+        rerun = await host.client.rerun(receipt.batch_ref, item_keys=["station-b"])
+
+        assert list(view.items) == ["station-a", "station-b"]
+        assert list(outcome.items) == ["station-a", "station-b"]
+        assert outcome.items["station-a"].outputs == {"doubled": 4, "tripled": 12}
+        assert facts[0].kind == "manifest" and facts[0].payload["item_keys"] == ["station-a", "station-b"]
+        assert {fact.payload["item_key"] for fact in facts if fact.kind == "child_settled"} == {"station-a", "station-b"}
+        assert list((await host.client.get(rerun.batch_ref)).items) == ["station-b"]
+        rerun_child = await home._get_submission("drop-labels-retry-1:station-b")
+        assert json.loads(rerun_child["inputs_json"]) == {"x": 3}
+
     async def test_items_are_keyed_in_manifest_order(self, home):
         host, served = serve_graphs(_chain_graph(), home=home)
         manifest = {"p-2": {"x": 2}, "p-1": {"x": 1}, "p-3": {"x": 3}}
