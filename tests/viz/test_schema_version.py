@@ -36,8 +36,14 @@ def test_current_schema_version_pinned() -> None:
     v5: ``GraphIR.container_transits`` tells ``simplify`` which collapsed
     containers really carry a value through. Falling back to "a box passes
     everything" hides real edges under a route that does not exist — a wrong
-    picture, not merely a stale one, so it must degrade loudly."""
-    assert CURRENT_SCHEMA_VERSION == "5"
+    picture, not merely a stale one, so it must degrade loudly.
+    v6: synthesized ``node_type == "OUTPUT"`` anchor pills — a container
+    output no descendant produces (a mounted table's receipt) gets an
+    in-container anchor and the boundary edge's ``source_when_expanded``
+    points at it. An old scene builder would honor the rewritten source
+    while never emitting the anchor node — a dangling edge — so it must
+    degrade loudly."""
+    assert CURRENT_SCHEMA_VERSION == "6"
 
 
 def test_build_graph_ir_emits_current_schema_version() -> None:
@@ -76,7 +82,7 @@ def test_js_scene_builder_returns_mismatch_sentinel_for_future_version() -> None
     )
     assert proc.returncode == 0, proc.stderr
     scene = json.loads(proc.stdout)
-    assert scene.get("schemaVersionMismatch") == {"got": "999", "supported": "5"}
+    assert scene.get("schemaVersionMismatch") == {"got": "999", "supported": "6"}
     # The mismatch-sentinel must short-circuit derivation entirely so the
     # frontend can render the static fallback without dragging in any
     # potentially-stale interpretation of the IR.
@@ -116,7 +122,7 @@ def test_js_scene_builder_degrades_loudly_on_v3_payload_without_container_entryp
     )
     assert proc.returncode == 0, proc.stderr
     scene = json.loads(proc.stdout)
-    assert scene.get("schemaVersionMismatch") == {"got": "3", "supported": "5"}
+    assert scene.get("schemaVersionMismatch") == {"got": "3", "supported": "6"}
     assert scene["nodes"] == []
     assert scene["edges"] == []
 
@@ -143,7 +149,7 @@ def test_js_scene_builder_degrades_loudly_when_schema_version_is_missing() -> No
     assert scene == {
         "nodes": [],
         "edges": [],
-        "schemaVersionMismatch": {"got": None, "supported": "5"},
+        "schemaVersionMismatch": {"got": None, "supported": "6"},
     }
 
 
@@ -174,7 +180,7 @@ def test_js_scene_builder_degrades_loudly_on_v4_payload_without_container_transi
     )
     assert proc.returncode == 0, proc.stderr
     scene = json.loads(proc.stdout)
-    assert scene.get("schemaVersionMismatch") == {"got": "4", "supported": "5"}
+    assert scene.get("schemaVersionMismatch") == {"got": "4", "supported": "6"}
     assert scene["nodes"] == []
     assert scene["edges"] == []
 

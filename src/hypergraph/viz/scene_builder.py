@@ -45,6 +45,32 @@ def build_initial_scene(
     scene_nodes: list[dict[str, Any]] = []
 
     for ir_node in ir.nodes:
+        if ir_node.node_type == "OUTPUT":
+            # Synthesized boundary-output anchor (a mounted table's receipt):
+            # visible exactly while its container chain is expanded — the same
+            # rule as any inner node — so an expanded container never sources
+            # an edge from its own hull, and a collapsed one keeps the edge on
+            # the box as before.
+            out = ir_node.outputs[0] if ir_node.outputs else {}
+            scene_nodes.append(
+                {
+                    "id": ir_node.id,
+                    "type": "custom",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "nodeType": "OUTPUT",
+                        "label": ir_node.label or ir_node.id,
+                        "typeHint": out.get("type"),
+                        "ownerContainer": ir_node.parent,
+                    },
+                    "sourcePosition": "bottom",
+                    "targetPosition": "top",
+                    "hidden": _ancestor_collapsed(ir_node.id, parent_map, expansion_state),
+                    "parentNode": ir_node.parent,
+                    "extent": "parent",
+                }
+            )
+            continue
         is_expanded = expansion_state.get(ir_node.id, False) if ir_node.node_type == "GRAPH" else None
         scene_node_type = _scene_node_type(ir_node.node_type)
         rf_type = "pipelineGroup" if scene_node_type == "PIPELINE" and is_expanded else "custom"
@@ -205,6 +231,9 @@ def build_initial_scene(
                 scene_nodes.append(scene_node)
 
     visible_ids = {n["id"] for n in scene_nodes if not n["hidden"]}
+    # Synthesized boundary-output anchors ARE the value pill: an edge sourced
+    # at one never interposes a DATA node in separate_outputs mode.
+    anchor_ids = {n.id for n in ir.nodes if n.node_type == "OUTPUT"}
     scene_edges: list[dict[str, Any]] = []
     # scene-edge id -> (entry it feeds, exit it leaves from) when the edge
     # touches a *collapsed* container. Kept out of the scene payload: it exists
@@ -250,7 +279,7 @@ def build_initial_scene(
                     edges_to_emit = [(None, base_source)]  # type: ignore[list-item]
 
                 for value_name, source in edges_to_emit:
-                    if separate_outputs and ir_edge.edge_type == "data" and value_name is not None:
+                    if separate_outputs and ir_edge.edge_type == "data" and value_name is not None and source not in anchor_ids:
                         source = f"data_{source}_{value_name}"
                     edge_id = f"{source}__{target}" if value_name is None else f"{source}__{target}__{value_name}"
                     ports = _collapsed_ports(ir_edge, expansion_state, parent_map)

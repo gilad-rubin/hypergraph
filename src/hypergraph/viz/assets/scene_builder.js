@@ -18,7 +18,7 @@
   // v4: canonical container_entrypoints field (D14, #211) — this scene
   // builder no longer derives entrypoints, so a v3 payload without the
   // field must banner instead of silently mis-routing START/control edges.
-  var SUPPORTED_SCHEMA_VERSION = '5';
+  var SUPPORTED_SCHEMA_VERSION = '6';
 
   // Mirror of scene_builder.py:DATA_FLOW_EDGE_TYPES — the edge types that
   // carry a value, and so the only ones the `simplify` path graph walks.
@@ -165,6 +165,30 @@
 
     for (var j = 0; j < ir.nodes.length; j++) {
       var irNode = ir.nodes[j];
+      if (irNode.node_type === 'OUTPUT') {
+        // Synthesized boundary-output anchor (a mounted table's receipt):
+        // visible exactly while its container chain is expanded — the same
+        // rule as any inner node — so an expanded container never sources an
+        // edge from its own hull. Twin of the Python OUTPUT branch.
+        var anchorOut = (irNode.outputs && irNode.outputs[0]) || {};
+        sceneNodes.push({
+          id: irNode.id,
+          type: 'custom',
+          position: { x: 0, y: 0 },
+          data: {
+            nodeType: 'OUTPUT',
+            label: irNode.label || irNode.id,
+            typeHint: anchorOut.type || null,
+            ownerContainer: irNode.parent || null,
+          },
+          sourcePosition: 'bottom',
+          targetPosition: 'top',
+          hidden: ancestorCollapsed(irNode.id, parentMap, expansionState),
+          parentNode: irNode.parent,
+          extent: 'parent',
+        });
+        continue;
+      }
       var sceneType = sceneNodeType(irNode.node_type);
       var isExpanded = irNode.node_type === 'GRAPH' ? !!expansionState[irNode.id] : null;
       var rfType = sceneType === 'PIPELINE' && isExpanded ? 'pipelineGroup' : 'custom';
@@ -340,6 +364,14 @@
       if (!sceneNodes[m].hidden) visibleIds[sceneNodes[m].id] = true;
     }
 
+    // Synthesized boundary-output anchors ARE the value pill: an edge sourced
+    // at one never interposes a DATA node in separateOutputs mode.
+    // Object.create(null): ids come from user-authored Python names.
+    var anchorIds = Object.create(null);
+    for (var an = 0; an < ir.nodes.length; an++) {
+      if (ir.nodes[an].node_type === 'OUTPUT') anchorIds[ir.nodes[an].id] = true;
+    }
+
     var sceneEdges = [];
     var edgeEntrypointOverrides = expandedContainerEntrypoints(ir, expansionState);
     // scene-edge id -> {entry, exit} when the edge touches a *collapsed*
@@ -427,7 +459,7 @@
           for (var v = 0; v < valuesToEmit.length; v++) {
             var valueName = valuesToEmit[v];
             var src = baseSrc;
-            if (separateOutputs && irEdge.edge_type === 'data' && valueName !== null) {
+            if (separateOutputs && irEdge.edge_type === 'data' && valueName !== null && !anchorIds[src]) {
               src = 'data_' + src + '_' + valueName;
             }
             var edgeId = valueName === null ? src + '__' + tgt : src + '__' + tgt + '__' + valueName;

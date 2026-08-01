@@ -203,3 +203,27 @@ def test_merge_tolerates_ir_without_type_hints():
     assert merged[0]["params"] == ["alpha", "beta"]
     assert merged[0]["type_hints"] == [None, None]
     assert merged[0]["id"] == "input_group_alpha_beta"
+
+
+def test_receipt_anchor_ranks_below_the_recipe_and_above_the_consumer():
+    """The synthesized OUTPUT anchor (the mounted table's receipt pill) must
+    sit at the BOTTOM of the expanded container, with the downstream consumer
+    ranked below it — the boundary edge flows downhill instead of climbing
+    from the container's bottom back up to a consumer dagre parked beside the
+    recipe's first node."""
+
+    @node(output_name="published")
+    def publish(receipt: object) -> str:
+        return str(receipt)
+
+    flat = Graph([_table().as_node(name="materialize_docs"), publish], name="ingest").to_flat_graph()
+    result = _layout(flat, depth=2)
+    assert result["ok"], result.get("error")
+    positions = result["positions"]
+
+    anchor_id = "materialize_docs/__output__receipt"
+    assert anchor_id in positions, sorted(positions)
+    anchor_y = positions[anchor_id]["y"]
+    inner_ys = [pos["y"] for node_id, pos in positions.items() if node_id.startswith("materialize_docs/") and node_id != anchor_id]
+    assert inner_ys and anchor_y > max(inner_ys), (anchor_y, inner_ys)
+    assert positions["publish"]["y"] > anchor_y

@@ -301,6 +301,42 @@
       }
       g.setEdge(e._rankSource, e._rankTarget, edgeLabel, e.id);
     });
+
+    // Rank each synthesized OUTPUT anchor (a mounted table's receipt pill)
+    // below everything inside its container: rank-only, undrawn edges from
+    // the container's visible leaf sinks to the anchor. The anchor has no
+    // drawn in-edge — the receipt has no single inner producer — so without
+    // these dagre would park it at the TOP of the container and the boundary
+    // edge it sources would climb backwards out of the box.
+    var anchorLayoutNodes = layoutNodes.filter(function(n) {
+      return n.data && n.data.nodeType === 'OUTPUT';
+    });
+    if (anchorLayoutNodes.length) {
+      var underContainer = function(nodeId, containerId) {
+        var current = displayParentById.get(nodeId);
+        var hops = 0;
+        while (current && hops <= layoutNodes.length) {
+          if (current === containerId) return true;
+          current = displayParentById.get(current);
+          hops++;
+        }
+        return false;
+      };
+      anchorLayoutNodes.forEach(function(anchor) {
+        var containerId = displayParentById.get(anchor.id);
+        if (!containerId) return;
+        layoutNodes.forEach(function(n) {
+          if (n.id === anchor.id) return;
+          if (n.data && n.data.nodeType === 'OUTPUT') return;
+          if (g.children(n.id) && g.children(n.id).length) return; // clusters cannot be ranked
+          if (!underContainer(n.id, containerId)) return;
+          var isSink = !layoutEdges.some(function(e) {
+            return e.source === n.id && e.target !== anchor.id && underContainer(e.target, containerId);
+          });
+          if (isSink) g.setEdge(n.id, anchor.id, { minlen: 1 }, 'rank__' + anchor.id + '__' + n.id);
+        });
+      });
+    }
     dagre.layout(g);
 
     var nodeById = new Map();

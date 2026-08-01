@@ -146,6 +146,28 @@
         </div>`;
     }
 
+    // ── OUTPUT node ──
+    if (nodeType === 'OUTPUT') {
+      // Synthesized boundary-output anchor: a container output no inner node
+      // produces (a mounted HyperTable's receipt). Same pill language as the
+      // map-fed INPUT pills, emerald output accent — the boundary edge leaves
+      // this pill instead of the expanded container's hull.
+      var otc = isLight ? 'text-slate-400' : 'text-slate-500';
+      var outCls = isLight
+        ? ' bg-emerald-50 border-emerald-300 text-emerald-700 shadow-emerald-100 hover:border-emerald-400'
+        : ' bg-slate-900 border-emerald-500/60 text-emerald-300 shadow-black/50 hover:border-emerald-400';
+      return html`
+        <div className="w-full h-full relative" style=${wrapStyle}>
+          <div className=${'px-3 py-1.5 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg overflow-hidden' + outCls}>
+            <span className=${'shrink-0 ' + (isLight ? 'text-emerald-500' : 'text-emerald-400')}>→</span>
+            <span className="text-xs font-mono font-medium shrink-0">${data.label}</span>
+            ${data.showTypes && data.typeHint ? html`<span className=${'text-xs font-mono truncate min-w-0 ' + otc} title=${data.typeHint}>: ${truncateTypeHint(data.typeHint)}</span>` : null}
+          </div>
+          <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${tgtStyle} />
+          <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${srcStyle} />
+        </div>`;
+    }
+
     // ── INPUT_GROUP node ──
     if (nodeType === 'INPUT_GROUP') {
       var params = data.params || [], paramTypes = data.paramTypes || [];

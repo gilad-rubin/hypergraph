@@ -124,7 +124,14 @@ class IRExternalInput:
 # falls back to "a box passes everything through", which hides real edges under
 # a route that does not exist. That is a wrong picture rather than a missing
 # one, so it must hit the mismatch banner.
-CURRENT_SCHEMA_VERSION = "5"
+# v6: ``ir.nodes`` may contain synthesized ``node_type == "OUTPUT"`` anchor
+# pills — a container output no descendant produces (a mounted HyperTable's
+# receipt) gets a visible in-container anchor, and the boundary edge's
+# ``source_when_expanded`` points at it. An old scene builder would honor the
+# rewritten source while never emitting the anchor node, leaving the edge
+# dangling — a missing edge rather than a degraded one, so it must hit the
+# mismatch banner.
+CURRENT_SCHEMA_VERSION = "6"
 
 
 class IRSchemaError(ValueError):

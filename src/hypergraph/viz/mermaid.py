@@ -33,8 +33,10 @@ from hypergraph.viz._simplify import EdgeRef, shortcut_edge_keys
 from hypergraph.viz.renderer._format import format_type
 from hypergraph.viz.renderer.ir_builder import (
     compute_container_transits,
+    container_output_anchors,
     find_internal_consumers,
     resolve_boundary_ports,
+    shared_answer_label,
 )
 from hypergraph.viz.renderer.nodes import (
     build_input_groups,
@@ -100,6 +102,12 @@ DEFAULT_COLORS: dict[str, dict[str, str]] = {
         "stroke-width": "2px",
         "color": "#065F46",
     },
+    "output": {
+        "fill": "#ECFDF5",
+        "stroke": "#34D399",
+        "stroke-width": "2px",
+        "color": "#047857",
+    },
 }
 
 # Maps HyperGraph node_type to Mermaid classDef name
@@ -110,6 +118,7 @@ _NODE_TYPE_TO_CLASS = {
     "INPUT": "input",
     "INPUT_GROUP": "input",
     "DATA": "data",
+    "OUTPUT": "output",
     "START": "start",
     "END": "end",
 }
@@ -206,6 +215,7 @@ _SHAPE_DELIMITERS: dict[str, tuple[str, str]] = {
     "INPUT": ('(["', '"])'),
     "INPUT_GROUP": ('(["', '"])'),
     "DATA": ('[/"', '"/]'),
+    "OUTPUT": ('(["', '"])'),
     "START": ('(("', '"))'),
     "END": ('(["', '"])'),
 }
@@ -349,6 +359,7 @@ def _render_merged_edges(
     exclusive_data_edges: set[tuple[str, str, str]],
     back_edges: set[tuple[str, str]],
     id_allocator: _MermaidIdAllocator,
+    output_anchors: dict[str, dict[str, str]] | None = None,
 ) -> list[_RenderedEdge]:
     """Render edges in merged output mode (no DATA intermediaries).
 
@@ -399,6 +410,11 @@ def _render_merged_edges(
             if not is_node_visible(target, flat_graph, expansion_state):
                 continue
             value_name = value_names[0] if value_names else ""
+            if not value_name and (source, target) in back_edges:
+                # A routed interrupt's answer edge: name the shared value it
+                # exists to deliver, so the cycle reads as the answer
+                # returning to the gate.
+                value_name = shared_answer_label(source, target, flat_graph) or ""
             edge_key = (id_allocator.get(source), id_allocator.get(target), f"ord_{value_name}")
             if edge_key in seen_edges:
                 continue
@@ -414,8 +430,12 @@ def _render_merged_edges(
             )
             continue
 
-        # Data edges
+        # Data edges. Merged mode draws ONE arrow per resolved (source,
+        # target) pair — the widget's story — so the dedup key carries no
+        # value name, and exclusivity is OR'd across every value the pair
+        # carries (a mutex arm on any of them dashes the one drawn arrow).
         values = value_names if value_names else [""]
+        pair_exclusive = any((source, target, value_name) in exclusive_data_edges for value_name in values)
         for value_name in values:
             actual_source = _resolve_data_source(
                 source,
@@ -423,6 +443,7 @@ def _render_merged_edges(
                 flat_graph,
                 expansion_state,
                 output_to_producer,
+                output_anchors,
             )
             actual_targets = _resolve_data_targets(
                 target,
@@ -436,19 +457,18 @@ def _render_merged_edges(
             for resolved_target in actual_targets:
                 if actual_source == resolved_target:
                     continue
-                edge_key = (id_allocator.get(actual_source), id_allocator.get(resolved_target), value_name)
+                edge_key = (id_allocator.get(actual_source), id_allocator.get(resolved_target))
                 if edge_key in seen_edges:
                     continue
                 seen_edges.add(edge_key)
-                is_exclusive = (source, target, value_name) in exclusive_data_edges
                 exit_port, entry_port = resolve_boundary_ports(flat_graph, source, target, value_names or [value_name])
                 out.append(
                     _RenderedEdge(
-                        _format_edge(actual_source, resolved_target, None, exclusive=is_exclusive, id_allocator=id_allocator),
+                        _format_edge(actual_source, resolved_target, None, exclusive=pair_exclusive, id_allocator=id_allocator),
                         "data",
                         actual_source,
                         resolved_target,
-                        exclusive=is_exclusive,
+                        exclusive=pair_exclusive,
                         is_back_edge=(source, target) in back_edges,
                         exit_port=exit_port,
                         entry_port=entry_port,
@@ -465,6 +485,7 @@ def _render_separate_edges(
     exclusive_data_edges: set[tuple[str, str, str]],
     back_edges: set[tuple[str, str]],
     id_allocator: _MermaidIdAllocator,
+    output_anchors: dict[str, dict[str, str]] | None = None,
 ) -> list[_RenderedEdge]:
     """Render edges in separate output mode (with DATA intermediaries).
 
@@ -506,6 +527,7 @@ def _render_separate_edges(
         value_names = edge_data.get("value_names", [])
 
         if edge_type == "data":
+            anchors_for_source = (output_anchors or {}).get(source, {})
             for value_name in value_names or [""]:
                 if not value_name:
                     continue
@@ -516,6 +538,7 @@ def _render_separate_edges(
                     flat_graph,
                     expansion_state,
                     output_to_producer,
+                    output_anchors,
                 )
                 if actual_source is None:
                     continue
@@ -529,7 +552,10 @@ def _render_separate_edges(
                 source_attrs = flat_graph.nodes.get(actual_source, {})
                 if is_internal_gate_output(actual_source, value_name, source_attrs):
                     continue
-                data_id = f"data_{actual_source}_{value_name}"
+                # A synthesized OUTPUT anchor IS the value pill — no DATA
+                # node interposed.
+                is_anchor_source = actual_source == anchors_for_source.get(value_name)
+                data_id = actual_source if is_anchor_source else f"data_{actual_source}_{value_name}"
                 for resolved_target in actual_targets:
                     edge_key = (id_allocator.get(data_id), id_allocator.get(resolved_target))
                     if edge_key not in seen_edges:
@@ -548,6 +574,8 @@ def _render_separate_edges(
 
         elif edge_type == "ordering":
             value_name = value_names[0] if value_names else ""
+            if not value_name and (source, target) in back_edges:
+                value_name = shared_answer_label(source, target, flat_graph) or ""
             edge_key = (id_allocator.get(source), id_allocator.get(target), f"ord_{value_name}")  # type: ignore[assignment]
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
@@ -667,6 +695,7 @@ def _resolve_data_source(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
     output_to_producer: dict[str, str],
+    output_anchors: dict[str, dict[str, str]] | None = None,
 ) -> str | None:
     """Resolve actual source for a data edge, exiting expanded containers."""
     actual_source = source
@@ -684,6 +713,13 @@ def _resolve_data_source(
             )
             if found:
                 actual_source = found
+            else:
+                # No descendant produces the value (a mounted table's
+                # receipt): the edge leaves the synthesized OUTPUT anchor
+                # inside the expanded subgraph, never the subgraph hull.
+                anchor = (output_anchors or {}).get(source, {}).get(value_name)
+                if anchor:
+                    return anchor
     if not is_node_visible(actual_source, flat_graph, expansion_state):
         return None
     return actual_source
@@ -788,6 +824,7 @@ def _render_subgraph_block(
     node_class_map: dict[str, str],
     id_allocator: _MermaidIdAllocator,
     indent: int = 1,
+    output_anchors: dict[str, dict[str, str]] | None = None,
 ) -> list[str]:
     """Render a subgraph block for an expanded GRAPH node."""
     attrs = flat_graph.nodes[container_id]
@@ -817,6 +854,7 @@ def _render_subgraph_block(
                     node_class_map,
                     id_allocator,
                     indent=indent + 1,
+                    output_anchors=output_anchors,
                 )
             )
         else:
@@ -831,6 +869,16 @@ def _render_subgraph_block(
                 ).strip()
             )
             node_class_map[child_id] = _NODE_TYPE_TO_CLASS.get(mermaid_type, "function")
+
+    # Synthesized boundary-output anchors: a container output no descendant
+    # produces (a mounted table's receipt) surfaces as an OUTPUT pill inside
+    # the expanded subgraph, and the boundary edge leaves it instead of the
+    # subgraph hull. Same anchor ids as the interactive IR path.
+    output_types = attrs.get("output_types", {})
+    for value_name, anchor_id in sorted(((output_anchors or {}).get(container_id, {})).items()):
+        anchor_label = _build_data_label(value_name, format_type(output_types.get(value_name)), show_types)
+        lines.append("    " * (indent + 1) + _format_node(id_allocator.get(anchor_id), anchor_label, "OUTPUT").strip())
+        node_class_map[anchor_id] = "output"
 
     lines.append(f"{prefix}end")
     return lines
@@ -926,6 +974,10 @@ def to_mermaid(
 
     expansion_state = build_expansion_state(flat_graph, depth)
     container_entrypoints = compute_container_entrypoints(flat_graph)
+    # Boundary outputs no descendant produces (a mounted table's receipt):
+    # each gets an OUTPUT anchor pill inside its expanded subgraph, shared
+    # with the interactive IR path so both pipelines agree on ids.
+    output_anchors = container_output_anchors(flat_graph)
     input_spec = flat_graph.graph.get("input_spec", {})
     bound_params = set(input_spec.get("bound", {}).keys())
     param_to_consumers = build_param_to_consumer_map(flat_graph, expansion_state)
@@ -1012,6 +1064,7 @@ def to_mermaid(
                     separate_outputs,
                     node_class_map,
                     id_allocator,
+                    output_anchors=output_anchors,
                 )
             )
             continue
@@ -1089,6 +1142,7 @@ def to_mermaid(
         exclusive_data_edges,
         back_edges,
         id_allocator,
+        output_anchors,
     )
     # Input edges enter the reduction with the flow edges (an input feeding a
     # chain keeps only its earliest consumer), then emit first so the text

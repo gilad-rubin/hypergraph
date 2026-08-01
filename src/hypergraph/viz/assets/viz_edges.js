@@ -62,6 +62,34 @@
     return cleaned.length >= 2 ? cleaned : deduped;
   }
 
+  /** Orthogonal polyline with small rounded corners. Feedback edges use this
+   * instead of curveBasis: their points are a deliberate Manhattan channel
+   * hugging the two nodes, and the B-spline smeared the corners into a wide
+   * orbit that read as spaghetti rather than "the answer comes back". */
+  function roundedChannelPath(pts, radius) {
+    if (!pts || pts.length < 2) return pts && pts.length ? 'M ' + pts[0].x + ' ' + pts[0].y : '';
+    var r = radius || 12;
+    var path = 'M ' + pts[0].x + ' ' + pts[0].y;
+    for (var i = 1; i < pts.length - 1; i++) {
+      var p0 = pts[i - 1], p1 = pts[i], p2 = pts[i + 1];
+      var l1 = Math.sqrt(Math.pow(p1.x - p0.x, 2) + Math.pow(p1.y - p0.y, 2));
+      var l2 = Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+      var cr = Math.min(r, l1 / 2, l2 / 2);
+      if (cr < 0.5 || l1 < 1e-6 || l2 < 1e-6) {
+        path += ' L ' + p1.x + ' ' + p1.y;
+        continue;
+      }
+      var inX = p1.x - ((p1.x - p0.x) / l1) * cr;
+      var inY = p1.y - ((p1.y - p0.y) / l1) * cr;
+      var outX = p1.x + ((p2.x - p1.x) / l2) * cr;
+      var outY = p1.y + ((p2.y - p1.y) / l2) * cr;
+      path += ' L ' + inX + ' ' + inY + ' Q ' + p1.x + ' ' + p1.y + ' ' + outX + ' ' + outY;
+    }
+    var last = pts[pts.length - 1];
+    path += ' L ' + last.x + ' ' + last.y;
+    return path;
+  }
+
   function pointAlongPolyline(pts, t) {
     if (!pts || pts.length < 2) return pts && pts[0] ? { x: pts[0].x, y: pts[0].y } : { x: 0, y: 0 };
     var total = 0;
@@ -94,11 +122,11 @@
 
     if (data && data.points && data.points.length > 0) {
       var points = normalizePoints(data.points.slice());
-      edgePath = curveBasis(points);
+      edgePath = data.isFeedbackEdge ? roundedChannelPath(points) : curveBasis(points);
       var isBranch = edgeLabel === 'True' || edgeLabel === 'False';
-      var lp = isBranch
+      var lp = data.isFeedbackEdge
         ? pointAlongPolyline(points, 0.5)
-        : pointAlongPolyline(points, 0.35);
+        : (isBranch ? pointAlongPolyline(points, 0.5) : pointAlongPolyline(points, 0.35));
       labelX = lp.x; labelY = lp.y;
     } else {
       var r = getBezierPath({ sourceX: props.sourceX, sourceY: props.sourceY, sourcePosition: props.sourcePosition,
@@ -134,6 +162,7 @@
 
   var Edges = {
     curveBasis: curveBasis,
+    roundedChannelPath: roundedChannelPath,
     normalizePoints: normalizePoints,
     pointAlongPolyline: pointAlongPolyline,
     CustomEdge: CustomEdge,
