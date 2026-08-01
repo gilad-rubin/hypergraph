@@ -258,6 +258,20 @@ class TestBatchOutcome:
         rerun_child = await home._get_submission("drop-labels-retry-1:station-b")
         assert json.loads(rerun_child["inputs_json"]) == {"x": 3}
 
+    async def test_checkpoint_reusing_batch_rerun_inherits_material_outputs(self, home):
+        host, served = serve_graphs(_chain_graph(), home=home)
+        original = await submit_keyed(host, served["chain"], {"a": {"x": 4}}, workflow_id="drop-reused")
+        async with _worker(host):
+            await _wait_for(lambda: _settled(RunHomeClient(home), original.batch_ref))
+
+        retry = await host.client.rerun(original.batch_ref)
+        async with _worker(host):
+            await _wait_for(lambda: _settled(RunHomeClient(home), retry.batch_ref))
+
+        outcome = await host.client.result(retry.batch_ref)
+        assert outcome.items["a"].outputs == {"doubled": 8, "tripled": 24}
+        assert host.client.result_sync(retry.batch_ref).items["a"].outputs == outcome.items["a"].outputs
+
     async def test_items_are_keyed_in_manifest_order(self, home):
         host, served = serve_graphs(_chain_graph(), home=home)
         manifest = {"p-2": {"x": 2}, "p-1": {"x": 1}, "p-3": {"x": 3}}
@@ -338,6 +352,46 @@ class TestBatchOutcome:
 
 
 class TestLineageAndRecovery:
+    async def test_checkpoint_reusing_rerun_inherits_material_outputs(self, home):
+        host, served = serve_graphs(_chain_graph(), home=home)
+        original = await host.submit(served["chain"], {"x": 4}, workflow_id="wf-reused")
+        async with _worker(host):
+            await _wait_for(lambda: _settled(RunHomeClient(home), original.run_ref))
+
+        retry = await host.client.rerun(original.run_ref)
+        async with _worker(host):
+            await _wait_for(lambda: _settled(RunHomeClient(home), retry.run_ref))
+
+        outcome = await host.client.result(retry.run_ref)
+        assert outcome.workflow_id == retry.workflow_id, "the requested run keeps its identity"
+        assert outcome.outputs == {"doubled": 8, "tripled": 24}
+        assert host.client.result_sync(retry.run_ref).outputs == outcome.outputs
+
+    async def test_checkpoint_reusing_rerun_that_produced_nothing_stays_empty(self, home):
+        host, served = serve_graphs(_empty_graph(), home=home)
+        original = await host.submit(served["quiet"], {"x": 4}, workflow_id="wf-empty-reused")
+        async with _worker(host):
+            await _wait_for(lambda: _settled(RunHomeClient(home), original.run_ref))
+
+        retry = await host.client.rerun(original.run_ref)
+        async with _worker(host):
+            await _wait_for(lambda: _settled(RunHomeClient(home), retry.run_ref))
+
+        assert (await host.client.result(retry.run_ref)).outputs == {}
+
+    async def test_retry_lineage_cycle_terminates(self, home):
+        for run_id in ("wf-cycle-a", "wf-cycle-b"):
+            home.create_run_sync(run_id, graph_name="quiet")
+            home.update_run_status_sync(run_id, WorkflowStatus.COMPLETED)
+        db = home._sync_db()
+        db.execute("UPDATE runs SET retry_of = 'wf-cycle-b' WHERE id = 'wf-cycle-a'")
+        db.execute("UPDATE runs SET retry_of = 'wf-cycle-a' WHERE id = 'wf-cycle-b'")
+        db.commit()
+
+        ref = RunRef(home=home.uri, run_id="wf-cycle-a")
+        assert (await RunHomeClient(home).result(ref)).outputs == {}
+        assert RunHomeClient(home).result_sync(ref).outputs == {}
+
     async def test_rerun_lineage_reads_each_generation_independently(self, home):
         """Rerun repeats inputs verbatim, so the fix has to be transient."""
         attempts: dict[str, int] = {"n": 0}

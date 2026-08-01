@@ -572,7 +572,7 @@ class TestClientList:
         time.sleep(0.002)
         home.create_run_sync("wf-done", graph_name="other")
         home.update_run_status_sync("wf-done", WorkflowStatus.COMPLETED)
-        # Backdate two rows so oldest-first ordering and older_than bite.
+        # Backdate two rows so newest-first ordering and older_than bite.
         db.execute("UPDATE host_submissions SET created_at = '2020-01-01T00:00:00+00:00' WHERE workflow_id = 'wf-q'")
         db.execute("UPDATE runs SET created_at = '2020-06-01T00:00:00Z' WHERE id = 'wf-done'")
         db.commit()
@@ -583,7 +583,7 @@ class TestClientList:
 
         everything = await client.list(RunQuery())
         ids = [view.workflow_id for view in everything]
-        assert ids == ["wf-q", "wf-done", "wf-sched", "wf-incomp", "wf-exh", "wf-paused"]
+        assert ids == ["wf-paused", "wf-exh", "wf-incomp", "wf-sched", "wf-done", "wf-q"]
 
         by_definition = await client.list(RunQuery(definition="dbl"))
         assert {view.workflow_id for view in by_definition} == {"wf-q", "wf-sched", "wf-incomp", "wf-exh", "wf-paused"}
@@ -605,10 +605,10 @@ class TestClientList:
             assert [view.workflow_id for view in views] == expected, condition
 
         aged = await client.list(RunQuery(older_than=timedelta(days=30)))
-        assert [view.workflow_id for view in aged] == ["wf-q", "wf-done"]
+        assert [view.workflow_id for view in aged] == ["wf-done", "wf-q"]
 
         limited = await client.list(RunQuery(limit=2))
-        assert [view.workflow_id for view in limited] == ["wf-q", "wf-done"]
+        assert [view.workflow_id for view in limited] == ["wf-paused", "wf-exh"]
 
     async def test_list_sync_mirror_and_validation(self, home):
         client = await self._fixtures(home)

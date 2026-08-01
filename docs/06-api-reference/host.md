@@ -811,7 +811,7 @@ voids it — so the stream alone accounts for every timer.
 
 `client.list(query)` filters joined run views through a typed `RunQuery` —
 submissions joined with their runs rows, plus bare Tier-0 runs (a runs row
-with no submission). Results come oldest first, capped at `query.limit`
+with no submission). Results come newest first, capped at `query.limit`
 (default 100):
 
 ```python
@@ -831,6 +831,18 @@ accepts a `BatchRef` or a bare batch id string and restricts results to
 that Batch's children, and `older_than` compares creation time. Omitted
 fields match everything. `limit` must be a positive `int`.
 `client.list_sync(...)` is the synchronous mirror.
+
+`RunView.created_at` and `RunView.completed_at` expose the Run ledger's own
+timestamps (`None` until the corresponding runs-row event exists). Read the
+graph-boundary values pinned when a Run started without reaching into the
+Run Home:
+
+```python
+inputs = await client.inputs(run_view.run_ref)
+```
+
+`client.inputs_sync(...)` is the synchronous mirror. It returns `{}` for an
+unknown Run or a legacy runs row that predates durable input persistence.
 
 ## Rerun: Repeat Settled Work
 

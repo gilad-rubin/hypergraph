@@ -1117,6 +1117,8 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert tuple(inspect.signature(RunHomeClient.stop_sync).parameters) == tuple(inspect.signature(RunHomeClient.stop).parameters)
     assert tuple(inspect.signature(RunHomeClient.list).parameters) == ("self", "query")
     assert tuple(inspect.signature(RunHomeClient.list_sync).parameters) == tuple(inspect.signature(RunHomeClient.list).parameters)
+    assert tuple(inspect.signature(RunHomeClient.inputs).parameters) == ("self", "ref")
+    assert tuple(inspect.signature(RunHomeClient.inputs_sync).parameters) == tuple(inspect.signature(RunHomeClient.inputs).parameters)
 
     # Inert refs and read models: identity only, typed waiting vocabulary.
     assert tuple(RunRef.__dataclass_fields__) == ("home", "run_id")
@@ -1133,6 +1135,8 @@ def test_durable_host_docs_pin_public_contract() -> None:
         "definition_id",
         "retry_of",
         "forked_from",
+        "created_at",
+        "completed_at",
     )
     assert tuple(RunUpdate.__dataclass_fields__) == ("cursor", "durable", "kind", "payload", "timestamp")
 

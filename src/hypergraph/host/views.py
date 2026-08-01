@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
 
@@ -152,6 +152,9 @@ class RunView:
         forked_from: Source workflow id when this run is a fork (migration),
             else None. Taken from the runs row when present, else the
             submission's recorded lineage.
+        created_at: When the runs row was created, or None before execution
+            starts.
+        completed_at: When the run reached a terminal status, else None.
     """
 
     run_ref: RunRef
@@ -162,6 +165,8 @@ class RunView:
     definition_id: DefinitionId | None
     retry_of: str | None
     forked_from: str | None
+    created_at: datetime | None
+    completed_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -179,7 +184,7 @@ class RunQuery:
             waiting computation ``RunView.waiting`` uses).
         older_than: Restrict to work created at least this long ago
             (aged-unclaimed and backlog queries).
-        limit: Maximum views returned, oldest first. Defaults to 100.
+        limit: Maximum views returned, newest first. Defaults to 100.
         batch: Restrict to children of one Batch — a ``BatchRef`` or a bare
             batch id string. Runs without Batch membership never match.
     """

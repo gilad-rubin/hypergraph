@@ -13,10 +13,10 @@ import json
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import aclosing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from difflib import get_close_matches
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from hypergraph.checkpointers.types import PauseSlot, WorkflowStatus
 from hypergraph.host._batch_store import BatchAcceptance, DefinitionPin
@@ -50,6 +50,9 @@ from hypergraph.host.views import (
 if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Run
     from hypergraph.host.home import RunHome
+
+
+_RETRY_LINEAGE_LIMIT = 32
 
 
 def _now_iso() -> str:
@@ -399,6 +402,8 @@ def _build_view(
         definition_id=definition_id,
         retry_of=retry_of,
         forked_from=forked_from,
+        created_at=run.created_at if run is not None else None,
+        completed_at=run.completed_at if run is not None else None,
     )
 
 
@@ -584,7 +589,7 @@ def _filter_list_rows(
     *,
     admission_full: bool = False,
 ) -> list[RunView]:
-    """Build views for joined rows and apply the RunQuery filters, oldest first."""
+    """Build views for joined rows and apply the RunQuery filters, newest first."""
     cutoff = datetime.now(timezone.utc) - query.older_than if query.older_than is not None else None
     batch_id = _query_batch_id(query)
     matched: list[tuple[datetime, RunView]] = []
@@ -605,7 +610,7 @@ def _filter_list_rows(
         if cutoff is not None and created_at > cutoff:
             continue
         matched.append((created_at, view))
-    matched.sort(key=lambda pair: (pair[0], pair[1].workflow_id))
+    matched.sort(key=lambda pair: (pair[0], pair[1].workflow_id), reverse=True)
     return [view for _, view in matched[: query.limit]]
 
 
@@ -677,6 +682,22 @@ class RunHomeClient:
         run = self._home.get_run(ref.run_id)
         return _build_view(self._home.uri, ref.run_id, submission, run, admission_full=self._home._admission_is_full_sync())
 
+    async def inputs(self, ref: RunRef) -> dict[str, Any]:
+        """Return the pinned graph-boundary inputs the run started from.
+
+        Returns an empty dict for an unknown run or legacy rows that predate
+        durable run inputs, matching the Run Home's persistence contract.
+        """
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"inputs() expects a RunRef, got {type(ref).__name__}.")
+        return await self._home.get_run_inputs(ref.run_id)
+
+    def inputs_sync(self, ref: RunRef) -> dict[str, Any]:
+        """Sync mirror of ``inputs``."""
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"inputs() expects a RunRef, got {type(ref).__name__}.")
+        return self._home.get_run_inputs_sync(ref.run_id)
+
     async def result(self, ref: RunRef | BatchRef) -> RunOutcome | BatchOutcome | None:
         """Return what ``ref`` durably produced, or None if unknown.
 
@@ -706,13 +727,18 @@ class RunHomeClient:
                 return None
             child_rows = await self._home._batch_child_rows(ref.batch_id)
             started = _started_child_ids(child_rows)
-            return _build_batch_outcome(
+            batch_result = _build_batch_outcome(
                 batch,
                 child_rows,
                 self._home.uri,
                 await self._home.get_states(started),
                 await self._home.get_step_failures(started),
             )
+            items = {
+                key: cast(RunOutcome, await self.result(item.run_ref)) if item is not None and item.outputs == {} else item
+                for key, item in batch_result.items.items()
+            }
+            return replace(batch_result, items=items)
         if not isinstance(ref, RunRef):
             raise TypeError(f"result() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         submission = await self._home._get_submission(ref.run_id)
@@ -720,7 +746,7 @@ class RunHomeClient:
         if submission is None and run is None:
             return None
         run_ids = [ref.run_id] if run is not None else []
-        return _build_run_outcome(
+        run_result = _build_run_outcome(
             self._home.uri,
             ref.run_id,
             submission,
@@ -728,6 +754,34 @@ class RunHomeClient:
             (await self._home.get_states(run_ids)).get(ref.run_id),
             (await self._home.get_step_failures(run_ids)).get(ref.run_id),
         )
+        if not run_result.settled or run_result.outputs != {}:
+            return run_result
+
+        seen = {ref.run_id}
+        current_submission, current_run = submission, run
+        for _ in range(_RETRY_LINEAGE_LIMIT):
+            source_id = (current_run.retry_of if current_run is not None else None) or (
+                current_submission["retry_of"] if current_submission is not None else None
+            )
+            if not source_id or source_id in seen:
+                return run_result
+            seen.add(source_id)
+            current_submission = await self._home._get_submission(source_id)
+            current_run = await self._home.get_run_async(source_id)
+            if current_submission is None and current_run is None:
+                return run_result
+            source_ids = [source_id] if current_run is not None else []
+            source = _build_run_outcome(
+                self._home.uri,
+                source_id,
+                current_submission,
+                current_run,
+                (await self._home.get_states(source_ids)).get(source_id),
+                (await self._home.get_step_failures(source_ids)).get(source_id),
+            )
+            if source.outputs:
+                return replace(run_result, outputs=source.outputs)
+        return run_result
 
     def result_sync(self, ref: RunRef | BatchRef) -> RunOutcome | BatchOutcome | None:
         """Sync mirror of ``result``."""
@@ -737,13 +791,18 @@ class RunHomeClient:
                 return None
             child_rows = self._home._batch_child_rows_sync(ref.batch_id)
             started = _started_child_ids(child_rows)
-            return _build_batch_outcome(
+            batch_result = _build_batch_outcome(
                 batch,
                 child_rows,
                 self._home.uri,
                 self._home.get_states_sync(started),
                 self._home.get_step_failures_sync(started),
             )
+            items = {
+                key: cast(RunOutcome, self.result_sync(item.run_ref)) if item is not None and item.outputs == {} else item
+                for key, item in batch_result.items.items()
+            }
+            return replace(batch_result, items=items)
         if not isinstance(ref, RunRef):
             raise TypeError(f"result() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         submission = self._home._get_submission_sync(ref.run_id)
@@ -751,7 +810,7 @@ class RunHomeClient:
         if submission is None and run is None:
             return None
         run_ids = [ref.run_id] if run is not None else []
-        return _build_run_outcome(
+        run_result = _build_run_outcome(
             self._home.uri,
             ref.run_id,
             submission,
@@ -759,6 +818,34 @@ class RunHomeClient:
             self._home.get_states_sync(run_ids).get(ref.run_id),
             self._home.get_step_failures_sync(run_ids).get(ref.run_id),
         )
+        if not run_result.settled or run_result.outputs != {}:
+            return run_result
+
+        seen = {ref.run_id}
+        current_submission, current_run = submission, run
+        for _ in range(_RETRY_LINEAGE_LIMIT):
+            source_id = (current_run.retry_of if current_run is not None else None) or (
+                current_submission["retry_of"] if current_submission is not None else None
+            )
+            if not source_id or source_id in seen:
+                return run_result
+            seen.add(source_id)
+            current_submission = self._home._get_submission_sync(source_id)
+            current_run = self._home.get_run(source_id)
+            if current_submission is None and current_run is None:
+                return run_result
+            source_ids = [source_id] if current_run is not None else []
+            source = _build_run_outcome(
+                self._home.uri,
+                source_id,
+                current_submission,
+                current_run,
+                self._home.get_states_sync(source_ids).get(source_id),
+                self._home.get_step_failures_sync(source_ids).get(source_id),
+            )
+            if source.outputs:
+                return replace(run_result, outputs=source.outputs)
+        return run_result
 
     async def stop(self, ref: RunRef | BatchRef, *, info: Any = None, source_ref: str | None = None) -> CommandReceipt | BatchCommandReceipt:
         """Record a durable stop command for ``ref``.
@@ -950,14 +1037,14 @@ class RunHomeClient:
         return self._home.get_pause_slot_sync(ref.run_id)
 
     async def list(self, query: RunQuery) -> list[RunView]:
-        """List runs matching ``query``, oldest first.
+        """List runs matching ``query``, newest first.
 
         Joins submissions with their runs rows and includes bare Tier-0
         runs (a runs row with no submission). Every filter is the same
         typed vocabulary views report: ``status`` matches the runs row
         (runs without one never match), ``waiting`` is computed exactly
         like ``RunView.waiting``, ``older_than`` compares the row's
-        creation time, and ``limit`` caps the result after oldest-first
+        creation time, and ``limit`` caps the result after newest-first
         ordering.
         """
         _validate_query(query)
