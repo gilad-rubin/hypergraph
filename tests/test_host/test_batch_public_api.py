@@ -9,8 +9,9 @@ What this file falsifies:
 3. Runner-shaped ``zip`` / ``product`` expansion freezes the expected
    manifest, and mutating the caller's collection afterwards cannot change
    it.
-4. ``identity`` derives stable identity from an expanded input, and never
-   falls back to a generated map index.
+4. ``identity`` derives stable identity from an expanded field — including
+   a manifest-only field the graph never sees — and never falls back to a
+   generated map index.
 5. Every submission refusal names the input, the supplied value, and a
    literal fix — before anything is accepted.
 6. An empty SQLite file, opened cold, runs the whole flow.
@@ -286,6 +287,48 @@ class TestRunnerShapedExpansion:
 
 
 class TestIdentity:
+    async def test_manifest_only_identity_keys_items_without_becoming_a_graph_input(self, home):
+        graph = expansion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+
+        receipt = await host.submit_batch(
+            graph,
+            [
+                {"case_label": "station-a", "work_item_id": "same-query"},
+                {"case_label": "station-b", "work_item_id": "same-query"},
+            ],
+            identity="case_label",
+            workflow_id="drop-labels",
+        )
+
+        batch = await home._get_batch(receipt.batch_ref.batch_id)
+        manifest = json.loads(batch["items_json"])
+        assert manifest == {
+            "station-a": {"work_item_id": "same-query"},
+            "station-b": {"work_item_id": "same-query"},
+        }
+        assert list((await host.client.get(receipt.batch_ref)).items) == ["station-a", "station-b"]
+        for label in manifest:
+            child = await home._get_submission(f"drop-labels:{label}")
+            assert json.loads(child["inputs_json"]) == {"work_item_id": "same-query"}
+
+    async def test_duplicate_manifest_only_keys_are_refused_before_acceptance(self, home):
+        graph = expansion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+
+        with pytest.raises(ItemKeyError, match="duplicate item key 'same-case'"):
+            await host.submit_batch(
+                graph,
+                [
+                    {"case_label": "same-case", "work_item_id": "query-a"},
+                    {"case_label": "same-case", "work_item_id": "query-b"},
+                ],
+                identity="case_label",
+                workflow_id="drop-duplicate-labels",
+            )
+
+        assert await host.client.list(RunQuery()) == []
+
     async def test_identity_reuses_the_mapped_scalar_as_the_item_key(self, home):
         graph = ingestion_graph()
         host = serve(graph, home=home, deployment_version="v1")

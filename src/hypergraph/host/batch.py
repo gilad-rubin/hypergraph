@@ -160,9 +160,9 @@ def normalize_map_over(map_over: str | Sequence[str]) -> list[str]:
 
 
 def _require_identity_input(identity: str, map_over: Sequence[str]) -> None:
-    """``identity`` must name an EXPANDED input, not a broadcast one.
+    """``identity`` must name an EXPANDED field, not a broadcast one.
 
-    A broadcast input holds the same value for every item, so it can only
+    A broadcast field holds the same value for every item, so it can only
     ever produce one key for the whole manifest. Refusing it here names the
     real mistake instead of reporting a duplicate-key collision the caller
     then has to decode.
@@ -176,8 +176,9 @@ def _require_identity_input(identity: str, map_over: Sequence[str]) -> None:
     if identity not in map_over:
         raise ItemKeyError(
             identity,
-            f"submit_batch() identity={identity!r} does not name an expanded input; map_over expands {list(map_over)!r}.\n\n"
-            "How to fix: name one of the map_over inputs. A broadcast input has the same value for every "
+            f"submit_batch() identity={identity!r} does not name an expanded input or manifest field; "
+            f"map_over expands {list(map_over)!r}.\n\n"
+            "How to fix: name one of the map_over fields. A broadcast field has the same value for every "
             "item, so it cannot identify one.",
         )
 
@@ -238,8 +239,9 @@ def expand_batch_items(
             reads it.
         map_mode: ``"zip"`` (parallel iteration) or ``"product"``
             (cartesian), exactly as ``runner.map`` reads it.
-        identity: The expanded input whose per-item scalar value becomes the
-            logical item key.
+        identity: The expanded field whose per-item scalar value becomes the
+            logical item key. The field may be manifest-only; when it is not
+            a graph boundary input, it is not passed to child Runs.
 
     Returns:
         Manifest-ordered ``(item_key, inputs_json)`` pairs.
@@ -321,13 +323,15 @@ def _is_json_safe(value: Any) -> bool:
     return True
 
 
-def _validate_item_fields(graph: Graph, item: dict[str, Any], *, index: int) -> None:
+def _validate_item_fields(graph: Graph, item: dict[str, Any], *, index: int, identity: str | None = None) -> None:
     expected = set(graph.inputs.all)
-    unknown = sorted(set(item) - expected)
+    allowed = expected | ({identity} if identity is not None else set())
+    unknown = sorted(set(item) - allowed)
     if unknown:
         raise ValueError(
             f"submit_batch() item {index} has unknown graph input field(s): {unknown}. Expected fields: {sorted(expected)}.\n\n"
-            "How to fix:\n  Remove fields that are not graph boundary inputs, or add the intended input to the graph."
+            "How to fix:\n  Remove fields that are neither graph boundary inputs nor the identity field, "
+            "or add the intended input to the graph."
         )
     missing = sorted(set(graph.inputs.required) - set(item))
     if missing:
@@ -349,15 +353,18 @@ def _validate_and_freeze_manifest(
     if schema is not None and (not isinstance(schema, type) or not issubclass(schema, BaseModel)):
         raise TypeError(f"submit_batch() schema must be a Pydantic BaseModel type or None, got {schema!r}.")
     validated: list[dict[str, Any]] = []
+    manifest_only_identity = identity not in graph.inputs.all
     for index, item in enumerate(expanded):
-        _validate_item_fields(graph, item, index=index)
+        _validate_item_fields(graph, item, index=index, identity=identity)
         value = item if schema is None else schema.model_validate(item).model_dump(mode="json")
-        _validate_item_fields(graph, value, index=index)
+        if manifest_only_identity and identity not in value:
+            value[identity] = item.get(identity)
+        _validate_item_fields(graph, value, index=index, identity=identity)
         validated.append(value)
-    return _freeze_manifest(validated, identity=identity)
+    return _freeze_manifest(validated, identity=identity, strip_identity=manifest_only_identity)
 
 
-def _freeze_manifest(expanded: list[dict[str, Any]], *, identity: str) -> list[tuple[str, str]]:
+def _freeze_manifest(expanded: list[dict[str, Any]], *, identity: str, strip_identity: bool) -> list[tuple[str, str]]:
     """Key and serialize expanded items, refusing duplicates before acceptance."""
     seen: dict[str, int] = {}
     pairs: list[tuple[str, str]] = []
@@ -371,13 +378,14 @@ def _freeze_manifest(expanded: list[dict[str, Any]], *, identity: str) -> list[t
                 "item. De-duplicate the expanded collection, or key on an input that is distinct per item.",
             )
         seen[key] = index
+        inputs = {name: value for name, value in item.items() if not strip_identity or name != identity}
         try:
-            pairs.append((key, json.dumps(item)))
+            pairs.append((key, json.dumps(inputs)))
         except (TypeError, ValueError) as exc:
-            unserializable = sorted(name for name, value in item.items() if not _is_json_safe(value))
+            unserializable = sorted(name for name, value in inputs.items() if not _is_json_safe(value))
             raise TypeError(
                 f"submit_batch() item {key!r} inputs must be JSON-serializable; "
-                f"{unserializable!r} {'is' if len(unserializable) == 1 else 'are'} not ({exc}). Item: {item!r}.\n\n"
+                f"{unserializable!r} {'is' if len(unserializable) == 1 else 'are'} not ({exc}). Item: {inputs!r}.\n\n"
                 "How to fix: pass values that survive a round trip through the store — a child Run is "
                 "started from its pinned inputs by a worker in another process, which has no access to "
                 "the object you submitted. Send an id or a path and load it inside the graph."

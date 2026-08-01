@@ -344,11 +344,13 @@ class Host:
             map_mode: ``"zip"`` (parallel iteration, the default) or
                 ``"product"`` (cartesian), exactly as ``runner.map`` reads
                 it.
-            identity: Required. Names one expanded input whose per-item
-                JSON-safe scalar value becomes the logical item key. Missing,
-                empty, non-scalar, and duplicate keys are refused before
-                acceptance (``ItemKeyError``) — a generated map index is
-                never durable identity.
+            identity: Required. Names one expanded field whose per-item
+                JSON-safe scalar value becomes the logical item key. The
+                field may be manifest-only: if it is not a graph boundary
+                input, it keys the Batch but is not passed to child Runs.
+                Missing, empty, non-scalar, and duplicate keys are refused
+                before acceptance (``ItemKeyError``) — a generated map
+                index is never durable identity.
             workflow_id: Required explicit Batch id (dedup identity).
             tolerance: Optional ``BatchTolerance`` pinned into the manifest
                 (part of the dedup fingerprint). Once failure-equivalent

@@ -156,18 +156,20 @@ transposing into parallel collections. Persisted inputs remain plain mappings:
 receipt = await host.submit_batch(
     ingest,
     [
-        {"doc_id": "d-17", "pdf_uri": "papers/17.pdf", "page_count": 8},
-        {"doc_id": "d-18", "pdf_uri": "papers/18.pdf", "page_count": 5},
+        {"case_label": "station-a", "pdf_uri": "papers/17.pdf", "page_count": 8},
+        {"case_label": "station-b", "pdf_uri": "papers/18.pdf", "page_count": 5},
     ],
-    identity="doc_id",
+    identity="case_label",
     admission_cost="page_count",
     workflow_id="schneider-drop-43",
 )
 ```
 
-Every item field must be a graph boundary input, every required boundary
-input must be present, and the resulting mapping must be JSON-serializable.
-These checks and identity validation all happen before acceptance.
+Every item field except the identity must be a graph boundary input, every
+required boundary input must be present, and the resulting mapping must be
+JSON-serializable. A manifest-only identity such as `case_label` above is
+removed from each child's pinned inputs, so the graph never sees it. These
+checks and identity validation all happen before acceptance.
 
 `admission_cost` optionally names a positive-integer item field. The Host
 validates and freezes that cost on each child submission; reruns preserve
@@ -183,13 +185,15 @@ deliberately absent: durable concurrency comes from
 `max_concurrency`, and durable failure policy comes from `tolerance`, not
 `error_handling`.
 
-`identity` names one **expanded** input whose value is the logical item key —
+`identity` names one **expanded** field whose value is the logical item key —
 the identity every count, outcome, and durable fact is reported under. It
-must be a name in `map_over`, and each item's value must be a JSON-safe
-scalar (a non-empty `str`, or an `int`), unique across the manifest;
-missing, empty, non-scalar (including `bool`, `float`, and `None`), or
-duplicate keys raise `ItemKeyError` before anything is written. Expanding to
-zero items is a `ValueError` — an empty Batch is not a Batch.
+must be a name in `map_over` for runner-shaped values, but it does not need
+to be a graph input. A manifest-only identity is retained as the manifest
+key and omitted from child Run inputs. Each identity value must be a
+JSON-safe scalar (a non-empty `str`, or an `int`), unique across the
+manifest; missing, empty, non-scalar (including `bool`, `float`, and `None`),
+or duplicate keys raise `ItemKeyError` before anything is written. Expanding
+to zero items is a `ValueError` — an empty Batch is not a Batch.
 
 **One transaction** persists all of it — the manifest row (Definition
 identity, item keys with pinned inputs, the tolerance declaration, the
@@ -1096,7 +1100,7 @@ brake counts **progressless re-adoptions**:
 |---|---|
 | `WorkerLockError` | a second worker starts on the same Run Home |
 | `UnservedGraphError` | `submit`, `submit_batch`, or `fork(into=…)` names a `Graph` this host does not serve, or one whose `structural_hash` drifted from the served Definition |
-| `ItemKeyError` | `submit_batch` `identity` names an input outside `map_over`, or an item's key is missing, empty, non-scalar, or duplicated |
+| `ItemKeyError` | `submit_batch` `identity` names a field outside `map_over`, or an item's key is missing, empty, non-scalar, or duplicated |
 | `AlreadyTerminalError` | a terminal `workflow_id` is reused for submit, submit_batch, or stop (including a fully settled Batch) |
 | `WorkflowIdConflictError` | a nonterminal `workflow_id` is reused with a different start fingerprint (Run or Batch), or a Batch id collides with existing work |
 | `ForkCompatibilityError` | `host.fork()` targets a structurally incompatible Definition |
