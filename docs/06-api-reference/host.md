@@ -832,6 +832,18 @@ that Batch's children, and `older_than` compares creation time. Omitted
 fields match everything. `limit` must be a positive `int`.
 `client.list_sync(...)` is the synchronous mirror.
 
+`RunView.created_at` and `RunView.completed_at` expose the Run ledger's own
+timestamps (`None` until the corresponding runs-row event exists). Read the
+graph-boundary values pinned when a Run started without reaching into the
+Run Home:
+
+```python
+inputs = await client.inputs(run_view.run_ref)
+```
+
+`client.inputs_sync(...)` is the synchronous mirror. It returns `{}` for an
+unknown Run or a legacy runs row that predates durable input persistence.
+
 ## Rerun: Repeat Settled Work
 
 `client.rerun(ref)` repeats terminal work under a new id with retry

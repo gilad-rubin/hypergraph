@@ -402,6 +402,8 @@ def _build_view(
         definition_id=definition_id,
         retry_of=retry_of,
         forked_from=forked_from,
+        created_at=run.created_at if run is not None else None,
+        completed_at=run.completed_at if run is not None else None,
     )
 
 
@@ -679,6 +681,22 @@ class RunHomeClient:
         submission = self._home._get_submission_sync(ref.run_id)
         run = self._home.get_run(ref.run_id)
         return _build_view(self._home.uri, ref.run_id, submission, run, admission_full=self._home._admission_is_full_sync())
+
+    async def inputs(self, ref: RunRef) -> dict[str, Any]:
+        """Return the pinned graph-boundary inputs the run started from.
+
+        Returns an empty dict for an unknown run or legacy rows that predate
+        durable run inputs, matching the Run Home's persistence contract.
+        """
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"inputs() expects a RunRef, got {type(ref).__name__}.")
+        return await self._home.get_run_inputs(ref.run_id)
+
+    def inputs_sync(self, ref: RunRef) -> dict[str, Any]:
+        """Sync mirror of ``inputs``."""
+        if not isinstance(ref, RunRef):
+            raise TypeError(f"inputs() expects a RunRef, got {type(ref).__name__}.")
+        return self._home.get_run_inputs_sync(ref.run_id)
 
     async def result(self, ref: RunRef | BatchRef) -> RunOutcome | BatchOutcome | None:
         """Return what ``ref`` durably produced, or None if unknown.

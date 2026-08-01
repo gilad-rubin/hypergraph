@@ -191,12 +191,22 @@ class TestDefinitionIdValue:
 
         view = await host.client.get(receipt.run_ref)
         assert view.definition_id == expected
+        assert view.created_at is None
+        assert view.completed_at is None
 
         async with _worker(host):
             view = await _wait_for(lambda: _terminal_view(host.client, receipt.run_ref))
         assert view.definition_id == expected
         assert view.retry_of is None
         assert view.forked_from is None
+        assert view.created_at is not None
+        assert view.completed_at is not None
+        assert view.created_at <= view.completed_at
+        assert await host.client.inputs(receipt.run_ref) == {"x": 1}
+        assert host.client.inputs_sync(receipt.run_ref) == {"x": 1}
+
+        with pytest.raises(TypeError, match="RunRef"):
+            await host.client.inputs("wf-pin")
 
 
 # === 2. Fingerprint dedup with distinct typed conflicts ===
