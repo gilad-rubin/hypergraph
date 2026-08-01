@@ -74,6 +74,7 @@ from hypergraph.host import (
     ForkCompatibilityError,
     Host,
     HostError,
+    HostRuntime,
     ItemKeyError,
     RerunError,
     RunHome,
@@ -233,6 +234,7 @@ __all__ = [
     # Durable host (Tier 1 local host)
     "serve",
     "Host",
+    "HostRuntime",
     "RunHome",
     "RunHomeClient",
     "RunRef",

@@ -969,6 +969,7 @@ def test_durable_host_docs_pin_public_contract() -> None:
         CommandReceipt,
         DefinitionId,
         Graph,
+        HostRuntime,
         RunHome,
         RunHomeClient,
         RunQuery,
@@ -988,6 +989,7 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert "host.submit_sync" in host_api
     assert "WorkerLockError" in host_api
     assert "WaitingCondition" in host_api
+    assert "HostRuntime" in host_api
 
     # Ticket 03: identity/dedup/rerun/fork surface is documented.
     assert "DefinitionId" in host_api
@@ -1062,6 +1064,12 @@ def test_durable_host_docs_pin_public_contract() -> None:
     )
     assert tuple(inspect.signature(serve).parameters) == ("graphs", "home", "deployment_version", "accepts")
     from hypergraph.host import Host
+
+    assert tuple(inspect.signature(HostRuntime).parameters) == ("path", "deployment_version")
+    assert tuple(inspect.signature(HostRuntime.serving).parameters) == ("self", "graph")
+    assert tuple(inspect.signature(HostRuntime.close).parameters) == ("self",)
+    assert isinstance(HostRuntime.client, property)
+    assert tuple(inspect.signature(Host.add_definition).parameters) == ("self", "graph")
 
     # Graph-first submission (#342): the served Graph object IS the selector,
     # resolved by its own pinned identity. A Definition-name string is not.
