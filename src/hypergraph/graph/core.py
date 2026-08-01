@@ -89,6 +89,73 @@ def _unique_outputs(nodes: Iterable[HyperNode]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(all_outputs))
 
 
+def _identity_map_item_fields(map_node: HyperNode, producer: HyperNode) -> tuple[str, ...]:
+    """Field names of an identity-mode mapped node's item schema.
+
+    Prefers the explicit ``schema=`` recorded by ``map_over``; falls back to
+    the producer's ``list[Item]`` return annotation, mirroring
+    ``HyperTable.visualize``'s ``fanout_map_fields``. Imported lazily: the
+    helpers are stdlib-only, and identity-mode map nodes only ever come from
+    the HyperTable idiom, so materialization is present whenever this runs.
+    """
+    from hypergraph.materialization._schema import item_schema_fields, return_type
+
+    schema = (getattr(map_node, "_map_config", None) or {}).get("schema")
+    if schema is None:
+        try:
+            schema = return_type(producer)
+        except Exception:
+            return ()
+    return item_schema_fields(schema)
+
+
+def _add_identity_fanout_edges(G: nx.DiGraph, nodes: list[HyperNode], lookup: dict[str, str]) -> None:
+    """Synthesize the fan-out edge for identity-mode mapped nodes in one scope.
+
+    An identity-mode mapped GraphNode (a HyperTable child recipe) names a
+    SIBLING's output as its map source, and its per-item inputs are fed from
+    the mapped rows rather than through name-matched ports — so auto-wiring
+    records no edge and the flat graph (the canonical viz representation)
+    would draw the fan-out node as an unreachable island. This synthesizes
+    the same ``is_map``/``map_fields`` edge shape ``HyperTable.visualize``
+    stamps, at EVERY flatten scope, so a table mounted inside another graph
+    (``MaterializationNode.nested_graph``) keeps its fan-out story too.
+    """
+    for map_node in nodes:
+        config = getattr(map_node, "_map_config", None) or {}
+        if not config.get("identity"):
+            continue
+        target_id = lookup.get(map_node.name, map_node.name)
+        if target_id not in G.nodes:
+            continue
+        for param in getattr(map_node, "_map_over", None) or ():
+            producer = next(
+                (
+                    sibling
+                    for sibling in nodes
+                    if sibling is not map_node and param in tuple(getattr(sibling, "data_outputs", None) or sibling.outputs)
+                ),
+                None,
+            )
+            if producer is None:
+                continue
+            src_id = lookup.get(producer.name, producer.name)
+            if src_id not in G.nodes:
+                continue
+            if G.has_edge(src_id, target_id):
+                # Merge, matching the extra_edges / _add_explicit_data_edges
+                # convention: the mapped node may already have a real edge
+                # from this producer for another value.
+                existing = G[src_id][target_id].get("value_names", [])
+                G[src_id][target_id]["value_names"] = list(dict.fromkeys([*existing, param]))
+                G[src_id][target_id]["is_map"] = True
+            else:
+                G.add_edge(src_id, target_id, edge_type="data", value_names=[param], is_map=True)
+            fields = _identity_map_item_fields(map_node, producer)
+            if fields:
+                G[src_id][target_id]["map_fields"] = list(fields)
+
+
 def _format_type_hint(type_hint: Any) -> str:
     """Format a type annotation for human-readable summaries."""
     if type_hint is type(None):
@@ -1972,6 +2039,8 @@ class Graph:
             tgt_id = root_lookup.get(tgt, tgt)
             G.add_edge(src_id, tgt_id, **data)
 
+        _add_identity_fanout_edges(G, list(self._nodes.values()), root_lookup)
+
         # Recursively add edges from nested graphs
         for node in self._nodes.values():
             node_id = root_lookup.get(node.name, node.name)
@@ -1997,6 +2066,8 @@ class Graph:
             src_id = child_lookup.get(src, src)
             tgt_id = child_lookup.get(tgt, tgt)
             G.add_edge(src_id, tgt_id, **data)
+
+        _add_identity_fanout_edges(G, list(inner.nodes.values()), child_lookup)
 
         # Recurse into children
         for child_node in inner.nodes.values():

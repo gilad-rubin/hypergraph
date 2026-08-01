@@ -88,6 +88,10 @@
         !!ext.map_fed,
         ownerContainer === undefined ? null : ownerContainer,
       ]);
+      // The pill's state-independent synthetic id (twin of
+      // IRExternalInput.synthetic_id): IR edges reference pills by it, so a
+      // bucket records its members for the per-state alias map.
+      var syntheticId = segments.length === 1 ? 'input_' + segments[0] : 'input_group_' + segments.join('_');
       var bucket = buckets[key];
       if (!bucket) {
         order.push(key);
@@ -101,12 +105,14 @@
           deepestOwner: ext.deepest_owner,
           targets: targets,
           hidden: hidden,
+          memberIds: [syntheticId],
         };
         continue;
       }
       bucket.params = bucket.params.concat(params);
       bucket.segments = bucket.segments.concat(segments);
       bucket.typeHints = bucket.typeHints.concat(ext.type_hints || []);
+      bucket.memberIds.push(syntheticId);
       // A merged pill is hidden only when every constituent is.
       bucket.hidden = bucket.hidden && hidden;
     }
@@ -228,6 +234,19 @@
     var inputBuckets = showInputs
       ? mergeInputsForState(ir, parentMap, expansionState, nodeVisibleIds, showBoundedInputs, expandedContainerEntrypoints(ir, expansionState))
       : [];
+    // An IR edge may target a pill by its state-independent synthetic id
+    // (identity-mode fan-out re-routes), but per-state merging can fold that
+    // pill into a group with a different id — remap so the edge lands on the
+    // pill node this state actually emits. Object.create(null): pill ids come
+    // from user-authored names, so prototype members must not shadow lookups.
+    var pillAlias = Object.create(null);
+    for (var pa = 0; pa < inputBuckets.length; pa++) {
+      var aliasBucket = inputBuckets[pa];
+      var memberIds = aliasBucket.memberIds || [];
+      for (var pai = 0; pai < memberIds.length; pai++) {
+        if (memberIds[pai] !== aliasBucket.id) pillAlias[memberIds[pai]] = aliasBucket.id;
+      }
+    }
     for (var k = 0; k < inputBuckets.length; k++) {
       var ext = inputBuckets[k];
       var hidden = ext.hidden;
@@ -386,6 +405,12 @@
           );
         }
         targets = resolveRewrittenEndpoints(resolvedTargets);
+        var aliased = [];
+        for (var al = 0; al < targets.length; al++) {
+          var aliasTarget = pillAlias[targets[al]] === undefined ? targets[al] : pillAlias[targets[al]];
+          if (aliased.indexOf(aliasTarget) === -1) aliased.push(aliasTarget);
+        }
+        targets = aliased;
       }
 
       // A data edge can carry multiple value_names (one NetworkX edge per

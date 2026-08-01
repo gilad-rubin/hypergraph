@@ -244,6 +244,27 @@ def resolve_port_address_consumers(
     return deduped
 
 
+def map_feeds_param(node_id: str, param: str, flat_graph: nx.DiGraph) -> bool:
+    """True when ``node_id`` is a mapped container whose fan-out edge supplies
+    ``param`` per item — its incoming ``is_map`` edge lists the name in
+    ``map_fields``. The value reaches the container's interior through the
+    mapped rows, so a same-named outer value must not claim its inner
+    consumers (the runtime never wires that edge)."""
+    if node_id not in flat_graph.nodes:
+        return False
+    return any(attrs.get("is_map") and param in (attrs.get("map_fields") or ()) for _pred, _succ, attrs in flat_graph.in_edges(node_id, data=True))
+
+
+def map_feeds_param_of_ancestor(node_id: str, param: str, flat_graph: nx.DiGraph) -> bool:
+    """True when ``node_id`` sits at-or-under a container that map-feeds ``param``."""
+    current: str | None = node_id
+    while current is not None:
+        if map_feeds_param(current, param, flat_graph):
+            return True
+        current = flat_graph.nodes.get(current, {}).get("parent")
+    return False
+
+
 def build_param_to_consumer_map(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
@@ -251,6 +272,10 @@ def build_param_to_consumer_map(
     mode: str = "all",
 ) -> dict[str, list[str]]:
     """Build map of param_name -> list of actual consumer node_ids.
+
+    Consumers that live at-or-under a mapped container whose ``map_fields``
+    name the param are excluded: the map feeds them per item, so drawing the
+    outer value into them asserts an edge runtime never wires.
 
     Returns:
         Dict mapping parameter names to list of consumer node IDs.
@@ -265,6 +290,8 @@ def build_param_to_consumer_map(
     for node_id, attrs in flat_graph.nodes(data=True):
         for param in attrs.get("inputs", ()):
             if not use_deepest and not is_node_visible(node_id, flat_graph, expansion_state):
+                continue
+            if map_feeds_param_of_ancestor(node_id, param, flat_graph):
                 continue
 
             if param not in param_to_consumers:

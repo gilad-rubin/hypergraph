@@ -379,6 +379,53 @@ def _fanout_ir(inner_inputs: tuple[str, ...]):
     return build_graph_ir(flat)
 
 
+def _mounted_table_ir():
+    """A HyperTable MOUNTED in an outer graph (panda's ingest shape).
+
+    Exercises what the standalone fan-out fixtures cannot: synthesized
+    map-fed field pills (fields hidden behind the MaterializationNode
+    boundary), the outer/inner split of a shared field name, and the
+    per-state pill-alias remap when two field pills merge into one group.
+    """
+    import tempfile
+
+    from hypergraph import Graph
+    from hypergraph.materialization._lancedb_store import LanceDBStore
+
+    store = LanceDBStore(tempfile.mkdtemp() + "/store")
+
+    @_node(output_name="pages")
+    def build_pages(source: str) -> list[_FanoutItem]:
+        return [_FanoutItem(item_id="i0", page_text=source, page_number=1)]
+
+    child = Graph([_embed_two_fields], name="proc").as_node(name="derive").map_over("pages", identity="item_id")
+    table = Graph([build_pages, child], name="recipe").as_table(identity="doc_id", store=store)
+
+    @_node(output_name="report")
+    def summarize(materialization: object) -> str:
+        return "ok"
+
+    outer = Graph([table.as_node(name="materialize", output_name="materialization"), summarize], name="outer")
+    return build_graph_ir(outer.to_flat_graph())
+
+
+@pytest.mark.parametrize("show_inputs", [False, True])
+def test_python_js_mounted_table_scenes_match(show_inputs: bool) -> None:
+    """Python and JS agree on a mounted table's synthesized field pills and
+    the pill-alias remap, across every expansion state."""
+    ir = _mounted_table_ir()
+    ir_dict: dict[str, Any] = asdict(ir)
+
+    for expansion_state in _all_expansion_states(ir_dict):
+        py_scene = build_initial_scene(ir, expansion_state=expansion_state, show_inputs=show_inputs)
+        js_scene = _node_scene(ir_dict, {"expansionState": expansion_state, "showInputs": show_inputs})
+        py_nodes, py_edges = _project(py_scene)
+        js_nodes, js_edges = _project(js_scene)
+        ctx = f"mounted state={expansion_state} inputs={show_inputs}"
+        assert py_nodes == js_nodes, f"Node drift for {ctx}\nPy-only: {sorted(py_nodes - js_nodes)}\nJS-only: {sorted(js_nodes - py_nodes)}"
+        assert py_edges == js_edges, f"Edge drift for {ctx}\nPy-only: {sorted(py_edges - js_edges)}\nJS-only: {sorted(js_edges - py_edges)}"
+
+
 @pytest.mark.parametrize("inner_inputs", [("page_text",), ("page_text", "page_number")])
 @pytest.mark.parametrize("show_inputs", [False, True])
 def test_python_js_fanout_scenes_match(inner_inputs: tuple[str, ...], show_inputs: bool) -> None:
