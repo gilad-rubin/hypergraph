@@ -13,7 +13,7 @@ import json
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import aclosing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any
@@ -50,6 +50,9 @@ from hypergraph.host.views import (
 if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Run
     from hypergraph.host.home import RunHome
+
+
+_RETRY_LINEAGE_LIMIT = 32
 
 
 def _now_iso() -> str:
@@ -720,7 +723,7 @@ class RunHomeClient:
         if submission is None and run is None:
             return None
         run_ids = [ref.run_id] if run is not None else []
-        return _build_run_outcome(
+        result = _build_run_outcome(
             self._home.uri,
             ref.run_id,
             submission,
@@ -728,6 +731,34 @@ class RunHomeClient:
             (await self._home.get_states(run_ids)).get(ref.run_id),
             (await self._home.get_step_failures(run_ids)).get(ref.run_id),
         )
+        if not result.settled or result.outputs != {}:
+            return result
+
+        seen = {ref.run_id}
+        current_submission, current_run = submission, run
+        for _ in range(_RETRY_LINEAGE_LIMIT):
+            source_id = (current_run.retry_of if current_run is not None else None) or (
+                current_submission["retry_of"] if current_submission is not None else None
+            )
+            if not source_id or source_id in seen:
+                return result
+            seen.add(source_id)
+            current_submission = await self._home._get_submission(source_id)
+            current_run = await self._home.get_run_async(source_id)
+            if current_submission is None and current_run is None:
+                return result
+            source_ids = [source_id] if current_run is not None else []
+            source = _build_run_outcome(
+                self._home.uri,
+                source_id,
+                current_submission,
+                current_run,
+                (await self._home.get_states(source_ids)).get(source_id),
+                (await self._home.get_step_failures(source_ids)).get(source_id),
+            )
+            if source.outputs:
+                return replace(result, outputs=source.outputs)
+        return result
 
     def result_sync(self, ref: RunRef | BatchRef) -> RunOutcome | BatchOutcome | None:
         """Sync mirror of ``result``."""
@@ -751,7 +782,7 @@ class RunHomeClient:
         if submission is None and run is None:
             return None
         run_ids = [ref.run_id] if run is not None else []
-        return _build_run_outcome(
+        result = _build_run_outcome(
             self._home.uri,
             ref.run_id,
             submission,
@@ -759,6 +790,34 @@ class RunHomeClient:
             self._home.get_states_sync(run_ids).get(ref.run_id),
             self._home.get_step_failures_sync(run_ids).get(ref.run_id),
         )
+        if not result.settled or result.outputs != {}:
+            return result
+
+        seen = {ref.run_id}
+        current_submission, current_run = submission, run
+        for _ in range(_RETRY_LINEAGE_LIMIT):
+            source_id = (current_run.retry_of if current_run is not None else None) or (
+                current_submission["retry_of"] if current_submission is not None else None
+            )
+            if not source_id or source_id in seen:
+                return result
+            seen.add(source_id)
+            current_submission = self._home._get_submission_sync(source_id)
+            current_run = self._home.get_run(source_id)
+            if current_submission is None and current_run is None:
+                return result
+            source_ids = [source_id] if current_run is not None else []
+            source = _build_run_outcome(
+                self._home.uri,
+                source_id,
+                current_submission,
+                current_run,
+                self._home.get_states_sync(source_ids).get(source_id),
+                self._home.get_step_failures_sync(source_ids).get(source_id),
+            )
+            if source.outputs:
+                return replace(result, outputs=source.outputs)
+        return result
 
     async def stop(self, ref: RunRef | BatchRef, *, info: Any = None, source_ref: str | None = None) -> CommandReceipt | BatchCommandReceipt:
         """Record a durable stop command for ``ref``.
