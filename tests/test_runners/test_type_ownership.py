@@ -102,6 +102,7 @@ ROOT_EXPORTS = (
     "SqliteCheckpointer",
     "serve",
     "Host",
+    "HostRuntime",
     "RunHome",
     "RunHomeClient",
     "RunRef",

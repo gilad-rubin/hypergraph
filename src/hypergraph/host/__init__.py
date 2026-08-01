@@ -21,6 +21,7 @@ from hypergraph.host.errors import (
 from hypergraph.host.home import RunHome
 from hypergraph.host.host import Host, SubmitReceipt, serve
 from hypergraph.host.refs import BatchCommandReceipt, BatchRef, BatchSubmitReceipt, CommandReceipt, RunRef
+from hypergraph.host.runtime import HostRuntime
 from hypergraph.host.views import BatchItemView, BatchUpdate, BatchView, RunQuery, RunUpdate, RunView, WaitingCondition
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "ForkCompatibilityError",
     "Host",
     "HostError",
+    "HostRuntime",
     "ItemKeyError",
     "RerunError",
     "RunHome",

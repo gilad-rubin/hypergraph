@@ -7,13 +7,51 @@ process can inspect and follow the run through a small client. It is additive
 is never required.
 
 {% hint style="info" %}
-This page covers the local Tier 1 host: `serve()`, `RunHome`, `Host`, and
-`RunHomeClient`. For direct execution semantics see [Runners](runners.md);
+This page covers the local Tier 1 host: `HostRuntime`, `serve()`, `RunHome`,
+`Host`, and `RunHomeClient`. For direct execution semantics see [Runners](runners.md);
 for process-local background handles see
 [Control Work After It Starts](../05-how-to/control-background-execution.md).
 `client.answer()` settles a durable pause **and re-admits the run** in one
 transaction — see [Answering a Pause](#answering-a-pause).
 {% endhint %}
+
+## Owning a Host Process
+
+Use `HostRuntime` when one application process should own the Run Home, serve
+Definitions as they become known, and keep one worker alive:
+
+```python
+from hypergraph import HostRuntime
+
+runtime = HostRuntime("./data/runs.db", deployment_version="2026.07.3")
+
+# The Home opens here, not when HostRuntime is constructed. An unbound graph
+# gets AsyncRunner; an explicit graph.with_runner(...) binding is preserved.
+host = await runtime.serving(refund_graph)
+receipt = await host.submit(refund_graph, {"claim_id": "c-42"})
+
+# Additive and idempotent: the existing worker and active Runs stay in place.
+await runtime.serving(triage_graph)
+
+client = runtime.client
+await runtime.close()  # stop claiming, drain active Runs, close the Home
+```
+
+`serving()` returns the same `Host` on every call. Re-serving the same
+Definition identity is a no-op; a new name is added to the live worker. A
+served name cannot be replaced with a structurally different Definition
+without closing and creating a new runtime. Worker startup runs the ordinary
+restart scan, so unfinished durable work is re-adopted without resubmission.
+
+`client` is the runtime's `RunHomeClient` and is also lazy: accessing it before
+`serving()` opens the Home for detached reads without starting a worker. If the
+worker task exits with an exception, the next `serving()`, `client`, or
+`close()` call raises `RuntimeError` with that exception as its cause rather
+than silently starting a replacement. A later call may start the worker again.
+
+`close()` is idempotent. It stops new claims, uses the Host's bounded drain,
+and closes the Home; queued submissions remain persisted for the next process.
+The same runtime may be used again after closing, which lazily reopens it.
 
 ## Serving Definitions
 

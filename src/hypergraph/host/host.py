@@ -111,6 +111,34 @@ class Host:
         """The one RunHomeClient for this Home (no verb copies on Host)."""
         return self._client
 
+    def add_definition(self, graph: Graph) -> None:
+        """Add one Definition without restarting this Host's worker.
+
+        Re-adding the same Definition identity is a no-op. A served name
+        cannot be replaced with a different structural identity; replacement
+        remains an explicit worker restart so in-flight work never changes
+        code underneath its pinned Definition.
+
+        Args:
+            graph: A named graph with a runner bound via ``with_runner()``.
+
+        Raises:
+            ValueError: If the graph is invalid for durable serving or tries
+                to replace a served Definition.
+        """
+        definition = _definition_from(graph, home=self._home, deployment_version=self._deployment_version, taken=())
+        existing = self._definitions.get(definition.name)
+        if existing is not None:
+            if existing.struct_hash == definition.struct_hash:
+                return
+            raise ValueError(
+                f"Definition {definition.name!r} is already served with structural hash {existing.struct_hash!r}; "
+                f"it cannot be replaced in-place by {definition.struct_hash!r}.\n\n"
+                "How to fix: close this Host and create a new one to replace a Definition, or give the new graph a distinct name."
+            )
+        self._definitions[definition.name] = definition
+        self._served_identities = self._served_identities | {definition.definition_id}
+
     async def submit(
         self,
         graph: Graph,
