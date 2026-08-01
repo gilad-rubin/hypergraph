@@ -184,7 +184,7 @@ class RunQuery:
             waiting computation ``RunView.waiting`` uses).
         older_than: Restrict to work created at least this long ago
             (aged-unclaimed and backlog queries).
-        limit: Maximum views returned, oldest first. Defaults to 100.
+        limit: Maximum views returned, newest first. Defaults to 100.
         batch: Restrict to children of one Batch — a ``BatchRef`` or a bare
             batch id string. Runs without Batch membership never match.
     """

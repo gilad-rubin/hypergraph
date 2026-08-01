@@ -811,7 +811,7 @@ voids it — so the stream alone accounts for every timer.
 
 `client.list(query)` filters joined run views through a typed `RunQuery` —
 submissions joined with their runs rows, plus bare Tier-0 runs (a runs row
-with no submission). Results come oldest first, capped at `query.limit`
+with no submission). Results come newest first, capped at `query.limit`
 (default 100):
 
 ```python

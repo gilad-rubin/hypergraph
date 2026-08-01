@@ -589,7 +589,7 @@ def _filter_list_rows(
     *,
     admission_full: bool = False,
 ) -> list[RunView]:
-    """Build views for joined rows and apply the RunQuery filters, oldest first."""
+    """Build views for joined rows and apply the RunQuery filters, newest first."""
     cutoff = datetime.now(timezone.utc) - query.older_than if query.older_than is not None else None
     batch_id = _query_batch_id(query)
     matched: list[tuple[datetime, RunView]] = []
@@ -610,7 +610,7 @@ def _filter_list_rows(
         if cutoff is not None and created_at > cutoff:
             continue
         matched.append((created_at, view))
-    matched.sort(key=lambda pair: (pair[0], pair[1].workflow_id))
+    matched.sort(key=lambda pair: (pair[0], pair[1].workflow_id), reverse=True)
     return [view for _, view in matched[: query.limit]]
 
 
@@ -1027,14 +1027,14 @@ class RunHomeClient:
         return self._home.get_pause_slot_sync(ref.run_id)
 
     async def list(self, query: RunQuery) -> list[RunView]:
-        """List runs matching ``query``, oldest first.
+        """List runs matching ``query``, newest first.
 
         Joins submissions with their runs rows and includes bare Tier-0
         runs (a runs row with no submission). Every filter is the same
         typed vocabulary views report: ``status`` matches the runs row
         (runs without one never match), ``waiting`` is computed exactly
         like ``RunView.waiting``, ``older_than`` compares the row's
-        creation time, and ``limit`` caps the result after oldest-first
+        creation time, and ``limit`` caps the result after newest-first
         ordering.
         """
         _validate_query(query)
