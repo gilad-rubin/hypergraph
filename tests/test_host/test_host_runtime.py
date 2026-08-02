@@ -206,15 +206,28 @@ class TestHostRuntimeLifecycle:
         assert raised.value.__cause__ is failure
         await runtime.close()
 
-    async def test_independently_cancelled_worker_is_raised_by_close(self, tmp_path):
+    async def test_a_cancelled_worker_is_a_clean_close_but_a_loud_next_use(self, tmp_path):
+        """Close winds the worker down, so a cancellation racing the
+        cooperative shutdown (an event-loop teardown, a task-group exit) is a
+        CLEAN close outcome — submitted work is durable either way. What stays
+        loud is USING the runtime after its worker was independently killed."""
         runtime = HostRuntime(tmp_path / "runs.db")
         await runtime.serving(_increment_graph("increment"))
         assert runtime._worker is not None
         runtime._worker.cancel()
 
+        await runtime.close()
+
+        survivor = HostRuntime(tmp_path / "runs2.db")
+        await survivor.serving(_increment_graph("increment"))
+        assert survivor._worker is not None
+        survivor._worker.cancel()
+        await asyncio.sleep(0)
+
         with pytest.raises(RuntimeError, match="worker stopped unexpectedly") as raised:
-            await runtime.close()
+            await survivor.serving(_increment_graph("increment"))
         assert isinstance(raised.value.__cause__, asyncio.CancelledError)
+        await survivor.close()
 
 
 class TestIncrementalHostDefinitions:
