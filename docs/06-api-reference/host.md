@@ -510,6 +510,32 @@ terminates immediately with no updates — matching `get()`'s honest `None`
 — instead of polling forever. `get_sync()` is the synchronous mirror of
 `get()`.
 
+### Waiting for work to stop moving
+
+`watch(ref, until=...)` chooses which arrival ends the stream:
+
+```python
+async for update in client.watch(batch_ref, until="resting"):
+    ...   # ends when nothing is running or queued — even if a gate is open
+```
+
+- `"settled"` (default) — a run ends at a terminal status; a Batch ends once
+  every manifest child is accounted (settled, unstarted, or
+  recovery-exhausted).
+- `"resting"` — also ends when the only thing left is **parked on a person**.
+
+A durable interrupt is a human gate, and a gate never answers itself: under
+`"settled"` one paused child holds the stream open for as long as nobody
+looks at it. An operator following many sweeps needs "nothing is running or
+queued" to be a reachable state, not a promise the work will finish.
+
+`"resting"` truncates the *wait*, never the facts — `child_paused` commits in
+the same transaction as the pause it reports, so it is already delivered when
+the stream ends — and it invents no outcome: a parked child is still not
+settled, and watching again from the stored cursor resumes exactly where the
+resting stream stopped. `BatchView.resting` is the same predicate for a
+caller that polls instead of watching.
+
 `WaitingCondition` is a closed enum — `QUEUED`, `SCHEDULED`, `PAUSED`,
 `VERSION_INCOMPATIBLE`, `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED` — so
 waiting work never looks alike and callers branch on typed values. `waiting`
@@ -796,6 +822,12 @@ Batch containing a paused child reports `settled=False` with that child
 counted `paused`, and `client.stop()` on a parked run is **accepted** rather
 than refused as terminal. A `paused` submission is not claimable — parking
 is not re-admission.
+
+That is also why a wait loop needs
+[`until="resting"`](#waiting-for-work-to-stop-moving): the run is genuinely
+unfinished, so `until="settled"` is right to keep waiting — but nothing will
+move until a person acts, and a caller that only wants "is anything still
+running?" must be able to say so.
 
 ### Answering re-admits the run
 

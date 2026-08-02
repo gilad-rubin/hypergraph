@@ -66,6 +66,7 @@ from hypergraph.host._batch_store import (
     BatchAcceptance,
     BatchStop,
     ChildSpec,
+    children_resting_rows,
     children_settled_rows,
     closeout_kind,
     is_repeat_occurrence,
@@ -1729,6 +1730,24 @@ class RunHome(SqliteCheckpointer):
                 (batch_id,),
             )
             return children_settled_rows(await children_cursor.fetchall())
+
+    async def _all_children_resting(self, batch_id: str) -> bool:
+        """True when no manifest child is still running or queued.
+
+        The watch-termination question for ``until="resting"``: the same
+        rows ``_all_children_settled`` reads, under the weaker predicate, so
+        a child parked on a human ENDS the stream instead of holding it open
+        forever. Every fact a resting child earned has already been
+        delivered — ``child_paused`` commits in the same transaction as the
+        pause it reports.
+        """
+        await self._ensure_db()
+        async with self._txn_lock():
+            children_cursor = await self._db.execute(
+                SELECT_CHILD_SETTLEMENT,
+                (batch_id,),
+            )
+            return children_resting_rows(await children_cursor.fetchall())
 
     def _write_batch_stop_sync(self, batch_id: str, info: Any, source_ref: str | None = None) -> bool:
         """Record a durable Batch stop, atomically, in ONE transaction.

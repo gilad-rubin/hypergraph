@@ -1159,7 +1159,12 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert tuple(inspect.signature(Host.work_forever).parameters) == ("self", "worker_id", "poll_interval", "drain_timeout")
     assert tuple(inspect.signature(RunHomeClient.get).parameters) == ("self", "ref")
     assert tuple(inspect.signature(RunHomeClient.get_sync).parameters) == ("self", "ref")
-    assert tuple(inspect.signature(RunHomeClient.watch).parameters) == ("self", "ref", "after", "poll_interval")
+    # `until` names WHICH arrival ends the stream, over a closed two-value
+    # vocabulary: "settled" (accounted for good) and "resting" (also arrives
+    # once the rest is parked on a person, so a human gate cannot hold a
+    # watch open forever — issue #386). Deliberately not a caller-supplied
+    # predicate: a third answer is one the store cannot evaluate.
+    assert tuple(inspect.signature(RunHomeClient.watch).parameters) == ("self", "ref", "after", "poll_interval", "until")
     # rerun takes item_keys for the Batch form and never an input override.
     # source_ref is audit provenance, recorded on the new submission like
     # submit/stop/fork record it — never a work-definition input.

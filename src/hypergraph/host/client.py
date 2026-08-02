@@ -55,6 +55,23 @@ if TYPE_CHECKING:
 
 _RETRY_LINEAGE_LIMIT = 32
 
+#: The two arrivals a ``watch`` may wait for. Closed on purpose: "when is
+#: this over?" has exactly two honest answers, and a caller that could pass
+#: a predicate would be defining a third the store cannot evaluate.
+WATCH_UNTIL_SETTLED = "settled"
+WATCH_UNTIL_RESTING = "resting"
+WATCH_UNTIL_VALUES: frozenset[str] = frozenset({WATCH_UNTIL_SETTLED, WATCH_UNTIL_RESTING})
+
+
+def _validate_until(until: str) -> None:
+    if until not in WATCH_UNTIL_VALUES:
+        raise ValueError(
+            f"watch() until must be {WATCH_UNTIL_SETTLED!r} or {WATCH_UNTIL_RESTING!r}, got {until!r}.\n\n"
+            f"How to fix:\n"
+            f"  until={WATCH_UNTIL_SETTLED!r}  # (the default) end when the work is accounted for good\n"
+            f"  until={WATCH_UNTIL_RESTING!r}  # also end when the only thing left is parked on a person"
+        )
+
 
 def _now_iso() -> str:
     """The timestamp a live (non-durable) preview carries."""
@@ -1624,7 +1641,12 @@ class RunHomeClient:
         return submission, run
 
     async def watch(
-        self, ref: RunRef | BatchRef, *, after: str | int | None = None, poll_interval: float = 0.05
+        self,
+        ref: RunRef | BatchRef,
+        *,
+        after: str | int | None = None,
+        poll_interval: float = 0.05,
+        until: str = WATCH_UNTIL_SETTLED,
     ) -> AsyncIterator[RunUpdate | BatchUpdate]:
         """Replay durable facts after ``after``, then tail live previews.
 
@@ -1636,23 +1658,40 @@ class RunHomeClient:
         carry ``durable=False`` and repeat the last durable cursor — they
         never advance it. Store cursors from durable updates only.
 
-        For a run, the generator ends once the run reaches a terminal
-        status and every committed fact has been delivered. For a Batch, it
-        ends once every manifest child is accounted — settled, unstarted,
-        or recovery-exhausted — and every committed Batch fact has been
-        delivered. Stopping a Batch does not end its stream: the ``stopped``
-        fact names no items, and the per-item facts it causes commit after
-        it. A ``ref`` unknown to this Run Home terminates immediately with
-        no updates, matching ``get()``'s honest ``None``.
+        ``until`` chooses WHICH arrival ends the stream:
+
+        - ``"settled"`` (default) — a run ends at a terminal status; a Batch
+          ends once every manifest child is accounted (settled, unstarted,
+          or recovery-exhausted).
+        - ``"resting"`` — also ends when the only thing left is **parked on
+          a person**. A durable interrupt is a human gate, and a gate never
+          answers itself: under ``"settled"`` a single paused child holds
+          the stream open for as long as nobody looks at it. A bulk operator
+          following dozens of sweeps needs "nothing is running or queued" to
+          be a reachable state, not a promise the work will finish (issue
+          #386).
+
+        Every fact a resting subject earned has already been delivered —
+        ``child_paused`` commits in the same transaction as the pause it
+        reports — so ``"resting"`` truncates the wait, never the facts. It
+        invents no outcome either: a parked child is still not settled, and
+        watching again from the stored cursor resumes exactly where this
+        stream stopped.
+
+        Stopping a Batch ends its stream under neither value: the
+        ``stopped`` fact names no items, and the per-item facts it causes
+        commit after it. A ``ref`` unknown to this Run Home terminates
+        immediately with no updates, matching ``get()``'s honest ``None``.
         """
+        _validate_until(until)
         # Typed as a generator, not an iterator: aclosing() below needs the
         # `aclose` that AsyncIterator does not declare, and both branches
         # are async generators.
         stream: AsyncGenerator[RunUpdate | BatchUpdate, None]
         if isinstance(ref, BatchRef):
-            stream = self._watch_batch(ref, after=after, poll_interval=poll_interval)
+            stream = self._watch_batch(ref, after=after, poll_interval=poll_interval, until=until)
         elif isinstance(ref, RunRef):
-            stream = self._watch_run(ref, after=after, poll_interval=poll_interval)
+            stream = self._watch_run(ref, after=after, poll_interval=poll_interval, until=until)
         else:
             raise TypeError(f"watch() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         # aclosing() runs the inner generator's finally (preview unsubscribe)
@@ -1677,20 +1716,33 @@ class RunHomeClient:
         )
         return updates, cursor, bool(rows)
 
-    async def _run_stream_ended(self, run_id: str) -> bool | None:
-        """Has this run settled? ``None`` means the ref is unknown here."""
+    async def _run_stream_ended(self, run_id: str, *, until: str) -> bool | None:
+        """Has this run arrived? ``None`` means the ref is unknown here.
+
+        Which arrival counts is ``until``'s to say. ``"settled"`` reads
+        exactly what it always did — an executing run answers from its runs
+        row alone, so the poll loop costs no extra statement. ``"resting"``
+        additionally ends on a run parked on a PERSON, and that one needs
+        the submission: a runs row stays ``PAUSED`` from the moment it parks
+        until a worker resumes it, including the whole interval after the
+        answer commits, so only ``_parked_on_human`` tells the two apart.
+        """
         run = await self._home.get_run_async(run_id)
-        if run is not None:
-            return run.status in TERMINAL_WORKFLOW_STATUSES
+        if run is not None and run.status in TERMINAL_WORKFLOW_STATUSES:
+            return True
+        if run is not None and until == WATCH_UNTIL_SETTLED:
+            return False
         submission = await self._home._get_submission(run_id)
+        if run is not None:
+            return run.status is WorkflowStatus.PAUSED and _parked_on_human(submission)
         if submission is None:
             # Unknown ref: nothing to replay, nothing to tail.
             return None
         # Stop-before-start (or never-admitted) work is settled once its
         # submission is finished, with no runs row.
-        return submission["state"] == "finished"
+        return submission["state"] == SUBMISSION_STATE_FINISHED
 
-    async def _watch_run(self, ref: RunRef, *, after: str | int | None, poll_interval: float) -> AsyncGenerator[RunUpdate, None]:
+    async def _watch_run(self, ref: RunRef, *, after: str | int | None, poll_interval: float, until: str) -> AsyncGenerator[RunUpdate, None]:
         """Replay one run's durable sequence, then tail its previews."""
         cursor = _parse_cursor(after)
         queue = self._bus.subscribe(ref.run_id) if self._bus is not None else None
@@ -1704,7 +1756,7 @@ class RunHomeClient:
                     continue
                 if terminal:
                     return
-                ended = await self._run_stream_ended(ref.run_id)
+                ended = await self._run_stream_ended(ref.run_id, until=until)
                 if ended is None:
                     return
                 terminal = ended
@@ -1748,7 +1800,7 @@ class RunHomeClient:
             )
         return updates, cursor, bool(rows)
 
-    async def _watch_batch(self, ref: BatchRef, *, after: str | int | None, poll_interval: float) -> AsyncGenerator[BatchUpdate, None]:
+    async def _watch_batch(self, ref: BatchRef, *, after: str | int | None, poll_interval: float, until: str) -> AsyncGenerator[BatchUpdate, None]:
         """Replay the per-Batch durable sequence, then tail child previews.
 
         Durable facts (``manifest``, ``child_settled``,
@@ -1758,9 +1810,10 @@ class RunHomeClient:
         only) and carry the child's ``run_id``/``item_key``; they never
         advance the cursor. The generator ends once every manifest child is
         accounted — settled, unstarted, or recovery-exhausted — and every
-        committed fact has been delivered. A durable ``stopped`` fact is a
-        control fact, never end-of-stream: the per-item facts a stop causes
-        commit after it.
+        committed fact has been delivered, or, under ``until="resting"``,
+        once the only unaccounted children are parked on a person. A durable
+        ``stopped`` fact is a control fact, never end-of-stream: the
+        per-item facts a stop causes commit after it.
         """
         cursor = _parse_batch_cursor(after)
         # The manifest is immutable, so the child set is read once.
@@ -1782,8 +1835,13 @@ class RunHomeClient:
                 # appends `stopped` first and writes child stop commands the
                 # gate applies later, each committing its own
                 # `child_unstarted` fact. The stream ends only once every
-                # manifest child is accounted (A9).
-                terminal = await self._home._all_children_settled(ref.batch_id)
+                # manifest child is accounted (A9) — or, under "resting",
+                # once the rest is waiting on a person.
+                terminal = (
+                    await self._home._all_children_resting(ref.batch_id)
+                    if until == WATCH_UNTIL_RESTING
+                    else await self._home._all_children_settled(ref.batch_id)
+                )
                 if not terminal:
                     await asyncio.sleep(poll_interval)
         finally:

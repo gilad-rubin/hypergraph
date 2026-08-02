@@ -68,6 +68,23 @@ def is_child_settled(submission_state: str | None, run_status: str | None) -> bo
     return run_status in TERMINAL_STATUS_VALUES or submission_state in SETTLED_SUBMISSION_STATES
 
 
+def is_child_resting(submission_state: str | None, run_status: str | None) -> bool:
+    """True when a child can no longer move WITHOUT a person.
+
+    THE resting rule, and deliberately weaker than settled: a child parked
+    on a durable interrupt will never advance on its own, so a caller
+    waiting for work to stop moving must count it as arrived. Otherwise one
+    human gate holds every wait loop open forever — which is exactly what a
+    770-document re-ingest hit (issue #386), and why "settled" and "resting"
+    are two predicates rather than one.
+
+    Resting is NOT settled: a parked child can still change outcome once
+    somebody answers. Nothing derives an outcome from this predicate; it
+    answers only "is anything still running or queued?".
+    """
+    return is_child_settled(submission_state, run_status) or submission_state == SUBMISSION_STATE_PAUSED
+
+
 class WaitingCondition(Enum):
     """Closed typed vocabulary naming why a Run waits.
 
@@ -376,6 +393,21 @@ class BatchView:
     settled: bool
     tolerance_tripped: bool
     retry_of: str | None
+
+    @property
+    def resting(self) -> bool:
+        """True when nothing is running or queued — only terminal or parked.
+
+        The predicate a caller polls when a Batch may legitimately stop
+        moving without being finished: every item is accounted for good, or
+        parked on a person. ``settled`` is the stricter question — it also
+        requires that no question is open.
+
+        Derived from the closed ``BATCH_COUNT_KEYS`` vocabulary, which
+        accounts every manifest item exactly once, so this can never
+        disagree with ``counts``.
+        """
+        return self.counts["active"] == 0 and self.counts["queued"] == 0
 
 
 @dataclass(frozen=True)

@@ -36,7 +36,7 @@ from hypergraph.host.batch import BatchTolerance, tolerance_trips
 from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import AlreadyTerminalError, HostError, WorkflowIdConflictError
 from hypergraph.host.fingerprint import batch_mismatch_aspect, canonical_json, start_fingerprint
-from hypergraph.host.views import TERMINAL_STATUS_VALUES, is_child_settled
+from hypergraph.host.views import TERMINAL_STATUS_VALUES, is_child_resting, is_child_settled
 
 # === Durable Batch stream kinds ===
 #
@@ -396,6 +396,15 @@ def children_settled_rows(rows: Sequence[Sequence[Any]]) -> bool:
     uses.
     """
     return all(is_child_settled(sub_state, run_status) for sub_state, run_status in rows)
+
+
+def children_resting_rows(rows: Sequence[Sequence[Any]]) -> bool:
+    """True when no ``(submission_state, run_status)`` pair can still move alone.
+
+    The same rows ``children_settled_rows`` reads, under the weaker
+    predicate: a child parked on a human is resting but not settled.
+    """
+    return all(is_child_resting(sub_state, run_status) for sub_state, run_status in rows)
 
 
 def trip_payload(items_json: str, tolerance_json: str, failure_count: int) -> dict[str, Any] | None:
