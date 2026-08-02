@@ -27,7 +27,7 @@ from hypergraph.checkpointers.base import CheckpointPolicy, _check_settlement
 
 # host/ is the same persistence subsystem as checkpointers/ (a RunHome IS a
 # SqliteCheckpointer), so reaching its private column list here is deliberate.
-from hypergraph.checkpointers.sqlite import _RUNS_COLS, SqliteCheckpointer, _run_status_update
+from hypergraph.checkpointers.sqlite import _PUBLIC_STEP_FILTER, _RUNS_COLS, SqliteCheckpointer, _run_status_update
 from hypergraph.checkpointers.types import (
     NO_RUN_TOTALS,
     AnswerRejectedError,
@@ -305,6 +305,84 @@ def _weighted_admission_fits(budget: int, claimed_count: int, claimed_units: int
     if cost > budget:
         return claimed_count == 0
     return claimed_count < 2 or claimed_units + cost <= budget
+
+
+# === Durable timing facts (issue #386) ===
+#
+# The execution journal already records what every node cost — a `steps`
+# row's duration_ms/cached/error, and the run's own duration_ms/node_count.
+# Nothing below measures anything or writes anything; it projects rows that
+# outlived the process that wrote them, which is the entire point: an
+# operator whose notebook kernel died still owes an answer for the work it
+# drove.
+
+#: One durable step row, as the timing read needs it.
+_STEP_TIMING_COLS = "run_id, superstep, node_name, node_type, status, duration_ms, cached, error, completed_at"
+#: How far the nested-run walk descends before it stops. A parent chain is
+#: a tree by construction; the bound is what makes a corrupted store return
+#: a bounded answer instead of spinning.
+_MAX_RUN_NESTING_DEPTH = 32
+
+
+def _timing_run_rows_query(*, definition: str | None, batch_id: str | None, limit: int) -> tuple[str, list[Any]]:
+    """The Host Runs a timing read covers, newest acceptance first.
+
+    Selection is by SUBMISSION, never by runs row: a submission that never
+    executed is still an accepted Run the operator asked about, and reports
+    itself honestly with no duration rather than vanishing from the answer.
+    """
+    conditions = []
+    params: list[Any] = []
+    if definition is not None:
+        conditions.append("s.definition_name = ?")
+        params.append(definition)
+    if batch_id is not None:
+        conditions.append("s.batch_id = ?")
+        params.append(batch_id)
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    params.append(limit)
+    return (
+        f"SELECT {_QUALIFIED_SUBMISSION_COLS}, {_QUALIFIED_RUN_COLS} FROM host_submissions s "
+        f"LEFT JOIN runs r ON r.id = s.workflow_id{where} ORDER BY s.created_at DESC, s.workflow_id DESC LIMIT ?",
+        params,
+    )
+
+
+def _descendant_runs_query(root_ids: Sequence[str]) -> tuple[str, list[Any]]:
+    """Every run reachable from ``root_ids`` through ``runs.parent_run_id``.
+
+    A Host Run is only the OUTERMOST run of the work it drove: a nested
+    graph node, and every item of a ``map``, commits its own runs row with
+    the parent recorded. Their step records are as durable as the parent's,
+    and a join that only matched ``runs.id = host_submissions.workflow_id``
+    threw them away — which is exactly the per-node evidence a fan-out is
+    worth reading. ``UNION`` (not ``UNION ALL``) plus the depth bound keeps
+    a malformed parent cycle finite.
+    """
+    placeholders = ", ".join("?" for _ in root_ids)
+    return (
+        f"""
+        WITH RECURSIVE descendants(id, root_id, depth) AS (
+            SELECT id, id, 0 FROM runs WHERE id IN ({placeholders})
+            UNION
+            SELECT child.id, parent.root_id, parent.depth + 1
+            FROM runs child JOIN descendants parent ON child.parent_run_id = parent.id
+            WHERE parent.depth < ?
+        )
+        SELECT id, root_id FROM descendants
+        """,
+        [*root_ids, _MAX_RUN_NESTING_DEPTH],
+    )
+
+
+def _step_timing_query(run_ids: Sequence[str]) -> tuple[str, Sequence[str]]:
+    """Durable step facts for one chunk of run ids, in execution order."""
+    placeholders = ", ".join("?" for _ in run_ids)
+    return (
+        f"SELECT {_STEP_TIMING_COLS} FROM steps WHERE run_id IN ({placeholders}) AND {_PUBLIC_STEP_FILTER} "
+        "ORDER BY run_id, COALESCE(completed_at, created_at), created_at, id",
+        run_ids,
+    )
 
 
 def _batch_children_query(batch_ids: Sequence[str]) -> tuple[str, Sequence[str]]:
@@ -2684,6 +2762,70 @@ class RunHome(SqliteCheckpointer):
             for row in await cursor.fetchall():
                 rows.append((None, self._row_to_run(row)))
             return rows
+
+    # === durable timing reads (issue #386) ===
+
+    def _timing_run_rows_sync(self, *, definition: str | None, batch_id: str | None, limit: int) -> list[tuple[dict[str, Any], Run | None]]:
+        """Host Runs a timing read covers, joined with their runs row."""
+        statement, params = _timing_run_rows_query(definition=definition, batch_id=batch_id, limit=limit)
+        with self._sync_lock:
+            rows = self._sync_db().execute(statement, params).fetchall()
+        return self._join_timing_rows(rows)
+
+    async def _timing_run_rows(self, *, definition: str | None, batch_id: str | None, limit: int) -> list[tuple[dict[str, Any], Run | None]]:
+        """Async mirror of ``_timing_run_rows_sync``."""
+        statement, params = _timing_run_rows_query(definition=definition, batch_id=batch_id, limit=limit)
+        await self._ensure_db()
+        async with self._txn_lock():
+            cursor = await self._db.execute(statement, params)
+            rows = await cursor.fetchall()
+        return self._join_timing_rows(rows)
+
+    def _join_timing_rows(self, rows: Sequence[Any]) -> list[tuple[dict[str, Any], Run | None]]:
+        sub_count = len(_SUBMISSION_COLS.split(", "))
+        return [(_row_to_submission(row[:sub_count]), self._row_to_run(row[sub_count:]) if row[sub_count] is not None else None) for row in rows]
+
+    def _descendant_run_ids_sync(self, root_ids: Sequence[str]) -> dict[str, str]:
+        """Every run under ``root_ids``, mapped to the root that owns it."""
+        owners: dict[str, str] = {}
+        for chunk in self._chunk_run_ids(root_ids):
+            with self._sync_lock:
+                rows = self._sync_db().execute(*_descendant_runs_query(chunk)).fetchall()
+            owners.update({str(run_id): str(root_id) for run_id, root_id in rows})
+        return owners
+
+    async def _descendant_run_ids(self, root_ids: Sequence[str]) -> dict[str, str]:
+        """Async mirror of ``_descendant_run_ids_sync``."""
+        owners: dict[str, str] = {}
+        if not root_ids:
+            return owners
+        await self._ensure_db()
+        for chunk in self._chunk_run_ids(root_ids):
+            async with self._txn_lock():
+                cursor = await self._db.execute(*_descendant_runs_query(chunk))
+                rows = await cursor.fetchall()
+            owners.update({str(run_id): str(root_id) for run_id, root_id in rows})
+        return owners
+
+    def _step_timing_rows_sync(self, run_ids: Sequence[str]) -> list[tuple[Any, ...]]:
+        """Durable step facts for these runs, in execution order."""
+        facts: list[tuple[Any, ...]] = []
+        for chunk in self._chunk_run_ids(run_ids):
+            with self._sync_lock:
+                facts.extend(self._sync_db().execute(*_step_timing_query(chunk)).fetchall())
+        return facts
+
+    async def _step_timing_rows(self, run_ids: Sequence[str]) -> list[tuple[Any, ...]]:
+        """Async mirror of ``_step_timing_rows_sync``."""
+        facts: list[tuple[Any, ...]] = []
+        if not run_ids:
+            return facts
+        await self._ensure_db()
+        for chunk in self._chunk_run_ids(run_ids):
+            async with self._txn_lock():
+                cursor = await self._db.execute(*_step_timing_query(chunk))
+                facts.extend(await cursor.fetchall())
+        return facts
 
     # === run_updates reads (watch replay) ===
 

@@ -462,6 +462,111 @@ class _RunReadSnapshot:
     pause_slot: PauseSlot | None
 
 
+@dataclass(frozen=True)
+class _StepFact:
+    """One durable ``steps`` row, addressed by the Run that owns its work.
+
+    ``run_id`` is the run the step actually executed in — a nested graph's
+    child run, or one item of a ``map`` — while ``root_run_id`` is the Host
+    Run that drove it. Keeping both is what lets a caller fold per document
+    (root) without losing which inner run inside the fan-out was slow.
+    """
+
+    run_id: str
+    root_run_id: str
+    superstep: int
+    node_name: str
+    node_type: str | None
+    status: str
+    duration_ms: float
+    cached: bool
+    error: str | None
+    completed_at: str | None
+
+
+@dataclass(frozen=True)
+class _RunTimingFact:
+    """One Host Run's own durable totals, plus its Batch address."""
+
+    view: RunView
+    batch_id: str | None
+    item_key: str | None
+    duration_ms: float | None
+    node_count: int
+    error_count: int
+
+
+@dataclass(frozen=True)
+class _TimingSnapshot:
+    """Durable timing facts for ONE selection of Host Runs.
+
+    Package-private on purpose, exactly like ``_RunReadSnapshot``: products
+    should consume ``NodeTimingsReadModel``, not fold storage rows.
+    """
+
+    home: str
+    definition: str | None
+    runs: tuple[_RunTimingFact, ...]
+    steps: tuple[_StepFact, ...]
+
+
+def _validate_timing_request(definition: str | None, limit: int) -> None:
+    """Refuse a timing request the store cannot honor, before it reads."""
+    if definition is not None and not isinstance(definition, str):
+        raise TypeError(f"node_timings() definition must be a Definition name string or None, got {type(definition).__name__}.")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError(f"node_timings() limit must be a positive int, got {limit!r}.")
+
+
+def _timing_batch_id(batch: BatchRef | str | None) -> str | None:
+    if batch is None or isinstance(batch, str):
+        return batch
+    if isinstance(batch, BatchRef):
+        return batch.batch_id
+    raise TypeError(f"node_timings() batch must be a BatchRef, a batch id string, or None, got {type(batch).__name__}.")
+
+
+def _timing_run_facts(home_uri: str, rows: Sequence[tuple[dict[str, Any], Run | None]], *, admission_full: bool) -> list[_RunTimingFact]:
+    """Project joined submission/run rows into per-Run durable totals."""
+    facts = []
+    for submission, run in rows:
+        view = _build_view(home_uri, submission["workflow_id"], submission, run, admission_full=admission_full)
+        if view is None:  # pragma: no cover - a submission always builds a view
+            continue
+        facts.append(
+            _RunTimingFact(
+                view=view,
+                batch_id=submission["batch_id"],
+                item_key=submission["item_key"],
+                duration_ms=run.duration_ms if run is not None else None,
+                node_count=run.node_count if run is not None else 0,
+                error_count=run.error_count if run is not None else 0,
+            )
+        )
+    return facts
+
+
+def _step_facts(rows: Sequence[tuple[Any, ...]], owners: dict[str, str]) -> list[_StepFact]:
+    """Shape raw step rows, attributing each to the Host Run that drove it."""
+    facts = []
+    for run_id, superstep, node_name, node_type, status, duration_ms, cached, error, completed_at in rows:
+        facts.append(
+            _StepFact(
+                run_id=str(run_id),
+                root_run_id=owners.get(str(run_id), str(run_id)),
+                superstep=int(superstep),
+                node_name=str(node_name),
+                node_type=None if node_type is None else str(node_type),
+                status=str(status),
+                duration_ms=float(duration_ms),
+                cached=bool(cached),
+                error=None if error is None else str(error),
+                completed_at=None if completed_at is None else str(completed_at),
+            )
+        )
+    return facts
+
+
 def _valid_item_keys(manifest: dict[str, Any], limit: int = 20) -> str:
     """Render the source manifest's keys as an error's valid-options list."""
     keys = sorted(manifest)
@@ -1208,6 +1313,31 @@ class RunHomeClient:
         tripped = self._home._tripped_batch_ids_sync(batch_ids)
         admission_full = self._home._admission_is_full_sync()
         return _batch_listing(self._home.uri, batches, children, tripped, admission_full=admission_full)
+
+    async def _timing_snapshot(self, definition: str | None, batch: BatchRef | str | None, limit: int) -> _TimingSnapshot:
+        """Durable timing facts for a selection of Host Runs and their descendants.
+
+        Four statements' worth of work regardless of how wide the fan-out
+        got: the Runs, the nested runs beneath them, their step rows, and
+        one admission probe.
+        """
+        _validate_timing_request(definition, limit)
+        batch_id = _timing_batch_id(batch)
+        rows = await self._home._timing_run_rows(definition=definition, batch_id=batch_id, limit=limit)
+        runs = _timing_run_facts(self._home.uri, rows, admission_full=await self._home._admission_is_full())
+        owners = await self._home._descendant_run_ids([fact.view.workflow_id for fact in runs if fact.view.status is not None])
+        steps = _step_facts(await self._home._step_timing_rows(builtins.list(owners)), owners)
+        return _TimingSnapshot(home=self._home.uri, definition=definition, runs=tuple(runs), steps=tuple(steps))
+
+    def _timing_snapshot_sync(self, definition: str | None, batch: BatchRef | str | None, limit: int) -> _TimingSnapshot:
+        """Sync mirror of ``_timing_snapshot``."""
+        _validate_timing_request(definition, limit)
+        batch_id = _timing_batch_id(batch)
+        rows = self._home._timing_run_rows_sync(definition=definition, batch_id=batch_id, limit=limit)
+        runs = _timing_run_facts(self._home.uri, rows, admission_full=self._home._admission_is_full_sync())
+        owners = self._home._descendant_run_ids_sync([fact.view.workflow_id for fact in runs if fact.view.status is not None])
+        steps = _step_facts(self._home._step_timing_rows_sync(builtins.list(owners)), owners)
+        return _TimingSnapshot(home=self._home.uri, definition=definition, runs=tuple(runs), steps=tuple(steps))
 
     async def _read_model_snapshot(self, ref: RunRef) -> _RunReadSnapshot | None:
         """Joined facts used by ``RunHomeReadModel`` for one Run."""

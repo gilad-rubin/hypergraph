@@ -582,6 +582,49 @@ by the manifests in it — so open the one Batch you care about with
 `batch_id` as the total tie-breaker, and the whole page costs a bounded
 number of statements however many children it spans.
 
+### What did the work cost?
+
+`node_timings(definition=None, batch=None, limit=200)` folds the **durable**
+timing facts the execution journal already committed — `steps.duration_ms`,
+`cached`, `error`, and each Run's own `duration_ms`/`node_count`:
+
+```python
+timings = await read.node_timings(batch=receipt.batch_ref)
+
+for node in timings.nodes:          # heaviest first
+    print(node.node_name, node.executions, node.cached, node.total_seconds, node.average_ms)
+```
+
+Nothing is measured here, so the answer outlives the process that produced
+it: a notebook kernel that died mid-sweep still owes its operator the cost
+of the work it drove, and this is where that answer lives.
+
+`NodeTimingsReadModel` carries three things:
+
+| field | what it is |
+| --- | --- |
+| `nodes` | `NodeTimingReadModel` per node name — `executions`, `cached`, `errors`, `total_seconds`, `average_ms` — ordered heaviest first |
+| `runs` | `RunTimingReadModel` per Host Run — its own wall `duration_ms`, `node_count`, `error_count`, and Batch address |
+| `steps` | every `StepTimingReadModel` row, so a caller folds the same facts its own way (per document, per superstep, per hour) |
+
+`average_ms` averages over executions that **actually ran**: a cache hit
+returns in microseconds and would otherwise report a node as fast when what
+really happened is that it was skipped. It is `None` when every execution
+was a cache hit — an honest "nothing ran", not a zero.
+
+The fold walks `runs.parent_run_id`, so a Host Run's nested graphs and every
+item of a `map` land in the same aggregate, each step keeping its own
+`workflow_id` alongside the `root_workflow_id`/`item_key` that drove it. A
+join matching only `runs.id = host_submissions.workflow_id` throws exactly
+that fan-out evidence away. A Run's `duration_ms` is wall time and is *not*
+the sum of its nodes' — a fan-out runs its pages concurrently, so both
+numbers are true and answer different questions.
+
+Inner runs driven by a runner the *product* owns — a `HyperTable`'s
+derivation runner, for instance — are recorded only if that runner has a
+checkpointer; see [issue #386](https://github.com/gilad-rubin/hypergraph/issues/386)
+for the durable-inner-step design.
+
 Every `RunHomeReadModel` method **reads**: it issues `SELECT`s against the
 Run Home the caller already opened, opens no second connection, and creates
 or migrates nothing. That is what makes it safe against a store another
