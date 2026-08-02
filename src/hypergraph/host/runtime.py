@@ -93,6 +93,14 @@ class HostRuntime:
                     # only belong to this close() caller; shielding leaves the
                     # drain alive for a later close() to join.
                     error = await asyncio.shield(self._worker_close)
+                    # A worker that ended CANCELLED is a clean close outcome:
+                    # submitted work is durable, and close() exists to wind the
+                    # worker down — a cancellation racing the cooperative
+                    # shutdown (an event-loop teardown, a task-group exit) must
+                    # not turn an orderly close into a failure. Cancellation
+                    # BETWEEN operations stays loud via _raise_worker_failure.
+                    if isinstance(error, asyncio.CancelledError):
+                        error = None
 
                 home = self._home
                 if home is not None:
