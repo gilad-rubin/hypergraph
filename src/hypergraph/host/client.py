@@ -635,6 +635,38 @@ def _filter_list_rows(
     return [view for _, view in matched[: query.limit]]
 
 
+def _validate_batch_listing(definition: str | None, limit: int) -> None:
+    """Refuse a listing request the store cannot honor, before it reads."""
+    if definition is not None and not isinstance(definition, str):
+        raise TypeError(f"list_batches() definition must be a Definition name string or None, got {type(definition).__name__}.")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError(f"list_batches() limit must be a positive int, got {limit!r}.")
+
+
+def _batch_listing(
+    home_uri: str,
+    batches: Sequence[dict[str, Any]],
+    children: dict[str, dict[str, tuple[dict[str, Any], Run | None]]],
+    tripped: frozenset[str],
+    *,
+    admission_full: bool,
+) -> list[tuple[BatchView, datetime]]:
+    """Project manifest rows plus their joined children into listed views."""
+    return [
+        (
+            _build_batch_view(
+                home_uri,
+                batch,
+                children.get(str(batch["batch_id"]), {}),
+                str(batch["batch_id"]) in tripped,
+                admission_full=admission_full,
+            ),
+            _parse_iso(str(batch["created_at"])),
+        )
+        for batch in batches
+    ]
+
+
 def _make_read_snapshot(
     view: RunView,
     submission: dict[str, Any] | None,
@@ -1145,6 +1177,37 @@ class RunHomeClient:
         _validate_query(query)
         rows = self._home._list_run_rows_sync()
         return _filter_list_rows(self._home.uri, rows, query, admission_full=self._home._admission_is_full_sync())
+
+    async def _list_batch_views(self, definition: str | None, limit: int) -> builtins.list[tuple[BatchView, datetime]]:
+        """Recent Batch views with their acceptance time, newest first.
+
+        Every view is built by ``_build_batch_view`` — THE bucket ladder —
+        so a listed census can never disagree with ``get(batch_ref)``. The
+        whole page costs a bounded number of statements: one manifest read,
+        one joined-children read per id chunk, one trip read, one admission
+        probe.
+        """
+        _validate_batch_listing(definition, limit)
+        batches = await self._home._list_batch_rows(definition=definition, limit=limit)
+        if not batches:
+            return []
+        batch_ids = [str(batch["batch_id"]) for batch in batches]
+        children = await self._home._batch_children(batch_ids)
+        tripped = await self._home._tripped_batch_ids_scan(batch_ids)
+        admission_full = await self._home._admission_is_full()
+        return _batch_listing(self._home.uri, batches, children, tripped, admission_full=admission_full)
+
+    def _list_batch_views_sync(self, definition: str | None, limit: int) -> builtins.list[tuple[BatchView, datetime]]:
+        """Sync mirror of ``_list_batch_views``."""
+        _validate_batch_listing(definition, limit)
+        batches = self._home._list_batch_rows_sync(definition=definition, limit=limit)
+        if not batches:
+            return []
+        batch_ids = [str(batch["batch_id"]) for batch in batches]
+        children = self._home._batch_children_sync(batch_ids)
+        tripped = self._home._tripped_batch_ids_sync(batch_ids)
+        admission_full = self._home._admission_is_full_sync()
+        return _batch_listing(self._home.uri, batches, children, tripped, admission_full=admission_full)
 
     async def _read_model_snapshot(self, ref: RunRef) -> _RunReadSnapshot | None:
         """Joined facts used by ``RunHomeReadModel`` for one Run."""

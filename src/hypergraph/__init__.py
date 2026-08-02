@@ -69,6 +69,7 @@ from hypergraph.host import (
     BatchReadModel,
     BatchRef,
     BatchSubmitReceipt,
+    BatchSummaryReadModel,
     BatchTolerance,
     BatchUpdate,
     BatchView,
@@ -270,6 +271,7 @@ __all__ = [
     "BatchItemView",
     "BatchReadModel",
     "BatchItemReadModel",
+    "BatchSummaryReadModel",
     "BatchUpdate",
     "BatchTolerance",
     # Durable pause slots (PRD 0010)

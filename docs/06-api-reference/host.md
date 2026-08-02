@@ -564,6 +564,30 @@ no web-framework dependency, and products remain responsible for
 authorization and for deciding which pinned inputs or pause evidence may
 cross their HTTP boundary.
 
+`list_batches(definition=None, limit=50)` answers the question a bulk
+operator asks before they hold any ref at all — *which sweeps did this Run
+Home accept?*:
+
+```python
+for row in await read.list_batches(definition="ingest", limit=20):
+    print(row.workflow_id, row.created_at, row.counts, row.settled)
+```
+
+Rows are `BatchSummaryReadModel`: `batch_ref`, `workflow_id`,
+`definition_id`, `created_at`, `item_count`, the same `counts` census
+`get_batch` reports, `settled`, `tolerance_tripped`, and `retry_of`. They
+carry no per-item map on purpose — a listing stays bounded by the page, not
+by the manifests in it — so open the one Batch you care about with
+`get_batch(row.batch_ref)`. Ordering is newest acceptance first with
+`batch_id` as the total tie-breaker, and the whole page costs a bounded
+number of statements however many children it spans.
+
+Every `RunHomeReadModel` method **reads**: it issues `SELECT`s against the
+Run Home the caller already opened, opens no second connection, and creates
+or migrates nothing. That is what makes it safe against a store another
+process owns — unlike `SqliteRunInspector`, which needs a
+`SqliteCheckpointer` and therefore a schema-ensuring write on open.
+
 ## Reading Results
 
 `client.result(ref)` answers what durable work **produced**. The worker keeps

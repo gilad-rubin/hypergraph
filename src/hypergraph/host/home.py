@@ -54,6 +54,8 @@ from hypergraph.host._batch_store import (
     SELECT_LAST_OCCURRENCE,
     SELECT_MEMBERSHIP,
     SELECT_PENDING_CLOSEOUT,
+    SELECT_RECENT_BATCHES,
+    SELECT_RECENT_BATCHES_BY_DEFINITION,
     SELECT_STOP_TARGETS,
     SELECT_STOPPED,
     SELECT_TOLERANCE_INPUTS,
@@ -303,6 +305,21 @@ def _weighted_admission_fits(budget: int, claimed_count: int, claimed_units: int
     if cost > budget:
         return claimed_count == 0
     return claimed_count < 2 or claimed_units + cost <= budget
+
+
+def _batch_children_query(batch_ids: Sequence[str]) -> tuple[str, Sequence[str]]:
+    """The joined-children read for one chunk of Batch ids, and its binds.
+
+    Stated once so the sync and async mirrors of ``_batch_children`` can
+    never select different columns — the row layout is positional, and a
+    drift here would silently mis-slice submissions and runs rows.
+    """
+    placeholders = ", ".join("?" for _ in batch_ids)
+    return (
+        f"SELECT {_QUALIFIED_SUBMISSION_COLS}, {_QUALIFIED_RUN_COLS} FROM host_submissions s "
+        f"LEFT JOIN runs r ON r.id = s.workflow_id WHERE s.batch_id IN ({placeholders})",
+        batch_ids,
+    )
 
 
 def _row_to_submission(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -1504,6 +1521,94 @@ class RunHome(SqliteCheckpointer):
                 run = self._row_to_run(row[sub_count:]) if row[sub_count] is not None else None
                 rows[submission["item_key"]] = (submission, run)
             return rows
+
+    def _list_batch_rows_sync(self, *, definition: str | None, limit: int) -> list[dict[str, Any]]:
+        """Recent Batch manifest rows, newest first.
+
+        Manifests only — children stay a separate bulk read, so listing N
+        Batches costs one statement here plus one join for the whole page
+        rather than one query per Batch.
+        """
+        statement = SELECT_RECENT_BATCHES if definition is None else SELECT_RECENT_BATCHES_BY_DEFINITION
+        params: tuple[Any, ...] = (limit,) if definition is None else (definition, limit)
+        with self._sync_lock:
+            rows = self._sync_db().execute(statement, params).fetchall()
+        return [row_to_batch(row) for row in rows]
+
+    async def _list_batch_rows(self, *, definition: str | None, limit: int) -> list[dict[str, Any]]:
+        """Async mirror of ``_list_batch_rows_sync``."""
+        statement = SELECT_RECENT_BATCHES if definition is None else SELECT_RECENT_BATCHES_BY_DEFINITION
+        params: tuple[Any, ...] = (limit,) if definition is None else (definition, limit)
+        await self._ensure_db()
+        async with self._txn_lock():
+            cursor = await self._db.execute(statement, params)
+            rows = await cursor.fetchall()
+        return [row_to_batch(row) for row in rows]
+
+    def _batch_children_sync(self, batch_ids: Sequence[str]) -> dict[str, dict[str, tuple[dict[str, Any], Run | None]]]:
+        """Children of MANY Batches at once, keyed by batch id then item key.
+
+        The bulk form of ``_batch_child_rows_sync``: a listing joins every
+        page's children in a bounded number of statements, so the per-Batch
+        census stays cheap no matter how many Batches (or children) a page
+        holds.
+        """
+        grouped: dict[str, dict[str, tuple[dict[str, Any], Run | None]]] = {batch_id: {} for batch_id in batch_ids}
+        for chunk in self._chunk_run_ids(batch_ids):
+            with self._sync_lock:
+                rows = self._sync_db().execute(*_batch_children_query(chunk)).fetchall()
+            self._collect_batch_children(rows, grouped)
+        return grouped
+
+    async def _batch_children(self, batch_ids: Sequence[str]) -> dict[str, dict[str, tuple[dict[str, Any], Run | None]]]:
+        """Async mirror of ``_batch_children_sync``."""
+        grouped: dict[str, dict[str, tuple[dict[str, Any], Run | None]]] = {batch_id: {} for batch_id in batch_ids}
+        if not batch_ids:
+            return grouped
+        await self._ensure_db()
+        for chunk in self._chunk_run_ids(batch_ids):
+            async with self._txn_lock():
+                cursor = await self._db.execute(*_batch_children_query(chunk))
+                rows = await cursor.fetchall()
+            self._collect_batch_children(rows, grouped)
+        return grouped
+
+    def _collect_batch_children(
+        self,
+        rows: Sequence[Any],
+        grouped: dict[str, dict[str, tuple[dict[str, Any], Run | None]]],
+    ) -> None:
+        """Group joined child rows under their Batch, exactly as the single-Batch read shapes them."""
+        sub_count = len(_SUBMISSION_COLS.split(", "))
+        for row in rows:
+            submission = _row_to_submission(row[:sub_count])
+            run = self._row_to_run(row[sub_count:]) if row[sub_count] is not None else None
+            grouped.setdefault(str(submission["batch_id"]), {})[submission["item_key"]] = (submission, run)
+
+    def _tripped_batch_ids_sync(self, batch_ids: Collection[str]) -> frozenset[str]:
+        """Sync mirror of ``_tripped_batch_ids``, taking its own lock."""
+        ids = list(batch_ids)
+        if not ids:
+            return frozenset()
+        placeholders = ", ".join("?" for _ in ids)
+        with self._sync_lock:
+            rows = (
+                self._sync_db()
+                .execute(
+                    f"SELECT DISTINCT batch_id FROM batch_updates WHERE kind = '{TRIP_UPDATE_KIND}' AND batch_id IN ({placeholders})",
+                    ids,
+                )
+                .fetchall()
+            )
+        return frozenset(str(row[0]) for row in rows)
+
+    async def _tripped_batch_ids_scan(self, batch_ids: Collection[str]) -> frozenset[str]:
+        """``_tripped_batch_ids`` for a caller that holds NO transaction."""
+        if not batch_ids:
+            return frozenset()
+        await self._ensure_db()
+        async with self._txn_lock():
+            return await self._tripped_batch_ids(batch_ids)
 
     def _read_batch_updates_sync(self, batch_id: str, after_bseq: int = 0) -> list[tuple[int, str, str, str]]:
         """Read batch_updates rows with bseq > after_bseq, in bseq order."""

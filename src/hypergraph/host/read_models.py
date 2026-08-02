@@ -144,8 +144,49 @@ class BatchReadModel:
         }
 
 
+@dataclass(frozen=True)
+class BatchSummaryReadModel:
+    """One Batch's census WITHOUT its per-item detail — a listing row.
+
+    Deliberately not a trimmed :class:`BatchReadModel`: a listing is bounded
+    by design, and a page of Batches that each carried a full item map would
+    grow with the manifests rather than with the page. Ask ``get_batch`` for
+    the item detail of the one Batch an operator opened.
+    """
+
+    batch_ref: BatchRef
+    workflow_id: str
+    definition_id: DefinitionId
+    created_at: datetime
+    item_count: int
+    counts: dict[str, int]
+    settled: bool
+    tolerance_tripped: bool
+    retry_of: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "batch_ref": self.batch_ref.to_dict(),
+            "workflow_id": self.workflow_id,
+            "definition_id": self.definition_id.to_dict(),
+            "created_at": self.created_at.isoformat(),
+            "item_count": self.item_count,
+            "counts": dict(self.counts),
+            "settled": self.settled,
+            "tolerance_tripped": self.tolerance_tripped,
+            "retry_of": self.retry_of,
+        }
+
+
 class RunHomeReadModel:
-    """Derive generic operator views from a backend-neutral Run Home client."""
+    """Derive generic operator views from a backend-neutral Run Home client.
+
+    Every method here READS. The statements it issues are ``SELECT``s
+    against the Run Home the caller already opened — it opens no second
+    connection, creates nothing, and migrates nothing, so an operator
+    surface (or a notebook that outlived the process that wrote the facts)
+    can project durable truth without becoming a writer of it.
+    """
 
     def __init__(self, client: RunHomeClient) -> None:
         if not isinstance(client, RunHomeClient):
@@ -185,6 +226,29 @@ class RunHomeReadModel:
     def get_batch_sync(self, ref: BatchRef) -> BatchReadModel | None:
         view = self._client.get_sync(ref)
         return _batch(view) if isinstance(view, BatchView) else None
+
+    async def list_batches(self, definition: str | None = None, limit: int = 50) -> list[BatchSummaryReadModel]:
+        """List recent Batches, newest first.
+
+        The listing an operator opens a bulk run on: which sweeps this Run
+        Home accepted, when, and how each one's manifest is doing right now.
+        Counts come from the SAME bucket ladder ``get_batch`` uses, so a row
+        in the list and the Batch it opens can never tell different stories.
+
+        Args:
+            definition: Only Batches pinned to this Definition name, or None
+                for every Definition in the Home.
+            limit: Cap on returned rows, newest first (default 50).
+
+        Returns:
+            One :class:`BatchSummaryReadModel` per Batch, newest acceptance
+            first, with ``batch_id`` as the total tie-breaker.
+        """
+        return [_batch_summary(view, created_at) for view, created_at in await self._client._list_batch_views(definition, limit)]
+
+    def list_batches_sync(self, definition: str | None = None, limit: int = 50) -> list[BatchSummaryReadModel]:
+        """Sync mirror of ``list_batches``."""
+        return [_batch_summary(view, created_at) for view, created_at in self._client._list_batch_views_sync(definition, limit)]
 
     async def _run(self, snapshot: _RunReadSnapshot) -> RunReadModel:
         pause = _pause(snapshot.view.run_ref, snapshot.pause_slot) if snapshot.view.waiting is WaitingCondition.PAUSED else None
@@ -271,6 +335,20 @@ def _batch(view: BatchView) -> BatchReadModel:
     )
 
 
+def _batch_summary(view: BatchView, created_at: datetime) -> BatchSummaryReadModel:
+    return BatchSummaryReadModel(
+        batch_ref=view.batch_ref,
+        workflow_id=view.workflow_id,
+        definition_id=view.definition_id,
+        created_at=created_at,
+        item_count=len(view.items),
+        counts=dict(view.counts),
+        settled=view.settled,
+        tolerance_tripped=view.tolerance_tripped,
+        retry_of=view.retry_of,
+    )
+
+
 def _json_copy(value: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(value))
 
@@ -282,6 +360,7 @@ def _iso(value: datetime | None) -> str | None:
 __all__ = [
     "BatchItemReadModel",
     "BatchReadModel",
+    "BatchSummaryReadModel",
     "PauseReadModel",
     "RUN_READ_STATUS_VALUES",
     "RunHomeReadModel",

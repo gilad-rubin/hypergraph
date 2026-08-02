@@ -85,6 +85,14 @@ COUNT_FAILURE_EQUIVALENT = (
 # sync and async doors can silently diverge; naming it makes that impossible.
 SELECT_BATCH_BY_ID = f"SELECT {BATCH_COLS} FROM host_batches WHERE batch_id = ?"
 SELECT_BATCH_BY_WORKFLOW = f"SELECT {BATCH_COLS} FROM host_batches WHERE workflow_id = ?"
+#: Recent Batch manifests, newest first, with ``batch_id`` as the total
+#: tie-breaker so two Batches accepted in the same millisecond still order
+#: deterministically. ``created_at`` is a UTC ISO string written by one
+#: clock, so lexicographic order IS chronological order.
+SELECT_RECENT_BATCHES = f"SELECT {BATCH_COLS} FROM host_batches ORDER BY created_at DESC, batch_id DESC LIMIT ?"
+SELECT_RECENT_BATCHES_BY_DEFINITION = (
+    f"SELECT {BATCH_COLS} FROM host_batches WHERE definition_name = ? ORDER BY created_at DESC, batch_id DESC LIMIT ?"
+)
 SELECT_BATCH_WORKFLOW_ID = "SELECT workflow_id FROM host_batches WHERE batch_id = ?"
 INSERT_BATCH = f"INSERT INTO host_batches ({BATCH_COLS}) VALUES ({BATCH_PLACEHOLDERS})"
 SELECT_MEMBERSHIP = "SELECT batch_id, item_key FROM host_submissions WHERE workflow_id = ?"
