@@ -510,6 +510,32 @@ terminates immediately with no updates — matching `get()`'s honest `None`
 — instead of polling forever. `get_sync()` is the synchronous mirror of
 `get()`.
 
+### Waiting for work to stop moving
+
+`watch(ref, until=...)` chooses which arrival ends the stream:
+
+```python
+async for update in client.watch(batch_ref, until="resting"):
+    ...   # ends when nothing is running or queued — even if a gate is open
+```
+
+- `"settled"` (default) — a run ends at a terminal status; a Batch ends once
+  every manifest child is accounted (settled, unstarted, or
+  recovery-exhausted).
+- `"resting"` — also ends when the only thing left is **parked on a person**.
+
+A durable interrupt is a human gate, and a gate never answers itself: under
+`"settled"` one paused child holds the stream open for as long as nobody
+looks at it. An operator following many sweeps needs "nothing is running or
+queued" to be a reachable state, not a promise the work will finish.
+
+`"resting"` truncates the *wait*, never the facts — `child_paused` commits in
+the same transaction as the pause it reports, so it is already delivered when
+the stream ends — and it invents no outcome: a parked child is still not
+settled, and watching again from the stored cursor resumes exactly where the
+resting stream stopped. `BatchView.resting` is the same predicate for a
+caller that polls instead of watching.
+
 `WaitingCondition` is a closed enum — `QUEUED`, `SCHEDULED`, `PAUSED`,
 `VERSION_INCOMPATIBLE`, `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED` — so
 waiting work never looks alike and callers branch on typed values. `waiting`
@@ -563,6 +589,73 @@ mirror. Hypergraph intentionally does not mount an HTTP router: the core has
 no web-framework dependency, and products remain responsible for
 authorization and for deciding which pinned inputs or pause evidence may
 cross their HTTP boundary.
+
+`list_batches(definition=None, limit=50)` answers the question a bulk
+operator asks before they hold any ref at all — *which sweeps did this Run
+Home accept?*:
+
+```python
+for row in await read.list_batches(definition="ingest", limit=20):
+    print(row.workflow_id, row.created_at, row.counts, row.settled)
+```
+
+Rows are `BatchSummaryReadModel`: `batch_ref`, `workflow_id`,
+`definition_id`, `created_at`, `item_count`, the same `counts` census
+`get_batch` reports, `settled`, `tolerance_tripped`, and `retry_of`. They
+carry no per-item map on purpose — a listing stays bounded by the page, not
+by the manifests in it — so open the one Batch you care about with
+`get_batch(row.batch_ref)`. Ordering is newest acceptance first with
+`batch_id` as the total tie-breaker, and the whole page costs a bounded
+number of statements however many children it spans.
+
+### What did the work cost?
+
+`node_timings(definition=None, batch=None, limit=200)` folds the **durable**
+timing facts the execution journal already committed — `steps.duration_ms`,
+`cached`, `error`, and each Run's own `duration_ms`/`node_count`:
+
+```python
+timings = await read.node_timings(batch=receipt.batch_ref)
+
+for node in timings.nodes:          # heaviest first
+    print(node.node_name, node.executions, node.cached, node.total_seconds, node.average_ms)
+```
+
+Nothing is measured here, so the answer outlives the process that produced
+it: a notebook kernel that died mid-sweep still owes its operator the cost
+of the work it drove, and this is where that answer lives.
+
+`NodeTimingsReadModel` carries three things:
+
+| field | what it is |
+| --- | --- |
+| `nodes` | `NodeTimingReadModel` per node name — `executions`, `cached`, `errors`, `total_seconds`, `average_ms` — ordered heaviest first |
+| `runs` | `RunTimingReadModel` per Host Run — its own wall `duration_ms`, `node_count`, `error_count`, and Batch address |
+| `steps` | every `StepTimingReadModel` row, so a caller folds the same facts its own way (per document, per superstep, per hour) |
+
+`average_ms` averages over executions that **actually ran**: a cache hit
+returns in microseconds and would otherwise report a node as fast when what
+really happened is that it was skipped. It is `None` when every execution
+was a cache hit — an honest "nothing ran", not a zero.
+
+The fold walks `runs.parent_run_id`, so a Host Run's nested graphs and every
+item of a `map` land in the same aggregate, each step keeping its own
+`workflow_id` alongside the `root_workflow_id`/`item_key` that drove it. A
+join matching only `runs.id = host_submissions.workflow_id` throws exactly
+that fan-out evidence away. A Run's `duration_ms` is wall time and is *not*
+the sum of its nodes' — a fan-out runs its pages concurrently, so both
+numbers are true and answer different questions.
+
+Inner runs driven by a runner the *product* owns — a `HyperTable`'s
+derivation runner, for instance — are recorded only if that runner has a
+checkpointer; see [issue #386](https://github.com/gilad-rubin/hypergraph/issues/386)
+for the durable-inner-step design.
+
+Every `RunHomeReadModel` method **reads**: it issues `SELECT`s against the
+Run Home the caller already opened, opens no second connection, and creates
+or migrates nothing. That is what makes it safe against a store another
+process owns — unlike `SqliteRunInspector`, which needs a
+`SqliteCheckpointer` and therefore a schema-ensuring write on open.
 
 ## Reading Results
 
@@ -729,6 +822,12 @@ Batch containing a paused child reports `settled=False` with that child
 counted `paused`, and `client.stop()` on a parked run is **accepted** rather
 than refused as terminal. A `paused` submission is not claimable — parking
 is not re-admission.
+
+That is also why a wait loop needs
+[`until="resting"`](#waiting-for-work-to-stop-moving): the run is genuinely
+unfinished, so `until="settled"` is right to keep waiting — but nothing will
+move until a person acts, and a caller that only wants "is anything still
+running?" must be able to say so.
 
 ### Answering re-admits the run
 

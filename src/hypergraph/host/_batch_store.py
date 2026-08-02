@@ -36,7 +36,7 @@ from hypergraph.host.batch import BatchTolerance, tolerance_trips
 from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import AlreadyTerminalError, HostError, WorkflowIdConflictError
 from hypergraph.host.fingerprint import batch_mismatch_aspect, canonical_json, start_fingerprint
-from hypergraph.host.views import TERMINAL_STATUS_VALUES, is_child_settled
+from hypergraph.host.views import TERMINAL_STATUS_VALUES, is_child_resting, is_child_settled
 
 # === Durable Batch stream kinds ===
 #
@@ -85,6 +85,14 @@ COUNT_FAILURE_EQUIVALENT = (
 # sync and async doors can silently diverge; naming it makes that impossible.
 SELECT_BATCH_BY_ID = f"SELECT {BATCH_COLS} FROM host_batches WHERE batch_id = ?"
 SELECT_BATCH_BY_WORKFLOW = f"SELECT {BATCH_COLS} FROM host_batches WHERE workflow_id = ?"
+#: Recent Batch manifests, newest first, with ``batch_id`` as the total
+#: tie-breaker so two Batches accepted in the same millisecond still order
+#: deterministically. ``created_at`` is a UTC ISO string written by one
+#: clock, so lexicographic order IS chronological order.
+SELECT_RECENT_BATCHES = f"SELECT {BATCH_COLS} FROM host_batches ORDER BY created_at DESC, batch_id DESC LIMIT ?"
+SELECT_RECENT_BATCHES_BY_DEFINITION = (
+    f"SELECT {BATCH_COLS} FROM host_batches WHERE definition_name = ? ORDER BY created_at DESC, batch_id DESC LIMIT ?"
+)
 SELECT_BATCH_WORKFLOW_ID = "SELECT workflow_id FROM host_batches WHERE batch_id = ?"
 INSERT_BATCH = f"INSERT INTO host_batches ({BATCH_COLS}) VALUES ({BATCH_PLACEHOLDERS})"
 SELECT_MEMBERSHIP = "SELECT batch_id, item_key FROM host_submissions WHERE workflow_id = ?"
@@ -388,6 +396,15 @@ def children_settled_rows(rows: Sequence[Sequence[Any]]) -> bool:
     uses.
     """
     return all(is_child_settled(sub_state, run_status) for sub_state, run_status in rows)
+
+
+def children_resting_rows(rows: Sequence[Sequence[Any]]) -> bool:
+    """True when no ``(submission_state, run_status)`` pair can still move alone.
+
+    The same rows ``children_settled_rows`` reads, under the weaker
+    predicate: a child parked on a human is resting but not settled.
+    """
+    return all(is_child_resting(sub_state, run_status) for sub_state, run_status in rows)
 
 
 def trip_payload(items_json: str, tolerance_json: str, failure_count: int) -> dict[str, Any] | None:

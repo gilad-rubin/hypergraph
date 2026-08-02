@@ -55,6 +55,23 @@ if TYPE_CHECKING:
 
 _RETRY_LINEAGE_LIMIT = 32
 
+#: The two arrivals a ``watch`` may wait for. Closed on purpose: "when is
+#: this over?" has exactly two honest answers, and a caller that could pass
+#: a predicate would be defining a third the store cannot evaluate.
+WATCH_UNTIL_SETTLED = "settled"
+WATCH_UNTIL_RESTING = "resting"
+WATCH_UNTIL_VALUES: frozenset[str] = frozenset({WATCH_UNTIL_SETTLED, WATCH_UNTIL_RESTING})
+
+
+def _validate_until(until: str) -> None:
+    if until not in WATCH_UNTIL_VALUES:
+        raise ValueError(
+            f"watch() until must be {WATCH_UNTIL_SETTLED!r} or {WATCH_UNTIL_RESTING!r}, got {until!r}.\n\n"
+            f"How to fix:\n"
+            f"  until={WATCH_UNTIL_SETTLED!r}  # (the default) end when the work is accounted for good\n"
+            f"  until={WATCH_UNTIL_RESTING!r}  # also end when the only thing left is parked on a person"
+        )
+
 
 def _now_iso() -> str:
     """The timestamp a live (non-durable) preview carries."""
@@ -462,6 +479,111 @@ class _RunReadSnapshot:
     pause_slot: PauseSlot | None
 
 
+@dataclass(frozen=True)
+class _StepFact:
+    """One durable ``steps`` row, addressed by the Run that owns its work.
+
+    ``run_id`` is the run the step actually executed in — a nested graph's
+    child run, or one item of a ``map`` — while ``root_run_id`` is the Host
+    Run that drove it. Keeping both is what lets a caller fold per document
+    (root) without losing which inner run inside the fan-out was slow.
+    """
+
+    run_id: str
+    root_run_id: str
+    superstep: int
+    node_name: str
+    node_type: str | None
+    status: str
+    duration_ms: float
+    cached: bool
+    error: str | None
+    completed_at: str | None
+
+
+@dataclass(frozen=True)
+class _RunTimingFact:
+    """One Host Run's own durable totals, plus its Batch address."""
+
+    view: RunView
+    batch_id: str | None
+    item_key: str | None
+    duration_ms: float | None
+    node_count: int
+    error_count: int
+
+
+@dataclass(frozen=True)
+class _TimingSnapshot:
+    """Durable timing facts for ONE selection of Host Runs.
+
+    Package-private on purpose, exactly like ``_RunReadSnapshot``: products
+    should consume ``NodeTimingsReadModel``, not fold storage rows.
+    """
+
+    home: str
+    definition: str | None
+    runs: tuple[_RunTimingFact, ...]
+    steps: tuple[_StepFact, ...]
+
+
+def _validate_timing_request(definition: str | None, limit: int) -> None:
+    """Refuse a timing request the store cannot honor, before it reads."""
+    if definition is not None and not isinstance(definition, str):
+        raise TypeError(f"node_timings() definition must be a Definition name string or None, got {type(definition).__name__}.")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError(f"node_timings() limit must be a positive int, got {limit!r}.")
+
+
+def _timing_batch_id(batch: BatchRef | str | None) -> str | None:
+    if batch is None or isinstance(batch, str):
+        return batch
+    if isinstance(batch, BatchRef):
+        return batch.batch_id
+    raise TypeError(f"node_timings() batch must be a BatchRef, a batch id string, or None, got {type(batch).__name__}.")
+
+
+def _timing_run_facts(home_uri: str, rows: Sequence[tuple[dict[str, Any], Run | None]], *, admission_full: bool) -> list[_RunTimingFact]:
+    """Project joined submission/run rows into per-Run durable totals."""
+    facts = []
+    for submission, run in rows:
+        view = _build_view(home_uri, submission["workflow_id"], submission, run, admission_full=admission_full)
+        if view is None:  # pragma: no cover - a submission always builds a view
+            continue
+        facts.append(
+            _RunTimingFact(
+                view=view,
+                batch_id=submission["batch_id"],
+                item_key=submission["item_key"],
+                duration_ms=run.duration_ms if run is not None else None,
+                node_count=run.node_count if run is not None else 0,
+                error_count=run.error_count if run is not None else 0,
+            )
+        )
+    return facts
+
+
+def _step_facts(rows: Sequence[tuple[Any, ...]], owners: dict[str, str]) -> list[_StepFact]:
+    """Shape raw step rows, attributing each to the Host Run that drove it."""
+    facts = []
+    for run_id, superstep, node_name, node_type, status, duration_ms, cached, error, completed_at in rows:
+        facts.append(
+            _StepFact(
+                run_id=str(run_id),
+                root_run_id=owners.get(str(run_id), str(run_id)),
+                superstep=int(superstep),
+                node_name=str(node_name),
+                node_type=None if node_type is None else str(node_type),
+                status=str(status),
+                duration_ms=float(duration_ms),
+                cached=bool(cached),
+                error=None if error is None else str(error),
+                completed_at=None if completed_at is None else str(completed_at),
+            )
+        )
+    return facts
+
+
 def _valid_item_keys(manifest: dict[str, Any], limit: int = 20) -> str:
     """Render the source manifest's keys as an error's valid-options list."""
     keys = sorted(manifest)
@@ -633,6 +755,38 @@ def _filter_list_rows(
         matched.append((created_at, view))
     matched.sort(key=lambda pair: (pair[0], pair[1].workflow_id), reverse=True)
     return [view for _, view in matched[: query.limit]]
+
+
+def _validate_batch_listing(definition: str | None, limit: int) -> None:
+    """Refuse a listing request the store cannot honor, before it reads."""
+    if definition is not None and not isinstance(definition, str):
+        raise TypeError(f"list_batches() definition must be a Definition name string or None, got {type(definition).__name__}.")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError(f"list_batches() limit must be a positive int, got {limit!r}.")
+
+
+def _batch_listing(
+    home_uri: str,
+    batches: Sequence[dict[str, Any]],
+    children: dict[str, dict[str, tuple[dict[str, Any], Run | None]]],
+    tripped: frozenset[str],
+    *,
+    admission_full: bool,
+) -> list[tuple[BatchView, datetime]]:
+    """Project manifest rows plus their joined children into listed views."""
+    return [
+        (
+            _build_batch_view(
+                home_uri,
+                batch,
+                children.get(str(batch["batch_id"]), {}),
+                str(batch["batch_id"]) in tripped,
+                admission_full=admission_full,
+            ),
+            _parse_iso(str(batch["created_at"])),
+        )
+        for batch in batches
+    ]
 
 
 def _make_read_snapshot(
@@ -1146,6 +1300,62 @@ class RunHomeClient:
         rows = self._home._list_run_rows_sync()
         return _filter_list_rows(self._home.uri, rows, query, admission_full=self._home._admission_is_full_sync())
 
+    async def _list_batch_views(self, definition: str | None, limit: int) -> builtins.list[tuple[BatchView, datetime]]:
+        """Recent Batch views with their acceptance time, newest first.
+
+        Every view is built by ``_build_batch_view`` — THE bucket ladder —
+        so a listed census can never disagree with ``get(batch_ref)``. The
+        whole page costs a bounded number of statements: one manifest read,
+        one joined-children read per id chunk, one trip read, one admission
+        probe.
+        """
+        _validate_batch_listing(definition, limit)
+        batches = await self._home._list_batch_rows(definition=definition, limit=limit)
+        if not batches:
+            return []
+        batch_ids = [str(batch["batch_id"]) for batch in batches]
+        children = await self._home._batch_children(batch_ids)
+        tripped = await self._home._tripped_batch_ids_scan(batch_ids)
+        admission_full = await self._home._admission_is_full()
+        return _batch_listing(self._home.uri, batches, children, tripped, admission_full=admission_full)
+
+    def _list_batch_views_sync(self, definition: str | None, limit: int) -> builtins.list[tuple[BatchView, datetime]]:
+        """Sync mirror of ``_list_batch_views``."""
+        _validate_batch_listing(definition, limit)
+        batches = self._home._list_batch_rows_sync(definition=definition, limit=limit)
+        if not batches:
+            return []
+        batch_ids = [str(batch["batch_id"]) for batch in batches]
+        children = self._home._batch_children_sync(batch_ids)
+        tripped = self._home._tripped_batch_ids_sync(batch_ids)
+        admission_full = self._home._admission_is_full_sync()
+        return _batch_listing(self._home.uri, batches, children, tripped, admission_full=admission_full)
+
+    async def _timing_snapshot(self, definition: str | None, batch: BatchRef | str | None, limit: int) -> _TimingSnapshot:
+        """Durable timing facts for a selection of Host Runs and their descendants.
+
+        Four statements' worth of work regardless of how wide the fan-out
+        got: the Runs, the nested runs beneath them, their step rows, and
+        one admission probe.
+        """
+        _validate_timing_request(definition, limit)
+        batch_id = _timing_batch_id(batch)
+        rows = await self._home._timing_run_rows(definition=definition, batch_id=batch_id, limit=limit)
+        runs = _timing_run_facts(self._home.uri, rows, admission_full=await self._home._admission_is_full())
+        owners = await self._home._descendant_run_ids([fact.view.workflow_id for fact in runs if fact.view.status is not None])
+        steps = _step_facts(await self._home._step_timing_rows(builtins.list(owners)), owners)
+        return _TimingSnapshot(home=self._home.uri, definition=definition, runs=tuple(runs), steps=tuple(steps))
+
+    def _timing_snapshot_sync(self, definition: str | None, batch: BatchRef | str | None, limit: int) -> _TimingSnapshot:
+        """Sync mirror of ``_timing_snapshot``."""
+        _validate_timing_request(definition, limit)
+        batch_id = _timing_batch_id(batch)
+        rows = self._home._timing_run_rows_sync(definition=definition, batch_id=batch_id, limit=limit)
+        runs = _timing_run_facts(self._home.uri, rows, admission_full=self._home._admission_is_full_sync())
+        owners = self._home._descendant_run_ids_sync([fact.view.workflow_id for fact in runs if fact.view.status is not None])
+        steps = _step_facts(self._home._step_timing_rows_sync(builtins.list(owners)), owners)
+        return _TimingSnapshot(home=self._home.uri, definition=definition, runs=tuple(runs), steps=tuple(steps))
+
     async def _read_model_snapshot(self, ref: RunRef) -> _RunReadSnapshot | None:
         """Joined facts used by ``RunHomeReadModel`` for one Run."""
         if not isinstance(ref, RunRef):
@@ -1431,7 +1641,12 @@ class RunHomeClient:
         return submission, run
 
     async def watch(
-        self, ref: RunRef | BatchRef, *, after: str | int | None = None, poll_interval: float = 0.05
+        self,
+        ref: RunRef | BatchRef,
+        *,
+        after: str | int | None = None,
+        poll_interval: float = 0.05,
+        until: str = WATCH_UNTIL_SETTLED,
     ) -> AsyncIterator[RunUpdate | BatchUpdate]:
         """Replay durable facts after ``after``, then tail live previews.
 
@@ -1443,23 +1658,40 @@ class RunHomeClient:
         carry ``durable=False`` and repeat the last durable cursor — they
         never advance it. Store cursors from durable updates only.
 
-        For a run, the generator ends once the run reaches a terminal
-        status and every committed fact has been delivered. For a Batch, it
-        ends once every manifest child is accounted — settled, unstarted,
-        or recovery-exhausted — and every committed Batch fact has been
-        delivered. Stopping a Batch does not end its stream: the ``stopped``
-        fact names no items, and the per-item facts it causes commit after
-        it. A ``ref`` unknown to this Run Home terminates immediately with
-        no updates, matching ``get()``'s honest ``None``.
+        ``until`` chooses WHICH arrival ends the stream:
+
+        - ``"settled"`` (default) — a run ends at a terminal status; a Batch
+          ends once every manifest child is accounted (settled, unstarted,
+          or recovery-exhausted).
+        - ``"resting"`` — also ends when the only thing left is **parked on
+          a person**. A durable interrupt is a human gate, and a gate never
+          answers itself: under ``"settled"`` a single paused child holds
+          the stream open for as long as nobody looks at it. A bulk operator
+          following dozens of sweeps needs "nothing is running or queued" to
+          be a reachable state, not a promise the work will finish (issue
+          #386).
+
+        Every fact a resting subject earned has already been delivered —
+        ``child_paused`` commits in the same transaction as the pause it
+        reports — so ``"resting"`` truncates the wait, never the facts. It
+        invents no outcome either: a parked child is still not settled, and
+        watching again from the stored cursor resumes exactly where this
+        stream stopped.
+
+        Stopping a Batch ends its stream under neither value: the
+        ``stopped`` fact names no items, and the per-item facts it causes
+        commit after it. A ``ref`` unknown to this Run Home terminates
+        immediately with no updates, matching ``get()``'s honest ``None``.
         """
+        _validate_until(until)
         # Typed as a generator, not an iterator: aclosing() below needs the
         # `aclose` that AsyncIterator does not declare, and both branches
         # are async generators.
         stream: AsyncGenerator[RunUpdate | BatchUpdate, None]
         if isinstance(ref, BatchRef):
-            stream = self._watch_batch(ref, after=after, poll_interval=poll_interval)
+            stream = self._watch_batch(ref, after=after, poll_interval=poll_interval, until=until)
         elif isinstance(ref, RunRef):
-            stream = self._watch_run(ref, after=after, poll_interval=poll_interval)
+            stream = self._watch_run(ref, after=after, poll_interval=poll_interval, until=until)
         else:
             raise TypeError(f"watch() expects a RunRef or BatchRef, got {type(ref).__name__}.")
         # aclosing() runs the inner generator's finally (preview unsubscribe)
@@ -1484,20 +1716,33 @@ class RunHomeClient:
         )
         return updates, cursor, bool(rows)
 
-    async def _run_stream_ended(self, run_id: str) -> bool | None:
-        """Has this run settled? ``None`` means the ref is unknown here."""
+    async def _run_stream_ended(self, run_id: str, *, until: str) -> bool | None:
+        """Has this run arrived? ``None`` means the ref is unknown here.
+
+        Which arrival counts is ``until``'s to say. ``"settled"`` reads
+        exactly what it always did — an executing run answers from its runs
+        row alone, so the poll loop costs no extra statement. ``"resting"``
+        additionally ends on a run parked on a PERSON, and that one needs
+        the submission: a runs row stays ``PAUSED`` from the moment it parks
+        until a worker resumes it, including the whole interval after the
+        answer commits, so only ``_parked_on_human`` tells the two apart.
+        """
         run = await self._home.get_run_async(run_id)
-        if run is not None:
-            return run.status in TERMINAL_WORKFLOW_STATUSES
+        if run is not None and run.status in TERMINAL_WORKFLOW_STATUSES:
+            return True
+        if run is not None and until == WATCH_UNTIL_SETTLED:
+            return False
         submission = await self._home._get_submission(run_id)
+        if run is not None:
+            return run.status is WorkflowStatus.PAUSED and _parked_on_human(submission)
         if submission is None:
             # Unknown ref: nothing to replay, nothing to tail.
             return None
         # Stop-before-start (or never-admitted) work is settled once its
         # submission is finished, with no runs row.
-        return submission["state"] == "finished"
+        return submission["state"] == SUBMISSION_STATE_FINISHED
 
-    async def _watch_run(self, ref: RunRef, *, after: str | int | None, poll_interval: float) -> AsyncGenerator[RunUpdate, None]:
+    async def _watch_run(self, ref: RunRef, *, after: str | int | None, poll_interval: float, until: str) -> AsyncGenerator[RunUpdate, None]:
         """Replay one run's durable sequence, then tail its previews."""
         cursor = _parse_cursor(after)
         queue = self._bus.subscribe(ref.run_id) if self._bus is not None else None
@@ -1511,7 +1756,7 @@ class RunHomeClient:
                     continue
                 if terminal:
                     return
-                ended = await self._run_stream_ended(ref.run_id)
+                ended = await self._run_stream_ended(ref.run_id, until=until)
                 if ended is None:
                     return
                 terminal = ended
@@ -1555,7 +1800,7 @@ class RunHomeClient:
             )
         return updates, cursor, bool(rows)
 
-    async def _watch_batch(self, ref: BatchRef, *, after: str | int | None, poll_interval: float) -> AsyncGenerator[BatchUpdate, None]:
+    async def _watch_batch(self, ref: BatchRef, *, after: str | int | None, poll_interval: float, until: str) -> AsyncGenerator[BatchUpdate, None]:
         """Replay the per-Batch durable sequence, then tail child previews.
 
         Durable facts (``manifest``, ``child_settled``,
@@ -1565,9 +1810,10 @@ class RunHomeClient:
         only) and carry the child's ``run_id``/``item_key``; they never
         advance the cursor. The generator ends once every manifest child is
         accounted — settled, unstarted, or recovery-exhausted — and every
-        committed fact has been delivered. A durable ``stopped`` fact is a
-        control fact, never end-of-stream: the per-item facts a stop causes
-        commit after it.
+        committed fact has been delivered, or, under ``until="resting"``,
+        once the only unaccounted children are parked on a person. A durable
+        ``stopped`` fact is a control fact, never end-of-stream: the
+        per-item facts a stop causes commit after it.
         """
         cursor = _parse_batch_cursor(after)
         # The manifest is immutable, so the child set is read once.
@@ -1589,8 +1835,13 @@ class RunHomeClient:
                 # appends `stopped` first and writes child stop commands the
                 # gate applies later, each committing its own
                 # `child_unstarted` fact. The stream ends only once every
-                # manifest child is accounted (A9).
-                terminal = await self._home._all_children_settled(ref.batch_id)
+                # manifest child is accounted (A9) — or, under "resting",
+                # once the rest is waiting on a person.
+                terminal = (
+                    await self._home._all_children_resting(ref.batch_id)
+                    if until == WATCH_UNTIL_RESTING
+                    else await self._home._all_children_settled(ref.batch_id)
+                )
                 if not terminal:
                     await asyncio.sleep(poll_interval)
         finally:
