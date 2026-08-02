@@ -2602,3 +2602,53 @@ class RunHome(SqliteCheckpointer):
             )
             rows = await cursor.fetchall()
             return [(int(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in rows]
+
+    def _latest_run_update_times_sync(self, run_ids: list[str]) -> dict[str, str]:
+        """Newest durable fact timestamp per requested Run, in one read."""
+        if not run_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in run_ids)
+        with self._sync_lock:
+            rows = (
+                self._sync_db()
+                .execute(
+                    f"""
+                SELECT update_row.run_id, update_row.created_at
+                FROM run_updates AS update_row
+                JOIN (
+                    SELECT run_id, MAX(seq) AS seq
+                    FROM run_updates
+                    WHERE run_id IN ({placeholders})
+                    GROUP BY run_id
+                ) AS latest
+                  ON latest.run_id = update_row.run_id AND latest.seq = update_row.seq
+                """,
+                    run_ids,
+                )
+                .fetchall()
+            )
+        return {str(run_id): str(created_at) for run_id, created_at in rows}
+
+    async def _latest_run_update_times(self, run_ids: list[str]) -> dict[str, str]:
+        """Async mirror of ``_latest_run_update_times_sync``."""
+        if not run_ids:
+            return {}
+        await self._ensure_db()
+        placeholders = ", ".join("?" for _ in run_ids)
+        async with self._txn_lock():
+            cursor = await self._db.execute(
+                f"""
+                SELECT update_row.run_id, update_row.created_at
+                FROM run_updates AS update_row
+                JOIN (
+                    SELECT run_id, MAX(seq) AS seq
+                    FROM run_updates
+                    WHERE run_id IN ({placeholders})
+                    GROUP BY run_id
+                ) AS latest
+                  ON latest.run_id = update_row.run_id AND latest.seq = update_row.seq
+                """,
+                run_ids,
+            )
+            rows = await cursor.fetchall()
+        return {str(run_id): str(created_at) for run_id, created_at in rows}
