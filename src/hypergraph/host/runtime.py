@@ -11,9 +11,12 @@ from typing import TYPE_CHECKING
 from hypergraph.host._bus import _PreviewBus, _register_bus
 from hypergraph.host.client import RunHomeClient
 from hypergraph.host.home import RunHome
-from hypergraph.host.host import Host
+from hypergraph.host.host import Host, _normalize_event_processors
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
 
 
@@ -27,11 +30,27 @@ class HostRuntime:
     Args:
         path: Filesystem path for the Run Home, or ``":memory:"``.
         deployment_version: Version pinned into Definitions and submissions.
+        event_processors: Processors this process adds to **every** durable
+            Run its worker executes. The seam an embedding application uses
+            to observe durable execution: the runtime constructs the runner
+            for an unbound graph, so an application could otherwise reach no
+            runner at all — and a graph that DOES carry its own runner is
+            covered too, because the processors are added by the Host at
+            execution rather than baked into one runner. Same contract as
+            :func:`~hypergraph.serve`: shared across concurrent Runs,
+            best-effort dispatch, and omitting it changes nothing.
     """
 
-    def __init__(self, path: str | Path, *, deployment_version: str = "") -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        deployment_version: str = "",
+        event_processors: Sequence[EventProcessor] | None = None,
+    ) -> None:
         self._path = Path(path)
         self._deployment_version = deployment_version
+        self._event_processors = _normalize_event_processors(event_processors, caller="HostRuntime()")
         self._home: RunHome | None = None
         self._host: Host | None = None
         self._worker: asyncio.Task[None] | None = None
@@ -145,7 +164,13 @@ class HostRuntime:
             home = self._open_home()
             bus = _PreviewBus()
             _register_bus(home.uri, bus)
-            self._host = Host(home=home, definitions={}, deployment_version=self._deployment_version, bus=bus)
+            self._host = Host(
+                home=home,
+                definitions={},
+                deployment_version=self._deployment_version,
+                bus=bus,
+                event_processors=self._event_processors,
+            )
         return self._host
 
     def _open_home(self) -> RunHome:

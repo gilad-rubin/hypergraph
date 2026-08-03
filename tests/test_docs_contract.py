@@ -1114,10 +1114,14 @@ def test_durable_host_docs_pin_public_contract() -> None:
         "max_active_runs",
         "max_admission_units",
     )
-    assert tuple(inspect.signature(serve).parameters) == ("graphs", "home", "deployment_version", "accepts")
+    assert tuple(inspect.signature(serve).parameters) == ("graphs", "home", "deployment_version", "accepts", "event_processors")
     from hypergraph.host import Host
 
-    assert tuple(inspect.signature(HostRuntime).parameters) == ("path", "deployment_version")
+    assert tuple(inspect.signature(HostRuntime).parameters) == ("path", "deployment_version", "event_processors")
+    # The seam an embedding application observes durable execution through: the
+    # runners that execute durable Runs are built by the library, so the Host
+    # takes the processors rather than one runner carrying them.
+    assert "event_processors" in host_api
     assert tuple(inspect.signature(HostRuntime.serving).parameters) == ("self", "graph")
     assert tuple(inspect.signature(HostRuntime.close).parameters) == ("self",)
     assert isinstance(HostRuntime.client, property)

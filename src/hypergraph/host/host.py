@@ -38,6 +38,7 @@ from hypergraph.host.views import SUBMISSION_STATE_FINISHED, SUBMISSION_STATE_PA
 from hypergraph.host.worker import _drain, _WorkerLock
 
 if TYPE_CHECKING:
+    from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
     from hypergraph.runners.base import BaseRunner
 
@@ -89,11 +90,16 @@ class Host:
         deployment_version: str,
         bus: _PreviewBus,
         accepts: tuple[DefinitionId, ...] = (),
+        event_processors: Sequence[EventProcessor] = (),
     ) -> None:
         self._home = home
         self._definitions = definitions
         self._deployment_version = deployment_version
         self._accepts = accepts
+        # Deployment-wide processors: every durable Run this worker executes
+        # gets them, whichever Definition it belongs to and whichever runner
+        # that Definition carries.
+        self._event_processors: tuple[EventProcessor, ...] = tuple(event_processors)
         # Served identities: each Definition's exact pinned identity plus any
         # explicitly accepted prior identities (ADR 0007).
         self._served_identities: frozenset[DefinitionId] = frozenset(definition.definition_id for definition in definitions.values()) | frozenset(
@@ -758,7 +764,11 @@ class Host:
             # and the submission finished without inventing a runs row.
             return
         inputs: dict[str, Any] | None = json.loads(row["inputs_json"])
-        processors = [_BusEventProcessor(self._bus, workflow_id)]
+        # Deployment processors first, per the library's carried-before-call-site
+        # order: they were declared once for the whole host, the bus processor is
+        # made per Run. Dispatch is best-effort, so an app processor that raises
+        # cannot break the preview bus or the run.
+        processors = [*self._event_processors, _BusEventProcessor(self._bus, workflow_id)]
         run_fn = definition.runner.run
         run_kwargs: dict[str, Any] = {
             "workflow_id": workflow_id,
@@ -881,7 +891,27 @@ def _validate_accepts(accepts: tuple[DefinitionId, ...], definitions: dict[str, 
             )
 
 
-def serve(*graphs: Graph, home: RunHome, deployment_version: str = "", accepts: tuple[DefinitionId, ...] = ()) -> Host:
+def _normalize_event_processors(event_processors: Sequence[EventProcessor] | None, *, caller: str) -> tuple[EventProcessor, ...]:
+    """Accept a sequence of processors; refuse a bare one loudly.
+
+    A single processor is iterable-looking to nobody, so passing one where a
+    sequence is expected would otherwise raise deep inside ``tuple()`` or,
+    worse, silently succeed for a str-like object.
+    """
+    if event_processors is None:
+        return ()
+    if isinstance(event_processors, (str, bytes)) or not isinstance(event_processors, Sequence):
+        raise TypeError(f"{caller} event_processors must be a sequence of EventProcessor, got {type(event_processors).__name__}. Wrap it in a list.")
+    return tuple(event_processors)
+
+
+def serve(
+    *graphs: Graph,
+    home: RunHome,
+    deployment_version: str = "",
+    accepts: tuple[DefinitionId, ...] = (),
+    event_processors: Sequence[EventProcessor] | None = None,
+) -> Host:
     """Bind Definitions to a Run Home and return the Host.
 
     Each graph must have a name and a runner bound via
@@ -903,6 +933,16 @@ def serve(*graphs: Graph, home: RunHome, deployment_version: str = "", accepts: 
             this host serves and its ``structural_hash`` must equal the
             served Definition's hash — anything else is a ``ValueError``
             (an undrainable declaration would park submissions forever).
+        event_processors: Processors this deployment adds to **every**
+            durable Run the worker executes, whichever Definition it belongs
+            to and whichever runner that Definition carries. The seam an
+            embedding application uses for process-wide observability — an
+            ``OpenTelemetryProcessor``, a metrics sink — without having to
+            reach a runner it did not construct. Instances are shared across
+            concurrent Runs, so a processor must be safe to use that way;
+            dispatch is best-effort, so one that raises is logged and cannot
+            break the Run. Omitted (the default) is byte-identical to before:
+            the worker passes only its own per-Run preview processor.
     """
     if not isinstance(home, RunHome):
         raise TypeError(f"serve() requires home=RunHome.open(...), got {type(home).__name__}.")
@@ -911,6 +951,7 @@ def serve(*graphs: Graph, home: RunHome, deployment_version: str = "", accepts: 
     for entry in accepts:
         if not isinstance(entry, DefinitionId):
             raise TypeError(f"serve() accepts= entries must be DefinitionId instances, got {type(entry).__name__}.")
+    processors = _normalize_event_processors(event_processors, caller="serve()")
 
     definitions: dict[str, _Definition] = {}
     for graph in graphs:
@@ -920,4 +961,11 @@ def serve(*graphs: Graph, home: RunHome, deployment_version: str = "", accepts: 
 
     bus = _PreviewBus()
     _register_bus(home.uri, bus)
-    return Host(home=home, definitions=definitions, deployment_version=deployment_version, bus=bus, accepts=tuple(accepts))
+    return Host(
+        home=home,
+        definitions=definitions,
+        deployment_version=deployment_version,
+        bus=bus,
+        accepts=tuple(accepts),
+        event_processors=processors,
+    )

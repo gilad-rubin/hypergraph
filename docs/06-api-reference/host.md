@@ -53,6 +53,34 @@ than silently starting a replacement. A later call may start the worker again.
 and closes the Home; queued submissions remain persisted for the next process.
 The same runtime may be used again after closing, which lazily reopens it.
 
+## Observing Durable Execution
+
+A durable Run is executed by a runner the library built, so an application
+cannot pass `event_processors=` to the `run()` call the way it does in
+process. `event_processors=` on `HostRuntime` (and on `serve()`) is that seam:
+
+```python
+from hypergraph.events.otel import OpenTelemetryProcessor
+
+runtime = HostRuntime(
+    "./data/runs.db",
+    deployment_version="2026.07.3",
+    event_processors=[OpenTelemetryProcessor(enrich_openinference=True)],
+)
+```
+
+Every durable Run this worker executes gets these processors — whichever
+Definition it belongs to, and whichever runner that Definition carries, since
+they are added at execution rather than baked into one runner. They arrive
+ahead of the worker's own per-Run preview processor, matching the
+carried-before-call-site order used everywhere else.
+
+One instance is shared across concurrent Runs, so a processor must be safe to
+use that way. Dispatch is best-effort: a processor that raises is logged and
+cannot break the Run, the preview bus, or `watch()`. Passing nothing is the
+default and changes nothing. A bare processor where a sequence is expected
+raises `TypeError` at construction.
+
 ## Serving Definitions
 
 Bind each root graph to its runner, then `serve()` the Definitions against

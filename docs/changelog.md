@@ -96,6 +96,26 @@
 
 ### Added
 
+- **A deployment can observe durable execution: `event_processors=` on
+  `HostRuntime` and `serve()`.** In process an application passes
+  `event_processors=` to `runner.run()`; a durable Run had no equivalent,
+  because the runner that executes it is built by the library — `HostRuntime`
+  constructs an `AsyncRunner` for an unbound graph — so the application could
+  reach no runner at all. Its nodes therefore produced no events, and an
+  OTel-instrumented client call inside a durable Run exported a **parentless**
+  span while the same graph run in process nested under its node. Processors
+  are added by the Host at execution rather than baked into one runner, so
+  they cover every served Definition **and** a graph that carries its own
+  runner (binding a runner to set `max_concurrency` no longer silently turns
+  observability off). They arrive ahead of the worker's per-Run preview
+  processor, matching the carried-before-call-site order used everywhere else.
+  One instance is shared across concurrent Runs, so a processor must be safe
+  to use that way; dispatch stays best-effort, so one that raises is logged
+  and cannot break the Run, the preview bus, or `watch()`. Passing nothing is
+  the default and is byte-identical to before; a bare processor where a
+  sequence is expected raises `TypeError` at construction rather than deep
+  inside the worker.
+
 - **Visualizations hide edges a longer path already implies (`simplify`,
   default on).** Given `A → B → C`, a direct `A → C` data edge is a shortcut
   past a route the diagram already draws, so it is dropped: the same
