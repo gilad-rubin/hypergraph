@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from hypergraph.host._bus import _PreviewBus, _register_bus
 from hypergraph.host.client import RunHomeClient
 from hypergraph.host.home import RunHome
-from hypergraph.host.host import Host, _normalize_event_processors
+from hypergraph.host.host import GraphBuilder, Host, _normalize_event_processors
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -91,6 +91,29 @@ class HostRuntime:
             served_graph = graph if graph.bound_runner is not None else graph.with_runner(AsyncRunner())
             host = self._ensure_host()
             host.add_definition(served_graph)
+            self._ensure_worker(host)
+            return host
+
+    async def serving_builder(self, key: str, builder: GraphBuilder) -> Host:
+        """Register a CONSTRUCTOR and ensure the worker is running.
+
+        The builder mirror of :meth:`serving`: it registers the code by
+        address rather than by instance, so this process can drain work
+        another one configured. Nothing is built here — a builder is called
+        when a submission that names it is claimed.
+
+        Repeated calls for the same key replace the registration, which is
+        safe because the built Definition is always verified against the
+        submission's pinned identity before it executes.
+
+        Returns:
+            The runtime's stable Host, for ``submit`` and ``submit_batch``.
+        """
+        async with self._lock:
+            self._require_not_closing()
+            self._raise_worker_failure()
+            host = self._ensure_host()
+            host.serve_builder(key, builder)
             self._ensure_worker(host)
             return host
 

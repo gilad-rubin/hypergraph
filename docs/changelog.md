@@ -96,6 +96,58 @@
 
 ### Added
 
+- **Durable Host: work can travel as data, and work nobody can do is refused
+  or dead-lettered.** Two failures motivated this, both of them "accepted work
+  nobody alive can do". A process configured a graph, submitted a 424-item
+  batch, and exited; the only process allowed to execute could not *build* that
+  Definition — a submission pins its identity, never a way to reconstruct it —
+  so every row was marked version-incompatible and sat queued forever with no
+  executor and no error. And nothing said so: the park was silent, terminal in
+  practice, and invisible to every read model.
+
+  The answer is the pattern Celery and Temporal have shipped for years — a
+  submission is data, and each worker holds a registry resolving a name to a
+  constructor.
+
+  - **`serve_builder(key, builder)`** registers a CONSTRUCTOR beside the
+    instances `serve()` registers; `serve(..., builders={...})` and
+    `HostRuntime.serving_builder(...)` are the same registration in bulk and on
+    a runtime. `serve()` now accepts a builder-only deployment (no graphs).
+  - **`submit(..., builder=(key, args))`** and `submit_batch(..., builder=…)`
+    record that address on every row, so any process registering the key can
+    rebuild the Definition and execute it. Construction is memoized per
+    `(key, arguments)`, so a 500-item Batch builds once.
+  - **The pinned identity still decides what runs.** A built Definition is
+    verified against it — `BuilderIdentityError` at submit, a
+    `builder_identity_mismatch` dead letter at claim. A builder never
+    substitutes code for a submission that pinned something else.
+  - **`NoServingWorkerError`** refuses a `builder=` address neither this
+    process nor any live worker registers — at the call site, before the rows
+    exist. Liveness comes from the new `host_workers` registry, which each
+    `work_forever()` writes at startup, pulses while it runs, and withdraws on
+    a clean exit.
+  - **`state='dead_letter'`** replaces the silent park for work nothing alive
+    can execute. It is settled (so `watch()` ends and a Batch reaches
+    `settled`), reports `WaitingCondition.DEAD_LETTER`, carries a durable
+    `dead_lettered` update and a `RunReadModel.dead_letter_reason`
+    (`unserved_identity`, `builder_missing`, `builder_identity_mismatch`,
+    `builder_failed`), settles its Batch item into a new `dead_letter` count
+    bucket, and is revived by `client.rerun()`.
+
+  A rolling deployment still PARKS: when anything alive serves the pinned
+  Definition *name*, the row stays `compat_state='incompatible'` and drains
+  through `accepts=` exactly as before. Only an address nothing answers to
+  dies. Two closed vocabularies each grew by one member — `WaitingCondition`
+  and `BATCH_COUNT_KEYS` — and `RunReadModel` gained one optional field.
+
+  Schema **v6 → v7**, additive and inert on open: `host_submissions` gains
+  nullable `builder_key`, `builder_args_json`, `claimed_by`, and `lease_until`
+  (the last two are written by nothing in this release; they exist now so the
+  multi-worker lease lands as behavior rather than as a second migration over
+  Run Homes carrying live claims), and the new `host_workers` table records
+  each worker's served identities, builder keys, and pulse. A v6 database with
+  in-flight claimed and parked rows migrates in place with every row untouched.
+
 - **A deployment can observe durable execution: `event_processors=` on
   `HostRuntime` and `serve()`.** In process an application passes
   `event_processors=` to `runner.run()`; a durable Run had no equivalent,
@@ -249,6 +301,12 @@
 - **Reserved column name validation** — identity and source columns named `_status`, `_error`, `_row_fingerprint`, `_write_gen`, `_parent_id`, or `_provenance_*` are rejected at graph analysis time with a clear error message.
 
 ### Fixed
+
+- **`watch(run_ref)` could never end for a Run that settled without ever
+  executing.** The stream's end condition asked only whether the submission was
+  `finished`, so a run parked by the recovery brake — or now dead-lettered —
+  with no runs row left the caller waiting forever on work that could not move
+  again. It now uses the same `is_child_settled` rule `BatchView` uses.
 
 - **Unchanged-parent `sync()` heals physically missing child rows** — before,
   the unchanged-parent fast path never inspected child tables, so a deleted

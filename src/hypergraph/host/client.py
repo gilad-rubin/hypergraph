@@ -11,7 +11,7 @@ import asyncio
 import builtins
 import json
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -29,7 +29,9 @@ from hypergraph.host.refs import BatchCommandReceipt, BatchRef, BatchSubmitRecei
 from hypergraph.host.views import (
     BATCH_COUNT_KEYS,
     BATCH_OUTCOME_ABANDONED,
+    BATCH_OUTCOME_DEAD_LETTER,
     BATCH_OUTCOME_RECOVERY_EXHAUSTED,
+    SUBMISSION_STATE_DEAD_LETTER,
     SUBMISSION_STATE_EXHAUSTED,
     SUBMISSION_STATE_FINISHED,
     SUBMISSION_STATE_PAUSED,
@@ -133,6 +135,27 @@ def _parse_batch_cursor(after: str | int | None) -> int:
     raise ValueError(f"Invalid batch watch cursor {after!r}. Expected None, an int bseq, or a 'bseq:N' cursor string from a durable BatchUpdate.")
 
 
+#: Submission states a rerun may revive WITHOUT a terminal runs row. Both are
+#: parking decisions the Host made rather than outcomes a run reached — the
+#: recovery brake, and the dead letter — so such a run may never have executed
+#: at all, and rerun is the one verb that brings the work back.
+_REVIVABLE_SUBMISSION_STATES: frozenset[str] = frozenset({SUBMISSION_STATE_EXHAUSTED, SUBMISSION_STATE_DEAD_LETTER})
+
+
+def _retired_ids(views: Sequence[RunView], submissions: Mapping[str, dict[str, Any] | None]) -> list[str]:
+    """Which of these Runs were dead-lettered, so only they are looked up.
+
+    The reason lives in a durable run update, which is one more read. Naming
+    the ids first keeps that read proportional to the answer: a page where
+    nothing was retired — the ordinary case — issues no query at all.
+    """
+    return [
+        view.workflow_id
+        for view in views
+        if (submission := submissions.get(view.workflow_id)) is not None and submission["state"] == SUBMISSION_STATE_DEAD_LETTER
+    ]
+
+
 def _child_settled(submission: dict[str, Any], run: Run | None) -> bool:
     """Adapt one joined child row to the shared settled-child rule.
 
@@ -163,6 +186,11 @@ def _child_bucket(submission: dict[str, Any], run: Run | None) -> tuple[str, str
     state = submission["state"]
     if state == SUBMISSION_STATE_EXHAUSTED:
         return BATCH_OUTCOME_RECOVERY_EXHAUSTED, BATCH_OUTCOME_RECOVERY_EXHAUSTED
+    if state == SUBMISSION_STATE_DEAD_LETTER:
+        # Retired, not merely waiting: no live worker could execute it. It
+        # reads settled everywhere so a watch() can end, and carries an
+        # outcome so nobody mistakes it for work still to come.
+        return BATCH_OUTCOME_DEAD_LETTER, BATCH_OUTCOME_DEAD_LETTER
     if state == SUBMISSION_STATE_PAUSED:
         return "paused", None
     if run is not None and state == "claimed":
@@ -365,6 +393,8 @@ def _waiting_condition(submission: dict[str, Any] | None, run: Run | None, admis
         return None
     if submission["state"] == SUBMISSION_STATE_EXHAUSTED:
         return WaitingCondition.RECOVERY_EXHAUSTED
+    if submission["state"] == SUBMISSION_STATE_DEAD_LETTER:
+        return WaitingCondition.DEAD_LETTER
     if run is not None and not answered_but_unresumed:
         return None  # executing
     # No runs row yet, or an answered pause back in claim order: both are
@@ -477,6 +507,7 @@ class _RunReadSnapshot:
     settled_at: datetime | None
     updated_at: datetime
     pause_slot: PauseSlot | None
+    dead_letter_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -796,6 +827,7 @@ def _make_read_snapshot(
     inputs: dict[str, Any],
     latest_update: str | None,
     pause_slot: PauseSlot | None,
+    dead_letter_reason: str | None = None,
 ) -> _RunReadSnapshot:
     """Shape joined storage facts without deriving a UI status word."""
     accepted_at = _parse_iso(submission["created_at"]) if submission is not None else None
@@ -823,6 +855,7 @@ def _make_read_snapshot(
         settled_at=settled_at,
         updated_at=max(timestamps),
         pause_slot=pause_slot,
+        dead_letter_reason=dead_letter_reason,
     )
 
 
@@ -864,7 +897,8 @@ class RunHomeClient:
 
         client = RunHomeClient(RunHome.open("file:./runs.db"))
 
-    ``rerun`` repeats a settled (or recovery-exhausted) run under a new
+    ``rerun`` repeats a settled run — or one the Host parked, whether by
+    the recovery brake or as a dead letter — under a new
     workflow id with retry lineage, or mints a new immutable Batch from
     named source item keys; ``stop`` records a durable stop command;
     ``list`` filters joined run views through a typed ``RunQuery``;
@@ -1372,7 +1406,8 @@ class RunHomeClient:
         if view is None:
             return None
         latest = await self._home._latest_run_update_times([view.workflow_id])
-        return await self._snapshot(view, submission, run, latest.get(view.workflow_id))
+        reasons = await self._home._dead_letter_reasons(_retired_ids([view], {view.workflow_id: submission}))
+        return await self._snapshot(view, submission, run, latest.get(view.workflow_id), reasons.get(view.workflow_id))
 
     def _read_model_snapshot_sync(self, ref: RunRef) -> _RunReadSnapshot | None:
         """Sync mirror of ``_read_model_snapshot``."""
@@ -1390,7 +1425,8 @@ class RunHomeClient:
         if view is None:
             return None
         latest = self._home._latest_run_update_times_sync([view.workflow_id])
-        return self._snapshot_sync(view, submission, run, latest.get(view.workflow_id))
+        reasons = self._home._dead_letter_reasons_sync(_retired_ids([view], {view.workflow_id: submission}))
+        return self._snapshot_sync(view, submission, run, latest.get(view.workflow_id), reasons.get(view.workflow_id))
 
     async def _list_read_model_snapshots(self, query: RunQuery) -> builtins.list[_RunReadSnapshot]:
         """Joined facts used by ``RunHomeReadModel`` for a filtered Run list."""
@@ -1404,7 +1440,8 @@ class RunHomeClient:
             elif run is not None:
                 by_id[run.id] = (None, run)
         latest = await self._home._latest_run_update_times([view.workflow_id for view in views])
-        return [await self._snapshot(view, *by_id[view.workflow_id], latest.get(view.workflow_id)) for view in views]
+        reasons = await self._home._dead_letter_reasons(_retired_ids(views, {key: pair[0] for key, pair in by_id.items()}))
+        return [await self._snapshot(view, *by_id[view.workflow_id], latest.get(view.workflow_id), reasons.get(view.workflow_id)) for view in views]
 
     def _list_read_model_snapshots_sync(self, query: RunQuery) -> builtins.list[_RunReadSnapshot]:
         """Sync mirror of ``_list_read_model_snapshots``."""
@@ -1418,7 +1455,8 @@ class RunHomeClient:
             elif run is not None:
                 by_id[run.id] = (None, run)
         latest = self._home._latest_run_update_times_sync([view.workflow_id for view in views])
-        return [self._snapshot_sync(view, *by_id[view.workflow_id], latest.get(view.workflow_id)) for view in views]
+        reasons = self._home._dead_letter_reasons_sync(_retired_ids(views, {key: pair[0] for key, pair in by_id.items()}))
+        return [self._snapshot_sync(view, *by_id[view.workflow_id], latest.get(view.workflow_id), reasons.get(view.workflow_id)) for view in views]
 
     async def _snapshot(
         self,
@@ -1426,13 +1464,14 @@ class RunHomeClient:
         submission: dict[str, Any] | None,
         run: Run | None,
         latest_update: str | None,
+        dead_letter_reason: str | None = None,
     ) -> _RunReadSnapshot:
         inputs = json.loads(submission["inputs_json"]) if submission is not None else await self._home.get_run_inputs(view.workflow_id)
         pause_slot = run.pause_slot if run is not None else None
         if pause_slot is None and view.waiting is WaitingCondition.PAUSED:
             pause_slot = await self._home.get_pause_slot(view.workflow_id)
         view = _reconcile_pause_view(view, pause_slot)
-        return _make_read_snapshot(view, submission, run, inputs, latest_update, pause_slot)
+        return _make_read_snapshot(view, submission, run, inputs, latest_update, pause_slot, dead_letter_reason)
 
     def _snapshot_sync(
         self,
@@ -1440,13 +1479,14 @@ class RunHomeClient:
         submission: dict[str, Any] | None,
         run: Run | None,
         latest_update: str | None,
+        dead_letter_reason: str | None = None,
     ) -> _RunReadSnapshot:
         inputs = json.loads(submission["inputs_json"]) if submission is not None else self._home.get_run_inputs_sync(view.workflow_id)
         pause_slot = run.pause_slot if run is not None else None
         if pause_slot is None and view.waiting is WaitingCondition.PAUSED:
             pause_slot = self._home.get_pause_slot_sync(view.workflow_id)
         view = _reconcile_pause_view(view, pause_slot)
-        return _make_read_snapshot(view, submission, run, inputs, latest_update, pause_slot)
+        return _make_read_snapshot(view, submission, run, inputs, latest_update, pause_slot, dead_letter_reason)
 
     async def rerun(
         self, ref: RunRef | BatchRef, *, item_keys: Sequence[str] | None = None, source_ref: str | None = None
@@ -1589,7 +1629,7 @@ class RunHomeClient:
         if submission is None:
             raise RerunError(ref.run_id, f"Cannot rerun {ref.run_id!r}: no such run in this Run Home.")
         run = self._home.get_run(ref.run_id)
-        if submission["state"] != "exhausted" and (run is None or run.status not in TERMINAL_WORKFLOW_STATUSES):
+        if submission["state"] not in _REVIVABLE_SUBMISSION_STATES and (run is None or run.status not in TERMINAL_WORKFLOW_STATUSES):
             raise RerunError(
                 ref.run_id,
                 f"Cannot rerun {ref.run_id!r}: the source run is not terminal. Rerun repeats settled work; wait for it to settle or fork/migrate instead.",
@@ -1623,15 +1663,17 @@ class RunHomeClient:
     async def _require_terminal_source(self, ref: RunRef) -> tuple[dict[str, Any], Run | None]:
         """Return the source submission + runs row, or raise RerunError.
 
-        A recovery-exhausted submission is a rerun source even without a
-        terminal runs row: rerun is how braked work is revived under a
-        fresh workflow id (the runs row may be None or nonterminal).
+        A recovery-exhausted or dead-lettered submission is a rerun source
+        even without a terminal runs row: rerun is how parked work is
+        revived under a fresh workflow id (the runs row may be None or
+        nonterminal). The dead letter's case is the plainer one — deploy
+        something that can run it, then rerun.
         """
         submission = await self._home._get_submission(ref.run_id)
         if submission is None:
             raise RerunError(ref.run_id, f"Cannot rerun {ref.run_id!r}: no such run in this Run Home.")
         run = await self._home.get_run_async(ref.run_id)
-        if submission["state"] == "exhausted":
+        if submission["state"] in _REVIVABLE_SUBMISSION_STATES:
             return submission, run
         if run is None or run.status not in TERMINAL_WORKFLOW_STATUSES:
             raise RerunError(
@@ -1738,9 +1780,13 @@ class RunHomeClient:
         if submission is None:
             # Unknown ref: nothing to replay, nothing to tail.
             return None
-        # Stop-before-start (or never-admitted) work is settled once its
-        # submission is finished, with no runs row.
-        return submission["state"] == SUBMISSION_STATE_FINISHED
+        # No runs row, so the SUBMISSION is the only thing that can say the
+        # work is over — stop-before-start, never-admitted, braked by the
+        # recovery cap, or dead-lettered. THE settled rule decides, the same
+        # one BatchView uses, because a watch that cannot end is the silent
+        # park wearing a different hat: the caller waits forever on work that
+        # will never move again.
+        return is_child_settled(submission["state"], None)
 
     async def _watch_run(self, ref: RunRef, *, after: str | int | None, poll_interval: float, until: str) -> AsyncGenerator[RunUpdate, None]:
         """Replay one run's durable sequence, then tail its previews."""
@@ -1809,7 +1855,8 @@ class RunHomeClient:
         are fanned in from every child run's preview queue (same process
         only) and carry the child's ``run_id``/``item_key``; they never
         advance the cursor. The generator ends once every manifest child is
-        accounted — settled, unstarted, or recovery-exhausted — and every
+        accounted — settled, unstarted, recovery-exhausted, or
+        dead-lettered — and every
         committed fact has been delivered, or, under ``until="resting"``,
         once the only unaccounted children are parked on a person. A durable
         ``stopped`` fact is a control fact, never end-of-stream: the

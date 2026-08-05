@@ -1258,7 +1258,7 @@ class TestExcludedOverflowStrategiesAreAbsent:
         names = " ".join(RunQuery.__dataclass_fields__).lower()
         assert not [word for word in self.FORBIDDEN if word in names]
 
-    def test_waiting_vocabulary_is_exactly_the_six_typed_conditions(self):
+    def test_waiting_vocabulary_is_exactly_the_seven_typed_conditions(self):
         assert [condition.value for condition in WaitingCondition] == [
             "queued",
             "scheduled",
@@ -1266,6 +1266,11 @@ class TestExcludedOverflowStrategiesAreAbsent:
             "version_incompatible",
             "admission_limited",
             "recovery_exhausted",
+            # Nothing alive can execute the work. Named, and deliberately
+            # not an admission word: a dead letter is never work the Home
+            # chose to defer, drop, or prioritize away — it is work whose
+            # executor does not exist.
+            "dead_letter",
         ]
         assert WaitingCondition is _WaitingCondition
 

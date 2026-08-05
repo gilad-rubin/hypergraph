@@ -11,16 +11,20 @@ from typing import TYPE_CHECKING
 from hypergraph.exceptions import HostError
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from hypergraph.host.definition import DefinitionId
 
 __all__ = [
     "AlreadyTerminalError",
+    "BuilderIdentityError",
     "ForkCompatibilityError",
     # Defined in ``hypergraph.exceptions`` so layers below the host (the
     # checkpointers' pause-settlement refusals) can subclass it without an
     # import cycle; this module stays its canonical import site.
     "HostError",
     "ItemKeyError",
+    "NoServingWorkerError",
     "RerunError",
     "UnservedGraphError",
     "WorkerLockError",
@@ -133,6 +137,66 @@ class UnservedGraphError(HostError):
                 "Definition: re-serve it, and migrate parked work with host.fork(ref, into=new_graph, reason=...)."
             )
         self.message = message or f"Graph {graph_name!r} is not served by this host.\n\n{detail}"
+        super().__init__(self.message)
+
+
+class NoServingWorkerError(HostError):
+    """A submission named work nothing alive could execute.
+
+    ``UnservedGraphError`` asks the SUBMITTING process's registry; this asks
+    the durable one. A submission carrying a ``builder`` address records a
+    constructor a worker is expected to call, so the address has to resolve
+    somewhere: in this Host's builder registry, or in a live worker's
+    ``host_workers`` row. Naming one nothing registered is how a batch gets
+    accepted, parked as version-incompatible, and sits queued forever with no
+    executor and no error — so it is refused here, before the rows exist.
+    """
+
+    def __init__(
+        self,
+        builder_key: str,
+        *,
+        registered: Collection[str] = (),
+        workers: Collection[str] = (),
+        message: str | None = None,
+    ) -> None:
+        self.builder_key = builder_key
+        self.registered = sorted(registered)
+        self.workers = sorted(workers)
+        known = f"This process registers: {self.registered}." if self.registered else "This process registers no builders."
+        alive = f" Live workers on this Run Home: {self.workers}." if self.workers else " No worker has a fresh pulse on this Run Home."
+        self.message = message or (
+            f"No worker can rebuild this submission: nothing registers the builder {builder_key!r}.\n\n"
+            f"{known}{alive}\n\n"
+            f"How to fix: register it where the work will run — host.serve_builder({builder_key!r}, build_fn) — "
+            "and start that worker before submitting, or submit without builder= so the pinned "
+            "Definition identity alone selects the executor."
+        )
+        super().__init__(self.message)
+
+
+class BuilderIdentityError(HostError):
+    """A registered builder produced a Definition other than the pinned one.
+
+    A submission pins the complete ``DefinitionId`` at accept time, and
+    strict checkpoint resume depends on that pin (ADR 0007). A builder whose
+    output drifted would resume a half-finished run against different
+    topology, so the built Definition is verified against the pin and refused
+    on mismatch — at submit time as this error, and at claim time as a
+    ``builder_identity_mismatch`` dead letter. Changed topology is a fork,
+    not a silent substitution.
+    """
+
+    def __init__(self, builder_key: str, pinned: DefinitionId, built: DefinitionId, message: str | None = None) -> None:
+        self.builder_key = builder_key
+        self.pinned = pinned
+        self.built = built
+        self.message = message or (
+            f"Builder {builder_key!r} built {built.to_dict()!r}, but the submission pins {pinned.to_dict()!r}.\n\n"
+            "How to fix: pass the builder arguments the submission was accepted with, or migrate the "
+            "run explicitly — host.fork(ref, into=new_graph, reason=...). A pinned identity is never "
+            "reinterpreted."
+        )
         super().__init__(self.message)
 
 

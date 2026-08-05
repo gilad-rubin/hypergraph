@@ -134,6 +134,98 @@ Definition this host serves and its structural hash must equal the served
 Definition's hash — anything else is a `ValueError`, because an
 undrainable declaration would park submissions forever (ADR 0007).
 
+## Serving Builders: work that travels as data
+
+`serve()` registers Definition **instances** — graph objects this process
+holds in memory. That is enough when the process that configures the work is
+also the one that runs it. It is not enough when they differ: a submission
+pins its `DefinitionId` and its inputs, never a way to *rebuild* the graph,
+so a worker that never saw the configuration cannot construct it.
+
+`serve_builder()` registers **constructors** beside those instances:
+
+```python
+def review_graph(args):                       # args arrive as JSON on the row
+    return build_review(kind=args["kind"], corpus=args["corpus"]).with_runner(AsyncRunner())
+
+host = serve(home=RunHome.open("file:./runs.db"),           # no graphs required
+             builders={"review.retrieval": review_graph})
+host.serve_builder("review.generation", generation_graph)   # or one at a time
+```
+
+A submission then carries that address alongside its pinned identity:
+
+```python
+receipt = await host.submit(
+    graph, {"case_id": "c-42"},
+    builder=("review.retrieval", {"kind": "retrieval", "corpus": "protocols"}),
+)
+```
+
+Any process that registered `"review.retrieval"` can claim that row, call the
+builder with the recorded arguments, and execute it. This is Celery's task
+registry and Temporal's workflow types, in the Run Home: the wire carries a
+name plus arguments, and each worker resolves the name locally.
+
+Three properties are worth stating plainly:
+
+- **The pinned identity still decides what runs.** The built Definition is
+  compared to the identity the submission pinned. A mismatch raises
+  `BuilderIdentityError` at submit and dead-letters at claim
+  (`builder_identity_mismatch`); it never executes. Registering a builder
+  grants no authority to change what a submission means — changed topology is
+  a `fork`, not a substitution.
+- **A builder is called once per address.** Construction is memoized on
+  `(key, arguments)`, so a 500-item Batch builds its Definition once.
+- **`builder=` is not part of the dedup fingerprint.** A duplicate
+  resubmission returns the stored receipt and never rewrites the address the
+  row was accepted with.
+
+Submitting a builder address nothing can resolve raises
+`NoServingWorkerError` at the call site. "Nothing" means neither this
+process's registry nor any worker with a fresh pulse in `host_workers` — the
+durable registry each `work_forever()` writes at startup, refreshes while it
+runs, and withdraws on a clean exit. Recording a builder address means *some
+process will rebuild this*, so an address nobody answers to is caught before
+400 rows exist rather than found hours later as a queue with no executor.
+
+## Dead Letters: work nothing alive can execute
+
+An unclaimable submission has two very different futures, and the Run Home
+distinguishes them instead of parking both in silence.
+
+If something alive serves the pinned Definition **name** — this worker at a
+different version, or another worker outright — the submission parks as
+before: `compat_state='incompatible'`,
+`WaitingCondition.VERSION_INCOMPATIBLE`, drainable by an `accepts=`
+declaration. That is a rolling deployment, and the work is waiting.
+
+If *nothing* alive answers to that name, and no live builder registers its
+key, the submission is retired as a **dead letter**:
+
+- `state='dead_letter'`, which is settled — so `watch()` ends, and a Batch
+  containing it reaches `settled` instead of hanging on it forever;
+- a durable `dead_lettered` run update carrying the reason, so a detached
+  reader learns it from the stream alone;
+- `child_settled` on its Batch with outcome `dead_letter`, counted in its own
+  `BatchView.counts` bucket;
+- `WaitingCondition.DEAD_LETTER` on the view, and on `RunReadModel` a
+  `failed` badge with `condition="dead_letter"` plus the exact
+  `dead_letter_reason`;
+- revivable with `client.rerun()`, exactly like recovery-exhausted work —
+  deploy something that can run it, then rerun.
+
+| `dead_letter_reason` | What to do about it |
+|---|---|
+| `unserved_identity` | Nothing serves that Definition name. Serve it where the work should run. |
+| `builder_missing` | The row names a builder key nothing registered. Register it on the worker. |
+| `builder_identity_mismatch` | A registered builder produced a different Definition than the pinned one. Reconcile the builder, or `fork` deliberately. |
+| `builder_failed` | The builder raised. Fix the constructor; the exception type is on the durable fact. |
+
+A tolerance trip deliberately does **not** count dead letters as failures: a
+missing deployment is not the Batch's work failing, and tripping would
+relabel the remaining items "unstarted" and bury the reason they really have.
+
 ## Submitting a Run
 
 ```python
@@ -565,8 +657,9 @@ resting stream stopped. `BatchView.resting` is the same predicate for a
 caller that polls instead of watching.
 
 `WaitingCondition` is a closed enum — `QUEUED`, `SCHEDULED`, `PAUSED`,
-`VERSION_INCOMPATIBLE`, `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED` — so
-waiting work never looks alike and callers branch on typed values. `waiting`
+`VERSION_INCOMPATIBLE`, `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED`,
+`DEAD_LETTER` — so waiting work never looks alike and callers branch on
+typed values. `waiting`
 is `None` while a Run executes or is terminal — including while a running
 Run is queued behind a [provider permit](#provider-resource-admission),
 which is execution, not waiting.
@@ -1328,7 +1421,9 @@ brake counts **progressless re-adoptions**:
 | `AlreadyTerminalError` | a terminal `workflow_id` is reused for submit, submit_batch, or stop (including a fully settled Batch) |
 | `WorkflowIdConflictError` | a nonterminal `workflow_id` is reused with a different start fingerprint (Run or Batch), or a Batch id collides with existing work |
 | `ForkCompatibilityError` | `host.fork()` targets a structurally incompatible Definition |
-| `RerunError` | `client.rerun()` names a missing or nonterminal source (recovery-exhausted sources are allowed) |
+| `NoServingWorkerError` | `submit` or `submit_batch` names a `builder=` key neither this process nor any live worker registers |
+| `BuilderIdentityError` | a registered builder produced a Definition other than the identity the submission pins |
+| `RerunError` | `client.rerun()` names a missing or nonterminal source (recovery-exhausted and dead-lettered sources are allowed) |
 | `HostError` | base class for host-specific errors; also raised directly for an unknown stop target |
 | `AnswerRejectedError` | `client.answer()` named no/unknown occurrence, a run that is not paused, or a value failing `answer_schema` |
 | `PauseAlreadySettledError` | `client.answer()` re-answered a settled occurrence |

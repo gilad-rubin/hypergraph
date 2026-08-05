@@ -10,16 +10,18 @@ from hypergraph.host.client import RunHomeClient
 from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import (
     AlreadyTerminalError,
+    BuilderIdentityError,
     ForkCompatibilityError,
     HostError,
     ItemKeyError,
+    NoServingWorkerError,
     RerunError,
     UnservedGraphError,
     WorkerLockError,
     WorkflowIdConflictError,
 )
 from hypergraph.host.home import RunHome
-from hypergraph.host.host import Host, SubmitReceipt, serve
+from hypergraph.host.host import GraphBuilder, Host, SubmitReceipt, serve
 from hypergraph.host.read_models import (
     RUN_READ_STATUS_VALUES,
     BatchItemReadModel,
@@ -49,14 +51,17 @@ __all__ = [
     "BatchTolerance",
     "BatchUpdate",
     "BatchView",
+    "BuilderIdentityError",
     "CommandReceipt",
     "DefinitionId",
     "ForkCompatibilityError",
+    "GraphBuilder",
     "Host",
     "HostError",
     "HostRuntime",
     "ItemKeyError",
     "NodeTimingReadModel",
+    "NoServingWorkerError",
     "NodeTimingsReadModel",
     "PauseReadModel",
     "RUN_READ_STATUS_VALUES",

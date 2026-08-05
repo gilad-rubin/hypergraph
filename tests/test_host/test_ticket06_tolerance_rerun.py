@@ -233,6 +233,7 @@ class TestScenarioFiveTable:
             "paused": 0,
             "queued": 0,
             "recovery_exhausted": 0,
+            "dead_letter": 0,
             "unstarted": 2,
             "abandoned": 0,
         }
@@ -542,6 +543,7 @@ class TestTripBehavior:
             "paused": 0,
             "queued": 0,
             "recovery_exhausted": 0,
+            "dead_letter": 0,
             "unstarted": 5,
             "abandoned": 0,
         }

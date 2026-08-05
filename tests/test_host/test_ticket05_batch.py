@@ -479,6 +479,7 @@ class TestKeyedOutcomes:
             "paused": 0,
             "queued": 0,
             "recovery_exhausted": 0,
+            "dead_letter": 0,
             "unstarted": 0,
             "abandoned": 0,
         }

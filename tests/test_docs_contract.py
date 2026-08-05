@@ -972,6 +972,7 @@ def test_durable_host_docs_pin_public_contract() -> None:
         CommandReceipt,
         DefinitionId,
         Graph,
+        Host,
         HostRuntime,
         PauseReadModel,
         RunHome,
@@ -1019,6 +1020,16 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert "recovery_cap" in host_api
     assert "RECOVERY_EXHAUSTED" in host_api
 
+    # Wave 1: work travels as data, and unexecutable work is named.
+    assert "serve_builder" in host_api
+    assert "builder=" in host_api
+    assert "NoServingWorkerError" in host_api
+    assert "BuilderIdentityError" in host_api
+    assert "dead_letter" in host_api
+    for reason in ("unserved_identity", "builder_missing", "builder_identity_mismatch", "builder_failed"):
+        assert reason in host_api, reason
+    assert tuple(inspect.signature(Host.serve_builder).parameters) == ("self", "key", "builder")
+
     # Issue 379: products consume one generic derive-on-read UI projection.
     assert "RunHomeReadModel" in host_api
     assert "PauseReadModel" in host_api
@@ -1039,6 +1050,7 @@ def test_durable_host_docs_pin_public_contract() -> None:
         "pause",
         "retry_of",
         "forked_from",
+        "dead_letter_reason",
     )
     assert tuple(PauseReadModel.__dataclass_fields__) == (
         "run_ref",
@@ -1114,7 +1126,15 @@ def test_durable_host_docs_pin_public_contract() -> None:
         "max_active_runs",
         "max_admission_units",
     )
-    assert tuple(inspect.signature(serve).parameters) == ("graphs", "home", "deployment_version", "accepts", "event_processors")
+    assert tuple(inspect.signature(serve).parameters) == (
+        "graphs",
+        "home",
+        "deployment_version",
+        "accepts",
+        "event_processors",
+        # The constructor registry: the door beside serve()'s instances.
+        "builders",
+    )
     from hypergraph.host import Host
 
     assert tuple(inspect.signature(HostRuntime).parameters) == ("path", "deployment_version", "event_processors")
@@ -1137,6 +1157,10 @@ def test_durable_host_docs_pin_public_contract() -> None:
         "start_at",
         "source_ref",
         "recovery_cap",
+        # The recorded constructor address, so a worker that never held this
+        # Definition can rebuild it. Never a second selector: the pinned
+        # identity still decides what executes.
+        "builder",
     )
     assert tuple(inspect.signature(Host.submit_sync).parameters) == tuple(inspect.signature(Host.submit).parameters)
     # Batch submission reuses runner map's expansion vocabulary and freezes
@@ -1156,6 +1180,7 @@ def test_durable_host_docs_pin_public_contract() -> None:
         "start_at",
         "source_ref",
         "recovery_cap",
+        "builder",
     )
     assert tuple(inspect.signature(Host.submit_batch_sync).parameters) == tuple(inspect.signature(Host.submit_batch).parameters)
     assert tuple(inspect.signature(Host.fork).parameters) == ("self", "ref", "into", "reason", "source_ref")
@@ -1228,6 +1253,7 @@ def test_durable_host_docs_pin_public_contract() -> None:
         "VERSION_INCOMPATIBLE",
         "ADMISSION_LIMITED",
         "RECOVERY_EXHAUSTED",
+        "DEAD_LETTER",
     }
     for verb in ("stop", "result", "status"):
         assert not hasattr(RunRef, verb), f"RunRef must stay inert; found {verb}"
