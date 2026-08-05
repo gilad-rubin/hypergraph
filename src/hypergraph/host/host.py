@@ -54,6 +54,7 @@ from hypergraph.host.home import (
     LEASE_TTL_SECONDS,
     WORKER_PULSE_TTL_SECONDS,
     RunHome,
+    WorkerCoverage,
     _normalize_utc_iso,
 )
 from hypergraph.host.refs import BatchRef, BatchSubmitReceipt, RunRef, SubmitReceipt
@@ -225,6 +226,27 @@ class Host:
     def builder_keys(self) -> frozenset[str]:
         """Constructor keys this host registered (see ``serve_builder``)."""
         return frozenset(self._builders)
+
+    async def live_coverage(self) -> WorkerCoverage:
+        """What every worker with a fresh pulse on this Home can execute.
+
+        A pure read of the ``host_workers`` registry — it grants nothing and
+        fences nothing, the claim CAS and ``claim_seq`` remain the only
+        authority. What it answers is "would this work run if I submitted it
+        and did nothing else?", which is the question a process has to settle
+        BEFORE deciding whether to become a worker itself.
+
+        ``submit`` already asks it on the caller's behalf and refuses an
+        address nobody answers to (``NoServingWorkerError``), so most callers
+        never need this. It is for the process that must arrange its own
+        execution FIRST — attaching an event processor to the runner that will
+        run the work, say, which is only worth doing where the work will run.
+        """
+        return await self._home._live_worker_coverage()
+
+    def live_coverage_sync(self) -> WorkerCoverage:
+        """Sync mirror of :meth:`live_coverage`."""
+        return self._home._live_worker_coverage_sync()
 
     def serve_builder(self, key: str, builder: GraphBuilder) -> None:
         """Register a CONSTRUCTOR under ``key``, beside the served instances.

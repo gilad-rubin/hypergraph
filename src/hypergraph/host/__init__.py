@@ -20,7 +20,7 @@ from hypergraph.host.errors import (
     WorkerLockError,
     WorkflowIdConflictError,
 )
-from hypergraph.host.home import RunHome
+from hypergraph.host.home import RunHome, WorkerCoverage
 from hypergraph.host.host import GraphBuilder, Host, SubmitReceipt, serve
 from hypergraph.host.read_models import (
     RUN_READ_STATUS_VALUES,
@@ -67,6 +67,7 @@ __all__ = [
     "RUN_READ_STATUS_VALUES",
     "RerunError",
     "RunHome",
+    "WorkerCoverage",
     "RunHomeClient",
     "RunHomeReadModel",
     "RunQuery",

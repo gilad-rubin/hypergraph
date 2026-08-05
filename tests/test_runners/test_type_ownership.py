@@ -104,6 +104,9 @@ ROOT_EXPORTS = (
     "Host",
     "HostRuntime",
     "RunHome",
+    # What the live worker registry answers: a process may ask who is alive
+    # and what they can execute before deciding to become a worker itself.
+    "WorkerCoverage",
     "RunHomeClient",
     "RunHomeReadModel",
     "RunRef",

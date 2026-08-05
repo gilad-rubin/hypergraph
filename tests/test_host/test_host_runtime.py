@@ -364,3 +364,40 @@ class TestStableWorkerId:
     async def test_a_non_string_worker_id_is_refused_by_name(self, tmp_path):
         with pytest.raises(TypeError, match="worker_id"):
             HostRuntime(tmp_path / "runs.db", worker_id=7)
+
+
+class TestLiveCoverage:
+    async def test_live_coverage_names_what_the_workers_alive_can_execute(self, tmp_path):
+        """The fact a process needs BEFORE deciding to become a worker itself.
+
+        `submit` asks it on the caller's behalf and refuses an unanswerable
+        address. A process arranging its own execution first — attaching an
+        event processor to the runner that will run the work — has to ask
+        before there is a submission to ask about.
+        """
+        path = tmp_path / "runs.db"
+        graph = _increment_graph("increment")
+
+        onlooker = HostRuntime(path, deployment_version="v1", worker_id="onlooker")
+        try:
+            host = await onlooker.registering(graph)
+            assert (await host.live_coverage()).builders == frozenset()
+
+            executor = HostRuntime(path, deployment_version="v1", worker_id="executor")
+            try:
+                await executor.serving_builder("x.increment", lambda args: _increment_graph("increment"))
+                for _ in range(200):
+                    coverage = await host.live_coverage()
+                    if "x.increment" in coverage.builders:
+                        break
+                    await asyncio.sleep(0.02)
+                assert coverage.builders == frozenset({"x.increment"})
+                assert coverage.worker_ids == frozenset({"executor"})
+            finally:
+                await executor.close()
+
+            # A clean exit withdraws its registration, so coverage is not a
+            # memory of who was once here.
+            assert (await host.live_coverage()).builders == frozenset()
+        finally:
+            await onlooker.close()
