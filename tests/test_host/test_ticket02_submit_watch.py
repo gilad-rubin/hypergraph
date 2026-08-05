@@ -2,8 +2,8 @@
 
 Covers: durable submission before execution, execution through the
 Definition's runner, detached (cross-process) get/watch, reconnectable
-durable cursors with non-advancing live previews, the exclusive worker
-lock with bounded drain, restart re-adoption, sync/async parity, and
+durable cursors with non-advancing live previews, several workers sharing
+one Home with bounded drain, restart re-adoption, sync/async parity, and
 serve() construction validation.
 """
 
@@ -29,7 +29,6 @@ from hypergraph import (
     RunRef,
     SyncRunner,
     WaitingCondition,
-    WorkerLockError,
     node,
     serve,
 )
@@ -461,54 +460,51 @@ async def _first_preview(updates):
     return previews or None
 
 
-# === 5. Exclusive worker lock ===
+# === 5. A second worker on one Home is legal ===
 
 
-class TestWorkerLock:
-    async def test_second_worker_fails_loudly_and_lock_releases(self, tmp_path, home):
+class TestASecondWorkerIsAdmitted:
+    """The rule that used to refuse this is gone, at both former doors.
+
+    ``work_forever`` took an OS lock on the database file, so a second
+    worker — even one naming the same file by a different URI spelling —
+    failed with ``WorkerLockError`` before it claimed anything. Both of
+    those refusals were tested here; both are now the behavior under test,
+    inverted. What keeps it safe is per-submission: the claim
+    compare-and-set, and the lease it stamps.
+    """
+
+    async def test_a_second_worker_starts_beside_the_first_and_both_drain(self, tmp_path, home):
         host1 = serve(_sync_graph("dbl"), home=home)
-        first = asyncio.create_task(host1.work_forever("w-1"))
-        await asyncio.sleep(0.15)  # first worker holds the lock
-
         detached = RunHome.open(_home_uri(tmp_path))
         try:
             host2 = serve(_sync_graph("dbl"), home=detached)
-            with pytest.raises(WorkerLockError):
-                await host2.work_forever("w-2")
-
-            host1.shutdown()
-            await asyncio.wait_for(first, timeout=20)
-
-            # After the first drains, the lock is released: a third worker succeeds.
-            async with _worker(host2, "w-3"):
-                await asyncio.sleep(0.1)
+            async with _worker(host1, "w-1"), _worker(host2, "w-2"):
+                receipts = [await host1.submit(_sync_graph("dbl"), {"x": n}, workflow_id=f"wf-pair-{n}") for n in range(6)]
+                for receipt in receipts:
+                    view = await _wait_for(lambda ref=receipt.run_ref: _terminal_view(host1.client, ref))
+                    assert view.status == WorkflowStatus.COMPLETED
+            assert not host1.worker_errors and not host2.worker_errors
         finally:
             await detached.close()
 
-    async def test_two_uri_spellings_of_one_database_share_one_lock(self, tmp_path, home):
-        """The lock identifies the FILE, not the string that named it.
+    async def test_two_uri_spellings_of_one_database_are_two_legal_workers(self, tmp_path, home):
+        """The spelling used to decide which lock file was taken.
 
-        SQLite accepts several spellings of one database. Keying the lock on
-        the raw URI gave ``file:.../runs.db`` and
-        ``file:.../runs.db?mode=rwc`` different lock files, so two exclusive
-        workers were admitted to the same database — the one thing the lock
-        exists to prevent.
+        SQLite accepts several spellings of one database, and keying the
+        lock on the raw URI once admitted two exclusive workers to the same
+        file — the one thing the lock existed to prevent. The Home no longer
+        cares: coordination is rows in the database both spellings open, so
+        the spelling cannot make two workers disagree about who holds what.
         """
-        from hypergraph.host.worker import _WorkerLock
-
         spelled_differently = RunHome.open(f"{_home_uri(tmp_path)}?mode=rwc")
         try:
-            assert _WorkerLock.for_home(home)._lock_path == _WorkerLock.for_home(spelled_differently)._lock_path
-
             host1 = serve(_sync_graph("dbl"), home=home)
-            first = asyncio.create_task(host1.work_forever("w-1"))
-            await asyncio.sleep(0.15)  # the first worker holds the lock
-            try:
-                with pytest.raises(WorkerLockError):
-                    await serve(_sync_graph("dbl"), home=spelled_differently).work_forever("w-2")
-            finally:
-                host1.shutdown()
-                await asyncio.wait_for(first, timeout=20)
+            host2 = serve(_sync_graph("dbl"), home=spelled_differently)
+            async with _worker(host1, "w-1"), _worker(host2, "w-2"):
+                receipt = await host1.submit(_sync_graph("dbl"), {"x": 3}, workflow_id="wf-spelling")
+                view = await _wait_for(lambda: _terminal_view(host1.client, receipt.run_ref))
+            assert view.status == WorkflowStatus.COMPLETED
         finally:
             await spelled_differently.close()
 

@@ -52,14 +52,27 @@ from typing import Any, Literal
 #: still executing the same run id — and there the park states the truth
 #: about the shared runs row anyway: that run really is paused on a question
 #: nobody has answered, and the answer transaction re-admits it as usual.
-PARK_SUBMISSION_SQL = "UPDATE host_submissions SET state = ?, claimed_at = NULL, finished_at = NULL WHERE workflow_id = ? AND state = 'claimed'"
+#:
+#: ``claimed_by``/``lease_until`` clear alongside ``claimed_at``, for the
+#: reason that column already does: the pair names who holds the claim RIGHT
+#: NOW, and a parked run is held by nobody. A lease left on a paused row
+#: would be a claim nobody is renewing, which is exactly what a reclaim scan
+#: reads as adoptable work.
+PARK_SUBMISSION_SQL = (
+    "UPDATE host_submissions SET state = ?, claimed_at = NULL, claimed_by = NULL, lease_until = NULL, finished_at = NULL "
+    "WHERE workflow_id = ? AND state = 'claimed'"
+)
 
 #: THE re-admit transition: paused -> pending, inside the answer transaction.
 #: Deliberately a plain flip back to ordinary queued work — an answered child
 #: is subject to the same Definition-compatibility, delayed-start,
-#: admission-cap, stop, recovery-brake, and worker-lock rules as everything
-#: else. Answering never jumps the queue.
-READMIT_ANSWERED_SQL = "UPDATE host_submissions SET state = 'pending', claimed_at = NULL, finished_at = NULL WHERE workflow_id = ? AND state = ?"
+#: admission-cap, stop, and recovery-brake rules as everything else.
+#: Answering never jumps the queue, and it never picks the worker: whichever
+#: worker claims it next takes the lease.
+READMIT_ANSWERED_SQL = (
+    "UPDATE host_submissions SET state = 'pending', claimed_at = NULL, claimed_by = NULL, lease_until = NULL, finished_at = NULL "
+    "WHERE workflow_id = ? AND state = ?"
+)
 
 #: THE release: settled work becoming finished, and nothing else. Every other
 #: outcome was already decided by the transaction that caused it.
@@ -69,8 +82,16 @@ READMIT_ANSWERED_SQL = "UPDATE host_submissions SET state = 'pending', claimed_a
 #: attempt parking and its release returning, an answer plus a re-claim can
 #: put the submission back in 'claimed' under a NEW attempt. Matching the
 #: name alone finished that live claim: the batch stream ended on an open
-#: question, the item was reported abandoned, and the restart scan (which
+#: question, the item was reported abandoned, and the reclaim scan (which
 #: re-adopts 'claimed' only) never picked it up again.
+#:
+#: This same CAS is the FENCE that makes leases safe. A lease expiring proves
+#: nothing about its holder — the presumed-dead worker may be partitioned,
+#: paused by the OS, or simply slow, and may wake up and finish. What it
+#: cannot do is commit: the adopting worker took a new ``claim_seq``, so the
+#: old claimant's release matches no row and its work is discarded. Oban's
+#: Lifeline documents the opposite outcome ("may cause duplicate execution")
+#: precisely because it has no such token.
 RELEASE_SUBMISSION_SQL = "UPDATE host_submissions SET state = ?, finished_at = ? WHERE workflow_id = ? AND state = 'claimed' AND claim_seq = ?"
 
 STOP_VERB = "stop"

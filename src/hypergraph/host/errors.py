@@ -33,18 +33,26 @@ __all__ = [
 
 
 class WorkerLockError(HostError):
-    """A second worker tried to claim a Run Home that already has one.
+    """RETIRED — nothing raises this, and nothing will.
 
-    One exclusive worker per Run Home is enforced by an OS-level lock at
-    ``work_forever()`` startup; the loser fails loudly and immediately.
+    A Run Home used to admit exactly one ``work_forever()`` worker,
+    enforced by an OS-level lock taken at startup, and this is what the
+    loser got. Several workers may now share one Home: each claim is a
+    compare-and-set that takes a time-bounded lease, so two workers can
+    never hold one submission, and a worker that stops renewing has its
+    claims adopted rather than waited on.
+
+    The name stays exported for one release so an ``except WorkerLockError``
+    written against the old rule still imports and still compiles. Delete
+    the handler — it can no longer fire.
     """
 
     def __init__(self, lock_path: str, message: str | None = None) -> None:
         self.lock_path = lock_path
         self.message = message or (
-            f"Run Home already has an active worker (lock: {lock_path!r}). "
-            "Only one work_forever() worker may own a Run Home at a time. "
-            "Stop the existing worker first; it releases the lock on exit."
+            f"Run Home worker lock {lock_path!r} is retired. "
+            "Several workers may share one Run Home: each claim takes a lease, "
+            "and a claim whose holder stops renewing is adopted by another worker."
         )
         super().__init__(self.message)
 

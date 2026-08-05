@@ -425,9 +425,14 @@ CREATE TABLE IF NOT EXISTS host_submissions (
 #       submission" — the pre-v7 shape, and still the ordinary one.
 #
 #   claimed_by, lease_until
-#       INERT. Written and read by nothing in this release. They exist now so
-#       the multi-worker lease lands as a behavior change rather than as a
-#       second migration over live Run Homes carrying in-flight claims.
+#       THE LEASE. Which worker holds this claim, and the instant after which
+#       anybody may adopt it — SQS's visibility timeout, Oban's locked_by +
+#       rescue_after. The claim CAS writes both, the holder renews
+#       lease_until while it works, and a scan adopts a claim whose lease ran
+#       out. Both NULL on a claimed row means a claim taken before leases
+#       existed, which is adoptable on sight. They are meaningful only while
+#       state = 'claimed'; a park or re-admission clears them, and a settled
+#       row keeps them as audit exactly as claimed_at does.
 
 # v7: which workers are alive, and what each of them can execute. A
 # submission's pinned identity says what it needs; this table says who could

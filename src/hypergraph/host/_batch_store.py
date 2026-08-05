@@ -266,6 +266,8 @@ class BatchAcceptance:
             self.child_admission_costs.get(spec.item_key, 1),
             self.builder_key,
             self.builder_args_json,
+            None,  # claimed_by / lease_until: nobody holds the claim yet
+            None,
         )
 
     def child_submitted_fact(self, spec: ChildSpec) -> dict[str, Any]:

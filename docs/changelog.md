@@ -96,6 +96,60 @@
 
 ### Added
 
+- **BREAKING (Durable Host): several workers may share one Run Home, and the
+  exclusive worker lock is gone.** `work_forever()` took an OS-level `flock`
+  on the database file, so a second worker failed immediately with
+  `WorkerLockError`. That lock never answered the question it existed for —
+  "is this half-finished Run dead, or is another worker holding it?" — it made
+  the question unaskable, and charged a notebook or a maintenance script the
+  right to execute durable work at all, including work only it could
+  configure.
+
+  A **lease** answers it, in the shape SQS, Kafka and Oban all ship. The claim
+  compare-and-set now also writes `claimed_by` and `lease_until` (schema v7's
+  columns, previously inert), a live worker renews every claim it holds in one
+  statement at a third of `lease_ttl` (new `work_forever(..., lease_ttl=90.0)`
+  parameter), and every poll pass adopts claims whose lease has run out. The
+  startup restart scan generalized into that same per-pass scan; at startup a
+  worker additionally adopts its own `worker_id`'s outstanding claims
+  immediately — this process *is* that worker and is executing nothing — so a
+  supervised restart resumes as promptly as it did under the lock.
+
+  **Expiry proves nothing about the old worker, and this does not pretend
+  otherwise.** The safety property is `claim_seq`, which already existed: an
+  adopted submission carries a NEW claim, and every transition that speaks for
+  one execution (`_release_submission`, the worker's dead-letter)
+  compare-and-sets on the claim it was handed, so a presumed-dead worker that
+  wakes up and finishes commits nothing. That is exactly the guarantee Oban's
+  Lifeline documents itself as lacking.
+
+  Four consequences worth checking against your deployment:
+
+  - **`WorkerLockError` is retired.** It is still exported for one release so
+    an existing `except WorkerLockError` keeps importing, but nothing raises
+    it and the handler is now dead code. `hypergraph.host.worker._WorkerLock`
+    and `lock_path_for` are deleted.
+  - **A crashed worker's work waits out its lease** (≤90 s by default) unless
+    the replacement runs under the same `worker_id`, or the previous worker
+    exited cleanly — a clean `shutdown()` surrenders its leases and withdraws
+    its registration, so work moves at once. Give each *live* worker its own
+    name; reuse the name across a restart of the same deployment.
+  - **`compat_state='incompatible'` is no longer parked until a restart.** It
+    hid a row from every worker's scan, which was correct when there was one
+    worker and wrong the moment a second could serve it. The reset moved from
+    worker startup to worker *arrival*: a worker publishing coverage this Home
+    has not seen from it before reopens the parked rows, in the same
+    transaction as its registration. A repeated pulse of unchanged coverage
+    does not, so a row waiting for its deployment still costs nothing.
+  - **`PRAGMA busy_timeout` is stated explicitly** (30 s, on the async, sync
+    and migration connections) rather than inherited from the driver's 5 s
+    default. WAL removes reader/writer blocking, not writer/writer contention,
+    and a Run Home now legally carries several writing processes.
+
+  No schema migration: v7 already carried both columns. `RunHomeClient`,
+  `watch`, `BatchView`, admission, tolerance, the pause lifecycle and the
+  recovery brake are untouched.
+
 - **Durable Host: work can travel as data, and work nobody can do is refused
   or dead-lettered.** Two failures motivated this, both of them "accepted work
   nobody alive can do". A process configured a graph, submitted a 424-item
@@ -142,9 +196,9 @@
 
   Schema **v6 → v7**, additive and inert on open: `host_submissions` gains
   nullable `builder_key`, `builder_args_json`, `claimed_by`, and `lease_until`
-  (the last two are written by nothing in this release; they exist now so the
-  multi-worker lease lands as behavior rather than as a second migration over
-  Run Homes carrying live claims), and the new `host_workers` table records
+  (the last two are the claim lease, described above; they landed in this
+  migration so the multi-worker behavior needed no second migration over Run
+  Homes carrying live claims), and the new `host_workers` table records
   each worker's served identities, builder keys, and pulse. A v6 database with
   in-flight claimed and parked rows migrates in place with every row untouched.
 

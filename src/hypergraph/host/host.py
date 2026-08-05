@@ -1,7 +1,7 @@
 """Host and serve() — the durable host's ownership seam.
 
 The Host owns new work (``submit``, ``submit_batch``) and worker lifecycle
-(``work_forever``, bounded drain, lock release). It exposes the one
+(``work_forever``, bounded drain, lease surrender). It exposes the one
 ``RunHomeClient`` as ``host.client`` and adds no pass-through verb copies.
 Direct runner execution (Tier 0) is unchanged: the host clones each
 Definition's runner onto the Home's checkpointer and never mutates the
@@ -49,7 +49,13 @@ from hypergraph.host.errors import (
     UnservedGraphError,
 )
 from hypergraph.host.fingerprint import batch_fingerprint, canonical_json, start_fingerprint
-from hypergraph.host.home import RunHome, _normalize_utc_iso
+from hypergraph.host.home import (
+    LEASE_RENEWAL_FRACTION,
+    LEASE_TTL_SECONDS,
+    WORKER_PULSE_TTL_SECONDS,
+    RunHome,
+    _normalize_utc_iso,
+)
 from hypergraph.host.refs import BatchRef, BatchSubmitReceipt, RunRef, SubmitReceipt
 from hypergraph.host.views import (
     DEAD_LETTER_BUILDER_FAILED,
@@ -58,7 +64,7 @@ from hypergraph.host.views import (
     TERMINAL_WORKFLOW_STATUSES,
     is_child_settled,
 )
-from hypergraph.host.worker import _drain, _WorkerLock
+from hypergraph.host.worker import _drain
 
 if TYPE_CHECKING:
     from hypergraph.events.processor import EventProcessor
@@ -71,13 +77,6 @@ logger = logging.getLogger("hypergraph.host")
 #: arguments arrive on the submission row as JSON, so they must be
 #: JSON-serializable — that is what makes the work data rather than a closure.
 GraphBuilder = Callable[[Mapping[str, Any]], "Graph"]
-
-#: How often a live worker rewrites its ``host_workers`` pulse. One third of
-#: the freshness window, the interval Kafka's session-timeout rule
-#: prescribes: three consecutive missed writes before anyone is declared
-#: dead. Deliberately NOT once per poll pass — an idle worker polls every
-#: 50 ms, and a write transaction that often would be pure churn.
-_WORKER_PULSE_INTERVAL_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -147,6 +146,25 @@ def _normalize_start_at(start_at: datetime | str | None) -> str | None:
 def _validate_recovery_cap(recovery_cap: int) -> None:
     if isinstance(recovery_cap, bool) or not isinstance(recovery_cap, int) or recovery_cap < 0:
         raise ValueError(f"recovery_cap must be an int >= 0 (the progressless re-adoption budget), got {recovery_cap!r}.")
+
+
+def heartbeat_tick(lease_ttl: float) -> float:
+    """How often a live worker writes, in seconds.
+
+    One write says two things — this worker is alive (``host_workers``) and
+    so are its claims (``lease_until``) — so its cadence has to satisfy the
+    SHORTER of the two windows. Pacing it on ``lease_ttl`` alone would let a
+    long lease starve the registry: a worker with a one-hour TTL would write
+    every twenty minutes, its ``host_workers`` row would go stale after
+    ninety seconds, and every submit would be told nothing alive can serve
+    its work — while that worker's claims were perfectly fresh.
+
+    A third of the window is Kafka's ``heartbeat.interval.ms`` rule: three
+    consecutive missed writes before anything is declared gone. Writing
+    earlier than a lease strictly needs is free; letting a registration
+    expire is not.
+    """
+    return min(lease_ttl, WORKER_PULSE_TTL_SECONDS) * LEASE_RENEWAL_FRACTION
 
 
 class Host:
@@ -848,35 +866,72 @@ class Host:
             return
         loop.call_soon_threadsafe(stop_event.set)
 
-    async def work_forever(self, worker_id: str, *, poll_interval: float = 0.05, drain_timeout: float = 30.0) -> None:
+    async def work_forever(
+        self,
+        worker_id: str,
+        *,
+        poll_interval: float = 0.05,
+        drain_timeout: float = 30.0,
+        lease_ttl: float = LEASE_TTL_SECONDS,
+    ) -> None:
         """Run the worker loop: claim, execute, repeat, with bounded drain.
 
-        Startup takes the OS-level exclusive worker lock — a second
-        ``work_forever`` on the same Home fails loudly with
-        ``WorkerLockError``. The restart scan re-adopts unfinished claimed
-        submissions so work continues without resubmission. On
-        ``shutdown()`` or cancellation the loop stops claiming, awaits
-        active runs up to ``drain_timeout``, cancels the rest, releases the
-        lock, and returns (or re-raises the cancellation) cleanly.
+        **Several workers may share one Run Home.** Each claim is an atomic
+        compare-and-set that also takes a time-bounded LEASE, so two workers
+        can never hold one submission, and a worker that stops renewing has
+        its claims adopted by whoever is still polling. The exclusive
+        ``flock`` this used to take is gone: it made "is this half-finished
+        Run dead, or is another worker holding it?" unaskable rather than
+        answered, at the cost of forbidding a notebook or a maintenance
+        script from ever executing work beside the server.
+
+        Startup adopts this ``worker_id``'s own outstanding claims
+        immediately — this process IS that worker and is executing nothing —
+        so a supervised restart resumes as promptly as it did under the
+        lock. Every later pass adopts only claims whose lease has EXPIRED,
+        and never its own. On ``shutdown()`` or cancellation the loop stops
+        claiming, awaits active runs up to ``drain_timeout``, cancels the
+        rest, surrenders whatever leases it still holds so another worker
+        can pick that work up at once rather than after the TTL, withdraws
+        its registration, and returns (or re-raises the cancellation)
+        cleanly.
 
         Each pass takes one ``now`` **from the store's clock** and scans
-        every due row with it: submissions whose ``start_at`` has arrived,
-        then scheduled pause answers whose ``due_at`` has arrived. There is
-        one due-row scanner, not a timer per feature — and one clock, so a
-        worker whose process clock drifts never claims early or fires late.
+        every due row with it: expired leases, then submissions whose
+        ``start_at`` has arrived, then scheduled pause answers whose
+        ``due_at`` has arrived. There is one due-row scanner, not a timer
+        per feature — and one clock, so workers whose process clocks drift
+        still agree on which claims have run out.
 
         Startup also REGISTERS this worker in ``host_workers`` — its served
         identities and its builder keys — and the loop keeps that row's
-        pulse fresh. The registration grants nothing: it is how a submitting
-        process learns whether anybody could execute its work, and how the
-        claim scan tells "another worker's work" apart from "work nothing
-        alive can run" instead of parking both alike. A clean exit withdraws
-        the row; a killed worker's row simply goes stale.
+        pulse fresh, on the same tick that renews its leases. The
+        registration grants nothing: it is how a submitting process learns
+        whether anybody could execute its work, how the claim scan tells
+        "another worker's work" apart from "work nothing alive can run"
+        instead of parking both alike, and what re-opens the
+        version-incompatible park when a worker able to drain it arrives. A
+        clean exit withdraws the row; a killed worker's row simply goes
+        stale.
+
+        Args:
+            worker_id: This worker's stable name. It is written onto every
+                claim it takes, so a restart under the same name reclaims
+                its own work at once; two live workers must not share one.
+            poll_interval: Idle sleep between claim scans.
+            drain_timeout: How long ``shutdown()`` awaits in-flight runs
+                before cancelling them.
+            lease_ttl: Seconds a claim stays this worker's before anybody
+                may adopt it, renewed at a third of that while the worker
+                lives. Lower it only for tests that must watch adoption
+                happen; a production value below the longest single Run's
+                event-loop stall invites duplicate execution (the claim
+                fence makes that wasteful, not unsafe).
         """
         if not isinstance(worker_id, str) or not worker_id:
             raise ValueError("work_forever() requires a non-empty worker_id string.")
-        lock = _WorkerLock.for_home(self._home)
-        lock.acquire()
+        if lease_ttl <= 0:
+            raise ValueError(f"work_forever() lease_ttl must be a positive number of seconds, got {lease_ttl!r}.")
         stop_event = asyncio.Event()
         self._stop_event = stop_event
         self._worker_loop = asyncio.get_running_loop()
@@ -889,22 +944,27 @@ class Host:
         self._published = None
         self._pulsed_at = None
         try:
-            await self._home._restart_scan()
+            await self._home._reclaim_expired(worker_id=worker_id, adopt_own=True)
             try:
                 while not stop_event.is_set():
                     # ONE store-authoritative `now` per pass drives every due
-                    # row: delayed starts (`start_at`) and scheduled pause
-                    # answers (`due_at`) share this scan rather than owning
-                    # separate timers (PRD 0017 / ADR 0008). It comes from the
-                    # STORE, so two workers on one Home agree on which rows
-                    # are due however their process clocks differ.
+                    # row: expired leases, delayed starts (`start_at`), and
+                    # scheduled pause answers (`due_at`) share this scan
+                    # rather than owning separate timers (PRD 0017 / ADR
+                    # 0008). It comes from the STORE, so workers on one Home
+                    # agree on which rows are due however their process
+                    # clocks differ.
                     now_iso = await self._home._store_now()
-                    await self._pulse(worker_id)
+                    # Renew before reclaiming, so this worker's own claims are
+                    # provably fresh before it judges anybody else's.
+                    await self._pulse(worker_id, now_iso, lease_ttl)
+                    await self._home._reclaim_expired(now_iso, worker_id=worker_id)
                     claimed = await self._home._claim_eligible(
                         now_iso,
                         served=self._served_identities,
                         builders=frozenset(self._builders),
                         worker_id=worker_id,
+                        lease_ttl=lease_ttl,
                     )
                     for row in claimed:
                         task = asyncio.create_task(self._execute_submission(row))
@@ -916,31 +976,59 @@ class Host:
                     await asyncio.sleep(0 if claimed else poll_interval)
             finally:
                 await _drain(set(tasks.values()), drain_timeout)
+                await self._release_leases(worker_id)
                 await self._withdraw(worker_id)
         finally:
             self._stop_event = None
             self._worker_loop = None
             self._published = None
             self._pulsed_at = None
-            lock.release()
 
-    async def _pulse(self, worker_id: str) -> None:
-        """Publish this worker's registration when it is stale or changed.
+    async def _pulse(self, worker_id: str, now_iso: str, lease_ttl: float) -> None:
+        """Say this worker is alive — and so are its claims — on one tick.
 
-        Two triggers, because the row answers two questions. The CLOCK keeps
-        "is this worker alive?" true, at a third of the freshness window. The
-        published SET keeps "what can it execute?" true the moment
-        ``add_definition`` or ``serve_builder`` widens it — waiting a pulse
-        interval there would let a submit refuse work this worker had just
-        learned to do.
+        Two triggers, because the registration row answers two questions.
+        The CLOCK keeps "is this worker alive?" true, at
+        ``LEASE_RENEWAL_FRACTION`` of the lease TTL: three writes per window,
+        Kafka's ``heartbeat.interval.ms`` rule. The published SET keeps "what
+        can it execute?" true the moment ``add_definition`` or
+        ``serve_builder`` widens it — waiting a tick there would let a submit
+        refuse work this worker had just learned to do, and would leave a
+        version-incompatible row parked against a worker that can now drain
+        it.
+
+        The LEASE renewal rides the same clock trigger rather than the poll
+        pass. The two facts have the same shape and the same kind of
+        deadline, so writing them on different cadences would buy nothing
+        and cost a write transaction every 50 ms on a Home that may now
+        carry several writers. ``heartbeat_tick`` is where the one cadence
+        that satisfies both windows is decided.
         """
         current = (self._served_identities, frozenset(self._builders))
         elapsed = None if self._pulsed_at is None else asyncio.get_running_loop().time() - self._pulsed_at
-        if self._published == current and elapsed is not None and elapsed < _WORKER_PULSE_INTERVAL_SECONDS:
+        due = elapsed is None or elapsed >= heartbeat_tick(lease_ttl)
+        if self._published == current and not due:
             return
         await self._home._pulse_worker(worker_id, served=current[0], builders=current[1])
+        if due:
+            await self._home._renew_leases(worker_id, now_iso, lease_ttl=lease_ttl)
+            self._pulsed_at = asyncio.get_running_loop().time()
         self._published = current
-        self._pulsed_at = asyncio.get_running_loop().time()
+
+    async def _release_leases(self, worker_id: str) -> None:
+        """Surrender this worker's claims on a clean exit; never fail shutdown.
+
+        A stopping worker knows it is gone, so it says so instead of making
+        the rest of the deployment wait out the TTL. Like ``_withdraw``, a
+        failure here costs only promptness — the lease expires on its own —
+        so it is logged rather than raised over a drain that just succeeded.
+        """
+        try:
+            await self._home._expire_leases(worker_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Worker %s could not surrender its leases; they expire on their own.", worker_id, exc_info=True)
 
     async def _withdraw(self, worker_id: str) -> None:
         """Withdraw the registration; cleanup never fails a shutdown.
@@ -960,8 +1048,9 @@ class Host:
     def _record_task_exception(self, task: asyncio.Task) -> None:
         """Retrieve a finished execution task's exception for observability.
 
-        A failed execution leaves its submission claimed; the restart scan
-        re-adopts it on the next worker startup.
+        A failed execution leaves its submission claimed. Its lease stops
+        being renewed when this worker stops, and the reclaim scan re-adopts
+        it — this worker's own at its next startup, anybody's once expired.
         """
         if task.cancelled():
             return
@@ -1034,7 +1123,7 @@ class Host:
         accepts on the same workflow id.
 
         None means "resume with nothing" — an unanswered parked run
-        re-adopted by the restart scan simply replays to its interrupt and
+        re-adopted by the reclaim scan simply replays to its interrupt and
         parks again on the same occurrence.
         """
         slot = await self._home.get_pause_slot(workflow_id)
@@ -1065,8 +1154,9 @@ class Host:
 
         None means "leave this claim alone": no builder covers the row, which
         can only happen if the registry shrank between the claim and here.
-        The restart scan returns it to pending and the next claim scan
-        decides its disposition against fresh registry truth.
+        The reclaim scan returns it to pending once this claim's lease runs
+        out, and the next claim scan decides its disposition against fresh
+        registry truth.
         """
         pinned = DefinitionId(row["definition_name"], row["def_version"], row["def_struct_hash"])
         if pinned in self._served_identities:
@@ -1103,7 +1193,7 @@ class Host:
         definition = await self._definition_for_claim(row)
         if definition is None:
             # Not executable by this worker; either already dead-lettered
-            # with a reason, or left claimed for the restart scan.
+            # with a reason, or left claimed for the reclaim scan.
             return
         workflow_id = row["workflow_id"]
         if await self._home._apply_stop_never_started(workflow_id):

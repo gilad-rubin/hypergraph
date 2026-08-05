@@ -1205,20 +1205,46 @@ repetition from migration.
 
 ## The Worker
 
-One product-owned process executes submitted work:
+Product-owned processes execute submitted work:
 
 ```python
 await host.work_forever(worker_id="labbox")   # blocks; explicit lifecycle
 host.shutdown()                               # from another task: bounded drain
 ```
 
-Startup takes an OS-level exclusive lock on the Home; a second worker on the
-same Home fails immediately with `WorkerLockError`. `shutdown()` stops new
-claims and lets in-flight runs finish within `drain_timeout` before the lock
-is released. On startup the worker re-adopts submissions whose previous
-worker died mid-run, so unfinished work continues without resubmission.
-Process supervision (systemd, FastAPI lifespan, cron) restarts the worker —
-Hypergraph runs no control-plane server.
+`shutdown()` stops new claims and lets in-flight runs finish within
+`drain_timeout`. Process supervision (systemd, FastAPI lifespan, cron)
+restarts the worker — Hypergraph runs no control-plane server.
+
+### Several workers may share one Run Home
+
+Each claim is an atomic compare-and-set that also takes a **lease**:
+`claimed_by` records which worker holds the submission, and `lease_until`
+the instant after which anybody may adopt it. A live worker renews its
+leases at a third of `lease_ttl` (90 s by default), and every worker's poll
+pass adopts claims whose lease has run out. So two workers can never hold
+one submission, and a worker that dies does not strand its work — nothing
+has to decide whether it died, only whether it stopped renewing.
+
+```python
+await host.work_forever("api", lease_ttl=90.0)       # the default
+await host.work_forever("notebook", lease_ttl=90.0)  # legal, same Home
+```
+
+Adoption is not a fence and does not pretend to be one. A presumed-dead
+worker may wake up and finish; what it can no longer do is **commit**,
+because the adopted submission carries a new claim and every transition
+that speaks for one execution compare-and-sets on the claim it was handed.
+
+Give each live worker its own `worker_id`. A restart under the same name
+reclaims that name's outstanding work at once, which is what makes a
+supervised restart resume immediately instead of waiting out the lease; a
+clean `shutdown()` surrenders its leases and withdraws its registration, so
+work moves without waiting either.
+
+Earlier releases enforced one worker per Home with an OS-level lock, and a
+second `work_forever` raised `WorkerLockError`. That rule is retired: the
+error is still exported for one release but nothing raises it.
 
 ## Host Work Admission
 
@@ -1415,7 +1441,7 @@ brake counts **progressless re-adoptions**:
 
 | Error | Raised when |
 |---|---|
-| `WorkerLockError` | a second worker starts on the same Run Home |
+| `WorkerLockError` | **retired** — nothing raises it. A Run Home admits several workers; the name is exported for one release so an old `except` clause still imports |
 | `UnservedGraphError` | `submit`, `submit_batch`, or `fork(into=…)` names a `Graph` this host does not serve, or one whose `structural_hash` drifted from the served Definition |
 | `ItemKeyError` | `submit_batch` `identity` names a field outside `map_over`, or an item's key is missing, empty, non-scalar, or duplicated |
 | `AlreadyTerminalError` | a terminal `workflow_id` is reused for submit, submit_batch, or stop (including a fully settled Batch) |

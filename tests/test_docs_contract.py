@@ -1185,7 +1185,11 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert tuple(inspect.signature(Host.submit_batch_sync).parameters) == tuple(inspect.signature(Host.submit_batch).parameters)
     assert tuple(inspect.signature(Host.fork).parameters) == ("self", "ref", "into", "reason", "source_ref")
     assert tuple(inspect.signature(Host.fork_sync).parameters) == tuple(inspect.signature(Host.fork).parameters)
-    assert tuple(inspect.signature(Host.work_forever).parameters) == ("self", "worker_id", "poll_interval", "drain_timeout")
+    # `lease_ttl` is the one knob leases added: how long a claim stays this
+    # worker's before anybody may adopt it. There is deliberately no
+    # `exclusive=` or `lock=` beside it — a Run Home admits several workers
+    # now, and the arbitration is per-submission, not per-Home.
+    assert tuple(inspect.signature(Host.work_forever).parameters) == ("self", "worker_id", "poll_interval", "drain_timeout", "lease_ttl")
     assert tuple(inspect.signature(RunHomeClient.get).parameters) == ("self", "ref")
     assert tuple(inspect.signature(RunHomeClient.get_sync).parameters) == ("self", "ref")
     # `until` names WHICH arrival ends the stream, over a closed two-value

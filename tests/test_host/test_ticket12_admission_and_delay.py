@@ -389,7 +389,7 @@ class TestSlotAccounting:
         db = home._sync_db()
         db.execute("UPDATE host_submissions SET state = 'claimed' WHERE workflow_id = 'wf-exh'")
         db.commit()
-        await home._restart_scan()  # progressless re-adoption at cap 1 parks it
+        await home._reclaim_expired()  # progressless re-adoption at cap 1 parks it
         assert _state(home, "wf-exh") == "exhausted"
 
         # Version-incompatible: a worker that cannot serve the pinned

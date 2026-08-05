@@ -15,7 +15,6 @@ nothing but time to the falsification.
 
 from __future__ import annotations
 
-import gc
 import json
 
 import pytest
@@ -24,7 +23,6 @@ from hypergraph import (
     BatchRef,
     BatchTolerance,
     DefinitionId,
-    RunHome,
     RunRef,
     WorkflowIdConflictError,
 )
@@ -39,7 +37,6 @@ from hypergraph.host._batch_store import (
 )
 from hypergraph.host.errors import AlreadyTerminalError, WorkerLockError
 from hypergraph.host.fingerprint import batch_mismatch_aspect, canonical_json, fingerprint_mismatch_aspect
-from hypergraph.host.worker import _WorkerLock
 
 pytestmark = pytest.mark.host_batch_interrupt
 
@@ -292,61 +289,59 @@ class TestBatchAcceptanceProjections:
         }
 
 
-# === 6. The exclusive worker lock, on an in-memory Home ===
+# === 6. WorkerLockError is retired, exported, and unraisable ===
 
 
-class TestTheWorkerLockOnAnInMemoryHome:
-    """A memory Home has no file to flock, so it locks on its own token.
+class TestTheRetiredWorkerLock:
+    """The rule this error names is gone; the name is kept for one release.
 
-    Worth its own test: every other suite runs against a file-backed Home,
-    so the in-memory branch of the lock is only ever reached here — and it
-    is the branch that keeps two ``work_forever`` calls in one process from
-    both claiming the same queue.
+    A Run Home used to admit exactly one ``work_forever`` worker, refused
+    by an OS lock at startup. Leases replaced that: each claim is a
+    compare-and-set that stamps a holder and an expiry, so two workers can
+    never hold one submission and a dead worker's claims are adopted rather
+    than waited on. What is pinned here is the deprecation shape — the
+    symbol still imports and still constructs, so ``except WorkerLockError``
+    written against the old rule keeps compiling, and its message says the
+    rule is retired instead of instructing an operator to go stop a worker
+    that is allowed to be running.
     """
 
-    def test_a_second_worker_on_the_same_memory_home_is_refused(self):
-        home = RunHome.open(":memory:")
-        first = _WorkerLock.for_home(home)
-        first.acquire()
-        try:
-            with pytest.raises(WorkerLockError, match="already has an active worker"):
-                _WorkerLock.for_home(home).acquire()
-        finally:
-            first.release()
+    def test_the_symbol_is_still_exported_from_both_doors(self):
+        import hypergraph
+        import hypergraph.host
 
-    def test_releasing_frees_it_and_is_idempotent(self):
-        home = RunHome.open(":memory:")
-        lock = _WorkerLock.for_home(home)
-        lock.acquire()
-        lock.release()
-        lock.release()  # no-op, not an error
+        assert hypergraph.WorkerLockError is WorkerLockError
+        assert hypergraph.host.WorkerLockError is WorkerLockError
 
-        again = _WorkerLock.for_home(home)
-        again.acquire()
-        again.release()
+    def test_its_message_names_the_retirement_not_a_worker_to_stop(self):
+        error = WorkerLockError("/tmp/runs.db.lock")
+        assert "retired" in str(error)
+        assert error.lock_path == "/tmp/runs.db.lock"
 
-    def test_two_memory_homes_lock_independently(self):
-        one = _WorkerLock.for_home(RunHome.open(":memory:"))
-        two = _WorkerLock.for_home(RunHome.open(":memory:"))
-        one.acquire()
-        two.acquire()  # a different Home, so a different lock: no refusal
-        one.release()
-        two.release()
+    def test_nothing_in_the_host_package_raises_it_any_more(self):
+        """The grep that keeps the deprecation honest.
 
-    def test_a_freed_home_never_hands_its_key_to_the_next_one(self):
-        """The reason the key is a minted token and not ``id(home)``.
-
-        A worker holds its Home for its whole life, but nothing stops an
-        operator process from opening short-lived Homes beside it — and
-        CPython hands a freed object's id straight to the next allocation,
-        so an id-keyed registry would let one of those inherit a live
-        worker's lock entry.
+        A retired error that some path still raises is not retired; it is
+        undocumented. ``errors.py`` defines it, so the definition site is
+        the only mention the source is allowed to keep.
         """
-        keys = []
-        for _ in range(1000):
-            home = RunHome.open(":memory:")
-            keys.append(_WorkerLock.for_home(home)._memory_key)
-            del home
-            gc.collect()
+        import pathlib
 
-        assert len(set(keys)) == len(keys)
+        import hypergraph.host
+
+        package = pathlib.Path(hypergraph.host.__file__).parent
+        raisers = [path.name for path in sorted(package.glob("*.py")) if "raise WorkerLockError" in path.read_text()]
+        assert raisers == []
+
+    def test_the_worker_module_kept_only_the_bounded_drain(self):
+        """The lock's machinery is deleted, not merely unused.
+
+        Leaving ``_WorkerLock`` behind would leave a second, contradictory
+        answer to "who may execute this Home's work" one import away from
+        any caller.
+        """
+        from hypergraph.host import worker
+
+        assert not hasattr(worker, "_WorkerLock")
+        assert not hasattr(worker, "lock_path_for")
+        assert hasattr(worker, "_drain")
