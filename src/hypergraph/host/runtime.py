@@ -39,6 +39,13 @@ class HostRuntime:
             execution rather than baked into one runner. Same contract as
             :func:`~hypergraph.serve`: shared across concurrent Runs,
             best-effort dispatch, and omitting it changes nothing.
+        worker_id: The stable name this runtime's worker claims and
+            registers under. Default: a fresh per-process name, which is
+            right for a throwaway process and wrong for a supervised one —
+            a restart under a NEW name cannot reclaim its own outstanding
+            claims at once and waits out their lease instead. A deployment
+            that is restarted by a supervisor should name itself after the
+            DEPLOYMENT rather than the process.
     """
 
     def __init__(
@@ -47,6 +54,7 @@ class HostRuntime:
         *,
         deployment_version: str = "",
         event_processors: Sequence[EventProcessor] | None = None,
+        worker_id: str = "",
     ) -> None:
         self._path = Path(path)
         self._deployment_version = deployment_version
@@ -60,7 +68,9 @@ class HostRuntime:
         self._worker_close: asyncio.Task[BaseException | None] | None = None
         self._home_close: asyncio.Task[None] | None = None
         runtime_id = f"{os.getpid()}-{uuid.uuid4().hex[:12]}"
-        self._worker_id = f"host-runtime-{runtime_id}"
+        if worker_id is not None and not isinstance(worker_id, str):
+            raise TypeError(f"HostRuntime(worker_id=) must be a string naming this worker, got {type(worker_id).__name__}.")
+        self._worker_id = worker_id or f"host-runtime-{runtime_id}"
         self._task_name = f"hypergraph-host-{runtime_id}"
 
     @property
@@ -115,6 +125,53 @@ class HostRuntime:
             host = self._ensure_host()
             host.serve_builder(key, builder)
             self._ensure_worker(host)
+            return host
+
+    async def registering(self, graph: Graph) -> Host:
+        """Register ``graph`` for SUBMISSION and reading, and start no worker.
+
+        The client mirror of :meth:`serving`. Submission is graph-first — the
+        pinned identity is the Graph object's own name plus structural hash —
+        so a process that wants to submit work somebody ELSE executes still
+        has to hold the Definition. Before leases that cost it nothing,
+        because one Home admitted one worker and a second process was refused
+        by name. Now it would cost a rival worker: :meth:`serving` would make
+        this process an executor of everything it submits, which is rarely
+        what a notebook beside a running deployment means.
+
+        So the two halves of ``serving()`` are separable, and which one a
+        process wants is a real choice: register here to submit and watch,
+        call :meth:`serving` to also execute. Calling ``serving()`` later
+        arms the worker over the same registrations — that is how a process
+        decides to run the work itself after finding out nobody else will.
+
+        Returns:
+            The runtime's stable Host, for ``submit`` and ``submit_batch``.
+        """
+        from hypergraph.graph import Graph
+        from hypergraph.runners.async_ import AsyncRunner
+
+        if not isinstance(graph, Graph):
+            raise TypeError(f"HostRuntime.registering() expects a Graph, got {type(graph).__name__}.")
+        async with self._lock:
+            self._require_not_closing()
+            self._raise_worker_failure()
+            registered = graph if graph.bound_runner is not None else graph.with_runner(AsyncRunner())
+            host = self._ensure_host()
+            host.add_definition(registered)
+            return host
+
+    async def registering_builder(self, key: str, builder: GraphBuilder) -> Host:
+        """Register a CONSTRUCTOR for submission, and start no worker.
+
+        The builder mirror of :meth:`registering`, and what a process uses to
+        say "I can rebuild this" without also saying "I will run it".
+        """
+        async with self._lock:
+            self._require_not_closing()
+            self._raise_worker_failure()
+            host = self._ensure_host()
+            host.serve_builder(key, builder)
             return host
 
     async def close(self) -> None:

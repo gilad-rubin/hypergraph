@@ -266,3 +266,101 @@ class TestIncrementalHostDefinitions:
             assert (await runtime.client.result(receipt.run_ref)).outputs == {"out": 2}
         finally:
             await runtime.close()
+
+
+class TestRegisteringWithoutWorking:
+    """Holding a Definition and executing it are separate decisions.
+
+    Submission is graph-first, so a process that wants work run SOMEWHERE ELSE
+    still has to hold the Definition it submits against. While one Home
+    admitted one worker, `serving()` could conflate the two safely — the
+    second process was refused the worker by name. Leases retire that refusal,
+    so conflating them would silently make every submitter an executor.
+    """
+
+    async def test_registering_lets_a_process_submit_without_becoming_a_worker(self, tmp_path):
+        path = tmp_path / "runs.db"
+        graph = _increment_graph("increment")
+
+        client = HostRuntime(path, deployment_version="v1", worker_id="client")
+        try:
+            host = await client.registering(graph)
+            assert client._worker is None, "registering must not arm a worker"
+            receipt = await host.submit(graph, {"x": 1}, workflow_id="run-over-there")
+            await asyncio.sleep(0.05)
+            assert client._home._get_submission_sync("run-over-there")["state"] == "pending"
+        finally:
+            await client.close()
+
+        # Nothing about the submission was degraded: another process's worker
+        # picks it up exactly as if the submitter had been the executor.
+        executor = HostRuntime(path, deployment_version="v1", worker_id="executor")
+        try:
+            await executor.serving(graph)
+            view = await asyncio.wait_for(_terminal(executor.client, receipt.run_ref), timeout=10)
+            assert view.status == WorkflowStatus.COMPLETED
+        finally:
+            await executor.close()
+
+    async def test_serving_after_registering_arms_the_same_registration(self, tmp_path):
+        """Deciding to run it here yourself is one later call, not a new Home."""
+        graph = _increment_graph("increment")
+        runtime = HostRuntime(tmp_path / "runs.db", deployment_version="v1", worker_id="solo")
+        try:
+            host = await runtime.registering(graph)
+            receipt = await host.submit(graph, {"x": 1}, workflow_id="mine-after-all")
+            assert runtime._worker is None
+            assert await runtime.serving(graph) is host
+            assert runtime._worker is not None
+            view = await asyncio.wait_for(_terminal(runtime.client, receipt.run_ref), timeout=10)
+            assert view.status == WorkflowStatus.COMPLETED
+        finally:
+            await runtime.close()
+
+    async def test_registering_builder_registers_a_constructor_and_no_worker(self, tmp_path):
+        runtime = HostRuntime(tmp_path / "runs.db", worker_id="builder-only")
+        try:
+            host = await runtime.registering_builder("x.increment", lambda args: _increment_graph(args["name"]))
+            assert runtime._worker is None
+            assert host.builder_keys == frozenset({"x.increment"})
+        finally:
+            await runtime.close()
+
+
+class TestStableWorkerId:
+    async def test_a_named_worker_reclaims_its_own_claims_across_a_restart(self, tmp_path):
+        """A supervised restart resumes at once only if it reuses its name.
+
+        `_reclaim_expired(adopt_own=True)` adopts THIS worker_id's outstanding
+        claims at any lease, because the process holding them is the one that
+        just started and is executing nothing. Under a per-process name, a
+        restart is a stranger to its own half-finished work and waits out the
+        lease instead.
+        """
+        path = tmp_path / "runs.db"
+        graph = _increment_graph("increment")
+        home = RunHome.open(path)
+        host = serve(graph.with_runner(AsyncRunner()), home=home, deployment_version="v1")
+        receipt = await host.submit(graph, {"x": 1}, workflow_id="half-done")
+        now = await home._store_now()
+        await home._claim_eligible(now, served=host._served_identities, worker_id="panda-api", lease_ttl=3600.0)
+        row = home._get_submission_sync("half-done")
+        assert (row["state"], row["claimed_by"]) == ("claimed", "panda-api")
+        await home.close()
+
+        restarted = HostRuntime(path, deployment_version="v1", worker_id="panda-api")
+        try:
+            await restarted.serving(graph)
+            view = await asyncio.wait_for(_terminal(restarted.client, receipt.run_ref), timeout=10)
+            assert view.status == WorkflowStatus.COMPLETED
+        finally:
+            await restarted.close()
+
+    async def test_the_default_worker_id_is_still_per_process(self, tmp_path):
+        runtime = HostRuntime(tmp_path / "runs.db")
+        assert runtime._worker_id.startswith("host-runtime-")
+        await runtime.close()
+
+    async def test_a_non_string_worker_id_is_refused_by_name(self, tmp_path):
+        with pytest.raises(TypeError, match="worker_id"):
+            HostRuntime(tmp_path / "runs.db", worker_id=7)

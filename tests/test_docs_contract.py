@@ -1137,12 +1137,20 @@ def test_durable_host_docs_pin_public_contract() -> None:
     )
     from hypergraph.host import Host
 
-    assert tuple(inspect.signature(HostRuntime).parameters) == ("path", "deployment_version", "event_processors")
+    # `worker_id` is what makes a SUPERVISED restart reclaim its own claims at
+    # once instead of waiting out their lease, so it has to be nameable by the
+    # deployment rather than derived from the process.
+    assert tuple(inspect.signature(HostRuntime).parameters) == ("path", "deployment_version", "event_processors", "worker_id")
     # The seam an embedding application observes durable execution through: the
     # runners that execute durable Runs are built by the library, so the Host
     # takes the processors rather than one runner carrying them.
     assert "event_processors" in host_api
     assert tuple(inspect.signature(HostRuntime.serving).parameters) == ("self", "graph")
+    # Registering and working are separable now that a Home admits several
+    # workers: a process that only submits must not become an executor of
+    # everything it submits just to hold the Definition it submits against.
+    assert tuple(inspect.signature(HostRuntime.registering).parameters) == ("self", "graph")
+    assert tuple(inspect.signature(HostRuntime.registering_builder).parameters) == ("self", "key", "builder")
     assert tuple(inspect.signature(HostRuntime.close).parameters) == ("self",)
     assert isinstance(HostRuntime.client, property)
     assert tuple(inspect.signature(Host.add_definition).parameters) == ("self", "graph")

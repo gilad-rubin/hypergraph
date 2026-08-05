@@ -43,6 +43,33 @@ served name cannot be replaced with a structurally different Definition
 without closing and creating a new runtime. Worker startup runs the ordinary
 restart scan, so unfinished durable work is re-adopted without resubmission.
 
+### Registering without working
+
+`serving()` does two things: it registers a Definition, and it makes this
+process an executor. Submission is graph-first, so a process that wants its
+work run **somewhere else** still has to hold the Definition it submits
+against — and now that a Home admits several workers, `serving()` would make
+every such submitter an executor of everything it submits.
+
+`registering()` is the other half on its own:
+
+```python
+host = await client_runtime.registering(refund_graph)   # no worker starts
+receipt = await host.submit(refund_graph, {"claim_id": "c-42"},
+                            builder=("refunds", {"region": "eu"}))
+```
+
+`registering_builder(key, builder)` is the constructor mirror. Calling
+`serving()` afterwards arms the worker over the same registrations, which is
+how a process decides to run the work itself after finding out nobody else
+will — typically after `NoServingWorkerError` said so at submit.
+
+`worker_id=` names the worker this runtime starts. The default is a fresh
+per-process name, which is right for a throwaway process and wrong for a
+supervised one: a restart under a new name is a stranger to its own
+outstanding claims and waits out their lease instead of reclaiming them at
+once. Name a supervised deployment after the DEPLOYMENT.
+
 `client` is the runtime's `RunHomeClient` and is also lazy: accessing it before
 `serving()` opens the Home for detached reads without starting a worker. If the
 worker task exits with an exception, the next `serving()`, `client`, or
