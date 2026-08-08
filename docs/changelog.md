@@ -202,6 +202,11 @@
   each worker's served identities, builder keys, and pulse. A v6 database with
   in-flight claimed and parked rows migrates in place with every row untouched.
 
+- **`HostRuntime.serving_builder()` is ready on return.** The method now
+  waits for its worker's constructor key to be durably visible in live
+  coverage before returning. A client can submit that builder address
+  immediately instead of racing the worker's first registry pulse.
+
 - **A deployment can observe durable execution: `event_processors=` on
   `HostRuntime` and `serve()`.** In process an application passes
   `event_processors=` to `runner.run()`; a durable Run had no equivalent,

@@ -214,6 +214,7 @@ class Host:
         # and the published set republishes immediately when a Definition or
         # a builder is added mid-flight.
         self._published: tuple[frozenset[DefinitionId], frozenset[str]] | None = None
+        self._coverage_published = asyncio.Condition()
         self._pulsed_at: float | None = None
         self.worker_errors: list[BaseException] = []
 
@@ -247,6 +248,15 @@ class Host:
     def live_coverage_sync(self) -> WorkerCoverage:
         """Sync mirror of :meth:`live_coverage`."""
         return self._home._live_worker_coverage_sync()
+
+    async def _wait_until_builder_is_served(self, key: str) -> None:
+        """Wait until this worker has durably published ``key``."""
+        async with self._coverage_published:
+            await self._coverage_published.wait_for(lambda: self._published is not None and key in self._published[1])
+
+    def _worker_starting(self) -> None:
+        """Discard coverage published by a previous worker task."""
+        self._published = None
 
     def serve_builder(self, key: str, builder: GraphBuilder) -> None:
         """Register a CONSTRUCTOR under ``key``, beside the served instances.
@@ -1035,7 +1045,9 @@ class Host:
         if due:
             await self._home._renew_leases(worker_id, now_iso, lease_ttl=lease_ttl)
             self._pulsed_at = asyncio.get_running_loop().time()
-        self._published = current
+        async with self._coverage_published:
+            self._published = current
+            self._coverage_published.notify_all()
 
     async def _release_leases(self, worker_id: str) -> None:
         """Surrender this worker's claims on a clean exit; never fail shutdown.

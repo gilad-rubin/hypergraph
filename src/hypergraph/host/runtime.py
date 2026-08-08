@@ -105,12 +105,16 @@ class HostRuntime:
             return host
 
     async def serving_builder(self, key: str, builder: GraphBuilder) -> Host:
-        """Register a CONSTRUCTOR and ensure the worker is running.
+        """Register a CONSTRUCTOR and ensure the worker is ready.
 
         The builder mirror of :meth:`serving`: it registers the code by
         address rather than by instance, so this process can drain work
         another one configured. Nothing is built here — a builder is called
         when a submission that names it is claimed.
+
+        The call returns only after this worker has published ``key`` to the
+        Run Home. Another process may therefore submit that address as soon
+        as this method returns without racing worker startup.
 
         Repeated calls for the same key replace the registration, which is
         safe because the built Definition is always verified against the
@@ -125,6 +129,7 @@ class HostRuntime:
             host = self._ensure_host()
             host.serve_builder(key, builder)
             self._ensure_worker(host)
+            await self._wait_until_builder_is_served(host, key)
             return host
 
     async def registering(self, graph: Graph) -> Host:
@@ -262,7 +267,28 @@ class HostRuntime:
 
     def _ensure_worker(self, host: Host) -> None:
         if self._worker is None:
+            host._worker_starting()
             self._worker = asyncio.create_task(host.work_forever(self._worker_id), name=self._task_name)
+
+    async def _wait_until_builder_is_served(self, host: Host, key: str) -> None:
+        worker = self._worker
+        if worker is None:
+            raise RuntimeError("HostRuntime worker was not started.")
+        ready = asyncio.create_task(host._wait_until_builder_is_served(key))
+        try:
+            done, _pending = await asyncio.wait((ready, worker), return_when=asyncio.FIRST_COMPLETED)
+            if ready in done:
+                await ready
+                self._raise_worker_failure()
+                if worker.done():
+                    raise RuntimeError(f"HostRuntime worker stopped after publishing builder {key!r}.")
+                return
+            self._raise_worker_failure()
+            raise RuntimeError(f"HostRuntime worker stopped before publishing builder {key!r}.")
+        finally:
+            if not ready.done():
+                ready.cancel()
+                await asyncio.gather(ready, return_exceptions=True)
 
     def _worker_failure(self) -> BaseException | None:
         worker = self._worker
