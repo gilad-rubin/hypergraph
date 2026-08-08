@@ -64,6 +64,11 @@ receipt = await host.submit(refund_graph, {"claim_id": "c-42"},
 how a process decides to run the work itself after finding out nobody else
 will — typically after `NoServingWorkerError` said so at submit.
 
+`serving_builder(key, builder)` is ready on return: it waits until this
+worker's constructor key is visible in the Run Home's live coverage. A client
+process may submit that builder address immediately after the call completes;
+it does not need to poll for worker startup.
+
 `worker_id=` names the worker this runtime starts. The default is a fresh
 per-process name, which is right for a throwaway process and wrong for a
 supervised one: a restart under a new name is a stranger to its own

@@ -377,6 +377,14 @@ class TestLiveCoverage:
         """
         path = tmp_path / "runs.db"
         graph = _increment_graph("increment")
+        pulse_started = asyncio.Event()
+        release_pulse = asyncio.Event()
+        original_pulse = RunHome._pulse_worker
+
+        async def gated_pulse(home, *args, **kwargs):
+            pulse_started.set()
+            await release_pulse.wait()
+            return await original_pulse(home, *args, **kwargs)
 
         onlooker = HostRuntime(path, deployment_version="v1", worker_id="onlooker")
         try:
@@ -384,20 +392,48 @@ class TestLiveCoverage:
             assert (await host.live_coverage()).builders == frozenset()
 
             executor = HostRuntime(path, deployment_version="v1", worker_id="executor")
+            # A previous worker task's publication cannot satisfy this worker's readiness.
+            executor._ensure_host()._published = (
+                frozenset(),
+                frozenset({"x.increment"}),
+            )
+            patch = pytest.MonkeyPatch()
+            patch.setattr(RunHome, "_pulse_worker", gated_pulse)
             try:
-                await executor.serving_builder("x.increment", lambda args: _increment_graph("increment"))
-                for _ in range(200):
-                    coverage = await host.live_coverage()
-                    if "x.increment" in coverage.builders:
-                        break
-                    await asyncio.sleep(0.02)
+                serving = asyncio.create_task(executor.serving_builder("x.increment", lambda args: _increment_graph("increment")))
+                await asyncio.wait_for(pulse_started.wait(), timeout=10)
+                assert not serving.done(), "serving_builder must wait for durable worker coverage"
+                release_pulse.set()
+                await asyncio.wait_for(serving, timeout=10)
+
+                coverage = await host.live_coverage()
                 assert coverage.builders == frozenset({"x.increment"})
                 assert coverage.worker_ids == frozenset({"executor"})
             finally:
+                release_pulse.set()
                 await executor.close()
+                patch.undo()
 
             # A clean exit withdraws its registration, so coverage is not a
             # memory of who was once here.
             assert (await host.live_coverage()).builders == frozenset()
         finally:
             await onlooker.close()
+
+    async def test_serving_builder_reports_a_worker_that_fails_before_ready(self, tmp_path, monkeypatch):
+        failure = OSError("registry unavailable")
+
+        async def fail_pulse(*args, **kwargs):
+            raise failure
+
+        monkeypatch.setattr(RunHome, "_pulse_worker", fail_pulse)
+        runtime = HostRuntime(tmp_path / "runs.db", worker_id="executor")
+        try:
+            with pytest.raises(RuntimeError, match="worker stopped unexpectedly") as raised:
+                await asyncio.wait_for(
+                    runtime.serving_builder("x.increment", lambda args: _increment_graph("increment")),
+                    timeout=10,
+                )
+            assert raised.value.__cause__ is failure
+        finally:
+            await runtime.close()
