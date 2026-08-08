@@ -74,7 +74,10 @@ SELECT_PENDING_CLOSEOUT = (
 SELECT_TRIPPED = f"SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = '{TRIP_UPDATE_KIND}' LIMIT 1"
 #: Failure-equivalent children: failed runs and recovery-exhausted
 #: submissions. Paused, queued, delayed, admission-limited, and unstarted
-#: children never count (PRD 0019).
+#: children never count (PRD 0019). Neither does a dead letter, on purpose:
+#: tolerance asks whether this Batch's WORK is failing, and "no deployment
+#: can run this" is not that. Tripping on it would also relabel the Batch's
+#: remaining items "unstarted" and bury the reason they actually have.
 COUNT_FAILURE_EQUIVALENT = (
     "SELECT COUNT(*) FROM host_submissions s LEFT JOIN runs r ON r.id = s.workflow_id "
     "WHERE s.batch_id = ? AND (r.status = 'failed' OR s.state = 'exhausted')"
@@ -182,6 +185,12 @@ class BatchAcceptance:
     batch_retry_of: str | None = None
     child_retry_of: Mapping[str, str] = field(default_factory=dict)
     child_admission_costs: Mapping[str, int] = field(default_factory=dict)
+    #: The constructor address every child carries (schema v7): how a worker
+    #: that does not hold this Definition in memory rebuilds it. One pair for
+    #: the whole Batch, because one Batch pins exactly one Definition — the
+    #: per-item variation is already the manifest's pinned inputs.
+    builder_key: str | None = None
+    builder_args_json: str | None = None
 
     @property
     def items_map(self) -> dict[str, Any]:
@@ -255,6 +264,10 @@ class BatchAcceptance:
             spec.item_key,
             0,  # claim_seq: no claim has been handed out yet
             self.child_admission_costs.get(spec.item_key, 1),
+            self.builder_key,
+            self.builder_args_json,
+            None,  # claimed_by / lease_until: nobody holds the claim yet
+            None,
         )
 
     def child_submitted_fact(self, spec: ChildSpec) -> dict[str, Any]:
@@ -388,7 +401,8 @@ def children_settled_rows(rows: Sequence[Sequence[Any]]) -> bool:
     A child is settled when its run reached a terminal status, its
     submission finished (terminal run, stop-before-start, or a tolerance
     trip that closed admission before it ever ran), or its submission is
-    recovery-exhausted (parked; v1 treats parked work as settled).
+    recovery-exhausted or dead-lettered (parked; v1 treats parked work as
+    settled).
 
     A tolerance trip needs no special case here: it marks every remaining
     item's submission finished in the tripping transaction, so those items

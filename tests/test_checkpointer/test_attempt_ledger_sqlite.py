@@ -306,7 +306,7 @@ async def test_pre_ledger_database_migrates_in_place(tmp_path):
             assert new_col[3] == 0  # notnull flag: nullable
             assert new_col[4] is None  # no default
             (version,) = probe.execute("SELECT version FROM _schema_version").fetchone()
-            assert version == 6
+            assert version == 7
         finally:
             probe.close()
 

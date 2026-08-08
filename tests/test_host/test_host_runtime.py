@@ -266,3 +266,174 @@ class TestIncrementalHostDefinitions:
             assert (await runtime.client.result(receipt.run_ref)).outputs == {"out": 2}
         finally:
             await runtime.close()
+
+
+class TestRegisteringWithoutWorking:
+    """Holding a Definition and executing it are separate decisions.
+
+    Submission is graph-first, so a process that wants work run SOMEWHERE ELSE
+    still has to hold the Definition it submits against. While one Home
+    admitted one worker, `serving()` could conflate the two safely — the
+    second process was refused the worker by name. Leases retire that refusal,
+    so conflating them would silently make every submitter an executor.
+    """
+
+    async def test_registering_lets_a_process_submit_without_becoming_a_worker(self, tmp_path):
+        path = tmp_path / "runs.db"
+        graph = _increment_graph("increment")
+
+        client = HostRuntime(path, deployment_version="v1", worker_id="client")
+        try:
+            host = await client.registering(graph)
+            assert client._worker is None, "registering must not arm a worker"
+            receipt = await host.submit(graph, {"x": 1}, workflow_id="run-over-there")
+            await asyncio.sleep(0.05)
+            assert client._home._get_submission_sync("run-over-there")["state"] == "pending"
+        finally:
+            await client.close()
+
+        # Nothing about the submission was degraded: another process's worker
+        # picks it up exactly as if the submitter had been the executor.
+        executor = HostRuntime(path, deployment_version="v1", worker_id="executor")
+        try:
+            await executor.serving(graph)
+            view = await asyncio.wait_for(_terminal(executor.client, receipt.run_ref), timeout=10)
+            assert view.status == WorkflowStatus.COMPLETED
+        finally:
+            await executor.close()
+
+    async def test_serving_after_registering_arms_the_same_registration(self, tmp_path):
+        """Deciding to run it here yourself is one later call, not a new Home."""
+        graph = _increment_graph("increment")
+        runtime = HostRuntime(tmp_path / "runs.db", deployment_version="v1", worker_id="solo")
+        try:
+            host = await runtime.registering(graph)
+            receipt = await host.submit(graph, {"x": 1}, workflow_id="mine-after-all")
+            assert runtime._worker is None
+            assert await runtime.serving(graph) is host
+            assert runtime._worker is not None
+            view = await asyncio.wait_for(_terminal(runtime.client, receipt.run_ref), timeout=10)
+            assert view.status == WorkflowStatus.COMPLETED
+        finally:
+            await runtime.close()
+
+    async def test_registering_builder_registers_a_constructor_and_no_worker(self, tmp_path):
+        runtime = HostRuntime(tmp_path / "runs.db", worker_id="builder-only")
+        try:
+            host = await runtime.registering_builder("x.increment", lambda args: _increment_graph(args["name"]))
+            assert runtime._worker is None
+            assert host.builder_keys == frozenset({"x.increment"})
+        finally:
+            await runtime.close()
+
+
+class TestStableWorkerId:
+    async def test_a_named_worker_reclaims_its_own_claims_across_a_restart(self, tmp_path):
+        """A supervised restart resumes at once only if it reuses its name.
+
+        `_reclaim_expired(adopt_own=True)` adopts THIS worker_id's outstanding
+        claims at any lease, because the process holding them is the one that
+        just started and is executing nothing. Under a per-process name, a
+        restart is a stranger to its own half-finished work and waits out the
+        lease instead.
+        """
+        path = tmp_path / "runs.db"
+        graph = _increment_graph("increment")
+        home = RunHome.open(path)
+        host = serve(graph.with_runner(AsyncRunner()), home=home, deployment_version="v1")
+        receipt = await host.submit(graph, {"x": 1}, workflow_id="half-done")
+        now = await home._store_now()
+        await home._claim_eligible(now, served=host._served_identities, worker_id="panda-api", lease_ttl=3600.0)
+        row = home._get_submission_sync("half-done")
+        assert (row["state"], row["claimed_by"]) == ("claimed", "panda-api")
+        await home.close()
+
+        restarted = HostRuntime(path, deployment_version="v1", worker_id="panda-api")
+        try:
+            await restarted.serving(graph)
+            view = await asyncio.wait_for(_terminal(restarted.client, receipt.run_ref), timeout=10)
+            assert view.status == WorkflowStatus.COMPLETED
+        finally:
+            await restarted.close()
+
+    async def test_the_default_worker_id_is_still_per_process(self, tmp_path):
+        runtime = HostRuntime(tmp_path / "runs.db")
+        assert runtime._worker_id.startswith("host-runtime-")
+        await runtime.close()
+
+    async def test_a_non_string_worker_id_is_refused_by_name(self, tmp_path):
+        with pytest.raises(TypeError, match="worker_id"):
+            HostRuntime(tmp_path / "runs.db", worker_id=7)
+
+
+class TestLiveCoverage:
+    async def test_live_coverage_names_what_the_workers_alive_can_execute(self, tmp_path):
+        """The fact a process needs BEFORE deciding to become a worker itself.
+
+        `submit` asks it on the caller's behalf and refuses an unanswerable
+        address. A process arranging its own execution first — attaching an
+        event processor to the runner that will run the work — has to ask
+        before there is a submission to ask about.
+        """
+        path = tmp_path / "runs.db"
+        graph = _increment_graph("increment")
+        pulse_started = asyncio.Event()
+        release_pulse = asyncio.Event()
+        original_pulse = RunHome._pulse_worker
+
+        async def gated_pulse(home, *args, **kwargs):
+            pulse_started.set()
+            await release_pulse.wait()
+            return await original_pulse(home, *args, **kwargs)
+
+        onlooker = HostRuntime(path, deployment_version="v1", worker_id="onlooker")
+        try:
+            host = await onlooker.registering(graph)
+            assert (await host.live_coverage()).builders == frozenset()
+
+            executor = HostRuntime(path, deployment_version="v1", worker_id="executor")
+            # A previous worker task's publication cannot satisfy this worker's readiness.
+            executor._ensure_host()._published = (
+                frozenset(),
+                frozenset({"x.increment"}),
+            )
+            patch = pytest.MonkeyPatch()
+            patch.setattr(RunHome, "_pulse_worker", gated_pulse)
+            try:
+                serving = asyncio.create_task(executor.serving_builder("x.increment", lambda args: _increment_graph("increment")))
+                await asyncio.wait_for(pulse_started.wait(), timeout=10)
+                assert not serving.done(), "serving_builder must wait for durable worker coverage"
+                release_pulse.set()
+                await asyncio.wait_for(serving, timeout=10)
+
+                coverage = await host.live_coverage()
+                assert coverage.builders == frozenset({"x.increment"})
+                assert coverage.worker_ids == frozenset({"executor"})
+            finally:
+                release_pulse.set()
+                await executor.close()
+                patch.undo()
+
+            # A clean exit withdraws its registration, so coverage is not a
+            # memory of who was once here.
+            assert (await host.live_coverage()).builders == frozenset()
+        finally:
+            await onlooker.close()
+
+    async def test_serving_builder_reports_a_worker_that_fails_before_ready(self, tmp_path, monkeypatch):
+        failure = OSError("registry unavailable")
+
+        async def fail_pulse(*args, **kwargs):
+            raise failure
+
+        monkeypatch.setattr(RunHome, "_pulse_worker", fail_pulse)
+        runtime = HostRuntime(tmp_path / "runs.db", worker_id="executor")
+        try:
+            with pytest.raises(RuntimeError, match="worker stopped unexpectedly") as raised:
+                await asyncio.wait_for(
+                    runtime.serving_builder("x.increment", lambda args: _increment_graph("increment")),
+                    timeout=10,
+                )
+            assert raised.value.__cause__ is failure
+        finally:
+            await runtime.close()

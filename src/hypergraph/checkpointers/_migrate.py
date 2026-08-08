@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def detect_schema_version(conn: Any) -> int:
@@ -15,7 +15,8 @@ def detect_schema_version(conn: Any) -> int:
         3 — v3 schema (pre attempt ledger)
         4 — v4 schema (attempt ledger tables, false cross-store FKs)
         5 — v5 schema (cross-store lineage columns carry no FK)
-        6 — current v6 schema (durable-host coordination + pending node boundaries)
+        6 — v6 schema (durable-host coordination + pending node boundaries)
+        7 — current v7 schema (submitted work carries a builder address; workers register)
     """
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
@@ -26,8 +27,8 @@ def detect_schema_version(conn: Any) -> int:
     return 0
 
 
-def create_v6_schema(conn: Any) -> None:
-    """Create a fresh v6 schema on an empty database."""
+def create_v7_schema(conn: Any) -> None:
+    """Create a fresh v7 schema on an empty database."""
     conn.execute(_CREATE_RUNS)
     conn.execute(_CREATE_STEPS)
     conn.execute(_CREATE_ATTEMPT_SERIES)
@@ -36,14 +37,16 @@ def create_v6_schema(conn: Any) -> None:
     _create_attempt_indexes(conn)
     _create_fts(conn)
     _ensure_v6_objects(conn)
+    _ensure_v7_objects(conn)
 
     conn.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
     conn.execute("INSERT INTO _schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
     conn.commit()
 
 
-# Backward-compatible alias: the fresh-create entry point used before v6.
-create_v5_schema = create_v6_schema
+# Backward-compatible aliases: the fresh-create entry points used before v7.
+create_v6_schema = create_v7_schema
+create_v5_schema = create_v7_schema
 
 
 def ensure_schema(conn: Any) -> None:
@@ -54,27 +57,35 @@ def ensure_schema(conn: Any) -> None:
         _ensure_v3_columns(conn)
         _ensure_v4_objects(conn)
         _ensure_v6_objects(conn)
+        _ensure_v7_objects(conn)
         return
     if version == 0:
-        create_v6_schema(conn)
+        create_v7_schema(conn)
         return
     if version == 2:
         _migrate_v2_to_v3(conn)
         _migrate_v3_to_v4(conn)
         _migrate_v4_to_v5(conn)
         _migrate_v5_to_v6(conn)
+        _migrate_v6_to_v7(conn)
         return
     if version == 3:
         _migrate_v3_to_v4(conn)
         _migrate_v4_to_v5(conn)
         _migrate_v5_to_v6(conn)
+        _migrate_v6_to_v7(conn)
         return
     if version == 4:
         _migrate_v4_to_v5(conn)
         _migrate_v5_to_v6(conn)
+        _migrate_v6_to_v7(conn)
         return
     if version == 5:
         _migrate_v5_to_v6(conn)
+        _migrate_v6_to_v7(conn)
+        return
+    if version == 6:
+        _migrate_v6_to_v7(conn)
         return
     raise ValueError(f"Unsupported database schema version {version} (current: {SCHEMA_VERSION}). Please upgrade hypergraph.")
 
@@ -391,7 +402,55 @@ CREATE TABLE IF NOT EXISTS host_submissions (
     -- fits inside one millisecond, so two successive claims of one
     -- submission can share a timestamp.
     claim_seq INTEGER NOT NULL DEFAULT 0,
-    admission_cost INTEGER NOT NULL DEFAULT 1
+    admission_cost INTEGER NOT NULL DEFAULT 1,
+    builder_key TEXT,
+    builder_args_json TEXT,
+    claimed_by TEXT,
+    lease_until TEXT
+)
+"""
+
+# === v7: submitted work carries a builder address, and workers register ===
+#
+# The four columns appended to host_submissions above are documented here
+# rather than inline, because SQLite stores a table's CREATE text verbatim
+# and rewrites it on ALTER TABLE ... DROP COLUMN — a `--` comment sitting
+# immediately before a dropped column leaves the stored DDL unparseable.
+#
+#   builder_key, builder_args_json
+#       The CONSTRUCTOR address, which is what makes a submission work-as-
+#       data. A pinned DefinitionId names an INSTANCE some process holds in
+#       memory; these two name a builder that any process registering the
+#       key can call to rebuild it. NULL builder_key means "instance-registry
+#       submission" — the pre-v7 shape, and still the ordinary one.
+#
+#   claimed_by, lease_until
+#       THE LEASE. Which worker holds this claim, and the instant after which
+#       anybody may adopt it — SQS's visibility timeout, Oban's locked_by +
+#       rescue_after. The claim CAS writes both, the holder renews
+#       lease_until while it works, and a scan adopts a claim whose lease ran
+#       out. Both NULL on a claimed row means a claim taken before leases
+#       existed, which is adoptable on sight. They are meaningful only while
+#       state = 'claimed'; a park or re-admission clears them, and a settled
+#       row keeps them as audit exactly as claimed_at does.
+
+# v7: which workers are alive, and what each of them can execute. A
+# submission's pinned identity says what it needs; this table says who could
+# supply it, so "accepted work nobody alive can do" is answerable at submit
+# time instead of discoverable hours later as a parked row.
+#
+# ``heartbeat_at`` is a pulse, not a lease: the worker rewrites it once per
+# poll pass and a row older than the freshness window is read as dead. The
+# row is deleted on clean worker exit, so a stopped worker stops covering
+# work immediately rather than after the window.
+_CREATE_HOST_WORKERS = """
+CREATE TABLE IF NOT EXISTS host_workers (
+    worker_id TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    heartbeat_at TEXT NOT NULL,
+    served_json TEXT NOT NULL DEFAULT '[]',
+    builders_json TEXT NOT NULL DEFAULT '[]',
+    endpoint TEXT
 )
 """
 
@@ -584,6 +643,10 @@ _HOST_SUBMISSIONS_ADDED_COLUMNS = (
     ("item_key", "item_key TEXT"),
     ("claim_seq", "claim_seq INTEGER NOT NULL DEFAULT 0"),
     ("admission_cost", "admission_cost INTEGER NOT NULL DEFAULT 1"),
+    ("builder_key", "builder_key TEXT"),
+    ("builder_args_json", "builder_args_json TEXT"),
+    ("claimed_by", "claimed_by TEXT"),
+    ("lease_until", "lease_until TEXT"),
 )
 
 # Columns appended to host_batches after its initial cut (ticket 06). The v6
@@ -635,8 +698,29 @@ def _ensure_v6_objects(conn: Any) -> None:
     conn.commit()
 
 
+def _ensure_v7_objects(conn: Any) -> None:
+    """Ensure v7 objects exist (safe idempotent guard).
+
+    The four ``host_submissions`` columns ride the guarded ALTER list above,
+    so only the worker registry needs creating here. Everything v7 adds is
+    additive and nullable: a v6 database migrates in place, keeps every row
+    byte-identical, and reads exactly as before until something writes a
+    builder address or registers a worker.
+    """
+    conn.execute(_CREATE_HOST_WORKERS)
+    conn.commit()
+
+
 def _migrate_v5_to_v6(conn: Any) -> None:
     """In-place migration from schema v5 to v6 (adds host coordination tables)."""
     _ensure_v6_objects(conn)
     conn.execute("UPDATE _schema_version SET version = 6")
+    conn.commit()
+
+
+def _migrate_v6_to_v7(conn: Any) -> None:
+    """In-place migration from schema v6 to v7 (builder address + worker registry)."""
+    _ensure_v6_objects(conn)
+    _ensure_v7_objects(conn)
+    conn.execute("UPDATE _schema_version SET version = 7")
     conn.commit()

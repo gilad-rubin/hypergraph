@@ -166,7 +166,13 @@ async def main() -> int:
     arm(home, host, boundary)
     print("worker-ready", flush=True)
     try:
-        await asyncio.wait_for(host.work_forever("kill-worker", poll_interval=0.01), timeout=60)
+        # lease_ttl is short on purpose. This worker is armed to SIGKILL
+        # itself, and the parent's restart worker may only adopt a claim
+        # whose lease has run out — a claim it does not hold is another
+        # worker's live work until then. What these boundaries prove is
+        # crash RECOVERY, not how long adoption waits; the lease timing
+        # itself is pinned in test_leases_and_multiple_workers.py.
+        await asyncio.wait_for(host.work_forever("kill-worker", poll_interval=0.01, lease_ttl=0.5), timeout=60)
     except (asyncio.TimeoutError, asyncio.CancelledError):
         host.shutdown()
     finally:

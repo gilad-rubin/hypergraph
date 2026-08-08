@@ -326,7 +326,10 @@ graph = Graph([first, second], name="killdef").with_runner(SyncRunner())
 home = RunHome.open({uri!r})
 host = serve(graph, home=home, deployment_version="v1")
 host.submit_sync(graph, {{"x": 1}}, workflow_id="wf-kill")
-asyncio.run(host.work_forever("w-child", poll_interval=0.02))
+# lease_ttl is short on purpose: this worker is about to be SIGKILLed,
+# and the successor may only adopt a claim whose lease has run out.
+# What is under test is crash RECOVERY, not how long adoption waits.
+asyncio.run(host.work_forever("w-child", poll_interval=0.02, lease_ttl=0.5))
 """
 
 
@@ -430,14 +433,14 @@ class TestRecoveryBrake:
         db = home._sync_db()
         db.execute("UPDATE host_submissions SET state = 'claimed' WHERE workflow_id = 'wf-poison'")
         db.commit()
-        await home._restart_scan()
+        await home._reclaim_expired()
         first = home._get_submission_sync("wf-poison")
         assert first["state"] == "pending"
         assert first["recovery_attempts"] == 1
 
         db.execute("UPDATE host_submissions SET state = 'claimed' WHERE workflow_id = 'wf-poison'")
         db.commit()
-        await home._restart_scan()
+        await home._reclaim_expired()
         # attempts >= cap: parked as recovery-exhausted with a durable update.
         submission = home._get_submission_sync("wf-poison")
         assert submission["state"] == "exhausted"
@@ -479,7 +482,7 @@ class TestRecoveryBrake:
         db.execute("INSERT INTO steps (run_id, step_index, superstep, node_name, status) VALUES ('wf-prog', 0, 0, 'compute', 'completed')")
         db.execute("UPDATE host_submissions SET state = 'claimed' WHERE workflow_id = 'wf-prog'")
         db.commit()
-        await home._restart_scan()
+        await home._reclaim_expired()
         submission = home._get_submission_sync("wf-prog")
         assert submission["state"] == "pending"
         assert submission["recovery_attempts"] == 1
@@ -559,7 +562,7 @@ class TestClientList:
         db = home._sync_db()
         db.execute("UPDATE host_submissions SET state = 'claimed' WHERE workflow_id = 'wf-exh'")
         db.commit()
-        await home._restart_scan()
+        await home._reclaim_expired()
         assert home._get_submission_sync("wf-exh")["state"] == "exhausted"
         # (restart_scan ran before the incompatible marking below, which it
         # would otherwise reset to 'compatible'.)
@@ -629,7 +632,7 @@ class TestClientList:
         db = home._sync_db()
         db.execute("UPDATE host_submissions SET state = 'claimed' WHERE workflow_id = 'wf-exh2'")
         db.commit()
-        await home._restart_scan()
+        await home._reclaim_expired()
         assert home._get_submission_sync("wf-exh2")["state"] == "exhausted"
         receipt = host.client.rerun_sync(RunRef(home=home.uri, run_id="wf-exh2"))
         assert receipt.workflow_id == "wf-exh2-retry-1"

@@ -30,7 +30,8 @@ TERMINAL_STATUS_VALUES: frozenset[str] = frozenset(status.value for status in TE
 
 # Submission states in which the host will never touch a submission again:
 # 'finished' (terminal run, stop-before-start, or a tolerance trip that
-# closed admission) and 'exhausted' (parked by the recovery brake).
+# closed admission), 'exhausted' (parked by the recovery brake), and
+# 'dead_letter' (retired because nothing alive can execute it).
 SUBMISSION_STATE_FINISHED = "finished"
 SUBMISSION_STATE_EXHAUSTED = "exhausted"
 # A run the worker released because it PAUSED on a durable interrupt. The
@@ -40,7 +41,39 @@ SUBMISSION_STATE_EXHAUSTED = "exhausted"
 # child 'active' to the bucket ladder and settled to `is_child_settled`,
 # ending `watch()` while a decision was still open.
 SUBMISSION_STATE_PAUSED = "paused"
-SETTLED_SUBMISSION_STATES: frozenset[str] = frozenset({SUBMISSION_STATE_FINISHED, SUBMISSION_STATE_EXHAUSTED})
+# Work no live worker can execute, parked WITH a reason instead of silently.
+# ``compat_state='incompatible'`` is the transient park — another worker
+# serves this identity and will take it — and it stays exactly that. This is
+# its terminal exit: nothing alive covers the pinned identity or the recorded
+# builder address, so the submission would otherwise sit queued forever with
+# no executor and no error. A dead letter is settled; ``client.rerun()``
+# revives it, exactly as it revives recovery-exhausted work.
+SUBMISSION_STATE_DEAD_LETTER = "dead_letter"
+SETTLED_SUBMISSION_STATES: frozenset[str] = frozenset({SUBMISSION_STATE_FINISHED, SUBMISSION_STATE_EXHAUSTED, SUBMISSION_STATE_DEAD_LETTER})
+
+# Why a submission was dead-lettered. A closed vocabulary, because the reason
+# is what an operator acts on: the first two say "deploy something that can
+# run this", the third says "a builder drifted from the identity it was
+# submitted against, and that is a fork decision, not a retry".
+DEAD_LETTER_UNSERVED_IDENTITY = "unserved_identity"
+DEAD_LETTER_BUILDER_MISSING = "builder_missing"
+DEAD_LETTER_BUILDER_IDENTITY_MISMATCH = "builder_identity_mismatch"
+# The fourth reason exists because a constructor is CODE: registering one
+# does not promise it returns. A builder that raises would otherwise leave
+# its submission claimed forever, holding an admission slot with nothing
+# executing — so it is retired here, with the exception type recorded.
+DEAD_LETTER_BUILDER_FAILED = "builder_failed"
+DEAD_LETTER_REASONS: frozenset[str] = frozenset(
+    {
+        DEAD_LETTER_UNSERVED_IDENTITY,
+        DEAD_LETTER_BUILDER_MISSING,
+        DEAD_LETTER_BUILDER_IDENTITY_MISMATCH,
+        DEAD_LETTER_BUILDER_FAILED,
+    }
+)
+#: The durable run-update kind carrying that reason, so a detached ``watch``
+#: learns why a submission was retired without querying the store.
+DEAD_LETTERED_UPDATE_KIND = "dead_lettered"
 
 
 def is_child_settled(submission_state: str | None, run_status: str | None) -> bool:
@@ -63,7 +96,7 @@ def is_child_settled(submission_state: str | None, run_status: str | None) -> bo
 
     Returns:
         True when the child reached a terminal run status or its submission
-        is settled (finished or recovery-exhausted).
+        is settled (finished, recovery-exhausted, or dead-lettered).
     """
     return run_status in TERMINAL_STATUS_VALUES or submission_state in SETTLED_SUBMISSION_STATES
 
@@ -101,9 +134,10 @@ class WaitingCondition(Enum):
     QUEUED = "queued"  # eligible, awaiting claim
     SCHEDULED = "scheduled"  # future start_at
     PAUSED = "paused"  # durable pause slot open
-    VERSION_INCOMPATIBLE = "version_incompatible"  # no serving worker
+    VERSION_INCOMPATIBLE = "version_incompatible"  # another worker serves it
     ADMISSION_LIMITED = "admission_limited"  # over the active-Run cap
     RECOVERY_EXHAUSTED = "recovery_exhausted"  # pinned recovery cap hit
+    DEAD_LETTER = "dead_letter"  # nothing alive can execute it
 
 
 @dataclass(frozen=True)
@@ -118,9 +152,11 @@ class RunUpdate:
             updates.
         kind: Fact kind — ``submitted``, ``run_started``, ``step``,
             ``status``, ``command``, ``answer``, ``recovery_exhausted``,
-            ``run_reset`` — or an event class name for previews. A
-            ``status`` fact for a pause also carries the ``pause_id`` it
-            committed with.
+            ``dead_lettered``, ``run_reset`` — or an event class name for
+            previews. A ``status`` fact for a pause also carries the
+            ``pause_id`` it committed with. A ``dead_lettered`` fact carries
+            the ``reason`` nothing could execute the work, the pinned
+            ``definition_id``, and the recorded ``builder_key``.
         payload: JSON-safe fact payload. A ``command`` fact names its
             ``verb`` (``stop`` or ``schedule_answer``) and carries the
             accepting caller's opaque ``source_ref`` — audit provenance
@@ -154,12 +190,13 @@ class RunView:
             exists yet (submission still pending).
         waiting: Typed waiting condition, or None: ``QUEUED`` (accepted,
             execution not started), ``SCHEDULED`` (future ``start_at``),
-            ``PAUSED`` (runs row paused), ``VERSION_INCOMPATIBLE`` (no
-            serving worker claims the pinned identity),
+            ``PAUSED`` (runs row paused), ``VERSION_INCOMPATIBLE`` (another
+            live worker serves the pinned identity, this one does not),
             ``ADMISSION_LIMITED`` (due and claimable, but the Home's
-            stored ``max_active_runs`` has no free slot), and
-            ``RECOVERY_EXHAUSTED`` (the pinned recovery cap tripped).
-            Never a WorkflowStatus.
+            stored ``max_active_runs`` has no free slot),
+            ``RECOVERY_EXHAUSTED`` (the pinned recovery cap tripped), and
+            ``DEAD_LETTER`` (nothing alive can execute it — see
+            ``RunHomeClient.dead_letter_reason``). Never a WorkflowStatus.
         definition_id: The pinned Definition identity from the submission,
             or reconstructed from the runs row for host-less (Tier 0) runs.
             None only when neither exists.
@@ -226,6 +263,12 @@ BATCH_OUTCOME_RECOVERY_EXHAUSTED = "recovery_exhausted"
 # emphatically not "unstarted": this child committed steps.
 BATCH_OUTCOME_ABANDONED = "abandoned"
 
+# THE Batch-level outcome for a child nothing alive could execute. Terminal
+# and settled like the two above, and named for the structural failure it is:
+# the item was accepted, no worker covered it, and it was retired with a
+# reason rather than left queued forever.
+BATCH_OUTCOME_DEAD_LETTER = "dead_letter"
+
 # Closed bucket vocabulary for BatchView.counts. Every manifest item is
 # accounted in exactly one bucket; terminal buckets are WorkflowStatus
 # values so child outcomes share the Run vocabulary.
@@ -249,6 +292,7 @@ BATCH_COUNT_KEYS: tuple[str, ...] = (
     "paused",
     "queued",
     "recovery_exhausted",
+    "dead_letter",
     "unstarted",
     "abandoned",
 )
@@ -275,7 +319,8 @@ class BatchItemView:
             an item and its Run never disagree about why it waits.
         outcome: The item's settled outcome string — a terminal status,
             ``"recovery_exhausted"`` for a child the recovery brake parked,
-            or ``"abandoned"`` for a started child a tolerance trip closed
+            ``"dead_letter"`` for one nothing alive could execute, or
+            ``"abandoned"`` for a started child a tolerance trip closed
             admission on — and None while it can still change. Exactly the
             value ``BatchView.outcomes`` reports for this key.
         started: Whether this child ever began executing (it has a runs
@@ -346,7 +391,8 @@ class BatchView:
             parked on a human answer (never ``active`` — it holds no
             active-Run slot); ``queued`` for a child awaiting claim,
             including one whose answer just made it runnable again;
-            ``recovery_exhausted`` for a parked child; ``unstarted`` for a
+            ``recovery_exhausted`` for a parked child; ``dead_letter`` for a
+            child no live worker could execute; ``unstarted`` for a
             child that finished without ever executing (stop-before-start,
             or closed admission it never reached); and ``abandoned`` for one
             that HAD started when closed admission settled it.
@@ -356,7 +402,8 @@ class BatchView:
             ``RunRef`` and current truth.
         outcomes: Logical item key → outcome, in manifest order: the
             terminal status string for settled children,
-            ``"recovery_exhausted"`` for parked children, ``"abandoned"``
+            ``"recovery_exhausted"`` for parked children, ``"dead_letter"``
+            for children nothing alive could execute, ``"abandoned"``
             for a started child a tolerance trip closed admission on, None
             while a child is in flight, and None for unstarted items
             (Hypergraph never fabricates results for items that never ran).
@@ -425,7 +472,8 @@ class BatchUpdate:
             waiting on a human), ``child_runnable`` (that occurrence was
             answered and the child re-entered claim order),
             ``child_settled`` (a child settled for good: a terminal run
-            transition, or the recovery brake parking it), ``tolerance_tripped``
+            transition, the recovery brake parking it, or a dead letter
+            retiring it), ``tolerance_tripped``
             (a pinned tolerance was strictly exceeded, committed in that
             same transaction at the next ``bseq``), ``child_unstarted`` (an
             item that ended unstarted without the trip fact naming it — a
@@ -438,8 +486,9 @@ class BatchUpdate:
             causes it.
         payload: JSON-safe fact payload. ``child_settled`` carries
             ``item_key``, ``workflow_id``, and ``status`` — a terminal
-            ``WorkflowStatus`` value, or ``"recovery_exhausted"`` for a
-            parked child, exactly the string ``BatchView.outcomes`` reports;
+            ``WorkflowStatus`` value, ``"recovery_exhausted"`` for a parked
+            child, or ``"dead_letter"`` for a retired one, exactly the string
+            ``BatchView.outcomes`` reports;
             ``child_paused`` and ``child_runnable`` carry ``item_key``,
             ``workflow_id``, an inert ``run_ref`` dict, and the ``pause_id``
             of the occurrence, so a consumer addresses the item without
