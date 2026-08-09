@@ -36,6 +36,7 @@ from hypergraph.checkpointers.types import (
     StalePauseError,
     WorkflowStatus,
 )
+from hypergraph.host._attempt_census import census_query
 from hypergraph.host._batch_store import (
     ABANDONED_UPDATE_KIND,
     CLOSE_PENDING_CHILDREN,
@@ -3424,6 +3425,34 @@ class RunHome(SqliteCheckpointer):
                 cursor = await self._db.execute(*_step_timing_query(chunk))
                 facts.extend(await cursor.fetchall())
         return facts
+
+    # === attempt ledger reads (issue #392) ===
+
+    def _attempt_census_rows_sync(self, run_ids: Sequence[str] | None, definition: str | None) -> list[tuple[Any, ...]]:
+        """Raw census rows: one statement per id window, never one per Run.
+
+        ``run_ids=None`` is a single unnarrowed pass over the whole ledger.
+        An EMPTY selection asks about no Run and reads nothing at all, which
+        is already what ``_chunk_run_ids`` returns for it.
+        """
+        rows: list[tuple[Any, ...]] = []
+        for window in [None] if run_ids is None else self._chunk_run_ids(run_ids):
+            with self._sync_lock:
+                rows.extend(self._sync_db().execute(*census_query(window, definition)).fetchall())
+        return rows
+
+    async def _attempt_census_rows(self, run_ids: Sequence[str] | None, definition: str | None) -> list[tuple[Any, ...]]:
+        """Async mirror of ``_attempt_census_rows_sync``."""
+        rows: list[tuple[Any, ...]] = []
+        windows: list[Sequence[str] | None] = [None] if run_ids is None else list(self._chunk_run_ids(run_ids))
+        if not windows:
+            return rows
+        await self._ensure_db()
+        for window in windows:
+            async with self._txn_lock():
+                cursor = await self._db.execute(*census_query(window, definition))
+                rows.extend(await cursor.fetchall())
+        return rows
 
     # === run_updates reads (watch replay) ===
 

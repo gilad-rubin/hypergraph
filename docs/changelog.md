@@ -96,6 +96,25 @@
 
 ### Added
 
+- **Three read verbs a product had been writing for itself (issue #392):
+  `RunHomeReadModel.retry_census()`, `node_timings(descend=...)`, and an
+  honest inner-cache outcome.** `retry_census(run_ids=None, definition=None)`
+  folds the durable attempt ledger into `{run_id: highest attempt reached}` —
+  the evidence a node's retries leave *below* the graph, where a Run's status
+  never shows them — at one statement per id window rather than the
+  per-series question `get_attempt_records` could answer. A Run appears only
+  if a node of it was attempt-managed, keyed by the run that executed that
+  node, so a nested graph's fourth try stays the nested run's.
+  `node_timings(..., descend=False)` reports only the steps each named Run
+  committed itself, the counterpart to the existing `runs.parent_run_id`
+  fold; the default is unchanged and the selection is identical either way.
+  `InnerCacheEvent` gains `shared` and a derived
+  `outcome` of `"hit" | "joined" | "computed"`: a call that joined another
+  caller's in-flight single-flight did no work of its own, so counting
+  computed work as "calls minus hits" was reporting a ceiling. `hit` keeps
+  its exact meaning, and a Hypercache that does not report sharing leaves
+  `shared` False, which reads as `computed`.
+
 - **BREAKING (Durable Host): several workers may share one Run Home, and the
   exclusive worker lock is gone.** `work_forever()` took an OS-level `flock`
   on the database file, so a second worker failed immediately with

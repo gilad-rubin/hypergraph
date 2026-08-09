@@ -402,6 +402,11 @@ class InnerCacheEvent(BaseEvent):
         stale: True if the cached value was past its stale window.
         refreshing: True if a background refresh was triggered.
         wrote: True if a new value was written to the cache store.
+        shared: True if this call JOINED an in-process single-flight rather
+            than performing the work itself. It never overlaps ``hit``:
+            joining is neither a store read nor a computation of one's own.
+            Reported only by a Hypercache that carries the distinction;
+            older ones leave it False, which reads as computed.
         mode: Cache mode in effect: "normal" | "bypass" | "refresh_forced".
     """
 
@@ -414,6 +419,22 @@ class InnerCacheEvent(BaseEvent):
     refreshing: bool = False
     wrote: bool = False
     mode: str = ""
+    shared: bool = False
+
+    @property
+    def outcome(self) -> Literal["hit", "joined", "computed"]:
+        """What this call actually cost, in one word.
+
+        Counting ``computed`` as "calls minus hits" makes it a CEILING on
+        the work reached: a call that joined another caller's in-flight
+        compute did no work of its own and is not a second computation. The
+        three words split that ceiling into what happened —
+        ``"hit"`` (served from the cache store), ``"joined"`` (waited on a
+        compute already running), ``"computed"`` (did the work here).
+        """
+        if self.hit:
+            return "hit"
+        return "joined" if self.shared else "computed"
 
 
 Event = (
