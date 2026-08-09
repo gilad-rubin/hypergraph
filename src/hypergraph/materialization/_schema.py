@@ -145,6 +145,11 @@ def python_type_to_arrow(tp: Any) -> Any:
         return pa.bool_()
     if tp is bytes:
         return pa.large_binary()
+    if tp is list:
+        # The bare class, as Table._evolve passes for a list VALUE whose
+        # element type nothing declared. Falling through to utf8 built a
+        # string column that rejected the very value that created it.
+        return pa.list_(pa.utf8())
 
     origin = typing.get_origin(tp)
     args = typing.get_args(tp)
