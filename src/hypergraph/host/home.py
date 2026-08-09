@@ -1,9 +1,10 @@
 """RunHome — the SQLite Run Home for the durable host (Tier 1).
 
 A RunHome IS the existing SQLite checkpointer plus coordination tables
-(schema v6): durable submissions, the per-Run durable update sequence, the
-host command channel, and the Home-scoped coordination settings every
-process that opens the store agrees on (``max_active_runs``). Steps stay the
+(schema v7): durable submissions, the per-Run durable update sequence, the
+host command channel, the worker registry, and the Home-scoped coordination
+settings every process that opens the store agrees on
+(``max_active_runs``). Steps stay the
 sole execution journal; host coordination facts never enter
 ``RunStatus``/``WorkflowStatus``.
 
@@ -13,13 +14,13 @@ checkpoint durability ``"sync"`` and rejects ``"exit"`` policies.
 
 from __future__ import annotations
 
-import itertools
 import json
 import logging
 import threading
 from collections.abc import Collection, Sequence
 from contextvars import ContextVar, Token
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -104,7 +105,12 @@ from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import AlreadyTerminalError, HostError, WorkflowIdConflictError
 from hypergraph.host.fingerprint import fingerprint_mismatch_aspect
 from hypergraph.host.views import (
+    BATCH_OUTCOME_DEAD_LETTER,
     BATCH_OUTCOME_RECOVERY_EXHAUSTED,
+    DEAD_LETTER_BUILDER_MISSING,
+    DEAD_LETTER_UNSERVED_IDENTITY,
+    DEAD_LETTERED_UPDATE_KIND,
+    SUBMISSION_STATE_DEAD_LETTER,
     SUBMISSION_STATE_FINISHED,
     SUBMISSION_STATE_PAUSED,
     TERMINAL_STATUS_VALUES,
@@ -115,18 +121,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("hypergraph.host")
 
-#: Worker-lock identity for in-memory Homes, minted once per Home. ``id()``
-#: cannot serve: it is unique only among LIVE objects, so a freed Home hands
-#: its id to the next allocation and two logically distinct Homes would share
-#: one entry in the worker-lock registry. A token is never reused.
-_memory_lock_tokens = itertools.count()
 _sync_wait_cancellation: ContextVar[threading.Event | None] = ContextVar("host_sync_wait_cancellation", default=None)
 
 _SUBMISSION_COLS = (
     "workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
     "start_at, state, recovery_attempts, recovery_cap, source_ref, created_at, claimed_at, finished_at, "
     "fingerprint, compat_state, retry_of, retry_index, forked_from, fork_reason, last_progress_step_count, batch_id, item_key, claim_seq, "
-    "admission_cost"
+    "admission_cost, builder_key, builder_args_json, claimed_by, lease_until"
 )
 _SUBMISSION_PLACEHOLDERS = ", ".join("?" for _ in _SUBMISSION_COLS.split(", "))
 _SELECT_SUBMISSION = f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE workflow_id = ?"
@@ -176,6 +177,218 @@ _SELECT_RUN_STATUS = "SELECT status FROM runs WHERE id = ?"
 # executed and would hand two pending reruns the same id.
 _COUNT_ACCEPTED_RETRIES = "SELECT COUNT(*) FROM host_submissions WHERE retry_of = ?"
 _COUNT_ACCEPTED_BATCH_RETRIES = "SELECT COUNT(*) FROM host_batches WHERE retry_of = ?"
+
+# === Worker registry (host_workers) ===
+#
+# A worker announces what it can execute and pulses while it lives, so
+# "which of these submissions can anything alive actually run?" is a query
+# rather than a guess. This is a PULSE about the WORKER, not a lease on any
+# submission: it grants no authority and fences nothing (the claim CAS and
+# claim_seq still do all of that). It only answers who is around, and what
+# they could run.
+
+#: How long a worker's pulse stays believable. The worker rewrites its row
+#: at a third of this window, the interval Kafka's session-timeout rule
+#: prescribes, so a row older than this has missed three consecutive writes:
+#: it belongs to a process that is gone, not to one that is merely busy.
+WORKER_PULSE_TTL_SECONDS = 90.0
+_UPSERT_WORKER_SQL = (
+    "INSERT INTO host_workers (worker_id, started_at, heartbeat_at, served_json, builders_json, endpoint) VALUES (?, ?, ?, ?, ?, ?) "
+    "ON CONFLICT(worker_id) DO UPDATE SET heartbeat_at = excluded.heartbeat_at, served_json = excluded.served_json, "
+    "builders_json = excluded.builders_json, endpoint = excluded.endpoint"
+)
+_DELETE_WORKER_SQL = "DELETE FROM host_workers WHERE worker_id = ?"
+_SELECT_LIVE_WORKERS_SQL = "SELECT worker_id, served_json, builders_json FROM host_workers WHERE heartbeat_at >= ?"
+_SELECT_WORKER_REGISTRATION_SQL = "SELECT served_json, builders_json FROM host_workers WHERE worker_id = ?"
+
+# === The claim lease (host_submissions.claimed_by / lease_until) ===
+#
+# A worker does not LOCK a Run Home; it takes a time-bounded lease on each
+# submission it claims, and renews the lease while it is genuinely working.
+# That is SQS's visibility timeout, Kafka's session timeout, and Oban's
+# locked_by + rescue_after, in the one shape SQLite supports: a
+# compare-and-set claim plus an expiry scan. Its whole value is that it makes
+# the unanswerable question unnecessary — nothing has to decide whether a
+# half-finished Run's worker is dead, only whether its lease has run out.
+#
+# Expiry proves nothing about the old worker, so the lease is not the safety
+# property; ``claim_seq`` is. A reclaimed submission gets a NEW claim, and
+# every transition that speaks for ONE execution (``_release_submission``,
+# the worker's ``_dead_letter``) compare-and-sets on the claim it was handed.
+# A presumed-dead worker that wakes up and finishes therefore commits
+# nothing: its release matches no row.
+
+#: How long a claim is its holder's before anybody may adopt it. Ninety
+#: seconds is SQS's own default visibility timeout, and it is renewed rather
+#: than fixed: graphile-worker's four hours and Oban Lifeline's sixty minutes
+#: both admit duplicate execution for a long job, and a durable Run has no
+#: correct fixed value — a page conversion takes a second and an ingestion
+#: drive takes fifteen minutes.
+LEASE_TTL_SECONDS = 90.0
+
+#: The fraction of the TTL at which a live holder renews. Kafka's rule for
+#: ``heartbeat.interval.ms`` against ``session.timeout.ms``: three
+#: consecutive missed renewals before anything is declared adoptable.
+LEASE_RENEWAL_FRACTION = 1 / 3
+
+#: Extend (or, with a zero TTL, immediately surrender) every claim this
+#: worker still holds. One statement per tick, whatever the number of claims:
+#: the worker's liveness is one fact about the worker, not one per Run.
+_RENEW_LEASES_SQL = "UPDATE host_submissions SET lease_until = ? WHERE state = 'claimed' AND claimed_by = ?"
+
+#: Re-open the parked rows when a worker's coverage arrives or widens.
+#: ``compat_state='incompatible'`` is a MEMO — "no worker that scanned this
+#: could serve its pinned identity" — and a memo has to be invalidated by the
+#: event that could change the answer. Under one worker that event was its
+#: own restart. Under several it is any worker publishing coverage it had not
+#: published before, which is exactly what a newly-arrived worker does.
+_UNPARK_INCOMPATIBLE_SQL = "UPDATE host_submissions SET compat_state = 'compatible' WHERE state = 'pending' AND compat_state = 'incompatible'"
+
+
+@dataclass(frozen=True)
+class WorkerCoverage:
+    """What the workers alive on a Run Home can execute, right now.
+
+    Two registries, read as one answer. ``identities`` is the instance
+    registry every ``serve()`` already builds — the exact pinned Definitions
+    a worker holds in memory. ``builders`` is the constructor registry: keys
+    whose builder any of those workers can call to REBUILD a Definition from
+    arguments carried on the submission row.
+
+    ``names`` is coarser than either and answers a different question. An
+    exact-identity miss has two very different causes, and the store cannot
+    tell them apart from the identity alone:
+
+    - **A version skew.** Something alive serves this Definition NAME at a
+      different version or structure. That is a rolling deployment, and
+      ``accepts=`` exists precisely to drain it — the submission is waiting,
+      not stranded.
+    - **A dead address.** Nothing alive serves this name at all. Nobody is
+      coming: that is the submission that sits queued forever with no
+      executor and no error, which is what a dead letter is for.
+    """
+
+    worker_ids: frozenset[str]
+    identities: frozenset[DefinitionId]
+    names: frozenset[str]
+    builders: frozenset[str]
+
+    def covers(self, identity: DefinitionId, builder_key: str | None) -> bool:
+        """Whether anything alive could execute this exact address."""
+        return identity in self.identities or (builder_key is not None and builder_key in self.builders)
+
+    def may_yet_cover(self, identity: DefinitionId, builder_key: str | None) -> bool:
+        """Whether waiting for this submission's executor is still reasonable."""
+        return self.covers(identity, builder_key) or identity.name in self.names
+
+
+def _shift_iso(now_iso: str, seconds: float) -> str:
+    """Offset a store-clock instant, keeping the one comparable UTC shape.
+
+    Every deadline in this store is decided by a lexicographic comparison
+    against one store-authoritative ``now`` (see ``_due_clause``), so a
+    deadline DERIVED from that ``now`` has to come back in the same spelling
+    ``_normalize_utc_iso`` produces. Both the pulse cutoff and the claim
+    lease are such derivations, and they go through this one function so a
+    worker's freshness and a claim's expiry can never mean two different
+    shapes of the same instant.
+    """
+    return (datetime.fromisoformat(now_iso) + timedelta(seconds=seconds)).astimezone(timezone.utc).isoformat()
+
+
+def _pulse_cutoff(now_iso: str) -> str:
+    """The oldest ``heartbeat_at`` still read as alive, in store-clock shape.
+
+    Derived from the STORE's ``now`` rather than the reader's process clock,
+    for the same reason every due predicate is: a notebook whose clock drifts
+    must not decide that the API server's worker is dead.
+    """
+    return _shift_iso(now_iso, -WORKER_PULSE_TTL_SECONDS)
+
+
+def _reclaim_predicate(now_iso: str, worker_id: str | None, adopt_own: bool) -> tuple[str, tuple[Any, ...]]:
+    """WHICH claimed rows a reclaim scan is entitled to adopt, and why.
+
+    Two forms, because a worker knows two different things.
+
+    ``adopt_own=True`` is the STARTUP form. It adopts any expired lease plus
+    every claim this ``worker_id`` itself holds, at any lease. This process
+    IS that worker: it has just started, it is demonstrably executing
+    nothing, so waiting out its own dead incarnation's lease would be a
+    delay it imposes on itself for no information. That is also what keeps a
+    supervised restart as prompt as it was under the exclusive lock.
+
+    ``adopt_own=False`` is the STEADY-STATE form, run every poll pass. It
+    adopts expired leases held by SOMEBODY ELSE and deliberately never this
+    worker's own: a poll pass that ran late (a blocked event loop, a long
+    GC) must not yank a Run out from under the task still executing it in
+    this very process. Another worker adopting that Run is the intended
+    arbitration, and ``claim_seq`` is what makes it safe; this process
+    racing itself is not.
+
+    Two kinds of claim are adoptable on sight, whatever their lease says,
+    and both are the same fact: nothing can renew them.
+
+    - ``claimed_by IS NULL`` — nobody put their name on it. ``_renew_leases``
+      extends the claims of a NAMED holder, so an unstamped claim is
+      un-renewable by construction; waiting out its lease would buy no
+      information at all.
+    - ``lease_until IS NULL`` — a claim taken before leases existed. This is
+      how a Run Home upgraded with work in flight drains.
+    """
+    expired = "(claimed_by IS NULL OR lease_until IS NULL OR lease_until <= ?)"
+    if adopt_own:
+        return (f"state = 'claimed' AND ({expired} OR claimed_by = ?)", (now_iso, worker_id))
+    # ``IS NOT`` is SQLite's null-safe compare, so an unstamped row is never
+    # mistaken for this worker's; ``? IS NULL`` turns the exclusion off
+    # entirely for a caller that names no worker.
+    return (f"state = 'claimed' AND {expired} AND (? IS NULL OR claimed_by IS NOT ?)", (now_iso, worker_id, worker_id))
+
+
+def _reasons_from_rows(rows: Sequence[Sequence[Any]]) -> dict[str, str]:
+    """Project ``dead_lettered`` update payloads to ``{run_id: reason}``."""
+    reasons: dict[str, str] = {}
+    for run_id, payload in rows:
+        try:
+            reason = json.loads(payload).get("reason")
+        except (TypeError, ValueError):  # pragma: no cover - corrupt payload
+            continue
+        if isinstance(reason, str):
+            reasons[str(run_id)] = reason
+    return reasons
+
+
+def _coverage_from_rows(rows: Sequence[Sequence[Any]], exclude: str | None) -> WorkerCoverage:
+    """Fold live ``host_workers`` rows into one coverage answer.
+
+    A row whose JSON will not parse is skipped rather than raised on: the
+    registry is an availability hint written by another process, and a
+    corrupt one must never break a submission or a claim scan.
+    """
+    worker_ids: set[str] = set()
+    identities: set[DefinitionId] = set()
+    builders: set[str] = set()
+    for worker_id, served_json, builders_json in rows:
+        if exclude is not None and worker_id == exclude:
+            continue
+        worker_ids.add(str(worker_id))
+        try:
+            served = json.loads(served_json or "[]")
+            keys = json.loads(builders_json or "[]")
+        except (TypeError, ValueError):  # pragma: no cover - corrupt registry row
+            continue
+        for entry in served:
+            try:
+                identities.add(DefinitionId.from_dict(entry))
+            except (TypeError, ValueError):  # pragma: no cover - corrupt registry row
+                continue
+        builders.update(str(key) for key in keys)
+    return WorkerCoverage(
+        frozenset(worker_ids),
+        frozenset(identities),
+        frozenset(identity.name for identity in identities),
+        frozenset(builders),
+    )
 
 
 class _Unset:
@@ -505,7 +718,6 @@ class RunHome(SqliteCheckpointer):
             ttl=policy.ttl if policy is not None else None,
         )
         super().__init__(path, policy=effective_policy, serializer=serializer)
-        self._memory_lock_token: int | None = next(_memory_lock_tokens) if self._is_memory else None
         if not isinstance(max_active_runs, _Unset):
             # Explicit argument writes through; omitting it adopts whatever the
             # store already holds (see the `max_active_runs` property).
@@ -1059,6 +1271,152 @@ class RunHome(SqliteCheckpointer):
             cursor = await self._db.execute(SELECT_TRIPPED, (batch_id,))
             return await cursor.fetchone() is not None
 
+    # === Worker registry (who is alive, and what can they execute) ===
+    #
+    # The two WRITE verbs are async-only on purpose: their only callers are
+    # worker-loop paths (``work_forever``), which have no sync mirror, so a
+    # ``_sync`` twin here would be dead code — the same reasoning
+    # ``_append_child_unstarted`` records. The READ has both mirrors, because
+    # ``submit`` and ``submit_sync`` both have to ask it.
+
+    async def _pulse_worker(
+        self,
+        worker_id: str,
+        *,
+        served: Collection[DefinitionId],
+        builders: Collection[str],
+        endpoint: str | None = None,
+    ) -> bool:
+        """Announce this worker and refresh its pulse, in one upsert.
+
+        Startup and every later pulse write the same statement, so a worker
+        that gains a Definition (``add_definition``) or a builder mid-flight
+        publishes it on its next tick rather than at the next restart.
+        ``started_at`` is written once and never overwritten.
+
+        Publishing coverage that is NEW to this Home also re-opens the
+        version-incompatible park, in the same transaction. That park is a
+        memo — "nothing that scanned this row could serve its pinned
+        identity" — and under one worker the only event that could change
+        the answer was that worker restarting, which is why the reset used
+        to live in the restart scan. Under several workers the event is a
+        worker ARRIVING, or an existing one widening what it serves; leaving
+        the reset at restart would hide a parked row from the very worker
+        that just showed up able to drain it. Re-parking costs one scan and
+        is idempotent, so erring toward re-evaluation is the cheap direction.
+
+        Returns True when this pulse published coverage the store had not
+        seen from this worker before.
+        """
+        await self._ensure_db()
+        now = await self._store_now()
+        served_json = json.dumps([identity.to_dict() for identity in sorted(served, key=lambda entry: (entry.name, entry.structural_hash))])
+        builders_json = json.dumps(sorted(builders))
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                cursor = await self._db.execute(_SELECT_WORKER_REGISTRATION_SQL, (worker_id,))
+                previous = await cursor.fetchone()
+                arrived = previous is None or tuple(previous) != (served_json, builders_json)
+                await self._db.execute(_UPSERT_WORKER_SQL, (worker_id, now, now, served_json, builders_json, endpoint))
+                if arrived:
+                    await self._db.execute(_UNPARK_INCOMPATIBLE_SQL)
+                await self._db.commit()
+                return arrived
+            except BaseException:
+                await self._rollback_async()
+                raise
+
+    async def _renew_leases(self, worker_id: str, now_iso: str | None = None, *, lease_ttl: float = LEASE_TTL_SECONDS) -> int:
+        """Extend every claim this worker still holds, in one statement.
+
+        The renewal is what turns a claim from a guess into a lease: while
+        this worker keeps writing, no scan may adopt its work; the moment it
+        stops, every claim it held becomes adoptable without anybody having
+        to prove it died. One UPDATE covers all of them because liveness is
+        one fact about the WORKER — a per-Run timer would multiply writes by
+        the admission cap and still say the same thing.
+
+        Called on the same tick as the worker's pulse, at
+        ``LEASE_RENEWAL_FRACTION`` of the TTL, so a live holder writes three
+        times per window (Kafka's ``heartbeat.interval.ms`` rule) and an idle
+        worker polling every 50 ms is not writing a transaction per pass.
+
+        Returns how many claims were renewed.
+        """
+        await self._ensure_db()
+        now_iso = await self._store_now() if now_iso is None else now_iso
+        lease_until = _shift_iso(now_iso, lease_ttl)
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                result = await self._db.execute(_RENEW_LEASES_SQL, (lease_until, worker_id))
+                await self._db.commit()
+                return int(result.rowcount)
+            except BaseException:
+                await self._rollback_async()
+                raise
+
+    async def _expire_leases(self, worker_id: str, now_iso: str | None = None) -> int:
+        """Surrender every claim this worker holds, on a clean exit.
+
+        The mirror of ``_retire_worker``, and there for the same reason: a
+        worker that stopped on purpose knows it is gone, so making the rest
+        of the deployment discover that by waiting out the TTL would be a
+        minute and a half of self-imposed idleness after every deploy. The
+        bounded drain cancels whatever outlived it, and those claims are
+        exactly the ones another worker should pick up next pass.
+
+        Deliberately expires the lease rather than returning the rows to
+        'pending' itself: adoption carries recovery-attempt accounting and
+        the recovery brake, and there is one place that owns those
+        (``_reclaim_expired``). This only says "not mine any more".
+
+        Returns how many claims were surrendered.
+        """
+        return await self._renew_leases(worker_id, now_iso, lease_ttl=0.0)
+
+    async def _retire_worker(self, worker_id: str) -> None:
+        """Withdraw this worker's registration on a clean exit.
+
+        A stopped worker stops covering work immediately rather than after
+        the pulse window: shutting a deployment down and then submitting to
+        it should refuse at once, not ninety seconds later. A worker that
+        dies without reaching here leaves its row behind, which is exactly
+        what the freshness window is for.
+        """
+        await self._ensure_db()
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                await self._db.execute(_DELETE_WORKER_SQL, (worker_id,))
+                await self._db.commit()
+            except BaseException:
+                await self._rollback_async()
+                raise
+
+    async def _live_worker_coverage(self, now_iso: str | None = None, *, exclude: str | None = None) -> WorkerCoverage:
+        """What the workers with a fresh pulse can execute right now.
+
+        A pure read against ``host_workers``. It grants nothing and fences
+        nothing — the claim CAS and ``claim_seq`` remain the only authority
+        — it answers "is there anybody who could run this?", which is the
+        question a submission has to ask before it becomes a durable row.
+        """
+        await self._ensure_db()
+        now_iso = await self._store_now() if now_iso is None else now_iso
+        async with self._txn_lock():
+            cursor = await self._db.execute(_SELECT_LIVE_WORKERS_SQL, (_pulse_cutoff(now_iso),))
+            return _coverage_from_rows(await cursor.fetchall(), exclude)
+
+    def _live_worker_coverage_sync(self, now_iso: str | None = None, *, exclude: str | None = None) -> WorkerCoverage:
+        """Sync mirror of ``_live_worker_coverage``."""
+        with self._sync_lock:
+            db = self._sync_db()
+            resolved = db.execute(_STORE_NOW_SQL).fetchone()[0] if now_iso is None else now_iso
+            rows = db.execute(_SELECT_LIVE_WORKERS_SQL, (_pulse_cutoff(resolved),)).fetchall()
+            return _coverage_from_rows(rows, exclude)
+
     # === Submissions ===
 
     def _submit_sync(
@@ -1079,6 +1437,8 @@ class RunHome(SqliteCheckpointer):
         batch_id: str | None = None,
         item_key: str | None = None,
         admission_cost: int = 1,
+        builder_key: str | None = None,
+        builder_args_json: str | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         """Insert one submission plus its 'submitted' update, atomically.
 
@@ -1088,6 +1448,14 @@ class RunHome(SqliteCheckpointer):
         on the row. Allocating it outside handed two reruns requested
         before either executed the same ``<source>-retry-1``, and the
         second silently deduped into the first.
+
+        ``builder_key``/``builder_args_json`` are the optional constructor
+        address (schema v7): how a process that does NOT hold this
+        Definition in memory rebuilds it. They are deliberately outside the
+        start fingerprint — the pinned identity plus inputs already say WHAT
+        runs, and these only say how to reconstitute it — so a duplicate
+        resubmission dedupes into the stored row and never rewrites the
+        builder address it was accepted with.
 
         Returns ``(created, row)``. When a submission already exists for
         ``workflow_id`` nothing is written: a fingerprint-identical
@@ -1169,6 +1537,10 @@ class RunHome(SqliteCheckpointer):
                         item_key,
                         0,  # claim_seq: no claim has been handed out yet
                         admission_cost,
+                        builder_key,
+                        builder_args_json,
+                        None,  # claimed_by / lease_until: nobody holds the claim yet
+                        None,
                     ),
                 )
                 self._append_run_update_sync(
@@ -1203,6 +1575,8 @@ class RunHome(SqliteCheckpointer):
         batch_id: str | None = None,
         item_key: str | None = None,
         admission_cost: int = 1,
+        builder_key: str | None = None,
+        builder_args_json: str | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         """Async mirror of ``_submit_sync``."""
         await self._ensure_db()
@@ -1277,6 +1651,10 @@ class RunHome(SqliteCheckpointer):
                         item_key,
                         0,  # claim_seq: no claim has been handed out yet
                         admission_cost,
+                        builder_key,
+                        builder_args_json,
+                        None,  # claimed_by / lease_until: nobody holds the claim yet
+                        None,
                     ),
                 )
                 await self._append_run_update(
@@ -1850,8 +2228,10 @@ class RunHome(SqliteCheckpointer):
         THE paused→runnable transition, and deliberately a plain flip back
         to ``pending``: an answered child is ordinary queued work, subject
         to the same Definition-compatibility, delayed-start, admission-cap,
-        stop, recovery-brake, and worker-lock rules as every other
-        submission. Answering never jumps the queue.
+        stop, and recovery-brake rules as every other submission. Answering
+        never jumps the queue, and it never picks the worker — the answered
+        child goes back in claim order and whichever worker claims it next
+        takes the lease.
 
         The compare-and-set on ``state = 'paused'`` is what makes the whole
         thing safe. It flips exactly once, so a re-fired timer or a replayed
@@ -1922,7 +2302,14 @@ class RunHome(SqliteCheckpointer):
                 raise
 
     async def _claim_eligible(
-        self, now_iso: str | None = None, *, served: Collection[DefinitionId], limit: int = _CLAIM_BATCH
+        self,
+        now_iso: str | None = None,
+        *,
+        served: Collection[DefinitionId],
+        builders: Collection[str] = (),
+        worker_id: str | None = None,
+        lease_ttl: float = LEASE_TTL_SECONDS,
+        limit: int = _CLAIM_BATCH,
     ) -> list[dict[str, Any]]:
         """CAS-claim eligible pending submissions (state -> 'claimed').
 
@@ -1934,17 +2321,57 @@ class RunHome(SqliteCheckpointer):
         attempt while this one is still unwinding, and a release that
         compared only the state name would settle that live claim.
 
+        The same CAS takes the LEASE: ``claimed_by = worker_id`` and
+        ``lease_until = now + lease_ttl``, written in the one statement that
+        flips the state, so there is no instant in which a submission is
+        claimed by nobody. The lease is what lets several workers share one
+        Run Home — each claims atomically, and a claim whose holder stops
+        renewing is adopted by ``_reclaim_expired`` rather than waited on
+        forever. A caller that names no ``worker_id`` still takes a lease,
+        stamped by nobody; only ``_reclaim_expired``'s startup form treats
+        the holder's name as meaningful.
+
         Eligible means ``state='pending'``, ``compat_state='compatible'``,
         and ``start_at`` absent or past. ``now_iso`` defaults to the STORE's
         clock (``_store_now``), so eligibility never depends on a worker
         process's own clock; a caller that scans several due sets in one
-        pass passes one instant down, and tests drive time explicitly. A
-        submission is claimed only when its pinned Definition identity is in
-        ``served`` — the exact served identities plus any ``accepts=``
-        declarations. An unserved submission is marked
-        ``compat_state='incompatible'`` (idempotent): later scans skip it so
-        incompatible rows never starve claimable ones, and clients see
-        ``WaitingCondition.VERSION_INCOMPATIBLE``.
+        pass passes one instant down, and tests drive time explicitly.
+
+        A submission is claimed when this worker can execute it EITHER way:
+        its pinned Definition identity is in ``served`` (the exact served
+        identities plus any ``accepts=`` declarations), or it carries a
+        ``builder_key`` this worker registered in ``builders``. The builder
+        gate is deliberately the KEY alone — the identity a builder produces
+        is knowable only after building — so the exact identity check moves
+        to the build step in ``Host._execute_submission``, where a mismatch
+        dead-letters instead of running a graph against topology it was never
+        pinned to.
+
+        A submission this worker cannot execute gets one of three
+        dispositions, and telling them apart is what the worker registry is
+        for:
+
+        - **Another live worker can run it right now** — its exact identity,
+          or its builder key, is covered by somebody else's registration.
+          The row is left pending and untouched. Marking it would hide it
+          from the one worker able to drain it, since later scans skip
+          ``incompatible``.
+        - **Somebody might yet run it** — a live worker (or this one) serves
+          the pinned Definition NAME, just not that exact identity. That is a
+          rolling deployment, which ``accepts=`` exists to drain, so the row
+          is marked ``compat_state='incompatible'`` exactly as before: later
+          scans skip it so it never starves claimable rows, and clients see
+          ``WaitingCondition.VERSION_INCOMPATIBLE``. Waiting, not lost. The
+          park is a memo, reopened when a worker publishes coverage this Home
+          has not seen from it before (``_pulse_worker``).
+        - **Nothing alive answers to that name at all** (and no live builder
+          registers its key): retire it as a ``dead_letter`` with a durable
+          reason. This is the case that used to be a silent park — work
+          accepted against code no live deployment runs, sitting pending
+          forever with no executor and no error. Now it is settled, carries
+          ``WaitingCondition.DEAD_LETTER`` and a ``dead_lettered`` run update
+          naming why, tells its Batch (``child_settled``), and is revived —
+          like recovery-exhausted work — by ``client.rerun()``.
 
         This is also the single admission choke point a tolerance trip
         closes: a child of a tripped Batch is never claimed. It is finished
@@ -1969,11 +2396,13 @@ class RunHome(SqliteCheckpointer):
         breaking ties) — it is never rejected or cancelled, and it is
         reported as
         ``WaitingCondition.ADMISSION_LIMITED``. A full cap never starves the
-        non-claiming dispositions: tripped-Batch children and
-        version-incompatible rows are still settled on this scan.
+        non-claiming dispositions: tripped-Batch children, incompatible rows,
+        and dead letters are still settled on this scan.
         """
         served_set = frozenset(served)
+        builder_set = frozenset(builders)
         now_iso = await self._store_now() if now_iso is None else now_iso
+        lease_until = _shift_iso(now_iso, lease_ttl)
         await self._ensure_db()
         async with self._txn_lock():
             try:
@@ -2002,6 +2431,10 @@ class RunHome(SqliteCheckpointer):
                 tripped = await self._tripped_batch_ids({s["batch_id"] for s in submissions if s["batch_id"] is not None})
                 claimed: list[dict[str, Any]] = []
                 admission_blocked = False
+                # Both read lazily and at most once per scan: the common pass
+                # claims everything it sees and needs neither.
+                coverage: WorkerCoverage | None = None
+                served_names: frozenset[str] | None = None
                 for submission in submissions:
                     if submission["batch_id"] in tripped:
                         # A tripped Batch has CLOSED ADMISSION: no pending
@@ -2028,20 +2461,51 @@ class RunHome(SqliteCheckpointer):
                         submission["def_version"],
                         submission["def_struct_hash"],
                     )
-                    if identity not in served_set:
-                        # Refuse loudly and durably: this worker cannot serve
-                        # the pinned identity; a new worker/version
-                        # re-evaluates via the restart scan.
-                        logger.warning(
-                            "Worker cannot serve submission %s: pinned identity %s is not served by this host; "
-                            "marking it version-incompatible (it stays parked until a serving worker or explicit migration).",
-                            submission["workflow_id"],
-                            identity.to_dict(),
-                        )
-                        await self._db.execute(
-                            "UPDATE host_submissions SET compat_state = 'incompatible' WHERE workflow_id = ? AND state = 'pending'",
-                            (submission["workflow_id"],),
-                        )
+                    builder_key = submission["builder_key"]
+                    if identity not in served_set and (builder_key is None or builder_key not in builder_set):
+                        # This worker cannot execute it either way. Whether
+                        # that is a wait or a dead end is a question about
+                        # everybody, so ask the registry — once per scan, and
+                        # only when a row actually needs the answer.
+                        if coverage is None:
+                            cursor = await self._db.execute(_SELECT_LIVE_WORKERS_SQL, (_pulse_cutoff(now_iso),))
+                            coverage = _coverage_from_rows(await cursor.fetchall(), worker_id)
+                        if served_names is None:
+                            served_names = frozenset(entry.name for entry in served_set)
+                        if coverage.covers(identity, builder_key):
+                            # ANOTHER LIVE WORKER can execute this exact
+                            # address. Leave it pending and say nothing: this
+                            # row is simply not this worker's business, and
+                            # the park would HIDE it from the very worker
+                            # that can run it (the claim scan skips
+                            # 'incompatible'). Under one worker that could
+                            # not happen — a row this worker could not serve
+                            # was a row nothing could serve — which is why
+                            # the park used to be the only disposition here.
+                            continue
+                        if coverage.may_yet_cover(identity, builder_key) or identity.name in served_names:
+                            # Somebody serves this Definition NAME but not
+                            # this identity — this worker at another version,
+                            # or another worker outright. That is a rolling
+                            # deployment, and `accepts=` is how it drains, so
+                            # the submission parks exactly as it always has.
+                            # The park is reopened when a worker publishes
+                            # coverage this Home has not seen from it before
+                            # (``_pulse_worker``), which is what a newly
+                            # deployed version arriving looks like.
+                            logger.warning(
+                                "Worker cannot serve submission %s: pinned identity %s is not served here; "
+                                "marking it version-incompatible (it stays parked until a serving worker or explicit migration).",
+                                submission["workflow_id"],
+                                identity.to_dict(),
+                            )
+                            await self._db.execute(
+                                "UPDATE host_submissions SET compat_state = 'incompatible' WHERE workflow_id = ? AND state = 'pending'",
+                                (submission["workflow_id"],),
+                            )
+                            continue
+                        reason = DEAD_LETTER_BUILDER_MISSING if builder_key is not None else DEAD_LETTER_UNSERVED_IDENTITY
+                        await self._dead_letter_in_txn(submission, reason, now_iso, identity=identity)
                         continue
                     if len(claimed) >= limit:
                         continue
@@ -2065,9 +2529,9 @@ class RunHome(SqliteCheckpointer):
                             admission_blocked = True
                             continue
                     result = await self._db.execute(
-                        "UPDATE host_submissions SET state = 'claimed', claimed_at = ?, claim_seq = claim_seq + 1 "
-                        "WHERE workflow_id = ? AND state = 'pending'",
-                        (now_iso, submission["workflow_id"]),
+                        "UPDATE host_submissions SET state = 'claimed', claimed_at = ?, claim_seq = claim_seq + 1, "
+                        "claimed_by = ?, lease_until = ? WHERE workflow_id = ? AND state = 'pending'",
+                        (now_iso, worker_id, lease_until, submission["workflow_id"]),
                     )
                     if result.rowcount == 1:
                         # The row was read before the bump, so the claim this
@@ -2075,6 +2539,8 @@ class RunHome(SqliteCheckpointer):
                         # the stale value back would let the releaser match a
                         # claim it never held.
                         submission["claim_seq"] = int(submission["claim_seq"]) + 1
+                        submission["claimed_by"] = worker_id
+                        submission["lease_until"] = lease_until
                         claimed.append(submission)
                         if free_slots is not None:
                             free_slots -= 1
@@ -2083,6 +2549,97 @@ class RunHome(SqliteCheckpointer):
                         oversized_active = cost > admission_budget if admission_budget is not None else False
                 await self._db.commit()
                 return claimed
+            except BaseException:
+                await self._rollback_async()
+                raise
+
+    async def _dead_letter_in_txn(
+        self,
+        submission: dict[str, Any],
+        reason: str,
+        now_iso: str,
+        *,
+        identity: DefinitionId | None = None,
+        claim_seq: int | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> bool:
+        """Retire one submission nothing can execute; caller holds the txn.
+
+        THE dead-letter transition, and the only one. The state flip, the
+        durable ``dead_lettered`` run update carrying the reason, and the
+        Batch's ``child_settled`` fact commit together — the same discipline
+        the recovery brake follows — so a detached ``watch`` learns the
+        item's fate from the stream alone and can never wait on it forever.
+
+        The transition is a COMPARE-AND-SET, on whichever state the caller
+        is entitled to retire:
+
+        - ``claim_seq=None`` (the claim scan): only a still-``pending`` row.
+          A submission a worker claimed between the scan's read and this
+          write is live work and must not be retired out from under it.
+        - ``claim_seq=N`` (a worker that claimed the row and then could not
+          build it): only ``claimed`` at exactly that claim, the same fence
+          ``_release_submission`` uses. A stale claimant cannot retire a
+          submission a newer claim already owns.
+
+        Returns True when this call was the one that retired the row.
+        """
+        workflow_id = submission["workflow_id"]
+        identity = identity or DefinitionId(submission["definition_name"], submission["def_version"], submission["def_struct_hash"])
+        if claim_seq is None:
+            result = await self._db.execute(
+                "UPDATE host_submissions SET state = ?, finished_at = ? WHERE workflow_id = ? AND state = 'pending'",
+                (SUBMISSION_STATE_DEAD_LETTER, now_iso, workflow_id),
+            )
+        else:
+            result = await self._db.execute(
+                "UPDATE host_submissions SET state = ?, finished_at = ? WHERE workflow_id = ? AND state = 'claimed' AND claim_seq = ?",
+                (SUBMISSION_STATE_DEAD_LETTER, now_iso, workflow_id, claim_seq),
+            )
+        if result.rowcount != 1:
+            return False
+        logger.warning(
+            "Dead-lettering submission %s (%s): pinned identity %s, builder %r. "
+            "Serve the Definition (or register the builder) where the work should run, then client.rerun() to revive it.",
+            workflow_id,
+            reason,
+            identity.to_dict(),
+            submission["builder_key"],
+        )
+        await self._append_run_update(
+            workflow_id,
+            DEAD_LETTERED_UPDATE_KIND,
+            {
+                "reason": reason,
+                "definition_id": identity.to_dict(),
+                "builder_key": submission["builder_key"],
+                **(detail or {}),
+            },
+        )
+        await self._append_child_settled(workflow_id, BATCH_OUTCOME_DEAD_LETTER)
+        return True
+
+    async def _dead_letter(self, workflow_id: str, reason: str, *, claim_seq: int, detail: dict[str, Any] | None = None) -> bool:
+        """Retire a submission THIS claim turned out to be unable to execute.
+
+        The worker's door into the same transition the claim scan uses: it
+        owns the transaction, the scan owns its own. Both write exactly one
+        state flip plus its durable facts, and both fence — the scan on
+        'pending', this on the claim it holds.
+        """
+        await self._ensure_db()
+        now = await self._store_now()
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                cursor = await self._db.execute(_SELECT_SUBMISSION, (workflow_id,))
+                row = await cursor.fetchone()
+                if row is None:
+                    await self._db.rollback()
+                    return False
+                retired = await self._dead_letter_in_txn(_row_to_submission(row), reason, now, claim_seq=claim_seq, detail=detail)
+                await self._db.commit()
+                return retired
             except BaseException:
                 await self._rollback_async()
                 raise
@@ -2133,7 +2690,7 @@ class RunHome(SqliteCheckpointer):
         'pending' → 'claimed', so a release still unwinding from the first
         attempt found the name it expected and finished the SECOND attempt's
         live claim: the batch stream ended while the question was open, the
-        item was reported abandoned, and the restart scan never re-adopted
+        item was reported abandoned, and the reclaim scan never re-adopted
         it. Comparing ``claim_seq`` makes a stale release exactly what it
         should be — nothing.
 
@@ -2196,11 +2753,24 @@ class RunHome(SqliteCheckpointer):
                 await self._rollback_async()
                 raise
 
-    async def _restart_scan(self) -> None:
-        """Re-adopt unfinished claimed submissions on worker startup.
+    async def _reclaim_expired(self, now_iso: str | None = None, *, worker_id: str | None = None, adopt_own: bool = False) -> None:
+        """Re-adopt claimed submissions whose lease has run out.
+
+        The same body the worker-startup restart scan always had; only the
+        row filter and the cadence changed, and both changed for the same
+        reason. Under the exclusive worker lock this could safely re-adopt
+        EVERY claimed row, because there provably was no other worker — the
+        lock made the hard question ("is this half-finished Run dead, or is
+        somebody else holding it?") unaskable rather than answered. Leases
+        answer it: a claim whose holder stopped renewing is adoptable, a
+        claim being renewed is not, and neither fact requires knowing
+        whether a process died. So the scan runs EVERY poll pass, not only
+        at startup, and several workers may share one Run Home.
+
+        See ``_reclaim_predicate`` for which rows each caller may adopt.
 
         Claimed submissions whose run settled terminally are marked
-        finished. Every other claimed submission is a recovery attempt and
+        finished. Every other adopted submission is a recovery attempt and
         gets ``recovery_attempts += 1``: when the incremented count reaches
         the submission's ``recovery_cap`` it is parked as 'exhausted' (a
         durable ``recovery_exhausted`` run update — and, for a Batch child,
@@ -2212,24 +2782,36 @@ class RunHome(SqliteCheckpointer):
         transitions) resets it to 0 at commit time via
         ``_after_run_mutation``, so a run killed WITH committed steps still
         shows the incremented attempt count after re-adoption (prototype
-        Scenario 3). Pending submissions also reset to
-        ``compat_state='compatible'`` so a new worker/deployment
-        re-evaluates version compatibility from scratch.
+        Scenario 3).
+
+        Adoption is not a fence and does not pretend to be one. The old
+        claimant may still be alive and may still finish; what it can no
+        longer do is COMMIT, because the adopted row carries a new
+        ``claim_seq`` and every transition that speaks for one execution
+        compare-and-sets on the claim it was handed.
+
+        Re-opening the version-incompatible park is deliberately NOT here.
+        That memo is invalidated by a worker's coverage arriving or widening
+        (``_pulse_worker``), which is a different event from a lease
+        expiring — and running it on every pass would re-park and re-warn on
+        every pass for as long as a row waits for its deployment.
         """
         await self._ensure_db()
-        now = _now_iso()
+        now_iso = await self._store_now() if now_iso is None else now_iso
+        where, params = _reclaim_predicate(now_iso, worker_id, adopt_own)
         terminal_placeholders = ", ".join("?" for _ in _TERMINAL_STATUS_VALUES)
         async with self._txn_lock():
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
                 await self._db.execute(
                     f"UPDATE host_submissions SET state = 'finished', finished_at = ? "
-                    f"WHERE state = 'claimed' AND workflow_id IN "
+                    f"WHERE {where} AND workflow_id IN "
                     f"(SELECT id FROM runs WHERE status IN ({terminal_placeholders}))",
-                    (now, *_TERMINAL_STATUS_VALUES),
+                    (now_iso, *params, *_TERMINAL_STATUS_VALUES),
                 )
                 cursor = await self._db.execute(
-                    f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE state = 'claimed'",
+                    f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE {where}",
+                    params,
                 )
                 for row in await cursor.fetchall():
                     submission = _row_to_submission(row)
@@ -2240,7 +2822,8 @@ class RunHome(SqliteCheckpointer):
                         # committed progress too many times. Park it
                         # exhausted; client.rerun() revives.
                         await self._db.execute(
-                            "UPDATE host_submissions SET state = 'exhausted', recovery_attempts = ? WHERE workflow_id = ?",
+                            "UPDATE host_submissions SET state = 'exhausted', recovery_attempts = ?, claimed_by = NULL, lease_until = NULL "
+                            "WHERE workflow_id = ?",
                             (attempts, workflow_id),
                         )
                         await self._append_run_update(
@@ -2261,14 +2844,10 @@ class RunHome(SqliteCheckpointer):
                         await self._append_child_settled(workflow_id, BATCH_OUTCOME_RECOVERY_EXHAUSTED)
                         continue
                     await self._db.execute(
-                        "UPDATE host_submissions SET state = 'pending', claimed_at = NULL, recovery_attempts = ? WHERE workflow_id = ?",
+                        "UPDATE host_submissions SET state = 'pending', claimed_at = NULL, claimed_by = NULL, lease_until = NULL, "
+                        "recovery_attempts = ? WHERE workflow_id = ?",
                         (attempts, workflow_id),
                     )
-                # A new worker (possibly a new deployment) re-evaluates
-                # version compatibility from scratch.
-                await self._db.execute(
-                    "UPDATE host_submissions SET compat_state = 'compatible' WHERE state = 'pending'",
-                )
                 await self._db.commit()
             except BaseException:
                 await self._rollback_async()
@@ -2918,3 +3497,38 @@ class RunHome(SqliteCheckpointer):
             )
             rows = await cursor.fetchall()
         return {str(run_id): str(created_at) for run_id, created_at in rows}
+
+    def _dead_letter_reasons_sync(self, run_ids: Sequence[str]) -> dict[str, str]:
+        """Why each of these Runs was retired, in one read.
+
+        Callers pass ONLY ids whose submission already says ``dead_letter``,
+        so an ordinary listing — where none is — issues no query at all and
+        this read costs what it returns rather than what the Home holds.
+        """
+        if not run_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in run_ids)
+        with self._sync_lock:
+            rows = (
+                self._sync_db()
+                .execute(
+                    f"SELECT run_id, payload FROM run_updates WHERE kind = ? AND run_id IN ({placeholders})",
+                    (DEAD_LETTERED_UPDATE_KIND, *run_ids),
+                )
+                .fetchall()
+            )
+        return _reasons_from_rows(rows)
+
+    async def _dead_letter_reasons(self, run_ids: Sequence[str]) -> dict[str, str]:
+        """Async mirror of ``_dead_letter_reasons_sync``."""
+        if not run_ids:
+            return {}
+        await self._ensure_db()
+        placeholders = ", ".join("?" for _ in run_ids)
+        async with self._txn_lock():
+            cursor = await self._db.execute(
+                f"SELECT run_id, payload FROM run_updates WHERE kind = ? AND run_id IN ({placeholders})",
+                (DEAD_LETTERED_UPDATE_KIND, *run_ids),
+            )
+            rows = await cursor.fetchall()
+        return _reasons_from_rows(rows)

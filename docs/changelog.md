@@ -96,6 +96,137 @@
 
 ### Added
 
+- **BREAKING (Durable Host): several workers may share one Run Home, and the
+  exclusive worker lock is gone.** `work_forever()` took an OS-level `flock`
+  on the database file, so a second worker failed immediately with
+  `WorkerLockError`. That lock never answered the question it existed for —
+  "is this half-finished Run dead, or is another worker holding it?" — it made
+  the question unaskable, and charged a notebook or a maintenance script the
+  right to execute durable work at all, including work only it could
+  configure.
+
+  A **lease** answers it, in the shape SQS, Kafka and Oban all ship. The claim
+  compare-and-set now also writes `claimed_by` and `lease_until` (schema v7's
+  columns, previously inert), a live worker renews every claim it holds in one
+  statement at a third of `lease_ttl` (new `work_forever(..., lease_ttl=90.0)`
+  parameter), and every poll pass adopts claims whose lease has run out. The
+  startup restart scan generalized into that same per-pass scan; at startup a
+  worker additionally adopts its own `worker_id`'s outstanding claims
+  immediately — this process *is* that worker and is executing nothing — so a
+  supervised restart resumes as promptly as it did under the lock.
+
+  **Expiry proves nothing about the old worker, and this does not pretend
+  otherwise.** The safety property is `claim_seq`, which already existed: an
+  adopted submission carries a NEW claim, and every transition that speaks for
+  one execution (`_release_submission`, the worker's dead-letter)
+  compare-and-sets on the claim it was handed, so a presumed-dead worker that
+  wakes up and finishes commits nothing. That is exactly the guarantee Oban's
+  Lifeline documents itself as lacking.
+
+  Four consequences worth checking against your deployment:
+
+  - **`WorkerLockError` is retired.** It is still exported for one release so
+    an existing `except WorkerLockError` keeps importing, but nothing raises
+    it and the handler is now dead code. `hypergraph.host.worker._WorkerLock`
+    and `lock_path_for` are deleted.
+  - **A crashed worker's work waits out its lease** (≤90 s by default) unless
+    the replacement runs under the same `worker_id`, or the previous worker
+    exited cleanly — a clean `shutdown()` surrenders its leases and withdraws
+    its registration, so work moves at once. Give each *live* worker its own
+    name; reuse the name across a restart of the same deployment.
+  - **`compat_state='incompatible'` is no longer parked until a restart.** It
+    hid a row from every worker's scan, which was correct when there was one
+    worker and wrong the moment a second could serve it. The reset moved from
+    worker startup to worker *arrival*: a worker publishing coverage this Home
+    has not seen from it before reopens the parked rows, in the same
+    transaction as its registration. A repeated pulse of unchanged coverage
+    does not, so a row waiting for its deployment still costs nothing.
+  - **`PRAGMA busy_timeout` is stated explicitly** (30 s, on the async, sync
+    and migration connections) rather than inherited from the driver's 5 s
+    default. WAL removes reader/writer blocking, not writer/writer contention,
+    and a Run Home now legally carries several writing processes.
+
+  No schema migration: v7 already carried both columns. `RunHomeClient`,
+  `watch`, `BatchView`, admission, tolerance, the pause lifecycle and the
+  recovery brake are untouched.
+
+- **Durable Host: work can travel as data, and work nobody can do is refused
+  or dead-lettered.** Two failures motivated this, both of them "accepted work
+  nobody alive can do". A process configured a graph, submitted a 424-item
+  batch, and exited; the only process allowed to execute could not *build* that
+  Definition — a submission pins its identity, never a way to reconstruct it —
+  so every row was marked version-incompatible and sat queued forever with no
+  executor and no error. And nothing said so: the park was silent, terminal in
+  practice, and invisible to every read model.
+
+  The answer is the pattern Celery and Temporal have shipped for years — a
+  submission is data, and each worker holds a registry resolving a name to a
+  constructor.
+
+  - **`serve_builder(key, builder)`** registers a CONSTRUCTOR beside the
+    instances `serve()` registers; `serve(..., builders={...})` and
+    `HostRuntime.serving_builder(...)` are the same registration in bulk and on
+    a runtime. `serve()` now accepts a builder-only deployment (no graphs).
+  - **`submit(..., builder=(key, args))`** and `submit_batch(..., builder=…)`
+    record that address on every row, so any process registering the key can
+    rebuild the Definition and execute it. Construction is memoized per
+    `(key, arguments)`, so a 500-item Batch builds once.
+  - **The pinned identity still decides what runs.** A built Definition is
+    verified against it — `BuilderIdentityError` at submit, a
+    `builder_identity_mismatch` dead letter at claim. A builder never
+    substitutes code for a submission that pinned something else.
+  - **`NoServingWorkerError`** refuses a `builder=` address neither this
+    process nor any live worker registers — at the call site, before the rows
+    exist. Liveness comes from the new `host_workers` registry, which each
+    `work_forever()` writes at startup, pulses while it runs, and withdraws on
+    a clean exit.
+  - **`state='dead_letter'`** replaces the silent park for work nothing alive
+    can execute. It is settled (so `watch()` ends and a Batch reaches
+    `settled`), reports `WaitingCondition.DEAD_LETTER`, carries a durable
+    `dead_lettered` update and a `RunReadModel.dead_letter_reason`
+    (`unserved_identity`, `builder_missing`, `builder_identity_mismatch`,
+    `builder_failed`), settles its Batch item into a new `dead_letter` count
+    bucket, and is revived by `client.rerun()`.
+
+  A rolling deployment still PARKS: when anything alive serves the pinned
+  Definition *name*, the row stays `compat_state='incompatible'` and drains
+  through `accepts=` exactly as before. Only an address nothing answers to
+  dies. Two closed vocabularies each grew by one member — `WaitingCondition`
+  and `BATCH_COUNT_KEYS` — and `RunReadModel` gained one optional field.
+
+  Schema **v6 → v7**, additive and inert on open: `host_submissions` gains
+  nullable `builder_key`, `builder_args_json`, `claimed_by`, and `lease_until`
+  (the last two are the claim lease, described above; they landed in this
+  migration so the multi-worker behavior needed no second migration over Run
+  Homes carrying live claims), and the new `host_workers` table records
+  each worker's served identities, builder keys, and pulse. A v6 database with
+  in-flight claimed and parked rows migrates in place with every row untouched.
+
+- **`HostRuntime.serving_builder()` is ready on return.** The method now
+  waits for its worker's constructor key to be durably visible in live
+  coverage before returning. A client can submit that builder address
+  immediately instead of racing the worker's first registry pulse.
+
+- **A deployment can observe durable execution: `event_processors=` on
+  `HostRuntime` and `serve()`.** In process an application passes
+  `event_processors=` to `runner.run()`; a durable Run had no equivalent,
+  because the runner that executes it is built by the library — `HostRuntime`
+  constructs an `AsyncRunner` for an unbound graph — so the application could
+  reach no runner at all. Its nodes therefore produced no events, and an
+  OTel-instrumented client call inside a durable Run exported a **parentless**
+  span while the same graph run in process nested under its node. Processors
+  are added by the Host at execution rather than baked into one runner, so
+  they cover every served Definition **and** a graph that carries its own
+  runner (binding a runner to set `max_concurrency` no longer silently turns
+  observability off). They arrive ahead of the worker's per-Run preview
+  processor, matching the carried-before-call-site order used everywhere else.
+  One instance is shared across concurrent Runs, so a processor must be safe
+  to use that way; dispatch stays best-effort, so one that raises is logged
+  and cannot break the Run, the preview bus, or `watch()`. Passing nothing is
+  the default and is byte-identical to before; a bare processor where a
+  sequence is expected raises `TypeError` at construction rather than deep
+  inside the worker.
+
 - **Visualizations hide edges a longer path already implies (`simplify`,
   default on).** Given `A → B → C`, a direct `A → C` data edge is a shortcut
   past a route the diagram already draws, so it is dropped: the same
@@ -229,6 +360,12 @@
 - **Reserved column name validation** — identity and source columns named `_status`, `_error`, `_row_fingerprint`, `_write_gen`, `_parent_id`, or `_provenance_*` are rejected at graph analysis time with a clear error message.
 
 ### Fixed
+
+- **`watch(run_ref)` could never end for a Run that settled without ever
+  executing.** The stream's end condition asked only whether the submission was
+  `finished`, so a run parked by the recovery brake — or now dead-lettered —
+  with no runs row left the caller waiting forever on work that could not move
+  again. It now uses the same `is_child_settled` rule `BatchView` uses.
 
 - **Unchanged-parent `sync()` heals physically missing child rows** — before,
   the unchanged-parent fast path never inspected child tables, so a deleted

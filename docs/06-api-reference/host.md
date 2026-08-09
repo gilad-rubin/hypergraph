@@ -43,6 +43,38 @@ served name cannot be replaced with a structurally different Definition
 without closing and creating a new runtime. Worker startup runs the ordinary
 restart scan, so unfinished durable work is re-adopted without resubmission.
 
+### Registering without working
+
+`serving()` does two things: it registers a Definition, and it makes this
+process an executor. Submission is graph-first, so a process that wants its
+work run **somewhere else** still has to hold the Definition it submits
+against — and now that a Home admits several workers, `serving()` would make
+every such submitter an executor of everything it submits.
+
+`registering()` is the other half on its own:
+
+```python
+host = await client_runtime.registering(refund_graph)   # no worker starts
+receipt = await host.submit(refund_graph, {"claim_id": "c-42"},
+                            builder=("refunds", {"region": "eu"}))
+```
+
+`registering_builder(key, builder)` is the constructor mirror. Calling
+`serving()` afterwards arms the worker over the same registrations, which is
+how a process decides to run the work itself after finding out nobody else
+will — typically after `NoServingWorkerError` said so at submit.
+
+`serving_builder(key, builder)` is ready on return: it waits until this
+worker's constructor key is visible in the Run Home's live coverage. A client
+process may submit that builder address immediately after the call completes;
+it does not need to poll for worker startup.
+
+`worker_id=` names the worker this runtime starts. The default is a fresh
+per-process name, which is right for a throwaway process and wrong for a
+supervised one: a restart under a new name is a stranger to its own
+outstanding claims and waits out their lease instead of reclaiming them at
+once. Name a supervised deployment after the DEPLOYMENT.
+
 `client` is the runtime's `RunHomeClient` and is also lazy: accessing it before
 `serving()` opens the Home for detached reads without starting a worker. If the
 worker task exits with an exception, the next `serving()`, `client`, or
@@ -52,6 +84,34 @@ than silently starting a replacement. A later call may start the worker again.
 `close()` is idempotent. It stops new claims, uses the Host's bounded drain,
 and closes the Home; queued submissions remain persisted for the next process.
 The same runtime may be used again after closing, which lazily reopens it.
+
+## Observing Durable Execution
+
+A durable Run is executed by a runner the library built, so an application
+cannot pass `event_processors=` to the `run()` call the way it does in
+process. `event_processors=` on `HostRuntime` (and on `serve()`) is that seam:
+
+```python
+from hypergraph.events.otel import OpenTelemetryProcessor
+
+runtime = HostRuntime(
+    "./data/runs.db",
+    deployment_version="2026.07.3",
+    event_processors=[OpenTelemetryProcessor(enrich_openinference=True)],
+)
+```
+
+Every durable Run this worker executes gets these processors — whichever
+Definition it belongs to, and whichever runner that Definition carries, since
+they are added at execution rather than baked into one runner. They arrive
+ahead of the worker's own per-Run preview processor, matching the
+carried-before-call-site order used everywhere else.
+
+One instance is shared across concurrent Runs, so a processor must be safe to
+use that way. Dispatch is best-effort: a processor that raises is logged and
+cannot break the Run, the preview bus, or `watch()`. Passing nothing is the
+default and changes nothing. A bare processor where a sequence is expected
+raises `TypeError` at construction.
 
 ## Serving Definitions
 
@@ -105,6 +165,98 @@ entry is validated structurally at `serve()` time: it must name a
 Definition this host serves and its structural hash must equal the served
 Definition's hash — anything else is a `ValueError`, because an
 undrainable declaration would park submissions forever (ADR 0007).
+
+## Serving Builders: work that travels as data
+
+`serve()` registers Definition **instances** — graph objects this process
+holds in memory. That is enough when the process that configures the work is
+also the one that runs it. It is not enough when they differ: a submission
+pins its `DefinitionId` and its inputs, never a way to *rebuild* the graph,
+so a worker that never saw the configuration cannot construct it.
+
+`serve_builder()` registers **constructors** beside those instances:
+
+```python
+def review_graph(args):                       # args arrive as JSON on the row
+    return build_review(kind=args["kind"], corpus=args["corpus"]).with_runner(AsyncRunner())
+
+host = serve(home=RunHome.open("file:./runs.db"),           # no graphs required
+             builders={"review.retrieval": review_graph})
+host.serve_builder("review.generation", generation_graph)   # or one at a time
+```
+
+A submission then carries that address alongside its pinned identity:
+
+```python
+receipt = await host.submit(
+    graph, {"case_id": "c-42"},
+    builder=("review.retrieval", {"kind": "retrieval", "corpus": "protocols"}),
+)
+```
+
+Any process that registered `"review.retrieval"` can claim that row, call the
+builder with the recorded arguments, and execute it. This is Celery's task
+registry and Temporal's workflow types, in the Run Home: the wire carries a
+name plus arguments, and each worker resolves the name locally.
+
+Three properties are worth stating plainly:
+
+- **The pinned identity still decides what runs.** The built Definition is
+  compared to the identity the submission pinned. A mismatch raises
+  `BuilderIdentityError` at submit and dead-letters at claim
+  (`builder_identity_mismatch`); it never executes. Registering a builder
+  grants no authority to change what a submission means — changed topology is
+  a `fork`, not a substitution.
+- **A builder is called once per address.** Construction is memoized on
+  `(key, arguments)`, so a 500-item Batch builds its Definition once.
+- **`builder=` is not part of the dedup fingerprint.** A duplicate
+  resubmission returns the stored receipt and never rewrites the address the
+  row was accepted with.
+
+Submitting a builder address nothing can resolve raises
+`NoServingWorkerError` at the call site. "Nothing" means neither this
+process's registry nor any worker with a fresh pulse in `host_workers` — the
+durable registry each `work_forever()` writes at startup, refreshes while it
+runs, and withdraws on a clean exit. Recording a builder address means *some
+process will rebuild this*, so an address nobody answers to is caught before
+400 rows exist rather than found hours later as a queue with no executor.
+
+## Dead Letters: work nothing alive can execute
+
+An unclaimable submission has two very different futures, and the Run Home
+distinguishes them instead of parking both in silence.
+
+If something alive serves the pinned Definition **name** — this worker at a
+different version, or another worker outright — the submission parks as
+before: `compat_state='incompatible'`,
+`WaitingCondition.VERSION_INCOMPATIBLE`, drainable by an `accepts=`
+declaration. That is a rolling deployment, and the work is waiting.
+
+If *nothing* alive answers to that name, and no live builder registers its
+key, the submission is retired as a **dead letter**:
+
+- `state='dead_letter'`, which is settled — so `watch()` ends, and a Batch
+  containing it reaches `settled` instead of hanging on it forever;
+- a durable `dead_lettered` run update carrying the reason, so a detached
+  reader learns it from the stream alone;
+- `child_settled` on its Batch with outcome `dead_letter`, counted in its own
+  `BatchView.counts` bucket;
+- `WaitingCondition.DEAD_LETTER` on the view, and on `RunReadModel` a
+  `failed` badge with `condition="dead_letter"` plus the exact
+  `dead_letter_reason`;
+- revivable with `client.rerun()`, exactly like recovery-exhausted work —
+  deploy something that can run it, then rerun.
+
+| `dead_letter_reason` | What to do about it |
+|---|---|
+| `unserved_identity` | Nothing serves that Definition name. Serve it where the work should run. |
+| `builder_missing` | The row names a builder key nothing registered. Register it on the worker. |
+| `builder_identity_mismatch` | A registered builder produced a different Definition than the pinned one. Reconcile the builder, or `fork` deliberately. |
+| `builder_failed` | The builder raised. Fix the constructor; the exception type is on the durable fact. |
+
+A tolerance trip deliberately does **not** count dead letters as failures: a
+missing deployment is not the Batch's work failing, and tripping would
+relabel the remaining items "unstarted" and bury the reason they really have.
 
 ## Submitting a Run
 
@@ -537,8 +689,9 @@ resting stream stopped. `BatchView.resting` is the same predicate for a
 caller that polls instead of watching.
 
 `WaitingCondition` is a closed enum — `QUEUED`, `SCHEDULED`, `PAUSED`,
-`VERSION_INCOMPATIBLE`, `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED` — so
-waiting work never looks alike and callers branch on typed values. `waiting`
+`VERSION_INCOMPATIBLE`, `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED`,
+`DEAD_LETTER` — so waiting work never looks alike and callers branch on
+typed values. `waiting`
 is `None` while a Run executes or is terminal — including while a running
 Run is queued behind a [provider permit](#provider-resource-admission),
 which is execution, not waiting.
@@ -1084,20 +1237,46 @@ repetition from migration.
 
 ## The Worker
 
-One product-owned process executes submitted work:
+Product-owned processes execute submitted work:
 
 ```python
 await host.work_forever(worker_id="labbox")   # blocks; explicit lifecycle
 host.shutdown()                               # from another task: bounded drain
 ```
 
-Startup takes an OS-level exclusive lock on the Home; a second worker on the
-same Home fails immediately with `WorkerLockError`. `shutdown()` stops new
-claims and lets in-flight runs finish within `drain_timeout` before the lock
-is released. On startup the worker re-adopts submissions whose previous
-worker died mid-run, so unfinished work continues without resubmission.
-Process supervision (systemd, FastAPI lifespan, cron) restarts the worker —
-Hypergraph runs no control-plane server.
+`shutdown()` stops new claims and lets in-flight runs finish within
+`drain_timeout`. Process supervision (systemd, FastAPI lifespan, cron)
+restarts the worker — Hypergraph runs no control-plane server.
+
+### Several workers may share one Run Home
+
+Each claim is an atomic compare-and-set that also takes a **lease**:
+`claimed_by` records which worker holds the submission, and `lease_until`
+the instant after which anybody may adopt it. A live worker renews its
+leases at a third of `lease_ttl` (90 s by default), and every worker's poll
+pass adopts claims whose lease has run out. So two workers can never hold
+one submission, and a worker that dies does not strand its work — nothing
+has to decide whether it died, only whether it stopped renewing.
+
+```python
+await host.work_forever("api", lease_ttl=90.0)       # the default
+await host.work_forever("notebook", lease_ttl=90.0)  # legal, same Home
+```
+
+Adoption is not a fence and does not pretend to be one. A presumed-dead
+worker may wake up and finish; what it can no longer do is **commit**,
+because the adopted submission carries a new claim and every transition
+that speaks for one execution compare-and-sets on the claim it was handed.
+
+Give each live worker its own `worker_id`. A restart under the same name
+reclaims that name's outstanding work at once, which is what makes a
+supervised restart resume immediately instead of waiting out the lease; a
+clean `shutdown()` surrenders its leases and withdraws its registration, so
+work moves without waiting either.
+
+Earlier releases enforced one worker per Home with an OS-level lock, and a
+second `work_forever` raised `WorkerLockError`. That rule is retired: the
+error is still exported for one release but nothing raises it.
 
 ## Host Work Admission
 
@@ -1294,13 +1473,15 @@ brake counts **progressless re-adoptions**:
 
 | Error | Raised when |
 |---|---|
-| `WorkerLockError` | a second worker starts on the same Run Home |
+| `WorkerLockError` | **retired** — nothing raises it. A Run Home admits several workers; the name is exported for one release so an old `except` clause still imports |
 | `UnservedGraphError` | `submit`, `submit_batch`, or `fork(into=…)` names a `Graph` this host does not serve, or one whose `structural_hash` drifted from the served Definition |
 | `ItemKeyError` | `submit_batch` `identity` names a field outside `map_over`, or an item's key is missing, empty, non-scalar, or duplicated |
 | `AlreadyTerminalError` | a terminal `workflow_id` is reused for submit, submit_batch, or stop (including a fully settled Batch) |
 | `WorkflowIdConflictError` | a nonterminal `workflow_id` is reused with a different start fingerprint (Run or Batch), or a Batch id collides with existing work |
 | `ForkCompatibilityError` | `host.fork()` targets a structurally incompatible Definition |
-| `RerunError` | `client.rerun()` names a missing or nonterminal source (recovery-exhausted sources are allowed) |
+| `NoServingWorkerError` | `submit` or `submit_batch` names a `builder=` key neither this process nor any live worker registers |
+| `BuilderIdentityError` | a registered builder produced a Definition other than the identity the submission pins |
+| `RerunError` | `client.rerun()` names a missing or nonterminal source (recovery-exhausted and dead-lettered sources are allowed) |
 | `HostError` | base class for host-specific errors; also raised directly for an unknown stop target |
 | `AnswerRejectedError` | `client.answer()` named no/unknown occurrence, a run that is not paused, or a value failing `answer_schema` |
 | `PauseAlreadySettledError` | `client.answer()` re-answered a settled occurrence |

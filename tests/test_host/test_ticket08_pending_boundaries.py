@@ -450,7 +450,10 @@ graph = Graph([seed, alpha, inner.as_node(name="nested")], name="killdef").with_
 home = RunHome.open({uri!r})
 host = serve(graph, home=home, deployment_version="v1")
 host.submit_sync(graph, {{"x": 1}}, workflow_id="wf-kill")
-asyncio.run(host.work_forever("w-child", poll_interval=0.02))
+# lease_ttl is short on purpose: this worker is about to be SIGKILLed,
+# and the successor may only adopt a claim whose lease has run out.
+# What is under test is crash RECOVERY, not how long adoption waits.
+asyncio.run(host.work_forever("w-child", poll_interval=0.02, lease_ttl=0.5))
 """
 
 
@@ -672,7 +675,10 @@ graph = Graph([worker, keep_going], name="loopdef", entrypoint="worker").with_ru
 home = RunHome.open({uri!r})
 host = serve(graph, home=home, deployment_version="v1")
 host.submit_sync(graph, {{"count": 0}}, workflow_id="wf-loop")
-asyncio.run(host.work_forever("w-child", poll_interval=0.02))
+# lease_ttl is short on purpose: this worker is about to be SIGKILLed,
+# and the successor may only adopt a claim whose lease has run out.
+# What is under test is crash RECOVERY, not how long adoption waits.
+asyncio.run(host.work_forever("w-child", poll_interval=0.02, lease_ttl=0.5))
 """
 
 

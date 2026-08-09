@@ -79,6 +79,12 @@ class RunReadModel:
     pause: PauseReadModel | None
     retry_of: str | None
     forked_from: str | None
+    #: Why this Run was retired, when ``condition`` is ``"dead_letter"``:
+    #: one of ``views.DEAD_LETTER_REASONS``. None for every other Run. It is
+    #: here rather than only in the durable stream because it is the thing an
+    #: operator acts on — "nothing serves this" and "a builder drifted" need
+    #: different answers from them.
+    dead_letter_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-safe dictionary suitable for an HTTP response."""
@@ -96,6 +102,7 @@ class RunReadModel:
             "pause": None if self.pause is None else self.pause.to_dict(),
             "retry_of": self.retry_of,
             "forked_from": self.forked_from,
+            "dead_letter_reason": self.dead_letter_reason,
         }
 
 
@@ -446,6 +453,11 @@ def _status(view: RunView, condition: str) -> tuple[str, str]:
         return WorkflowStatus.STOPPED.value, condition
     if view.waiting is WaitingCondition.RECOVERY_EXHAUSTED:
         return WorkflowStatus.FAILED.value, condition
+    if view.waiting is WaitingCondition.DEAD_LETTER:
+        # A structural failure is still a failure to a badge: this Run will
+        # never produce a result. The precise reason stays in `condition`
+        # and in `dead_letter_reason`, which is where an operator looks.
+        return WorkflowStatus.FAILED.value, condition
     if view.waiting is WaitingCondition.PAUSED:
         return WaitingCondition.PAUSED.value, condition
     if view.waiting is not None:
@@ -471,6 +483,7 @@ def _run(snapshot: _RunReadSnapshot, pause: PauseReadModel | None) -> RunReadMod
         pause=pause,
         retry_of=snapshot.view.retry_of,
         forked_from=snapshot.view.forked_from,
+        dead_letter_reason=snapshot.dead_letter_reason,
     )
 
 

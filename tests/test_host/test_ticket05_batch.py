@@ -479,6 +479,7 @@ class TestKeyedOutcomes:
             "paused": 0,
             "queued": 0,
             "recovery_exhausted": 0,
+            "dead_letter": 0,
             "unstarted": 0,
             "abandoned": 0,
         }
@@ -898,7 +899,10 @@ submit_keyed_sync(host, graph,
     {{"item-%d" % n: {{"x": n}} for n in range(5)}},
     workflow_id="wf-bkill",
 )
-asyncio.run(host.work_forever("w-child", poll_interval=0.02))
+# lease_ttl is short on purpose: this worker is about to be SIGKILLed,
+# and the successor may only adopt a claim whose lease has run out.
+# What is under test is crash RECOVERY, not how long adoption waits.
+asyncio.run(host.work_forever("w-child", poll_interval=0.02, lease_ttl=0.5))
 """
 
 

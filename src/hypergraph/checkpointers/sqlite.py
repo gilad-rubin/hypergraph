@@ -75,6 +75,21 @@ _STEP_TIME_ORDER_DESC_WITH_ALIAS = "COALESCE(s.completed_at, s.created_at) DESC,
 _MAX_SQL_VARIABLES = 500
 _RETENTION_BASELINE_NODE_NAME = "__retained_state__"
 _RETENTION_BASELINE_NODE_TYPE = "RetentionBaseline"
+
+#: How long a writer waits for another writer's lock before raising
+#: ``database is locked``. Stated rather than inherited, because the driver
+#: default (5 s) is a number nobody chose for this store and WAL does not
+#: cover the case: WAL removes reader/writer blocking, not writer/writer
+#: contention. A Run Home legally carries several worker processes now, each
+#: opening short ``BEGIN IMMEDIATE`` transactions to claim, renew a lease,
+#: reclaim an expired one, or commit a step — every one of which is
+#: milliseconds long, so a wait this generous means "the holder is wedged",
+#: never "the machine is busy". It applies to every connection this module
+#: opens: the async one, the cached sync one, and the short-lived migration
+#: connection, which is the one that would otherwise fail a process START
+#: because another worker happened to be mid-write.
+SQLITE_BUSY_TIMEOUT_MS = 30_000
+_BUSY_TIMEOUT_PRAGMA = f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}"
 _PUBLIC_STEP_FILTER = f"node_name != '{_RETENTION_BASELINE_NODE_NAME}' AND (node_type IS NULL OR node_type != '{_RETENTION_BASELINE_NODE_TYPE}')"
 _PUBLIC_STEP_FILTER_WITH_ALIAS = (
     f"s.node_name != '{_RETENTION_BASELINE_NODE_NAME}' AND (s.node_type IS NULL OR s.node_type != '{_RETENTION_BASELINE_NODE_TYPE}')"
@@ -678,6 +693,7 @@ class SqliteCheckpointer(Checkpointer):
             db = await self._aiosqlite.connect(self._connect_path, uri=self._connect_uri)
             try:
                 await db.execute("PRAGMA journal_mode=WAL")
+                await db.execute(_BUSY_TIMEOUT_PRAGMA)
                 # For in-memory DBs, schema must be created after async connect
                 # so the shared-cache database stays alive across connections.
                 if self._is_memory:
@@ -700,6 +716,7 @@ class SqliteCheckpointer(Checkpointer):
         with self._sync_lock:
             conn = sqlite3.connect(self._connect_path, uri=self._connect_uri)
             try:
+                conn.execute(_BUSY_TIMEOUT_PRAGMA)
                 ensure_schema(conn)
             finally:
                 conn.close()
@@ -1839,6 +1856,7 @@ class SqliteCheckpointer(Checkpointer):
                     check_same_thread=False,
                 )
                 conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute(_BUSY_TIMEOUT_PRAGMA)
                 ensure_schema(conn)
                 # Defense-in-depth for same-store references, mirroring the async
                 # connection. Set after ensure_schema so a v4->v5 table rebuild

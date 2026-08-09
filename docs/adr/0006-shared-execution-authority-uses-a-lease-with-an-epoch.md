@@ -8,6 +8,14 @@ independently by all three clean-room designs and the anchored review
 (`docs/research/2026-07-21-cleanroom-durable-host-experiment.md`); risk
 analysis in `docs/research/2026-07-21-durable-host-canon-grill.md`.
 
+**The tier boundary below is superseded (2026-08-05).** SQLite now claims
+with a lease: `host_submissions.claimed_by` / `lease_until`, renewed by the
+holder and adopted on expiry, with `claim_seq` as the fence. The exclusive
+worker lock and `WorkerLockError` are retired. Everything else in this ADR
+stands, and the local tier now implements more of it than the boundary
+allowed — see "Tier boundary" for what changed and what still does not hold
+here.
+
 ## Context
 
 Two processes must never both write one workflow's history. Remote death is
@@ -52,10 +60,33 @@ performed before it.
   settlement was not witnessed surfaces `OUTCOME_UNKNOWN` and is never spent
   again automatically; it requires an explicit operator decision. The
   declaration and reservation contract is specified in PRD 0014.
-- **Tier boundary.** SQLite (local Run Home) does NOT advertise leases: one
-  OS-level exclusive worker lock per Home; epoch fields may exist as private
-  schema placeholders. The lease-with-epoch contract is the Postgres
-  (shared) tier, accepted only via the eight-point kill-test matrix.
+- **Tier boundary.** *(Superseded 2026-08-05; the original read: "SQLite
+  (local Run Home) does NOT advertise leases: one OS-level exclusive worker
+  lock per Home; epoch fields may exist as private schema placeholders. The
+  lease-with-epoch contract is the Postgres (shared) tier, accepted only via
+  the eight-point kill-test matrix.")*
+
+  SQLite now claims with a lease. `host_submissions.claimed_by` and
+  `lease_until` are written by the claim compare-and-set, renewed by the
+  holder at a third of the TTL, and adopted on expiry by any worker's poll
+  pass; `claim_seq` is the epoch, and the transitions that speak for one
+  execution compare-and-set on it. Several workers may share one Home, and
+  `WorkerLockError` is retired.
+
+  The lock was never the answer this ADR wanted — it made "is this
+  half-finished Run dead?" unaskable rather than answered, and forbade a
+  notebook from executing work only it could configure. Deferring the lease
+  bought nothing once the local tier had a real second executor.
+
+  **What still does NOT hold at this tier**, and is still the Postgres
+  tier's work: the fence is at the SUBMISSION's transitions, not on every
+  journal write. Step saves, attempt operations and status transitions are
+  not epoch-checked, so a presumed-dead worker still executing can commit
+  steps to a Run another worker has adopted. That is the documented
+  at-least-once boundary — an adopted Run resumes from checkpoint state and
+  a duplicated step is wasted work, never a second settlement — but it is
+  not "every mutation is fenced in-transaction", and the eight-point
+  kill-test matrix remains the gate for claiming that.
 
 ## Consequences
 

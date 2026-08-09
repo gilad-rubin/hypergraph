@@ -919,8 +919,8 @@ class TestSearch:
 
 
 class TestMigration:
-    def test_fresh_db_gets_v6_schema(self, tmp_path):
-        """A new database gets v6 schema automatically."""
+    def test_fresh_db_gets_v7_schema(self, tmp_path):
+        """A new database gets v7 schema automatically."""
         cp = SqliteCheckpointer(str(tmp_path / "fresh.db"))
         # Trigger sync schema creation
         assert cp.runs() == []
@@ -988,7 +988,7 @@ class TestMigration:
         }
 
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 6
+        assert version == 7
         conn.close()
 
     def test_migration_idempotent(self, tmp_path):
@@ -1002,7 +1002,7 @@ class TestMigration:
         ensure_schema(conn)
         ensure_schema(conn)  # Second time should be a no-op
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 6
+        assert version == 7
         conn.close()
 
     def test_v6_db_gains_pending_nodes_in_place(self, tmp_path):
@@ -1031,7 +1031,7 @@ class TestMigration:
             assert "pending_nodes" in tables
             assert conn.execute("SELECT COUNT(*) FROM pending_nodes").fetchone()[0] == 0
             assert [row[0] for row in conn.execute("SELECT id FROM runs").fetchall()] == ["r-1"]
-            assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 6
+            assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 7
         finally:
             conn.close()
 
@@ -1063,6 +1063,67 @@ class TestMigration:
         row = conn.execute("SELECT compat_state, fingerprint, retry_of FROM host_submissions WHERE workflow_id = 'wf-legacy'").fetchone()
         assert row == ("compatible", None, None)
         ensure_schema(conn)  # idempotent on the migrated database
+        conn.close()
+
+    def test_v6_db_with_in_flight_work_migrates_to_v7_in_place(self, tmp_path):
+        """A REAL v6 database carrying unfinished work becomes v7 untouched.
+
+        The migration that adds the builder address and the worker registry
+        runs over Run Homes with claimed and parked rows in them, so the one
+        thing it must not do is disturb any of them. Every v7 addition is a
+        nullable column or a new table: existing rows keep their values, the
+        new columns read NULL, and nothing about claim, recovery, or Batch
+        membership changes meaning.
+        """
+        import sqlite3
+
+        from hypergraph.checkpointers._migrate import _ensure_v6_objects, ensure_schema
+
+        db_path = str(tmp_path / "in-flight-v6.db")
+        conn = sqlite3.connect(db_path)
+        ensure_schema(conn)
+        # Rewind to a genuine v6 database: drop what v7 added, and say so.
+        conn.execute("DROP TABLE host_workers")
+        for column in ("builder_key", "builder_args_json", "claimed_by", "lease_until"):
+            conn.execute(f"ALTER TABLE host_submissions DROP COLUMN {column}")
+        conn.execute("UPDATE _schema_version SET version = 6")
+        conn.execute(
+            "INSERT INTO host_submissions (workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
+            "state, recovery_attempts, claim_seq, batch_id, item_key, created_at, claimed_at) "
+            "VALUES ('drop-1:a', 'ingest', 'v1', 'h1', '{\"x\": 1}', 'claimed', 2, 5, 'b-1', 'a', "
+            "'2026-08-01T00:00:00+00:00', '2026-08-01T00:01:00+00:00')"
+        )
+        conn.execute(
+            "INSERT INTO host_submissions (workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
+            "state, compat_state, created_at) "
+            "VALUES ('drop-1:b', 'ingest', 'v1', 'h1', '{\"x\": 2}', 'pending', 'incompatible', '2026-08-01T00:00:00+00:00')"
+        )
+        conn.commit()
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 6
+
+        ensure_schema(conn)
+
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 7
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()}
+        assert {"builder_key", "builder_args_json", "claimed_by", "lease_until"} <= cols
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert "host_workers" in tables
+        assert conn.execute("SELECT COUNT(*) FROM host_workers").fetchone()[0] == 0
+
+        # The in-flight claim is exactly as it was, and reads NULL for every
+        # new column: nothing writes them until something asks for a builder.
+        claimed = conn.execute(
+            "SELECT state, recovery_attempts, claim_seq, batch_id, item_key, claimed_at, "
+            "builder_key, builder_args_json, claimed_by, lease_until "
+            "FROM host_submissions WHERE workflow_id = 'drop-1:a'"
+        ).fetchone()
+        assert claimed == ("claimed", 2, 5, "b-1", "a", "2026-08-01T00:01:00+00:00", None, None, None, None)
+        parked = conn.execute("SELECT state, compat_state FROM host_submissions WHERE workflow_id = 'drop-1:b'").fetchone()
+        assert parked == ("pending", "incompatible")
+
+        ensure_schema(conn)  # idempotent on the migrated database
+        _ensure_v6_objects(conn)  # and the v6 guard still runs harmlessly
+        assert conn.execute("SELECT COUNT(*) FROM host_submissions").fetchone()[0] == 2
         conn.close()
 
     def test_v6_db_gains_ticket14_command_columns_in_place(self, tmp_path):

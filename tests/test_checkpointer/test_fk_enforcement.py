@@ -449,7 +449,7 @@ class TestV4ToV5Migration:
             probe = sqlite3.connect(path)
             try:
                 (version,) = probe.execute("SELECT version FROM _schema_version").fetchone()
-                assert version == 6
+                assert version == 7
                 assert _fk_map(probe, "runs") == {("forked_from", "runs", "id"), ("retry_of", "runs", "id")}
                 assert _fk_map(probe, "steps") == {("run_id", "runs", "id"), ("attempt_series_id", "attempt_series", "id")}
                 # Step ids (FTS rowids) are preserved by the rebuild.
@@ -486,7 +486,7 @@ class TestV4ToV5Migration:
             ensure_schema(conn)
             ensure_schema(conn)  # second call must be a no-op
             (version,) = conn.execute("SELECT version FROM _schema_version").fetchone()
-            assert version == 6
+            assert version == 7
             (run_count,) = conn.execute("SELECT COUNT(*) FROM runs").fetchone()
             assert run_count == 4
         finally:

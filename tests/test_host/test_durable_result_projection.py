@@ -472,7 +472,7 @@ class TestLineageAndRecovery:
         db.execute("UPDATE host_submissions SET state = 'claimed' WHERE workflow_id = 'wf-crash'")
         db.commit()
 
-        await home._restart_scan()
+        await home._reclaim_expired()
         assert home._get_submission_sync("wf-crash")["state"] == "pending", "the orphan must be re-adopted"
 
         async with _worker(host, worker_id="w-recovered"):

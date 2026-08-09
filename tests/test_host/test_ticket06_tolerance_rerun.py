@@ -233,6 +233,7 @@ class TestScenarioFiveTable:
             "paused": 0,
             "queued": 0,
             "recovery_exhausted": 0,
+            "dead_letter": 0,
             "unstarted": 2,
             "abandoned": 0,
         }
@@ -428,7 +429,7 @@ class TestFailureEquivalence:
         db = home._sync_db()
         db.execute("UPDATE host_submissions SET state = 'claimed', recovery_attempts = 2 WHERE workflow_id = 'drop-eq:p-0'")
         db.commit()
-        await home._restart_scan()
+        await home._reclaim_expired()
 
         assert home._get_submission_sync("drop-eq:p-0")["state"] == "exhausted"
         assert home._batch_tripped_sync(batch_id) is True
@@ -526,7 +527,7 @@ class TestTripBehavior:
 
         # The worker dies with five children claimed but unexecuted; the
         # restart scan returns them to pending.
-        await home._restart_scan()
+        await home._reclaim_expired()
         assert [row["state"] for row in (home._get_submission_sync(f"drop-reopen:p-{n}") for n in range(8))].count("pending") == 5
 
         # Admission refuses them and records them as explicitly unstarted.
@@ -542,6 +543,7 @@ class TestTripBehavior:
             "paused": 0,
             "queued": 0,
             "recovery_exhausted": 0,
+            "dead_letter": 0,
             "unstarted": 5,
             "abandoned": 0,
         }
@@ -906,7 +908,7 @@ class TestDurableStreamAccountsEveryItem:
         # The worker dies with five children claimed but never executed;
         # the restart scan returns them to pending and admission refuses
         # them. Each refusal is a durable fact, not a silent state flip.
-        await home._restart_scan()
+        await home._reclaim_expired()
         assert await _claim(host, home) == []
 
         updates = _batch_updates(home, batch_id)
@@ -929,7 +931,7 @@ class TestDurableStreamAccountsEveryItem:
 
     async def test_a_watch_consumer_learns_every_item_without_reading_the_view(self, home):
         host, receipt = await self._tripped_with_claimed_children(home)
-        await home._restart_scan()
+        await home._reclaim_expired()
         assert await _claim(host, home) == []
 
         durable = [update async for update in host.client.watch(receipt.batch_ref) if update.durable]
@@ -1075,7 +1077,7 @@ class TestDurableStreamAccountsEveryItem:
         # progress, three times over: the brake parks both at the default
         # recovery_cap of 3.
         for _ in range(3):
-            await home._restart_scan()
+            await home._reclaim_expired()
             await _claim(host, home)
         assert [home._get_submission_sync(f"drop-a9-parked:p-{n}")["state"] for n in range(4)].count("exhausted") == 2
         return host, receipt

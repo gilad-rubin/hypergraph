@@ -125,8 +125,10 @@ effect safety pass real kill tests.
 - The Run Home is the existing checkpointer plus coordination facts in the
   same transactional store. StepRecords remain the execution journal.
 - SQLite permits one exclusive worker owner. Other processes may submit,
-  inspect, watch, and append control commands.
-- Worker lifecycle has explicit start, bounded drain, and lock release.
+  inspect, watch, and append control commands. **Superseded 2026-08-05:**
+  SQLite permits SEVERAL workers, arbitrated per submission by a renewed
+  lease and fenced by `claim_seq` (ADR 0006 tier-boundary note).
+- Worker lifecycle has explicit start, bounded drain, and lease surrender.
   Product process supervision restarts the worker; Hypergraph adds no
   control-plane server.
 - Definition identity is the typed tuple of name, deployment version, and

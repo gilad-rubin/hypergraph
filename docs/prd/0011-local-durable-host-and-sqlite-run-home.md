@@ -73,6 +73,12 @@ Requirements:
   lifecycle is explicit: startup, bounded drain on shutdown, and lock
   release. No lease/epoch contract is exposed in this tier (ADR 0006 tier
   boundary). Intake and observation from other processes remain legal.
+  **Superseded 2026-08-05:** several workers may share one Home. Each claim
+  takes a lease (`claimed_by` / `lease_until`), its holder renews it, and an
+  expired claim is adopted under a new `claim_seq` that fences the old
+  holder. Shutdown surrenders leases instead of releasing a lock, and
+  `WorkerLockError` is retired. See the ADR 0006 tier-boundary note for what
+  this tier still does not fence.
 - **Verbs and ownership (A13):** Host: `submit`, `submit_batch`, `fork`,
   `work_forever`. RunHomeClient: `get`, `list` (via `RunQuery`), `watch`,
   `stop`, `rerun`, `answer` (gated on PRD 0010 per A1). The Host exposes

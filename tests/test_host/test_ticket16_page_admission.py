@@ -175,7 +175,7 @@ class TestPageAdmissionContract:
             reopened_host, _ = _host(reopened)
             assert _claimed_costs(reopened) == [4, 4]
             assert await _claim(reopened, reopened_host) == []
-            await reopened._restart_scan()
+            await reopened._reclaim_expired()
             reclaimed = await _claim(reopened, reopened_host)
             assert [row["admission_cost"] for row in reclaimed] == [4, 4]
             assert _claimed_costs(reopened) == [4, 4]
