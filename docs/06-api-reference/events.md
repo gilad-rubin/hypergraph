@@ -339,7 +339,18 @@ class InnerCacheEvent(BaseEvent):
     refreshing: bool             # True if background refresh was triggered
     wrote: bool                  # True if a new value was written
     mode: str                    # Cache mode in effect
+    shared: bool                 # True if this call joined an in-flight compute
+
+    @property
+    def outcome(self) -> Literal["hit", "joined", "computed"]: ...
 ```
+
+`outcome` says what one call actually cost, in one word. Counting computed
+work as "calls minus hits" makes it a *ceiling*: a call that joined another
+caller's in-flight single-flight did no work of its own and is not a second
+computation. `hit` keeps its exact previous meaning, and `shared` is
+reported only by a Hypercache that carries the distinction — an older one
+leaves it `False`, which reads as `computed`.
 
 ### Event (Union Type)
 

@@ -799,10 +799,46 @@ that fan-out evidence away. A Run's `duration_ms` is wall time and is *not*
 the sum of its nodes' — a fan-out runs its pages concurrently, so both
 numbers are true and answer different questions.
 
+`descend=False` declines that walk and reports only the steps each named Run
+committed **itself** — the outer graph's own cost, fan-out aside:
+
+```python
+whole = await read.node_timings(definition="ingest")                  # pages included
+outer = await read.node_timings(definition="ingest", descend=False)   # the document's own nodes
+```
+
+The selection is identical either way; only the fold narrows. The two
+answers differ by the entire fan-out and neither estimates the other, so a
+report quoting one should say which it read.
+
 Inner runs driven by a runner the *product* owns — a `HyperTable`'s
 derivation runner, for instance — are recorded only if that runner has a
 checkpointer; see [issue #386](https://github.com/gilad-rubin/hypergraph/issues/386)
 for the durable-inner-step design.
+
+### Did anything retry?
+
+`retry_census(run_ids=None, definition=None)` reads the durable attempt
+ledger — the evidence a node's retries leave **below** the graph, where the
+Run's own status never shows them:
+
+```python
+attempts = await read.retry_census(definition="ingest")
+struggling = {run_id: tries for run_id, tries in attempts.items() if tries > 1}
+```
+
+The value is the **highest** attempt any one node of that Run reached, never
+a sum: *"this Run needed a fourth try somewhere"* is the fact an operator
+acts on. A Run appears only when a node of it was attempt-managed — a
+declared `RetryPolicy` or timeout — so an absent Run never opened a series,
+and a Run reported as `1` was managed and succeeded on its first invocation.
+
+Runs are keyed by the run that **executed** the retried node, so a nested
+graph's retries answer under the nested run's own id: a page's fourth try is
+the page's, not silently the document's. `run_ids` narrows to a selection —
+an empty sequence asks about no Run and reads nothing — and `definition`
+narrows to the Host Runs one Definition has submissions for. Either way the
+census costs one statement per id window, never one per Run.
 
 Every `RunHomeReadModel` method **reads**: it issues `SELECT`s against the
 Run Home the caller already opened, opens no second connection, and creates

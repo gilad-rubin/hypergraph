@@ -142,6 +142,30 @@ async def test_a_fan_out_s_inner_nodes_are_folded_under_the_host_run_that_drove_
     assert timings.runs[0].workflow_id == "sweep-fanout:doc-1"
 
 
+async def test_declining_to_descend_reports_only_each_run_s_own_steps(home, ledger):
+    """The opposite question: what did the OUTER graph cost, fan-out aside?"""
+    graph = fan_out_graph()
+    host = serve(graph, home=home, deployment_version="v1")
+    await settled_sweep(host, graph, ["doc-1"], "sweep-scope")
+    read = RunHomeReadModel(host.client)
+
+    folded = await read.node_timings()
+    own = await read.node_timings(descend=False)
+
+    assert "derive_page" in {timing.node_name for timing in folded.nodes}
+    assert "derive_page" not in {timing.node_name for timing in own.nodes}
+    assert {timing.node_name for timing in own.nodes} == {"split_pages", "derive_pages", "publish"}
+    assert {step.workflow_id for step in own.steps} == {"sweep-scope:doc-1"}
+
+    # Only the FOLD narrows: the same Runs were selected, and every step in
+    # the narrower answer is one the wider answer also reported.
+    assert own.runs == folded.runs
+    assert set(own.steps) <= set(folded.steps)
+
+    with pytest.raises(TypeError, match="descend must be a bool"):
+        await read.node_timings(descend="no")
+
+
 async def test_the_selection_narrows_by_definition_batch_and_limit(home, ledger):
     graph = ingestion_graph()
     other = ingestion_graph(name="other-ingest")
@@ -198,6 +222,7 @@ def test_sync_timings_mirror_the_async_ones(home, ledger):
 
     assert [run.workflow_id for run in timings.runs] == ["sweep-sync-timings:work-clean"]
     assert read.node_timings_sync(definition="never-served").runs == ()
+    assert read.node_timings_sync(definition=graph.name, descend=False).runs == timings.runs
 
 
 def test_the_timing_read_writes_nothing_to_the_run_home(home, ledger):

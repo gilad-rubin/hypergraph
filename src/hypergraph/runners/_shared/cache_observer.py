@@ -58,6 +58,11 @@ def node_cache_observer(
                 stale=t.stale,
                 refreshing=t.refreshing,
                 wrote=t.wrote,
+                # Read defensively: a Hypercache that predates the
+                # single-flight distinction reports no `shared` at all, and
+                # a missing field must degrade to "computed" rather than
+                # break the bridge that carries every other decision.
+                shared=getattr(t, "shared", False),
                 mode=t.mode,
             )
         )

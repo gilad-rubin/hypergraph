@@ -154,6 +154,46 @@ class TestNodeEndEventCachedField:
         assert isinstance(node_events[2], NodeEndEvent)
 
 
+def _telemetry(**decision):
+    """One Hypercache decision, with the fields its observer always sends."""
+    fields = {
+        "instance": "Service",
+        "operation": "embed",
+        "hit": False,
+        "stale": False,
+        "refreshing": False,
+        "wrote": False,
+        "shared": False,
+        "mode": "normal",
+    }
+    return SimpleNamespace(**{**fields, **decision})
+
+
+def _bridged(monkeypatch, decisions) -> list[InnerCacheEvent]:
+    """Run the observer bridge over a scripted sequence of decisions."""
+    fake_hypercache = ModuleType("hypercache")
+
+    @contextmanager
+    def observe_cache(callback):
+        for decision in decisions:
+            callback(decision)
+        yield
+
+    fake_hypercache.observe_cache = observe_cache
+    monkeypatch.setitem(sys.modules, "hypercache", fake_hypercache)
+
+    emitted: list[InnerCacheEvent] = []
+    with node_cache_observer(
+        emitted.append,
+        run_id="run-1",
+        node_name="embed_node",
+        graph_name="demo_graph",
+        node_span_id="span-1",
+    ):
+        pass
+    return emitted
+
+
 class TestInnerCacheObserverBridge:
     """Tests for Hypergraph's bridge into Hypercache telemetry."""
 
@@ -199,3 +239,34 @@ class TestInnerCacheObserverBridge:
         assert event.instance == "Service"
         assert event.operation == "embed"
         assert event.hit is True
+
+    def test_the_bridge_tells_a_joined_call_apart_from_one_that_computed(self, monkeypatch):
+        """Three decisions, three words — `computed` stops being a ceiling.
+
+        A caller that joined another's in-flight compute did no work of its
+        own. Counting it as `calls - hits` charged it a second provider call
+        that never happened.
+        """
+        emitted = _bridged(
+            monkeypatch,
+            [
+                _telemetry(hit=True),
+                _telemetry(shared=True),
+                _telemetry(wrote=True),
+            ],
+        )
+
+        assert [event.outcome for event in emitted] == ["hit", "joined", "computed"]
+        assert [event.shared for event in emitted] == [False, True, False]
+        # The existing field keeps its existing meaning: a consumer that
+        # only reads `hit` sees exactly what it saw before.
+        assert [event.hit for event in emitted] == [True, False, False]
+
+    def test_a_hypercache_that_reports_no_sharing_still_bridges_every_call(self, monkeypatch):
+        """The installed floor has no `shared`; a missing field is not a crash."""
+        older = SimpleNamespace(instance="Service", operation="embed", hit=False, stale=False, refreshing=False, wrote=True, mode="normal")
+
+        emitted = _bridged(monkeypatch, [older])
+
+        assert not hasattr(older, "shared")
+        assert (emitted[0].shared, emitted[0].outcome) == (False, "computed")

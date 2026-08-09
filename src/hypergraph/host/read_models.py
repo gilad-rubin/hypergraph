@@ -392,6 +392,7 @@ class RunHomeReadModel:
         *,
         batch: BatchRef | str | None = None,
         limit: int = 200,
+        descend: bool = True,
     ) -> NodeTimingsReadModel:
         """Fold the DURABLE per-node timing facts a Run Home already holds.
 
@@ -415,6 +416,13 @@ class RunHomeReadModel:
             limit: Cap on the Host Runs covered, newest acceptance first
                 (default 200). Nested runs beneath them are not capped —
                 they belong to a Run that was already selected.
+            descend: Whether nested runs count. True (the default) folds a
+                Run's nested graphs and mapped items into its aggregate;
+                False reports only the steps each named Run committed
+                ITSELF, which is what a caller comparing outer-graph cost
+                across Definitions is asking about. The two answers differ
+                by the whole fan-out and neither is the other's estimate,
+                so a report says which one it read.
 
         Returns:
             :class:`NodeTimingsReadModel`: per-node aggregates ordered by
@@ -422,7 +430,7 @@ class RunHomeReadModel:
             per-Run totals, and every step record so a caller can fold the
             same facts its own way — per document, per superstep, per hour.
         """
-        return _node_timings(await self._client._timing_snapshot(definition, batch, limit))
+        return _node_timings(await self._client._timing_snapshot(definition, batch, limit, descend))
 
     def node_timings_sync(
         self,
@@ -430,9 +438,49 @@ class RunHomeReadModel:
         *,
         batch: BatchRef | str | None = None,
         limit: int = 200,
+        descend: bool = True,
     ) -> NodeTimingsReadModel:
         """Sync mirror of ``node_timings``."""
-        return _node_timings(self._client._timing_snapshot_sync(definition, batch, limit))
+        return _node_timings(self._client._timing_snapshot_sync(definition, batch, limit, descend))
+
+    async def retry_census(self, run_ids: Sequence[str] | None = None, *, definition: str | None = None) -> dict[str, int]:
+        """How many attempts each Run's retried nodes actually spent.
+
+        A node that retried BELOW the graph leaves its evidence in the
+        durable attempt ledger and nowhere in the Run's status, so a Run that
+        looks merely slow reads exactly like one that has been failing and
+        retrying all along. This is the verb that tells them apart, and it
+        costs one statement per id window rather than one per Run.
+
+        The number is the HIGHEST attempt any one node of the Run reached,
+        never a sum: "this Run needed a fourth try somewhere" is the fact an
+        operator acts on. A Run is present only when a node of it was
+        attempt-managed — a declared retry policy or timeout — so an absent
+        Run never opened a series, and a Run reported as ``1`` was managed
+        and succeeded on its first invocation.
+
+        Runs are keyed by the run that EXECUTED the retried node, exactly as
+        the ledger records it, so a nested graph's retries answer under the
+        nested run's own id. Unlike ``node_timings``, this verb does not
+        walk ``runs.parent_run_id`` — a retry count folded onto a parent
+        would report a page's fourth try as the document's.
+
+        Args:
+            run_ids: Narrow to these run ids, or None for every Run in the
+                Home. An EMPTY sequence asks about no Run and reads nothing.
+            definition: Only Runs pinned to this Definition name, or None
+                for every Definition in the Home. Naming one selects Host
+                Runs, which are the Runs a Definition has submissions for.
+
+        Returns:
+            ``{run_id: highest attempt number}``, one entry per Run whose
+            ledger holds an attempt, and an empty mapping when none does.
+        """
+        return await self._client._attempt_census(run_ids, definition)
+
+    def retry_census_sync(self, run_ids: Sequence[str] | None = None, *, definition: str | None = None) -> dict[str, int]:
+        """Sync mirror of ``retry_census``."""
+        return self._client._attempt_census_sync(run_ids, definition)
 
     async def _run(self, snapshot: _RunReadSnapshot) -> RunReadModel:
         pause = _pause(snapshot.view.run_ref, snapshot.pause_slot) if snapshot.view.waiting is WaitingCondition.PAUSED else None

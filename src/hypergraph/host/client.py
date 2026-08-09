@@ -19,6 +19,7 @@ from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any, cast
 
 from hypergraph.checkpointers.types import PauseSlot, WorkflowStatus
+from hypergraph.host._attempt_census import folded_census, validate_census_request
 from hypergraph.host._batch_store import BatchAcceptance, DefinitionPin
 from hypergraph.host._bus import _bus_for, _PreviewBus
 from hypergraph.host.batch import BatchTolerance
@@ -558,12 +559,24 @@ class _TimingSnapshot:
     steps: tuple[_StepFact, ...]
 
 
-def _validate_timing_request(definition: str | None, limit: int) -> None:
+def _validate_timing_request(definition: str | None, limit: int, descend: bool) -> None:
     """Refuse a timing request the store cannot honor, before it reads."""
     if definition is not None and not isinstance(definition, str):
         raise TypeError(f"node_timings() definition must be a Definition name string or None, got {type(definition).__name__}.")
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         raise ValueError(f"node_timings() limit must be a positive int, got {limit!r}.")
+    if not isinstance(descend, bool):
+        raise TypeError(f"node_timings() descend must be a bool, got {type(descend).__name__}.")
+
+
+def _own_runs_only(root_ids: Sequence[str]) -> dict[str, str]:
+    """Each selected Run owning only itself — the walk NOT taken.
+
+    ``_descendant_run_ids`` returns exactly this shape plus the nested runs
+    beneath each root, so refusing to descend is a different owner map and
+    nothing else: the same step read, the same attribution, a narrower set.
+    """
+    return {run_id: run_id for run_id in root_ids}
 
 
 def _timing_batch_id(batch: BatchRef | str | None) -> str | None:
@@ -1365,30 +1378,48 @@ class RunHomeClient:
         admission_full = self._home._admission_is_full_sync()
         return _batch_listing(self._home.uri, batches, children, tripped, admission_full=admission_full)
 
-    async def _timing_snapshot(self, definition: str | None, batch: BatchRef | str | None, limit: int) -> _TimingSnapshot:
+    async def _timing_snapshot(self, definition: str | None, batch: BatchRef | str | None, limit: int, descend: bool = True) -> _TimingSnapshot:
         """Durable timing facts for a selection of Host Runs and their descendants.
 
         Four statements' worth of work regardless of how wide the fan-out
         got: the Runs, the nested runs beneath them, their step rows, and
-        one admission probe.
+        one admission probe. ``descend=False`` drops the second of those and
+        reports each selected Run's OWN steps.
         """
-        _validate_timing_request(definition, limit)
+        _validate_timing_request(definition, limit, descend)
         batch_id = _timing_batch_id(batch)
         rows = await self._home._timing_run_rows(definition=definition, batch_id=batch_id, limit=limit)
         runs = _timing_run_facts(self._home.uri, rows, admission_full=await self._home._admission_is_full())
-        owners = await self._home._descendant_run_ids([fact.view.workflow_id for fact in runs if fact.view.status is not None])
+        roots = [fact.view.workflow_id for fact in runs if fact.view.status is not None]
+        owners = await self._home._descendant_run_ids(roots) if descend else _own_runs_only(roots)
         steps = _step_facts(await self._home._step_timing_rows(builtins.list(owners)), owners)
         return _TimingSnapshot(home=self._home.uri, definition=definition, runs=tuple(runs), steps=tuple(steps))
 
-    def _timing_snapshot_sync(self, definition: str | None, batch: BatchRef | str | None, limit: int) -> _TimingSnapshot:
+    def _timing_snapshot_sync(self, definition: str | None, batch: BatchRef | str | None, limit: int, descend: bool = True) -> _TimingSnapshot:
         """Sync mirror of ``_timing_snapshot``."""
-        _validate_timing_request(definition, limit)
+        _validate_timing_request(definition, limit, descend)
         batch_id = _timing_batch_id(batch)
         rows = self._home._timing_run_rows_sync(definition=definition, batch_id=batch_id, limit=limit)
         runs = _timing_run_facts(self._home.uri, rows, admission_full=self._home._admission_is_full_sync())
-        owners = self._home._descendant_run_ids_sync([fact.view.workflow_id for fact in runs if fact.view.status is not None])
+        roots = [fact.view.workflow_id for fact in runs if fact.view.status is not None]
+        owners = self._home._descendant_run_ids_sync(roots) if descend else _own_runs_only(roots)
         steps = _step_facts(self._home._step_timing_rows_sync(builtins.list(owners)), owners)
         return _TimingSnapshot(home=self._home.uri, definition=definition, runs=tuple(runs), steps=tuple(steps))
+
+    async def _attempt_census(self, run_ids: Sequence[str] | None, definition: str | None) -> dict[str, int]:
+        """The durable attempt ledger, folded to one number per Run.
+
+        One statement per id window, never one per Run: a retry count is a
+        COLUMN on an operator's table, and a table that asked a question per
+        row would cost more than the answer it renders.
+        """
+        validate_census_request(run_ids, definition)
+        return folded_census(await self._home._attempt_census_rows(run_ids, definition))
+
+    def _attempt_census_sync(self, run_ids: Sequence[str] | None, definition: str | None) -> dict[str, int]:
+        """Sync mirror of ``_attempt_census``."""
+        validate_census_request(run_ids, definition)
+        return folded_census(self._home._attempt_census_rows_sync(run_ids, definition))
 
     async def _read_model_snapshot(self, ref: RunRef) -> _RunReadSnapshot | None:
         """Joined facts used by ``RunHomeReadModel`` for one Run."""
