@@ -275,6 +275,9 @@ def build_run_start_event(
         retry_of=lineage.retry_of,
         retry_index=lineage.retry_index,
         is_resume=lineage.is_resume,
+        # What this run MAY do, before it has done any of it. The Graph
+        # caches it, so a 400-item map computes the topology once.
+        plan=graph.execution_plan(),
     )
     return run_id, span_id, event
 

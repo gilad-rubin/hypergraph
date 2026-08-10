@@ -8,6 +8,7 @@ notebook selection — all over synthetic events, no sleeps, no network.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -382,3 +383,140 @@ def test_a_graph_carried_console_suppresses_the_default_too() -> None:
     with patch("hypergraph.events.rich_progress._detect_mode", return_value="notebook"):
         processors = ensure_progress_processor(None, carried=(console,))
     assert processors == []
+
+
+# ---------------------------------------------------------------------------
+# upcoming nodes: the shape of the work is visible before it starts
+# ---------------------------------------------------------------------------
+
+
+def _planned(*entries: tuple[str, bool]) -> tuple:
+    from hypergraph.events.types import PlannedNode
+
+    return tuple(PlannedNode(name=name, certain=certain) for name, certain in entries)
+
+
+def test_the_plan_draws_upcoming_nodes_before_anything_starts() -> None:
+    console = ConsoleProcessor()
+    console.on_event(
+        RunStartEvent(
+            run_id="r",
+            span_id="root",
+            graph_name="pipeline",
+            is_map=True,
+            map_size=3,
+            plan=_planned(("fetch", True), ("enrich", True), ("archive", False)),
+        )
+    )
+    rows = {row["name"]: row["state"] for row in console.payload()["tree"]["children"]}
+    # Nothing has run, yet the whole graph is already drawn — in plan order.
+    assert [row["name"] for row in console.payload()["tree"]["children"]] == ["fetch", "enrich", "archive"]
+    assert rows == {"fetch": "upcoming", "enrich": "upcoming", "archive": "possible"}
+    html = render_console(console.payload())
+    assert "queued</span>" in html and "may run</span>" in html
+
+
+def test_a_started_node_stops_being_upcoming() -> None:
+    console = ConsoleProcessor()
+    console.on_event(
+        RunStartEvent(run_id="r", span_id="root", graph_name="p", is_map=True, map_size=1, plan=_planned(("work", True), ("after", True)))
+    )
+    console.on_event(RunStartEvent(run_id="r", span_id="item", parent_span_id="root", graph_name="p", item_index=0))
+    console.on_event(NodeStartEvent(run_id="r", span_id="n", parent_span_id="item", node_name="work", graph_name="p"))
+    states = {row["name"]: row["state"] for row in console.payload()["tree"]["children"]}
+    assert states == {"work": "running", "after": "upcoming"}
+    console.on_event(NodeEndEvent(run_id="r", span_id="n", parent_span_id="item", node_name="work", graph_name="p", duration_ms=4.0))
+    assert {r["name"]: r["state"] for r in console.payload()["tree"]["children"]}["work"] == "done"
+
+
+def test_a_gated_node_that_never_ran_stays_possible_not_failed() -> None:
+    """The branch not taken is not an omission and not a failure."""
+    console = ConsoleProcessor()
+    console.on_event(
+        RunStartEvent(run_id="r", span_id="root", graph_name="p", is_map=True, map_size=1, plan=_planned(("taken", False), ("not_taken", False)))
+    )
+    console.on_event(RunStartEvent(run_id="r", span_id="item", parent_span_id="root", graph_name="p", item_index=0))
+    console.on_event(NodeStartEvent(run_id="r", span_id="n", parent_span_id="item", node_name="taken", graph_name="p"))
+    console.on_event(NodeEndEvent(run_id="r", span_id="n", parent_span_id="item", node_name="taken", graph_name="p", duration_ms=2.0))
+    console.on_event(RunEndEvent(run_id="r", span_id="item", parent_span_id="root", graph_name="p", status=RunStatus.COMPLETED))
+    console.on_event(RunEndEvent(run_id="r", span_id="root", graph_name="p", status=RunStatus.COMPLETED))
+    states = {row["name"]: row["state"] for row in console.payload()["tree"]["children"]}
+    assert states == {"taken": "done", "not_taken": "possible"}
+    assert console.payload()["failed"] == 0
+
+
+def test_a_producer_without_a_plan_still_works() -> None:
+    """Every plan field is optional — an old producer loses nothing."""
+    console = ConsoleProcessor()
+    for group in _map_events(items=2):
+        _feed(console, group)
+    payload = console.payload()
+    assert [row["name"] for row in payload["tree"]["children"]] == ["work"]
+    assert payload["tree"]["children"][0]["state"] == "done"
+
+
+# ---------------------------------------------------------------------------
+# the reader's collapse survives the refresh, and the theme is the repo's
+# ---------------------------------------------------------------------------
+
+
+def _row_ids(frame: str) -> set[str]:
+    return set(re.findall(r'id="hgc[0-9a-f]+-[sc]-([a-z0-9]+)"', frame))
+
+
+def test_every_frame_carries_the_state_script_with_a_stable_key() -> None:
+    console = ConsoleProcessor()
+    frames = []
+    for group in _map_events(items=4):
+        _feed(console, group)
+        frames.append(render_console(console.payload()))
+    assert all("data-hg-console-restored" in frame for frame in frames)
+    # A row id IS the reader's collapse, addressed. Rows may be ADDED as work
+    # is discovered, but an existing id must never move — restoring onto a
+    # renumbered row would apply the reader's choice to the wrong step.
+    ids = [_row_ids(frame) for frame in frames]
+    assert ids[0] and all(earlier <= later for earlier, later in zip(ids, ids[1:], strict=False))
+    keys = set(re.findall(r"K='([^']+)'", "".join(frames)))
+    assert len(keys) == 1, f"the storage key moved between frames: {keys}"
+    assert "hypergraph:console:" in frames[0]
+
+
+def test_a_planned_run_has_every_row_id_from_the_very_first_frame() -> None:
+    """With a plan, not even an ADDED row disturbs the reader's collapse."""
+    console = ConsoleProcessor()
+    plan = _planned(("fetch", True), ("enrich", True), ("publish", True))
+    console.on_event(RunStartEvent(run_id="r", span_id="root", graph_name="p", is_map=True, map_size=2, plan=plan))
+    frames = [render_console(console.payload())]
+    for index in range(2):
+        console.on_event(RunStartEvent(run_id="r", span_id=f"i{index}", parent_span_id="root", graph_name="p", item_index=index))
+        for name in ("fetch", "enrich", "publish"):
+            span = f"n{index}{name}"
+            console.on_event(NodeStartEvent(run_id="r", span_id=span, parent_span_id=f"i{index}", node_name=name, graph_name="p"))
+            console.on_event(NodeEndEvent(run_id="r", span_id=span, parent_span_id=f"i{index}", node_name=name, graph_name="p", duration_ms=3.0))
+        console.on_event(RunEndEvent(run_id="r", span_id=f"i{index}", parent_span_id="root", graph_name="p", status=RunStatus.COMPLETED))
+        frames.append(render_console(console.payload()))
+    assert all(_row_ids(frame) == _row_ids(frames[0]) for frame in frames)
+
+
+def test_the_frame_uses_the_repo_theme_mechanism_and_never_hardcodes_light() -> None:
+    console = ConsoleProcessor()
+    for group in _map_events(items=2):
+        _feed(console, group)
+    html = render_console(console.payload())
+    # hypergraph's own detector wraps every widget; the console must use it
+    # rather than inventing a second one.
+    assert "color-scheme:light dark" in html
+    assert "data-jp-theme-light" in html or "jpThemeLight" in html
+    assert "data-vscode-theme-kind" in html
+    assert "color-scheme:light;" not in html
+    # Colors resolve per theme through CSS light-dark(), not a fixed palette.
+    assert html.count("light-dark(") >= 20
+    assert not re.search(r"--ink:#", html)
+
+
+def test_the_settled_frame_stays_within_budget_with_plan_theme_and_script() -> None:
+    console = ConsoleProcessor()
+    for group in _map_events(items=40, fail={7}, retry_on={3}, cached_on={5}):
+        _feed(console, group)
+    html = render_console(console.payload())
+    assert len(html.encode()) <= 50_000, f"settled frame too heavy: {len(html.encode()):,} bytes"

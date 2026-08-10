@@ -61,6 +61,31 @@ class BaseEvent:
     timestamp: float = field(default_factory=_now)
 
 
+@dataclass(frozen=True, slots=True)
+class PlannedNode:
+    """One node this run's graph holds, known BEFORE anything executes.
+
+    A graph's topology is settled at construction, so a progress surface can
+    show what is still coming instead of only what has already started. What
+    it must not do is present a guess as a plan — which is what ``certain``
+    is for.
+
+    Attributes:
+        name: The node's name, as its events will report it.
+        certain: True when the node runs if the run reaches the end. False
+            when a gate or route controls it (``Graph.controlled_by``) — it
+            MAY never run, and a surface must mark it distinctly rather than
+            promise it.
+        fans_out: True for a graph node configured with ``map_over``. Its
+            children are counted separately, and how many there will be is
+            not knowable until the value it maps over exists.
+    """
+
+    name: str
+    certain: bool = True
+    fans_out: bool = False
+
+
 @dataclass(frozen=True)
 class RunStartEvent(BaseEvent):
     """Emitted when a graph run begins.
@@ -75,6 +100,9 @@ class RunStartEvent(BaseEvent):
         retry_of: Source workflow id when this run is a retry.
         retry_index: Retry sequence number for retry runs.
         is_resume: Whether this run resumed an existing workflow.
+        plan: The graph's nodes in execution order, each marked certain or
+            merely possible — everything this run MAY do, before it has done
+            any of it. Empty when the producer supplies no plan.
     """
 
     graph_name: str = ""
@@ -86,6 +114,7 @@ class RunStartEvent(BaseEvent):
     retry_of: str | None = None
     retry_index: int | None = None
     is_resume: bool = False
+    plan: tuple[PlannedNode, ...] = ()
 
 
 @dataclass(frozen=True)

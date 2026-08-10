@@ -250,6 +250,27 @@ The hash excludes:
 
 ## Methods
 
+### `execution_plan() -> tuple[PlannedNode, ...]`
+
+What this graph MAY do, in execution order, before it does any of it — a
+topological ordering of the nodes, computed once and cached. Each
+`PlannedNode` (see [events](events.md)) carries:
+
+- `name` — the node's name, as its events will report it
+- `certain` — `True` when nothing gates the node; `False` when a gate or
+  route controls it (see `controlled_by`), meaning it may never run
+- `fans_out` — `True` for a graph node configured with `map_over`
+
+Every `RunStartEvent` carries this as `plan`, which is how the
+[console](events.md#the-console) draws upcoming nodes before they start. A
+cyclic graph has no topological order; its nodes still appear, in
+construction order.
+
+```python
+for step in graph.execution_plan():
+    print(step.name, "certain" if step.certain else "may run")
+```
+
 ### `describe(*, show_types=True) -> str`
 
 Return a multiline summary of the active graph scope.

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from hypergraph.events.processor import EventProcessor
+    from hypergraph.events.types import PlannedNode
     from hypergraph.materialization import HyperTable, TableStore
     from hypergraph.nodes.graph_node import GraphNode
     from hypergraph.runners import BaseRunner
@@ -295,6 +296,7 @@ class Graph:
         self._cached_hash: str | None = None
         self._cached_structural_hash: str | None = None
         self._controlled_by: dict[str, list[str]] | None = None
+        self._execution_plan: tuple[PlannedNode, ...] | None = None
         self._validate()
         # Eagerly compute inputs so bind-conflict validation fires at build time.
         _ = self.inputs
@@ -422,6 +424,47 @@ class Graph:
         if self._controlled_by is None:
             self._controlled_by = self._compute_controlled_by()
         return self._controlled_by
+
+    def execution_plan(self) -> tuple[PlannedNode, ...]:
+        """What this graph MAY do, in execution order, before it does any of it.
+
+        The topology is settled at construction, so this needs no run: a
+        topological ordering of the nodes, each marked ``certain`` when
+        nothing gates it and merely possible when a gate or route controls
+        it (:attr:`controlled_by`). A progress surface renders the certain
+        ones as work still to come and the rest distinctly — a node behind a
+        route may never run at all, and drawing it as pending would be a
+        promise the graph never made.
+
+        A cycle (an agentic loop's back edge) has no topological order; its
+        nodes still appear, in construction order, because "which nodes
+        exist" stays answerable when "in what order" does not.
+
+        Returns:
+            One :class:`~hypergraph.events.types.PlannedNode` per node.
+        """
+        if self._execution_plan is None:
+            self._execution_plan = self._compute_execution_plan()
+        return self._execution_plan
+
+    def _compute_execution_plan(self) -> tuple[PlannedNode, ...]:
+        from hypergraph.events.types import PlannedNode
+
+        try:
+            order = list(nx.topological_sort(self._nx_graph))
+        except nx.NetworkXUnfeasible:
+            order = []
+        seen = set(order)
+        order += [name for name in self._nodes if name not in seen]
+        return tuple(
+            PlannedNode(
+                name=name,
+                certain=not self.controlled_by.get(name),
+                fans_out=getattr(self._nodes[name], "map_config", None) is not None,
+            )
+            for name in order
+            if name in self._nodes
+        )
 
     def _compute_controlled_by(self) -> dict[str, list[str]]:
         from hypergraph.nodes.gate import END, GateNode

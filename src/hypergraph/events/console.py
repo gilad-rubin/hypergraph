@@ -50,6 +50,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from hypergraph._repr import theme_wrap, widget_state_key
 from hypergraph.events.processor import TypedEventProcessor
 from hypergraph.events.types import (
     InnerCacheEvent,
@@ -109,12 +110,27 @@ class _Step:
     child_started: int = 0
     child_done: int = 0
     child_failed: int = 0
+    #: Has anything entered this step yet? A row seeded from the run's plan
+    #: stays False until its first ``on_node_start``.
+    started: bool = False
+    #: False when a gate or route controls this node: it MAY never run, so
+    #: the row reads "possible" instead of promising it.
+    certain: bool = True
 
     def add_duration(self, ms: float) -> None:
         self.total_ms += ms
         self.count += 1
         if len(self.durations) < _DURATION_CAP:
             self.durations.append(ms)
+
+    @property
+    def state(self) -> str:
+        """What this row IS right now — the one word the styling keys off."""
+        if self.running:
+            return "running"
+        if self.started:
+            return "done"
+        return "upcoming" if self.certain else "possible"
 
 
 class ConsoleProcessor(TypedEventProcessor):
@@ -199,6 +215,7 @@ class ConsoleProcessor(TypedEventProcessor):
                 self.total_items = 1
                 self.started_items = 1
                 self._runs[e.span_id] = _RunRec(e.span_id, "root", (), 0, item_label=f"{self.unit_one(0)} #0")
+            self._seed_plan(e, (), 0)
             return
         node = self._nodes.get(parent)
         if node is not None:
@@ -215,6 +232,7 @@ class ConsoleProcessor(TypedEventProcessor):
                     node.level + 1,
                     item_label=node.item_label,
                 )
+                self._seed_plan(e, node.path, node.level + 1)
             else:
                 self._runs[e.span_id] = _RunRec(
                     e.span_id,
@@ -223,6 +241,7 @@ class ConsoleProcessor(TypedEventProcessor):
                     node.level,
                     item_label=node.item_label,
                 )
+                self._seed_plan(e, node.path, node.level)
             return
         run = self._runs.get(parent)
         if run is None:
@@ -237,6 +256,21 @@ class ConsoleProcessor(TypedEventProcessor):
             label = f"{run.item_label} · {self.unit_one(run.level)} #{e.item_index}"
             self._runs[e.span_id] = _RunRec(e.span_id, "child_item", run.step_prefix, run.level, item_label=label)
 
+    def _seed_plan(self, e: RunStartEvent, prefix: tuple[str, ...], level: int) -> None:
+        """Draw the run's whole graph before any of it has started.
+
+        The topology is settled at construction, so the rows exist from the
+        first frame instead of appearing one at a time as work reaches them
+        — and in the graph's own execution order rather than arrival order.
+        A node a gate controls is seeded as ``possible``, never as pending:
+        it may never run, and the row must not promise otherwise.
+        """
+        for planned in getattr(e, "plan", ()) or ():
+            step = self._step(prefix + (planned.name,), level)
+            step.certain = step.certain and planned.certain
+            if planned.fans_out:
+                step.is_map = True
+
     def on_node_start(self, e: NodeStartEvent) -> None:
         self._touch(e.timestamp)
         run = self._runs.get(e.parent_span_id or "")
@@ -245,6 +279,7 @@ class ConsoleProcessor(TypedEventProcessor):
         run.saw_node = True
         path = run.step_prefix + (e.node_name,)
         step = self._step(path, run.level)
+        step.started = True
         step.running += 1
         rec = _NodeRec(path, self._clock(), run.level, run.item_label)
         self._nodes[e.span_id] = rec
@@ -371,6 +406,7 @@ class ConsoleProcessor(TypedEventProcessor):
                 "id": "n" + hashlib.sha1("/".join(path).encode()).hexdigest()[:6],
                 "name": step.name,
                 "depth": depth,
+                "state": step.state,
                 "unit": unit,
                 "unit_one": self.unit_one(step.level),
                 "share": share,
@@ -449,6 +485,7 @@ class ConsoleProcessor(TypedEventProcessor):
             "tree": {
                 "id": "root",
                 "name": self.graph_name,
+                "state": "done" if self.terminal else "running",
                 "unit": self.unit(0),
                 "unit_one": self.unit_one(0),
                 "share": 100.0,
@@ -477,12 +514,21 @@ def _percentile(samples_ms: list[float], q: float) -> float | None:
 # ---------------------------------------------------------------------------
 
 _CSS = """
-#$UID{--page:#f5f6f8;--surface:#ffffff;--surface-2:#f8f9fb;--rule:#e5e8ee;--rule-soft:#eef0f4;
-  --ink:#151a23;--ink-2:#3f4757;--ink-3:#6a7288;--accent:#4f46e5;--accent-tint:#f3f4fe;
-  --accent-line:#e0e1f8;--bar:#8790aa;--bar-child:#b4bacb;--bar-track:#ecEEF3;--ok:#177a58;
-  --warn:#8a5a08;--warn-tint:#fcf7ee;--bad:#b3283f;--bad-tint:#fcf0f2;
+#$UID{--surface:light-dark(#ffffff,#161a22);--surface-2:light-dark(#f8f9fb,#1b202a);
+  --rule:light-dark(#e5e8ee,#2b313d);--rule-soft:light-dark(#eef0f4,#232936);
+  --ink:light-dark(#151a23,#e8ebf2);--ink-2:light-dark(#3f4757,#b6bdcc);
+  --ink-3:light-dark(#6a7288,#8a93a7);--accent:light-dark(#4f46e5,#a9a4f7);
+  --accent-tint:light-dark(#f3f4fe,#272444);--accent-line:light-dark(#e0e1f8,#3b3766);
+  --bar:light-dark(#8790aa,#7b8399);
+  --bar-child:light-dark(#b4bacb,#5c6375);--bar-strong:light-dark(#6d7694,#98a1ba);
+  --bar-sel:light-dark(#5b647f,#c2c9de);--bar-track:light-dark(#ecEEF3,#262c37);
+  --ok:light-dark(#177a58,#3fbf90);--warn:light-dark(#8a5a08,#e0a53a);
+  --warn-tint:light-dark(#fcf7ee,#332a17);--warn-line:light-dark(#f0e3cc,#4a3c1e);
+  --warn-ink:light-dark(#6b5527,#e6cf9e);--warn-code:light-dark(#f2e6d0,#453721);
+  --bad:light-dark(#b3283f,#ff8095);--bad-tint:light-dark(#fcf0f2,#3a1e24);
+  --chip:light-dark(#f1f3f7,#232935);--chip-2:light-dark(#eef0f5,#252b38);
+  --hover:light-dark(#e9ebf1,#2a3140);--dotted:light-dark(#c4cad6,#4a5262);
   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
-  color-scheme:light;
   font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,sans-serif;
   color:var(--ink);-webkit-font-smoothing:antialiased;text-align:left}
 #$UID *,#$UID *::before,#$UID *::after{box-sizing:border-box}
@@ -504,7 +550,7 @@ _CSS = """
 #$UID .dot{width:6px;height:6px;border-radius:999px;background:var(--ink-3);flex:none}
 #$UID .dot[data-tone=live]{background:var(--ok);animation:pulse-$UID 2.6s ease-out infinite}
 #$UID .dot[data-tone=saved]{background:var(--ink-3)}
-@keyframes pulse-$UID{0%{box-shadow:0 0 0 0 rgba(23,122,88,.36)}70%{box-shadow:0 0 0 6px rgba(23,122,88,0)}100%{box-shadow:0 0 0 0 rgba(23,122,88,0)}}
+@keyframes pulse-$UID{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--ok) 36%,transparent)}70%{box-shadow:0 0 0 6px transparent}100%{box-shadow:0 0 0 0 transparent}}
 #$UID .bc-chip{display:inline-flex;align-items:center;white-space:nowrap;padding:4px 9px;border-radius:5px;
   font-size:10.5px;font-weight:650;letter-spacing:.08em;text-transform:uppercase}
 #$UID .bc-chip[data-tone=running]{background:var(--accent-tint);color:var(--accent)}
@@ -535,9 +581,9 @@ _CSS = """
 #$UID .legend i{font-style:normal;color:var(--ink-3)}
 #$UID .key{width:8px;height:8px;border-radius:2px;flex:none}
 #$UID .notice{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 24px 22px;padding:11px 14px;
-  border-radius:6px;background:var(--warn-tint);border:1px solid #f0e3cc}
+  border-radius:6px;background:var(--warn-tint);border:1px solid var(--warn-line)}
 #$UID .notice b{color:var(--warn);font-size:12.5px;font-weight:650;white-space:nowrap}
-#$UID .notice-text{color:#6b5527;font-size:12.5px;min-width:0}
+#$UID .notice-text{color:var(--warn-ink);font-size:12.5px;min-width:0}
 #$UID .bc-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(232px,264px);border-top:1px solid var(--rule)}
 #$UID .bc-main{min-width:0;display:flex;flex-direction:column;padding:20px 20px 24px;border-right:1px solid var(--rule)}
 #$UID .bc-side{min-width:0;padding:20px 22px 24px;background:var(--surface-2)}
@@ -558,17 +604,17 @@ _CSS = """
 #$UID .r-name{display:flex;align-items:center;gap:9px;min-width:0}
 #$UID .caret{flex:none;width:18px;height:18px;display:grid;place-items:center;padding:0;line-height:0;
   border:0;border-radius:4px;background:transparent;color:var(--ink-3);cursor:pointer}
-#$UID .caret:hover{background:#e9ebf1;color:var(--ink)}
+#$UID .caret:hover{background:var(--hover);color:var(--ink)}
 #$UID .caret svg{transition:transform .15s ease}
 #$UID .caret-gap{flex:none;width:18px}
 #$UID .r-label{font-size:13.5px;font-weight:500;letter-spacing:-.005em;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis;min-width:0}
-#$UID .r-fan{flex:none;padding:2px 6px;border-radius:4px;background:#eef0f5;color:var(--ink-2);
+#$UID .r-fan{flex:none;padding:2px 6px;border-radius:4px;background:var(--chip-2);color:var(--ink-2);
   font-size:11px;font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums}
 #$UID .r-unit{color:var(--ink-3);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #$UID .r-track{position:relative;height:9px;border-radius:2px;background:var(--bar-track);overflow:hidden}
 #$UID .r-bar{position:absolute;top:0;bottom:0;min-width:3px;border-radius:2px;background:var(--bar)}
-#$UID .row[data-depth="0"] .r-bar{background:#6d7694}
+#$UID .row[data-depth="0"] .r-bar{background:var(--bar-strong)}
 #$UID .row[data-depth="2"] .r-bar{background:var(--bar-child)}
 #$UID .r-pct,#$UID .r-med{font-size:12.5px;text-align:right;white-space:nowrap;
   font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
@@ -577,16 +623,27 @@ _CSS = """
 #$UID .r-sig{display:flex;gap:6px;justify-content:flex-end;align-items:center;flex-wrap:wrap;min-width:0}
 #$UID .badge{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;flex:none;
   padding:3px 8px;border-radius:4px;font-size:11.5px;font-weight:500;line-height:1.3;
-  background:#f1f3f7;color:var(--ink-2)}
+  background:var(--chip);color:var(--ink-2)}
 #$UID .badge b{font-weight:650;font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
 #$UID .badge[data-tone=cache]{background:var(--accent-tint);color:var(--accent)}
 #$UID .badge[data-tone=error]{background:var(--bad-tint);color:var(--bad)}
-#$UID .badge[data-tone=flag]{background:var(--warn-tint);color:var(--warn);box-shadow:inset 0 0 0 1px #ecdec4}
+#$UID .badge[data-tone=flag]{background:var(--warn-tint);color:var(--warn);box-shadow:inset 0 0 0 1px var(--warn-line)}
 #$UID .badge[data-tone=gate]{background:var(--warn-tint);color:var(--warn)}
+#$UID .badge[data-tone=queued]{background:transparent;color:var(--ink-3);box-shadow:inset 0 0 0 1px var(--rule)}
+#$UID .badge[data-tone=possible]{background:transparent;color:var(--ink-3);
+  box-shadow:inset 0 0 0 1px var(--rule);font-style:italic}
+#$UID .row[data-state=upcoming] .r-label,#$UID .row[data-state=possible] .r-label{color:var(--ink-3);font-weight:400}
+#$UID .row[data-state=upcoming] .r-unit,#$UID .row[data-state=possible] .r-unit{opacity:.7}
+#$UID .row[data-state=upcoming] .r-track{background:transparent;box-shadow:inset 0 0 0 1px var(--rule-soft)}
+#$UID .row[data-state=possible] .r-track{background:transparent;
+  background-image:repeating-linear-gradient(90deg,var(--rule) 0 3px,transparent 3px 7px);
+  background-size:100% 1px;background-position:0 50%;background-repeat:no-repeat}
+#$UID .row[data-state=upcoming] .r-pct,#$UID .row[data-state=possible] .r-pct{color:var(--ink-3);font-weight:400}
+#$UID .row[data-state=running] .r-label{font-weight:600}
 #$UID .legend-marks{margin-top:auto;padding-top:20px;border-top:1px solid var(--rule-soft);
   max-width:80ch;color:var(--ink-3);font-size:11.5px;line-height:1.65}
 #$UID .legend-marks b{color:var(--ink-2);font-weight:600}
-#$UID .foot-note{border-bottom:1px dotted #c4cad6;cursor:help}
+#$UID .foot-note{border-bottom:1px dotted var(--dotted);cursor:help}
 #$UID .lanes{margin-top:28px;padding-top:20px;border-top:1px solid var(--rule-soft);display:grid;gap:12px}
 #$UID .lane{display:grid;grid-template-columns:84px minmax(56px,1fr) 126px 112px 94px;gap:14px;
   align-items:center;max-width:680px}
@@ -603,18 +660,18 @@ _CSS = """
 #$UID .pill b{font-weight:650;font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;color:var(--ink)}
 #$UID .pill[data-tone=accent]{background:var(--accent-tint);border-color:var(--accent-line);color:var(--accent)}
 #$UID .pill[data-tone=accent] b{color:var(--accent)}
-#$UID .pill[data-tone=flag]{background:var(--warn-tint);border-color:#ecdec4;color:var(--warn)}
+#$UID .pill[data-tone=flag]{background:var(--warn-tint);border-color:var(--warn-line);color:var(--warn)}
 #$UID .facts{margin-top:8px}
 #$UID .fact{padding:11px 0;border-top:1px solid var(--rule)}
 #$UID .fact dt{color:var(--ink-3);font-size:10px;font-weight:650;letter-spacing:.09em;text-transform:uppercase}
 #$UID .fact dd{margin-top:5px;font-size:13px;line-height:1.45;color:var(--ink);overflow-wrap:anywhere}
 #$UID .warnv{color:var(--warn);font-weight:600}
-#$UID .callout{margin-top:16px;padding:12px 13px;border-radius:6px;background:var(--warn-tint);border:1px solid #f0e3cc}
+#$UID .callout{margin-top:16px;padding:12px 13px;border-radius:6px;background:var(--warn-tint);border:1px solid var(--warn-line)}
 #$UID .callout .t{display:flex;align-items:center;gap:7px;margin-bottom:6px;color:var(--warn);
   font-size:10px;font-weight:650;letter-spacing:.09em;text-transform:uppercase}
 #$UID .callout .t i{width:6px;height:6px;border-radius:999px;background:var(--warn);flex:none}
-#$UID .callout p{font-size:12.5px;line-height:1.55;color:#6b5527}
-#$UID .callout code{padding:1px 5px;border-radius:4px;background:#f2e6d0;font-size:11.5px}
+#$UID .callout p{font-size:12.5px;line-height:1.55;color:var(--warn-ink)}
+#$UID .callout code{padding:1px 5px;border-radius:4px;background:var(--warn-code);font-size:11.5px}
 #$UID [data-detail]{display:none}
 #$UID .fails{padding:20px 24px 22px;border-top:1px solid var(--rule)}
 #$UID .fail{display:grid;grid-template-columns:10px minmax(70px,auto) minmax(64px,auto) minmax(0,1fr);
@@ -734,9 +791,42 @@ def _badges(row: dict[str, Any]) -> str:
     return "".join(parts)
 
 
+def _to_come(row: dict[str, Any]) -> str:
+    """The row for a step nothing has entered yet.
+
+    Drawn from the run's PLAN, so the shape of the work is visible from the
+    first frame. It carries no numbers, because it has earned none — an
+    empty track, a dash for the median, and one word for what it is.
+    """
+    possible = row.get("state") == "possible"
+    word = "may run" if possible else "queued"
+    hint = (
+        f"{row['name']} sits behind a route or gate — it may never run, so nothing here promises it will."
+        if possible
+        else f"{row['name']} has not started yet. It runs once per {row['unit_one']}."
+    )
+    return f'<span class="badge" data-tone="{"possible" if possible else "queued"}" title="{_esc(hint)}">{word}</span>'
+
+
 def _row_html(uid: str, row: dict[str, Any], depth: int) -> str:
     kids = bool(row["children"])
     rid = row["id"]
+    state = row.get("state", "done")
+    if state in ("upcoming", "possible"):
+        sel = f"{uid}-s-{rid}"
+        caret = '<span class="caret-gap"></span>'
+        return f"""
+  <div class="row" role="treeitem" aria-level="{depth + 1}"
+       data-row="{rid}" data-depth="{depth}" data-state="{state}">
+    <span class="r-name" style="padding-left:{depth * 24}px">
+      {caret}<label class="r-lab" for="{sel}"><span class="r-label" title="{_esc(row["name"])}">{_esc(row["name"])}</span></label>
+    </span>
+    <label class="r-unit n" for="{sel}" title="{_esc(row["unit"])}">{row["unit"]}</label>
+    <label class="r-track" for="{sel}" title="Nothing measured yet"></label>
+    <label class="r-pct n" for="{sel}">—</label>
+    <label class="r-med n" for="{sel}">—</label>
+    <label class="r-sig" for="{sel}">{_to_come(row)}</label>
+  </div>"""
     caret = (
         f'<label class="caret" for="{uid}-c-{rid}" title="Collapse or expand {_esc(row["name"])}"'
         f' aria-label="Collapse or expand {_esc(row["name"])}">{_CARET}</label>'
@@ -766,7 +856,7 @@ def _row_html(uid: str, row: dict[str, Any], depth: int) -> str:
     sel = f"{uid}-s-{rid}"
     return f"""
   <div class="row" role="treeitem" aria-level="{depth + 1}"
-       data-row="{rid}" data-depth="{depth}">
+       data-row="{rid}" data-depth="{depth}" data-state="{state}">
     <span class="r-name" style="padding-left:{depth * 24}px">
       {caret}<label class="r-lab" for="{sel}"><span class="r-label" title="{_esc(row["name"])}">{_esc(row["name"])}</span>
       {fan}</label>
@@ -790,6 +880,18 @@ def _tree_html(uid: str, rows: list[dict[str, Any]], depth: int) -> str:
 
 
 def _detail_html(payload: dict[str, Any], row: dict[str, Any]) -> str:
+    if row.get("state") in ("upcoming", "possible"):
+        possible = row["state"] == "possible"
+        pills = [f'<span class="pill" data-tone="{"flag" if possible else ""}">{"may run" if possible else "queued"}</span>']
+        pills.append(f'<span class="pill">counts <b>{row["unit"]}</b></span>')
+        why = (
+            "A route or gate decides whether this node runs at all, so the console lists it as possible and promises nothing."
+            if possible
+            else "This node is in the graph and has not started yet. It is drawn from the run's plan, not from a measurement."
+        )
+        facts = [("Status", "Not started"), ("Why it is listed", why)]
+        facts_html = "".join(f'<div class="fact"><dt>{_esc(k)}</dt><dd>{_esc(v)}</dd></div>' for k, v in facts)
+        return f'<div class="d-name">{_esc(row["name"])}</div><div class="d-pills">{"".join(pills)}</div><dl class="facts">{facts_html}</dl>'
     pills = [f'<span class="pill" data-tone="accent" title="Share of the run\'s measured work"><b>{_fmt_pct(row["share"])}</b> of wall</span>']
     pills.append(f'<span class="pill" title="{_esc(row["name"])} counts {row["unit"]}">counts <b>{row["unit"]}</b></span>')
     if row.get("flag"):
@@ -1083,7 +1185,7 @@ def render_console(payload: dict[str, Any]) -> str:
         rid = row["id"]
         dyn_css.append(f'#{uid}-s-{rid}:checked~.bc [data-row="{rid}"]{{background:var(--accent-tint);border-color:var(--accent-line)}}')
         dyn_css.append(f'#{uid}-s-{rid}:checked~.bc [data-row="{rid}"] .r-label{{font-weight:600}}')
-        dyn_css.append(f'#{uid}-s-{rid}:checked~.bc [data-row="{rid}"] .r-bar{{background:#5b647f}}')
+        dyn_css.append(f'#{uid}-s-{rid}:checked~.bc [data-row="{rid}"] .r-bar{{background:var(--bar-sel)}}')
         dyn_css.append(f'#{uid}-s-{rid}:checked~.bc [data-detail="{rid}"]{{display:block}}')
         if row["children"]:
             dyn_css.append(f'#{uid}-c-{rid}:checked~.bc [data-kids="{rid}"]{{display:none}}')
@@ -1096,7 +1198,7 @@ def render_console(payload: dict[str, Any]) -> str:
     eyebrow = "Hypergraph map" if payload["mode"] == "map" else "Hypergraph run"
     css = _CSS.replace("$UID", uid) + "".join(dyn_css)
 
-    return f"""<div id="{uid}">
+    frame = f"""<div id="{uid}">
 <style>{css}</style>
 {"".join(inputs)}
 <section class="bc" aria-label="Console">
@@ -1133,6 +1235,55 @@ def render_console(payload: dict[str, Any]) -> str:
   <div class="bc-foot"><span>{foot_left}</span><span>{foot_right}</span></div>
 </section>
 </div>"""
+    state_key = payload.get("state_key") or widget_state_key("console", payload["title"], payload["unit"])
+    return theme_wrap(frame + _state_script(uid, state_key), state_key=state_key)
+
+
+# ---------------------------------------------------------------------------
+# surviving the refresh — the collapse a reader chose outlives every frame
+# ---------------------------------------------------------------------------
+
+
+def _state_script(uid: str, state_key: str) -> str:
+    """Re-apply the reader's own expand/collapse and selection to a new frame.
+
+    A live console replaces its whole frame a few times a second, and a
+    replaced DOM node loses the checkbox state that IS the collapse. So each
+    frame carries this: read what the reader last chose, apply it before
+    paint, and record every later change.
+
+    Deliberately not ``document.currentScript``. A notebook front end that
+    injects output HTML and re-creates the script node leaves that null, so
+    the container is found by the id the frame already has.
+
+    Storage is ``localStorage`` when the front end allows it and a
+    window-scoped map when it does not (some webviews partition or refuse
+    it), so the state at worst lives as long as the page. Everything is in
+    one try/catch: a front end that strips scripts entirely loses only the
+    PERSISTENCE — the collapse itself is CSS, and keeps working.
+    """
+    return (
+        "<script>(function(){try{"
+        f"var U={uid!r},K={state_key!r};"
+        "var R=document.getElementById(U);if(!R)return;"
+        "var S=(function(){try{var t='hypergraph:probe';localStorage.setItem(t,'1');"
+        "localStorage.removeItem(t);return localStorage;}catch(e){"
+        "var m=(window.__hgConsoleState=window.__hgConsoleState||{});"
+        "return{getItem:function(k){return k in m?m[k]:null;},setItem:function(k,v){m[k]=v;}};}})();"
+        "var P='hypergraph:console:'+K+':';var n=U.length+3;"
+        "var box=R.querySelectorAll('input[type=checkbox]');"
+        "for(var i=0;i<box.length;i++){var c=box[i];var ck=P+'c:'+c.id.slice(n);"
+        "var v=S.getItem(ck);if(v==='1')c.checked=true;else if(v==='0')c.checked=false;"
+        "if(!c.__hgB){c.__hgB=1;c.addEventListener('change',function(ev){try{"
+        "S.setItem(P+'c:'+ev.target.id.slice(n),ev.target.checked?'1':'0');}catch(_e){}});}}"
+        "var rad=R.querySelectorAll('input[type=radio]');var want=S.getItem(P+'sel');"
+        "for(var j=0;j<rad.length;j++){var r=rad[j];"
+        "if(want&&r.id.slice(n)===want)r.checked=true;"
+        "if(!r.__hgB){r.__hgB=1;r.addEventListener('change',function(ev){try{"
+        "if(ev.target.checked)S.setItem(P+'sel',ev.target.id.slice(n));}catch(_e){}});}}"
+        "R.setAttribute('data-hg-console-restored','1');"
+        "}catch(e){}})()</script>"
+    )
 
 
 # ---------------------------------------------------------------------------

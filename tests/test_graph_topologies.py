@@ -542,3 +542,104 @@ class TestDeeplyNestedGraphs:
 
         # Same structure produces same hash
         assert hash1 == hash2
+
+
+class TestExecutionPlanIsKnownBeforeTheRun:
+    """``Graph.execution_plan()`` — what a run MAY do, before it does any of it.
+
+    Issue #392: a progress surface draws upcoming work from this, so the
+    ordering must be the graph's own and the certainty must be honest.
+    """
+
+    def test_a_linear_graph_plans_in_topological_order_and_is_all_certain(self):
+        from hypergraph import Graph, node
+
+        @node(output_name="a")
+        def first(x: int) -> int:
+            return x
+
+        @node(output_name="b")
+        def second(a: int) -> int:
+            return a
+
+        @node(output_name="c")
+        def third(b: int) -> int:
+            return b
+
+        plan = Graph([third, first, second], name="linear").execution_plan()
+        assert [p.name for p in plan] == ["first", "second", "third"]
+        assert all(p.certain for p in plan)
+        assert not any(p.fans_out for p in plan)
+
+    def test_a_routed_branch_is_possible_not_pending(self):
+        from hypergraph import Graph, node, route
+
+        @node(output_name="a")
+        def head(x: int) -> int:
+            return x
+
+        @node(output_name="y")
+        def left(a: int) -> int:
+            return a
+
+        @node(output_name="z")
+        def right(a: int) -> int:
+            return -a
+
+        @route(targets=["left", "right"])
+        def pick(a: int) -> str:
+            return "left"
+
+        plan = {p.name: p for p in Graph([head, pick, left, right], name="branchy").execution_plan()}
+        assert plan["head"].certain and plan["pick"].certain
+        # A gate controls these two: they MAY never run, and the plan says so.
+        assert not plan["left"].certain and not plan["right"].certain
+
+    def test_a_map_over_node_declares_that_it_fans_out(self):
+        from hypergraph import Graph, node
+
+        @node(output_name="pages")
+        def split(x: int) -> list[int]:
+            return [x]
+
+        @node(output_name="done")
+        def per_page(pages: int) -> int:
+            return pages
+
+        inner = Graph([per_page], name="inner")
+        outer = Graph([split, inner.as_node(name="fan").map_over("pages")], name="outer")
+        plan = {p.name: p for p in outer.execution_plan()}
+        assert plan["fan"].fans_out and not plan["split"].fans_out
+
+    def test_a_cycle_still_lists_its_nodes(self):
+        """No topological order exists, but "which nodes" stays answerable."""
+        from hypergraph import Graph, node, route
+
+        @node(output_name="a")
+        def start(x: int) -> int:
+            return x
+
+        @node(output_name="b")
+        def loop(a: int) -> int:
+            return a
+
+        @route(targets=["loop", "done"])
+        def again(b: int) -> str:
+            return "done"
+
+        @node(output_name="c")
+        def done(b: int) -> int:
+            return b
+
+        plan = Graph([start, loop, again, done], name="cyclic", entrypoint="start").execution_plan()
+        assert {p.name for p in plan} == {"start", "loop", "again", "done"}
+
+    def test_the_plan_is_computed_once_and_cached(self):
+        from hypergraph import Graph, node
+
+        @node(output_name="a")
+        def only(x: int) -> int:
+            return x
+
+        graph = Graph([only], name="one")
+        assert graph.execution_plan() is graph.execution_plan()

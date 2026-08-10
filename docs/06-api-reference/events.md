@@ -629,6 +629,38 @@ first-class rows with their own child counts), the run-level header line
 `N/total · F failed · R retries · C cached`, a failures pane, retry and cache
 badges — all derived from the run's own events, cumulative truth only.
 
+**Upcoming nodes.** A graph's topology is settled at construction, so every
+node is drawn from the first frame, in the graph's own execution order,
+instead of appearing only once work reaches it. `RunStartEvent.plan` carries
+`Graph.execution_plan()`, and each row reads:
+
+| row state | meaning |
+|---|---|
+| `queued` | in the graph, not started yet — it runs if the run reaches the end |
+| `may run` | a gate or route controls it (`Graph.controlled_by`); it may never run at all |
+| running / done | measured, with its share, median and badges |
+
+A gated node that never ran stays `may run`: the branch not taken is neither
+a failure nor an omission, and the console never presents an uncertain node
+as pending. The durable submission watch has no equivalent — the Run Home
+read models expose no per-run pending node boundary — so it reports condition
+and elapsed only, never a guess.
+
+**The reader's collapse survives the refresh.** A live frame replaces the
+whole display handle several times a second, which would otherwise wipe any
+expand/collapse the reader chose. Every frame carries a small inline script
+that re-applies the stored collapse and selection before paint, keyed by a
+stable per-graph key (`hypergraph:console:<key>:…`) in `localStorage`, with a
+window-scoped fallback where a front end refuses storage. Row ids derive from
+the node path, so they never move between frames. Interactivity itself is
+CSS-only: a front end that strips scripts loses the persistence, not the
+collapse.
+
+**Theme.** The frame goes through hypergraph's own widget theme wrapper
+(`hypergraph._repr.theme_wrap`), which detects JupyterLab, VS Code and Marimo
+themes and otherwise follows the system preference; every colour is a CSS
+`light-dark()` pair. The console defines no detector of its own.
+
 Attached via `Host.serve(event_processors=[LiveConsole()])` it renders each
 durable Run **this process's worker** executes, per-item live (a new root run
 resets the fold). A notebook that only SUBMITTED has no events to fold — the
