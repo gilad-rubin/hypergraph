@@ -581,7 +581,9 @@ def render_snapshot(
     from hypergraph.events.console import _CSS, _esc, _fmt_s, _n_unit
 
     uid = uid or ("hgw" + uuid4().hex[:8])
-    unit = item_label
+    # ``item_label`` is caller text and lands in many attributes; escape it
+    # once here, exactly as the event console escapes its ``item_labels``.
+    unit = _esc(item_label)
     one = unit[:-1] if unit.endswith("s") else unit
     counts = snapshot.counts
     total = snapshot.total

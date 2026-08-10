@@ -296,3 +296,66 @@ async def test_watch_snapshot_is_one_read_and_log_panel_throttles(home, ledger, 
     with caplog.at_level("INFO", logger="hypergraph.host.watch"):
         panel(one)
     assert any("1/1 settled" in record.getMessage() for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# two things the frame must never do: trust a label, or invent an answer
+# ---------------------------------------------------------------------------
+
+
+async def test_an_item_key_carrying_markup_cannot_break_the_frame(home, ledger):
+    """Item keys are caller data — a Batch may legitimately be keyed by them."""
+    graph = ingestion_graph()
+    host = serve(graph, home=home, deployment_version="v1")
+    # A key that FAILS, so the frame has to print it in Needs attention.
+    # (No "/" — an item key containing one never gets claimed; see the
+    # separate finding. The escaping question is about "<", ">" and "&".)
+    receipt = await _submit(host, graph, ["<img onerror=alert(1)> & co -boom", "work-clean"], "wc-esc")
+
+    async with worker(host):
+        snapshot = await watch_submissions(host.client, [receipt.batch_ref], refresh_seconds=0.05, stop_after_minutes=1.0)
+
+    html = render_snapshot(snapshot, uid="hgwesc", item_label="<b>cases</b>")
+    assert "<img onerror=alert(1)>" not in html
+    assert "<b>cases</b>" not in html
+    assert "&lt;img onerror=alert(1)&gt; &amp; co" in html
+    assert "&lt;b&gt;cases&lt;/b&gt;" in html
+
+
+async def test_a_batch_the_home_cannot_read_yet_is_polled_not_declared_done(home, ledger):
+    """Unreadable is UNKNOWN. A submitted Batch whose rows are not visible
+    yet must keep the watch waiting — declaring it settled would report a
+    finished run for work that had not started.
+    """
+    graph = ingestion_graph()
+    host = serve(graph, home=home, deployment_version="v1")
+    receipt = await _submit(host, graph, ["work-clean"], "wc-unreadable")
+
+    class SlowToAppear(SubmissionWatcher):
+        """The Run Home answers None for the first few polls, then the truth."""
+
+        def __init__(self, client):
+            super().__init__(client)
+            self.polls = 0
+
+        async def progress(self, ref):
+            self.polls += 1
+            if self.polls <= 3:
+                return None
+            return await super().progress(ref)
+
+    watcher = SlowToAppear(host.client)
+    async with worker(host):
+        snapshot = await watch_submissions(watcher, [receipt.batch_ref], refresh_seconds=0.05, stop_after_minutes=1.0)
+
+    # It kept polling past the unreadable window rather than returning an
+    # empty (and therefore "resting"-looking) picture.
+    assert watcher.polls > 3
+    assert snapshot.resting and snapshot.total == 1 and snapshot.done == 1
+
+
+def test_an_empty_picture_is_never_resting() -> None:
+    """The predicate itself: nothing read is unknown, not finished."""
+    from hypergraph.host.watch import WatchSnapshot
+
+    assert not WatchSnapshot().resting

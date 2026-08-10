@@ -755,6 +755,35 @@ def _walk(row: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+#: Payload fields naming a UNIT. These come from ``item_labels``, which is
+#: caller text, so they are escaped once on the way into the markup — unlike
+#: node names, which each site escapes where it interpolates them.
+_UNIT_FIELDS = ("unit", "unit_one", "fan_unit", "fan_unit_one", "parent_unit_one")
+
+
+def _escaped_units(payload: dict[str, Any]) -> dict[str, Any]:
+    """A render-time copy of the payload whose unit words are HTML-safe.
+
+    A caller is free to name its unit ``a & b``. The payload itself stays raw
+    data — a caller may read it as JSON — so only the copy the markup is
+    built from carries escaped units.
+    """
+
+    def scrub(node: dict[str, Any]) -> dict[str, Any]:
+        out = dict(node)
+        for field_name in _UNIT_FIELDS:
+            value = out.get(field_name)
+            if isinstance(value, str):
+                out[field_name] = _esc(value)
+        if isinstance(out.get("children"), list):
+            out["children"] = [scrub(child) for child in out["children"]]
+        return out
+
+    safe = scrub(payload)
+    safe["tree"] = scrub(payload["tree"])
+    return safe
+
+
 def _badges(row: dict[str, Any]) -> str:
     parts = []
     unit, one = row["unit"], row["unit_one"]
@@ -801,11 +830,11 @@ def _to_come(row: dict[str, Any]) -> str:
     possible = row.get("state") == "possible"
     word = "may run" if possible else "queued"
     hint = (
-        f"{row['name']} sits behind a route or gate — it may never run, so nothing here promises it will."
+        f"{_esc(row['name'])} sits behind a route or gate — it may never run, so nothing here promises it will."
         if possible
-        else f"{row['name']} has not started yet. It runs once per {row['unit_one']}."
+        else f"{_esc(row['name'])} has not started yet. It runs once per {row['unit_one']}."
     )
-    return f'<span class="badge" data-tone="{"possible" if possible else "queued"}" title="{_esc(hint)}">{word}</span>'
+    return f'<span class="badge" data-tone="{"possible" if possible else "queued"}" title="{hint}">{word}</span>'
 
 
 def _row_html(uid: str, row: dict[str, Any], depth: int) -> str:
@@ -821,7 +850,7 @@ def _row_html(uid: str, row: dict[str, Any], depth: int) -> str:
     <span class="r-name" style="padding-left:{depth * 24}px">
       {caret}<label class="r-lab" for="{sel}"><span class="r-label" title="{_esc(row["name"])}">{_esc(row["name"])}</span></label>
     </span>
-    <label class="r-unit n" for="{sel}" title="{_esc(row["unit"])}">{row["unit"]}</label>
+    <label class="r-unit n" for="{sel}" title="{row["unit"]}">{row["unit"]}</label>
     <label class="r-track" for="{sel}" title="Nothing measured yet"></label>
     <label class="r-pct n" for="{sel}">—</label>
     <label class="r-med n" for="{sel}">—</label>
@@ -861,10 +890,10 @@ def _row_html(uid: str, row: dict[str, Any], depth: int) -> str:
       {caret}<label class="r-lab" for="{sel}"><span class="r-label" title="{_esc(row["name"])}">{_esc(row["name"])}</span>
       {fan}</label>
     </span>
-    <label class="r-unit n" for="{sel}" title="{_esc(unit_title)}">{unit_cell}</label>
+    <label class="r-unit n" for="{sel}" title="{unit_title}">{unit_cell}</label>
     <label class="r-track" for="{sel}" title="{share_title}"><span class="r-bar" style="left:{row["start"]:.2f}%;width:{row["share"]:.2f}%"></span></label>
     <label class="r-pct n" for="{sel}" title="{share_title}">{_fmt_pct(row["share"])}</label>
-    <label class="r-med n" for="{sel}" title="{_esc(med_title)}">{med}</label>
+    <label class="r-med n" for="{sel}" title="{med_title}">{med}</label>
     <label class="r-sig" for="{sel}">{_badges(row)}</label>
   </div>"""
 
@@ -969,6 +998,8 @@ def _detail_html(payload: dict[str, Any], row: dict[str, Any]) -> str:
 
 def render_console(payload: dict[str, Any]) -> str:
     """Render one console frame from a processor payload. Pure function."""
+    raw = payload
+    payload = _escaped_units(payload)
     uid = payload["uid"]
     unit, one = payload["unit"], payload["unit_one"]
     root = payload["tree"]
@@ -1235,7 +1266,7 @@ def render_console(payload: dict[str, Any]) -> str:
   <div class="bc-foot"><span>{foot_left}</span><span>{foot_right}</span></div>
 </section>
 </div>"""
-    state_key = payload.get("state_key") or widget_state_key("console", payload["title"], payload["unit"])
+    state_key = raw.get("state_key") or widget_state_key("console", raw["title"], raw["unit"])
     return theme_wrap(frame + _state_script(uid, state_key), state_key=state_key)
 
 

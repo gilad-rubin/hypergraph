@@ -520,3 +520,62 @@ def test_the_settled_frame_stays_within_budget_with_plan_theme_and_script() -> N
         _feed(console, group)
     html = render_console(console.payload())
     assert len(html.encode()) <= 50_000, f"settled frame too heavy: {len(html.encode()):,} bytes"
+
+
+# ---------------------------------------------------------------------------
+# a label is text, never markup
+# ---------------------------------------------------------------------------
+
+
+def test_a_label_carrying_markup_cannot_break_the_frame() -> None:
+    """Names and unit words are DATA. A graph is free to contain angle brackets.
+
+    Node names, item labels and failure messages all reach the HTML, and a
+    caller naming a unit ``<script>`` or a node ``a & b`` must produce an
+    escaped frame, not a broken (or executable) one.
+    """
+    console = ConsoleProcessor(item_labels=("<script>alert(1)</script>", "a & b"))
+    console.on_event(
+        RunStartEvent(
+            run_id="r",
+            span_id="root",
+            graph_name="<img src=x onerror=boom>",
+            is_map=True,
+            map_size=1,
+            plan=_planned(
+                ("<b>bold</b>", True),
+            ),
+        )
+    )
+    console.on_event(RunStartEvent(run_id="r", span_id="item", parent_span_id="root", graph_name="g", item_index=0))
+    console.on_event(NodeStartEvent(run_id="r", span_id="n", parent_span_id="item", node_name="<b>bold</b>", graph_name="g"))
+    console.on_event(
+        NodeErrorEvent(
+            run_id="r",
+            span_id="n",
+            parent_span_id="item",
+            node_name="<b>bold</b>",
+            graph_name="g",
+            error="<i>boom</i> & more",
+            error_type="ValueError",
+        )
+    )
+    console.on_event(RunEndEvent(run_id="r", span_id="item", parent_span_id="root", graph_name="g", status=RunStatus.FAILED))
+    console.on_event(RunEndEvent(run_id="r", span_id="root", graph_name="<img src=x onerror=boom>", status=RunStatus.PARTIAL))
+
+    html = render_console(console.payload())
+    # The console's own markup is the ONLY markup in the frame.
+    for injected in ("<script>alert(1)</script>", "<b>bold</b>", "<i>boom</i>", "<img src=x onerror=boom>"):
+        assert injected not in html, f"unescaped {injected!r} reached the frame"
+    # …and the text itself still shows, escaped.
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert "&lt;b&gt;bold&lt;/b&gt;" in html
+
+
+def test_a_nested_fan_out_unit_is_escaped_too() -> None:
+    """The level-1 unit reaches its own set of sites; escape it there too."""
+    nested = ConsoleProcessor(item_labels=("outer & co", "<em>pages</em>"))
+    _feed(nested, _nested_map_events())
+    html = render_console(nested.payload())
+    assert "<em>pages</em>" not in html
+    assert "&lt;em&gt;pages&lt;/em&gt;" in html and "outer &amp; co" in html
