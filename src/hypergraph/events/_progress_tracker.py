@@ -10,6 +10,7 @@ from hypergraph.events.types import RunStatus
 if TYPE_CHECKING:
     from hypergraph.events.types import (
         InnerCacheEvent,
+        NodeAttemptEndEvent,
         NodeEndEvent,
         NodeErrorEvent,
         NodeStartEvent,
@@ -45,6 +46,11 @@ class _ProgressMessage:
     total: int = 0
     status: RunStatus | None = None
     error: str | None = None
+    #: Run-level cumulative truth, filled on the root ``run-end`` message:
+    #: failed items, retried attempts, and cache hits across the whole run.
+    failed: int = 0
+    retries: int = 0
+    cache_hits: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +88,7 @@ class _NodeState:
     succeeded: int = 0
     cached: int = 0
     failures: int = 0
+    retries: int = 0
     total_duration_ms: float = 0.0
     inner_cache_hits: int = 0
     inner_cache_refreshing: int = 0
@@ -98,6 +105,7 @@ def _format_stats(
     succeeded: int = 0,
     failures: int = 0,
     cached: int = 0,
+    retries: int = 0,
     avg_ms: float | None = None,
     inner_cache_hits: int = 0,
     inner_cache_refreshing: int = 0,
@@ -109,6 +117,8 @@ def _format_stats(
         parts.append(f"{failures}✗")
     if cached:
         parts.append(f"{cached}◉")
+    if retries:
+        parts.append(f"{retries}↺")
     if avg_ms is not None:
         parts.append(f"~{_format_duration(avg_ms)}")
     if inner_cache_hits:
@@ -125,6 +135,12 @@ class _ProgressTracker:
         self.spans: dict[str, _SpanState] = {}
         self.node_bars: dict[_NodeKey, _NodeState] = {}
         self.map_children: dict[str, list[_NodeKey]] = {}
+        # Run-level cumulative truth (never decremented): retried attempts
+        # and cache hits anywhere in the run, plus the root map span so the
+        # header row can carry them live.
+        self.run_retries = 0
+        self.run_cache_hits = 0
+        self._root_map_span: str | None = None
 
     def _get_span(self, span_id: str) -> _SpanState:
         if span_id not in self.spans:
@@ -194,6 +210,7 @@ class _ProgressTracker:
                 succeeded=node.succeeded,
                 failures=node.failures,
                 cached=node.cached,
+                retries=node.retries,
                 avg_ms=avg_ms,
                 inner_cache_hits=node.inner_cache_hits,
                 inner_cache_refreshing=node.inner_cache_refreshing,
@@ -204,6 +221,9 @@ class _ProgressTracker:
         info = self.spans[span_id]
         if info.map_size is None:
             raise RuntimeError("Cannot render progress for a map without a known size.")
+        # The ROOT map row is the run-level header: it carries the whole
+        # run's cumulative retries and cache hits next to its item counts.
+        is_root = info.parent_span_id is None
         return _TaskView(
             key=span_id,
             description=self._map_description(info.display_name, info.depth),
@@ -212,8 +232,20 @@ class _ProgressTracker:
             stats=_format_stats(
                 succeeded=info.succeeded,
                 failures=info.failures,
+                cached=self.run_cache_hits if is_root else 0,
+                retries=self.run_retries if is_root else 0,
             ),
         )
+
+    def _header_refresh(self) -> tuple[_TaskView, ...]:
+        """The root map header row, when one exists and can render."""
+        span_id = self._root_map_span
+        if span_id is None:
+            return ()
+        info = self.spans.get(span_id)
+        if info is None or info.map_size is None:
+            return ()
+        return (self._map_view(span_id),)
 
     def on_run_start(self, event: RunStartEvent) -> _ProgressUpdate:
         reset = False
@@ -221,7 +253,12 @@ class _ProgressTracker:
             self.spans.clear()
             self.node_bars.clear()
             self.map_children.clear()
+            self.run_retries = 0
+            self.run_cache_hits = 0
+            self._root_map_span = None
             reset = True
+        if event.parent_span_id is None and event.is_map:
+            self._root_map_span = event.span_id
 
         info = self._get_span(event.span_id)
         info.parent_span_id = event.parent_span_id
@@ -317,10 +354,12 @@ class _ProgressTracker:
             node.completed += 1
             if event.cached:
                 node.cached += 1
+                self.run_cache_hits += 1
+                tasks = (self._node_view(key), *self._header_refresh())
             else:
                 node.succeeded += 1
                 node.total_duration_ms += event.duration_ms
-            tasks = (self._node_view(key),)
+                tasks = (self._node_view(key),)
 
         message = None
         if self._find_map_ancestor(event.span_id) is None:
@@ -368,9 +407,32 @@ class _ProgressTracker:
             return _ProgressUpdate()
         if event.hit:
             node.inner_cache_hits += 1
+            self.run_cache_hits += 1
         if event.refreshing:
             node.inner_cache_refreshing += 1
+        if event.hit:
+            return _ProgressUpdate(tasks=(self._node_view(key), *self._header_refresh()))
         return _ProgressUpdate(tasks=(self._node_view(key),))
+
+    def on_node_attempt_end(self, event: NodeAttemptEndEvent) -> _ProgressUpdate:
+        """A retried attempt is cumulative truth: count it on the node's bar.
+
+        Attempt events hang off the logical node span (``parent_span_id``),
+        which registered its bar key at ``on_node_start``. Only a granted
+        retry counts — a final failure is the logical ``on_node_error``'s
+        fact, and a first-try success never opened a second attempt.
+        """
+        if not event.retry_scheduled or not event.parent_span_id:
+            return _ProgressUpdate()
+        span_info = self.spans.get(event.parent_span_id)
+        if span_info is None or span_info.node_bar_key is None:
+            return _ProgressUpdate()
+        node = self.node_bars.get(span_info.node_bar_key)
+        if node is None:
+            return _ProgressUpdate()
+        node.retries += 1
+        self.run_retries += 1
+        return _ProgressUpdate(tasks=(self._node_view(span_info.node_bar_key), *self._header_refresh()))
 
     def on_run_end(self, event: RunEndEvent) -> _ProgressUpdate:
         span_info = self.spans.get(event.span_id)
@@ -397,10 +459,23 @@ class _ProgressTracker:
                 )
 
         if span_info.parent_span_id is None:
+            # The root run-end carries the run-level header truth:
+            # "N/total · F failed · R retries · C cached" for a map, and
+            # the cumulative retry/cache facts for a plain run.
+            completed = total = failed = 0
+            if span_info.is_map and span_info.map_size is not None:
+                completed = span_info.completed
+                total = span_info.map_size
+                failed = span_info.failures
             message = _ProgressMessage(
                 kind="run-end",
                 name=event.graph_name or "Run",
                 status=event.status,
                 error=event.error,
+                completed=completed,
+                total=total,
+                failed=failed,
+                retries=self.run_retries,
+                cache_hits=self.run_cache_hits,
             )
         return _ProgressUpdate(tasks=tasks, message=message)

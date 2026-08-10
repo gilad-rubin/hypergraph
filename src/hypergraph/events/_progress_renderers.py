@@ -48,6 +48,20 @@ def _require_rich() -> None:
         ) from None
 
 
+def _completion_suffix(message: _ProgressMessage) -> str:
+    """The run-level header line rendered with the completion message.
+
+    ``N/total · F failed · R retries · C cached`` for a map; a plain run has
+    no item census, so it reports only the cumulative retry/cache facts it
+    actually accrued, and stays silent when there are none.
+    """
+    if message.total:
+        return f" · {message.completed}/{message.total} · {message.failed} failed · {message.retries} retries · {message.cache_hits} cached"
+    if message.retries or message.cache_hits:
+        return f" · {message.retries} retries · {message.cache_hits} cached"
+    return ""
+
+
 class _RichTTYRenderer:
     """Render progress tasks through Rich's terminal Progress display."""
 
@@ -106,16 +120,17 @@ class _RichTTYRenderer:
             self._display_completion(update.message)
 
     def _display_completion(self, message: _ProgressMessage) -> None:
+        suffix = _completion_suffix(message)
         if message.status == RunStatus.COMPLETED:
-            text = f"[bold green]✓ {message.name} completed![/bold green]"
+            text = f"[bold green]✓ {message.name} completed!{suffix}[/bold green]"
         elif message.status == RunStatus.PARTIAL:
-            text = f"[bold yellow]◐ {message.name} completed with failures[/bold yellow]"
+            text = f"[bold yellow]◐ {message.name} completed with failures{suffix}[/bold yellow]"
         elif message.status == RunStatus.PAUSED:
-            text = f"[bold yellow]‖ {message.name} paused[/bold yellow]"
+            text = f"[bold yellow]‖ {message.name} paused{suffix}[/bold yellow]"
         elif message.status == RunStatus.STOPPED:
-            text = f"[bold yellow]◼ {message.name} stopped[/bold yellow]"
+            text = f"[bold yellow]◼ {message.name} stopped{suffix}[/bold yellow]"
         else:
-            text = f"[bold red]✗ {message.name} failed: {message.error}[/bold red]"
+            text = f"[bold red]✗ {message.name} failed: {message.error}{suffix}[/bold red]"
         self._progress.console.print(text)
 
     def flush(self) -> None:
@@ -349,24 +364,25 @@ class _NotebookRenderer:
     def _display_completion(self, message: _ProgressMessage) -> None:
         from IPython.display import HTML, display
 
+        header = _completion_suffix(message)
         if message.status == RunStatus.COMPLETED:
             color = STATUS_COLORS["completed"]
-            text = f"✓ {message.name} completed!"
+            text = f"✓ {message.name} completed!{header}"
         elif message.status == RunStatus.PARTIAL:
             color = STATUS_COLORS["partial"]
-            text = f"◐ {message.name} completed with failures"
+            text = f"◐ {message.name} completed with failures{header}"
         elif message.status == RunStatus.PAUSED:
             color = STATUS_COLORS["paused"]
-            text = f"‖ {message.name} paused"
+            text = f"‖ {message.name} paused{header}"
         elif message.status == RunStatus.STOPPED:
             # Preserve the pre-refactor notebook completion foreground. Badge
             # policy intentionally has a distinct canonical stopped color.
             color = STATUS_COLORS["paused"]
-            text = f"◼ {message.name} stopped"
+            text = f"◼ {message.name} stopped{header}"
         else:
             color = STATUS_COLORS["failed"]
             suffix = f": {message.error}" if message.error else ""
-            text = f"✗ {message.name} failed{suffix}"
+            text = f"✗ {message.name} failed{suffix}{header}"
         html = f'<div style="{FONT_SANS_STYLE}; color:{color}; font-weight:700; padding:4px 0">{text}</div>'
         display(HTML(theme_wrap(html)))
 
@@ -437,17 +453,18 @@ class _LogRenderer:
         self._print(f"◈ {message.name}: {milestone}% ({message.completed}/{message.total})")
 
     def _display_completion(self, message: _ProgressMessage) -> None:
+        header = _completion_suffix(message)
         if message.status == RunStatus.COMPLETED:
-            text = f"✓ {message.name} completed!"
+            text = f"✓ {message.name} completed!{header}"
         elif message.status == RunStatus.PARTIAL:
-            text = f"◐ {message.name} completed with failures"
+            text = f"◐ {message.name} completed with failures{header}"
         elif message.status == RunStatus.PAUSED:
-            text = f"‖ {message.name} paused"
+            text = f"‖ {message.name} paused{header}"
         elif message.status == RunStatus.STOPPED:
-            text = f"◼ {message.name} stopped"
+            text = f"◼ {message.name} stopped{header}"
         else:
             suffix = f": {message.error}" if message.error else ""
-            text = f"✗ {message.name} failed{suffix}"
+            text = f"✗ {message.name} failed{suffix}{header}"
         self._print(text)
 
     def flush(self) -> None:

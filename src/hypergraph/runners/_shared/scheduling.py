@@ -328,22 +328,31 @@ def ensure_progress_processor(
     *,
     carried: Sequence[Any] = (),
 ) -> list[Any]:
-    """Ensure at least one RichProgressProcessor across the merged sequence.
+    """Ensure at least one progress surface across the merged sequence.
 
     ``carried`` is the graph-carried processor tuple that the caller merges in
     front of the call-site list afterwards. The presence check inspects the
-    merged view ``[*carried, *event_processors]`` so an explicit Rich processor
-    anywhere in it suppresses the auto-synthesized default (issue #207).
+    merged view ``[*carried, *event_processors]`` so an explicit progress
+    processor anywhere in it suppresses the auto-synthesized default
+    (issue #207) — which is also the escape hatch: passing
+    ``RichProgressProcessor(force_mode="notebook")`` keeps the bars in a
+    notebook, and passing a ``ConsoleProcessor`` keeps the console anywhere.
 
-    Returns a new call-site list: unchanged (copied) when a Rich processor is
-    already present, otherwise with one default prepended. ``carried``
-    processors are only inspected, never included in the returned list — the
-    caller owns that merge (and map templates must forward only the call-site
-    list into per-item runs).
+    The synthesized default follows the output mode: a notebook renders the
+    live console (``LiveConsole``); a TTY or plain stream keeps the
+    bars/milestone log (``RichProgressProcessor``).
+
+    Returns a new call-site list: unchanged (copied) when a progress
+    processor is already present, otherwise with one default prepended.
+    ``carried`` processors are only inspected, never included in the returned
+    list — the caller owns that merge (and map templates must forward only
+    the call-site list into per-item runs).
     """
-    from hypergraph.events.rich_progress import RichProgressProcessor
+    from hypergraph.events.console import ConsoleProcessor, LiveConsole
+    from hypergraph.events.rich_progress import RichProgressProcessor, _detect_mode
 
     processors = list(event_processors) if event_processors else []
-    if not any(isinstance(p, RichProgressProcessor) for p in (*carried, *processors)):
-        processors.insert(0, RichProgressProcessor())
+    if not any(isinstance(p, (RichProgressProcessor, ConsoleProcessor)) for p in (*carried, *processors)):
+        default = LiveConsole() if _detect_mode() == "notebook" else RichProgressProcessor()
+        processors.insert(0, default)
     return processors

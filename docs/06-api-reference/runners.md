@@ -64,7 +64,7 @@ class SyncRunner:
 **Args:**
 - `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`. Supports `InMemoryCache`, `DiskCache`, or any `CacheBackend` implementation.
 - `checkpointer` — Optional [checkpointer](../05-how-to/batch-processing.md#checkpointing-with-map) for persistent run history. For `run()`, enables strict lineage semantics, generic IDs for fresh/retry runs, and source-derived IDs for `fork_from`. For `map()`, persistence is enabled when `workflow_id` is provided. Requires `SqliteCheckpointer` or any `SyncCheckpointerProtocol` implementation.
-- `show_progress` — If `True`, automatically attaches a Rich progress processor to `run()` and `map()` calls — unless a `RichProgressProcessor` is already carried by the graph or passed via `event_processors`. Per-call `show_progress` overrides this default.
+- `show_progress` — If `True`, automatically attaches a progress surface to `run()` and `map()` calls: in a notebook the live console (`LiveConsole`, see [events](events.md#the-console)), in a terminal Rich bars, elsewhere the milestone log — unless a `RichProgressProcessor` or `ConsoleProcessor` is already carried by the graph or passed via `event_processors` (`RichProgressProcessor(force_mode=...)` is the escape hatch that keeps bars in a notebook). Per-call `show_progress` overrides this default.
 
 ### run()
 
@@ -790,7 +790,7 @@ class AsyncRunner:
 **Args:**
 - `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`.
 - `checkpointer` — Optional checkpointer for persistent run history. For `run()`, enables strict lineage semantics, generic IDs for fresh/retry runs, and source-derived IDs for `fork_from`. For `map()`, persistence is enabled when `workflow_id` is provided. Requires `SqliteCheckpointer` or any `Checkpointer` implementation.
-- `show_progress` — If `True`, automatically attaches a Rich progress processor to `run()` and `map()` calls — unless a `RichProgressProcessor` is already carried by the graph or passed via `event_processors`. Per-call `show_progress` overrides this default.
+- `show_progress` — If `True`, automatically attaches a progress surface to `run()` and `map()` calls: in a notebook the live console (`LiveConsole`, see [events](events.md#the-console)), in a terminal Rich bars, elsewhere the milestone log — unless a `RichProgressProcessor` or `ConsoleProcessor` is already carried by the graph or passed via `event_processors` (`RichProgressProcessor(force_mode=...)` is the escape hatch that keeps bars in a notebook). Per-call `show_progress` overrides this default.
 - `max_concurrency` — Default maximum number of concurrently executing nodes. A per-call `max_concurrency` overrides it.
 - `event_processors` — Processors added to every `run()` and `map()` call. Per-call processors append to these defaults rather than replacing them.
 

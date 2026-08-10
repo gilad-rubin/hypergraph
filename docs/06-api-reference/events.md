@@ -7,6 +7,7 @@ The event system lets you observe graph execution without modifying your workflo
 - **AsyncEventProcessor** - Async-aware variant for async runners
 - **TypedEventProcessor** - Auto-dispatches to typed handler methods
 - **RichProgressProcessor** - Hierarchical Rich progress bars out of the box
+- **ConsoleProcessor / LiveConsole** - The console: a live, bounded HTML view over one run or map (what `show_progress=True` renders in notebooks). Its durable twin over submitted work is [`hypergraph.host.watch`](host.md#watching-submissions-live-hypergraphhostwatch)
 
 ## Overview
 
@@ -533,16 +534,21 @@ class RichProgressProcessor(TypedEventProcessor):
         self,
         *,
         transient: bool = True,
-        force_mode: Literal["tty", "non-tty", "auto"] = "auto",
+        force_mode: Literal["tty", "notebook", "non-tty", "auto"] = "auto",
     ) -> None: ...
 ```
 
 **Args:**
 - `transient` - If `True` (default), progress bars are removed after completion. Set to `False` to keep them visible.
 - `force_mode` - Controls output mode:
-  - `"auto"` (default): detect via `stdout.isatty()`
+  - `"auto"` (default): notebook kernel → notebook HTML bars, TTY → Rich live bars, else milestone log
   - `"tty"`: force Rich live bars
+  - `"notebook"`: force the notebook HTML bar renderer
   - `"non-tty"`: force plain-text milestone logging (useful for CI/log pipelines)
+
+Retried attempts reach every renderer as cumulative truth (`n↺` on the node's
+bar), and the completion line carries the run-level header
+`N/total · F failed · R retries · C cached`.
 
 ### Visual Output
 
@@ -592,6 +598,44 @@ In non-TTY mode, map progress is logged at fixed milestones (10%, 25%, 50%, 75%,
 | 🗺️ | Map-level progress bar |
 
 Indentation reflects nesting depth. Failed nodes show `[red]FAILED[/red]` in the description.
+
+---
+
+## The Console
+
+`ConsoleProcessor` folds one run's event stream into a bounded payload;
+`render_console(payload)` turns it into one self-contained HTML frame; and
+`LiveConsole` renders that frame into ONE IPython display handle, updated in
+place while the run executes and settled at shutdown — the frame a saved
+notebook keeps. In a notebook, `show_progress=True` selects `LiveConsole`
+automatically; passing `RichProgressProcessor(force_mode=...)` explicitly
+keeps the bars instead.
+
+```python
+from hypergraph import AsyncRunner, LiveConsole
+
+console = LiveConsole(item_labels=("orders", "line items"))
+result = await AsyncRunner().map(graph, values, map_over="item_id", event_processors=[console])
+```
+
+**Constructor (all optional):**
+- `item_labels` — unit names per fan-out level (level 0 = the run/map's own items, level 1 = the first nested map's items, ...). Defaults to "items" / "child items".
+- `capacity` — a callable returning `[{name, busy, cap, waiting, paused_seconds}, ...]` describing shared work lanes; the Lanes section renders only when provided.
+- `title` / `subtitle` — header text; default to the root graph's name.
+- `refresh_seconds` (`LiveConsole` only) — in-place re-render cadence.
+
+The console shows hierarchy (nested `as_node().map_over(...)` fan-outs are
+first-class rows with their own child counts), the run-level header line
+`N/total · F failed · R retries · C cached`, a failures pane, retry and cache
+badges — all derived from the run's own events, cumulative truth only.
+
+Attached via `Host.serve(event_processors=[LiveConsole()])` it renders each
+durable Run **this process's worker** executes, per-item live (a new root run
+resets the fold). A notebook that only SUBMITTED has no events to fold — the
+worker may be another process — so a console over durable submissions reads
+durable truth instead: `hypergraph.host.watch` (`watch_submissions`,
+`SubmissionWatcher`, `ConsolePanel`) folds the same design from Run Home read
+models, for both `submit` and `submit_batch`; see [host.md](host.md).
 
 ---
 

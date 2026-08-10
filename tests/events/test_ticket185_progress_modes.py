@@ -166,7 +166,9 @@ def test_one_transcript_preserves_tty_tasks_stats_and_completion() -> None:
     stats = [call.kwargs["stats"] for call in progress.update.call_args_list if "stats" in call.kwargs]
     assert "3✓ 2✗ ~6ms 1↩ 1↻" in stats
     assert stats[-1] == "1✓ 2✗"
-    progress.console.print.assert_called_once_with("[bold green]✓ pipeline completed![/bold green]")
+    # The run-level header (issue #392): cumulative cache/retry truth rides
+    # the completion line even for a non-map root run.
+    progress.console.print.assert_called_once_with("[bold green]✓ pipeline completed! · 0 retries · 1 cached[/bold green]")
 
 
 def test_one_transcript_preserves_notebook_html_refresh_and_completion() -> None:
@@ -209,7 +211,7 @@ def test_one_transcript_preserves_exact_non_tty_text_and_map_milestones(
         "[12:34:56] ◈ inner: 50% (3/5)",
         "[12:34:56] ◈ inner: 75% (4/5)",
         "[12:34:56] ◈ inner: 100% (5/5)",
-        "[12:34:56] ✓ pipeline completed!",
+        "[12:34:56] ✓ pipeline completed! · 0 retries · 1 cached",
     ]
 
 

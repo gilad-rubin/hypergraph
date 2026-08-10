@@ -1,5 +1,6 @@
 """Event system for observing graph execution."""
 
+from hypergraph.events.console import ConsoleProcessor, LiveConsole, render_console
 from hypergraph.events.dispatcher import EventDispatcher
 from hypergraph.events.processor import (
     AsyncEventProcessor,
@@ -49,6 +50,10 @@ __all__ = [
     "AsyncEventProcessor",
     "EventProcessor",
     "TypedEventProcessor",
+    # The console
+    "ConsoleProcessor",
+    "LiveConsole",
+    "render_console",
     # Dispatcher
     "EventDispatcher",
 ]

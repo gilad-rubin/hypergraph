@@ -14,6 +14,7 @@ from hypergraph.events.processor import AsyncEventProcessor, TypedEventProcessor
 if TYPE_CHECKING:
     from hypergraph.events.types import (
         InnerCacheEvent,
+        NodeAttemptEndEvent,
         NodeEndEvent,
         NodeErrorEvent,
         NodeStartEvent,
@@ -100,6 +101,9 @@ class RichProgressProcessor(TypedEventProcessor, AsyncEventProcessor):
 
     def on_node_error(self, event: NodeErrorEvent) -> None:
         self._renderer.emit(self._tracker.on_node_error(event))
+
+    def on_node_attempt_end(self, event: NodeAttemptEndEvent) -> None:
+        self._renderer.emit(self._tracker.on_node_attempt_end(event))
 
     def on_inner_cache(self, event: InnerCacheEvent) -> None:
         self._renderer.emit(self._tracker.on_inner_cache(event))

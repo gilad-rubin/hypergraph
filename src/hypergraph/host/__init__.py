@@ -38,8 +38,32 @@ from hypergraph.host.read_models import (
 from hypergraph.host.refs import BatchCommandReceipt, BatchRef, BatchSubmitReceipt, CommandReceipt, RunRef
 from hypergraph.host.runtime import HostRuntime
 from hypergraph.host.views import BatchItemView, BatchUpdate, BatchView, RunQuery, RunUpdate, RunView, WaitingCondition
+from hypergraph.host.watch import (
+    Attention,
+    ConsolePanel,
+    ItemProgress,
+    LogPanel,
+    SubmissionProgress,
+    SubmissionWatcher,
+    WatchSnapshot,
+    render_snapshot,
+    snapshot_line,
+    watch_snapshot,
+    watch_submissions,
+)
 
 __all__ = [
+    "Attention",
+    "ConsolePanel",
+    "ItemProgress",
+    "LogPanel",
+    "SubmissionProgress",
+    "SubmissionWatcher",
+    "WatchSnapshot",
+    "render_snapshot",
+    "snapshot_line",
+    "watch_snapshot",
+    "watch_submissions",
     "AlreadyTerminalError",
     "BatchCommandReceipt",
     "BatchItemView",

@@ -563,6 +563,39 @@ across process restarts, with no graph code. A `BatchRef` unknown to the
 Home terminates immediately with no updates. `client.get_sync(batch_ref)`
 is the synchronous mirror of `get()`.
 
+## Watching Submissions Live: `hypergraph.host.watch`
+
+The console over durable work, for **both** submit verbs. The executing
+worker may be another process, so there is no event stream to fold — the
+live picture derives from Run Home read models (`get_batch` / `get_run`,
+`list_runs`, `client.result`, `retry_census`), O(items) reads per poll and
+bounded rendering: the only per-item list drawn is the items actually
+RUNNING, everything else is an exceptions-only list.
+
+A `RunRef` from `submit` and a `BatchRef` from `submit_batch` fold into the
+same picture — a lone Run is a submission of one item — so a mixed list is
+one console, and a submit receipt may be passed in place of its ref.
+
+```python
+from hypergraph.host import ConsolePanel, watch_submissions
+
+batch = await host.submit_batch(graph, values, map_over="item_id", identity="item_id")
+one = await host.submit(graph, {"item_id": "a81f43"})
+snapshot = await watch_submissions(host.client, [batch, one], draw=ConsolePanel())
+```
+
+- `watch_submissions(client_or_watcher, refs, *, refresh_seconds=3.0, max_watch_minutes=90.0, slow_multiple=3.0, stop_after_minutes=None, adopted=0, note="", until_submitted=None, draw=None)` — poll until every submission RESTS (settled or parked on a human; a parked item would never settle without an answer). `refs` accepts `BatchRef`, `RunRef`, or the receipts carrying them. `max_watch_minutes` stops the PICTURE and drops the poll to a heartbeat; only `stop_after_minutes` abandons the watch. `refs` is read live, so a caller still submitting passes the list it appends to plus `until_submitted`.
+- `SubmissionWatcher(client)` — the fold: `await watcher.progress(ref)` returns one `SubmissionProgress` (census, per-item condition words, elapsed, durable failure evidence, and the attempt-ledger retry census). A Batch costs four read-model calls per poll; a lone Run costs three, because `get_run` carries what `get_batch` and `list_runs` split.
+- `SubmissionProgress` — one submission: `ref`, `is_batch`, `definition`, `counts` (the closed `BATCH_COUNT_KEYS` vocabulary, so a Run's census merges with a Batch's), `items`, `running`, `parked`, `resting`.
+- `WatchSnapshot` — every watched submission as one picture: `done/total`, merged `counts`, the bounded `running` list, `parked`, `exceptions` (failures, open gates, retried items, stragglers past `slow_multiple` × median), `resting`.
+- Drawing: `ConsolePanel()` renders the console frame into ONE IPython display handle (the resting frame is what a saved notebook keeps); `LogPanel(every_seconds)` logs one line; `render_snapshot(snapshot)` / `snapshot_line(snapshot)` are the pure renderers.
+
+Deliberately absent: "which node is it on right now" — the read models do
+not expose per-run pending node boundaries at a cost a poll may pay, so the
+view reports condition, status, elapsed, and attempt count, never a guess.
+A ref this Home never accepted contributes nothing to the picture, and an
+unread submission is *unknown*, never "resting".
+
 ## Failure Tolerance and the Trip
 
 A pinned `BatchTolerance` **trips** when failure-equivalent children

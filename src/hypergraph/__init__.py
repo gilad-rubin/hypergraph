@@ -40,6 +40,7 @@ from hypergraph.events import (
     SuperstepStartEvent,
     TypedEventProcessor,
 )
+from hypergraph.events.console import ConsoleProcessor, LiveConsole, render_console
 from hypergraph.events.rich_progress import RichProgressProcessor
 from hypergraph.exceptions import (
     AttemptOutcomeUnknownError,
@@ -75,6 +76,7 @@ from hypergraph.host import (
     BatchView,
     BuilderIdentityError,
     CommandReceipt,
+    ConsolePanel,
     DefinitionId,
     ForkCompatibilityError,
     GraphBuilder,
@@ -97,13 +99,17 @@ from hypergraph.host import (
     RunUpdate,
     RunView,
     StepTimingReadModel,
+    SubmissionProgress,
+    SubmissionWatcher,
     SubmitReceipt,
     UnservedGraphError,
     WaitingCondition,
+    WatchSnapshot,
     WorkerCoverage,
     WorkerLockError,
     WorkflowIdConflictError,
     serve,
+    watch_submissions,
 )
 from hypergraph.limits import ProcessLocalLimiter
 from hypergraph.nodes import (
@@ -233,6 +239,9 @@ __all__ = [
     "InnerCacheEvent",
     "StreamingChunkEvent",
     "RichProgressProcessor",
+    "ConsoleProcessor",
+    "LiveConsole",
+    "render_console",
     # Context
     "NodeContext",
     # Observability
@@ -248,6 +257,11 @@ __all__ = [
     "SqliteCheckpointer",
     # Durable host (Tier 1 local host)
     "serve",
+    "ConsolePanel",
+    "SubmissionProgress",
+    "SubmissionWatcher",
+    "WatchSnapshot",
+    "watch_submissions",
     "Host",
     "HostRuntime",
     "RunHome",

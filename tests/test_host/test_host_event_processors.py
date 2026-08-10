@@ -193,3 +193,42 @@ class TestServeEventProcessors:
                 serve(graph, home=home, event_processors=Recorder())  # type: ignore[arg-type]
         finally:
             await home.close()
+
+
+class TestTheConsoleOverServedRuns:
+    """The console attaches to a worker and folds each durable Run it executes.
+
+    The other half of issue #392: events ARE local to the process that
+    executes, so a worker running in this process can fold them exactly as
+    an in-process runner does. A notebook that only SUBMITTED reads durable
+    truth instead — that is ``hypergraph.host.watch``.
+    """
+
+    async def test_serve_carries_the_console_and_a_new_run_resets_the_fold(self, tmp_path):
+        from hypergraph.events.console import ConsoleProcessor, render_console
+
+        console = ConsoleProcessor()
+        graph = _two_step_graph("served-console")
+        home = RunHome.open(f"file:{tmp_path / 'runs.db'}")
+        try:
+            host = serve(graph.with_runner(AsyncRunner()), home=home, event_processors=[console])
+            first = await host.submit(graph, {"x": 4}, workflow_id="console-run-1")
+            second = await host.submit(graph, {"x": 5}, workflow_id="console-run-2")
+            worker = asyncio.create_task(host.work_forever("console-worker"))
+            try:
+                await asyncio.wait_for(_terminal(host.client, first.run_ref), timeout=10)
+                await asyncio.wait_for(_terminal(host.client, second.run_ref), timeout=10)
+            finally:
+                host.shutdown()
+                await asyncio.wait_for(worker, timeout=10)
+        finally:
+            await home.close()
+
+        payload = console.payload()
+        # A new root Run resets the fold, so the frame shows the Run that
+        # ran LAST — one run, its two steps, not a merged pile of both.
+        assert payload["mode"] == "run" and payload["total"] == 1
+        assert payload["title"] == "served-console"
+        assert [step["name"] for step in payload["tree"]["children"]] == ["double", "triple"]
+        assert payload["terminal"] and payload["done"] == 1 and payload["failed"] == 0
+        assert len(render_console(payload).encode()) <= 50_000
