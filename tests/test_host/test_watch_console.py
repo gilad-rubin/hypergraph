@@ -242,6 +242,10 @@ async def test_the_console_frame_is_bounded_and_names_the_truth(home, ledger):
 
     html = render_snapshot(snapshot, uid="hgwtest", elapsed_s=4.2)
     assert "Hypergraph durable submissions" in html
+    # Same theme mechanism as the event console: hypergraph's own wrapper,
+    # never a second detector and never a hardcoded palette.
+    assert "color-scheme:light dark" in html and "data-vscode-theme-kind" in html
+    assert html.count("light-dark(") >= 20
     assert "ingest" in html
     assert "Needs attention" in html and "work-boom" in html
     assert "parked" in html

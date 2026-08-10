@@ -569,10 +569,15 @@ def render_snapshot(
     The same visual language ``hypergraph.events.console.render_console``
     renders from events: header with the run-level line, stat tiles, the
     segmented progress bar, the bounded in-flight table, and the
-    needs-attention list. ``item_label`` names the unit ("items" by
-    default); ``elapsed_s`` is the watch's own clock, when the caller keeps
-    one.
+    needs-attention list — down to the palette, which resolves light or dark
+    through hypergraph's own widget theme wrapper rather than a second
+    detector. ``item_label`` names the unit ("items" by default);
+    ``elapsed_s`` is the watch's own clock, when the caller keeps one.
+
+    No collapse state to keep: this view has no tree to collapse, so it
+    carries the theme wrapper and nothing else.
     """
+    from hypergraph._repr import theme_wrap
     from hypergraph.events.console import _CSS, _esc, _fmt_s, _n_unit
 
     uid = uid or ("hgw" + uuid4().hex[:8])
@@ -725,7 +730,7 @@ def render_snapshot(
         foot_right = f"{running_n:,} {unit} running · straggler past {snapshot.slow_after:,.0f}s"
 
     css = _CSS.replace("$UID", uid)
-    return f"""<div id="{uid}">
+    frame = f"""<div id="{uid}">
 <style>{css}</style>
 <section class="bc" aria-label="Durable submission console">
   <div class="bc-head">
@@ -749,6 +754,7 @@ def render_snapshot(
   <div class="bc-foot"><span>{foot_left}</span><span>{foot_right}</span></div>
 </section>
 </div>"""
+    return theme_wrap(frame, state_key=f"watch:{uid}")
 
 
 def snapshot_line(snapshot: WatchSnapshot) -> str:
