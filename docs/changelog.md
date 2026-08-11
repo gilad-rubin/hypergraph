@@ -380,6 +380,22 @@
 
 ### Fixed
 
+- **A Batch item key containing `/` was accepted and then never claimed —
+  the item read `queued` forever and the Batch never rested.** The child
+  workflow id is composed as `<batch workflow_id>:<item key>`, and `/` is
+  reserved in a run id for hierarchy (`<parent>/<node>`), so
+  `validate_workflow_id` raised — but inside the worker THREAD, long after
+  acceptance. The submission stayed `claimed` with no error, no dead letter,
+  and no diagnostic: indistinguishable from a slow worker. The key is now
+  refused at `submit_batch()` with `ItemKeyError` naming the offending key
+  and the reason, rather than escaped — an escaped key would read back
+  differently in every keyed outcome, view, and rerun selector. The same
+  refusal now guards the caller-chosen `workflow_id` on `submit()`,
+  `submit_sync()`, and `submit_batch()` (a `ValueError` at the door), where
+  it had the identical silent-stall symptom; a Batch id carrying `/`
+  poisoned every child of the manifest. Only `/` is refused — markup,
+  colons, spaces, and non-ASCII still key items verbatim.
+
 - **`watch(run_ref)` could never end for a Run that settled without ever
   executing.** The stream's end condition asked only whether the submission was
   `finished`, so a run parked by the recovery brake — or now dead-lettered —

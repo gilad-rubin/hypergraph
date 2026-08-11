@@ -382,7 +382,13 @@ to be a graph input. A manifest-only identity is retained as the manifest
 key and omitted from child Run inputs. Each identity value must be a
 JSON-safe scalar (a non-empty `str`, or an `int`), unique across the
 manifest; missing, empty, non-scalar (including `bool`, `float`, and `None`),
-or duplicate keys raise `ItemKeyError` before anything is written. Expanding
+or duplicate keys raise `ItemKeyError` before anything is written. A key
+containing `/` raises `ItemKeyError` too: the key composes this item's child
+workflow id, where `/` is reserved for hierarchy, so accepting it would
+accept an item no worker could ever claim. It is refused rather than escaped
+— an escaped key would read back differently in every keyed outcome. The
+same rule applies to `workflow_id` itself on both `submit` and `submit_batch`
+(a `ValueError`), since every child id is composed from it. Expanding
 to zero items is a `ValueError` — an empty Batch is not a Batch.
 
 **One transaction** persists all of it — the manifest row (Definition
@@ -1544,7 +1550,7 @@ brake counts **progressless re-adoptions**:
 |---|---|
 | `WorkerLockError` | **retired** — nothing raises it. A Run Home admits several workers; the name is exported for one release so an old `except` clause still imports |
 | `UnservedGraphError` | `submit`, `submit_batch`, or `fork(into=…)` names a `Graph` this host does not serve, or one whose `structural_hash` drifted from the served Definition |
-| `ItemKeyError` | `submit_batch` `identity` names a field outside `map_over`, or an item's key is missing, empty, non-scalar, or duplicated |
+| `ItemKeyError` | `submit_batch` `identity` names a field outside `map_over`, or an item's key is missing, empty, non-scalar, duplicated, or contains `/` (reserved by the child workflow id) |
 | `AlreadyTerminalError` | a terminal `workflow_id` is reused for submit, submit_batch, or stop (including a fully settled Batch) |
 | `WorkflowIdConflictError` | a nonterminal `workflow_id` is reused with a different start fingerprint (Run or Batch), or a Batch id collides with existing work |
 | `ForkCompatibilityError` | `host.fork()` targets a structurally incompatible Definition |

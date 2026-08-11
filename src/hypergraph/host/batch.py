@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel
 
 from hypergraph.host.errors import ItemKeyError
+from hypergraph.runners._shared.state_restore import RESERVED_WORKFLOW_ID_CHAR, workflow_id_is_reserved
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
@@ -192,6 +193,12 @@ def _item_key(value: Any, *, identity: str, index: int) -> str:
     all three are refused rather than silently stringified into a key an
     operator can never reproduce. A generated map index is never acceptable
     durable identity, so there is no fallback.
+
+    A key that cannot survive the child-id composition is refused here too:
+    the item key becomes ``"<batch workflow_id>:<item key>"``, and ``"/"`` is
+    reserved in a run id for hierarchy. Escaping it instead would make the
+    key round-trip differently in every read model, and accepting it means
+    accepting work no worker can ever claim.
     """
     if isinstance(value, str):
         if not value:
@@ -199,6 +206,17 @@ def _item_key(value: Any, *, identity: str, index: int) -> str:
                 identity,
                 f"submit_batch() item {index} has an empty {identity!r}; a logical item key must name the item.\n\n"
                 "How to fix: give every expanded item a non-empty key value.",
+            )
+        if workflow_id_is_reserved(value):
+            raise ItemKeyError(
+                identity,
+                f"submit_batch() item {index} has a {identity!r} containing {RESERVED_WORKFLOW_ID_CHAR!r} ({value!r}); "
+                "a logical item key becomes this item's child workflow id ('<batch workflow_id>:<item key>'), and "
+                f"{RESERVED_WORKFLOW_ID_CHAR!r} is reserved there for hierarchical run ids (nested graphs, map items).\n\n"
+                "How to fix: key on a value without it — an id, not a path. Hypergraph refuses the key rather than "
+                "escaping it, because an escaped key would read back differently in every keyed outcome, and a child "
+                "id that reads as a nested run of something else is never claimed: the item would sit queued and the "
+                "Batch would never rest.",
             )
         return value
     if isinstance(value, int) and not isinstance(value, bool):
@@ -254,7 +272,8 @@ def expand_batch_items(
             entry, an unknown ``map_mode``, a ``map_over`` input missing
             from ``values``, unequal zip lengths, or an empty expansion.
         ItemKeyError: ``identity`` names a broadcast input, or an item's key
-            is missing, empty, non-scalar, or duplicated.
+            is missing, empty, non-scalar, duplicated, or carries the ``"/"``
+            reserved by the child workflow id.
     """
     from hypergraph.runners._shared.map_inputs import generate_map_inputs
 

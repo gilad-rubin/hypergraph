@@ -443,13 +443,32 @@ def restore_completed_child_outputs(
     return node.map_outputs_from_original(filter_outputs(restored, node.graph))
 
 
+#: THE character hierarchy is composed with — ``"<parent>/<node>"`` and
+#: ``"<parent>/<node>/<iteration>"`` above. A caller-chosen id carrying one
+#: reads as a nested run of something else, so it is reserved.
+RESERVED_WORKFLOW_ID_CHAR = "/"
+
+
+def workflow_id_is_reserved(workflow_id: str) -> bool:
+    """Whether this id could never name a top-level run of its own.
+
+    THE one predicate every door asks, so a caller-supplied id is refused
+    where it is accepted rather than where it is executed. A durable host
+    composes ids of its own (``"<batch workflow_id>:<item key>"``) and
+    accepts work long before any runner sees it; without this check the
+    refusal lands inside a worker thread, where it leaves the submission
+    claimed and the work indistinguishable from slow.
+    """
+    return RESERVED_WORKFLOW_ID_CHAR in workflow_id
+
+
 def validate_workflow_id(workflow_id: str | None, parent_run_id: str | None) -> None:
     """Reject user-provided workflow_id containing '/' (reserved for hierarchy).
 
     Only validates user-initiated calls (parent_run_id is None). Internal child
     calls from GraphNode executors legitimately use '/' in hierarchical IDs.
     """
-    if workflow_id and "/" in workflow_id and parent_run_id is None:
+    if workflow_id and workflow_id_is_reserved(workflow_id) and parent_run_id is None:
         raise ValueError(
             f"workflow_id cannot contain '/': {workflow_id!r}. "
             "The '/' character is reserved for hierarchical run IDs "

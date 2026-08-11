@@ -66,6 +66,7 @@ from hypergraph.host.views import (
     is_child_settled,
 )
 from hypergraph.host.worker import _drain
+from hypergraph.runners._shared.state_restore import RESERVED_WORKFLOW_ID_CHAR, workflow_id_is_reserved
 
 if TYPE_CHECKING:
     from hypergraph.events.processor import EventProcessor
@@ -147,6 +148,26 @@ def _normalize_start_at(start_at: datetime | str | None) -> str | None:
 def _validate_recovery_cap(recovery_cap: int) -> None:
     if isinstance(recovery_cap, bool) or not isinstance(recovery_cap, int) or recovery_cap < 0:
         raise ValueError(f"recovery_cap must be an int >= 0 (the progressless re-adoption budget), got {recovery_cap!r}.")
+
+
+def _validate_workflow_id_char(workflow_id: str, *, verb: str) -> None:
+    """Refuse a caller-chosen id no runner would ever execute under.
+
+    The runner has always reserved ``"/"`` for hierarchy, but it says so at
+    RUN time — inside a worker thread, long after acceptance. A durable
+    submission refused there is not refused at all: the row stays claimed,
+    nothing settles, and the work reads exactly like a slow worker. Saying
+    it at the door makes an unexecutable id a submission error, which is
+    what it is.
+    """
+    if workflow_id_is_reserved(workflow_id):
+        raise ValueError(
+            f"{verb}() workflow_id cannot contain {RESERVED_WORKFLOW_ID_CHAR!r}: {workflow_id!r}. "
+            f"The {RESERVED_WORKFLOW_ID_CHAR!r} character is reserved for hierarchical run ids (nested graphs, map items), "
+            "so no runner would ever execute under this id.\n\n"
+            "How to fix: choose an id without it. It is refused here rather than escaped because the id is what every "
+            "read model, ref, and rerun names this work by."
+        )
 
 
 def heartbeat_tick(lease_ttl: float) -> float:
@@ -369,7 +390,10 @@ class Host:
                 immediately: a submission must never name code no worker can
                 execute.
             values: JSON-serializable graph inputs.
-            workflow_id: Optional explicit id; one is generated when omitted.
+            workflow_id: Optional explicit id; one is generated when
+                omitted. It may not contain ``"/"`` — that character is
+                reserved for hierarchical run ids, so no runner would
+                execute under it.
             start_at: Optional delayed start (datetime or ISO string).
             source_ref: Optional caller provenance marker.
             recovery_cap: Recovery brake budget — how many progressless
@@ -450,6 +474,8 @@ class Host:
     ) -> tuple[_Definition, str, str | None, str]:
         """Validate one Run submission and normalize its stored fields."""
         _validate_recovery_cap(recovery_cap)
+        if workflow_id is not None:
+            _validate_workflow_id_char(workflow_id, verb="submit")
         definition = self._require_definition(graph, builder)
         inputs_json = self._serialize_inputs(values)
         start_at_iso = _normalize_start_at(start_at)
@@ -479,6 +505,9 @@ class Host:
         """
         if not isinstance(workflow_id, str) or not workflow_id:
             raise ValueError(f"submit_batch() requires a non-empty workflow_id string, got {workflow_id!r}.")
+        # Every child id is composed from this one, so a reserved character
+        # here poisons the WHOLE manifest, not one item.
+        _validate_workflow_id_char(workflow_id, verb="submit_batch")
         if tolerance is not None and not isinstance(tolerance, BatchTolerance):
             raise TypeError(f"submit_batch() tolerance must be a BatchTolerance or None, got {type(tolerance).__name__}.")
         _validate_recovery_cap(recovery_cap)
@@ -591,10 +620,15 @@ class Host:
                 JSON-safe scalar value becomes the logical item key. The
                 field may be manifest-only: if it is not a graph boundary
                 input, it keys the Batch but is not passed to child Runs.
-                Missing, empty, non-scalar, and duplicate keys are refused
-                before acceptance (``ItemKeyError``) — a generated map
-                index is never durable identity.
-            workflow_id: Required explicit Batch id (dedup identity).
+                Missing, empty, non-scalar, duplicate, and ``"/"``-bearing
+                keys are refused before acceptance (``ItemKeyError``) — a
+                generated map index is never durable identity, and a key
+                that cannot compose this item's child workflow id
+                (``"<batch workflow_id>:<item key>"``) would be work no
+                worker could ever claim.
+            workflow_id: Required explicit Batch id (dedup identity). It
+                composes every child id, so it may not contain ``"/"``
+                either.
             tolerance: Optional ``BatchTolerance`` pinned into the manifest
                 (part of the dedup fingerprint). Once failure-equivalent
                 children strictly exceed either threshold the Batch trips:

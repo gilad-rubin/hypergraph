@@ -362,6 +362,7 @@ class TestIdentity:
             ({"work_item_id": ["a", True]}, "a bool"),
             ({"work_item_id": ["a", ["x"]]}, "a list"),
             ({"work_item_id": ["a", "a"]}, "duplicate item key"),
+            ({"work_item_id": ["a", "shard/1"]}, "reserved"),
         ],
     )
     async def test_invalid_and_duplicate_keys_are_refused_before_acceptance(self, home, values, match):
@@ -391,6 +392,88 @@ class TestIdentity:
         host = serve(graph, home=home, deployment_version="v1")
         with pytest.raises(TypeError, match="identity"):
             await host.submit_batch(graph, {"work_item_id": ["a"]}, map_over="work_item_id", workflow_id="drop-nokey")
+
+
+# === 4b. Accepted work is executable work: no id no worker can claim ===
+
+
+class TestAcceptedIdsAreExecutable:
+    """An accepted submission must be one a worker could actually claim.
+
+    The bug this pins (friction 2026-08-10): a Batch item key containing
+    ``"/"`` was accepted, written into the manifest, and then never claimed
+    by anybody. The runner reserves ``"/"`` for hierarchical run ids
+    (``"<parent>/<node>"``), and the composed child id
+    ``"<batch workflow_id>:<item key>"`` inherited the character — so
+    ``validate_workflow_id`` raised inside the worker THREAD, long past
+    acceptance. The submission stayed ``claimed``, the item read ``queued``
+    forever, and the Batch never rested: indistinguishable from a slow
+    worker, with no error, no dead letter, and no diagnostic anywhere.
+
+    The refusal is loud rather than an escape on purpose. An escaped key
+    would round-trip differently in every keyed outcome, view, and rerun
+    selector — the caller would never read back the key it submitted.
+    """
+
+    async def test_an_item_key_that_cannot_compose_a_child_id_is_refused(self, home):
+        graph = ingestion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+
+        with pytest.raises(ItemKeyError) as excinfo:
+            await submit_ids(host, graph, ["work-clean", "tenant/work-boom"], "drop-slash")
+
+        message = str(excinfo.value)
+        assert "'tenant/work-boom'" in message  # the offending key, verbatim
+        assert "'/'" in message and "reserved" in message  # and why
+        assert "How to fix:" in message
+        assert excinfo.value.identity == "work_item_id"
+        # Refused before acceptance: the CLEAN sibling was not accepted either.
+        assert await host.client.list(RunQuery()) == []
+
+    async def test_a_batch_workflow_id_that_cannot_compose_child_ids_is_refused(self, home):
+        """The same defect one level up: it poisons every child, not one item."""
+        graph = ingestion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+
+        with pytest.raises(ValueError, match="workflow_id cannot contain '/'"):
+            await submit_ids(host, graph, ["work-a", "work-b"], "drops/2026-08-10")
+
+        assert await host.client.list(RunQuery()) == []
+
+    async def test_a_run_workflow_id_that_no_runner_would_execute_is_refused(self, home):
+        """``submit`` shares the defect: the refusal used to land at run time."""
+        graph = ingestion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+
+        with pytest.raises(ValueError, match="workflow_id cannot contain '/'"):
+            await host.submit(graph, {"work_item_id": "work-a"}, workflow_id="tenant/work-a")
+        with pytest.raises(ValueError, match="workflow_id cannot contain '/'"):
+            host.submit_sync(graph, {"work_item_id": "work-a"}, workflow_id="tenant/work-a")
+
+        assert await host.client.list(RunQuery()) == []
+
+    async def test_every_accepted_child_id_is_a_run_id_a_worker_can_execute(self, home):
+        """The invariant the refusal buys — and how NARROW it is.
+
+        Only the reserved character is refused. Markup, colons, spaces, and
+        non-ASCII all still key items verbatim, and each composed child id
+        passes the runner's own gate: what this Home accepted, a worker can
+        claim.
+        """
+        from hypergraph.runners._shared.state_restore import validate_workflow_id
+
+        graph = ingestion_graph()
+        host = serve(graph, home=home, deployment_version="v1")
+        keys = ["<img onerror=alert(1)> & co -boom", "ns:work-b12", "work c 3", "מסמך-4"]
+
+        receipt = await submit_ids(host, graph, keys, "drop-hostile")
+
+        view = await host.client.get(receipt.batch_ref)
+        assert list(view.items) == keys  # every key round-trips verbatim
+        for key in keys:
+            child_id = view.items[key].run_ref.run_id
+            assert child_id == f"drop-hostile:{key}"
+            validate_workflow_id(child_id, None)  # would raise on a reserved character
 
 
 # === 5. Every submission refusal is actionable ===

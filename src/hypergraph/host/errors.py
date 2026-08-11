@@ -216,6 +216,11 @@ class ItemKeyError(HostError):
     completion never make an item anonymous. A missing, empty, non-scalar,
     or duplicated key is refused before acceptance — never silently
     replaced by a generated map index.
+
+    So is a key carrying ``"/"``: the key becomes this item's child workflow
+    id, where ``"/"`` is reserved for hierarchy. Escaping it would make the
+    key read back differently in every keyed outcome, and accepting it would
+    accept work no worker can ever claim.
     """
 
     def __init__(self, identity: str, message: str) -> None:
