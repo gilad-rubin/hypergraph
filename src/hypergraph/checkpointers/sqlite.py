@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import threading
+import time
 import uuid
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
@@ -90,6 +91,9 @@ _RETENTION_BASELINE_NODE_TYPE = "RetentionBaseline"
 #: because another worker happened to be mid-write.
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 _BUSY_TIMEOUT_PRAGMA = f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}"
+#: How often the WAL conversion re-tries while another connection holds the
+#: database lock. See ``_ensure_wal`` for why it cannot simply wait.
+_WAL_RETRY_INTERVAL = 0.01
 _PUBLIC_STEP_FILTER = f"node_name != '{_RETENTION_BASELINE_NODE_NAME}' AND (node_type IS NULL OR node_type != '{_RETENTION_BASELINE_NODE_TYPE}')"
 _PUBLIC_STEP_FILTER_WITH_ALIAS = (
     f"s.node_name != '{_RETENTION_BASELINE_NODE_NAME}' AND (s.node_type IS NULL OR s.node_type != '{_RETENTION_BASELINE_NODE_TYPE}')"
@@ -189,6 +193,35 @@ _ATTEMPT_SERIES_CLOSE_SQL = "UPDATE attempt_series SET closed_at = ?, committed_
 _ATTEMPT_LIVE_SQL = f"SELECT {_ATTEMPT_RECORD_COLS} FROM attempt_records WHERE series_id = ? AND status = 'started' LIMIT 1"
 _ATTEMPT_MAX_NUMBER_SQL = "SELECT COALESCE(MAX(attempt_number), 0) FROM attempt_records WHERE series_id = ?"
 _RUN_EXISTS_SQL = "SELECT 1 FROM runs WHERE id = ?"
+
+
+def _ensure_wal(conn: Any) -> None:
+    """Put the DATABASE in WAL — waiting out another connection's lock.
+
+    ``PRAGMA journal_mode`` is the one statement here that does NOT consult
+    the busy handler: a connection arriving while somebody else holds the
+    database lock is refused on the spot with "database is locked", however
+    long it just said it was willing to wait. That refusal really happened —
+    a second worker on one Run Home died at startup because the first was
+    mid-write — so the wait is spelled out here rather than delegated.
+
+    The mode is a property of the FILE and persists in its header, so an
+    already-WAL database is left alone: nothing to set, no lock to take, and
+    the common case — every connection after the first — costs one read.
+    """
+    import sqlite3
+
+    if str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal":
+        return
+    deadline = time.monotonic() + SQLITE_BUSY_TIMEOUT_MS / 1000
+    while True:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(_WAL_RETRY_INTERVAL)
 
 
 @dataclass(frozen=True, slots=True)
@@ -565,11 +598,66 @@ class SqliteCheckpointer(Checkpointer):
             self._connect_uri = True
         self._serializer = serializer or JsonSerializer()
         self._db: Any = None
-        self._sync_conn: Any = None
-        self._sync_lock = threading.RLock()
+        self._sync_state = threading.local()
+        self._sync_connections: list[tuple[threading.RLock, Any]] = []
+        self._sync_registry_lock = threading.Lock()
+        self._schema_ready = False
         self._init_lock: asyncio.Lock | None = None
         self._async_txn_lock: asyncio.Lock | None = None
         self._aiosqlite = _require_aiosqlite()
+
+    # === The synchronous connection: one per THREAD ===
+    #
+    # A single shared sync connection deadlocked a durable Host. Three
+    # parties, one cycle: an async write transaction holds SQLite's write
+    # lock across its ``await``s (that is what ``_txn_lock`` serializes); the
+    # run executing in a ``to_thread`` worker holds the sync lock and waits
+    # for that write lock; and the event loop then makes one of the
+    # documented synchronous reads (``get_run``, ``state``, ``values``) and
+    # waits for the sync lock. Nothing can commit, so nothing moves until
+    # ``busy_timeout`` expires 30 s later and the RUN fails with "database is
+    # locked" — a run that never executed a node, reported as a failure.
+    #
+    # WAL exists precisely so a reader never waits for a writer; sharing one
+    # connection is what took that away. Per thread, each caller reads its
+    # own snapshot, and cross-thread serialization is SQLite's write lock
+    # alone — the same arbitration two worker PROCESSES on one Home already
+    # rely on. Every multi-statement sync write already opens ``BEGIN
+    # IMMEDIATE``, so no transaction depended on the shared lock for its
+    # atomicity.
+
+    @property
+    def _sync_lock(self) -> threading.RLock:
+        """This thread's re-entrant guard for its own sync connection.
+
+        Re-entrant because sync methods call each other; per thread because a
+        lock shared across threads is the deadlock edge described above.
+        """
+        lock = getattr(self._sync_state, "lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._sync_state.lock = lock
+        return lock
+
+    @property
+    def _sync_conn(self) -> Any:
+        """This thread's sqlite3 connection, or None before first use."""
+        return getattr(self._sync_state, "conn", None)
+
+    @_sync_conn.setter
+    def _sync_conn(self, conn: Any) -> None:
+        self._sync_state.conn = conn
+
+    def _take_sync_connections(self) -> list[tuple[threading.RLock, Any]]:
+        """Detach every thread's connection so the caller can close them."""
+        with self._sync_registry_lock:
+            connections = list(self._sync_connections)
+            self._sync_connections.clear()
+        # A fresh thread-local drops every thread's handle at once; a thread
+        # that reads again after close() lazily opens a new connection,
+        # exactly as it did before its first read.
+        self._sync_state = threading.local()
+        return connections
 
     def __del__(self) -> None:
         """Best-effort cleanup for forgotten checkpointers.
@@ -577,17 +665,25 @@ class SqliteCheckpointer(Checkpointer):
         Tests and callers should still prefer explicit ``await close()``.
         This fallback only exists to avoid unraisable GC-time warnings when an
         async sqlite connection is accidentally dropped without teardown.
+
+        Each connection is closed under its OWNING thread's lock, tried
+        without blocking: a finalizer must never wait on a thread that is
+        mid-read, and a connection it could not take stays registered rather
+        than being forgotten while still open.
         """
-        sync_lock = getattr(self, "_sync_lock", None)
         with contextlib.suppress(Exception):
-            if sync_lock is not None and sync_lock.acquire(blocking=False):
+            with self._sync_registry_lock:
+                registered = list(self._sync_connections)
+            for entry in registered:
+                lock, conn = entry
+                if not lock.acquire(blocking=False):
+                    continue
                 try:
-                    sync_conn = getattr(self, "_sync_conn", None)
-                    if sync_conn is not None:
-                        sync_conn.close()
-                        self._sync_conn = None
+                    conn.close()
+                    with self._sync_registry_lock, contextlib.suppress(ValueError):
+                        self._sync_connections.remove(entry)
                 finally:
-                    sync_lock.release()
+                    lock.release()
 
         db = getattr(self, "_db", None)
         if db is None:
@@ -692,7 +788,11 @@ class SqliteCheckpointer(Checkpointer):
 
             db = await self._aiosqlite.connect(self._connect_path, uri=self._connect_uri)
             try:
-                await db.execute("PRAGMA journal_mode=WAL")
+                # The journal mode is not set here: it belongs to the FILE,
+                # and ``_ensure_sync_schema`` above (or, for ``:memory:``,
+                # below) already put it in WAL. Re-declaring it per
+                # connection took a database-wide lock for no gain — and
+                # that statement does not honour ``busy_timeout``.
                 await db.execute(_BUSY_TIMEOUT_PRAGMA)
                 # For in-memory DBs, schema must be created after async connect
                 # so the shared-cache database stays alive across connections.
@@ -713,23 +813,27 @@ class SqliteCheckpointer(Checkpointer):
         """Set up schema using sync connection (migration logic is sync)."""
         import sqlite3
 
-        with self._sync_lock:
+        with self._sync_registry_lock:
             conn = sqlite3.connect(self._connect_path, uri=self._connect_uri)
             try:
                 conn.execute(_BUSY_TIMEOUT_PRAGMA)
+                _ensure_wal(conn)
                 ensure_schema(conn)
             finally:
                 conn.close()
+            self._schema_ready = True
 
     async def close(self) -> None:
         """Close database connections."""
-        with self._sync_lock:
-            if self._sync_conn is not None:
-                self._sync_conn.close()
-                self._sync_conn = None
+        for lock, conn in self._take_sync_connections():
+            with lock:
+                conn.close()
         if self._db is not None:
             await self._db.close()
             self._db = None
+        # A reopened store re-checks its schema: for ``:memory:`` the shared
+        # cache died with the last connection, so the next one starts empty.
+        self._schema_ready = False
         self._init_lock = None
         self._async_txn_lock = None
 
@@ -1839,30 +1943,40 @@ class SqliteCheckpointer(Checkpointer):
     # === Sync Reads ===
 
     def _sync_db(self):
-        """Open a sync sqlite3 connection (lazy, cached).
+        """This THREAD's sync sqlite3 connection (lazy, cached per thread).
 
         Creates/migrates schema if needed so sync reads work standalone.
+        Per thread, so that WAL's promise holds where it matters: a reader
+        never waits behind another thread's writer (see the deadlock note on
+        ``_sync_lock``).
         """
         with self._sync_lock:
             if self._sync_conn is None:
                 import sqlite3
 
                 # WAL mode allows concurrent readers alongside async writes.
-                # Access is serialized because one cached connection is shared
-                # by background workers and their caller.
                 conn = sqlite3.connect(
                     self._connect_path,
                     uri=self._connect_uri,
                     check_same_thread=False,
                 )
-                conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute(_BUSY_TIMEOUT_PRAGMA)
-                ensure_schema(conn)
+                if not self._schema_ready:
+                    # Schema and journal mode belong to the DATABASE, not to a
+                    # connection: settling them once per thread would take a
+                    # database-wide lock on every new thread to answer a
+                    # question already answered. A sync-only caller that never
+                    # awaited ``initialize`` settles them here instead.
+                    _ensure_wal(conn)
+                    ensure_schema(conn)
+                    self._schema_ready = True
                 # Defense-in-depth for same-store references, mirroring the async
                 # connection. Set after ensure_schema so a v4->v5 table rebuild
                 # runs with foreign keys off.
                 conn.execute("PRAGMA foreign_keys=ON")
                 self._sync_conn = conn
+                with self._sync_registry_lock:
+                    self._sync_connections.append((self._sync_lock, conn))
             return self._sync_conn
 
     def state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:

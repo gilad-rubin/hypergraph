@@ -380,6 +380,29 @@
 
 ### Fixed
 
+- **A durable Run could fail with "database is locked" without executing a
+  single node.** The SQLite store shared ONE synchronous connection across
+  threads, which closed a three-party cycle: the event loop held a
+  `BEGIN IMMEDIATE` open across its `await`s, the Run executing in a
+  `to_thread` worker held the sync lock and waited for that write lock, and
+  the loop then made one of the documented synchronous reads (`get_run`,
+  `state`, `values`, the `*_sync` client mirrors) and waited for the sync
+  lock. Nothing could commit until `busy_timeout` expired thirty seconds
+  later — and it was the RUN that failed, not the reader. Each thread now
+  gets its own connection, so a reader never queues behind another thread's
+  writer, which is what WAL promised all along; cross-thread arbitration is
+  SQLite's write lock alone, the same one two worker processes on one Run
+  Home already rely on.
+
+- **A second worker on a busy Run Home could die at startup with "database
+  is locked".** Every new connection re-declared `PRAGMA journal_mode=WAL`,
+  which takes a database-wide lock and is the one statement that does NOT
+  consult the busy handler — so a connection opened while another was
+  mid-write was refused outright, however long it had just said it was
+  willing to wait. The journal mode belongs to the FILE and persists, so it
+  is now settled once per store (waiting out a genuine conversion) instead
+  of re-declared by every connection.
+
 - **A Batch item key containing `/` was accepted and then never claimed —
   the item read `queued` forever and the Batch never rested.** The child
   workflow id is composed as `<batch workflow_id>:<item key>`, and `/` is
