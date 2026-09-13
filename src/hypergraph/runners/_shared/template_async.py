@@ -41,6 +41,7 @@ from hypergraph.runners._shared.lineage import (
     resolve_existing_run,
     validate_lineage_request,
     validate_map_parent_identity,
+    validate_restorable_history,
 )
 from hypergraph.runners._shared.map_inputs import generate_map_inputs
 from hypergraph.runners._shared.map_resume import (
@@ -384,6 +385,20 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     # should not re-require original graph inputs that were already
                     # consumed by upstream completed steps.
                     skip_missing_input_validation = True
+                    # Retention compaction is the only writer of a baseline
+                    # carrier, so retention="full" pays nothing for this gate.
+                    source_run_id = resume_checkpoint.source_run_id
+                    retention_policy = getattr(checkpointer, "policy", None)
+                    read_raw_steps = getattr(checkpointer, "get_steps", None)
+                    if source_run_id is not None and getattr(retention_policy, "retention", "full") != "full" and callable(read_raw_steps):
+                        validate_restorable_history(
+                            graph=graph,
+                            steps=await read_raw_steps(source_run_id, superstep=resume_checkpoint.source_superstep, show_internal=True),
+                            active_nodes=compute_execution_scope(graph).active_nodes,
+                            workflow_id=workflow_id,
+                            source_run_id=source_run_id,
+                            policy=retention_policy,
+                        )
         except BaseException as error:
             if inspection_transport is not None:
                 inspection_transport.fail_to_start(error)

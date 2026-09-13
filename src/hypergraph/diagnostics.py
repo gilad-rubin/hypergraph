@@ -46,6 +46,7 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     "HG_RETRY_POLICY_CHANGED": f"{_ERRORS_DOC}#hg-retry-policy-changed",
     "HG_ATTEMPT_PERSISTENCE_FAILED": f"{_ERRORS_DOC}#hg-attempt-persistence-failed",
     "HG_RUNNER_POLICY_UNSUPPORTED": f"{_ERRORS_DOC}#hg-runner-policy-unsupported",
+    "HG_COMPACTED_RETENTION": f"{_ERRORS_DOC}#hg-compacted-retention",
 }
 
 
@@ -239,6 +240,7 @@ def _problem_for(code: str, error: BaseException, node_name: str | None) -> str:
         "HG_RUNNER_POLICY_UNSUPPORTED": ("The selected runner cannot execute this node's declared retry/timeout policy."),
         "HG_TIMEOUT_UNSUPPORTED": (f"{where} declares a timeout this runner/callable cannot enforce cooperatively."),
         "HG_RETRY_POLICY_INVALID": ("The declared RetryPolicy is invalid."),
+        "HG_COMPACTED_RETENTION": ("Retention compaction folded away the execution identity this restore would need."),
     }
     return problems[code]
 
@@ -262,6 +264,10 @@ _FIXES: dict[str, tuple[str, ...]] = {
     "HG_RUNNER_POLICY_UNSUPPORTED": ("Run policy-bearing nodes on SyncRunner/AsyncRunner, or use the runner's native options where offered.",),
     "HG_TIMEOUT_UNSUPPORTED": ("Make the node async and await a cancellation-aware client, or configure the client library's own request timeout.",),
     "HG_RETRY_POLICY_INVALID": ("Follow the RetryPolicy constructor error: explicit retry_on Exception types and positive finite timing fields.",),
+    "HG_COMPACTED_RETENTION": (
+        "Use retention='full' or retention='latest' for lineages you fork or resume.",
+        "Or start a new workflow_id and re-run from its inputs instead of restoring this one.",
+    ),
 }
 
 
