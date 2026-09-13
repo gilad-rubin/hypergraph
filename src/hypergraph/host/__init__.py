@@ -7,7 +7,7 @@ code. Tier 0 (direct runner execution) is unchanged.
 
 from hypergraph.host.batch import BatchTolerance
 from hypergraph.host.client import RunHomeClient
-from hypergraph.host.definition import DefinitionId
+from hypergraph.host.definition import DefinitionId, definition_struct_hash
 from hypergraph.host.errors import (
     AlreadyTerminalError,
     BuilderIdentityError,
@@ -79,6 +79,7 @@ __all__ = [
     "BuilderIdentityError",
     "CommandReceipt",
     "DefinitionId",
+    "definition_struct_hash",
     "FollowDeadlineExpired",
     "ForkCompatibilityError",
     "GraphBuilder",

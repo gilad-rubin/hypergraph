@@ -65,7 +65,7 @@ class DefinitionId:
         return cls(name=name, deployment_version=deployment_version, structural_hash=structural_hash)
 
 
-def scope_description(graph: Graph) -> str:
+def narrowing_description(graph: Graph) -> str:
     """Name the narrowing in the caller's own spelling, or ``""``.
 
     A chainable spelling — ``"select('cheap')"``,

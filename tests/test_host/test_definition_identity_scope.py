@@ -12,10 +12,15 @@ What this file falsifies:
 2. `with_entrypoint` travels the same path and is refused the same way.
 3. Serving the narrowed graph is the fix: it is its own Definition, it
    accepts, and its entrypoint really does skip the upstream node.
-4. `submit_batch` and `fork` share `_require_definition`, so one guard covers
+4. A host that serves ONE narrowing and is handed another is told what it
+   actually serves — "drop the select()" would be wrong advice there.
+5. `submit_batch` and `fork` share `_require_definition`, so one guard covers
    all three new-work/migration verbs.
-5. An unmodified graph's Definition hash is still its `structural_hash` —
+6. An unmodified graph's Definition hash is still its `structural_hash` —
    every already-stored submission keeps resolving.
+7. The documented upgrade path for a host that serves a narrowed graph:
+   already-stored work parks as VERSION_INCOMPATIBLE and drains under the
+   unnarrowed Definition, whose identity never moved.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ import pytest
 
 from hypergraph import (
     AsyncRunner,
+    DefinitionId,
     Graph,
     RunQuery,
     UnservedGraphError,
@@ -31,8 +37,8 @@ from hypergraph import (
     serve,
 )
 from hypergraph.checkpointers.types import WorkflowStatus
-from hypergraph.host.definition import definition_struct_hash
-from tests.test_host._batch_interrupt import worker
+from hypergraph.host import WaitingCondition, definition_struct_hash
+from tests.test_host._batch_interrupt import until, worker
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -106,6 +112,52 @@ class TestSelectionIsDefinitionIdentity:
         assert receipt.duplicate is False
 
 
+class TestTheRefusalNamesBothNarrowings:
+    async def test_a_differently_narrowed_graph_is_told_what_the_host_serves(self, home):
+        """ "Drop the select()" would be wrong: the served one is narrowed too."""
+        ledger: list[str] = []
+        full = pipeline(ledger)
+        host = serve(full.select("cheap"), home=home, deployment_version="v1")
+
+        with pytest.raises(UnservedGraphError) as excinfo:
+            await host.submit(full.select("costly"), {"x": 1})
+
+        message = str(excinfo.value)
+        assert "narrowed by select('costly')" in message, message
+        assert "served one is narrowed by select('cheap')" in message, message
+        assert "graph.select('cheap')" in message, "the fix names the narrowing this host serves"
+        assert "Dropping the select('costly') will not match" in message
+
+    async def test_an_unnarrowed_graph_against_a_narrowed_host_says_so(self, home):
+        ledger: list[str] = []
+        full = pipeline(ledger)
+        host = serve(full.with_entrypoint("costly"), home=home, deployment_version="v1")
+
+        with pytest.raises(UnservedGraphError) as excinfo:
+            await host.submit(full, {"x": 1})
+
+        message = str(excinfo.value)
+        assert "this Graph is not narrowed and the served Definition is narrowed by with_entrypoint('costly')" in message, message
+        assert "graph.with_entrypoint('costly')" in message
+
+    async def test_a_drifted_topology_still_reads_as_drift_not_as_narrowing(self, home):
+        """Narrowing is only named when the topology matches: no half-truths."""
+        ledger: list[str] = []
+        host = serve(pipeline(ledger), home=home, deployment_version="v1")
+
+        @node(output_name="cheap")
+        def other(x: int) -> int:
+            return x
+
+        drifted = Graph([other], name="pipeline").with_runner(AsyncRunner())
+        with pytest.raises(UnservedGraphError) as excinfo:
+            await host.submit(drifted.select("cheap"), {"x": 1})
+
+        message = str(excinfo.value)
+        assert "narrowed by" not in message, message
+        assert "A changed topology is a new Definition" in message
+
+
 class TestEntrypointIsDefinitionIdentity:
     async def test_an_entrypoint_graph_is_refused_against_its_unrestricted_twin(self, home):
         ledger: list[str] = []
@@ -175,3 +227,56 @@ class TestUnmodifiedGraphsKeepTheirIdentity:
         receipt = await host.submit(full, {"x": 1}, workflow_id="unmodified")
         view = await host.client.get(receipt.run_ref)
         assert view.definition_id.structural_hash == full.structural_hash
+
+
+class TestComputingThePinnedHash:
+    async def test_the_public_helper_is_what_a_submission_pins(self, home):
+        ledger: list[str] = []
+        narrowed = pipeline(ledger).with_entrypoint("costly")
+        host = serve(narrowed, home=home, deployment_version="v1")
+
+        receipt = await host.submit(narrowed, {"cheap": 2}, workflow_id="pinned")
+        view = await host.client.get(receipt.run_ref)
+        assert view.definition_id.structural_hash == definition_struct_hash(narrowed)
+        assert view.definition_id.structural_hash != narrowed.structural_hash
+
+    async def test_accepts_takes_the_definition_hash_and_says_so_when_it_does_not(self, home):
+        ledger: list[str] = []
+        narrowed = pipeline(ledger).with_entrypoint("costly")
+
+        # The documented way to build a prior identity.
+        prior = DefinitionId("pipeline", "v0", definition_struct_hash(narrowed))
+        serve(narrowed, home=home, deployment_version="v1", accepts=(prior,))
+
+        # The unnarrowed hash is the mistake this now names.
+        with pytest.raises(ValueError, match=r"definition_struct_hash\(graph\)") as excinfo:
+            serve(narrowed, home=home, deployment_version="v1", accepts=(DefinitionId("pipeline", "v0", narrowed.structural_hash),))
+        assert "narrowing is part of Definition identity" in str(excinfo.value)
+
+
+class TestUpgradingAHostThatServesANarrowedGraph:
+    async def test_stored_work_parks_version_incompatible_and_drains_unnarrowed(self, home):
+        """The migration paragraph in docs/06-api-reference/host.md, run."""
+        ledger: list[str] = []
+        legacy_host = serve(pipeline(ledger), home=home, deployment_version="v1")
+        receipt = await legacy_host.submit(pipeline(ledger), {"x": 1}, workflow_id="legacy-1")
+        assert (await legacy_host.client.get(receipt.run_ref)).definition_id.structural_hash == pipeline(ledger).structural_hash
+
+        # Upgrade: the same deployment now serves the narrowed graph.
+        upgraded = serve(pipeline(ledger).with_entrypoint("costly"), home=home, deployment_version="v1")
+
+        async def parked_view():
+            view = await upgraded.client.get(receipt.run_ref)
+            return view if view.waiting is WaitingCondition.VERSION_INCOMPATIBLE else None
+
+        async with worker(upgraded, "w-upgraded"):
+            parked = await until(parked_view)
+        assert parked.waiting is WaitingCondition.VERSION_INCOMPATIBLE
+        assert parked.status is None and ledger == [], "parked, never lost, never executed"
+
+        # The documented drain: the unnarrowed Definition's identity never moved.
+        drain_host = serve(pipeline(ledger), home=home, deployment_version="v1")
+        async with worker(drain_host, "w-drain"):
+            drained = await drain_host.client.follow(receipt.run_ref, deadline=30)
+        assert drained.status is WorkflowStatus.COMPLETED
+        assert ledger == ["cheap", "costly"], "it runs unnarrowed — what the old identity could not say"

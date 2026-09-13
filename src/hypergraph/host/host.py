@@ -40,7 +40,7 @@ from hypergraph.host._batch_store import BatchAcceptance, DefinitionPin
 from hypergraph.host._bus import _BusEventProcessor, _PreviewBus, _register_bus
 from hypergraph.host.batch import BatchTolerance, MapMode, expand_batch_items, freeze_batch_items
 from hypergraph.host.client import RunHomeClient
-from hypergraph.host.definition import DefinitionId, definition_struct_hash, scope_description
+from hypergraph.host.definition import DefinitionId, definition_struct_hash, narrowing_description
 from hypergraph.host.errors import (
     BuilderIdentityError,
     ForkCompatibilityError,
@@ -849,11 +849,17 @@ class Host:
             if built.definition_id != pinned:
                 raise BuilderIdentityError(builder.key, pinned, built.definition_id)
             return built
+        # A narrowing difference is only worth naming when the TOPOLOGY
+        # matches: if the nodes and edges drifted too, that is the bigger
+        # news, and "it is narrowed differently" would be a half-truth.
+        served_graph = definition.graph if definition is not None else None
+        same_topology = served_graph is not None and served_graph.structural_hash == graph.structural_hash
         raise UnservedGraphError(
             graph.name or "",
             struct_hash,
             {name: served.struct_hash for name, served in self._definitions.items()},
-            scope=scope_description(graph),
+            narrowing=narrowing_description(graph) if same_topology else "",
+            served_narrowing=narrowing_description(served_graph) if same_topology and served_graph is not None else "",
         )
 
     def _build_definition(self, builder: _BuilderAddress) -> _Definition:
@@ -1403,7 +1409,10 @@ def _validate_accepts(accepts: tuple[DefinitionId, ...], definitions: dict[str, 
         if entry.structural_hash != served.struct_hash:
             raise ValueError(
                 f"serve() accepts= entry {entry.to_dict()!r} pins structural_hash {entry.structural_hash!r}, but the served "
-                f"Definition {entry.name!r} has hash {served.struct_hash!r}. accepts= requires structural compatibility (ADR 0007)."
+                f"Definition {entry.name!r} has hash {served.struct_hash!r}. accepts= requires structural compatibility (ADR 0007).\n\n"
+                "How to fix: compute the hash with definition_struct_hash(graph) — for a graph narrowed by select() or "
+                "with_entrypoint() that is NOT graph.structural_hash, because the narrowing is part of Definition identity. "
+                "accepts= declares a prior deployment_version of the same structure, never a different structure."
             )
 
 
@@ -1447,9 +1456,11 @@ def serve(
             submission only when its pinned identity matches a served
             Definition exactly or one of these declarations. Every entry is
             validated structurally at serve() time: it must name a Definition
-            this host serves and its ``structural_hash`` must equal the
-            served Definition's hash — anything else is a ``ValueError``
-            (an undrainable declaration would park submissions forever).
+            this host serves and its ``structural_hash`` must equal that
+            Definition's pinned hash — ``definition_struct_hash(graph)``,
+            which for a narrowed graph is not ``graph.structural_hash`` —
+            and anything else is a ``ValueError`` (an undrainable
+            declaration would park submissions forever).
         event_processors: Processors this deployment adds to **every**
             durable Run the worker executes, whichever Definition it belongs
             to and whichever runner that Definition carries. The seam an
