@@ -130,7 +130,7 @@ Practical mental model:
 - `scheduling.py` — Active-scope computation, SCC planning, frontier scheduling, and interrupt batching
 - `state.py` — Execution context, capabilities, pause exception, and graph state
 - `state_restore.py` — Fresh/checkpoint state initialization, coercion, and workflow IDs
-- `template_sync.py` / `template_async.py` — Template Method base for runner lifecycle. Threads runtime select, entrypoint config, and checkpoint semantics into validation and execution.
+- `template_sync.py` / `template_async.py` — Template Method base for runner lifecycle. Threads runtime select, entrypoint config, and checkpoint semantics into validation and execution. `template_sync.py` is generated from `template_async.py` by `scripts/gen_sync.py`; CI's lint job fails on drift.
 - `types.py` — One-release compatibility re-exports for the canonical `results.py` and `state.py` owners
 - `validation.py` — Runner-level validation, runtime select resolution, InputSpec scoping
 - `value_resolution.py` — Input addressing, availability, precedence, and collection

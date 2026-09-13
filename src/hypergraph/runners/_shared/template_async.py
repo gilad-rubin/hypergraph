@@ -110,6 +110,7 @@ if TYPE_CHECKING:
     from hypergraph.runners._shared.validation import _InputValidationContext
 
 
+# sync:skip-start: fan-out budgets — a sync map runs items one at a time, so neither cap exists there
 MAX_UNBOUNDED_MAP_TASKS = 10_000
 # Default streaming concurrency for map_iter when the caller doesn't pass one.
 # Unlike map(), map_iter is bounded by design, so an absent limit means a modest
@@ -117,10 +118,11 @@ MAX_UNBOUNDED_MAP_TASKS = 10_000
 _DEFAULT_STREAM_CONCURRENCY = 16
 
 
+# sync:skip-end
 class AsyncRunnerTemplate(BaseRunner, ABC):
     """Template implementation for async run/map lifecycle."""
 
-    _accepts_checkpoint_error_sink: ClassVar[Literal[True]] = True
+    _accepts_checkpoint_error_sink: ClassVar[Literal[True]] = True  # sync:skip: only the async engine saves steps in the background
 
     @property
     @abstractmethod
@@ -145,7 +147,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         graph: Graph,
         values: dict[str, Any],
         max_iterations: int,
-        max_concurrency: int | None,
+        max_concurrency: int | None,  # sync:skip: a sync engine has no concurrency budget to spend
         *,
         dispatcher: EventDispatcher,
         run_id: str,
@@ -154,16 +156,21 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         workflow_id: str | None = None,
         checkpoint: Checkpoint | None = None,
         step_buffer: list[Any] | None = None,
-        checkpoint_save_errors: list[str] | None = None,
+        checkpoint_save_errors: list[str] | None = None,  # sync:skip: only background step-saves can fail out of band
         _complete_on_stop: bool = False,
         item_index: int | None = None,
     ) -> GraphState:
+        # sync:only-start: the sink the paragraph below documents does not exist in the sync signature
+        # """Execute graph and return final state."""
+        # sync:only-end
+        # sync:skip-start: same, the async docstring documents an async-only parameter
         """Execute graph and return final state.
 
         ``checkpoint_save_errors`` is a caller-owned sink: implementations
         append string reprs of background step-save failures (durability
         "async") so the template can surface them on the RunResult.
         """
+        # sync:skip-end
         ...
 
     @abstractmethod
@@ -215,6 +222,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         """Shut down dispatcher."""
         ...
 
+    # sync:skip-start: the shared limiter is an asyncio.Semaphore; sequential sync execution needs no budget
     @abstractmethod
     def _get_concurrency_limiter(self) -> Any:
         """Get current shared concurrency limiter."""
@@ -230,6 +238,30 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         """Reset shared concurrency limiter using token."""
         ...
 
+    # sync:skip-end
+    # sync:only-start: a sync run must never require an event loop, so it needs the checkpointer's sync half
+    # def _get_sync_checkpointer(self, workflow_id: str | None) -> Any:
+    #     """Return sync checkpointer if workflow_id is provided, else None.
+    #
+    #     Validates that the checkpointer supports sync writes via the
+    #     SyncCheckpointerProtocol.
+    #     """
+    #     checkpointer = self._checkpointer
+    #     if checkpointer is None or workflow_id is None:
+    #         return None
+    #
+    #     from hypergraph.checkpointers.protocols import SyncCheckpointerProtocol
+    #
+    #     if not isinstance(checkpointer, SyncCheckpointerProtocol):
+    #         raise TypeError(
+    #             f"{type(checkpointer).__name__} does not support sync writes "
+    #             f"(missing SyncCheckpointerProtocol). SyncRunner requires a checkpointer "
+    #             f"that implements create_run_sync/save_step_sync/update_run_status_sync. "
+    #             f"SqliteCheckpointer supports this."
+    #         )
+    #     return checkpointer
+    #
+    # sync:only-end
     async def run(
         self,
         graph: Graph,
@@ -239,7 +271,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
-        max_concurrency: int | None = None,
+        max_concurrency: int | None = None,  # sync:skip: sync runs one node at a time; there is no budget to set
         inspect: bool = False,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
@@ -256,7 +288,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         _resume_seed_values: dict[str, Any] | None = None,
         _complete_on_stop: bool = False,
         _item_index: int | None = None,
-        _checkpoint_error_sink: CheckpointErrorSink | None = None,
+        _checkpoint_error_sink: CheckpointErrorSink | None = None,  # sync:skip: nothing saves steps off the calling thread in sync
         _reservation: _WorkflowReservation | None = None,
         _inspection_session: InspectionSession | None = None,
         _inspection_transport: NotebookInspectionTransport | None = None,
@@ -264,10 +296,12 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
+        # sync:skip-start: runner-level max_concurrency / event_processors defaults are an AsyncRunner constructor feature
         if max_concurrency is None:
             max_concurrency = getattr(self, "_max_concurrency", None)
         if _parent_span_id is None and _parent_run_id is None:
             event_processors = [*getattr(self, "_event_processors", ()), *(event_processors or [])]
+        # sync:skip-end
         if not isinstance(inspect, bool):
             raise TypeError(
                 f"inspect must be a bool, got {type(inspect).__name__}.\n\n"
@@ -298,7 +332,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             except Exception:
                 inspection_transport = None
         try:
-            validate_max_concurrency(max_concurrency)
+            validate_max_concurrency(max_concurrency)  # sync:skip: no max_concurrency parameter to validate
             run_option_names = runner_option_names(self.run)
             map_option_names = runner_option_names(self.map)
             validation_ctx = _validation_ctx
@@ -333,6 +367,27 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 inspection_transport.fail_to_start(error)
             raise
 
+        # sync:only-start: acquiring the checkpointer's sync half can raise TypeError, so it happens inside a try that reports to the transport
+        # try:
+        #     if self._checkpointer is not None and _validation_ctx is None and workflow_id is None and fork_from is None:
+        #         workflow_id = generate_workflow_id()
+        #     sync_checkpointer_key = workflow_id
+        #     if sync_checkpointer_key is None:
+        #         sync_checkpointer_key = fork_from if fork_from is not None else retry_from
+        #     sync_cp = self._get_sync_checkpointer(sync_checkpointer_key)
+        #     if _validation_ctx is None and (fork_from is not None or retry_from is not None) and sync_cp is None:
+        #         raise ValueError("fork_from/retry_from require a checkpointer and workflow persistence to be enabled.")
+        # except BaseException as error:
+        #     if inspection_transport is not None:
+        #         inspection_transport.fail_to_start(error)
+        #     raise
+        # resume_checkpoint = None
+        # resume_action = ResumeAction.START_NEW
+        # skip_missing_input_validation = False
+        # try:
+        #     if sync_cp is not None and _validation_ctx is None:
+        # sync:only-end
+        # sync:skip-start: the async half needs no protocol check, so one try covers acquisition and lineage
         try:
             checkpointer = self._checkpointer
             if _validation_ctx is None and (fork_from is not None or retry_from is not None) and checkpointer is None:
@@ -343,6 +398,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             if checkpointer is not None and _validation_ctx is None:
                 if workflow_id is None and fork_from is None:
                     workflow_id = generate_workflow_id()
+                # sync:skip-end
                 validate_lineage_request(
                     checkpoint=checkpoint,
                     fork_from=fork_from,
@@ -507,7 +563,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         dispatcher = None
         run_row_created = False
         step_buffer: list[Any] = []
-        checkpoint_save_errors: list[str] = []
+        checkpoint_save_errors: list[str] = []  # sync:skip: a sync step-save raises inline, so there is nothing to collect
 
         async def settle_created_run_failed() -> None:
             if not run_row_created:
@@ -531,8 +587,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             parent_span_id=_parent_span_id,
             shutdown_dispatcher=self._shutdown_dispatcher_async,
             settle_run_row=settle_created_run_failed,
-            checkpoint_error_sink=_checkpoint_error_sink,
-            checkpoint_errors=lambda: checkpoint_save_errors,
+            checkpoint_error_sink=_checkpoint_error_sink,  # sync:skip: RunTeardown has no sink to forward
+            checkpoint_errors=lambda: checkpoint_save_errors,  # sync:skip: RunTeardown has no sink to forward
         )
 
         try:
@@ -604,7 +660,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     graph,
                     normalized_values,
                     max_iter,
-                    max_concurrency,
+                    max_concurrency,  # sync:skip: the sync engine takes no concurrency budget
                     dispatcher=dispatcher,
                     run_id=run_id,
                     run_span_id=run_span_id,
@@ -612,7 +668,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     workflow_id=workflow_id,
                     checkpoint=resume_checkpoint,
                     step_buffer=step_buffer,
-                    checkpoint_save_errors=checkpoint_save_errors,
+                    checkpoint_save_errors=checkpoint_save_errors,  # sync:skip: the sync engine has no background saves to report
                     _complete_on_stop=_complete_on_stop,
                     item_index=_item_index,
                 )
@@ -681,7 +737,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 run_id=run_id,
                 workflow_id=workflow_id,
                 log=collector.build(graph.name, run_id, total_duration_ms),
-                checkpoint_errors=checkpoint_save_errors,
+                checkpoint_errors=checkpoint_save_errors,  # sync:skip: no background saves, so no errors to surface
                 inspection=inspection,
             )
         except PauseExecution as pause:
@@ -689,7 +745,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             total_duration_ms = (time.time() - start_time) * 1000
             try:
-                _validate_pause_options_have_routes(graph, pause.pause_info, partial_state)
+                _validate_pause_options_have_routes(graph, pause.pause_info, partial_state)  # sync:skip: no sync interrupt executor exists to pause
                 if dispatcher.active:
                     from hypergraph.events.types import InterruptEvent
 
@@ -727,7 +783,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     # buffered, and the PAUSED transition commit as ONE unit,
                     # and the paused step is never written after the slot: no
                     # reader ever sees a committed paused run whose question
-                    # is missing (PRD 0010).
+                    # is missing (PRD 0010). The generated sync template commits
+                    # the same way; no shipped sync runner declares
+                    # ``supports_interrupts`` yet, so that half stays
+                    # unexercised in-tree, and generation is what keeps it from
+                    # drifting when one does.
                     await commit_pause_async(
                         checkpointer,
                         graph,
@@ -750,7 +810,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 workflow_id=workflow_id,
                 pause=pause.pause_info,
                 log=collector.build(graph.name, run_id, total_duration_ms),
-                checkpoint_errors=checkpoint_save_errors,
+                checkpoint_errors=checkpoint_save_errors,  # sync:skip: no background saves, so no errors to surface
                 inspection=inspection,
             )
         except Exception as e:
@@ -825,7 +885,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 error=error,
                 node_failures=node_failures,
                 log=collector.build(graph.name, run_id, total_duration_ms),
-                checkpoint_errors=checkpoint_save_errors,
+                checkpoint_errors=checkpoint_save_errors,  # sync:skip: no background saves, so no errors to surface
                 inspection=inspection,
             )
         except BaseException as error:
@@ -851,7 +911,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         select: str | list[str] = SELECT_UNSET,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
-        max_concurrency: int | None = None,
+        max_concurrency: int | None = None,  # sync:skip: sync map is sequential; there is no budget to set
         inspect: bool = False,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
@@ -860,7 +920,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         _parent_span_id: str | None = None,
         _parent_run_id: str | None = None,
         _item_index: int | None = None,
-        _checkpoint_error_sink: CheckpointErrorSink | None = None,
+        _checkpoint_error_sink: CheckpointErrorSink | None = None,  # sync:skip: nothing saves steps off the calling thread in sync
         _reservation: _WorkflowReservation | None = None,
         _inspection_session: InspectionSession | None = None,
         _inspection_transport: NotebookInspectionTransport | None = None,
@@ -868,10 +928,12 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
+        # sync:skip-start: runner-level max_concurrency / event_processors defaults are an AsyncRunner constructor feature
         if max_concurrency is None:
             max_concurrency = getattr(self, "_max_concurrency", None)
         if _parent_span_id is None and _parent_run_id is None:
             event_processors = [*getattr(self, "_event_processors", ()), *(event_processors or [])]
+        # sync:skip-end
         if not isinstance(inspect, bool):
             raise TypeError(
                 f"inspect must be a bool, got {type(inspect).__name__}.\n\n"
@@ -906,7 +968,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             except Exception:
                 inspection_transport = None
         try:
-            validate_max_concurrency(max_concurrency)
+            validate_max_concurrency(max_concurrency)  # sync:skip: no max_concurrency parameter to validate
             run_option_names = runner_option_names(self.run)
             map_option_names = runner_option_names(self.map)
             validate_error_handling(error_handling)
@@ -943,6 +1005,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             validate_runner_compatibility(graph, self.capabilities)
             validate_node_types(graph, self.supported_node_types)
             validate_delegated_runners(graph, self.capabilities)
+            # sync:only-start: the protocol check can raise TypeError, which belongs to this pre-flight try
+            # sync_cp = self._get_sync_checkpointer(workflow_id)
+            # sync:only-end
         except BaseException as error:
             if inspection_transport is not None:
                 inspection_transport.fail_to_start(error)
@@ -997,6 +1062,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     ),
                 )
             return map_result
+        # sync:skip-start: nothing fans out in a sync map, so there is no unbounded fan-out to cap and no background saves to collect
         if max_concurrency is None and len(input_variations) > MAX_UNBOUNDED_MAP_TASKS:
             error = ValueError(
                 f"Too many map tasks without a concurrency limit: {len(input_variations)}. "
@@ -1005,6 +1071,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             inspection_settlement.abort(error, unstarted_item_indexes=tuple(range(len(input_variations))))
             raise error
         item_checkpoint_errors: list[list[str]] = [[] for _ in input_variations]
+        # sync:skip-end
 
         try:
             reservation = _reservation or self._active_workflows.reserve(workflow_id)
@@ -1012,7 +1079,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             inspection_settlement.abort(error, unstarted_item_indexes=tuple(range(len(input_variations))))
             raise
         dispatcher = None
-        checkpointer = self._checkpointer
+        checkpointer = self._checkpointer  # sync:skip: the sync half was acquired in the pre-flight try above
         has_checkpointer = checkpointer is not None and workflow_id is not None
         parent_run_row_created = False
         claimed_indexes: set[int] = set()
@@ -1037,9 +1104,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             parent_span_id=_parent_span_id,
             shutdown_dispatcher=self._shutdown_dispatcher_async,
             settle_run_row=settle_created_parent_run_failed,
-            checkpoint_error_sink=_checkpoint_error_sink,
-            checkpoint_errors=lambda: [message for messages in item_checkpoint_errors for message in messages],
-            release_concurrency_limiter=self._reset_concurrency_limiter,
+            checkpoint_error_sink=_checkpoint_error_sink,  # sync:skip: RunTeardown has no sink to forward
+            checkpoint_errors=lambda: [message for messages in item_checkpoint_errors for message in messages],  # sync:skip: same
+            release_concurrency_limiter=self._reset_concurrency_limiter,  # sync:skip: no limiter was installed
         )
 
         try:
@@ -1091,10 +1158,12 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             completed_runs = await _get_completed_child_runs(checkpointer, workflow_id)
             completed_by_signature, completed_legacy_by_index = index_completed_child_runs(completed_runs, workflow_id)
 
+            # sync:skip-start: the shared limiter is a budget for concurrent items; sync has none to install
             existing_limiter = self._get_concurrency_limiter()
             teardown.adopt_limiter(
                 self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
             )
+            # sync:skip-end
             map_stop_signal = get_stop_signal()
         except BaseException as error:
             try:
@@ -1154,7 +1223,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     select=select,
                     on_missing=on_missing,
                     entrypoint=entrypoint,
-                    max_concurrency=max_concurrency,
+                    max_concurrency=max_concurrency,  # sync:skip: run() takes no concurrency budget in sync
                     inspect=owns_inspection,
                     error_handling="continue",
                     event_processors=event_processors,
@@ -1165,7 +1234,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     _validation_ctx=ctx,
                     _run_config=({MAP_SIGNATURE_CONFIG_KEY: item_signature} if item_signature is not None else None),
                     _item_index=idx,
+                    # sync:skip-start: no background saves per item, so there is nothing to route to a sink
                     _checkpoint_error_sink=(item_checkpoint_errors[idx].append if _checkpoint_error_sink is not None else None),
+                    # sync:skip-end
                     _inspection_session=child_inspection_session,
                     _inspection_path=_inspection_path,
                 )
@@ -1182,6 +1253,19 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         terminal_error: BaseException | None = None
         try:
+            # sync:only-start: sync map is sequential and fail-fast — that is user-visible behavior, not an implementation detail
+            # for idx, variation_inputs in enumerate(input_variations):
+            #     if map_stop_signal is not None and map_stop_signal.is_set:
+            #         break
+            #     result = _run_map_item(idx, variation_inputs)
+            #     results.append(result)
+            #     if error_handling == "raise" and result.status == RunStatus.FAILED:
+            #         error = result.error
+            #         assert error is not None, "FAILED status requires an error"
+            #         with _failure_evidence_context(error, result.node_failures):
+            #             raise error from None
+            # sync:only-end
+            # sync:skip-start: concurrent fan-out (gather, then a bounded worker queue) has no sequential counterpart
             if max_concurrency is None:
                 if map_stop_signal is None or not map_stop_signal.is_set:
                     tasks = [_run_map_item(idx, v) for idx, v in enumerate(input_variations)]
@@ -1237,6 +1321,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                             assert error is not None, "FAILED status requires an error"
                             with _failure_evidence_context(error, result.node_failures):
                                 raise error from None
+            # sync:skip-end
 
             total_duration_ms = (time.time() - start_time) * 1000
             unstarted_item_indexes = (
@@ -1368,10 +1453,22 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         select: str | list[str] = SELECT_UNSET,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
-        max_concurrency: int | None = None,
+        max_concurrency: int | None = None,  # sync:skip: sync map_iter is sequential; there is no budget to set
         error_handling: ErrorHandling = "raise",
         **input_values: Any,
     ) -> AsyncIterator[tuple[int, RunResult]]:
+        # sync:only-start: sync streams one item at a time, so it promises order, not completion order
+        # """Stream ``(index, RunResult)`` pairs as each mapped item completes.
+        #
+        # Like :meth:`map`, but yields incrementally instead of buffering a
+        # ``MapResult`` — bounding memory to one item at a time. ``index`` is the
+        # input item's position, so a consumer can correlate a result with its
+        # source item regardless of arrival order. ``error_handling="raise"``
+        # re-raises when a failed item is reached; ``"continue"`` yields the failed
+        # ``RunResult`` and keeps going.
+        # """
+        # sync:only-end
+        # sync:skip-start: same, the async docstring promises backpressure and completion order
         """Stream ``(index, RunResult)`` pairs as each mapped item completes.
 
         Concurrent and backpressured: at most ``max_concurrency`` items run at
@@ -1382,11 +1479,12 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         matches :meth:`map`: ``"raise"`` re-raises when a failed item is reached,
         ``"continue"`` yields the failed ``RunResult`` and keeps going.
         """
+        # sync:skip-end
         run_option_names = runner_option_names(self.run)
         map_option_names = runner_option_names(self.map)
         validate_error_handling(error_handling)
         validate_on_missing(on_missing)
-        validate_max_concurrency(max_concurrency)
+        validate_max_concurrency(max_concurrency)  # sync:skip: no max_concurrency parameter to validate
         effective_selected = resolve_runtime_selected(select, graph)
         ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=effective_selected)
         normalized_values = normalize_inputs(
@@ -1406,6 +1504,32 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
 
+        # sync:only-start: sync map_iter pulls one input variation at a time — a sync run must never require an event loop
+        # # Lazy: pull one input variation at a time so peak memory stays bounded
+        # # by a single item, not the whole batch.
+        # for idx, variation_inputs in enumerate(generate_map_inputs(normalized_values, map_over_list, map_mode, clone)):
+        #     try:
+        #         result = self.run(
+        #             graph,
+        #             variation_inputs,
+        #             select=select,
+        #             on_missing=on_missing,
+        #             entrypoint=entrypoint,
+        #             error_handling="continue",
+        #             show_progress=False,
+        #             _validation_ctx=ctx,
+        #             _item_index=idx,
+        #         )
+        #     except Exception as e:  # per-item validation error (e.g. missing input) → failed row
+        #         result = build_pre_run_failed_result(e)
+        #     if error_handling == "raise" and result.status == RunStatus.FAILED:
+        #         error = result.error
+        #         assert error is not None, "FAILED status requires an error"
+        #         with _failure_evidence_context(error, result.node_failures):
+        #             raise error from None
+        #     yield idx, result
+        # sync:only-end
+        # sync:skip-start: a worker pool, a backpressured queue and a cancelling finally have no sequential counterpart
         # Always stream lazily: workers pull input variations on demand, so peak
         # memory is bounded by the worker pool + result buffer, never the input
         # size. map_iter is backpressured by default (its whole purpose), so an
@@ -1487,6 +1611,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             await asyncio.gather(*workers, closer, return_exceptions=True)
             if token is not None:
                 self._reset_concurrency_limiter(token)
+        # sync:skip-end
 
 
 async def _get_completed_child_runs(
@@ -1503,6 +1628,7 @@ async def _get_completed_child_runs(
     return [run for run in child_runs if run.status == WorkflowStatus.COMPLETED]
 
 
+# sync:skip-start: gate-option validation only runs at a pause, and no sync runner can pause yet
 def _validate_pause_options_have_routes(
     graph: Graph,
     pause_info: PauseInfo,
@@ -1563,3 +1689,6 @@ def _validate_pause_options_have_routes(
                     f"The gate returned {decision!r}; declared targets are {gate.targets!r}.\n\n"
                     f"How to fix: Map that option to a declared route target, or remove it from the question."
                 )
+
+
+# sync:skip-end

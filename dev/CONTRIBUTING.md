@@ -70,7 +70,44 @@ uv run pre-commit run --all-files          # all hooks
 
 # Viz tests
 uv run pytest tests/viz/                   # requires Playwright
+
+# Generated sync runner template (see "The sync template is generated" below)
+uv run python scripts/gen_sync.py          # regenerate after editing template_async.py
+uv run python scripts/gen_sync.py --check  # what CI's lint job runs
 ```
+
+### The sync template is generated
+
+`src/hypergraph/runners/_shared/template_sync.py` is **generated** from
+`template_async.py` by `scripts/gen_sync.py`. Do not hand-edit it: change the
+async template, run the generator, and commit both files. CI's lint job runs
+`--check` and fails with the offending hunk if they disagree.
+
+The transform is `async def` -> `def`, `await x` -> `x`, a rename table for the
+names that genuinely differ (the checkpointer's sync half, `AsyncRunTeardown` ->
+`RunTeardown`, the `_async` / `_sync` hook pairs), and three markers for the
+places where the two halves are not the same code at all:
+
+| marker | meaning |
+|---|---|
+| `# sync:skip: <reason>` | drop this one line from the sync file |
+| `# sync:skip-start: <reason>` … `# sync:skip-end` | drop this region |
+| `# sync:only-start: <reason>` … `# sync:only-end` | emit this commented block as live sync code |
+
+Every marker must carry a reason; the generator refuses one that does not, and
+refuses a `# sync:skip:` suffix left on a statement `ruff format` has wrapped
+across several lines (use a region there).
+
+**The constraint the whole design rests on: a sync run must never require an
+event loop.** That is why the sync half is not a blocking facade over the async
+engine (`asyncio.run` inside a running loop breaks in Jupyter, ContextVars do not
+cross a portal thread cleanly, and sync's fail-fast sequential `map` is
+user-visible behavior a shared concurrent engine would change). So wherever the
+mechanical transform would produce loop-dependent code — the concurrent `map`
+fan-out, the backpressured `map_iter` worker pool, the shared concurrency
+limiter, the background checkpoint-error sink — the sync side is marked, not
+translated. A new marker is a claim that the two halves genuinely differ; prefer
+deleting the difference over adding one.
 
 ### CI parity — install ALL extras before the gate
 

@@ -679,6 +679,9 @@ Touches:
 
 ### 4. `template_sync.py` / `template_async.py`
 
+`template_sync.py` is generated from `template_async.py` (`scripts/gen_sync.py`);
+edit the async half and regenerate.
+
 Touches:
 
 - public run semantics

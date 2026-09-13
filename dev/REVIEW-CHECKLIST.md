@@ -39,8 +39,10 @@ For public event changes, mirrors specifically include:
 **What:** Diff or review the counterpart to verify both sides stay in sync.
 
 ```bash
-# Sync/async runner templates
-diff src/hypergraph/runners/_shared/template_sync.py src/hypergraph/runners/_shared/template_async.py
+# Sync/async runner templates: template_sync.py is GENERATED, never hand-edited.
+# Edit template_async.py, regenerate, and let --check prove there is no drift.
+uv run python scripts/gen_sync.py
+uv run python scripts/gen_sync.py --check
 
 # Check executor counterparts exist
 ls src/hypergraph/runners/sync/executors/
@@ -48,7 +50,7 @@ ls src/hypergraph/runners/async_/executors/
 ```
 
 **Parallel surfaces:**
-- `template_sync.py` ↔ `template_async.py`
+- `template_sync.py` ← generated from `template_async.py` (machine-checked in CI)
 - `sync/executors/` ↔ `async_/executors/`
 - Flat graph logic ↔ nested graph logic (test with nested graphs)
 - Core runner ↔ DaftRunner (test parity for renames, select, multi-output)
@@ -118,6 +120,8 @@ Before pushing or creating a PR:
 - [ ] **Conventional commit** message with scope? (`feat(graph): add X`)
 - [ ] **Type hints** on public API methods?
 - [ ] **Sync/async parity** — if you changed a sync runner feature, did you update async too?
+      (`_shared/template_sync.py` is generated: edit the async half and run
+      `uv run python scripts/gen_sync.py`, which CI re-checks.)
 
 ## Review Checklist (Review Agents)
 
@@ -155,7 +159,8 @@ When reviewing code changes:
 
 ### Sync/Async Parity
 - [ ] Changes to `sync/` mirrored in `async_/`?
-- [ ] Changes to `_shared/template_sync.py` mirrored in `_shared/template_async.py`?
+- [ ] Changes to `_shared/template_async.py` regenerated into `_shared/template_sync.py`
+      (`uv run python scripts/gen_sync.py`) and both files committed?
 - [ ] New executor in `sync/executors/` has counterpart in `async_/executors/`?
 
 ### API Design
