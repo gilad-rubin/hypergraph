@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, Union, get_args, get_
 import networkx as nx
 
 from hypergraph.graph._conflict import validate_output_conflicts
-from hypergraph.graph._helpers import get_edge_produced_values, sources_of
+from hypergraph.graph._helpers import sources_of
+from hypergraph.graph.addressing import get_edge_produced_values
 from hypergraph.graph.input_spec import InputSpec, _compute_active_scope, _data_only_subgraph, compute_input_spec
 from hypergraph.graph.validation import GraphConfigError, validate_graph
 from hypergraph.limits import ProcessLocalLimiter
@@ -1121,7 +1122,7 @@ class Graph:
         Raises:
             ValueError: If a key is not a valid graph input in the current scope.
         """
-        from hypergraph.graph._helpers import flatten_subgraph_addressing
+        from hypergraph.graph.addressing import flatten_subgraph_addressing
 
         merged: dict[str, Any] = {}
         if _values is not None:

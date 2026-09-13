@@ -96,7 +96,7 @@ def normalize_inputs(
 
     if graph is None:
         return merged
-    from hypergraph.graph._helpers import flatten_subgraph_addressing
+    from hypergraph.graph.addressing import flatten_subgraph_addressing
 
     return flatten_subgraph_addressing(merged, graph)
 

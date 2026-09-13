@@ -66,7 +66,7 @@ def warn_on_bind_overrides(graph: Graph, provided_values: dict[str, Any]) -> Non
     both values; otherwise it stays generic. Dot-pathed addresses are annotated
     with their owning subgraph for clarity.
     """
-    from hypergraph.graph._helpers import describe_addressed_input
+    from hypergraph.graph.addressing import describe_addressed_input
 
     bound = graph.inputs.bound
     for key, new_value in provided_values.items():

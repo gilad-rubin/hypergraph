@@ -100,7 +100,7 @@ def precompute_input_validation(
     selected: tuple[str, ...] | None = None,
 ) -> _InputValidationContext:
     """Graph-structural validation — call once, reuse across items."""
-    from hypergraph.graph._helpers import get_edge_produced_values
+    from hypergraph.graph.addressing import get_edge_produced_values
 
     if entrypoint is not None:
         raise ValueError(
@@ -256,7 +256,7 @@ def _build_missing_input_message(
     suggestions: dict[str, list[str]],
 ) -> str:
     """Build a helpful error message for missing inputs."""
-    from hypergraph.graph._helpers import describe_addressed_input
+    from hypergraph.graph.addressing import describe_addressed_input
 
     sorted_missing = sorted(missing)
     any_dotted = any("." in m for m in sorted_missing)
