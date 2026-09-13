@@ -477,21 +477,20 @@ CREATE TABLE IF NOT EXISTS host_submissions (
 # got past that SELECT.
 _HOST_SUBMISSIONS_V10_COLUMNS = (("exclusive_key", "exclusive_key TEXT"),)
 
+#: The submission states the host will never touch again, as the index
+#: predicate spans them. This restates ``SETTLED_SUBMISSION_STATES`` from
+#: ``hypergraph.host.views``, which is where that vocabulary is DEFINED and
+#: documented, because this layer must not import the host: ``host/`` imports
+#: ``checkpointers/``, never the other way round. The two cannot drift —
+#: ``test_the_index_predicate_is_the_settled_vocabulary`` fails the moment a
+#: settled state is added on one side only, and widening the index is what
+#: adding one has to do.
+_SETTLED_SUBMISSION_STATE_VALUES: tuple[str, ...] = ("dead_letter", "exhausted", "finished")
+
 
 def _exclusive_key_index_sql() -> str:
-    """The partial unique index over LIVE exclusive-key holders.
-
-    The settled vocabulary belongs to the host (``SETTLED_SUBMISSION_STATES``
-    in ``hypergraph.host.views``), and this layer never imports the host at
-    module scope — ``hypergraph.host`` imports this module. Deferring the
-    import to call time costs nothing (``hypergraph/__init__`` loads the host
-    package eagerly, so it is always resident by the time a schema is
-    ensured) and keeps the predicate DERIVED: adding a settled state widens
-    the index with it instead of leaving a retyped list behind.
-    """
-    from hypergraph.host.views import SETTLED_SUBMISSION_STATES
-
-    settled = ", ".join(f"'{state}'" for state in sorted(SETTLED_SUBMISSION_STATES))
+    """The partial unique index over LIVE exclusive-key holders."""
+    settled = ", ".join(f"'{state}'" for state in sorted(_SETTLED_SUBMISSION_STATE_VALUES))
     return (
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_host_submissions_exclusive "
         f"ON host_submissions(exclusive_key) WHERE exclusive_key IS NOT NULL AND state NOT IN ({settled})"

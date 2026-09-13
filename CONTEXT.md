@@ -198,6 +198,10 @@ _Avoid_: Durable handle (banned per ADR 0004), job token, reconnectable handle
 The dedup identity of a submission: complete Definition identity, normalized inputs, effective Batch configuration, and requested start time. Worker identity and submission time are excluded.
 _Avoid_: Idempotency key (callers never manage one), request hash
 
+**Exclusive key**:
+The optional name of the **subject** a submission is about — `"review:doc-41"` — where the workflow id names the submission itself. At most one LIVE run may hold a key, enforced inside the acceptance transaction and backed by a partial unique index over the unsettled submission states. A second submit while a holder is in flight adopts it (the live run's receipt, `duplicate=True`), a differing start fingerprint is a typed conflict, and a settled holder frees the key so the next submit starts a new Run. Batches do not take one: a Batch's exclusive identity is its required workflow id.
+_Avoid_: Idempotency key (that is the start fingerprint), lock, singleton run, dedup key (a workflow id already dedupes submissions)
+
 **Durable Batch**:
 An immutable manifest of unique stable logical item keys, each mapped to one independent child Run, with keyed outcomes and explicit unstarted items. Never a durable parent MapResult array.
 _Avoid_: Persisted MapResult, batch job array

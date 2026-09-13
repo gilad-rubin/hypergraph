@@ -33,6 +33,7 @@ from hypergraph import (
     node,
     serve,
 )
+from hypergraph.checkpointers._migrate import _SETTLED_SUBMISSION_STATE_VALUES
 from hypergraph.host.views import SETTLED_SUBMISSION_STATES
 
 pytest.importorskip("aiosqlite")
@@ -295,7 +296,17 @@ async def test_the_unique_index_refuses_a_second_live_holder(tmp_path):
 
 
 async def test_the_index_predicate_is_the_settled_vocabulary(tmp_path):
-    """Adding a settled state must widen the index, not leave a stale list."""
+    """Adding a settled state must widen the index, not leave a stale list.
+
+    `checkpointers/` cannot import `host/` — the dependency runs the other
+    way — so the schema module restates the settled states rather than
+    deriving them. THIS is what makes the restatement safe: the two spellings
+    are pinned to each other here, and adding a settled state on one side
+    only fails this test rather than silently leaving a live holder of a key
+    that has actually settled.
+    """
+    assert set(_SETTLED_SUBMISSION_STATE_VALUES) == SETTLED_SUBMISSION_STATES
+
     home = RunHome.open(f"file:{tmp_path / 'runs.db'}")
     try:
         sql = home._sync_db().execute("SELECT sql FROM sqlite_master WHERE name = 'idx_host_submissions_exclusive'").fetchone()[0]
