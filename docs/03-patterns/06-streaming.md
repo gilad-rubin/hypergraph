@@ -134,6 +134,8 @@ class StreamToWebSocket(TypedEventProcessor):
 result = await runner.run(graph, values, event_processors=[StreamToWebSocket()])
 ```
 
+That sink sends every chunk to one socket. When concurrent map items or nested graphs stream at the same time, route the interleaved chunks with [Route Interleaved Chunks From Nested Graphs and Map Items](../05-how-to/observe-execution.md#route-interleaved-chunks-from-nested-graphs-and-map-items).
+
 For hosts that need to pull a run's existing typed event stream, `AsyncRunner.iter()` returns a context-managed handle. It yields lifecycle events and delivered preview chunks in their execution order; after the stream ends, `result()` returns the normal `RunResult` (and raises the run failure by default):
 
 ```python
