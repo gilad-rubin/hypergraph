@@ -206,6 +206,16 @@ RESULT_NAMES = (
     "DURATION_PRECISION",
 )
 
+# Execution-trace types live beside their collector in run_log.py; results.py
+# re-exports them, so every import path and every existing pickle still lands
+# on the same class object.
+TRACE_CLASSES = (
+    "NodeRecord",
+    "NodeStats",
+    "RunLog",
+    "MapLog",
+)
+
 STATE_NAMES = (
     "CheckpointErrorSink",
     "PauseExecution",
@@ -297,7 +307,8 @@ def test_canonical_modules_and_legacy_pickle_lookups() -> None:
 
     for name in result_classes:
         canonical = getattr(canonical_results, name)
-        assert canonical.__module__ == "hypergraph.runners._shared.results"
+        owner = "hypergraph.runners._shared.run_log" if name in TRACE_CLASSES else "hypergraph.runners._shared.results"
+        assert canonical.__module__ == owner
         payload = f"chypergraph.runners._shared.types\n{name}\n.".encode()
         assert pickle.loads(payload) is canonical
     for name in state_classes:
@@ -315,6 +326,34 @@ def test_canonical_modules_and_legacy_pickle_lookups() -> None:
         graph_name="graph",
     )
     assert isinstance(empty_map, Sequence)
+
+
+def test_trace_types_still_unpickle_through_results() -> None:
+    """A pickle written before the move names results.py — it must still load."""
+    canonical_results, _ = _canonical_modules()
+    canonical_run_log = importlib.import_module("hypergraph.runners._shared.run_log")
+
+    for name in TRACE_CLASSES:
+        canonical = getattr(canonical_run_log, name)
+        assert getattr(canonical_results, name) is canonical
+        legacy_payload = f"chypergraph.runners._shared.results\n{name}\n.".encode()
+        assert pickle.loads(legacy_payload) is canonical
+
+    log = canonical_run_log.RunLog(
+        graph_name="g",
+        run_id="r",
+        total_duration_ms=1.0,
+        steps=(canonical_run_log.NodeRecord(node_name="n", superstep=0, duration_ms=1.0, status="completed", span_id="s"),),
+    )
+    assert pickle.loads(pickle.dumps(log)) == log
+
+
+def test_run_log_does_not_import_results_at_runtime() -> None:
+    """The trace types own themselves: results.py depends on run_log.py, not back."""
+    canonical_run_log = importlib.import_module("hypergraph.runners._shared.run_log")
+    tree = ast.parse(Path(canonical_run_log.__file__).read_text())
+    module_level = {node.module for node in tree.body if isinstance(node, ast.ImportFrom) and node.module is not None}
+    assert "hypergraph.runners._shared.results" not in module_level
 
 
 def test_results_do_not_import_state_at_runtime() -> None:
