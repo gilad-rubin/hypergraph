@@ -313,6 +313,9 @@ Key files:
 - `src/hypergraph/checkpointers/serializers.py`
 - `src/hypergraph/checkpointers/_migrate.py`
 - `src/hypergraph/checkpointers/_answer_schema.py`
+- `src/hypergraph/checkpointers/_rows.py`
+- `src/hypergraph/checkpointers/_retention.py`
+- `src/hypergraph/checkpointers/_lineage.py`
 
 ### What This Subsystem Owns
 
@@ -616,7 +619,10 @@ src/hypergraph/
 │   ├── serializers.py
 │   ├── types.py
 │   ├── _answer_schema.py
-│   └── _migrate.py
+│   ├── _lineage.py
+│   ├── _migrate.py
+│   ├── _retention.py
+│   └── _rows.py
 │
 ├── events/                           observability
 │   ├── dispatcher.py

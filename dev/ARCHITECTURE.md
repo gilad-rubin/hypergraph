@@ -159,6 +159,9 @@ Durability, lineage, and historical inspection for persisted runs.
 | `protocols.py` | Sync write protocol for `SyncRunner` |
 | `serializers.py` | Payload serializers |
 | `_migrate.py` | SQLite schema migrations |
+| `_rows.py` | Column lists and the row<->record codec both checkpointer halves decode by name with |
+| `_retention.py` | The retention policy every backend shares, and the statements one compaction pass runs |
+| `_lineage.py` | Fork/retry ancestry traversal and the tree layout it renders |
 | `_answer_schema.py` | Render an interrupt's declared `answer_type` as JSON Schema and check settled values against it |
 
 **Rule**: Checkpointing is not just persistence. It participates in resume,
