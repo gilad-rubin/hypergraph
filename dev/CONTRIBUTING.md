@@ -45,6 +45,31 @@ Guidelines:
 - Do not reuse another worktree's virtualenv
 - Prefer `uv run ...` so commands execute against the local worktree environment
 
+### Stale bytecode after a branch switch
+
+Git does not delete directories, and `__pycache__/` is ignored — so switching
+away from a branch that added a subpackage leaves an empty-looking
+`src/hypergraph/<pkg>/` behind, kept alive by its stale bytecode. Python then
+imports that directory as a PEP 420 namespace package: `import hypergraph.<pkg>`
+**succeeds** with `__file__ = None` and no contents.
+
+This makes `pytest.importorskip("hypergraph.<pkg>")` an unreliable probe for a
+branch-only subpackage — it does not skip. The failure surfaces much later as
+`ImportError: cannot import name 'X' from 'hypergraph.<pkg>' (unknown location)`,
+or never, if the probe only imports the package.
+
+Prefer a per-branch worktree: a fresh worktree has no leftover directory, which
+is why the guidance above is the real mitigation. If you do switch in place:
+
+```bash
+find . -name __pycache__ -type d -prune -exec rm -rf {} +
+```
+
+`tests/test_package_layout.py` fails if any directory under `src/hypergraph/`
+lacks an `__init__.py`, so a leftover is caught here rather than in a lying probe.
+
+## Notebooks
+
 The notebook setup does two separate jobs:
 
 - `nbstripout` removes notebook outputs and transient metadata from the Git-tracked version so HTML-heavy cells do not explode diffs.
