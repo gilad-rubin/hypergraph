@@ -255,15 +255,23 @@ class TestComputingThePinnedHash:
 
 
 class TestUpgradingAHostThatServesANarrowedGraph:
-    async def test_stored_work_parks_version_incompatible_and_drains_unnarrowed(self, home):
-        """The migration paragraph in docs/06-api-reference/host.md, run."""
+    async def test_a_selected_hosts_stored_work_parks_and_drains_unnarrowed(self, home):
+        """The migration paragraph in docs/06-api-reference/host.md, run.
+
+        The legacy row carries the inputs the SELECTED Definition takes — the
+        same ones the whole graph takes, which is exactly why this narrowing
+        has a drain and `with_entrypoint` does not (the test below).
+        """
         ledger: list[str] = []
+        legacy_inputs = {"x": 1}
+        assert pipeline(ledger).select("cheap").inputs.required == ("x",), "the selected surface IS these inputs"
+
         legacy_host = serve(pipeline(ledger), home=home, deployment_version="v1")
-        receipt = await legacy_host.submit(pipeline(ledger), {"x": 1}, workflow_id="legacy-1")
+        receipt = await legacy_host.submit(pipeline(ledger), legacy_inputs, workflow_id="legacy-1")
         assert (await legacy_host.client.get(receipt.run_ref)).definition_id.structural_hash == pipeline(ledger).structural_hash
 
-        # Upgrade: the same deployment now serves the narrowed graph.
-        upgraded = serve(pipeline(ledger).with_entrypoint("costly"), home=home, deployment_version="v1")
+        # Upgrade: the same deployment now serves the selected graph.
+        upgraded = serve(pipeline(ledger).select("cheap"), home=home, deployment_version="v1")
 
         async def parked_view():
             view = await upgraded.client.get(receipt.run_ref)
@@ -280,3 +288,25 @@ class TestUpgradingAHostThatServesANarrowedGraph:
             drained = await drain_host.client.follow(receipt.run_ref, deadline=30)
         assert drained.status is WorkflowStatus.COMPLETED
         assert ledger == ["cheap", "costly"], "it runs unnarrowed — what the old identity could not say"
+
+    async def test_an_entrypoint_hosts_backlog_has_no_unnarrowed_drain(self, home):
+        """Why the drain bullet is scoped to `select()`.
+
+        A `with_entrypoint`-narrowed host's submissions carry MID-GRAPH
+        values. The unnarrowed Definition refuses those inputs outright, so
+        serving it is not a migration path for that backlog — stop and
+        resubmit is.
+        """
+        ledger: list[str] = []
+        narrowed = pipeline(ledger).with_entrypoint("costly")
+        assert narrowed.inputs.required == ("cheap",), "the entrypoint surface is a mid-graph value"
+
+        host = serve(narrowed, home=home, deployment_version="v1")
+        receipt = await host.submit(narrowed, {"cheap": 2}, workflow_id="entry-legacy")
+        async with worker(host):
+            assert (await host.client.follow(receipt.run_ref, deadline=30)).status is WorkflowStatus.COMPLETED
+        assert ledger == ["costly"]
+
+        # The same stored inputs, handed to the unnarrowed Definition:
+        with pytest.raises(ValueError, match=r"internal parameters: \['cheap'\]"):
+            await AsyncRunner().run(pipeline(ledger), {"cheap": 2})

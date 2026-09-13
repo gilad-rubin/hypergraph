@@ -283,14 +283,22 @@ serves one:
 
 - **Drain (or stop) the queue before upgrading.** Nothing parks, and there is
   nothing to migrate.
-- **Already parked?** Serve the *unnarrowed* graph — its identity is still
-  the old hash — from a worker deployment of its own, and the backlog drains
-  there; retire that deployment once it is empty. Be deliberate: those runs
-  execute unnarrowed, which is more than the old host ran, because the old
-  pinned hash could not tell the two apart (that is the bug being fixed).
-- **Or stop them and resubmit** against the narrowed Definition with a new
-  `workflow_id` and the same inputs — the only path that runs exactly what
-  the narrowing says.
+- **Already parked, and the narrowing is a `select()`?** Serve the
+  *unnarrowed* graph — its identity is still the old hash — from a worker
+  deployment of its own, and the backlog drains there; retire that deployment
+  once it is empty. A selection takes the same inputs the whole graph takes,
+  so the stored inputs still fit (check that they satisfy every *required*
+  input: a selection that narrowed the input surface leaves the unnarrowed
+  run short of one). Be deliberate: those runs execute unnarrowed, which is
+  more than the old host ran, because the old pinned hash could not tell the
+  two apart — that is the bug being fixed.
+- **Already parked, and the narrowing is a `with_entrypoint()`?** There is no
+  drain: that backlog's stored inputs are mid-graph values, which the
+  unnarrowed Definition refuses (`Providing values for internal parameters:
+  ['cheap']`). Stop and resubmit.
+- **Stop them and resubmit** against the narrowed Definition with a new
+  `workflow_id` and the same inputs — always available, and the only path
+  that runs exactly what the narrowing says.
 
 `accepts=` cannot bridge the two, and neither can `host.fork(into=…)`: both
 require structural compatibility, because seeding history from recorded
