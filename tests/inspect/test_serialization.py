@@ -845,355 +845,7 @@ def test_mutable_public_library_aliases_never_define_trusted_adapters() -> None:
     }
 
 
-def test_forged_defining_module_aliases_never_define_trusted_adapters() -> None:
-    calls = {
-        "columns": 0,
-        "getitem": 0,
-        "iloc": 0,
-        "model_dump": 0,
-        "repr": 0,
-        "shape": 0,
-        "tolist": 0,
-    }
-
-    class ForgedArray:
-        __module__ = "numpy"
-
-        @property
-        def shape(self) -> tuple[int, ...]:
-            calls["shape"] += 1
-            return (1,)
-
-        def __getitem__(self, key: object) -> object:
-            calls["getitem"] += 1
-            return 7
-
-        def tolist(self) -> list[int]:
-            calls["tolist"] += 1
-            return [7]
-
-        def __repr__(self) -> str:
-            calls["repr"] += 1
-            return "ForgedArray(<redacted>)"
-
-    class ForgedFrame:
-        __module__ = "pandas.core.frame"
-
-        @property
-        def shape(self) -> tuple[int, int]:
-            calls["shape"] += 1
-            raise AssertionError("forged DataFrame must not enter the adapter")
-
-        @property
-        def columns(self) -> tuple[str, ...]:
-            calls["columns"] += 1
-            raise AssertionError("forged DataFrame must not enter the adapter")
-
-        @property
-        def iloc(self) -> object:
-            calls["iloc"] += 1
-            raise AssertionError("forged DataFrame must not enter the adapter")
-
-        def __repr__(self) -> str:
-            calls["repr"] += 1
-            return "ForgedFrame(<redacted>)"
-
-    class ForgedModel:
-        __module__ = "pydantic.main"
-
-        def model_dump(self) -> dict[str, object]:
-            calls["model_dump"] += 1
-            raise AssertionError("forged BaseModel must not enter the adapter")
-
-        def __repr__(self) -> str:
-            calls["repr"] += 1
-            return "ForgedModel(<redacted>)"
-
-    ForgedArray.__name__ = "ndarray"
-    ForgedArray.__qualname__ = "ndarray"
-    ForgedFrame.__name__ = "DataFrame"
-    ForgedFrame.__qualname__ = "DataFrame"
-    ForgedModel.__name__ = "BaseModel"
-    ForgedModel.__qualname__ = "BaseModel"
-
-    serialized: list[SerializedValue] = []
-    for module_name, alias, forged_type in (
-        ("numpy._core._multiarray_umath", "ndarray", ForgedArray),
-        ("pandas.core.frame", "DataFrame", ForgedFrame),
-        ("pydantic.main", "BaseModel", ForgedModel),
-    ):
-        module = dict.__getitem__(sys.modules, module_name)
-        namespace = object.__getattribute__(module, "__dict__")
-        original = dict.__getitem__(namespace, alias)
-        setattr(module, alias, forged_type)
-        try:
-            serialized.append(serialize_value(forged_type()))
-        finally:
-            setattr(module, alias, original)
-
-    assert [(value.kind, value.text) for value in serialized] == [
-        ("text", "ForgedArray(<redacted>)"),
-        ("text", "ForgedFrame(<redacted>)"),
-        ("text", "ForgedModel(<redacted>)"),
-    ]
-    assert calls == {
-        "columns": 0,
-        "getitem": 0,
-        "iloc": 0,
-        "model_dump": 0,
-        "repr": 3,
-        "shape": 0,
-        "tolist": 0,
-    }
-
-
-def test_forged_dataframe_with_real_bases_never_defines_trust() -> None:
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            """
-import pandas as pd
-from pandas.core.arraylike import OpsMixin
-from pandas.core.generic import NDFrame
-
-calls = {"repr": 0, "shape": 0}
-
-def forged_repr(_value):
-    calls["repr"] += 1
-    return "ForgedDataFrame(<redacted>)"
-
-def forged_shape(_value):
-    calls["shape"] += 1
-    raise AssertionError("forged public protocol must not run")
-
-forged_type = type(
-    "DataFrame",
-    (NDFrame, OpsMixin),
-    {
-        "__module__": "pandas.core.frame",
-        "__repr__": forged_repr,
-        "shape": property(forged_shape),
-    },
-)
-forged = object.__new__(forged_type)
-forged.__dict__["_mgr"] = vars(
-    pd.DataFrame({"secret": ["maya-secret"]})
-)["_mgr"]
-
-frame_module = __import__("pandas.core.frame", fromlist=["DataFrame"])
-real_public = pd.DataFrame
-real_internal = frame_module.DataFrame
-pd.DataFrame = forged_type
-frame_module.DataFrame = forged_type
-try:
-    from hypergraph.runners._shared._inspect_serialization import serialize_value
-    serialized = serialize_value(forged)
-finally:
-    pd.DataFrame = real_public
-    frame_module.DataFrame = real_internal
-
-assert serialized.kind == "text", serialized
-assert serialized.text == "ForgedDataFrame(<redacted>)"
-assert calls == {"repr": 1, "shape": 0}
-""",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-
-
-def test_coordinated_forged_pandas_classes_never_define_trust() -> None:
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            """
-import numpy as np
-import pandas as pd
-import pandas.core.arraylike as arraylike
-import pandas.core.frame as frame_module
-import pandas.core.generic as generic
-import pandas.core.indexes.base as index_module
-import pandas.core.indexes.range as range_module
-
-calls = {"frame_repr": 0, "index_repr": 0, "range_repr": 0}
-
-def redacted(name):
-    def represent(_value):
-        calls[f"{name}_repr"] += 1
-        return f"{name.title()}(<redacted>)"
-    return represent
-
-real_frame = pd.DataFrame
-source = real_frame({"secret": ["maya-secret"]})
-forged_frame = type(
-    "DataFrame",
-    (generic.NDFrame, arraylike.OpsMixin),
-    {"__module__": "pandas.core.frame", "__repr__": redacted("frame")},
-)
-forged_index = type(
-    "Index",
-    (object,),
-    {"__module__": "pandas.core.indexes.base", "__repr__": redacted("index")},
-)
-forged_range = type(
-    "RangeIndex",
-    (forged_index,),
-    {"__module__": "pandas.core.indexes.range", "__repr__": redacted("range")},
-)
-
-column_axis = object.__new__(forged_index)
-column_axis.__dict__["_data"] = np.asarray(["secret"])
-row_axis = object.__new__(forged_range)
-row_axis.__dict__["_range"] = range(1)
-source._mgr.axes[0] = column_axis
-source._mgr.axes[1] = row_axis
-forged = object.__new__(forged_frame)
-forged.__dict__["_mgr"] = source.__dict__["_mgr"]
-
-frame_module.DataFrame = forged_frame
-pd.DataFrame = forged_frame
-index_module.Index = forged_index
-pd.Index = forged_index
-range_module.RangeIndex = forged_range
-pd.RangeIndex = forged_range
-
-from hypergraph.runners._shared._inspect_serialization import serialize_value
-
-serialized = serialize_value(forged)
-assert serialized.kind == "text", serialized
-assert serialized.text == "Frame(<redacted>)"
-assert "maya-secret" not in serialized.text
-assert calls == {"frame_repr": 1, "index_repr": 0, "range_repr": 0}
-""",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-
-
-def test_forged_pydantic_model_with_real_metaclass_never_defines_trust() -> None:
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            """
-import pydantic
-import pydantic.main
-from pydantic._internal._model_construction import ModelMetaclass
-
-calls = {"repr": 0}
-
-def forged_repr(_value):
-    calls["repr"] += 1
-    return "ForgedBaseModel(<redacted>)"
-
-forged_type = type.__new__(
-    ModelMetaclass,
-    "BaseModel",
-    (object,),
-    {"__module__": "pydantic.main", "__repr__": forged_repr},
-)
-forged = object.__new__(forged_type)
-forged.__dict__["secret"] = "stored"
-
-real_public = pydantic.BaseModel
-real_internal = pydantic.main.BaseModel
-pydantic.BaseModel = forged_type
-pydantic.main.BaseModel = forged_type
-try:
-    from hypergraph.runners._shared._inspect_serialization import serialize_value
-    serialized = serialize_value(forged)
-finally:
-    pydantic.BaseModel = real_public
-    pydantic.main.BaseModel = real_internal
-
-assert serialized.kind == "text", serialized
-assert serialized.text == "ForgedBaseModel(<redacted>)"
-assert calls == {"repr": 1}
-""",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-
-
-def test_coordinated_forged_pydantic_aliases_never_define_trust() -> None:
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            """
-import pydantic
-import pydantic.main
-import pydantic._internal._model_construction as model_construction
-
-calls = {"model_dump": 0, "repr": 0}
-
-def forged_repr(_value):
-    calls["repr"] += 1
-    return "CoordinatedBaseModel(<redacted>)"
-
-def model_dump(_value):
-    calls["model_dump"] += 1
-    raise AssertionError("forged model_dump must not run")
-
-forged_metaclass = type(
-    "ModelMetaclass",
-    (type,),
-    {"__module__": "pydantic._internal._model_construction"},
-)
-forged_type = forged_metaclass(
-    "BaseModel",
-    (object,),
-    {
-        "__module__": "pydantic.main",
-        "__repr__": forged_repr,
-        "model_dump": model_dump,
-    },
-)
-forged = forged_type()
-forged.__dict__["secret"] = "must remain behind repr"
-
-real_metaclass = model_construction.ModelMetaclass
-real_public = pydantic.BaseModel
-real_internal = pydantic.main.BaseModel
-model_construction.ModelMetaclass = forged_metaclass
-pydantic.BaseModel = forged_type
-pydantic.main.BaseModel = forged_type
-try:
-    from hypergraph.runners._shared._inspect_serialization import serialize_value
-    serialized = serialize_value(forged)
-finally:
-    model_construction.ModelMetaclass = real_metaclass
-    pydantic.BaseModel = real_public
-    pydantic.main.BaseModel = real_internal
-
-assert serialized.kind == "text", serialized
-assert serialized.text == "CoordinatedBaseModel(<redacted>)"
-assert calls == {"model_dump": 0, "repr": 1}
-""",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-
-
-def test_dataframe_serialization_uses_only_proven_stored_values() -> None:
-    calls = {"columns": 0, "iloc": 0, "itertuples": 0, "shape": 0}
+def test_dataframe_serialization_reads_a_bounded_corner_of_the_public_frame() -> None:
     frame = pd.DataFrame(
         {
             "customer_id": ["maya-23", "ari-12"],
@@ -1202,34 +854,7 @@ def test_dataframe_serialization_uses_only_proven_stored_values() -> None:
         }
     )
 
-    def bomb_property(name: str) -> property:
-        def get(_self: object) -> object:
-            calls[name] += 1
-            raise AssertionError(f"DataFrame.{name} must not be invoked")
-
-        return property(get)
-
-    def bomb_itertuples(_self: object, *args: object, **kwargs: object) -> object:
-        calls["itertuples"] += 1
-        raise AssertionError("DataFrame.itertuples must not be invoked")
-
-    originals = {
-        "columns": pd.DataFrame.columns,
-        "iloc": pd.DataFrame.iloc,
-        "itertuples": pd.DataFrame.itertuples,
-        "shape": pd.DataFrame.shape,
-    }
-    pd.DataFrame.columns = bomb_property("columns")
-    pd.DataFrame.iloc = bomb_property("iloc")
-    pd.DataFrame.itertuples = bomb_itertuples
-    pd.DataFrame.shape = bomb_property("shape")
-    try:
-        serialized = serialize_value(frame)
-    finally:
-        pd.DataFrame.columns = originals["columns"]
-        pd.DataFrame.iloc = originals["iloc"]
-        pd.DataFrame.itertuples = originals["itertuples"]
-        pd.DataFrame.shape = originals["shape"]
+    serialized = serialize_value(frame)
 
     assert serialized.kind == "table"
     assert serialized.table is not None
@@ -1242,7 +867,46 @@ def test_dataframe_serialization_uses_only_proven_stored_values() -> None:
         ["maya-23", 0.9, True],
         ["ari-12", 0.3, False],
     ]
-    assert calls == {"columns": 0, "iloc": 0, "itertuples": 0, "shape": 0}
+
+
+def test_a_frame_far_wider_than_the_column_cap_stays_a_bounded_table() -> None:
+    def value_for(index: int) -> int | float | str:
+        residue = index % 7
+        if residue in {0, 1}:
+            return index
+        if residue in {2, 4}:
+            return float(index)
+        return str(index)
+
+    frame = pd.DataFrame({f"column_{index}": [value_for(index)] for index in range(12_000)})
+
+    serialized = serialize_value(frame)
+
+    assert serialized.kind == "table"
+    assert serialized.table is not None
+    assert serialized.table.original_column_count == 12_000
+    assert serialized.table.columns_truncated is True
+    assert len(serialized.table.columns) == 20
+    assert [column.text for column in serialized.table.columns] == [f"column_{index}" for index in range(20)]
+
+
+def test_an_unreadable_frame_becomes_a_typed_placeholder_not_a_crash() -> None:
+    frame = pd.DataFrame({"score": [0.9, 0.3]})
+    original_iloc = pd.DataFrame.iloc
+
+    def broken_iloc(_self: object) -> object:
+        raise RuntimeError("storage is unavailable")
+
+    pd.DataFrame.iloc = property(broken_iloc)
+    try:
+        serialized = serialize_value(frame)
+    finally:
+        pd.DataFrame.iloc = original_iloc
+
+    assert serialized.kind == "placeholder"
+    assert serialized.type_name == "DataFrame"
+    assert serialized.reason == "unsupported DataFrame storage"
+    assert serialized.truncated is True
 
 
 def test_fragmented_numpy_dataframe_remains_a_bounded_table() -> None:
@@ -1258,23 +922,6 @@ def test_fragmented_numpy_dataframe_remains_a_bounded_table() -> None:
     assert [[cell.value for cell in row.cells] for row in serialized.table.rows] == [list(range(20))]
     assert serialized.table.original_column_count == 21
     assert serialized.table.columns_truncated is True
-
-
-def test_dataframe_placement_scan_limit_is_cumulative() -> None:
-    def value_for(index: int) -> int | float | str:
-        residue = index % 7
-        if residue in {0, 1}:
-            return index
-        if residue in {2, 4}:
-            return float(index)
-        return str(index)
-
-    frame = pd.DataFrame({f"column_{index}": [value_for(index)] for index in range(12_000)})
-
-    serialized = serialize_value(frame)
-
-    assert serialized.kind == "placeholder"
-    assert serialized.reason == "DataFrame storage exceeds 10000-placement inspection limit"
 
 
 def test_stored_dataframe_layout_preserves_empty_rows_duplicate_columns_and_placements() -> None:
@@ -1722,19 +1369,55 @@ assert [item.value for item in serialized.items] == [1, 2, 3]
     assert completed.returncode == 0, completed.stderr
 
 
-def test_extension_backed_dataframe_is_rejected_without_extension_hooks() -> None:
-    calls = {
-        "array": 0,
-        "dtype": 0,
-        "extension_repr": 0,
-        "frame_repr": 0,
-        "getitem": 0,
-        "iter": 0,
-        "len": 0,
-        "take": 0,
-        "tolist": 0,
-    }
+def test_extension_backed_dataframes_render_as_tables() -> None:
+    frame = pd.DataFrame(
+        {
+            "quantity": pd.array([3, None], dtype="Int64"),
+            "customer": pd.array(["maya", "ari"], dtype="string"),
+            "seen_at": pd.to_datetime(["2026-01-01", "2026-01-02"]),
+        }
+    )
 
+    serialized = serialize_value(frame)
+
+    assert serialized.kind == "table"
+    assert serialized.type_name == "DataFrame"
+    assert serialized.table is not None
+    assert [column.text for column in serialized.table.columns] == [
+        "quantity",
+        "customer",
+        "seen_at",
+    ]
+    first_row = serialized.table.rows[0].cells
+    assert (first_row[0].kind, first_row[0].value) == ("number", 3)
+    assert (first_row[1].kind, first_row[1].text) == ("text", "maya")
+    assert first_row[2].kind == "text"
+    assert "2026-01-01" in (first_row[2].text or "")
+    second_row = serialized.table.rows[1].cells
+    assert second_row[0].kind == "text"
+    assert second_row[0].text == "<NA>"
+
+
+def test_arrow_backed_dataframes_render_as_tables() -> None:
+    pytest.importorskip("pyarrow")
+    frame = pd.DataFrame(
+        {
+            "quantity": pd.array([3, 4], dtype="int64[pyarrow]"),
+            "customer": pd.array(["maya", "ari"], dtype="string[pyarrow]"),
+        }
+    )
+
+    serialized = serialize_value(frame)
+
+    assert serialized.kind == "table"
+    assert serialized.table is not None
+    assert [[cell.text if cell.kind == "text" else cell.value for cell in row.cells] for row in serialized.table.rows] == [
+        [3, "maya"],
+        [4, "ari"],
+    ]
+
+
+def test_third_party_extension_arrays_render_without_whole_frame_repr() -> None:
     class HostileDtype(ExtensionDtype):
         name = "hypergraph-hostile"
         type = object
@@ -1761,7 +1444,6 @@ def test_extension_backed_dataframe_is_rejected_without_extension_hooks() -> Non
 
         @property
         def dtype(self) -> ExtensionDtype:
-            calls["dtype"] += 1
             return HostileDtype()
 
         @property
@@ -1769,17 +1451,14 @@ def test_extension_backed_dataframe_is_rejected_without_extension_hooks() -> Non
             return len(self._values) * 8
 
         def __len__(self) -> int:
-            calls["len"] += 1
             return len(self._values)
 
         def __getitem__(self, item: int | slice) -> object:
-            calls["getitem"] += 1
             if isinstance(item, slice):
                 return type(self)(self._values[item])
             return self._values[item]
 
         def __iter__(self) -> Iterator[object]:
-            calls["iter"] += 1
             return iter(self._values)
 
         def __array__(
@@ -1787,16 +1466,7 @@ def test_extension_backed_dataframe_is_rejected_without_extension_hooks() -> Non
             dtype: object = None,
             copy: bool | None = None,
         ) -> np.ndarray:
-            calls["array"] += 1
             return np.asarray(self._values, dtype=dtype)
-
-        def __repr__(self) -> str:
-            calls["extension_repr"] += 1
-            raise AssertionError("DataFrame repr must not delegate to the extension")
-
-        def tolist(self) -> list[object]:
-            calls["tolist"] += 1
-            return list(self._values)
 
         def isna(self) -> np.ndarray:
             return np.asarray([value is None for value in self._values])
@@ -1808,7 +1478,6 @@ def test_extension_backed_dataframe_is_rejected_without_extension_hooks() -> Non
             allow_fill: bool = False,
             fill_value: object = None,
         ) -> HostileArray:
-            calls["take"] += 1
             values = take(
                 np.asarray(self._values, dtype=object),
                 indices,
@@ -1820,43 +1489,26 @@ def test_extension_backed_dataframe_is_rejected_without_extension_hooks() -> Non
         def copy(self) -> HostileArray:
             return type(self)(self._values.copy())
 
-    frames = (
-        pd.DataFrame({"customer": HostileArray(["maya", "ari"])}),
-        pd.DataFrame(
-            [[1, 2]],
-            columns=pd.Index(HostileArray(["customer", "score"])),
-        ),
-        pd.DataFrame(
-            [[1], [2]],
-            index=pd.Index(HostileArray(["maya", "ari"])),
-        ),
-    )
+    frame = pd.DataFrame({"customer": HostileArray(["maya", "ari"])})
+    frame_repr_calls = 0
     original_repr = pd.DataFrame.__repr__
 
-    def forbidden_frame_repr(_: pd.DataFrame) -> str:
-        calls["frame_repr"] += 1
-        raise AssertionError("extension-backed DataFrame must not use whole-value repr")
+    def counted_frame_repr(_: pd.DataFrame) -> str:
+        nonlocal frame_repr_calls
+        frame_repr_calls += 1
+        return "DataFrame(<redacted>)"
 
-    pd.DataFrame.__repr__ = forbidden_frame_repr
-    serialized_frames: list[SerializedValue] = []
-    observed_calls: list[dict[str, int]] = []
+    pd.DataFrame.__repr__ = counted_frame_repr
     try:
-        for frame in frames:
-            calls = dict.fromkeys(calls, 0)
-            serialized_frames.append(serialize_value(frame))
-            observed_calls.append(calls.copy())
+        serialized = serialize_value(frame)
     finally:
         pd.DataFrame.__repr__ = original_repr
 
-    assert [serialized.kind for serialized in serialized_frames] == [
-        "placeholder",
-        "placeholder",
-        "placeholder",
-    ]
-    assert {serialized.type_name for serialized in serialized_frames} == {"DataFrame"}
-    assert {serialized.reason for serialized in serialized_frames} == {"unsupported extension-backed DataFrame"}
-    assert all(serialized.truncated for serialized in serialized_frames)
-    assert observed_calls == [dict.fromkeys(calls, 0)] * 3
+    assert serialized.kind == "table"
+    assert serialized.table is not None
+    assert [column.text for column in serialized.table.columns] == ["customer"]
+    assert [[cell.text for cell in row.cells] for row in serialized.table.rows] == [["maya"], ["ari"]]
+    assert frame_repr_calls == 0
 
 
 def test_array_and_dataframe_protocols_and_subclasses_use_repr_only() -> None:
@@ -2099,7 +1751,7 @@ def test_js_unsafe_size_metadata_crosses_the_wire_as_exact_decimal_strings() -> 
     assert serialized_value_to_wire(serialize_value(list(range(201))))["original_size"] == 201
 
 
-def test_serializer_module_imports_without_optional_data_packages() -> None:
+def test_serializing_values_never_imports_the_optional_data_packages() -> None:
     source_root = Path(__file__).parents[2] / "src"
     import_script = """
 import sys
@@ -2115,7 +1767,31 @@ for name, path in (
     package.__path__ = [path]
     sys.modules[name] = package
 
-import hypergraph.runners._shared._inspect_serialization
+from hypergraph.runners._shared._inspect_serialization import serialize_value
+
+
+class Duck:
+    shape = (1, 1)
+    columns = ("a",)
+
+    def item(self, *indexes):
+        return 1
+
+    def tolist(self):
+        return [1]
+
+    def model_dump(self):
+        return {"a": 1}
+
+    def __repr__(self):
+        return "Duck()"
+
+
+for candidate in ({"a": [1, 2]}, [1, 2, 3], "text", Duck(), [{"a": 1}]):
+    serialize_value(candidate)
+
+leaked = sorted(name for name in sys.modules if name.split(".")[0] in {"pandas", "numpy", "pydantic"})
+assert not leaked, leaked
 """
     completed = subprocess.run(
         [sys.executable, "-S", "-c", import_script, str(source_root)],

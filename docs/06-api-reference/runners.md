@@ -1469,24 +1469,20 @@ recognized Pydantic models, exact NumPy `ndarray` values, exact pandas
 `DataFrame` values, and a user-supplied `MappingProxyType` backed by an exact
 `dict`.
 
-Trusted NumPy, pandas, and Pydantic adapters use canonical class provenance,
-not mutable public aliases. Replacing `numpy.ndarray`, `pandas.DataFrame`, or
-`pydantic.BaseModel` with a custom class does not make that class trusted.
+Trusted NumPy, pandas, and Pydantic adapters dispatch on exact class identity
+resolved from the library's own defining module, not mutable public aliases.
+Replacing `numpy.ndarray`, `pandas.DataFrame`, or `pydantic.BaseModel` with a
+custom class does not make that class trusted, and a subclass is not the exact
+class.
 
-Within the documented rank and size limits, exact arrays with canonical NumPy
-1.x and 2.x `ndarray` provenance remain structured. An exact pandas
-`DataFrame` is structured only when it has a recognized trusted NumPy-backed
-internal storage layout: standard NumPy-backed storage Hypergraph knows how to
-inspect. An allowed pandas version with an unrecognized internal storage layout
-becomes a bounded `unsupported DataFrame storage` placeholder without calling
-DataFrame `repr`. An ExtensionArray-backed DataFrame—one whose data blocks, row
-axis, or column axis use extension storage—gets the narrower
-`unsupported extension-backed DataFrame` result without invoking extension
-hooks. This is an
-implementation safety boundary, not an all-version guarantee; package version
-compatibility alone does not make an unknown internal storage layout safe to
-traverse. DataFrame `repr` delegates to extension hooks, so both storage
-placeholders bypass it.
+Within the documented rank and size limits, exact NumPy `ndarray` values remain
+structured. An exact pandas `DataFrame` is read through pandas' public API
+(`shape`, `columns`, `iloc`), and only for the displayed corner, so storage
+layout never decides whether a frame renders: NumPy-backed, nullable
+extension-backed and Arrow-backed DataFrames all render as bounded tables, as
+do datetime columns. If that bounded read raises, the value becomes a bounded
+`unsupported DataFrame storage` placeholder without calling DataFrame `repr`,
+so an unreadable frame degrades instead of failing the run.
 
 Unsupported subclasses and custom protocols use a whole-value bounded `repr`
 fallback for each rendered occurrence instead of calling advertised traversal

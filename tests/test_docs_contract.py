@@ -787,13 +787,12 @@ def test_inspect_docs_pin_observational_serialization_and_background_identity() 
         assert "backed by an exact `dict`" in serialization_docs
         assert "proxy backed by a custom mapping" in serialization_docs
         assert "whole-value bounded `repr` fallback" in serialization_docs
-        assert "canonical class provenance" in serialization_docs
+        assert "exact class identity" in serialization_docs
         assert "mutable public aliases" in serialization_docs
-        assert "standard NumPy-backed storage" in serialization_docs
-        assert "ExtensionArray-backed DataFrame" in serialization_docs
-        assert "unsupported extension-backed DataFrame" in serialization_docs
+        assert "pandas' public API" in serialization_docs
+        assert "extension-backed and Arrow-backed DataFrames" in serialization_docs
+        assert "unsupported DataFrame storage" in serialization_docs
         assert "without calling DataFrame `repr`" in serialization_docs
-        assert "delegates to extension hooks" in serialization_docs
 
     for result_type in (RunResult, MapResult):
         doc = inspect.getdoc(result_type.inspect)
@@ -857,20 +856,30 @@ def test_inspect_docs_pin_array_storage_compatibility_truth() -> None:
     run_inspect = _scoped_section(run_result, "### inspect()")
     fixed = _scoped_section(changelog, "### Fixed")
 
+    # The live pages state the behavior shipping today: the DataFrame reader
+    # goes through pandas' public API, so storage layout no longer decides
+    # whether a frame renders.
     for serialization_docs in (
         " ".join(debug.split()),
         " ".join(run_inspect.split()),
-        " ".join(fixed.split()),
     ):
-        assert "canonical NumPy 1.x and 2.x `ndarray` provenance" in serialization_docs
-        assert "recognized trusted NumPy-backed internal storage layout" in serialization_docs
-        assert "allowed pandas version with an unrecognized internal storage layout" in serialization_docs
+        assert "exact NumPy" in serialization_docs
+        assert "pandas' public API (`shape`, `columns`, `iloc`)" in serialization_docs
+        assert "only for the displayed corner" in serialization_docs
+        assert "storage layout never decides whether a frame renders" in serialization_docs
+        assert "extension-backed and Arrow-backed DataFrames" in serialization_docs
         assert "unsupported DataFrame storage" in serialization_docs
         assert "without calling DataFrame `repr`" in serialization_docs
-        assert "data blocks, row axis, or column axis" in serialization_docs
-        assert "unsupported extension-backed DataFrame" in serialization_docs
-        assert "without invoking extension hooks" in serialization_docs
-        assert "implementation safety boundary, not an all-version guarantee" in serialization_docs
+        assert "degrades instead of failing the run" in serialization_docs
+        # The private-block-manager vocabulary is gone from the live pages.
+        assert "unsupported extension-backed DataFrame" not in serialization_docs
+        assert "internal storage layout" not in serialization_docs
+
+    # The changelog entry is release history, not a behavior mirror: it keeps
+    # describing the state that shipped in its own release.
+    normalized_fixed = " ".join(fixed.split())
+    assert "unsupported DataFrame storage" in normalized_fixed
+    assert "unsupported extension-backed DataFrame" in normalized_fixed
 
     normalized_debug = " ".join(debug.split())
     assert "optional `examples` dependency range" in normalized_debug
