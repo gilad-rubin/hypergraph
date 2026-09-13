@@ -23,8 +23,11 @@ from hypergraph import (
     interrupt,
 )
 from hypergraph.checkpointers import (
+    BlobSerializer,
+    BlobStore,
     BoundaryState,
     Checkpointer,
+    FileBlobStore,
     MemoryCheckpointer,
     NodeBoundary,
     PendingNode,
@@ -1305,3 +1308,20 @@ def test_durable_host_docs_pin_public_contract() -> None:
     for excluded in ("cancel_oldest", "cancel_newest", "admission_key"):
         assert excluded not in host_api
         assert excluded not in " ".join(_hypergraph_all())
+
+
+def test_blob_serializer_docs_track_its_contract() -> None:
+    """The three blob exports keep the constructor and store shapes the checkpointers page documents."""
+    checkpointers = _read("docs/06-api-reference/checkpointers.md")
+
+    assert tuple(inspect.signature(BlobSerializer).parameters) == ("store", "lossy")
+    assert tuple(inspect.signature(FileBlobStore).parameters) == ("root",)
+    assert tuple(inspect.signature(BlobStore.put).parameters) == ("self", "data")
+    assert tuple(inspect.signature(BlobStore.get).parameters) == ("self", "ref")
+    assert isinstance(FileBlobStore("."), BlobStore)
+
+    assert "from hypergraph.checkpointers import BlobSerializer, FileBlobStore, SqliteCheckpointer" in checkpointers
+    assert "serializer=BlobSerializer(FileBlobStore(" in checkpointers
+    assert "`put(bytes) -> ref`" in checkpointers and "`get(ref) -> bytes`" in checkpointers
+    assert '{"$bytes": "<sha256>"}' in checkpointers
+    assert "never deletes a blob" in checkpointers

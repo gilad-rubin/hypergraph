@@ -135,6 +135,28 @@ class TestBlobSerializer:
         s = self._serializer(tmp_path)
         assert s.deserialize(s.serialize(Row(seed=3, name="r", blob=b"\x00"))) == {"name": "r", "blob": b"\x00", "extra": [3]}
 
+    def test_put_syncs_the_blob_before_naming_it(self, tmp_path, monkeypatch):
+        import os
+
+        from hypergraph.checkpointers import FileBlobStore
+
+        events: list[str] = []
+        real_fsync, real_replace = os.fsync, os.replace
+
+        def fsync(fd):
+            events.append("fsync")
+            real_fsync(fd)
+
+        def replace(src, dst):
+            events.append("replace")
+            real_replace(src, dst)
+
+        monkeypatch.setattr(os, "fsync", fsync)
+        monkeypatch.setattr(os, "replace", replace)
+        FileBlobStore(tmp_path).put(b"pdf")
+        assert events[:2] == ["fsync", "replace"]  # the bytes, then the name
+        assert events.count("fsync") >= 2  # ...then the folder entry that holds the name
+
     def test_corrupt_blob_is_refused(self, tmp_path):
         from hypergraph.checkpointers import BlobCorruptError
 

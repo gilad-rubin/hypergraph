@@ -110,7 +110,12 @@ class BlobCorruptError(ValueError):
 
 
 class FileBlobStore:
-    """A ``BlobStore`` over one folder: ``<root>/<first two hex>/<sha256>``, written atomically, never overwritten."""
+    """A ``BlobStore`` over one folder: ``<root>/<first two hex>/<sha256>``.
+
+    A blob is written to a temporary file, synced to disk, then named: a reference the checkpoint has committed never
+    dangles after a crash. Files are never overwritten (only a corrupt one is healed) and never deleted: prune the
+    folder yourself once the runs that reference it are gone.
+    """
 
     def __init__(self, root: str | Path):
         self._root = Path(root)
@@ -131,12 +136,18 @@ class FileBlobStore:
             if path.read_bytes() == data:
                 return ref
             path.unlink()  # a corrupt file under a content hash is rewritten, never kept
+        new_shard = not path.parent.exists()
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".", suffix=".part")
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(data)
+                f.flush()
+                os.fsync(f.fileno())  # the bytes reach disk before the name does
             os.replace(tmp, path)
+            _fsync_dir(path.parent)  # ...and the name reaches disk before the checkpoint row can commit it
+            if new_shard:
+                _fsync_dir(self._root)
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
@@ -151,6 +162,18 @@ class FileBlobStore:
         if hashlib.sha256(data).hexdigest() != ref:
             raise BlobCorruptError(f"blob {ref!r} under {self._root} does not match its content hash")
         return data
+
+
+def _fsync_dir(path: Path) -> None:
+    """Flush a directory entry to disk; a no-op where the platform cannot open a directory (Windows)."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 _BYTES_KEY = "$bytes"

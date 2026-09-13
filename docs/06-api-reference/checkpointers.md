@@ -204,7 +204,19 @@ consumed a raw graph input could never be satisfied on resume.
   `bytes` (a PDF, an image) between nodes, use `BlobSerializer(FileBlobStore(dir))`:
   the bytes live once in the store, by content hash, and the checkpoint keeps a
   `{"$bytes": "<sha256>"}` reference. Any object with `put(bytes) -> ref` and
-  `get(ref) -> bytes` is a `BlobStore`.
+  `get(ref) -> bytes` is a `BlobStore`. The store never deletes a blob: prune
+  the folder yourself once the runs that reference it are gone.
+
+```python
+from hypergraph.checkpointers import BlobSerializer, FileBlobStore, SqliteCheckpointer
+
+checkpointer = SqliteCheckpointer(
+    "runs.db",
+    serializer=BlobSerializer(FileBlobStore("runs.blobs")),
+)
+# A node may now take or return raw bytes. The checkpoint row keeps
+# {"$bytes": "<sha256>"}; runs.blobs/<2 hex>/<sha256> keeps the bytes, once.
+```
 
 ```python
 await checkpointer.create_run("wf-1", graph_name="demo", inputs={"x": 5})
