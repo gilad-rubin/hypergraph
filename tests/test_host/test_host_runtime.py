@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from hypergraph import AsyncRunner, Graph, HostRuntime, RunHome, node, serve
+from hypergraph import AsyncRunner, Graph, HostRuntime, RunHome, WaitingCondition, node, serve
 from hypergraph.checkpointers.types import WorkflowStatus
 from hypergraph.host.host import Host
 
@@ -21,6 +21,27 @@ def _increment_graph(name: str, *, started: asyncio.Event | None = None, release
         return x + 1
 
     return Graph([increment], name=name)
+
+
+def _gated_increment_graph(name: str, *, started: dict[int, asyncio.Event], release: dict[int, asyncio.Event]) -> Graph:
+    """One Definition whose every Run announces itself and parks on its OWN gate."""
+
+    @node(output_name="out")
+    async def increment(x: int) -> int:
+        started[x].set()
+        await release[x].wait()
+        return x + 1
+
+    return Graph([increment], name=name)
+
+
+async def _stored_cap(path) -> int | None:
+    """The active-Run cap as a SECOND process would read it out of the store."""
+    opened = RunHome.open(path)
+    try:
+        return opened.max_active_runs
+    finally:
+        await opened.close()
 
 
 async def _terminal(client, ref):
@@ -364,6 +385,112 @@ class TestStableWorkerId:
     async def test_a_non_string_worker_id_is_refused_by_name(self, tmp_path):
         with pytest.raises(TypeError, match="worker_id"):
             HostRuntime(tmp_path / "runs.db", worker_id=7)
+
+
+class TestDeclaredActiveRunCap:
+    """A runtime that owns the Home also declares its work-admission cap.
+
+    `serve()` takes an already-open Home, so its caller wrote
+    `RunHome.open(uri, max_active_runs=4)` themselves. `HostRuntime` opens the
+    Home on its own, so without this keyword a deployment had to reach into
+    the runtime's private Home after construction and hope the assignment
+    landed before the worker's first claim scan.
+    """
+
+    async def test_a_declared_cap_is_written_into_the_store_the_runtime_opens(self, tmp_path):
+        path = tmp_path / "runs.db"
+        runtime = HostRuntime(path, deployment_version="v1", max_active_runs=4)
+        try:
+            assert runtime.client is not None  # opening the Home writes the cap through
+            assert await _stored_cap(path) == 4
+        finally:
+            await runtime.close()
+
+    async def test_omitting_the_cap_adopts_the_stored_one_and_an_explicit_none_clears_it(self, tmp_path):
+        """`open()`'s three-state rule, carried unchanged onto the runtime.
+
+        A plain `None` default would make every restart of a supervised
+        deployment silently overwrite the cap an operator tuned.
+        """
+        path = tmp_path / "runs.db"
+        configured = RunHome.open(path, max_active_runs=3)
+        await configured.close()
+
+        adopting = HostRuntime(path, deployment_version="v1")
+        try:
+            assert adopting.client is not None
+            assert await _stored_cap(path) == 3
+        finally:
+            await adopting.close()
+
+        unlimited = HostRuntime(path, deployment_version="v1", max_active_runs=None)
+        try:
+            assert unlimited.client is not None
+            assert await _stored_cap(path) is None
+        finally:
+            await unlimited.close()
+
+    @pytest.mark.parametrize("cap", [1, 2])
+    async def test_the_declared_cap_bounds_how_many_runs_execute_at_once(self, tmp_path, cap):
+        """Three submissions, `cap` of them executing, the rest ADMISSION_LIMITED.
+
+        Freeing one slot admits exactly the next Run in claim order, which is
+        what separates "the cap held it back" from "the worker was slow".
+        """
+        started = {x: asyncio.Event() for x in (1, 2, 3)}
+        release = {x: asyncio.Event() for x in (1, 2, 3)}
+        graph = _gated_increment_graph("gated", started=started, release=release)
+        runtime = HostRuntime(tmp_path / "runs.db", deployment_version="v1", worker_id="capped", max_active_runs=cap)
+        try:
+            host = await runtime.serving(graph)
+            receipts = {x: await host.submit(graph, {"x": x}, workflow_id=f"wf-{x}") for x in (1, 2, 3)}
+            admitted = list(range(1, cap + 1))
+
+            for x in admitted:
+                await asyncio.wait_for(started[x].wait(), timeout=10)
+
+            for x in (x for x in (1, 2, 3) if x not in admitted):
+                assert not started[x].is_set()
+                view = await runtime.client.get(receipts[x].run_ref)
+                assert view is not None
+                # Held, never rejected: no runs row yet, and a typed reason why.
+                assert view.status is None
+                assert view.waiting is WaitingCondition.ADMISSION_LIMITED
+
+            release[admitted[0]].set()  # one slot frees
+            await asyncio.wait_for(started[cap + 1].wait(), timeout=10)
+
+            for event in release.values():
+                event.set()
+            for x in (1, 2, 3):
+                view = await asyncio.wait_for(_terminal(runtime.client, receipts[x].run_ref), timeout=15)
+                assert view.status == WorkflowStatus.COMPLETED
+        finally:
+            for event in release.values():
+                event.set()
+            await runtime.close()
+
+    @pytest.mark.parametrize("bad", [0, -1, True, 2.0, "2"])
+    def test_a_cap_that_is_not_a_positive_int_or_none_is_refused_at_construction(self, tmp_path, bad):
+        with pytest.raises(ValueError, match="max_active_runs"):
+            HostRuntime(tmp_path / "runs.db", max_active_runs=bad)
+
+    def test_the_refusal_names_the_fix_and_leaves_no_half_open_home_behind(self, tmp_path):
+        path = tmp_path / "runs.db"
+        with pytest.raises(ValueError, match="How to fix"):
+            HostRuntime(path, max_active_runs=0)
+        assert not path.exists()
+
+    async def test_a_deployment_declares_its_name_and_its_cap_in_one_constructor(self, tmp_path):
+        """Both knobs reach their destinations: the worker's name, the store's cap."""
+        path = tmp_path / "runs.db"
+        runtime = HostRuntime(path, deployment_version="v1", worker_id="panda-api", max_active_runs=2)
+        try:
+            assert runtime.client is not None
+            assert runtime._worker_id == "panda-api"
+            assert await _stored_cap(path) == 2
+        finally:
+            await runtime.close()
 
 
 class TestLiveCoverage:
