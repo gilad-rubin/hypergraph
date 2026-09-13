@@ -169,6 +169,11 @@ def validate_item_inputs(
             )
         )
 
+    # Suggestion candidates: every address this run could still accept. Narrowing
+    # to the missing *required* set would offer a name that silently drops an
+    # optional value the user meant to pass (review of #90).
+    fillable = sorted(expected_inputs - provided)
+
     if unknown:
         stale_exposed_message = _build_stale_exposed_address_message(
             unknown=unknown,
@@ -179,6 +184,7 @@ def validate_item_inputs(
         _warn_on_unrecognized_inputs(
             unknown=unknown,
             expected_inputs=expected_inputs,
+            fillable=fillable,
             active_nodes=ctx.active_nodes,
         )
 
@@ -193,6 +199,7 @@ def validate_item_inputs(
         missing=sorted(missing_required),
         provided=list(provided),
         unrecognized=sorted(unknown),
+        fillable=fillable,
     )
 
     raise MissingInputError(
@@ -228,12 +235,15 @@ def _build_missing_input_message(
     missing: list[str],
     provided: list[str],
     unrecognized: list[str],
+    fillable: list[str],
 ) -> str:
     """Build a helpful error message for missing inputs.
 
     Suggestions are keyed by the names the user actually typed that the graph
-    does not recognize, and are drawn only from the still-missing addresses --
-    so the answer offered is always a name that would satisfy this run.
+    does not recognize, and drawn from ``fillable`` -- every address this run
+    could still accept, optional ones included. Offering only the missing
+    *required* addresses would answer a typo'd optional name with a different
+    parameter, and taking that advice silently drops the user's value.
     """
     from hypergraph.graph.addressing import describe_addressed_input, format_did_you_mean
 
@@ -254,7 +264,7 @@ def _build_missing_input_message(
     if unrecognized:
         lines = []
         for name in sorted(unrecognized):
-            clause = format_did_you_mean(name, sorted_missing)
+            clause = format_did_you_mean(name, fillable)
             lines.append(f"  - {name!r}: {clause}" if clause else f"  - {name!r}")
         msg += "\n\nUnrecognized inputs:\n" + "\n".join(lines)
 
@@ -481,9 +491,15 @@ def _warn_on_unrecognized_inputs(
     *,
     unknown: set[str],
     expected_inputs: set[str],
+    fillable: list[str],
     active_nodes: dict[str, HyperNode],
 ) -> None:
-    """Warn when extra provided keys are outside the active graph scope."""
+    """Warn when extra provided keys are outside the active graph scope.
+
+    This is the surface where a typo costs the most: an unrecognized value is
+    dropped, the run completes, and the parameter falls back to its default. So
+    the warning carries the same suggestion the missing-input error would.
+    """
     if not unknown:
         return
 
@@ -495,6 +511,7 @@ def _warn_on_unrecognized_inputs(
             unknown=unknown,
             expected_inputs=expected_inputs,
             active_nodes=active_nodes,
+            fillable=fillable,
         ),
         UserWarning,
         stacklevel=4,
@@ -507,8 +524,11 @@ def _build_internal_override_message(
     unknown: set[str],
     expected_inputs: set[str],
     active_nodes: dict[str, HyperNode],
+    fillable: list[str] | None = None,
 ) -> str:
     """Create a clear internal override message with producer mapping."""
+    from hypergraph.graph.addressing import format_did_you_mean
+
     unexpected = sorted(internal_edge | unknown)
     message = [f"Providing values for internal parameters: {unexpected}."]
 
@@ -524,6 +544,10 @@ def _build_internal_override_message(
 
     if unknown:
         message.append(f"Not recognized in active graph scope: {sorted(unknown)}.")
+        for name in sorted(unknown):
+            clause = format_did_you_mean(name, fillable or ())
+            if clause:
+                message.append(f"{name!r}: {clause}")
 
     message.append(f"Expected inputs: {sorted(expected_inputs)}")
     return " ".join(message)

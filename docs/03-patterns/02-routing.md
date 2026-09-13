@@ -394,30 +394,46 @@ def route_by_tier(user_tier: str | None) -> str | None:
 Hypergraph validates routing at graph construction:
 
 ```python
-@route(targets=["step_a", "step_b", END])
+@route(targets=["step_c", END])  # Typo - the node is called 'step_b'
 def decide(x: int) -> str:
-    return "step_c"  # Typo - not in targets
+    return "step_c"
 
 graph = Graph([decide, step_a, step_b])
-# GraphConfigError: Route target 'step_c' not found.
-# Valid targets: ['step_a', 'step_b', 'END']
-# Did you mean 'step_a'?
+# GraphConfigError: Gate 'decide' targets unknown node 'step_c'
+#
+#   -> Target 'step_c' is not in the graph
+#   -> Available nodes: ['decide', 'step_a', 'step_b']
+#
+# How to fix:
+#   1. Add a node named 'step_c' to the graph, OR
+#   2. Remove 'step_c' from the gate's targets
+#
+#   Did you mean 'step_a' or 'step_b'?
 ```
+
+A gate's *declared* targets are checked when the graph is built. What the routing
+function *returns* can only be checked when it runs — see below.
 
 ### Invalid Return Values at Runtime
 
 If a routing function returns a value not in its targets:
 
 ```python
-@route(targets=["a", "b"])
+@route(targets=["step_a", "step_b", END])
 def decide(x: int) -> str:
-    return "nonexistent"  # Not in targets!
+    return "step_c"  # Not in targets!
 
-graph = Graph([decide, a, b])
-result = runner.run(graph, {"x": 5})
+graph = Graph([decide, step_a, step_b])
+result = runner.run(graph, {"x": 5}, error_handling="continue")
 
 # result.status == RunStatus.FAILED
-# result.error: ValueError: invalid target 'nonexistent'
+# result.error: ValueError: Gate 'decide' returned invalid target 'step_c'
+#
+#   -> Valid targets: ['END', 'step_a', 'step_b']
+#
+# How to fix: Return one of the targets listed in @route(targets=[...])
+#
+#   Did you mean 'step_a' or 'step_b'?
 ```
 
 ### Type Safety

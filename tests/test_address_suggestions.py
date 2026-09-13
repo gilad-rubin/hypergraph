@@ -67,6 +67,17 @@ class TestLeafOnlyRegression:
             )
         assert "  - 'embeder.indexer.overwrite': Did you mean 'embedder.indexer.overwrite'?" in str(exc.value)
 
+    def test_providing_nothing_at_all_offers_no_guess(self):
+        """The old matcher's "discoverability" fallback -- suggest some valid
+        input nobody typed -- was the #90 bug. Nothing typed, nothing guessed."""
+        with pytest.raises(MissingInputError) as exc:
+            SyncRunner().run(_nested_outer())
+
+        message = str(exc.value)
+        assert "Did you mean" not in message
+        assert "Unrecognized inputs" not in message
+        assert "(address as 'embedder.indexer.docs')" in message
+
     def test_complete_miss_lists_valid_names_without_guessing(self):
         with pytest.warns(UserWarning), pytest.raises(MissingInputError) as exc:
             SyncRunner().run(_nested_outer(), {"quux": 1})
@@ -76,6 +87,46 @@ class TestLeafOnlyRegression:
         assert "Unrecognized inputs:\n  - 'quux'" in message
         assert "(address as 'embedder.indexer.docs')" in message
         assert "(address as 'embedder.indexer.overwrite')" in message
+
+
+class TestOptionalInputsAreCandidatesToo:
+    """Review of #90: drawing candidates from the missing *required* set only
+    answers a typo'd optional name with a different parameter, and taking that
+    advice completes the run while silently dropping the value."""
+
+    @staticmethod
+    def _optional_graph() -> Graph:
+        @node(output_name="total")
+        def add(alpha: int, alpha_two: int = 7) -> int:
+            return alpha + alpha_two
+
+        return Graph([Graph([add], name="b").as_node(namespaced=True)], name="a")
+
+    def test_a_typod_optional_input_is_offered_its_own_address(self):
+        graph = self._optional_graph()
+        assert sorted(graph.inputs.all) == ["b.alpha", "b.alpha_two"]
+        assert sorted(graph.inputs.required) == ["b.alpha"]
+
+        with pytest.warns(UserWarning), pytest.raises(MissingInputError) as exc:
+            SyncRunner().run(graph, {"a.b.alpha_tw": 3})
+
+        message = str(exc.value)
+        assert "  - 'a.b.alpha_tw': Did you mean 'b.alpha_two'?" in message
+        assert "'b.alpha'?" not in message
+
+    def test_the_warning_that_precedes_a_silent_drop_carries_the_suggestion(self):
+        """No required input is missing here, so nothing raises: the run
+        COMPLETES and 'alpha_two' falls back to its default while the value the
+        user passed is thrown away. The warning is the only signal there is."""
+        with pytest.warns(UserWarning) as caught:
+            result = SyncRunner().run(self._optional_graph(), {"b.alpha": 1, "alpha_two": 99})
+
+        assert result.values == {"b.total": 8}  # not 100 -- the value was dropped
+        assert "'alpha_two': Did you mean 'b.alpha_two'?" in str(caught[0].message)
+
+    def test_taking_the_suggestion_makes_the_value_count(self):
+        result = SyncRunner().run(self._optional_graph(), {"b.alpha": 1, "b.alpha_two": 99})
+        assert result.values == {"b.total": 100}
 
 
 class TestRanking:
@@ -151,6 +202,17 @@ class TestEveryNameTakingSurfaceUsesTheEngine:
             _nested_outer().select("index")
         assert "Did you mean 'embedder.indexer.index'?" in str(exc.value)
 
+    def test_select_keys_each_suggestion_by_the_name_that_was_rejected(self):
+        """select() reports every invalid name at once, so an unkeyed clause
+        would read as the answer for all of them."""
+        with pytest.raises(ValueError) as exc:
+            _nested_outer().select("index", "indexer.indx", "quux")
+
+        message = str(exc.value)
+        assert "  - 'index': Did you mean 'embedder.indexer.index'?" in message
+        assert "  - 'indexer.indx': Did you mean 'embedder.indexer.index'?" in message
+        assert "'quux':" not in message  # no close output -- no invented clause
+
     def test_select_on_a_complete_miss_still_lists_valid_outputs(self):
         with pytest.raises(ValueError) as exc:
             _nested_outer().select("quux")
@@ -170,9 +232,8 @@ class TestEveryNameTakingSurfaceUsesTheEngine:
             Graph([producer, consumer])
         assert "Did you mean 'done_signal'?" in str(exc.value)
 
-    def test_gate_target_typo_suggests_the_node_the_docs_promise(self):
-        """README and docs/03-patterns/02-routing.md both advertise a
-        ``Did you mean '<node>'?`` line here; before #90 none was emitted."""
+    def test_gate_target_typo_suggests_the_node_at_build_time(self):
+        """A gate's *declared* target is checked when the graph is built."""
 
         @route(targets=["retyr", END])
         def decide(x: int) -> str:
@@ -185,3 +246,27 @@ class TestEveryNameTakingSurfaceUsesTheEngine:
         with pytest.raises(GraphConfigError) as exc:
             Graph([decide, retry])
         assert "Did you mean 'retry'?" in str(exc.value)
+
+    def test_returned_target_typo_suggests_a_declared_target_at_runtime(self):
+        """What a routing function *returns* is only checkable when it runs.
+        README, docs/01-introduction/what-is-hypergraph.md,
+        docs/03-patterns/02-routing.md and docs/06-api-reference/gates.md all
+        quote this message; before the #90 repair it carried no suggestion and
+        rendered its target list as ``["'step_a'", 'END']``."""
+
+        @node(output_name="a")
+        def step_a(x: int) -> str:
+            return "a"
+
+        @node(output_name="b")
+        def step_b(x: int) -> str:
+            return "b"
+
+        @route(targets=["step_a", "step_b", END])
+        def decide(x: int) -> str:
+            return "step_c"
+
+        result = SyncRunner().run(Graph([decide, step_a, step_b]), {"x": 5}, error_handling="continue")
+        message = str(result.error)
+        assert "  -> Valid targets: ['END', 'step_a', 'step_b']" in message
+        assert "Did you mean 'step_a' or 'step_b'?" in message

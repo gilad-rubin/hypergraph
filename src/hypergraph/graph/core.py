@@ -1198,9 +1198,11 @@ class Graph:
         all_outputs = set(self.outputs)
         invalid = [n for n in names if n not in all_outputs]
         if invalid:
-            suggestion = format_did_you_mean(invalid[0], all_outputs)
-            hint = f" {suggestion}" if suggestion else ""
-            raise ValueError(f"Cannot select {invalid}: not graph outputs.{hint} Valid outputs: {self.outputs}")
+            # One clause per rejected name: select() reports the whole list at
+            # once, so an unkeyed suggestion would read as the answer for all
+            # of them.
+            clauses = [f"\n  - {name!r}: {clause}" for name in invalid if (clause := format_did_you_mean(name, all_outputs))]
+            raise ValueError(f"Cannot select {invalid}: not graph outputs. Valid outputs: {self.outputs}" + "".join(clauses))
         if len(names) != len(set(names)):
             raise ValueError(f"select() requires unique output names. Received: {names}")
 

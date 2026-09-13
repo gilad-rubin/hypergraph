@@ -642,7 +642,10 @@ def decide(x: int) -> str:
     return "nonexistent"
 
 Graph([decide])
-# GraphConfigError: Route target 'nonexistent' references unknown node.
+# GraphConfigError: Gate 'decide' targets unknown node 'nonexistent'
+#
+#   -> Target 'nonexistent' is not in the graph
+#   -> Available nodes: ['decide']
 ```
 
 **Self-targeting:**
@@ -689,7 +692,11 @@ graph = Graph([decide, a, b])
 result = runner.run(graph, {"x": 5})
 
 # result.status == RunStatus.FAILED
-# result.error: ValueError: invalid target 'c'. Valid targets: ['a', 'b']
+# result.error: ValueError: Gate 'decide' returned invalid target 'c'
+#
+#   -> Valid targets: ['a', 'b']
+#
+# How to fix: Return one of the targets listed in @route(targets=[...])
 ```
 
 **Wrong return type for multi_target:**

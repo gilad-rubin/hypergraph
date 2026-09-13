@@ -14,8 +14,12 @@ function's consumers, exactly:
   ``graph/core.py`` and ``graph/input_spec.py``.
 - ``format_did_you_mean`` -- ``graph/core.py`` (``Graph.bind``,
   ``Graph.select``), ``graph/validation.py`` (``wait_for`` names, gate targets)
-  and ``runners._shared.validation`` (run/map input validation). It is the one
-  "did you mean?" engine; no caller runs its own fuzzy match.
+  and ``runners._shared`` (``validation`` for run/map inputs,
+  ``routing_validation`` for a gate's returned target). It is the one engine
+  for *name and address* suggestions; no such caller runs its own fuzzy match.
+  ``host/client.py`` deliberately keeps its own ``get_close_matches`` for
+  durable batch item keys -- a different namespace, with no path structure to
+  rank by.
 - ``suggest_addresses`` -- the ranking half of that engine, called by
   ``format_did_you_mean`` and available to any caller that needs the ranked
   addresses without the rendered sentence.
@@ -155,11 +159,9 @@ def suggest_addresses(name: str, candidates: Iterable[str]) -> tuple[str, ...]:
     if not pool:
         return ()
     segments = name.split(".")
-    for tier in (_exact_suffix, _typo_at_same_depth, _typo_in_suffix, _whole_path_distance):
-        ranked = tier(name, segments, pool)
-        if ranked:
-            return ranked
-    return ()
+    # ``or`` short-circuits on the first non-empty tier -- this chain IS the
+    # ranking; a later tier never sees a name an earlier one answered.
+    return _exact_suffix(segments, pool) or _typo_at_same_depth(segments, pool) or _typo_in_suffix(segments, pool) or _whole_path_distance(name, pool)
 
 
 def format_did_you_mean(name: str, candidates: Iterable[str]) -> str:
@@ -184,13 +186,13 @@ def format_did_you_mean(name: str, candidates: Iterable[str]) -> str:
     return f"Did you mean {listed}, or {matches[-1]!r}?"
 
 
-def _exact_suffix(name: str, segments: list[str], pool: list[str]) -> tuple[str, ...]:
+def _exact_suffix(segments: list[str], pool: list[str]) -> tuple[str, ...]:
     """Candidates that end in exactly these segments (a missing address prefix)."""
     depth = len(segments)
     return tuple(candidate for candidate in pool if candidate.split(".")[-depth:] == segments)
 
 
-def _typo_at_same_depth(name: str, segments: list[str], pool: list[str]) -> tuple[str, ...]:
+def _typo_at_same_depth(segments: list[str], pool: list[str]) -> tuple[str, ...]:
     """Candidates of the same depth differing in exactly one mistyped segment."""
     depth = len(segments)
     scored = [
@@ -201,7 +203,7 @@ def _typo_at_same_depth(name: str, segments: list[str], pool: list[str]) -> tupl
     return _best(scored)
 
 
-def _typo_in_suffix(name: str, segments: list[str], pool: list[str]) -> tuple[str, ...]:
+def _typo_in_suffix(segments: list[str], pool: list[str]) -> tuple[str, ...]:
     """Deeper candidates whose trailing segments differ in exactly one typo."""
     depth = len(segments)
     scored = [
@@ -212,7 +214,7 @@ def _typo_in_suffix(name: str, segments: list[str], pool: list[str]) -> tuple[st
     return _best(scored)
 
 
-def _whole_path_distance(name: str, segments: list[str], pool: list[str]) -> tuple[str, ...]:
+def _whole_path_distance(name: str, pool: list[str]) -> tuple[str, ...]:
     """Last resort: closeness of the whole path, for a dropped middle segment."""
     scored = [(ratio, candidate) for candidate in pool if (ratio := _ratio(name, candidate)) >= _TYPO_CUTOFF]
     return _best(scored)
