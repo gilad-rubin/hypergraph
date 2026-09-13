@@ -123,6 +123,12 @@ remaining budget, so the effective policy must stay identical. A deliberate
 new lineage is free to change it: `fork_from=...`, `override_workflow=True`,
 or a new `workflow_id`.
 
+`map()` applies the same rule at the parent batch boundary, before any item
+executes and before the batch row is rewritten. A batch has no
+`fork_from`/`override_workflow` shortcut, so its new lineage is a fresh
+`workflow_id`. See
+[Batch Processing — Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
+
 Policy identity is separate from graph and cache identity: a policy change
 never triggers `GraphChangedError` and never invalidates cached successful
 outputs. Runs recorded before the manifest existed skip this validation; the

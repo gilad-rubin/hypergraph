@@ -241,7 +241,7 @@ Execute a graph multiple times with different inputs.
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
 - `event_processors` - Optional list of [event processors](events.md) to observe execution, merged after any processors the graph carries (see [Graph-Carried Processors](events.md#graph-carried-processors))
 - `show_progress` - Override the runner-level progress setting for this call.
-- `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. Creates a parent batch run with per-item child runs (`{workflow_id}/0`, `{workflow_id}/1`, ...). On re-run, completed items are skipped. See [Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
+- `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. Creates a parent batch run with per-item child runs (`{workflow_id}/0`, `{workflow_id}/1`, ...). On re-run, completed items are skipped. Re-running an existing batch first validates graph and retry-policy identity at the batch boundary, raising `GraphChangedError` or [`RetryPolicyChangedError`](errors.md#retrypolicychangederror-hg_retry_policy_changed) before any item executes; use a fresh `workflow_id` to adopt a changed graph or policy. See [Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
 - `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
 
 **Returns:** [`MapResult`](#mapresult) wrapping per-iteration RunResults with batch metadata
@@ -942,7 +942,7 @@ Execute graph multiple times concurrently.
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
 - `event_processors` - Optional list of [event processors](events.md) to observe execution, merged after any processors the graph carries (see [Graph-Carried Processors](events.md#graph-carried-processors))
 - `show_progress` - Override the runner-level progress setting for this call.
-- `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. Creates per-item child runs that can be skipped on re-run. See [Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
+- `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. Creates per-item child runs that can be skipped on re-run. Re-running an existing batch first validates graph and retry-policy identity at the batch boundary, raising `GraphChangedError` or [`RetryPolicyChangedError`](errors.md#retrypolicychangederror-hg_retry_policy_changed) before any item executes; use a fresh `workflow_id` to adopt a changed graph or policy. See [Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
 - `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
 
 **Example:**

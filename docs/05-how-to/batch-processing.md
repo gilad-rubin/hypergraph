@@ -515,6 +515,25 @@ assert results[0].log.steps[0].status == "restored"
 
 Restored items remain included in completed counts, but are also reported as a separate subset in `MapResult`, `MapLog`, parent events, and telemetry. Average item duration uses only freshly executed completed items with real logs, so a fully restored batch omits the average instead of displaying fake `0ms` work. This makes it safe to retry large batches — you only pay for the items that actually need re-processing, and the result shows which items were skipped.
 
+**Identity is checked at the batch boundary first.** Before any item runs — and before the parent batch row is rewritten — `map()` compares the graph and the retry/timeout policy you passed against the ones the stored batch actually ran, exactly as [`run()`](../06-api-reference/runners.md#run) does. A changed graph raises `GraphChangedError`; a changed policy raises `RetryPolicyChangedError` with the field-level diff. Without this, a resumed batch would hand back the *previous* graph's restored values while recording the new graph as the one that produced them.
+
+```python
+await runner.map(double_graph, {"x": [1, 2]}, map_over="x", workflow_id="batch")
+# → [{out: 2}, {out: 4}]
+
+await runner.map(triple_graph, {"x": [1, 2]}, map_over="x", workflow_id="batch")
+# GraphChangedError: Graph structure changed for workflow 'batch'.
+# Fork instead of resuming in place.
+```
+
+A new lineage adopts the change freely — for a batch that means a fresh `workflow_id` (`map()` has no `override_workflow`/`fork_from` shortcut):
+
+```python
+await runner.map(triple_graph, {"x": [1, 2]}, map_over="x", workflow_id="batch-v2")  # fine
+```
+
+Only identity is gated. Re-running a batch that already finished is still allowed, so you can top one up with extra items and restore the rest.
+
 **Compatibility.** Each completed item is matched by a persisted signature of its inputs, and that signature is authoritative: an item is restored only when its current inputs match, even if the item sits at the same position as before — changed or unmatched inputs re-execute fresh (never an error, never a stale result). Children persisted by pre-signature versions of hypergraph carry no signature, and only those legacy children keep the old position-based fallback: they are restored by their numeric index. Each stored child is restored at most once per resume, so duplicate inputs claim their matching runs one-for-one (in stable run-id order) and any extra duplicates execute fresh.
 
 ## When to Use Map vs Loop
