@@ -480,7 +480,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         inspection_settlement = InspectionSettlement(
             inspection_session if owns_inspection else None,
             transport=inspection_transport,
-            started_at=time.time(),
         )
         try:
             effective_show_progress = show_progress if show_progress is not None else getattr(self, "_show_progress", False)
@@ -504,6 +503,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         except BaseException as error:
             inspection_settlement.abort(error)
             raise
+        inspection_settlement.start()
         dispatcher = None
         run_row_created = False
         step_buffer: list[Any] = []
@@ -590,7 +590,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 run_row_created = True
         except BaseException as error:
             try:
-                await teardown.settle(dispatcher, settle_run_row=True)
+                await teardown.settle_completely(dispatcher, settle_run_row=True)
             except BaseException as final_error:
                 inspection_settlement.abort(final_error)
                 raise
@@ -833,7 +833,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             raise
         finally:
             try:
-                await teardown.settle(dispatcher, settle_run_row=terminal_error is not None)
+                await teardown.settle_completely(dispatcher, settle_run_row=terminal_error is not None)
             except BaseException as final_error:
                 inspection_settlement.abort(final_error)
                 raise
@@ -976,8 +976,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         inspection_settlement = InspectionSettlement(
             map_inspection_session,
             transport=inspection_transport,
-            started_at=time.time(),
         )
+        inspection_settlement.start()
         if not input_variations:
             map_result = MapResult(
                 results=(),
@@ -1092,13 +1092,13 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             completed_by_signature, completed_legacy_by_index = index_completed_child_runs(completed_runs, workflow_id)
 
             existing_limiter = self._get_concurrency_limiter()
-            teardown.limiter_token = (
+            teardown.adopt_limiter(
                 self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
             )
             map_stop_signal = get_stop_signal()
         except BaseException as error:
             try:
-                await teardown.settle(dispatcher, settle_run_row=True)
+                await teardown.settle_completely(dispatcher, settle_run_row=True)
             except BaseException as final_error:
                 inspection_settlement.abort(final_error, unstarted_item_indexes=tuple(range(len(input_variations))))
                 raise
@@ -1344,7 +1344,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             raise
         finally:
             try:
-                await teardown.settle(dispatcher, settle_run_row=terminal_error is not None)
+                await teardown.settle_completely(dispatcher, settle_run_row=terminal_error is not None)
             except BaseException as final_error:
                 inspection_settlement.abort(
                     final_error,

@@ -1,16 +1,27 @@
 """The exit ladder a run or a map walks, written once per runner family.
 
 Every exit from a template method — clean, stopped, paused, failed, or abrupt —
-owes the same four steps: settle the run row this call created, shut the
-dispatcher down, drop the stop-signal context token, and hand the workflow
-reservation back. Writing that ladder out at each exit is how the templates
-drifted: nine shutdown sites per file spelled the same guard three different
-ways, and only the async file remembered to forward checkpoint-save errors.
+owes the same steps in the same order: settle the run row this call created,
+shut the dispatcher down, forward this run's checkpoint-save errors, release a
+concurrency limiter it installed, drop the stop-signal context token, and hand
+the workflow reservation back. Writing that ladder out at each exit is how the
+templates drifted: nine shutdown sites per file spelled the same guard three
+different ways, and only the async file remembered the two middle steps.
 
-``RunTeardown`` owns the state those steps need, so each exit is one
-``settle(...)`` call with one guard spelling. ``InspectionSettlement`` is the
-matching single place an inspection session reaches a terminal snapshot, so a
-teardown that itself fails can never leave a notebook shell running forever.
+The ladder has two exit policies, and the templates need both:
+
+* :meth:`settle` is the ordinary exit. The first step that raises stops the
+  rest; the template records it as the run's terminal error and its ``finally``
+  finishes what this call did not reach.
+* :meth:`settle_completely` is the last chance — the template's ``finally`` and
+  its setup-failure handler. Every step runs even when an earlier one raised.
+
+Each step clears its own state only once it has succeeded, so a step that
+raised is retried by the next call and a step that succeeded is not repeated.
+
+``InspectionSettlement`` is the matching single place an inspection session
+reaches a terminal snapshot, so a teardown that itself fails can never leave a
+notebook shell running forever.
 """
 
 from __future__ import annotations
@@ -31,12 +42,7 @@ if TYPE_CHECKING:
 
 
 class RunTeardown:
-    """One sync run's or map's exit ladder.
-
-    Each step clears its own state only once it has succeeded, so calling
-    ``settle`` again after a step raised retries exactly that step — which is
-    what the template's ``finally`` relies on.
-    """
+    """One sync run's or map's exit ladder."""
 
     def __init__(
         self,
@@ -63,11 +69,29 @@ class RunTeardown:
         *,
         settle_run_row: bool = False,
     ) -> EventDispatcher | None:
-        """Walk the ladder; return the dispatcher that still owes a shutdown.
+        """Walk the ladder; the first step that raises stops the rest.
 
-        A later step runs even when an earlier one raised, and the first
-        exception is what propagates — the caller records it as the run's
-        terminal error and the template's ``finally`` retries what is left.
+        Returns the dispatcher that still owes a shutdown — ``None`` once it
+        has had one, and the caller's own dispatcher for a nested run, whose
+        dispatcher belongs to its parent.
+        """
+        if settle_run_row:
+            self._settle_run_row()
+        dispatcher = self._shut_down(dispatcher)
+        self._release_stop_signal()
+        self._reservation.release()
+        return dispatcher
+
+    def settle_completely(
+        self,
+        dispatcher: EventDispatcher | None,
+        *,
+        settle_run_row: bool = False,
+    ) -> EventDispatcher | None:
+        """Walk the whole ladder: a later step runs even if an earlier raised.
+
+        The exception that propagates is the LAST one raised, carrying the
+        earlier ones as its ``__context__`` — Python's ``finally`` re-raise.
         """
         try:
             try:
@@ -99,10 +123,10 @@ class RunTeardown:
 class AsyncRunTeardown:
     """One async run's or map's exit ladder.
 
-    Same ladder as :class:`RunTeardown`, plus the two steps only the async
-    templates have: forwarding this run's checkpoint-save errors to the caller
-    that asked for them, and releasing a concurrency limiter this call
-    installed.
+    Same ladder as :class:`RunTeardown`, with the two steps only the async
+    templates have sitting between the dispatcher shutdown and the stop signal:
+    forwarding this run's checkpoint-save errors to the caller that asked for
+    them, and releasing a concurrency limiter this call installed.
     """
 
     def __init__(
@@ -125,12 +149,16 @@ class AsyncRunTeardown:
         self._release_concurrency_limiter = release_concurrency_limiter
         self._signal_token: Any | None = None
         self._forwarded_checkpoint_errors = False
-        self.limiter_token: Any | None = None
+        self._limiter_token: Any | None = None
 
     def arm(self, workflow_id: str | None) -> None:
         """Bind the reservation to its final identity and publish its signal."""
         self._reservation.bind(workflow_id)
         self._signal_token = set_stop_signal(self._reservation.signal)
+
+    def adopt_limiter(self, token: Any | None) -> None:
+        """Take ownership of a concurrency-limiter token this call installed."""
+        self._limiter_token = token
 
     async def settle(
         self,
@@ -138,15 +166,37 @@ class AsyncRunTeardown:
         *,
         settle_run_row: bool = False,
     ) -> EventDispatcher | None:
-        """Walk the ladder; return the dispatcher that still owes a shutdown."""
+        """Walk the ladder; the first step that raises stops the rest."""
+        if settle_run_row:
+            await self._settle_run_row()
+        dispatcher = await self._shut_down(dispatcher)
+        self._forward_checkpoint_errors()
+        self._release_limiter()
+        self._release_stop_signal()
+        self._reservation.release()
+        return dispatcher
+
+    async def settle_completely(
+        self,
+        dispatcher: EventDispatcher | None,
+        *,
+        settle_run_row: bool = False,
+    ) -> EventDispatcher | None:
+        """Walk the whole ladder: a later step runs even if an earlier raised.
+
+        The exception that propagates is the LAST one raised, carrying the
+        earlier ones as its ``__context__`` — Python's ``finally`` re-raise.
+        """
         try:
             try:
-                if settle_run_row:
-                    await self._settle_run_row()
+                try:
+                    if settle_run_row:
+                        await self._settle_run_row()
+                finally:
+                    dispatcher = await self._shut_down(dispatcher)
             finally:
                 self._forward_checkpoint_errors()
                 self._release_limiter()
-                dispatcher = await self._shut_down(dispatcher)
         finally:
             try:
                 self._release_stop_signal()
@@ -170,10 +220,10 @@ class AsyncRunTeardown:
             self._checkpoint_error_sink(message)
 
     def _release_limiter(self) -> None:
-        if self.limiter_token is None or self._release_concurrency_limiter is None:
+        if self._limiter_token is None or self._release_concurrency_limiter is None:
             return
-        self._release_concurrency_limiter(self.limiter_token)
-        self.limiter_token = None
+        self._release_concurrency_limiter(self._limiter_token)
+        self._limiter_token = None
 
     def _release_stop_signal(self) -> None:
         if self._signal_token is None:
@@ -196,11 +246,14 @@ class InspectionSettlement:
         session: InspectionSession | MapInspectionSession | None,
         *,
         transport: NotebookInspectionTransport | None,
-        started_at: float,
     ) -> None:
         self._session = session
         self._transport = transport
-        self._started_at = started_at
+        self._started_at: float | None = None
+
+    def start(self) -> None:
+        """Start the duration clock; an abort before this reports 0.0."""
+        self._started_at = time.time()
 
     def publish(self, *, status: str, total_duration_ms: float, **detail: Any) -> Any:
         """Publish the terminal snapshot this run reached on its own terms.
@@ -223,9 +276,15 @@ class InspectionSettlement:
         if session is not None and not session.snapshot().terminal:
             session.finish(
                 status=RunStatus.FAILED.value,
-                total_duration_ms=(time.time() - self._started_at) * 1000,
+                total_duration_ms=self._elapsed_ms(),
                 error=error,
                 **detail,
             )
         elif self._transport is not None:
             self._transport.fail_to_start(error)
+
+    def _elapsed_ms(self) -> float:
+        """0.0 before the clock starts: nothing had run yet to take time."""
+        if self._started_at is None:
+            return 0.0
+        return (time.time() - self._started_at) * 1000

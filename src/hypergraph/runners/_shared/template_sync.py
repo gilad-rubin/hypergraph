@@ -460,7 +460,6 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         inspection_settlement = InspectionSettlement(
             inspection_session if owns_inspection else None,
             transport=inspection_transport,
-            started_at=time.time(),
         )
         try:
             effective_show_progress = show_progress if show_progress is not None else getattr(self, "_show_progress", False)
@@ -484,6 +483,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         except BaseException as error:
             inspection_settlement.abort(error)
             raise
+        inspection_settlement.start()
         dispatcher = None
         run_row_created = False
         step_buffer: list[Any] = []
@@ -565,7 +565,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 run_row_created = True
         except BaseException as error:
             try:
-                teardown.settle(dispatcher, settle_run_row=True)
+                teardown.settle_completely(dispatcher, settle_run_row=True)
             except BaseException as final_error:
                 inspection_settlement.abort(final_error)
                 raise
@@ -786,7 +786,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             raise
         finally:
             try:
-                teardown.settle(dispatcher, settle_run_row=terminal_error is not None)
+                teardown.settle_completely(dispatcher, settle_run_row=terminal_error is not None)
             except BaseException as final_error:
                 inspection_settlement.abort(final_error)
                 raise
@@ -923,8 +923,8 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         inspection_settlement = InspectionSettlement(
             map_inspection_session,
             transport=inspection_transport,
-            started_at=time.time(),
         )
+        inspection_settlement.start()
         if not input_variations:
             map_result = MapResult(
                 results=(),
@@ -1027,7 +1027,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             map_stop_signal = get_stop_signal()
         except BaseException as error:
             try:
-                teardown.settle(dispatcher, settle_run_row=True)
+                teardown.settle_completely(dispatcher, settle_run_row=True)
             except BaseException as final_error:
                 inspection_settlement.abort(final_error, unstarted_item_indexes=tuple(range(len(input_variations))))
                 raise
@@ -1223,7 +1223,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             raise
         finally:
             try:
-                teardown.settle(dispatcher, settle_run_row=terminal_error is not None)
+                teardown.settle_completely(dispatcher, settle_run_row=terminal_error is not None)
             except BaseException as final_error:
                 inspection_settlement.abort(
                     final_error,
