@@ -333,6 +333,18 @@ runner.run(Graph([do_work]), {"x": 5})
 
 `current_node_span()` returns `None` outside of node execution (for example, if called at module import time).
 
+`current_node_span` and `NodeSpanRef` are exported from `hypergraph` and
+`hypergraph.runners`, and their defining module, `hypergraph.runners.observability`,
+is a public path — an instrumentation library that soft-imports the accessor can
+depend on it:
+
+```python
+try:
+    from hypergraph.runners.observability import current_node_span
+except ImportError:  # hypergraph not installed
+    current_node_span = lambda: None
+```
+
 Mapped work uses a parent `map` span plus child graph spans per item:
 
 ```text

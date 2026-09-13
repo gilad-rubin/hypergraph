@@ -207,7 +207,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         parent_span_id: str | None,
         *,
         context: RunContext = DEFAULT_RUN_CONTEXT,
-        status: str | None = None,
+        status: RunStatus | None = None,
         error: BaseException | None = None,
         batch_summary: BatchSummary | None = None,
     ) -> None:
@@ -702,7 +702,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 start_time,
                 _parent_span_id,
                 context=run_context,
-                status=status.value,
+                status=status,
             )
             # Flush buffered steps ("exit" mode) and mark run completed
             if has_checkpointer:
@@ -770,7 +770,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         start_time,
                         _parent_span_id,
                         context=run_context,
-                        status=RunStatus.PAUSED.value,
+                        status=RunStatus.PAUSED,
                     )
                 if has_checkpointer:
                     from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
@@ -1363,7 +1363,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 start_time,
                 _parent_span_id,
                 context=RunContext(workflow_id=workflow_id, item_index=_item_index),
-                status=batch_summary.event_status_value,
+                status=batch_summary.event_status,
                 batch_summary=batch_summary,
             )
 

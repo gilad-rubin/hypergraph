@@ -9,10 +9,21 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from hypergraph._utils import plural
+
+# One status enum, not two. ``RunStatus`` is defined in ``events.types`` — the
+# lower-level, already-public surface that events are built from — and re-exported
+# here so ``hypergraph.RunStatus``, ``hypergraph.runners.RunStatus`` and
+# ``hypergraph.events.RunStatus`` are the same object: comparing a
+# ``RunResult.status`` with a ``RunEndEvent.status`` can no longer be silently False.
+from hypergraph.events.types import RunStatus as RunStatus
+
+# One error-handling alias, not two. Defined in ``nodes.graph_node`` (which cannot
+# import the runners package at runtime) and re-exported here, so adding a member
+# cannot make the two definitions disagree.
+from hypergraph.nodes.graph_node import ErrorHandling as ErrorHandling
 
 # results.py stays the import path these trace types have always had —
 # including for pickles that name it — so the unused ones are re-exported.
@@ -41,8 +52,6 @@ from hypergraph.runners.inspection import InspectionDisplay
 if TYPE_CHECKING:
     from hypergraph.diagnostics import Diagnostic
     from hypergraph.runners._shared._inspect import MapInspection, RunInspection
-
-ErrorHandling = Literal["raise", "continue"]
 
 
 @dataclass(frozen=True)
@@ -94,24 +103,6 @@ class FailureEvidence:
         return (
             f"FailureEvidence({self.node_name!r} | {type(self.error).__name__} | superstep {self.superstep} | {_format_duration(self.duration_ms)})"
         )
-
-
-class RunStatus(Enum):
-    """Status of a graph execution run.
-
-    Values:
-        COMPLETED: Run finished successfully
-        FAILED: Run encountered an error
-        PAUSED: Execution paused at an InterruptNode, waiting for user response
-        PARTIAL: Some map items completed, others failed (batch operations)
-        STOPPED: Run was cooperatively stopped via runner.stop()
-    """
-
-    COMPLETED = "completed"
-    FAILED = "failed"
-    PAUSED = "paused"
-    PARTIAL = "partial"
-    STOPPED = "stopped"
 
 
 def aggregate_run_status(results: Sequence[RunResult]) -> RunStatus:

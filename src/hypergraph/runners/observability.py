@@ -9,6 +9,11 @@ exact node span that triggered it, even when many nodes run concurrently.
 Zero coupling, mirroring ``cache_observer``: hypergraph knows nothing about
 the consumers; consumers soft-import this accessor and tolerate ``None``
 (no graph running, or a runner that does not publish spans).
+
+This module is public — a user-facing accessor cannot live behind an
+underscore. ``NodeSpanRef`` and :func:`current_node_span` are exported from
+``hypergraph`` and ``hypergraph.runners``; ``set_current_node_span`` and
+``reset_current_node_span`` are runner-internal and deliberately unexported.
 """
 
 from __future__ import annotations

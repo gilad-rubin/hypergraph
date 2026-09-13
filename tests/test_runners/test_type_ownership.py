@@ -132,7 +132,6 @@ ROOT_EXPORTS = (
     "RUN_READ_STATUS_VALUES",
     "WaitingCondition",
     "HostError",
-    "WorkerLockError",
     "AlreadyTerminalError",
     "DefinitionId",
     "WorkflowIdConflictError",
@@ -184,6 +183,9 @@ RUNNER_EXPORTS = (
     "SyncRunner",
     "AsyncRunner",
     "DaftRunner",
+    "NodeContext",
+    "NodeSpanRef",
+    "current_node_span",
 )
 
 RESULT_NAMES = (
@@ -307,7 +309,16 @@ def test_canonical_modules_and_legacy_pickle_lookups() -> None:
 
     for name in result_classes:
         canonical = getattr(canonical_results, name)
-        owner = "hypergraph.runners._shared.run_log" if name in TRACE_CLASSES else "hypergraph.runners._shared.results"
+        # The trace classes are defined beside their collector in ``run_log``, and
+        # ``RunStatus`` is the one status enum, defined one layer down in
+        # ``events.types``; ``results`` re-exports both. Every legacy pickle path
+        # still resolves to that single object, which is what this test protects.
+        if name == "RunStatus":
+            owner = "hypergraph.events.types"
+        elif name in TRACE_CLASSES:
+            owner = "hypergraph.runners._shared.run_log"
+        else:
+            owner = "hypergraph.runners._shared.results"
         assert canonical.__module__ == owner
         payload = f"chypergraph.runners._shared.types\n{name}\n.".encode()
         assert pickle.loads(payload) is canonical

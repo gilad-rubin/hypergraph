@@ -13,14 +13,21 @@ from hypergraph.diagnostics import Diagnostic, ErrorDetail
 
 
 class RunStatus(Enum):
-    """Status of a graph run in event context.
+    """Outcome of a graph run — the one status enum in the library.
+
+    This is the same object as ``hypergraph.RunStatus`` and
+    ``hypergraph.runners.RunStatus``; ``runners._shared.results`` re-exports it.
+    A ``RunResult.status`` and a ``RunEndEvent.status`` are therefore directly
+    comparable, and ``isinstance(result.status, hypergraph.events.RunStatus)``
+    holds. It is defined here because ``events`` is the lower layer: nothing
+    under ``hypergraph/events/`` imports ``hypergraph.runners``.
 
     Values:
         COMPLETED: Run finished successfully.
         FAILED: Run encountered an error.
-        PAUSED: Run paused at an interrupt.
-        PARTIAL: Run completed with mixed item outcomes.
-        STOPPED: Run stopped cooperatively.
+        PAUSED: Execution paused at an InterruptNode, waiting for user response.
+        PARTIAL: Some map items completed, others failed (batch operations).
+        STOPPED: Run was cooperatively stopped via ``runner.stop()``.
     """
 
     COMPLETED = "completed"

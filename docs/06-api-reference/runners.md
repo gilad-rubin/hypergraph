@@ -377,6 +377,18 @@ Translation runner: converts DAGs into chained Daft `df.with_column()` UDF calls
 from hypergraph.integrations.daft import DaftRunner
 ```
 
+`hypergraph.integrations.daft` is the documented door for every Daft symbol —
+`DaftRunner`, `Options`, `node`, `stateful`. Two deep paths under it are also
+supported and will keep resolving to the same objects:
+
+```python
+from hypergraph.integrations.daft.runner import DaftRunner
+from hypergraph.integrations.daft.options import DEFAULT_OPTIONS, Options
+```
+
+Prefer the package import; reach for the submodules only when you need
+`DEFAULT_OPTIONS`, which the package does not re-export.
+
 `DaftRunner` translates each node into a Daft UDF and chains them via
 `df.with_column()`. The entire graph becomes a single Daft query plan executed
 columnar-style. This is a good fit when:
@@ -1644,6 +1656,23 @@ class RunStatus(Enum):
     PARTIAL = "partial"      # Batch had mixed completed and failed items
     STOPPED = "stopped"      # Run stopped cooperatively
 ```
+
+There is exactly one `RunStatus`. `hypergraph.RunStatus`,
+`hypergraph.runners.RunStatus` and `hypergraph.events.RunStatus` are the same
+object, so a `RunResult.status` and a `RunEndEvent.status` compare directly:
+
+```python
+from hypergraph import RunStatus
+from hypergraph.events import RunStatus as EventRunStatus
+
+RunStatus is EventRunStatus                      # True
+result.status == run_end_event.status            # meaningful, not always False
+isinstance(result.status, EventRunStatus)        # True
+```
+
+The enum is defined in `hypergraph.events.types` — events are the lower layer —
+and re-exported by the runner package. Nothing in your code has to know that:
+import it from `hypergraph`.
 
 **Usage:**
 
