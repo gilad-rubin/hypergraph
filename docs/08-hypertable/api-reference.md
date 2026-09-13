@@ -122,9 +122,12 @@ class WriteOutcome(Enum):
     HEALED = "healed"
 ```
 
-`HEALED` is reported by `sync()` when an unchanged parent row had damaged
-child rows rebuilt — rows physically missing, or stored in error under
-`on_error="store"`. A receipt is never `SKIPPED` on a path that wrote rows.
+`HEALED` is reported by `sync()` or `insert()` when an unchanged parent row
+had damaged child rows rebuilt — rows physically missing, or stored in error
+under `on_error="store"` — and every rebuilt row landed healthy. A receipt is
+never `SKIPPED` on a path that wrote rows, and a repair whose retry failed
+again healed nothing, so it reports `UPDATED` and the child stays in error for
+the next attempt to find.
 
 `PARTIAL` is reported under `on_error="store"` when one node failed and the
 other derived columns were produced anyway: those columns are stored, the
@@ -255,7 +258,8 @@ Derive a list without deleting identities not present in that list.
 
 - source changes re-derive affected downstream columns;
 - answer changes answer an interrupt and continue downstream;
-- metadata-only changes persist without derivation and report `SKIPPED`.
+- metadata-only changes persist without derivation and report `UPDATED`
+  (the row is rewritten, so the receipt does not claim a skip).
 
 If a source upstream of an old answer changes, the answer's provenance no
 longer matches. The row becomes `WAITING` with a fresh question and fresh
@@ -280,8 +284,8 @@ are not re-derived, though present child rows are rewritten at the repair's
 generation. A physically missing row leaves nothing to rebuild the item list
 from, so the fan-out boundary re-runs once to regenerate it; a stored error
 row still carries its own item, so the stored list is reused and the boundary
-does not re-run. A retry that fails again leaves the child in error, and
-the next `sync()` tries it again.
+does not re-run. A retry that fails again leaves the child in error and
+reports `UPDATED` rather than `HEALED`, and the next `sync()` tries it again.
 
 ### `delete(id) -> None`
 

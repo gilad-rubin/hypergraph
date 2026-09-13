@@ -187,7 +187,9 @@ and deletes identities absent from the incoming collection. An unchanged
 parent whose child rows were damaged is self-repairing: `sync()` compares each
 child table's recorded fan-out count against the child rows physically present
 and reads their status, then re-runs only the children that are missing or
-stored as an error row, reporting the row as `healed` instead of `skipped`.
+stored as an error row, reporting the row as `healed` instead of `skipped`
+(or as `updated`, when the retry failed again and healed nothing). `insert()`
+repairs and reports the same way.
 
 ## Stored errors
 

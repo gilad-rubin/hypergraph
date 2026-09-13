@@ -11,6 +11,12 @@ from typing import TYPE_CHECKING, Any, Literal
 from hypergraph import Graph
 from hypergraph._thread_settle import to_thread_settled
 from hypergraph.graph import GraphConfigError
+from hypergraph.materialization._commit import (
+    dedup_child_rows as _dedup_child_rows,
+)
+from hypergraph.materialization._commit import (
+    dedup_rows as _dedup_rows,
+)
 from hypergraph.materialization._fingerprint import compute_node_definition_hash
 from hypergraph.materialization._hypertable_viz import render_hypertable
 from hypergraph.materialization._indexes import IndexPolicy
@@ -41,12 +47,6 @@ from hypergraph.materialization._types import (
 )
 from hypergraph.materialization._write_actions import RunGraph, RunOperations, WriteOperation
 from hypergraph.materialization._writes import WritePlanner
-from hypergraph.materialization._writes import (
-    dedup_child_rows as _dedup_child_rows,
-)
-from hypergraph.materialization._writes import (
-    dedup_rows as _dedup_rows,
-)
 
 if TYPE_CHECKING:
     from hypergraph.materialization._branches import MaterializationBranch
@@ -667,10 +667,11 @@ class HyperTable:
         errored_ids: list[str] = []
         for row in rows:
             id_val = str(row.get(identity, ""))
-            if row.get("_status") == "error":
+            stored = RowStatus.of_stored(row)
+            if stored is RowStatus.ERROR:
                 errored += 1
                 errored_ids.append(id_val)
-            elif row.get("_status") == RowStatus.PARTIAL.value:
+            elif stored is RowStatus.PARTIAL:
                 # Its sources still fingerprint clean, but columns are missing:
                 # report the work sync() would redo, never "fresh".
                 stale += 1
@@ -775,7 +776,7 @@ class HyperTable:
         """Return the typed inbox of rows blocked on a human answer."""
         self._ensure_analyzed()
         rows = _dedup_rows(
-            self._store.read_rows(self._spec.name, [("_status", "eq", RowStatus.WAITING.value)]),
+            self._store.read_rows(self._spec.name, [("_status", "eq", RowStatus.WAITING.stored_value)]),
             self._identity,
         )
         waiting: list[WaitingRow] = []
@@ -788,7 +789,7 @@ class HyperTable:
         """Return rows whose stored derivation failed."""
         self._ensure_analyzed()
         rows = _dedup_rows(
-            self._store.read_rows(self._spec.name, [("_status", "eq", RowStatus.ERROR.value)]),
+            self._store.read_rows(self._spec.name, [("_status", "eq", RowStatus.ERROR.stored_value)]),
             self._identity,
         )
         return tuple(ErroredRow(str(row[self._identity]), str(row.get("_error") or ""), _public_row(row, self._spec)) for row in rows)
@@ -803,7 +804,7 @@ class HyperTable:
         """
         self._ensure_analyzed()
         rows = _dedup_rows(
-            self._store.read_rows(self._spec.name, [("_status", "eq", RowStatus.PARTIAL.value)]),
+            self._store.read_rows(self._spec.name, [("_status", "eq", RowStatus.PARTIAL.stored_value)]),
             self._identity,
         )
         return tuple(PartialRow(str(row[self._identity]), deserialize_changes(row.get(CHANGES_COLUMN)), _public_row(row, self._spec)) for row in rows)

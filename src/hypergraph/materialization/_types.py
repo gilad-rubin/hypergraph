@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -26,6 +27,36 @@ class RowStatus(Enum):
     queryable, counts as needing heal in ``status()``, and the next ``sync()``
     re-derives exactly the null columns.
     """
+
+    @classmethod
+    def of_stored(cls, row: Mapping[str, Any] | None) -> RowStatus:
+        """Decode the ``_status`` cell of one stored row.
+
+        A row with no ``_status`` cell — or a null one — predates the column and
+        was only ever written on the complete path, so it decodes as
+        ``COMPLETE``; that legacy state is the reason the raw comparisons this
+        replaces all had to spell ``in (None, "complete")``. A missing row is
+        likewise nothing to tell apart from a complete one at the call sites
+        that ask (they check ``existing is None`` separately when it matters).
+        Any other value is a store that did not preserve the column, and says
+        so loudly rather than silently reading as "not an error".
+        """
+        value = None if row is None else row.get("_status")
+        if value is None:
+            return cls.COMPLETE
+        try:
+            return cls(value)
+        except ValueError:
+            raise ValueError(
+                "Stored row carries an unknown _status value.\n\n"
+                f"Value: {value!r}; known values: {', '.join(status.value for status in cls)}\n\n"
+                "How to fix: preserve the HyperTable-managed _status value unchanged in the TableStore."
+            ) from None
+
+    @property
+    def stored_value(self) -> str:
+        """The value this status is written as in the ``_status`` column."""
+        return self.value
 
 
 class ChangeReason(Enum):

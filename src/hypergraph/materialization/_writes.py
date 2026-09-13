@@ -1,12 +1,33 @@
-"""Pure write plans and row normalization for HyperTable."""
+"""What a HyperTable write derives, and what its receipt may claim.
+
+This module plans writes; it does not shape rows (``_row_builder``) and does
+not touch the store (``_commit``). What is left is the decision sequence: read
+the stored row, classify what this write has to do to it, drive the runner for
+exactly the nodes that cannot be reused, and report the physical truth of what
+happened.
+
+Two rules hold everywhere below:
+
+- a write plan yields graph execution effects and nothing else, so a runner
+  (sync, async, or a test double) can drive it;
+- ``WriteOutcome`` is a claim about physical effect, so ``SKIPPED`` is only ever
+  reported by a path that wrote no rows.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Generator, Mapping
 from dataclasses import dataclass, replace
-from typing import Any, Literal
+from typing import Any
 
 from hypergraph import Graph
+from hypergraph.materialization._commit import (
+    ChildGenerations,
+    ChildWrites,
+    TableCommitter,
+    dedup_child_rows,
+    dedup_rows,
+)
 from hypergraph.materialization._provenance import (
     DerivedChildren,
     Provenance,
@@ -18,15 +39,12 @@ from hypergraph.materialization._provenance import (
     split_boundary_provenance,
 )
 from hypergraph.materialization._recipe_journal import RecipeJournal
+from hypergraph.materialization._row_builder import RowBuilder
 from hypergraph.materialization._schema import (
-    CHANGES_COLUMN,
-    QUESTION_COLUMN,
     RECIPE_COLUMN,
     TableSpec,
     input_names,
     is_internal_column,
-    python_type_to_arrow,
-    return_type,
 )
 from hypergraph.materialization._types import (
     ChangeReason,
@@ -36,11 +54,16 @@ from hypergraph.materialization._types import (
     TableReceipt,
     WriteOutcome,
     deserialize_question,
-    serialize_changes,
-    serialize_question,
 )
 from hypergraph.materialization._write_actions import RunGraph, RunOperations, WriteOperation, _Predicate
 from hypergraph.runners import PauseInfo, RunStatus
+
+__all__ = [
+    "WritePlanner",
+    "dedup_child_rows",
+    "dedup_rows",
+    "normalize_to_dict",
+]
 
 
 def normalize_to_dict(item: Any) -> dict[str, Any]:
@@ -56,26 +79,54 @@ def normalize_to_dict(item: Any) -> dict[str, Any]:
     return dict(item)
 
 
-def dedup_rows(rows: list[dict[str, Any]], identity: str) -> list[dict[str, Any]]:
-    """Keep only the highest write generation for each root identity."""
-    best: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        identity_value = str(row.get(identity, ""))
-        existing = best.get(identity_value)
-        if existing is None or row.get("_write_gen", 0) > existing.get("_write_gen", 0):
-            best[identity_value] = row
-    return list(best.values())
+# ---------------------------------------------------------------------------
+# What one write has to do to one stored row
+# ---------------------------------------------------------------------------
 
 
-def dedup_child_rows(rows: list[dict[str, Any]], identity: str) -> list[dict[str, Any]]:
-    """Keep only the highest write generation for each parent/child identity."""
-    best: dict[tuple[str, str], dict[str, Any]] = {}
-    for row in rows:
-        key = (str(row.get("_parent_id", "")), str(row.get(identity, "")))
-        existing = best.get(key)
-        if existing is None or row.get("_write_gen", 0) > existing.get("_write_gen", 0):
-            best[key] = row
-    return list(best.values())
+@dataclass(frozen=True, slots=True)
+class SkipWrite:
+    """The stored row already answers this write; derive nothing.
+
+    ``refresh_stamps`` marks the one write this arm may still make: a row
+    stored before the table stamped recipes needs its stamp, which changes no
+    value the reader can see.
+    """
+
+    row: dict[str, Any]
+    refresh_stamps: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeAnswers:
+    """Only answers arrived: run the interrupt slice, reusing stored columns."""
+
+    row: dict[str, Any]
+    answers: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class Reconcile:
+    """A stored row can be converged column by column, reusing what is fresh.
+
+    Reconciliation can still turn out to be impossible once the planner walks
+    the columns (a stored value the value chain cannot account for), in which
+    case this arm falls through to ``FullDerive``.
+    """
+
+    row: dict[str, Any]
+    parent_skipped: bool
+
+
+@dataclass(frozen=True, slots=True)
+class FullDerive:
+    """Run the whole graph: there is no stored row worth reusing."""
+
+    row: dict[str, Any] | None
+    parent_skipped: bool
+
+
+WriteClass = SkipWrite | ResumeAnswers | Reconcile | FullDerive
 
 
 @dataclass(frozen=True)
@@ -115,34 +166,7 @@ class _DegradedConvergence:
     error: BaseException | None
 
 
-class _ChildGenerations:
-    """Per-mutation write generations for child tables.
-
-    Child rows historically inherited the parent table's generation counter, but
-    the two counters can diverge — a crash between the child write and the parent
-    write leaves child rows one generation ahead, and ``ChildTable.set()`` bumps
-    child generations independently. A child upsert that then reuses an existing
-    physical generation survives cleanup (which deletes only OLDER generations)
-    and the stale row can win the public dedup tie (#205).
-
-    Every child-table mutation therefore allocates a generation strictly greater
-    than every physical row currently in that table, never merely the parent's
-    counter. Allocation is lazy (a mutation that never touches a child table
-    never reads its max) and cached per table, so a mutation's writes and its
-    cleanup agree on one generation.
-    """
-
-    def __init__(self, store: Any, root_gen: int) -> None:
-        self._store = store
-        self._root_gen = root_gen
-        self._allocated: dict[str, int] = {}
-
-    def for_table(self, table_name: str) -> int:
-        gen = self._allocated.get(table_name)
-        if gen is None:
-            gen = max(self._root_gen, self._store.max_write_gen(table_name) + 1)
-            self._allocated[table_name] = gen
-        return gen
+_ConvergenceResult = ReconcileResult | _PausedConvergence | _DegradedConvergence | ReconcileUnavailable
 
 
 def _run_values(result: Any) -> dict[str, Any]:
@@ -159,6 +183,23 @@ def _run_pause(result: Any) -> PauseInfo | None:
     return None
 
 
+def _pause_provenance(provenances: Mapping[str, str], pause: PauseInfo, *, routed: bool = False) -> str:
+    """The provenance stamp an interrupt answer will be stored under.
+
+    A waiting row is only re-openable if the answer carries the provenance of
+    the inputs the question was asked from, so a missing stamp is a structural
+    error, not a value this plan may invent.
+    """
+    provenance = provenances.get(pause.response_key) if pause.response_key is not None else None
+    if provenance is None:
+        raise RuntimeError(
+            f"HyperTable could not compute provenance for {'a routed' if routed else 'an'} interrupt answer.\n\n"
+            f"Answer column: {pause.response_key!r}\n\n"
+            "How to fix: ensure every required interrupt input is a stored source or derived column."
+        )
+    return provenance
+
+
 class WritePlanner:
     """Own physical row convergence and yield only graph execution effects."""
 
@@ -169,239 +210,26 @@ class WritePlanner:
         spec: TableSpec,
         identity: str,
         components: Mapping[str, Any],
-        on_error: Literal["raise", "store"],
+        on_error: str,
         provenance: Provenance,
         *,
         page_max_concurrency: int = 16,
     ):
         self._graph = graph
-        self._store = store
         self._spec = spec
         self._identity = identity
         self._components = dict(components)
         self._on_error = on_error
         self._provenance = provenance
         self._page_max_concurrency = page_max_concurrency
-        self._recipe_column_ready: set[str] = set()
-        self._changes_column_ready: set[str] = set()
-        self._journal = RecipeJournal(store)
-        self._answer_graphs: dict[tuple[str, ...], Graph] = {}
-        self._routed_graphs: dict[tuple[str, str], Graph] = {}
+        self._commit = TableCommitter(store, spec, identity)
+        self._rows = RowBuilder(self._commit, spec, identity, provenance)
 
     @property
     def journal(self) -> RecipeJournal:
-        return self._journal
+        return self._rows.journal
 
-    def _read_rows(
-        self,
-        table: str,
-        where: tuple[tuple[str, str, Any], ...] | None = None,
-        *,
-        limit: int | None = None,
-        columns: tuple[str, ...] | None = None,
-    ) -> list[dict[str, Any]]:
-        predicate = list(where) if where is not None else None
-        projection = list(columns) if columns is not None else None
-        if projection is None or not self._store.supports_column_projection():
-            rows = self._store.read_rows(table, predicate, limit=limit)
-            return self._store._project_rows(rows, projection)
-        return self._store.read_rows(table, predicate, limit=limit, columns=projection)
-
-    def _evolve_for_metadata(
-        self,
-        item: Mapping[str, Any],
-        *,
-        table_name: str | None = None,
-        identity: str | None = None,
-    ) -> None:
-        target = table_name or self._spec.name
-        identity_column = identity or self._identity
-        known_columns = set(self._store.column_names(target))
-        if not known_columns:
-            sample = self._store.read_rows(target, limit=1)
-            known_columns = set(sample[0]) if sample else {column.name for column in self._spec.columns}
-        new_metadata = {
-            key: python_type_to_arrow(type(value) if value is not None else str)
-            for key, value in item.items()
-            if key not in known_columns and key != identity_column
-        }
-        if new_metadata:
-            self._store.evolve_schema(target, new_metadata)
-
-    def _ensure_recipe_column(self, table_name: str) -> None:
-        if table_name in self._recipe_column_ready:
-            return
-        physical = self._store.column_names(table_name)
-        if physical and RECIPE_COLUMN not in physical:
-            self._store.evolve_schema(table_name, {RECIPE_COLUMN: python_type_to_arrow(str)})
-        self._recipe_column_ready.add(table_name)
-
-    def _ensure_changes_column(self, table_name: str) -> None:
-        if table_name in self._changes_column_ready:
-            return
-        physical = self._store.column_names(table_name)
-        if physical and CHANGES_COLUMN not in physical:
-            self._store.evolve_schema(table_name, {CHANGES_COLUMN: python_type_to_arrow(str)})
-        self._changes_column_ready.add(table_name)
-
-    def _stamp_recipe(self, row: dict[str, Any], table_name: str, child_spec: TableSpec | None = None) -> None:
-        if not self._provenance.table_stamps_recipe():
-            return
-        if child_spec is not None:
-            if child_spec.child_graph is None:
-                return
-            fingerprint = self._provenance.current_child_recipe_fingerprint(child_spec)
-        else:
-            fingerprint = self._provenance.current_recipe_fingerprint()
-        self._ensure_recipe_column(table_name)
-        row[RECIPE_COLUMN] = fingerprint
-
-    def _record_node_recipe(self, node: Any) -> str:
-        entries = self._provenance.recipe_entries(node)
-        for entry in entries:
-            self._journal.record(entry.hash, entry.kind, entry.payload)
-        return entries[0].hash
-
-    def _provenance_nodes(self, name: str) -> tuple[Any, ...]:
-        for column in self._spec.columns:
-            if column.role in ("derived", "answer") and column.name == name:
-                return self._provenance.column_producers(column)
-        for child_spec in self._spec.children:
-            if child_spec.map_input == name:
-                boundary = self._provenance.boundary_node(child_spec)
-                return (boundary,) if boundary is not None else ()
-        return ()
-
-    def _build_parent_row(
-        self,
-        item: Mapping[str, Any],
-        source_inputs: Mapping[str, Any],
-        outputs: Mapping[str, Any],
-        write_gen: int,
-        mode: Literal["complete", "waiting", "error", "partial"],
-        *,
-        provenances: Mapping[str, str] | None = None,
-        error: str | None = None,
-        pause: PauseInfo | None = None,
-        pause_provenance: str | None = None,
-        changes: tuple[ColumnChange, ...] = (),
-    ) -> dict[str, Any]:
-        row: dict[str, Any] = {self._identity: item[self._identity]}
-        row.update({key: value for key, value in item.items() if key != self._identity})
-        derived_columns = self._provenance.derived_columns()
-        if mode == "error":
-            for column in derived_columns:
-                row[column.name] = None
-        else:
-            for column in derived_columns:
-                if column.name in outputs:
-                    row[column.name] = outputs[column.name]
-                elif mode == "partial" or (mode == "waiting" and column.role == "answer"):
-                    row[column.name] = None
-        row["_row_fingerprint"] = self._provenance.root_fingerprint(source_inputs)
-        row["_write_gen"] = write_gen
-        self._stamp_recipe(row, self._spec.name)
-
-        if mode != "error":
-            if provenances is None and mode == "partial":
-                raise RuntimeError("partial row requires the provenances of the columns that survived")
-            if provenances is None:
-                values = {**{key: value for key, value in item.items() if key != self._identity}, **outputs}
-                provenances = {
-                    column.name: self._provenance.node_provenance(self._provenance.column_producers(column)[0], values) for column in derived_columns
-                }
-                for child_spec in self._spec.children:
-                    boundary = self._provenance.boundary_node(child_spec)
-                    if boundary is None:
-                        continue
-                    provenance = self._provenance.node_provenance(boundary, values)
-                    if provenance is not None:
-                        provenances[child_spec.map_input] = self._provenance.boundary_provenance_value(
-                            provenance,
-                            outputs.get(child_spec.map_input),
-                        )
-            for name, provenance in provenances.items():
-                row[f"_provenance_{name}"] = provenance
-                for node in self._provenance_nodes(name):
-                    self._record_node_recipe(node)
-
-        row["_status"] = mode
-        row["_error"] = error if mode in ("error", "partial") else None
-        if mode == "waiting":
-            if pause is None or pause_provenance is None:
-                raise RuntimeError("waiting row requires a pause and provenance")
-            row[QUESTION_COLUMN] = serialize_question(pause, pause_provenance)
-        else:
-            row[QUESTION_COLUMN] = None
-        if mode == "partial":
-            self._ensure_changes_column(self._spec.name)
-            row[CHANGES_COLUMN] = serialize_changes(changes)
-        return row
-
-    def _build_child_row(
-        self,
-        spec: TableSpec,
-        item: Mapping[str, Any],
-        identity: Any,
-        parent_id: Any,
-        fingerprint: str,
-        write_gen: int,
-        *,
-        status: Literal["complete", "error"],
-        error: str | None,
-        outputs: Mapping[str, Any] | None = None,
-        provenances: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        row = {
-            spec.identity: identity,
-            "_parent_id": parent_id,
-            "_write_gen": write_gen,
-            "_row_fingerprint": fingerprint,
-            "_status": status,
-            "_error": error,
-            QUESTION_COLUMN: None,
-        }
-        self._stamp_recipe(row, spec.name, spec)
-        row.update({key: value for key, value in item.items() if key not in (spec.identity, "_parent_id")})
-        row.update(outputs or {})
-        for name, provenance in (provenances or {}).items():
-            row[f"_provenance_{name}"] = provenance
-            for column in spec.columns:
-                if column.role == "derived" and column.name == name:
-                    for node in self._provenance.column_producers(column):
-                        self._record_node_recipe(node)
-                    break
-        return row
-
-    def _stamp_existing_row(
-        self,
-        table: str,
-        existing: Mapping[str, Any],
-        write_gen: int,
-        child_spec: TableSpec | None = None,
-        *,
-        normalize_values: bool = True,
-    ) -> dict[str, Any]:
-        row = {key: normalize_value(value) for key, value in existing.items()} if normalize_values else dict(existing)
-        self._stamp_recipe(row, table, child_spec)
-        row["_write_gen"] = write_gen
-        return row
-
-    def _evolve_for_backfill_column(self, column: str) -> None:
-        sample = self._store.read_rows(self._spec.name, limit=1)
-        if sample and column not in sample[0]:
-            column_type = str
-            for spec_column in self._spec.columns:
-                if spec_column.name == column and spec_column.role == "derived" and spec_column.produced_by:
-                    column_type = return_type(spec_column.produced_by)
-                    break
-            self._store.evolve_schema(
-                self._spec.name,
-                {
-                    column: python_type_to_arrow(column_type),
-                    f"_provenance_{column}": python_type_to_arrow(str),
-                },
-            )
+    # -- inputs --------------------------------------------------------------
 
     def _graph_inputs(self, item: Mapping[str, Any], provided: set[str] | None = None) -> dict[str, Any]:
         required = input_names(self._graph.inputs.required)
@@ -409,88 +237,6 @@ class WritePlanner:
         accepted_answers = answers if provided is None else answers & provided
         accepted = required | accepted_answers
         return {key: value for key, value in item.items() if key != self._identity and key in accepted}
-
-    def _answer_graph(self, answer_names: set[str]) -> Graph:
-        key = tuple(sorted(answer_names))
-        cached = self._answer_graphs.get(key)
-        if cached is not None:
-            return cached
-
-        graph_nodes = self._graph.nodes
-        roots: set[str] = set()
-        for column in self._spec.columns:
-            if column.role != "answer" or column.name not in answer_names:
-                continue
-            for producer in self._provenance.column_producers(column):
-                roots.add(producer.name)
-        selected = self._node_names_downstream(roots)
-        if not selected:
-            raise RuntimeError(
-                "HyperTable could not locate the interrupt that owns an answer column.\n\n"
-                f"Answer columns: {', '.join(key)}\n\n"
-                "How to fix: keep each answer_name on an interrupt node in the graph passed to as_table()."
-            )
-
-        graph = Graph(
-            [node for name, node in graph_nodes.items() if name in selected],
-            name=f"{self._spec.name}__answer",
-        )
-        bindings = {name: value for name, value in self._components.items() if name in set(graph.inputs.all)}
-        if bindings:
-            graph = graph.bind(**bindings)
-        self._answer_graphs[key] = graph
-        return graph
-
-    def _node_names_downstream(self, roots: set[str], graph: Graph | None = None) -> set[str]:
-        target_graph = graph or self._graph
-        selected = set(roots)
-        pending = list(roots)
-        while pending:
-            node_name = pending.pop()
-            for successor in target_graph.nx_graph.successors(node_name):
-                if successor not in selected:
-                    selected.add(successor)
-                    pending.append(successor)
-        return selected
-
-    def _routing_gate(self, node: Any, graph: Graph) -> Any | None:
-        if getattr(node, "is_gate", False):
-            return node
-        seen = {node.name}
-        frontier = [node.name]
-        while frontier:
-            predecessors: list[str] = []
-            for name in frontier:
-                predecessors.extend(graph.nx_graph.predecessors(name))
-            predecessors = [name for name in predecessors if name not in seen]
-            for name in predecessors:
-                candidate = graph.nodes[name]
-                if getattr(candidate, "is_gate", False):
-                    return candidate
-            seen.update(predecessors)
-            frontier = predecessors
-        return None
-
-    def _routed_graph(self, gate: Any, source: Graph, table_name: str) -> Graph:
-        cache_key = (table_name, gate.name)
-        cached = self._routed_graphs.get(cache_key)
-        if cached is not None:
-            return cached
-        selected = self._node_names_downstream({gate.name}, source)
-        graph = Graph(
-            [node for name, node in source.nodes.items() if name in selected],
-            name=f"{table_name}__{gate.name}",
-        )
-        bindings = {name: value for name, value in self._components.items() if name in set(graph.inputs.all)}
-        if bindings:
-            graph = graph.bind(**bindings)
-        self._routed_graphs[cache_key] = graph
-        return graph
-
-    @staticmethod
-    def _executed_nodes(result: Any) -> set[str]:
-        log = getattr(result, "log", None)
-        return {step.node_name for step in getattr(log, "steps", ())}
 
     def _answer_inputs(
         self,
@@ -509,14 +255,76 @@ class WritePlanner:
         return {key: value for key, value in item.items() if key in sources}
 
     @staticmethod
-    def _parent_skipped(existing: dict[str, Any] | None, fingerprint: str) -> bool:
-        if existing is None or existing.get("_row_fingerprint") != fingerprint:
-            return False
-        return existing.get("_status") in (None, "complete")
+    def _executed_nodes(result: Any) -> set[str]:
+        log = getattr(result, "log", None)
+        return {step.node_name for step in getattr(log, "steps", ())}
+
+    # -- classification ------------------------------------------------------
+
+    def classify_write(self, item: Mapping[str, Any], provided_names: set[str]) -> WriteClass:
+        """Decide what this write must do to the row it is about to touch.
+
+        Pure apart from the single stored-row read: given the stored row it
+        names one of four arms, so the write plan is a dispatch instead of a
+        ladder of overlapping booleans.
+        """
+        existing = self._commit.read_one(self._spec.name, self._identity, item[self._identity])
+        fingerprint = self._provenance.root_fingerprint(self._source_inputs(item))
+        answer_names = {column.name for column in self._spec.columns if column.role == "answer"}
+        provided_answers = answer_names & provided_names
+        source_names = {column.name for column in self._spec.columns if column.role == "source"}
+        source_provided = bool(source_names & provided_names)
+        if existing is None:
+            return FullDerive(None, parent_skipped=False)
+
+        status = RowStatus.of_stored(existing)
+        unchanged = existing.get("_row_fingerprint") == fingerprint
+        if unchanged and status is RowStatus.WAITING and not provided_answers:
+            return SkipWrite(existing)
+        # An unchanged, complete parent is not re-derived. It is still not a
+        # skip when it has children: they may be damaged, and only the reconcile
+        # arm can tell (#204, #314).
+        parent_skipped = unchanged and status is RowStatus.COMPLETE and not provided_answers
+        if parent_skipped and not self._spec.children:
+            return SkipWrite(existing, refresh_stamps=self._provenance.row_missing_stamp(existing, RECIPE_COLUMN))
+        if provided_answers and not source_provided:
+            return ResumeAnswers(existing, frozenset(provided_answers))
+        if status is not RowStatus.ERROR:
+            return Reconcile(existing, parent_skipped)
+        return FullDerive(existing, parent_skipped)
+
+    # -- receipts ------------------------------------------------------------
 
     @staticmethod
-    def _can_reconcile(existing: dict[str, Any] | None) -> bool:
-        return existing is not None and existing.get("_status") != "error"
+    def _receipt_for_row(identity_value: Any, outcome: WriteOutcome, row: Mapping[str, Any]) -> RowReceipt:
+        status = RowStatus.of_stored(row)
+        if status is RowStatus.WAITING:
+            pause, _provenance = deserialize_question(row["_question"])
+            return RowReceipt(str(identity_value), outcome, status, pause=pause)
+        if status in (RowStatus.ERROR, RowStatus.PARTIAL):
+            return RowReceipt(str(identity_value), outcome, status, error=str(row.get("_error") or ""))
+        return RowReceipt(str(identity_value), outcome, status)
+
+    def _unchanged_parent_receipt(self, identity_value: Any, before: ChildWrites) -> RowReceipt:
+        """The receipt for a row whose parent this plan did not re-derive.
+
+        ``SKIPPED`` is a claim about physical effect, so it may only be made
+        when nothing was written. Child rows this plan derived under the
+        unchanged parent are a repair: ``HEALED`` when every one of them landed
+        healthy, and plain ``UPDATED`` when rows were written but a child is
+        still stored in error — a heal that did not heal is not a heal
+        (#204, #314).
+        """
+        repair = self._commit.child_writes.since(before)
+        if repair.healed:
+            outcome = WriteOutcome.HEALED
+        elif repair.wrote:
+            outcome = WriteOutcome.UPDATED
+        else:
+            outcome = WriteOutcome.SKIPPED
+        return RowReceipt(str(identity_value), outcome, RowStatus.COMPLETE)
+
+    # -- column reconciliation -----------------------------------------------
 
     def _reconcile(
         self,
@@ -524,16 +332,16 @@ class WritePlanner:
         existing: dict[str, Any],
         spec: TableSpec | None = None,
         provided: set[str] | None = None,
-    ) -> Generator[RunGraph, Any, ReconcileResult | _PausedConvergence | _DegradedConvergence | None]:
+    ) -> Generator[RunGraph, Any, _ConvergenceResult]:
         target = spec or self._spec
         target_graph = target.child_graph if spec is not None else self._graph
         if target_graph is None:
-            return None
+            return ReconcileUnavailable()
         # Only the parent table stores partial rows; a child row is whole or errored (#314).
         degrade = self._degrade() and spec is None
         boundary_counts: dict[str, int] = {}
         for child_spec in target.children:
-            rows = self._read_rows(
+            rows = self._commit.read_rows(
                 child_spec.name,
                 (("_parent_id", "eq", item[target.identity]),),
             )
@@ -547,7 +355,7 @@ class WritePlanner:
         while True:
             state, step = self._provenance.next_reconcile_step(state)
             if isinstance(step, ReconcileUnavailable):
-                return None
+                return step
             if isinstance(step, ReconcileComplete):
                 return step.result
 
@@ -570,9 +378,9 @@ class WritePlanner:
                 )
                 continue
 
-            gate = self._routing_gate(step.node, target_graph)
+            gate = self._provenance.routing_gate(step.node, target_graph)
             if gate is not None:
-                graph = self._routed_graph(gate, target_graph, target.name)
+                graph = self._provenance.routed_graph(gate, target_graph, target.name)
                 values = dict(state.values)
                 result = yield RunGraph(
                     graph,
@@ -581,7 +389,7 @@ class WritePlanner:
                 routed_outputs = _run_values(result)
                 routed_executed = self._executed_nodes(result)
                 remaining = {node.name for node in state.nodes[state.node_index :]}
-                routed_scope = self._node_names_downstream({gate.name}, target_graph) & remaining
+                routed_scope = self._provenance.node_names_downstream({gate.name}, target_graph) & remaining
                 stale_existing = dict(state.existing)
                 for routed_name in routed_scope:
                     routed_node = target_graph.nodes[routed_name]
@@ -594,19 +402,12 @@ class WritePlanner:
                     outputs.update(routed_outputs)
                     values.update(routed_outputs)
                     provenances = dict(state.provenances)
-                    provenances.update(self._provenances_for_values(values, pause, routed_executed, target))
-                    pause_provenance = provenances.get(pause.response_key)
-                    if pause_provenance is None:
-                        raise RuntimeError(
-                            "HyperTable could not compute provenance for a routed interrupt answer.\n\n"
-                            f"Answer column: {pause.response_key!r}\n\n"
-                            "How to fix: ensure every required interrupt input is a stored source or derived column."
-                        )
+                    provenances.update(self._rows.provenances_for_values(values, pause, routed_executed, target))
                     return _PausedConvergence(
                         pause=pause,
                         outputs=outputs,
                         provenances=provenances,
-                        provenance=pause_provenance,
+                        provenance=_pause_provenance(provenances, pause, routed=True),
                     )
                 routed_scope.discard(step.node.name)
                 state = self._provenance.apply_reconcile_result(
@@ -643,114 +444,16 @@ class WritePlanner:
             outputs = _run_values(result)
             state = self._provenance.apply_reconcile_result(state, step, outputs)
 
-    def _cleanup_parent(self, identity_value: Any, write_gen: int) -> None:
-        self._store.delete_rows(
-            self._spec.name,
-            [(self._identity, "eq", identity_value), ("_write_gen", "lt", write_gen)],
-        )
-
-    def _cleanup_children(self, identity_value: Any, child_gens: _ChildGenerations) -> None:
-        for child_spec in self._spec.children:
-            self._store.delete_rows(
-                child_spec.name,
-                [("_parent_id", "eq", identity_value), ("_write_gen", "lt", child_gens.for_table(child_spec.name))],
-            )
-
-    def _refresh_missing_stamps(
-        self,
-        existing: dict[str, Any],
-    ) -> None:
-        identity_value = existing[self._identity]
-        write_gen = self._store.max_write_gen(self._spec.name) + 1
-        new_row = self._stamp_existing_row(self._spec.name, existing, write_gen)
-        self._store.write_rows(self._spec.name, [new_row])
-        self._cleanup_parent(identity_value, write_gen)
-        for child_spec in self._spec.children:
-            if child_spec.child_graph is None:
-                continue
-            child_gen = self._store.max_write_gen(child_spec.name) + 1
-            rows = self._read_rows(child_spec.name, (("_parent_id", "eq", identity_value),))
-            for row in dedup_child_rows(rows, child_spec.identity):
-                stamp = row.get(RECIPE_COLUMN)
-                if isinstance(stamp, str) and stamp:
-                    continue
-                inputs = self._provenance.child_source_inputs(row, child_spec)
-                if row.get("_row_fingerprint") != self._provenance.child_fingerprint(inputs, child_spec):
-                    continue
-                new_child = self._stamp_existing_row(
-                    child_spec.name,
-                    row,
-                    child_gen,
-                    child_spec,
-                )
-                self._store.write_rows(child_spec.name, [new_child])
-                self._store.delete_rows(
-                    child_spec.name,
-                    [
-                        (child_spec.identity, "eq", row[child_spec.identity]),
-                        ("_parent_id", "eq", identity_value),
-                        ("_write_gen", "lt", child_gen),
-                    ],
-                )
-
-    def _bind_child_components(self, child_graph: Any) -> Any:
-        if not self._components:
-            return child_graph
-        valid_inputs = set(child_graph.inputs.all)
-        bindings = {key: value for key, value in self._components.items() if key in valid_inputs}
-        return child_graph.bind(**bindings) if bindings else child_graph
+    # -- children ------------------------------------------------------------
 
     @staticmethod
     def _child_items(outputs: Mapping[str, Any], child_spec: TableSpec) -> list[Any] | None:
-        if not child_spec.child_graph:
+        if not child_spec.child_graph or child_spec.map_input is None:
             return None
         child_items = outputs.get(child_spec.map_input)
         if not child_items or not isinstance(child_items, list):
             return None
         return child_items
-
-    def _child_provenances(self, child_spec: TableSpec, values: dict[str, Any]) -> dict[str, str]:
-        provenances: dict[str, str] = {}
-        for node in self._provenance.nodes_in_dependency_order(child_spec):
-            provenance = self._provenance.node_provenance(node, values)
-            for column in self._provenance.node_columns(node, child_spec):
-                provenances[column.name] = provenance
-        return provenances
-
-    @staticmethod
-    def _rebuild_child_items(rows: list[dict[str, Any]], child_spec: TableSpec) -> list[dict[str, Any]]:
-        derived = {column.name for column in child_spec.columns if column.role == "derived"}
-        return [
-            {key: normalize_value(value) for key, value in row.items() if key not in derived and key != "_parent_id" and not is_internal_column(key)}
-            for row in dedup_child_rows(rows, child_spec.identity)
-        ]
-
-    def _build_child_action(
-        self,
-        child_spec: TableSpec,
-        child_item: dict[str, Any],
-        child_identity: Any,
-        parent_id: Any,
-        fingerprint: str,
-        write_gen: int,
-        *,
-        status: Literal["complete", "error"],
-        error: str | None,
-        outputs: Mapping[str, Any] | None = None,
-        provenances: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return self._build_child_row(
-            child_spec,
-            child_item,
-            child_identity,
-            parent_id,
-            fingerprint,
-            write_gen,
-            status=status,
-            error=error,
-            outputs=outputs,
-            provenances=provenances,
-        )
 
     def _insert_child_item(
         self,
@@ -768,7 +471,7 @@ class WritePlanner:
             if column.role == "source" and column.content_key and column.name in child_item
         }
         fingerprint = self._provenance.child_fingerprint(child_inputs, child_spec)
-        existing_rows = self._read_rows(
+        existing_rows = self._commit.read_rows(
             child_spec.name,
             (
                 ("_parent_id", "eq", parent_id),
@@ -776,9 +479,10 @@ class WritePlanner:
             ),
         )
         existing = max(existing_rows, key=lambda row: row.get("_write_gen", 0)) if existing_rows else None
-        if existing is not None and existing.get("_row_fingerprint") == fingerprint and existing.get("_status") in (None, "complete"):
+        stored_status = RowStatus.of_stored(existing)
+        if existing is not None and existing.get("_row_fingerprint") == fingerprint and stored_status is RowStatus.COMPLETE:
             if self._provenance.row_missing_stamp(existing, RECIPE_COLUMN):
-                bumped = self._stamp_existing_row(
+                bumped = self._rows.stamp_existing_row(
                     child_spec.name,
                     existing,
                     write_gen,
@@ -788,37 +492,39 @@ class WritePlanner:
             else:
                 bumped = dict(existing)
                 bumped["_write_gen"] = write_gen
-            self._store.write_rows(child_spec.name, [bumped])
+            self._commit.restamp_child(child_spec.name, bumped)
             return
 
+        def error_row(error: BaseException) -> dict[str, Any]:
+            return self._rows.child_row(
+                child_spec,
+                child_item,
+                child_identity,
+                parent_id,
+                fingerprint,
+                write_gen,
+                status=RowStatus.ERROR,
+                error=f"{type(error).__name__}: {error}",
+            )
+
         row: dict[str, Any] | None = None
-        if existing is not None and existing.get("_status") in (None, "complete"):
+        if existing is not None and stored_status is RowStatus.COMPLETE:
             try:
                 reconciled = yield from self._reconcile(child_item, existing, child_spec)
             except Exception as error:
                 if self._on_error == "raise":
                     raise
-                row = self._build_child_action(
-                    child_spec,
-                    child_item,
-                    child_identity,
-                    parent_id,
-                    fingerprint,
-                    write_gen,
-                    status="error",
-                    error=f"{type(error).__name__}: {error}",
-                )
-                self._store.write_rows(child_spec.name, [row])
+                self._commit.write_derived_child(child_spec.name, error_row(error), errored=True)
                 return
             if isinstance(reconciled, ReconcileResult):
-                row = self._build_child_action(
+                row = self._rows.child_row(
                     child_spec,
                     child_item,
                     child_identity,
                     parent_id,
                     fingerprint,
                     write_gen,
-                    status="complete",
+                    status=RowStatus.COMPLETE,
                     error=None,
                     outputs=reconciled.output_values(),
                     provenances=reconciled.provenance_values(),
@@ -830,38 +536,28 @@ class WritePlanner:
             except Exception as error:
                 if self._on_error == "raise":
                     raise
-                row = self._build_child_action(
-                    child_spec,
-                    child_item,
-                    child_identity,
-                    parent_id,
-                    fingerprint,
-                    write_gen,
-                    status="error",
-                    error=f"{type(error).__name__}: {error}",
-                )
-                self._store.write_rows(child_spec.name, [row])
+                self._commit.write_derived_child(child_spec.name, error_row(error), errored=True)
                 return
-            row = self._build_child_action(
+            row = self._rows.child_row(
                 child_spec,
                 child_item,
                 child_identity,
                 parent_id,
                 fingerprint,
                 write_gen,
-                status="complete",
+                status=RowStatus.COMPLETE,
                 error=None,
                 outputs=child_outputs,
-                provenances=self._child_provenances(child_spec, {**child_item, **child_outputs}),
+                provenances=self._rows.child_provenances(child_spec, {**child_item, **child_outputs}),
             )
-        self._store.write_rows(child_spec.name, [row])
+        self._commit.write_derived_child(child_spec.name, row, errored=False)
 
     def _insert_children_items(
         self,
         parent_id: Any,
         child_items: list[Any],
         child_spec: TableSpec,
-        child_gens: _ChildGenerations,
+        child_gens: ChildGenerations,
     ) -> WriteOperation:
         if child_spec.child_graph is None:
             return
@@ -869,7 +565,7 @@ class WritePlanner:
         # physical row currently in the child table, so cleanup (which deletes
         # older generations) removes every stale row and no tie can survive.
         write_gen = child_gens.for_table(child_spec.name)
-        bound_graph = self._bind_child_components(child_spec.child_graph)
+        bound_graph = self._provenance.bind_child_components(child_spec.child_graph)
         operations = tuple(self._insert_child_item(parent_id, item, child_spec, bound_graph, write_gen) for item in child_items)
         if operations:
             yield RunOperations(operations, self._page_max_concurrency)
@@ -879,7 +575,7 @@ class WritePlanner:
         parent_id: Any,
         outputs: Mapping[str, Any],
         child_spec: TableSpec,
-        child_gens: _ChildGenerations,
+        child_gens: ChildGenerations,
     ) -> Generator[RunGraph, Any, None]:
         child_items = self._child_items(outputs, child_spec)
         if child_items is not None:
@@ -888,20 +584,20 @@ class WritePlanner:
     def _apply_reconciled(
         self,
         item: dict[str, Any],
-        graph_inputs: dict[str, Any],
+        source_inputs: dict[str, Any],
         existing: dict[str, Any],
         reconciled: ReconcileResult,
         parent_skipped: bool,
         write_gen: int,
-        child_gens: _ChildGenerations,
-    ) -> Generator[RunGraph, Any, str]:
+        child_gens: ChildGenerations,
+    ) -> Generator[RunGraph, Any, None]:
         outputs = reconciled.output_values()
         provenances = reconciled.provenance_values()
         identity_value = item[self._identity]
         for selection in reconciled.children:
             if isinstance(selection, RebuildChildren):
-                rows = self._read_rows(selection.spec.name, (("_parent_id", "eq", identity_value),))
-                child_items = self._rebuild_child_items(rows, selection.spec)
+                rows = self._commit.read_rows(selection.spec.name, (("_parent_id", "eq", identity_value),))
+                child_items = self._rows.rebuild_child_items(rows, selection.spec)
             elif isinstance(selection, DerivedChildren):
                 child_items = list(selection.items)
             else:
@@ -915,59 +611,20 @@ class WritePlanner:
         provenance_changed = any(existing.get(f"_provenance_{name}") != provenance for name, provenance in provenances.items())
         rewrite_parent = not parent_skipped or provenance_changed or self._provenance.row_missing_stamp(existing, RECIPE_COLUMN)
         if rewrite_parent:
-            self._evolve_for_metadata(item)
-            row = self._build_parent_row(
+            self._rows.evolve_for_metadata(item)
+            row = self._rows.parent_row(
                 item,
-                graph_inputs,
+                source_inputs,
                 outputs,
                 write_gen,
-                "complete",
+                RowStatus.COMPLETE,
                 provenances=provenances,
             )
-            self._store.write_rows(self._spec.name, [row])
-            self._cleanup_parent(identity_value, write_gen)
-        self._cleanup_children(identity_value, child_gens)
-        return "skipped" if parent_skipped else "updated"
+            self._commit.write_rows(self._spec.name, [row])
+            self._commit.cleanup_parent(identity_value, write_gen)
+        self._commit.cleanup_children(identity_value, child_gens)
 
-    def _provenances_for_values(
-        self,
-        values: Mapping[str, Any],
-        pause: PauseInfo | None = None,
-        executed: set[str] | None = None,
-        spec: TableSpec | None = None,
-    ) -> dict[str, str]:
-        provenances: dict[str, str] = {}
-        for node in self._provenance.nodes_in_dependency_order(spec):
-            if executed is not None and node.name not in executed:
-                continue
-            provenance = self._provenance.node_provenance(node, values)
-            if provenance is None:
-                continue
-            for column in self._provenance.node_columns(node, spec):
-                if column.name in values or (pause is not None and column.name == pause.response_key):
-                    provenances[column.name] = provenance
-        return provenances
-
-    @staticmethod
-    def _receipt_for_row(identity_value: Any, outcome: WriteOutcome, row: Mapping[str, Any]) -> RowReceipt:
-        if row.get("_status") == "waiting":
-            pause, _provenance = deserialize_question(row["_question"])
-            return RowReceipt(str(identity_value), outcome, RowStatus.WAITING, pause=pause)
-        if row.get("_status") == "error":
-            return RowReceipt(
-                str(identity_value),
-                outcome,
-                RowStatus.ERROR,
-                error=str(row.get("_error") or ""),
-            )
-        if row.get("_status") == "partial":
-            return RowReceipt(
-                str(identity_value),
-                outcome,
-                RowStatus.PARTIAL,
-                error=str(row.get("_error") or ""),
-            )
-        return RowReceipt(str(identity_value), outcome, RowStatus.COMPLETE)
+    # -- parent rows ---------------------------------------------------------
 
     def _write_waiting_parent(
         self,
@@ -978,26 +635,26 @@ class WritePlanner:
         pause: PauseInfo,
         pause_provenance: str,
         write_gen: int,
-        child_gens: _ChildGenerations,
+        child_gens: ChildGenerations,
         existing: dict[str, Any] | None,
         outcome: WriteOutcome,
     ) -> RowReceipt:
         identity_value = item[self._identity]
-        self._evolve_for_metadata(item)
-        row = self._build_parent_row(
+        self._rows.evolve_for_metadata(item)
+        row = self._rows.parent_row(
             item,
             source_inputs,
             outputs,
             write_gen,
-            "waiting",
+            RowStatus.WAITING,
             provenances=provenances,
             pause=pause,
             pause_provenance=pause_provenance,
         )
-        self._store.write_rows(self._spec.name, [row])
+        self._commit.write_rows(self._spec.name, [row])
         if existing is not None:
-            self._cleanup_parent(identity_value, write_gen)
-            self._cleanup_children(identity_value, child_gens)
+            self._commit.cleanup_parent(identity_value, write_gen)
+            self._commit.cleanup_children(identity_value, child_gens)
         return RowReceipt(str(identity_value), outcome, RowStatus.WAITING, pause=pause)
 
     def _degrade(self) -> bool:
@@ -1042,7 +699,7 @@ class WritePlanner:
         A failure inside a mounted graph is reported under its path
         (``embed_stage/embed``); the graph knows only the node that owns it."""
         roots = {name.split("/", 1)[0] for name in failures} & set(self._graph.nodes)
-        return self._node_names_downstream(roots) if roots else set()
+        return self._provenance.node_names_downstream(roots) if roots else set()
 
     def _partial_columns(
         self,
@@ -1110,47 +767,47 @@ class WritePlanner:
             failure = degradation.error if degradation.error is not None else RuntimeError(error)
             self._error_parent(item, source_inputs, write_gen, failure, existing)
             return RowReceipt(str(item[self._identity]), outcome, RowStatus.ERROR, error=error)
-        stamps = dict(provenances) if provenances is not None else self._provenances_for_values({**item, **outputs})
+        stamps = dict(provenances) if provenances is not None else self._rows.provenances_for_values({**item, **outputs})
         if kept is not None:
             for name in outputs:
                 if name not in stamps and kept.get(f"_provenance_{name}") is not None:
                     stamps[name] = kept[f"_provenance_{name}"]
-        self._evolve_for_metadata(item)
-        row = self._build_parent_row(
+        self._rows.evolve_for_metadata(item)
+        row = self._rows.parent_row(
             item,
             source_inputs,
             outputs,
             write_gen,
-            "partial",
+            RowStatus.PARTIAL,
             provenances={name: stamp for name, stamp in stamps.items() if stamp is not None and name in outputs},
             error=error,
             changes=changes,
         )
-        self._store.write_rows(self._spec.name, [row])
+        self._commit.write_rows(self._spec.name, [row])
         if existing is not None:
-            self._cleanup_parent(item[self._identity], write_gen)
+            self._commit.cleanup_parent(item[self._identity], write_gen)
         return RowReceipt(str(item[self._identity]), outcome, RowStatus.PARTIAL, error=error)
 
     def _error_parent(
         self,
         item: dict[str, Any],
-        graph_inputs: dict[str, Any],
+        source_inputs: dict[str, Any],
         write_gen: int,
         error: BaseException,
         existing: dict[str, Any] | None,
     ) -> None:
-        self._evolve_for_metadata(item)
-        row = self._build_parent_row(
+        self._rows.evolve_for_metadata(item)
+        row = self._rows.parent_row(
             item,
-            graph_inputs,
+            source_inputs,
             {},
             write_gen,
-            "error",
+            RowStatus.ERROR,
             error=f"{type(error).__name__}: {error}",
         )
-        self._store.write_rows(self._spec.name, [row])
+        self._commit.write_rows(self._spec.name, [row])
         if existing is not None:
-            self._cleanup_parent(item[self._identity], write_gen)
+            self._commit.cleanup_parent(item[self._identity], write_gen)
 
     def _resume_answer(
         self,
@@ -1159,10 +816,10 @@ class WritePlanner:
         existing: dict[str, Any],
         answer_names: set[str],
         write_gen: int,
-        child_gens: _ChildGenerations,
+        child_gens: ChildGenerations,
     ) -> Generator[RunGraph, Any, RowReceipt]:
         identity_value = item[self._identity]
-        graph = self._answer_graph(answer_names)
+        graph = self._provenance.answer_graph(answer_names)
         try:
             result = yield RunGraph(
                 graph,
@@ -1186,22 +843,15 @@ class WritePlanner:
         }
         outputs.update(_run_values(result))
         pause = _run_pause(result)
-        provenances = self._provenances_for_values({**item, **outputs}, pause)
+        provenances = self._rows.provenances_for_values({**item, **outputs}, pause)
         if pause is not None:
-            pause_provenance = provenances.get(pause.response_key)
-            if pause_provenance is None:
-                raise RuntimeError(
-                    "HyperTable could not compute provenance for an interrupt answer.\n\n"
-                    f"Answer column: {pause.response_key!r}\n\n"
-                    "How to fix: ensure every required interrupt input is a stored source or derived column."
-                )
             return self._write_waiting_parent(
                 item,
                 source_inputs,
                 outputs,
                 provenances,
                 pause,
-                pause_provenance,
+                _pause_provenance(provenances, pause),
                 write_gen,
                 child_gens,
                 existing,
@@ -1210,19 +860,21 @@ class WritePlanner:
 
         for child_spec in self._spec.children:
             yield from self._insert_children(identity_value, outputs, child_spec, child_gens)
-        self._evolve_for_metadata(item)
-        row = self._build_parent_row(
+        self._rows.evolve_for_metadata(item)
+        row = self._rows.parent_row(
             item,
             source_inputs,
             outputs,
             write_gen,
-            "complete",
+            RowStatus.COMPLETE,
             provenances=provenances,
         )
-        self._store.write_rows(self._spec.name, [row])
-        self._cleanup_parent(identity_value, write_gen)
-        self._cleanup_children(identity_value, child_gens)
+        self._commit.write_rows(self._spec.name, [row])
+        self._commit.cleanup_parent(identity_value, write_gen)
+        self._commit.cleanup_children(identity_value, child_gens)
         return RowReceipt(str(identity_value), WriteOutcome.UPDATED, RowStatus.COMPLETE)
+
+    # -- the four arms -------------------------------------------------------
 
     def _insert_one(
         self,
@@ -1231,156 +883,183 @@ class WritePlanner:
         provided: set[str] | None = None,
     ) -> Generator[RunGraph, Any, RowReceipt]:
         identity_value = item[self._identity]
-        child_gens = _ChildGenerations(self._store, write_gen)
+        child_gens = self._commit.child_generations(write_gen)
         provided_names = provided if provided is not None else set(item) - {self._identity}
-        graph_inputs = self._graph_inputs(item, provided_names)
         source_inputs = self._source_inputs(item)
-        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
-        outcome = WriteOutcome.UPDATED if existing is not None else WriteOutcome.INSERTED
-        fingerprint = self._provenance.root_fingerprint(source_inputs)
-        answer_names = {column.name for column in self._spec.columns if column.role == "answer"}
-        provided_answers = answer_names & provided_names
-        answer_provided = bool(provided_answers)
-        source_names = {column.name for column in self._spec.columns if column.role == "source"}
-        source_provided = bool(source_names & provided_names)
-        if existing is not None and existing.get("_row_fingerprint") == fingerprint and existing.get("_status") == "waiting" and not answer_provided:
-            return self._receipt_for_row(identity_value, WriteOutcome.SKIPPED, existing)
-        parent_skipped = self._parent_skipped(existing, fingerprint)
-        if answer_provided:
-            parent_skipped = False
-        if parent_skipped and not self._spec.children:
-            if self._provenance.row_missing_stamp(existing, RECIPE_COLUMN):
-                self._refresh_missing_stamps(existing)
-            return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
+        plan = self.classify_write(item, provided_names)
+        outcome = WriteOutcome.UPDATED if plan.row is not None else WriteOutcome.INSERTED
+        before = self._commit.child_writes
 
-        if existing is not None and answer_provided and not source_provided:
+        if isinstance(plan, SkipWrite):
+            if plan.refresh_stamps:
+                self._commit.refresh_missing_stamps(plan.row, self._rows, self._provenance)
+            return self._receipt_for_row(identity_value, WriteOutcome.SKIPPED, plan.row)
+
+        if isinstance(plan, ResumeAnswers):
             return (
                 yield from self._resume_answer(
                     item,
                     source_inputs,
-                    existing,
-                    provided_answers,
+                    plan.row,
+                    set(plan.answers),
                     write_gen,
                     child_gens,
                 )
             )
 
-        if self._can_reconcile(existing):
-            try:
-                reconciled = yield from self._reconcile(item, existing, provided=provided_names)
-            except Exception as error:
-                if self._on_error == "raise":
-                    raise
-                if parent_skipped:
-                    return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
-                self._error_parent(item, source_inputs, write_gen, error, existing)
-                return RowReceipt(str(identity_value), outcome, RowStatus.ERROR, error=f"{type(error).__name__}: {error}")
-            if isinstance(reconciled, _PausedConvergence):
-                return self._write_waiting_parent(
-                    item,
-                    source_inputs,
-                    reconciled.outputs,
-                    reconciled.provenances,
-                    reconciled.pause,
-                    reconciled.provenance,
-                    write_gen,
-                    child_gens,
-                    existing,
-                    outcome,
-                )
-            if isinstance(reconciled, _DegradedConvergence):
-                if parent_skipped:
-                    return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
-                return self._degraded_parent(
-                    item,
-                    source_inputs,
-                    write_gen,
-                    existing,
-                    outcome,
-                    _Degradation(reconciled.outputs, reconciled.failures, reconciled.error),
-                    provenances=reconciled.provenances,
-                    kept=existing,
-                )
-            if reconciled is not None:
-                reconciled_outcome = yield from self._apply_reconciled(
-                    item,
-                    source_inputs,
-                    existing,
-                    reconciled,
-                    parent_skipped,
-                    write_gen,
-                    child_gens,
-                )
-                return RowReceipt(
-                    str(identity_value),
-                    WriteOutcome.SKIPPED if reconciled_outcome == "skipped" else outcome,
-                    RowStatus.COMPLETE,
-                )
+        if isinstance(plan, Reconcile):
+            receipt = yield from self._reconciled_parent(item, source_inputs, provided_names, plan, outcome, write_gen, child_gens, before)
+            if receipt is not None:
+                return receipt
 
+        return (
+            yield from self._derived_parent(
+                item,
+                source_inputs,
+                provided_names,
+                plan.row,
+                plan.parent_skipped,
+                outcome,
+                write_gen,
+                child_gens,
+                before,
+            )
+        )
+
+    def _reconciled_parent(
+        self,
+        item: dict[str, Any],
+        source_inputs: dict[str, Any],
+        provided_names: set[str],
+        plan: Reconcile,
+        outcome: WriteOutcome,
+        write_gen: int,
+        child_gens: ChildGenerations,
+        before: ChildWrites,
+    ) -> Generator[RunGraph, Any, RowReceipt | None]:
+        """Converge a stored row column by column.
+
+        Returns ``None`` when the stored values cannot support column-scoped
+        reconciliation, which is the caller's signal to derive the whole graph.
+        """
+        identity_value = item[self._identity]
+        existing = plan.row
         try:
-            result = yield RunGraph(self._graph, graph_inputs, degrade=self._degrade())
+            reconciled = yield from self._reconcile(item, existing, provided=provided_names)
+        except Exception as error:
+            if self._on_error == "raise":
+                raise
+            if plan.parent_skipped:
+                return self._unchanged_parent_receipt(identity_value, before)
+            self._error_parent(item, source_inputs, write_gen, error, existing)
+            return RowReceipt(str(identity_value), outcome, RowStatus.ERROR, error=f"{type(error).__name__}: {error}")
+
+        if isinstance(reconciled, _PausedConvergence):
+            return self._write_waiting_parent(
+                item,
+                source_inputs,
+                reconciled.outputs,
+                reconciled.provenances,
+                reconciled.pause,
+                reconciled.provenance,
+                write_gen,
+                child_gens,
+                existing,
+                outcome,
+            )
+        if isinstance(reconciled, _DegradedConvergence):
+            if plan.parent_skipped:
+                return self._unchanged_parent_receipt(identity_value, before)
+            return self._degraded_parent(
+                item,
+                source_inputs,
+                write_gen,
+                existing,
+                outcome,
+                _Degradation(reconciled.outputs, reconciled.failures, reconciled.error),
+                provenances=reconciled.provenances,
+                kept=existing,
+            )
+        if isinstance(reconciled, ReconcileUnavailable):
+            return None
+        yield from self._apply_reconciled(
+            item,
+            source_inputs,
+            existing,
+            reconciled,
+            plan.parent_skipped,
+            write_gen,
+            child_gens,
+        )
+        if plan.parent_skipped:
+            return self._unchanged_parent_receipt(identity_value, before)
+        return RowReceipt(str(identity_value), outcome, RowStatus.COMPLETE)
+
+    def _derived_parent(
+        self,
+        item: dict[str, Any],
+        source_inputs: dict[str, Any],
+        provided_names: set[str],
+        existing: dict[str, Any] | None,
+        parent_skipped: bool,
+        outcome: WriteOutcome,
+        write_gen: int,
+        child_gens: ChildGenerations,
+        before: ChildWrites,
+    ) -> Generator[RunGraph, Any, RowReceipt]:
+        """Run the whole graph for one row and store what it produced."""
+        identity_value = item[self._identity]
+        try:
+            result = yield RunGraph(self._graph, self._graph_inputs(item, provided_names), degrade=self._degrade())
         except Exception as error:
             if self._on_error == "raise":
                 raise
             if parent_skipped:
-                return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
+                return self._unchanged_parent_receipt(identity_value, before)
             self._error_parent(item, source_inputs, write_gen, error, existing)
             return RowReceipt(str(identity_value), outcome, RowStatus.ERROR, error=f"{type(error).__name__}: {error}")
 
         degradation = self._run_degradation(result)
         if degradation is not None:
             if parent_skipped:
-                return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
+                return self._unchanged_parent_receipt(identity_value, before)
             return self._degraded_parent(item, source_inputs, write_gen, existing, outcome, degradation)
 
         outputs = _run_values(result)
         pause = _run_pause(result)
         if pause is not None:
-            provenances = self._provenances_for_values({**item, **outputs}, pause)
-            pause_provenance = provenances.get(pause.response_key)
-            if pause_provenance is None:
-                raise RuntimeError(
-                    "HyperTable could not compute provenance for an interrupt answer.\n\n"
-                    f"Answer column: {pause.response_key!r}\n\n"
-                    "How to fix: ensure every required interrupt input is a stored source or derived column."
-                )
+            provenances = self._rows.provenances_for_values({**item, **outputs}, pause)
             return self._write_waiting_parent(
                 item,
                 source_inputs,
                 outputs,
                 provenances,
                 pause,
-                pause_provenance,
+                _pause_provenance(provenances, pause),
                 write_gen,
                 child_gens,
                 existing,
                 outcome,
             )
 
-        if parent_skipped:
-            for child_spec in self._spec.children:
-                yield from self._insert_children(identity_value, outputs, child_spec, child_gens)
-            self._cleanup_children(identity_value, child_gens)
-            return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
-
         for child_spec in self._spec.children:
             yield from self._insert_children(identity_value, outputs, child_spec, child_gens)
-        self._evolve_for_metadata(item)
-        row = self._build_parent_row(
-            item,
-            source_inputs,
-            outputs,
-            write_gen,
-            "complete",
-        )
-        self._store.write_rows(self._spec.name, [row])
+        if parent_skipped:
+            self._commit.cleanup_children(identity_value, child_gens)
+            return self._unchanged_parent_receipt(identity_value, before)
+
+        self._rows.evolve_for_metadata(item)
+        row = self._rows.parent_row(item, source_inputs, outputs, write_gen, RowStatus.COMPLETE)
+        self._commit.write_rows(self._spec.name, [row])
         if existing is not None:
-            self._cleanup_parent(identity_value, write_gen)
-            self._cleanup_children(identity_value, child_gens)
+            self._commit.cleanup_parent(identity_value, write_gen)
+            self._commit.cleanup_children(identity_value, child_gens)
         return RowReceipt(str(identity_value), outcome, RowStatus.COMPLETE)
 
+    # -- public write plans --------------------------------------------------
+
     def insert(self, items: list[dict[str, Any]]) -> WriteOperation:
-        write_gen = self._store.max_write_gen(self._spec.name) + 1
+        write_gen = self._commit.next_write_gen()
         receipts: list[RowReceipt] = []
         for item in items:
             receipts.append((yield from self._insert_one(item, write_gen)))
@@ -1390,8 +1069,8 @@ class WritePlanner:
         self,
         identity_value: str,
         changes: dict[str, Any],
-    ) -> tuple[dict[str, Any], bool, int]:
-        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
+    ) -> tuple[dict[str, Any], dict[str, Any], bool, int]:
+        existing = self._commit.read_one(self._spec.name, self._identity, identity_value)
         if existing is None:
             raise KeyError(identity_value)
         item: dict[str, Any] = {self._identity: identity_value}
@@ -1405,35 +1084,28 @@ class WritePlanner:
         item.update(changes)
         derivation_inputs = {column.name for column in self._spec.columns if column.role in ("source", "answer")}
         needs_rederive = any(key in derivation_inputs for key in changes)
-        write_gen = self._store.max_write_gen(self._spec.name) + 1
-        return item, needs_rederive, write_gen
+        write_gen = self._commit.next_write_gen()
+        return item, existing, needs_rederive, write_gen
 
     def update(self, identity_value: str, changes: dict[str, Any]) -> WriteOperation:
-        item, needs_rederive, write_gen = self._prepare_update(identity_value, changes)
-        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
+        item, existing, needs_rederive, write_gen = self._prepare_update(identity_value, changes)
         if not needs_rederive:
-            self._evolve_for_metadata({self._identity: identity_value, **changes})
+            # Metadata-only: no derivation, but a row IS written, so the receipt
+            # reports the physical effect rather than claiming a skip (#248).
+            self._rows.evolve_for_metadata({self._identity: identity_value, **changes})
             row = {key: normalize_value(value) for key, value in existing.items()}
             row.update(changes)
             row["_write_gen"] = write_gen
-            self._store.write_rows(self._spec.name, [row])
-            self._cleanup_parent(identity_value, write_gen)
-            return self._receipt_for_row(identity_value, WriteOutcome.SKIPPED, existing)
+            self._commit.write_rows(self._spec.name, [row])
+            self._commit.cleanup_parent(identity_value, write_gen)
+            return self._receipt_for_row(identity_value, WriteOutcome.UPDATED, existing)
 
         return (yield from self._insert_one(item, write_gen, provided=set(changes)))
 
     def delete(self, identity_value: str) -> None:
-        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
-        if existing is None:
+        if self._commit.read_one(self._spec.name, self._identity, identity_value) is None:
             return
-        child_tables = {child_spec.name for child_spec in self._spec.children}
-        if self._store.supports_manifests():
-            from hypergraph.materialization._branch_registry import registered_child_tables
-
-            child_tables.update(registered_child_tables(self._store, self._spec.name))
-        for child_table in sorted(child_tables):
-            self._store.delete_rows(child_table, [("_parent_id", "eq", identity_value)])
-        self._store.delete_rows(self._spec.name, [(self._identity, "eq", identity_value)])
+        self._commit.delete_row_and_children(identity_value)
 
     def _row_unchanged(self, item: dict[str, Any], existing: dict[str, Any]) -> bool:
         inputs = self._source_inputs(item)
@@ -1464,40 +1136,22 @@ class WritePlanner:
             _, expected = split_boundary_provenance(existing.get(f"_provenance_{child_spec.map_input}"))
             if expected is None:
                 continue
-            rows = self._read_rows(
+            rows = self._commit.read_rows(
                 child_spec.name,
                 (("_parent_id", "eq", identity_value),),
                 columns=(child_spec.identity, "_parent_id", "_write_gen", "_status"),
             )
             present = dedup_child_rows(rows, child_spec.identity)
-            if len(present) != expected or any(row.get("_status") == "error" for row in present):
+            if len(present) != expected or any(RowStatus.of_stored(row) is RowStatus.ERROR for row in present):
                 return True
         return False
 
-    def _heal_damaged_children(self, item: dict[str, Any], write_gen: int) -> Generator[RunGraph, Any, RowReceipt]:
-        """Rebuild missing or errored child rows under an unchanged parent (#204, #314).
-
-        Delegates to the ordinary reconcile path: fresh parent columns are
-        reused, the fan-out boundary re-runs once to regenerate the item list
-        when rows are physically missing (a stored error row still carries its
-        item, so the list is reused instead), and only children without a
-        healthy physical row run the child graph. The receipt reports the repair
-        as ``HEALED`` whenever child rows were written — never ``SKIPPED`` on a
-        path that wrote rows.
-        """
-        gens_before = {child_spec.name: self._store.max_write_gen(child_spec.name) for child_spec in self._spec.children}
-        receipt = yield from self._insert_one(item, write_gen)
-        wrote_children = any(self._store.max_write_gen(name) > gen for name, gen in gens_before.items())
-        if wrote_children and receipt.outcome is WriteOutcome.SKIPPED:
-            return replace(receipt, outcome=WriteOutcome.HEALED)
-        return receipt
-
     def sync(self, items: list[dict[str, Any]]) -> WriteOperation:
-        rows = self._read_rows(self._spec.name)
+        rows = self._commit.read_rows(self._spec.name)
         existing_by_id = {str(row[self._identity]): row for row in dedup_rows(rows, self._identity) if row.get(self._identity) is not None}
         incoming_ids: set[str] = set()
         receipts: list[RowReceipt] = []
-        write_gen = self._store.max_write_gen(self._spec.name) + 1
+        write_gen = self._commit.next_write_gen()
 
         for item in items:
             identity_value = str(item[self._identity])
@@ -1505,11 +1159,14 @@ class WritePlanner:
             existing = existing_by_id.get(identity_value)
             if existing is None:
                 receipts.append((yield from self._insert_one(item, write_gen)))
-            elif self._row_unchanged(item, existing) and existing.get("_status") in (None, "complete"):
+            elif self._row_unchanged(item, existing) and RowStatus.of_stored(existing) is RowStatus.COMPLETE:
                 if self._provenance.row_missing_stamp(existing, RECIPE_COLUMN):
-                    self._refresh_missing_stamps(existing)
+                    self._commit.refresh_missing_stamps(existing, self._rows, self._provenance)
                 if self._children_need_repair(existing):
-                    receipts.append((yield from self._heal_damaged_children(item, write_gen)))
+                    # The ordinary write plan does the repair, and reports it:
+                    # its receipt is HEALED when the rebuilt children landed
+                    # healthy, never SKIPPED on a path that wrote rows.
+                    receipts.append((yield from self._insert_one(item, write_gen)))
                 else:
                     receipts.append(RowReceipt(identity_value, WriteOutcome.SKIPPED, RowStatus.COMPLETE))
             else:
@@ -1535,36 +1192,33 @@ class WritePlanner:
                 f"Fields: {', '.join(blocked)}\n\n"
                 "How to fix: update annotation metadata only; converge content changes with update()."
             )
-        rows = dedup_rows(self._read_rows(self._spec.name, where), self._identity)
+        rows = dedup_rows(self._commit.read_rows(self._spec.name, where), self._identity)
         if not rows:
             return 0
-        self._evolve_for_metadata({self._identity: rows[0][self._identity], **fields})
-        write_gen = self._store.max_write_gen(self._spec.name) + 1
+        self._rows.evolve_for_metadata({self._identity: rows[0][self._identity], **fields})
+        write_gen = self._commit.next_write_gen()
         updated = []
         for row in rows:
             new_row = {key: normalize_value(value) for key, value in row.items()}
             new_row.update(fields)
             new_row["_write_gen"] = write_gen
             updated.append(new_row)
-        self._store.write_rows(self._spec.name, updated)
+        self._commit.write_rows(self._spec.name, updated)
         for row in rows:
-            self._store.delete_rows(
-                self._spec.name,
-                [(self._identity, "eq", row[self._identity]), ("_write_gen", "lt", write_gen)],
-            )
+            self._commit.cleanup_parent(row[self._identity], write_gen)
         return len(updated)
 
     def derive_column(self, column: str, *, backfill: bool) -> WriteOperation:
         if backfill:
-            self._evolve_for_backfill_column(column)
+            self._rows.evolve_for_backfill_column(column)
         node = self._provenance.producing_node(column)
-        write_gen = self._store.max_write_gen(self._spec.name) + 1
-        rows = dedup_rows(self._read_rows(self._spec.name), self._identity)
+        write_gen = self._commit.next_write_gen()
+        rows = dedup_rows(self._commit.read_rows(self._spec.name), self._identity)
         receipts: list[RowReceipt] = []
         derived_columns = self._provenance.derived_columns()
         derived_names = {derived.name for derived in derived_columns}
         for existing in rows:
-            child_gens = _ChildGenerations(self._store, write_gen)
+            child_gens = self._commit.child_generations(write_gen)
             if backfill and not self._provenance.column_is_null(existing.get(column)):
                 receipts.append(
                     self._receipt_for_row(
@@ -1610,21 +1264,22 @@ class WritePlanner:
                 )
                 continue
             if isinstance(reconciled, _PausedConvergence):
-                receipt = self._write_waiting_parent(
-                    item,
-                    source_inputs,
-                    reconciled.outputs,
-                    reconciled.provenances,
-                    reconciled.pause,
-                    reconciled.provenance,
-                    write_gen,
-                    child_gens,
-                    existing,
-                    WriteOutcome.UPDATED,
+                receipts.append(
+                    self._write_waiting_parent(
+                        item,
+                        source_inputs,
+                        reconciled.outputs,
+                        reconciled.provenances,
+                        reconciled.pause,
+                        reconciled.provenance,
+                        write_gen,
+                        child_gens,
+                        existing,
+                        WriteOutcome.UPDATED,
+                    )
                 )
-                receipts.append(receipt)
                 continue
-            if reconciled is None:
+            if isinstance(reconciled, ReconcileUnavailable):
                 raise RuntimeError(
                     "HyperTable could not converge a re-derived column.\n\n"
                     f"Column: {column!r}\n\n"

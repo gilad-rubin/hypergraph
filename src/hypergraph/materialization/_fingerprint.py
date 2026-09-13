@@ -173,7 +173,7 @@ def recipe_component_hashes(
     The caller's components are layered OVER the graph's own bindings: a graph
     mounted as a child carries the ``bind(...)`` values it was built with, and
     only the ROOT graph's bindings ever reach ``components``. A root bind wins
-    on a shared name, mirroring ``WritePlanner._bind_child_components`` at run
+    on a shared name, mirroring ``Provenance.bind_child_components`` at run
     time. For a root table the components ARE the graph's bindings, so the
     merge is a no-op there.
 
