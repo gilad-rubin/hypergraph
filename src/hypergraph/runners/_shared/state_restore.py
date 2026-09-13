@@ -47,6 +47,34 @@ def initialize_state(
     )
 
 
+class CheckpointCoercionError(Exception):
+    """A stored checkpoint value could not be rebuilt as its annotated model.
+
+    Restore re-mints typed models from the graph's annotations. When that
+    fails — a model whose shape changed since the run was checkpointed, a
+    hand-written value, a serializer that lost a field — the value is
+    refused here rather than passed on as a raw ``dict`` for a node to trip
+    over several supersteps later (#408).
+
+    ``name`` is filled in by ``coerce_checkpoint_values``, which is the level
+    that knows which value it was reading; the raising level knows only the
+    model. The underlying validation error is kept as ``__cause__``.
+    """
+
+    def __init__(self, model: type, cause: BaseException, name: str | None = None) -> None:
+        self.model = model
+        self.cause = cause
+        self.name = name
+        subject = f"checkpoint value {name!r}" if name else "a checkpoint value"
+        self.message = (
+            f"Cannot restore {subject} as {model.__name__}: {type(cause).__name__}: {cause}\n\n"
+            "How to fix: if the model changed shape since this run was checkpointed, fork the run into "
+            "the new Definition (host.fork) or start a fresh one — a resumed run must be able to rebuild "
+            "the values it stored. If the annotation is wrong, correct it and re-run."
+        )
+        super().__init__(self.message)
+
+
 def _extract_model_type(hint: Any) -> type | None:
     """Extract a Pydantic BaseModel or dataclass type from a type hint.
 
@@ -152,7 +180,29 @@ def _coerce_tuple(value: Any, hint: Any) -> Any:
 
 
 def _coerce_single(value: Any, model: type) -> Any:
-    """Coerce a single value to a model type. Returns value unchanged on failure."""
+    """Rebuild one stored dict as its annotated model, or refuse loudly.
+
+    A value with nothing to rebuild is returned unchanged: it is already the
+    model, or it is not a dict at all (a plain string stored for a plain
+    annotation), or the annotation is neither a pydantic model nor a
+    dataclass. Those are the silent-by-design paths.
+
+    What is NOT silent any more is a dict that WAS supposed to become this
+    model and could not (#408). Returning it handed the resumed run a
+    ``dict`` where a node's annotation said a model, and the failure surfaced
+    as an ``AttributeError`` several nodes later with nothing pointing back
+    at the restore.
+
+    Note:
+        A dataclass is CONSTRUCTED, not validated — dataclasses do not check
+        field types, so a stored ``{"value": "nope"}`` for ``value: float``
+        rebuilds a ``Metric(value="nope")``. Only a construction failure
+        (a missing required field, say) is caught here. Annotate with a
+        pydantic model where the stored shape must be enforced.
+
+    Raises:
+        CheckpointCoercionError: The dict could not become the model.
+    """
     import dataclasses
 
     if isinstance(value, model):
@@ -164,8 +214,8 @@ def _coerce_single(value: Any, model: type) -> Any:
             return model.model_validate(value)
         if dataclasses.is_dataclass(model):
             return model(**{k: v for k, v in value.items() if k in {f.name for f in dataclasses.fields(model)}})
-    except Exception:
-        return value
+    except Exception as exc:
+        raise CheckpointCoercionError(model, exc) from exc
     return value
 
 
@@ -205,13 +255,25 @@ def coerce_checkpoint_values(
 
     Walks the graph's output type annotations and converts plain dicts
     back into Pydantic models or dataclasses where the type is known.
+
+    This is the level that knows the NAME of the value being restored, so a
+    refusal from below is re-raised carrying it: "cannot restore checkpoint
+    value 'score' as Score" is actionable, "cannot restore a dict" is not.
+
+    Raises:
+        CheckpointCoercionError: A stored value could not be rebuilt as the
+            model its annotation names.
     """
     type_map = _build_output_type_map(graph)
     coerced = dict(values)
     for name, value in coerced.items():
         hint = type_map.get(name)
-        if hint is not None:
+        if hint is None:
+            continue
+        try:
             coerced[name] = _coerce_value(value, hint)
+        except CheckpointCoercionError as refused:
+            raise CheckpointCoercionError(refused.model, refused.cause, name=name) from refused.cause
     return coerced
 
 
