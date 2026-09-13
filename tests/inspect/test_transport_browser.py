@@ -192,6 +192,7 @@ def _partial_customer_map() -> tuple[MapInspection, MapInspection]:
         running_node,
         status="failed",
         failure=failure,
+        failure_key="failure-0",
         ended_at_ms=45.0,
         duration_ms=25.0,
     )
@@ -203,6 +204,7 @@ def _partial_customer_map() -> tuple[MapInspection, MapInspection]:
         status="failed",
         nodes=(failed_node,),
         failures=(failure,),
+        failure_keys=("failure-0",),
         total_duration_ms=25.0,
         captured=True,
         terminal=True,
@@ -844,12 +846,14 @@ def test_untrusted_terminal_run_escapes_hostile_failure_text(
         qualified_name=hostile,
         inputs={"customer_id": hostile},
         failure=hostile_failure,
+        failure_key="failure-0",
     )
     terminal_run = replace(
         failed_item.run,
         graph_name=hostile,
         nodes=(hostile_node,),
         failures=(hostile_failure,),
+        failure_keys=("failure-0",),
         error=hostile_failure.error,
     )
     envelope = _envelope(
@@ -914,6 +918,7 @@ def test_untrusted_terminal_run_pairs_first_failure_with_its_exact_node(
         status="failed",
         inputs={"customer_id": "a"},
         failure=failure_a,
+        failure_key="failure-1",
     )
     node_b = replace(
         _node(1),
@@ -922,11 +927,13 @@ def test_untrusted_terminal_run_pairs_first_failure_with_its_exact_node(
         status="failed",
         inputs={"customer_id": "b"},
         failure=failure_b,
+        failure_key="failure-0",
     )
     terminal_run = replace(
         _run(graph_name="research", status="failed", terminal=True, node_count=0),
         nodes=(node_a, node_b),
         failures=(failure_b, failure_a),
+        failure_keys=("failure-0", "failure-1"),
         error=failure_b.error,
     )
     envelope = _envelope(
@@ -1255,11 +1262,13 @@ def test_untrusted_terminal_discloses_truncated_exception_preview(
         qualified_name="score_customer",
         status="failed",
         failure=evidence,
+        failure_key="failure-0",
     )
     artifact = replace(
         _run(graph_name="customer_review", status="failed", terminal=True, node_count=0),
         nodes=(failed_node,),
         failures=(evidence,),
+        failure_keys=("failure-0",),
         error=error,
     )
     envelope = _envelope(
@@ -1305,11 +1314,13 @@ def test_untrusted_terminal_does_not_duplicate_unavailable_exception_type(
         qualified_name="score_customer",
         status="failed",
         failure=evidence,
+        failure_key="failure-0",
     )
     artifact = replace(
         _run(graph_name="customer_review", status="failed", terminal=True, node_count=0),
         nodes=(failed_node,),
         failures=(evidence,),
+        failure_keys=("failure-0",),
         error=error,
     )
     envelope = _envelope(
@@ -1358,11 +1369,13 @@ def test_untrusted_terminal_preserves_visible_and_copy_whitespace_exactly(
         status="failed",
         inputs={"message": exact_text},
         failure=evidence,
+        failure_key="failure-0",
     )
     artifact = replace(
         _run(graph_name="workflow", status="failed", terminal=True, node_count=0),
         nodes=(failed_node,),
         failures=(evidence,),
+        failure_keys=("failure-0",),
         error=error,
     )
     envelope = _envelope(

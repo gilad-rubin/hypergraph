@@ -44,6 +44,7 @@ class NodeInspection:
     inputs: Mapping[str, Any] | None = field(default=None, repr=False, compare=False)
     outputs: Mapping[str, Any] | None = field(default=None, repr=False, compare=False)
     failure: FailureEvidence | None = field(default=None, repr=False, compare=False)
+    failure_key: str | None = field(default=None, repr=False, compare=False)
     started_at_ms: float | None = None
     ended_at_ms: float | None = None
     duration_ms: float = 0.0
@@ -76,6 +77,7 @@ class RunInspection:
     total_duration_ms: float
     captured: bool
     terminal: bool
+    failure_keys: tuple[str, ...] = field(default=(), repr=False, compare=False)
     error: BaseException | None = field(default=None, repr=False, compare=False)
     revision: int = field(default=0, repr=False, compare=False)
     _runner_kind: RunnerKind | None = field(default=None, repr=False, compare=False)
@@ -185,6 +187,9 @@ class InspectionSession:
         self._next_subscriber = 0
         self._next_sequence = 0
         self._failure_span_ids: set[str] = set()
+        self._failure_key_by_span: dict[str, str] = {}
+        self._recorded_failure_spans: list[str] = []
+        self._next_failure_key = 0
 
     def bind_run(self, run_id: str, *, workflow_id: str | None = None) -> None:
         """Bind effective run identity before node execution begins."""
@@ -342,21 +347,58 @@ class InspectionSession:
     ) -> None:
         """Mark a failed execution and optionally publish its leaf evidence."""
         with self._lock:
+            failure_key = self._failure_key_locked(span_id, failure, record_failure=record_failure)
             self._replace_node_locked(
                 span_id,
                 status="failed",
                 failure=failure,
+                failure_key=failure_key,
                 ended_at_ms=ended_at_ms,
                 duration_ms=duration_ms,
             )
             if record_failure:
                 self._failure_span_ids.add(span_id)
+                self._recorded_failure_spans.append(span_id)
+            recorded = tuple(node for node in self._artifact.nodes if node.span_id in self._failure_span_ids and node.failure is not None)
             self._replace_artifact_locked(
-                failures=tuple(node.failure for node in self._artifact.nodes if node.span_id in self._failure_span_ids and node.failure is not None),
+                failures=tuple(node.failure for node in recorded),
+                failure_keys=tuple(self._failure_key_by_span[node.span_id] for node in recorded),
                 error=self._artifact.error if self._artifact.error is not None else failure.error,
             )
             artifact, subscribers = self._publication_locked()
         self._notify(subscribers, artifact, urgent=True)
+
+    def _failure_key_locked(
+        self,
+        span_id: str,
+        failure: FailureEvidence,
+        *,
+        record_failure: bool,
+    ) -> str:
+        """Pair this execution with a failure occurrence while the pairing is known.
+
+        A recorded leaf failure opens a new occurrence.  An aggregate execution
+        -- a GraphNode re-raising what failed inside it -- joins the occurrence
+        of the most recent leaf carrying the same error object, which is the
+        one it is re-raising.
+        """
+        existing = self._failure_key_by_span.get(span_id)
+        if existing is not None:
+            return existing
+        if not record_failure:
+            for recorded_span in reversed(self._recorded_failure_spans):
+                recorded_node = next(
+                    (node for node in reversed(self._artifact.nodes) if node.span_id == recorded_span),
+                    None,
+                )
+                if recorded_node is not None and recorded_node.failure is not None and recorded_node.failure.error is failure.error:
+                    key = self._failure_key_by_span[recorded_span]
+                    self._failure_key_by_span[span_id] = key
+                    return key
+        key = f"failure-{self._next_failure_key}"
+        self._next_failure_key += 1
+        self._failure_key_by_span[span_id] = key
+        return key
 
     def finish(
         self,
@@ -369,6 +411,7 @@ class InspectionSession:
         """Publish the terminal snapshot and return it."""
         with self._lock:
             terminal_failures = failures or self._artifact.failures
+            terminal_failure_keys = self._terminal_failure_keys_locked(terminal_failures)
             settled_status = cast(
                 NodeInspectionStatus,
                 status if status in {"completed", "failed", "paused", "stopped"} else "failed",
@@ -378,6 +421,7 @@ class InspectionSession:
                 status=status,
                 nodes=settled_nodes,
                 failures=tuple(terminal_failures),
+                failure_keys=terminal_failure_keys,
                 total_duration_ms=total_duration_ms,
                 terminal=True,
                 error=error,
@@ -385,6 +429,26 @@ class InspectionSession:
             artifact, subscribers = self._publication_locked()
         self._notify(subscribers, artifact, urgent=True)
         return artifact
+
+    def _terminal_failure_keys_locked(
+        self,
+        terminal_failures: tuple[FailureEvidence, ...],
+    ) -> tuple[str, ...]:
+        """Keep the recorded occurrence keys, in order, for the settled list.
+
+        The terminal list is the same run's failures in the same order, so the
+        keys this session already assigned line up positionally; anything beyond
+        what was recorded opens a fresh occurrence.
+        """
+        recorded = self._artifact.failure_keys
+        keys: list[str] = []
+        for index in range(len(terminal_failures)):
+            if index < len(recorded):
+                keys.append(recorded[index])
+                continue
+            keys.append(f"failure-{self._next_failure_key}")
+            self._next_failure_key += 1
+        return tuple(keys)
 
     def snapshot(self) -> RunInspection:
         """Return the latest immutable artifact."""
@@ -778,6 +842,7 @@ def degraded_run_inspection(result: RunResult) -> RunInspection:
                     values_captured=False,
                     inputs=failure.inputs if failure is not None else None,
                     failure=failure,
+                    failure_key=(f"failure-{failure_index}" if failure_index is not None else None),
                     duration_ms=step.duration_ms,
                     cached=step.cached,
                 )
@@ -799,6 +864,7 @@ def degraded_run_inspection(result: RunResult) -> RunInspection:
                 values_captured=False,
                 inputs=failure.inputs,
                 failure=failure,
+                failure_key=f"failure-{failure_index}",
                 duration_ms=failure.duration_ms,
             )
         )
@@ -810,6 +876,7 @@ def degraded_run_inspection(result: RunResult) -> RunInspection:
         status=result.status.value,
         nodes=tuple(nodes),
         failures=result.node_failures,
+        failure_keys=tuple(f"failure-{index}" for index in range(len(result.node_failures))),
         total_duration_ms=(result.log.total_duration_ms if result.log is not None else 0.0),
         captured=False,
         terminal=True,

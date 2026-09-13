@@ -22,7 +22,6 @@ from hypergraph import AsyncRunner, Graph, SyncRunner, node
 from hypergraph.runners._shared import _inspect_transport
 from hypergraph.runners._shared._inspect import MapInspection, RunInspection
 from hypergraph.runners._shared._inspect_html import (
-    _failure_keys,
     build_inspection_payload,
     render_map_inspection,
     render_run_inspection,
@@ -544,10 +543,8 @@ def test_real_shared_peer_failures_keep_distinct_occurrence_keys(
     assert [node.failure.inputs["customer_id"] is shared_value for node in failed_nodes] == [True, True]  # type: ignore[union-attr]
     assert [node.failure.duration_ms for node in failed_nodes] == [0.0, 0.0]  # type: ignore[union-attr]
 
-    node_keys, public_keys = _failure_keys(item.run)
-    failed_node_keys = [key for node, key in zip(item.run.nodes, node_keys, strict=True) if node.failure is not None]
-    assert failed_node_keys == ["failure-0", "failure-1"]
-    assert list(public_keys) == ["failure-0", "failure-1"]
+    assert [node.failure_key for node in failed_nodes] == ["failure-0", "failure-1"]
+    assert list(item.run.failure_keys) == ["failure-0", "failure-1"]
 
 
 @pytest.mark.parametrize("runner_kind", ["sync", "async"])
@@ -622,202 +619,41 @@ def test_round_tripped_b20_projection_keeps_outer_public_and_inner_leaf_indexes(
         leaf = next(node for node in item.run.nodes if node.qualified_name == "review_group/review_customer" and node.status == "failed")
         assert leaf.item_index == 1
         assert item.run.failures[0].item_index == outer_index
-        node_keys, public_keys = _failure_keys(item.run)
-        leaf_key = next(key for node, key in zip(item.run.nodes, node_keys, strict=True) if node is leaf)
-        assert leaf_key == public_keys[0]
+        assert leaf.failure_key == item.run.failure_keys[0]
+
+
+def test_real_nested_aggregate_shares_the_leaf_occurrence_key() -> None:
+    batch, _ = _run_unstable_nested_map("sync")
+    item = batch.inspect()._artifact.items[0]
+    assert item.run is not None
+    leaf = next(node for node in item.run.nodes if node.qualified_name == "review_group/review_customer" and node.status == "failed")
+    container = next(node for node in item.run.nodes if node.qualified_name == "review_group" and node.failure is not None)
+
+    # The container re-raises what failed inside it, so both executions point at
+    # the same occurrence -- recorded when the leaf failed, not re-derived later.
+    assert leaf.failure_key == "failure-0"
+    assert container.failure_key == leaf.failure_key
+    assert item.run.failure_keys == ("failure-0",)
 
 
 @pytest.mark.parametrize(
-    ("artifact_item_index", "target_inner_index"),
+    "round_trip",
     [
-        pytest.param(0, 1, id="outer-zero-collides-with-inner-zero"),
-        pytest.param(1, 0, id="outer-one-collides-with-inner-one-reversed"),
+        pytest.param(copy.deepcopy, id="deepcopy"),
+        pytest.param(lambda value: pickle.loads(pickle.dumps(value)), id="pickle"),
     ],
 )
-def test_copied_projected_peer_never_borrows_coincidental_inner_index(
-    monkeypatch: pytest.MonkeyPatch,
-    artifact_item_index: int,
-    target_inner_index: int,
-) -> None:
-    batch, _, _ = _run_shared_peer_failures("sync", monkeypatch)
-    item = batch.inspect()._artifact.items[0]
-    assert item.run is not None
-    target_public = replace(
-        item.run.failures[target_inner_index],
-        item_index=artifact_item_index,
-    )
-    run = replace(
-        item.run,
-        item_index=artifact_item_index,
-        nodes=(tuple(reversed(item.run.nodes)) if artifact_item_index == 1 else item.run.nodes),
-        failures=(target_public,),
-    )
-
-    node_keys, public_keys = _failure_keys(run)
-    failed_node_keys = [key for node, key in zip(run.nodes, node_keys, strict=True) if node.failure is not None]
-
-    assert public_keys == ("failure-0",)
-    assert "failure-0" not in failed_node_keys
-    assert len(set(failed_node_keys)) == 2
-
-
-@pytest.mark.parametrize("malformation", ["projection", "embedded-node-name"])
-def test_public_failure_requires_safe_projection_and_embedded_leaf_name(
-    malformation: str,
+def test_round_tripped_occurrence_keys_survive_without_re_derivation(
+    round_trip: Callable[[MapResult], MapResult],
 ) -> None:
     batch, _ = _run_unstable_nested_map("sync")
-    item = batch.inspect()._artifact.items[0]
-    assert item.run is not None
-    leaf_index = next(
-        index
-        for index, current in enumerate(item.run.nodes)
-        if current.qualified_name == "review_group/review_customer" and current.status == "failed"
-    )
-    leaf = item.run.nodes[leaf_index]
-    assert leaf.failure is not None
-    nodes = list(item.run.nodes)
-    public_failure = item.run.failures[0]
-    if malformation == "projection":
-        public_failure = replace(public_failure, item_index=99)
-    else:
-        nodes[leaf_index] = replace(
-            leaf,
-            failure=replace(leaf.failure, node_name="decoy/review_customer"),
-        )
-    run = replace(
-        item.run,
-        nodes=tuple(nodes),
-        failures=(public_failure,),
-    )
+    before = batch.inspect()._artifact.items[0].run
+    assert before is not None
+    after = round_trip(batch).inspect()._artifact.items[0].run
+    assert after is not None
 
-    node_keys, public_keys = _failure_keys(run)
-
-    assert public_keys == ("failure-0",)
-    assert node_keys[leaf_index] != "failure-0"
-
-
-def _single_map_failure_run() -> RunInspection:
-    @node(output_name="reviewed")
-    def reject(customer_id: str) -> str:
-        raise ValueError(f"manual review: {customer_id}")
-
-    batch = SyncRunner().map(
-        Graph([reject], name="single-map-review"),
-        {"customer_id": ["maya-23"]},
-        map_over="customer_id",
-        inspect=True,
-        error_handling="continue",
-    )
-    item = batch.inspect()._artifact.items[0]
-    assert item.run is not None
-    return item.run
-
-
-def test_public_projection_rejects_foreign_index_when_leaf_equals_container() -> None:
-    base = _single_map_failure_run()
-    assert base.item_index == 0
-    leaf_index = next(index for index, current in enumerate(base.nodes) if current.failure is not None)
-    assert base.nodes[leaf_index].item_index == 0
-    run = replace(
-        base,
-        failures=(replace(base.failures[0], item_index=99),),
-    )
-
-    node_keys, public_keys = _failure_keys(run)
-
-    assert public_keys == ("failure-0",)
-    assert node_keys[leaf_index] != "failure-0"
-
-
-def test_aggregate_projection_rejects_foreign_index_when_leaf_equals_container() -> None:
-    base = _single_map_failure_run()
-    base_leaf = next(current for current in base.nodes if current.failure is not None)
-    assert base_leaf.failure is not None
-    shared_failure = replace(
-        base_leaf.failure,
-        node_name="review_group/reject",
-    )
-    leaf = replace(
-        base_leaf,
-        qualified_name="review_group/reject",
-        failure=shared_failure,
-    )
-    foreign_aggregate = replace(
-        leaf,
-        span_id=f"{leaf.span_id}-foreign-aggregate",
-        node_name="review_group",
-        qualified_name="review_group",
-        item_index=99,
-        sequence=leaf.sequence - 1,
-        failure=replace(shared_failure, item_index=99),
-    )
-    run = replace(
-        base,
-        nodes=(foreign_aggregate, leaf),
-        failures=(shared_failure,),
-    )
-
-    node_keys, public_keys = _failure_keys(run)
-
-    assert public_keys == ("failure-0",)
-    assert node_keys[1] == "failure-0"
-    assert node_keys[0] != "failure-0"
-
-
-@pytest.mark.parametrize(
-    ("duplicate_position", "expected_container_matches"),
-    [
-        pytest.param("before-leaf", 0, id="ambiguous-aggregate-occurrences"),
-        pytest.param("after-leaf", 1, id="later-cycle-occurrence"),
-    ],
-)
-def test_aggregate_alias_requires_unique_preceding_occurrence(
-    duplicate_position: str,
-    expected_container_matches: int,
-) -> None:
-    batch, _ = _run_unstable_nested_map("sync")
-    item = batch.inspect()._artifact.items[0]
-    assert item.run is not None
-    container = next(current for current in item.run.nodes if current.qualified_name == "review_group" and current.failure is not None)
-    leaf = next(current for current in item.run.nodes if current.qualified_name == "review_group/review_customer" and current.status == "failed")
-    duplicate_sequence = leaf.sequence - 1 if duplicate_position == "before-leaf" else leaf.sequence + 1
-    duplicate = replace(
-        container,
-        span_id=f"{container.span_id}-{duplicate_position}",
-        sequence=duplicate_sequence,
-    )
-    run = replace(item.run, nodes=(*item.run.nodes, duplicate))
-
-    node_keys, public_keys = _failure_keys(run)
-    container_keys = [key for node, key in zip(run.nodes, node_keys, strict=True) if node.qualified_name == "review_group"]
-    leaf_key = next(key for node, key in zip(run.nodes, node_keys, strict=True) if node is leaf)
-
-    assert public_keys == ("failure-0",)
-    assert leaf_key == "failure-0"
-    assert container_keys.count("failure-0") == expected_container_matches
-    assert len(set(container_keys)) == len(container_keys)
-
-
-def test_aggregate_alias_requires_matching_embedded_failure_node_name() -> None:
-    batch, _ = _run_unstable_nested_map("sync")
-    item = batch.inspect()._artifact.items[0]
-    assert item.run is not None
-    container_index = next(
-        index for index, current in enumerate(item.run.nodes) if current.qualified_name == "review_group" and current.failure is not None
-    )
-    container = item.run.nodes[container_index]
-    assert container.failure is not None
-    nodes = list(item.run.nodes)
-    nodes[container_index] = replace(
-        container,
-        failure=replace(container.failure, node_name="decoy/review_customer"),
-    )
-    run = replace(item.run, nodes=tuple(nodes))
-
-    node_keys, public_keys = _failure_keys(run)
-
-    assert public_keys == ("failure-0",)
-    assert node_keys[container_index] != "failure-0"
+    assert after.failure_keys == before.failure_keys
+    assert [node.failure_key for node in after.nodes] == [node.failure_key for node in before.nodes]
 
 
 class _RecordingTransport:

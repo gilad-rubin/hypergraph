@@ -72,160 +72,9 @@ def _node_wire(
     }
 
 
-def _same_exact_text(left: object, right: object) -> bool:
-    """Compare framework-owned text without dispatching caller equality."""
-    return type(left) is str and type(right) is str and left == right
-
-
-def _same_exact_item_index(left: object, right: object) -> bool:
-    """Compare framework-owned indexes without dispatching caller equality."""
-    if left is None or right is None:
-        return left is right
-    return type(left) is int and type(right) is int and left == right
-
-
-def _failures_share_raw_aliases(
-    left: FailureEvidence,
-    right: FailureEvidence,
-) -> bool:
-    """Match shallow capture aliases without invoking caller-defined hooks."""
-    if left.error is not right.error:
-        return False
-    if type(left.inputs) is not dict or type(right.inputs) is not dict:
-        return False
-    if len(left.inputs) != len(right.inputs):
-        return False
-    left_items = tuple(left.inputs.items())
-    right_items = tuple(right.inputs.items())
-    return all(
-        _same_exact_text(left_key, right_key) and left_value is right_value
-        for (left_key, left_value), (right_key, right_value) in zip(
-            left_items,
-            right_items,
-            strict=True,
-        )
-    )
-
-
-def _is_aggregate_path(aggregate: object, leaf: object) -> bool:
-    """Return whether one framework path is a strict ancestor of another."""
-    return type(aggregate) is str and type(leaf) is str and leaf.startswith(f"{aggregate}/")
-
-
-def _is_failure_item_projection(
-    evidence_item_index: object,
-    leaf_item_index: object,
-    containing_item_index: int | None,
-) -> bool:
-    """Accept exact leaf identity or an outer containing-item projection."""
-    if _same_exact_item_index(evidence_item_index, leaf_item_index):
-        return True
-    if type(containing_item_index) is not int:
-        return False
-    return _same_exact_item_index(
-        evidence_item_index,
-        containing_item_index,
-    )
-
-
-def _failure_keys(
-    artifact: RunInspection,
-) -> tuple[tuple[str | None, ...], tuple[str, ...]]:
-    """Correlate stable node occurrences, then expose opaque wire ordinals."""
-    public_keys = tuple(f"failure-{index}" for index, _ in enumerate(artifact.failures))
-    node_keys: list[str | None] = [None] * len(artifact.nodes)
-    unclaimed_nodes = {index for index, node in enumerate(artifact.nodes) if node.failure is not None}
-    for failure_index, failure in enumerate(artifact.failures):
-        candidates = [
-            node_index
-            for node_index in sorted(unclaimed_nodes)
-            if (
-                (node := artifact.nodes[node_index]).failure is not None
-                and _same_exact_text(node.qualified_name, failure.node_name)
-                and _same_exact_text(node.failure.node_name, failure.node_name)
-                and _same_exact_item_index(
-                    node.item_index,
-                    node.failure.item_index,
-                )
-                and _is_failure_item_projection(
-                    failure.item_index,
-                    node.item_index,
-                    artifact.item_index,
-                )
-                and (node.failure is failure or _failures_share_raw_aliases(node.failure, failure))
-            )
-        ]
-        identical_candidates = [node_index for node_index in candidates if artifact.nodes[node_index].failure is failure]
-        if len(identical_candidates) == 1:
-            selected_node_index = identical_candidates[0]
-        elif len(candidates) == 1:
-            selected_node_index = candidates[0]
-        else:
-            # Ambiguous evidence must not borrow another real occurrence.
-            continue
-
-        failure_key = public_keys[failure_index]
-        selected_node = artifact.nodes[selected_node_index]
-        selected_failure = selected_node.failure
-        assert selected_failure is not None
-        node_keys[selected_node_index] = failure_key
-        unclaimed_nodes.remove(selected_node_index)
-
-        aggregate_aliases_by_path: dict[str, list[int]] = {}
-        for node_index in sorted(unclaimed_nodes):
-            node = artifact.nodes[node_index]
-            node_failure = node.failure
-            if (
-                node_failure is None
-                or not _is_aggregate_path(
-                    node.qualified_name,
-                    selected_node.qualified_name,
-                )
-                or not _same_exact_text(
-                    node_failure.node_name,
-                    selected_failure.node_name,
-                )
-                or not _same_exact_item_index(
-                    node.item_index,
-                    node_failure.item_index,
-                )
-                or not _failures_share_raw_aliases(
-                    node_failure,
-                    selected_failure,
-                )
-                or not _is_failure_item_projection(
-                    node.item_index,
-                    selected_node.item_index,
-                    artifact.item_index,
-                )
-                or type(node.sequence) is not int
-                or type(selected_node.sequence) is not int
-                or node.sequence >= selected_node.sequence
-            ):
-                continue
-            assert type(node.qualified_name) is str
-            aggregate_aliases_by_path.setdefault(
-                node.qualified_name,
-                [],
-            ).append(node_index)
-
-        for aggregate_aliases in aggregate_aliases_by_path.values():
-            if len(aggregate_aliases) != 1:
-                continue
-            node_index = aggregate_aliases[0]
-            node_keys[node_index] = failure_key
-            unclaimed_nodes.remove(node_index)
-
-    next_key = len(public_keys)
-    for node_index in sorted(unclaimed_nodes):
-        node_keys[node_index] = f"failure-{next_key}"
-        next_key += 1
-    return tuple(node_keys), public_keys
-
-
 def _run_wire(artifact: RunInspection) -> dict[str, object]:
     error = getattr(artifact, "error", None)
-    node_failure_keys, public_failure_keys = _failure_keys(artifact)
+    public_failure_keys = artifact.failure_keys
     return {
         "run_id": artifact.run_id,
         "graph_name": artifact.graph_name,
@@ -237,8 +86,14 @@ def _run_wire(artifact: RunInspection) -> dict[str, object]:
         "terminal": artifact.terminal,
         **({"runner_kind": artifact._runner_kind} if artifact._runner_kind is not None else {}),
         "error": _serialized(error) if error is not None else None,
-        "nodes": [_node_wire(node, failure_key=node_failure_keys[index]) for index, node in enumerate(artifact.nodes)],
-        "failures": [_failure_wire(failure, failure_key=public_failure_keys[index]) for index, failure in enumerate(artifact.failures)],
+        "nodes": [_node_wire(node, failure_key=node.failure_key) for node in artifact.nodes],
+        "failures": [
+            _failure_wire(
+                failure,
+                failure_key=(public_failure_keys[index] if index < len(public_failure_keys) else None),
+            )
+            for index, failure in enumerate(artifact.failures)
+        ],
     }
 
 
