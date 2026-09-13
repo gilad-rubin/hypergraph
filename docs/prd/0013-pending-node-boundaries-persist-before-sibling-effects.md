@@ -36,6 +36,12 @@ After:
 # Unfinished siblings stay attributable; nothing is inferred from silence.
 ```
 
+StepRecords still commit per superstep, not per node, so a sibling that ran
+to completion inside the killed superstep has no StepRecord; it marks its own
+boundary `settled_at` as its result lands and therefore reads
+`settled_unrecorded` — the node completed, its recorded value did not survive
+— instead of being indistinguishable from a sibling that never started (#330).
+
 Requirements:
 
 - Every runnable sibling boundary is persisted as pending before any

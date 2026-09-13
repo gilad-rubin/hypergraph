@@ -107,6 +107,10 @@ class ExecutionContext:
     ``superstep`` (current index, set per superstep) give attempt reservations
     the same superstep numbering StepRecords use.
 
+    ``persist_boundaries`` is the pending-node seam probe, resolved once per
+    run by the runner and carried here so a node can settle its OWN boundary
+    the moment its result is in hand (PRD 0013 / #330) without re-probing.
+
     ``provider_limits`` carries the graph-scope provider-resource budgets
     (``graph.with_provider_limit``) to the function-node executors,
     outermost first. These are shared process-local permit pools over
@@ -131,6 +135,7 @@ class ExecutionContext:
     checkpointer: Checkpointer | None = None
     superstep_offset: int = 0
     superstep: int = 0
+    persist_boundaries: bool = False
     provider_limits: tuple[ProcessLocalLimiter, ...] = ()
 
 

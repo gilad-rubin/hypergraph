@@ -10,6 +10,7 @@ import pytest
 import pytest_asyncio
 
 from hypergraph.checkpointers import (
+    BoundaryState,
     CheckpointPolicy,
     SqliteCheckpointer,
     StepRecord,
@@ -936,8 +937,8 @@ class TestSearch:
 
 
 class TestMigration:
-    def test_fresh_db_gets_v8_schema(self, tmp_path):
-        """A new database gets v8 schema automatically."""
+    def test_fresh_db_gets_v9_schema(self, tmp_path):
+        """A new database gets v9 schema automatically."""
         cp = SqliteCheckpointer(str(tmp_path / "fresh.db"))
         # Trigger sync schema creation
         assert cp.runs() == []
@@ -958,8 +959,10 @@ class TestMigration:
         # v6 pending node boundaries (ticket 08): a core checkpointer table,
         # keyed on exactly the tuple `steps` is unique on.
         assert "pending_nodes" in tables
+        # ``settled_at`` is the v9 per-node settlement marker (#330); it is
+        # the last column, so a v8 database gains it by plain ALTER.
         boundary_cols = [row[1] for row in conn.execute("PRAGMA table_info(pending_nodes)").fetchall()]
-        assert boundary_cols == ["run_id", "superstep", "node_name", "node_type", "created_at", "dispatched_at"]
+        assert boundary_cols == ["run_id", "superstep", "node_name", "node_type", "created_at", "dispatched_at", "settled_at"]
         boundary_pk = [row[1] for row in conn.execute("PRAGMA table_info(pending_nodes)").fetchall() if row[5]]
         assert boundary_pk == ["run_id", "superstep", "node_name"]
 
@@ -1013,7 +1016,7 @@ class TestMigration:
         assert provenance_col[4] is None  # no default
 
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 8
+        assert version == 9
         conn.close()
 
     def test_migration_idempotent(self, tmp_path):
@@ -1027,7 +1030,7 @@ class TestMigration:
         ensure_schema(conn)
         ensure_schema(conn)  # Second time should be a no-op
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 8
+        assert version == 9
         conn.close()
 
     def test_v6_db_gains_pending_nodes_in_place(self, tmp_path):
@@ -1056,7 +1059,7 @@ class TestMigration:
             assert "pending_nodes" in tables
             assert conn.execute("SELECT COUNT(*) FROM pending_nodes").fetchone()[0] == 0
             assert [row[0] for row in conn.execute("SELECT id FROM runs").fetchall()] == ["r-1"]
-            assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 8
+            assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 9
         finally:
             conn.close()
 
@@ -1128,7 +1131,7 @@ class TestMigration:
 
         ensure_schema(conn)
 
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 8
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 9
         cols = {row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()}
         assert {"builder_key", "builder_args_json", "claimed_by", "lease_until"} <= cols
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
@@ -1186,7 +1189,7 @@ class TestMigration:
 
         ensure_schema(conn)
 
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 8
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 9
         step_cols = [row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()]
         assert step_cols[-1] == "folded_producers"
         # Every pre-existing value is identical; the only change is one
@@ -1194,6 +1197,49 @@ class TestMigration:
         after = conn.execute("SELECT * FROM steps ORDER BY step_index").fetchall()
         assert [row[:-1] for row in after] == before
         assert [row[-1] for row in after] == [None, None]
+
+        ensure_schema(conn)  # idempotent on the migrated database
+        conn.close()
+
+    def test_v8_db_with_recorded_boundaries_gains_the_settlement_marker(self, tmp_path):
+        """A v8 database keeps every boundary row and only gains `settled_at` (#330).
+
+        The interesting row is a boundary a v8 install recorded: it never had
+        a way to say the node finished. Migration must not invent one — NULL
+        is the honest answer, and NULL is exactly what the derivation reads
+        as "nothing settled it", which is what a v8 process actually knew.
+        """
+        import sqlite3
+
+        from hypergraph.checkpointers._migrate import ensure_schema
+
+        db_path = str(tmp_path / "boundaries-v8.db")
+        conn = sqlite3.connect(db_path)
+        ensure_schema(conn)
+        # Rewind to a genuine v8 database: drop what v9 added, and say so.
+        conn.execute("ALTER TABLE pending_nodes DROP COLUMN settled_at")
+        conn.execute("UPDATE _schema_version SET version = 8")
+        conn.execute(
+            "INSERT INTO pending_nodes (run_id, superstep, node_name, node_type, created_at) "
+            "VALUES ('wf-old', 1, 'alpha', 'FunctionNode', '2026-08-01T00:00:00Z')"
+        )
+        conn.commit()
+        before = conn.execute("SELECT * FROM pending_nodes ORDER BY node_name").fetchall()
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 8
+
+        ensure_schema(conn)
+
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 9
+        boundary_cols = [row[1] for row in conn.execute("PRAGMA table_info(pending_nodes)").fetchall()]
+        assert boundary_cols[-1] == "settled_at"
+        after = conn.execute("SELECT * FROM pending_nodes ORDER BY node_name").fetchall()
+        assert [row[:-1] for row in after] == before
+        assert [row[-1] for row in after] == [None]
+
+        # And the row a v8 install left behind still reads as untouched work.
+        (boundary,) = SqliteCheckpointer(db_path).get_node_boundaries_sync("wf-old")
+        assert boundary.settled_at is None
+        assert boundary.state is BoundaryState.PENDING
 
         ensure_schema(conn)  # idempotent on the migrated database
         conn.close()

@@ -115,9 +115,15 @@ final and before `run_superstep_*`, and it must use the same
 `superstep_idx + superstep_offset` the StepRecords will carry: a boundary
 and its step share one address.
 
+Each node then settles its OWN boundary the moment its result is in hand,
+before that result is folded into shared state — `settle_node_boundary_*`
+from the superstep functions, not from the runner loop. Do not move it after
+the fold: the async fold cannot start until every sibling has returned, so a
+mark written there would never survive the kill it exists to describe.
+
 Put boundary logic in `pending_boundaries.py` and call it from both
-runners. A boundary is intent, never execution truth — never derive "this
-node ran" from it.
+runners. A boundary is intent, never execution truth — a settlement mark says
+the node completed and never what it produced.
 
 ## Staleness (`_is_stale`)
 

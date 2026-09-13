@@ -8,16 +8,17 @@ interrupted iteration never leaks into the next iteration's identity; sync
 and async runners (and the Memory and SQLite backends) expose the same
 recovery result; existing checkpoint resume is unaffected.
 
-What this does NOT deliver — pinned by
-``test_sibling_completed_inside_the_killed_superstep_re_executes``: a
-StepRecord is committed per SUPERSTEP, not per node, so a sibling that ran to
-completion inside the killed superstep has no StepRecord, derives as PENDING,
-and re-executes on restart. No boundary in a killed superstep can truthfully
-read COMMITTED. Facts committed in earlier, *finished* supersteps do survive
-the kill. Re-dispatching a repeat-safe sibling is explicitly tolerated by
-PRD 0013 ("this only wastes effort"); making the effectful case safe needs a
-per-node settlement marker, which is an OPEN MAINTAINER DECISION carried by
-PRD 0014 / ticket 09 alongside the ``dispatched_at`` seam.
+A StepRecord is still committed per SUPERSTEP, not per node, so no boundary
+in a killed superstep can read COMMITTED — but per #330 each node marks its
+own boundary ``settled_at`` the moment its result is in hand, so a sibling
+that ran to completion inside the killed superstep reads SETTLED_UNRECORDED
+rather than being indistinguishable from one that never started (pinned by
+``test_sibling_completed_inside_the_killed_superstep_is_readable_as_settled``).
+Facts committed in earlier, *finished* supersteps survive the kill as
+COMMITTED. Re-dispatching a repeat-safe settled sibling is still what resume
+does, and is explicitly tolerated by PRD 0013 ("this only wastes effort");
+what changed is that recovery can now tell the two cases apart, which is what
+PRD 0014 / ticket 09 needs alongside the ``dispatched_at`` seam.
 """
 
 import asyncio
@@ -26,6 +27,8 @@ import sqlite3
 import subprocess
 import sys
 import time
+from dataclasses import replace
+from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -46,7 +49,9 @@ from hypergraph.checkpointers import (
     Checkpointer,
     CheckpointPolicy,
     MemoryCheckpointer,
+    PendingNode,
     SqliteCheckpointer,
+    StepStatus,
     WorkflowStatus,
     node_address,
 )
@@ -280,6 +285,9 @@ class TestBoundariesPrecedeSiblingEffects:
         assert {b.address for b in boundaries} == step_addresses
         assert all(b.state is BoundaryState.COMMITTED for b in boundaries)
         assert all(b.dispatched_at is None for b in boundaries)
+        # Every node settled its own boundary on the way through; COMMITTED
+        # simply outranks the marker once the StepRecord lands.
+        assert all(b.settled_at is not None for b in boundaries)
         # The sync mirror reads the same rows.
         assert _addresses(sqlite_cp.get_node_boundaries_sync("wf-match")) == _addresses(boundaries)
 
@@ -534,7 +542,10 @@ class TestRealKillBetweenSiblingBoundaries:
         parent_states = _states(parent)
         assert parent_states == {
             "wf-kill:0:seed": BoundaryState.COMMITTED,
-            "wf-kill:1:alpha": BoundaryState.PENDING,
+            # Ran to completion inside the killed superstep: its StepRecord
+            # died with the superstep, its settlement mark did not.
+            "wf-kill:1:alpha": BoundaryState.SETTLED_UNRECORDED,
+            # Never started.
             "wf-kill:1:nested": BoundaryState.PENDING,
         }
         # Nothing was inferred from silence: both unfinished siblings of the
@@ -574,8 +585,10 @@ class TestRealKillBetweenSiblingBoundaries:
         # The sibling that never started dispatches exactly once...
         assert after_restart.count("inner_slow") == 1
         # ...and so does `alpha`, which had already run to COMPLETION when the
-        # kill landed: its superstep never committed, so its boundary is
-        # PENDING and recovery dispatches it again.
+        # kill landed: its superstep never committed, so it has no recorded
+        # output to restore and recovery dispatches this pure node again.
+        # The boundary said SETTLED_UNRECORDED, not PENDING — resume treats
+        # the two alike, a reader does not.
         assert after_restart.count("alpha") == 1
 
         # Parent-facing addresses match across the kill, and every boundary
@@ -585,21 +598,23 @@ class TestRealKillBetweenSiblingBoundaries:
         assert all(b.state is BoundaryState.COMMITTED for b in final_parent if b.superstep == 0)
         assert not [b for b in final_parent if b.state is BoundaryState.UNKNOWN_EFFECT]
 
-    async def test_sibling_completed_inside_the_killed_superstep_re_executes(self, tmp_path, home, kind, runner_expr, async_kw, sleep_stmt):
-        """Documents CURRENT behavior — deliberately not a guarantee.
+    async def test_sibling_completed_inside_the_killed_superstep_is_readable_as_settled(
+        self, tmp_path, home, kind, runner_expr, async_kw, sleep_stmt
+    ):
+        """The #330 marker: completed-inside-the-kill is no longer silence.
 
         ``alpha`` runs to completion inside the superstep the kill lands in.
-        StepRecords are committed per superstep (``_save_superstep_records``),
-        never per node, so no StepRecord exists for it: its boundary derives
-        as PENDING and the restart dispatches it a second time. It follows
-        that NO boundary in a killed superstep can ever read COMMITTED.
+        StepRecords are still committed per superstep
+        (``_save_superstep_records``), never per node, so no StepRecord
+        exists for it and NO boundary in a killed superstep can read
+        COMMITTED. What the per-node settlement marker adds is that ``alpha``
+        is no longer indistinguishable from ``nested``, which never started:
+        one reads SETTLED_UNRECORDED, the other PENDING.
 
-        Whether to add a per-node settlement marker (e.g. ``settled_at`` on
-        ``pending_nodes``), move StepRecord commit timing to per-node, or
-        amend PRD 0013's "After" block to match per-superstep reality is an
-        OPEN MAINTAINER DECISION; ticket 09 / PRD 0014 needs such a marker.
-        Until it is taken, pinning the real behavior here is worth more than
-        a test implying a stronger guarantee than the code delivers.
+        Resume is deliberately unchanged for a pure node — there is no
+        recorded output to restore, so ``alpha`` runs a second time exactly
+        as before. The marker buys the READING, which is what an effectful
+        node (PRD 0014) has to key off.
         """
         marker = tmp_path / f"resib-{kind}.txt"
         script = _SIBLING_KILL_SCRIPT.format(
@@ -621,11 +636,20 @@ class TestRealKillBetweenSiblingBoundaries:
         parent_steps = await home.get_steps("wf-kill")
         assert [s.node_name for s in parent_steps] == ["seed"]
 
-        # Its boundary is therefore PENDING, indistinguishable from the
-        # sibling that never started.
-        states = _states(home.get_node_boundaries_sync("wf-kill"))
-        assert states["wf-kill:1:alpha"] is BoundaryState.PENDING
+        # Its boundary says so anyway, and the sibling that never started
+        # still reads PENDING — the two are now distinguishable.
+        boundaries = home.get_node_boundaries_sync("wf-kill")
+        states = _states(boundaries)
+        assert states["wf-kill:1:alpha"] is BoundaryState.SETTLED_UNRECORDED
         assert states["wf-kill:1:nested"] is BoundaryState.PENDING
+        # The superstep that DID commit outranks its own markers.
+        assert states["wf-kill:0:seed"] is BoundaryState.COMMITTED
+        # The mark reached the database file, not just this process.
+        (settled,) = [b for b in boundaries if b.node_name == "alpha"]
+        assert settled.settled_at is not None
+        assert settled.step_status is None
+        # And it claims nothing about the effect seam.
+        assert settled.dispatched_at is None
 
         # --- restart: the completed-but-unrecorded sibling runs a SECOND time
         runner = SyncRunner() if kind == "sync" else AsyncRunner()
@@ -636,9 +660,11 @@ class TestRealKillBetweenSiblingBoundaries:
         assert view.status == WorkflowStatus.COMPLETED
 
         executions = marker.read_text().splitlines()
-        assert executions.count("alpha") == 2, "completed-inside-the-killed-superstep sibling re-executes"
+        assert executions.count("alpha") == 2, "a SETTLED_UNRECORDED pure node re-executes, exactly like a PENDING one"
         # The superstep that DID finish before the kill is not replayed.
         assert executions.count("seed") == 1
+        # And once the replay commits, the journal outranks the marker.
+        assert _states(home.get_node_boundaries_sync("wf-kill"))["wf-kill:1:alpha"] is BoundaryState.COMMITTED
 
 
 # === 4. Loop: an interrupted iteration never leaks into the next identity ===
@@ -797,7 +823,9 @@ class TestRunnerAndBackendParity:
             await AsyncRunner(checkpointer=cp).run(graph, {"x": 1}, workflow_id="wf-a")
 
             def shape(run_id: str, boundaries):
-                return sorted((b.superstep, b.node_name, b.node_type, b.state) for b in boundaries)
+                # ``settled_at`` compared as presence, not clock value: what
+                # must match is WHICH nodes settled, on both runner families.
+                return sorted((b.superstep, b.node_name, b.node_type, b.state, b.settled_at is not None) for b in boundaries)
 
             sync_parent = shape("wf-s", cp.get_node_boundaries_sync("wf-s"))
             async_parent = shape("wf-a", await cp.get_node_boundaries("wf-a"))
@@ -818,7 +846,7 @@ class TestRunnerAndBackendParity:
             await AsyncRunner(checkpointer=memory).run(graph, {"x": 1}, workflow_id="wf-x")
 
             def shape(boundaries):
-                return sorted((b.superstep, b.node_name, b.node_type, b.state) for b in boundaries)
+                return sorted((b.superstep, b.node_name, b.node_type, b.state, b.settled_at is not None) for b in boundaries)
 
             assert shape(await cp.get_node_boundaries("wf-x")) == shape(await memory.get_node_boundaries("wf-x"))
             assert shape(await cp.get_node_boundaries("wf-x/nested")) == shape(await memory.get_node_boundaries("wf-x/nested"))
@@ -898,3 +926,163 @@ class TestCompatibility:
             finally:
                 if label == "sqlite":
                     await cp.close()
+
+
+# === 7. The per-node settlement marker (#330) ===
+
+
+class TestPerNodeSettlement:
+    """A node's own completion is durable before its superstep commits."""
+
+    @staticmethod
+    def _graph(record: list):
+        @node(output_name="seeded")
+        def seed(x: int) -> int:
+            return x
+
+        @node(output_name="a_out")
+        def alpha(seeded: int) -> int:
+            record.append("alpha")
+            return seeded + 1
+
+        return Graph([seed, alpha], name="settledef")
+
+    @pytest.mark.parametrize("runner_kind", ["sync", "async"])
+    async def test_a_node_settles_its_boundary_before_its_superstep_commits(self, tmp_path, runner_kind):
+        """The mark is on disk while the superstep is still running.
+
+        ``watcher`` runs in the same superstep as ``marked`` and reads the
+        DATABASE FILE over a fresh connection, so what it sees is what a
+        different process would see. Reading a settlement there proves the
+        write does not wait for ``_save_superstep_records``.
+        """
+        db_path = str(tmp_path / f"settle-{runner_kind}.db")
+        seen: dict = {}
+
+        @node(output_name="seeded")
+        def seed(x: int) -> int:
+            return x
+
+        @node(output_name="marked_out")
+        def marked(seeded: int) -> int:
+            return seeded + 1
+
+        @node(output_name="watch_out")
+        def watcher(seeded: int) -> int:
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                conn = sqlite3.connect(db_path)
+                try:
+                    rows = conn.execute(
+                        "SELECT node_name, settled_at FROM pending_nodes WHERE run_id = ? AND superstep = 1",
+                        ("wf-settle",),
+                    ).fetchall()
+                finally:
+                    conn.close()
+                if any(row[0] == "marked" and row[1] is not None for row in rows):
+                    seen["marked"] = True
+                    break
+                time.sleep(0.02)
+            # Its own StepRecord cannot exist yet: this superstep is still
+            # running, and records commit when it ends.
+            conn = sqlite3.connect(db_path)
+            try:
+                seen["steps"] = [row[0] for row in conn.execute("SELECT node_name FROM steps WHERE run_id = ?", ("wf-settle",)).fetchall()]
+            finally:
+                conn.close()
+            return seeded
+
+        # `marked` is ordered first so the sync runner reaches the watcher
+        # only after it has settled; the async runner schedules both and the
+        # watcher polls.
+        graph = Graph([seed, marked, watcher], name="watchdef")
+        cp = SqliteCheckpointer(db_path, policy=CheckpointPolicy(durability="sync"))
+        try:
+            if runner_kind == "sync":
+                SyncRunner(checkpointer=cp).run(graph, {"x": 1}, workflow_id="wf-settle")
+            else:
+                await AsyncRunner(checkpointer=cp).run(graph, {"x": 1}, workflow_id="wf-settle")
+        finally:
+            await cp.close()
+
+        assert seen.get("marked") is True, "the settlement mark was not durable while its superstep was still running"
+        assert seen["steps"] == ["seed"], "only the FINISHED superstep had committed its records"
+
+    @pytest.mark.parametrize("backend", ["sqlite", "memory"])
+    async def test_recording_intent_again_never_un_settles_a_node(self, tmp_path, backend):
+        """The upsert guard, stated as behavior on both backends.
+
+        A history-less claimed run re-records superstep 0's intent when it
+        restarts. That write must not roll a settled boundary back to
+        pending, and a second settlement must not move the clock.
+        """
+        cp = SqliteCheckpointer(str(tmp_path / "guard.db")) if backend == "sqlite" else MemoryCheckpointer()
+        try:
+            await cp.create_run("wf-guard")
+            intent = PendingNode(run_id="wf-guard", superstep=0, node_name="alpha", node_type="FunctionNode")
+            await cp.record_pending_nodes([intent])
+            await cp.record_pending_nodes([replace(intent, settled_at=datetime(2026, 9, 13, tzinfo=timezone.utc))])
+            (settled,) = await cp.get_node_boundaries("wf-guard")
+            assert settled.state is BoundaryState.SETTLED_UNRECORDED
+
+            # Re-recording intent leaves the mark exactly where it was...
+            await cp.record_pending_nodes([replace(intent, created_at=datetime(2030, 1, 1, tzinfo=timezone.utc))])
+            (after_intent,) = await cp.get_node_boundaries("wf-guard")
+            assert after_intent.state is BoundaryState.SETTLED_UNRECORDED
+            assert after_intent.settled_at == settled.settled_at
+            assert after_intent.created_at == settled.created_at
+
+            # ...and so does a second settlement: a node completes once per
+            # occurrence, so the first mark is the true one.
+            await cp.record_pending_nodes([replace(intent, settled_at=datetime(2030, 1, 1, tzinfo=timezone.utc))])
+            (after_resettle,) = await cp.get_node_boundaries("wf-guard")
+            assert after_resettle.settled_at == settled.settled_at
+        finally:
+            if backend == "sqlite":
+                await cp.close()
+
+    async def test_a_node_that_raised_never_marks_itself_settled(self, sqlite_cp):
+        """The failure path: the marker says "completed", so a crash gets none.
+
+        Its honest status comes from the journal instead — the failed step is
+        a witnessed settlement, so the boundary reads COMMITTED with a FAILED
+        step, never SETTLED_UNRECORDED.
+        """
+
+        @node(output_name="seeded")
+        def seed(x: int) -> int:
+            return x
+
+        @node(output_name="ok_out")
+        def ok(seeded: int) -> int:
+            return seeded + 1
+
+        @node(output_name="bad_out")
+        def bad(seeded: int) -> int:
+            raise RuntimeError("boom")
+
+        graph = Graph([seed, ok, bad], name="faildef")
+        with pytest.raises(RuntimeError, match="boom"):
+            await AsyncRunner(checkpointer=sqlite_cp).run(graph, {"x": 1}, workflow_id="wf-fail")
+
+        by_name = {b.node_name: b for b in await sqlite_cp.get_node_boundaries("wf-fail")}
+        assert by_name["bad"].settled_at is None
+        assert by_name["bad"].step_status is StepStatus.FAILED
+        assert by_name["bad"].state is BoundaryState.COMMITTED
+        # Its sibling finished, so it did mark itself.
+        assert by_name["ok"].settled_at is not None
+
+    async def test_a_checkpointer_without_the_seam_settles_nothing(self):
+        """The probe governs settlement too — no seam, no per-node write."""
+
+        class SeamlessCheckpointer(MemoryCheckpointer):
+            record_pending_nodes = None  # type: ignore[assignment]
+            get_node_boundaries = None  # type: ignore[assignment]
+
+        cp = SeamlessCheckpointer()
+        assert not supports_pending_boundaries(cp, sync=False)
+
+        record: list = []
+        result = await AsyncRunner(checkpointer=cp).run(self._graph(record), {"x": 1}, workflow_id="wf-seamless")
+        assert result["a_out"] == 2
+        assert record == ["alpha"]

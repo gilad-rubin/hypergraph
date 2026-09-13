@@ -35,6 +35,7 @@ from hypergraph.runners._shared.observability import (
     reset_current_node_span,
     set_current_node_span,
 )
+from hypergraph.runners._shared.pending_boundaries import settle_node_boundary_async
 from hypergraph.runners._shared.readiness import apply_node_result
 from hypergraph.runners._shared.results import FailureEvidence
 from hypergraph.runners._shared.state import ExecutionContext, GraphState, PauseExecution
@@ -408,9 +409,24 @@ async def run_superstep_async(
                 )
             raise
 
+    async def execute_one_and_settle(
+        node: HyperNode,
+    ) -> tuple[HyperNode, dict[str, Any], dict[str, int], dict[str, int], float, bool, str]:
+        """Run one node, then settle its own boundary before the fold.
+
+        The fold below cannot start until EVERY sibling has returned, so a
+        settlement written there would never survive a kill inside this
+        superstep — which is the whole point of the marker. This wrapper puts
+        the mark where the sync loop puts it: the instant this node's result
+        is in hand. A node that raised never reaches it.
+        """
+        result = await execute_one(node)
+        await settle_node_boundary_async(ctx_base, superstep_idx, node)
+        return result
+
     # Execute all ready nodes concurrently
     # Concurrency is controlled at the FunctionNode level via the global semaphore
-    tasks = [execute_one(node) for node in ready_nodes]
+    tasks = [execute_one_and_settle(node) for node in ready_nodes]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     # Separate successes from failures, applying successful outputs first

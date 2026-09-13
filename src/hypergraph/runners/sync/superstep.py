@@ -33,6 +33,7 @@ from hypergraph.runners._shared.observability import (
     reset_current_node_span,
     set_current_node_span,
 )
+from hypergraph.runners._shared.pending_boundaries import settle_node_boundary_sync
 from hypergraph.runners._shared.readiness import apply_node_result
 from hypergraph.runners._shared.results import FailureEvidence
 from hypergraph.runners._shared.state import ExecutionContext, GraphState, PauseExecution
@@ -403,6 +404,12 @@ def run_superstep_sync(
                     node_errors={node.name: e},
                 )
                 raise error from e
+
+        # This node's result is in hand — settle its own boundary before the
+        # result is folded into shared state, so a kill later in this
+        # superstep leaves it readable as SETTLED_UNRECORDED rather than
+        # indistinguishable from a sibling that never started.
+        settle_node_boundary_sync(ctx_base, superstep_idx, node)
 
         # Record wait_for versions
         wait_for_versions = {name: state.get_version(name) for name in node.wait_for}
