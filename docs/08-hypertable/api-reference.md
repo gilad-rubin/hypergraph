@@ -263,7 +263,11 @@ row against the deduplicated child rows physically present, and reads their
 read per parent; no writes). When every child row is present and complete, the
 row is a zero-execution, zero-write `SKIPPED`; when a child is damaged, only
 that child runs the child graph — present children and parent derived columns
-are not re-derived. A retry that fails again leaves the child in error, and
+are not re-derived, though present child rows are rewritten at the repair's
+generation. A physically missing row leaves nothing to rebuild the item list
+from, so the fan-out boundary re-runs once to regenerate it; a stored error
+row still carries its own item, so the stored list is reused and the boundary
+does not re-run. A retry that fails again leaves the child in error, and
 the next `sync()` tries it again.
 
 ### `delete(id) -> None`
