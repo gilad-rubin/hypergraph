@@ -440,6 +440,77 @@ result = await runner.run(graph, inputs,
 
 The async runner calls `on_event_async` when available, falling back to `on_event` for sync processors. You can mix sync and async processors in the same list.
 
+### Route Interleaved Chunks From Nested Graphs and Map Items
+
+Concurrent map items and nested graphs all publish `ctx.stream()` chunks into
+the *same* processor, interleaved. Route them with the pair
+`(event.workflow_id, event.node_name)`:
+
+```python
+from collections import defaultdict
+
+from hypergraph import StreamingChunkEvent, TypedEventProcessor
+
+class ChunkRouter(TypedEventProcessor):
+    """Fan interleaved preview chunks out to one sink per streaming node."""
+
+    def __init__(self):
+        self.sinks: dict[tuple[str, str], list[object]] = defaultdict(list)
+
+    def on_streaming_chunk(self, event: StreamingChunkEvent) -> None:
+        route = (event.workflow_id, event.node_name)
+        self.sinks[route].append(event.chunk)
+```
+
+Both halves of the key are needed, and neither is enough alone:
+
+- **`workflow_id` is the qualified path**, `<batch>/<item>/<child>/...`. It
+  already encodes the map item index *and* the whole nesting path, so you never
+  add `item_index` to the key. A child graph that streams from two nodes emits
+  two chunk sources under one `workflow_id`.
+- **`node_name` is the node's *local* name inside its own graph** —
+  `'streamer'`, never `'left.streamer'`. Two nested graphs can each hold a node
+  called `streamer`, so the local name is not unique on its own.
+
+| Run shape | `workflow_id` | `node_name` | `graph_name` | `item_index` |
+| --- | --- | --- | --- | --- |
+| flat run | `wf` | `streamer` | `outer` | `None` |
+| nested run | `wf/left` | `streamer` | `drafting` | `None` |
+| nested inside a map item | `wf/1/left` | `streamer` | `drafting` | `1` |
+
+`item_index` is `None` for an ordinary `run()` and an `int` only inside
+`map()`/`map_iter()`. Use it for display or per-item progress, not as part of
+the route — a route built from `workflow_id` needs no `None` special case:
+
+```python
+label = f"item {event.item_index}" if event.item_index is not None else "run"
+```
+
+`event.parent_span_id` (the span of the emitting node) is public and stable if
+you already correlate with spans, but the route above does not need it.
+
+**When there is no `workflow_id`.** `workflow_id` is whatever the caller passed
+to `run()` or `map()`; it is `None` when the caller passed nothing, and
+`map_iter()` has no `workflow_id` parameter at all. Route those runs by
+`run_id`, which is always set and is distinct per run — including one run per
+nested child graph and one per mapped item:
+
+```python
+route = (event.workflow_id or event.run_id, event.node_name)
+```
+
+Prefer `workflow_id` when you have one: it is *your* stable name, so it still
+identifies the same node across a resume or a reconnect, while `run_id` is
+fresh on every execution.
+
+**The drop policy this inherits.** Preview delivery never backpressures graph
+execution. When a slow consumer fills a run handle's buffer, the oldest queued
+`StreamingChunkEvent` is discarded first and `handle.dropped_chunks` reports how
+many were dropped; lifecycle events are never dropped. A consumer that must see
+every chunk uses its own event processor and transport policy, as `ChunkRouter`
+above does. See [Streaming](../03-patterns/06-streaming.md) for the full
+buffering and sink discussion.
+
 ## Carry Processors on the Graph
 
 Instead of threading `event_processors=` through every call site, a graph can
