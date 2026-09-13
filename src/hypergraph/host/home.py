@@ -566,7 +566,13 @@ class _AdmissionLedger:
     blocked: bool = False
 
     def admits(self, cost: int) -> bool:
-        """Whether the next submission in claim order may be claimed now."""
+        """Whether the next submission in claim order may be claimed now.
+
+        NOT a pure predicate: a refusal by the page budget CLOSES the budget
+        for the rest of this scan (``blocked``), which is what keeps page
+        admission FIFO. Ask it exactly once per submission, in claim order,
+        and never twice about the same row.
+        """
         if self.free_slots is not None and self.free_slots <= 0:
             return False
         if self.budget is None:
@@ -2594,7 +2600,7 @@ class RunHome(SqliteCheckpointer):
                         # that is a wait or a dead end is a question about
                         # everybody, so ask the registry — once per scan, and
                         # only when a row actually needs the answer.
-                        coverage = await self._live_coverage_in_txn(now_iso, worker_id) if coverage is None else coverage
+                        coverage = await self._live_coverage_in_txn(now_iso, exclude=worker_id) if coverage is None else coverage
                         await self._park_or_retire_unservable(submission, identity, now_iso, coverage=coverage, served_names=served_names)
                         continue
                     if len(claimed) >= limit:
@@ -2657,10 +2663,10 @@ class RunHome(SqliteCheckpointer):
             # the view.
             await self._append_trip_closeout(submission["workflow_id"])
 
-    async def _live_coverage_in_txn(self, now_iso: str, worker_id: str | None) -> WorkerCoverage:
+    async def _live_coverage_in_txn(self, now_iso: str, *, exclude: str | None) -> WorkerCoverage:
         """``_live_worker_coverage`` for a caller that already holds the txn."""
         cursor = await self._db.execute(_SELECT_LIVE_WORKERS_SQL, (_pulse_cutoff(now_iso),))
-        return _coverage_from_rows(await cursor.fetchall(), worker_id)
+        return _coverage_from_rows(await cursor.fetchall(), exclude)
 
     async def _park_or_retire_unservable(
         self,
