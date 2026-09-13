@@ -25,7 +25,8 @@ How the transform works
 
    A marker is a claim that the two halves genuinely differ. Every one that
    exists today traces back to the same constraint: **a sync run must never
-   require an event loop** — see ``dev/CONTRIBUTING.md``.
+   require an event loop** — see ADR 0009
+   (``docs/adr/0009-a-sync-run-must-never-require-an-event-loop.md``).
 
 2. **Token rewriting** (``tokenize``-based, so nothing inside a string or a
    comment is ever touched — which is also why it runs *before* the markers:

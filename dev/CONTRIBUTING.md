@@ -99,15 +99,17 @@ refuses a `# sync:skip:` suffix left on a statement `ruff format` has wrapped
 across several lines (use a region there).
 
 **The constraint the whole design rests on: a sync run must never require an
-event loop.** That is why the sync half is not a blocking facade over the async
-engine (`asyncio.run` inside a running loop breaks in Jupyter, ContextVars do not
-cross a portal thread cleanly, and sync's fail-fast sequential `map` is
-user-visible behavior a shared concurrent engine would change). So wherever the
-mechanical transform would produce loop-dependent code — the concurrent `map`
-fan-out, the backpressured `map_iter` worker pool, the shared concurrency
-limiter, the background checkpoint-error sink — the sync side is marked, not
-translated. A new marker is a claim that the two halves genuinely differ; prefer
-deleting the difference over adding one.
+event loop.** See
+[ADR 0009](../docs/adr/0009-a-sync-run-must-never-require-an-event-loop.md) for
+why that rules out a blocking facade over the async engine: `asyncio.run` inside
+a running loop breaks in Jupyter, ContextVars do not cross a portal thread
+cleanly, and sync's fail-fast sequential `map` is user-visible behavior a shared
+concurrent engine would change. So wherever the mechanical transform would
+produce loop-dependent code — the concurrent `map` fan-out, the backpressured
+`map_iter` worker pool, the shared concurrency limiter, the background
+checkpoint-error sink — the sync side is marked, not translated. A new marker is
+a claim that the two halves genuinely differ; prefer deleting the difference over
+adding one.
 
 ### CI parity — install ALL extras before the gate
 

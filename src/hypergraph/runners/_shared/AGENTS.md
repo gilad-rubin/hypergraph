@@ -13,7 +13,8 @@ A difference the transform cannot express needs a `# sync:skip` /
 `# sync:only` marker WITH a reason — and a marker is a claim that the two
 halves genuinely differ, so prefer deleting the difference over adding one.
 The constraint behind every existing marker: a sync run must never require
-an event loop (see `dev/CONTRIBUTING.md`).
+an event loop (`docs/adr/0009-a-sync-run-must-never-require-an-event-loop.md`;
+workflow in `dev/CONTRIBUTING.md`).
 
 ## Template Exit Ladder (`run_teardown.py`)
 
