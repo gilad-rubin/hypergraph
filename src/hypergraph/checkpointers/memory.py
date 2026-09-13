@@ -8,12 +8,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from hypergraph.checkpointers._retention import (
-    BASELINE_NODE_NAME as _BASELINE_NODE_NAME,
-)
-from hypergraph.checkpointers._retention import (
-    BASELINE_NODE_TYPE as _BASELINE_NODE_TYPE,
-)
-from hypergraph.checkpointers._retention import (
+    BASELINE_NODE_NAME,
+    BASELINE_NODE_TYPE,
     plan_retention,
 )
 from hypergraph.checkpointers.base import (
@@ -280,7 +276,7 @@ class MemoryCheckpointer(Checkpointer):
         if superstep is not None:
             records = [record for record in records if record.superstep <= superstep]
         if not show_internal:
-            records = [record for record in records if record.node_name != _BASELINE_NODE_NAME and record.node_type != _BASELINE_NODE_TYPE]
+            records = [record for record in records if record.node_name != BASELINE_NODE_NAME and record.node_type != BASELINE_NODE_TYPE]
         return sorted(records, key=_step_sort_key)
 
     async def get_run_async(self, run_id: str) -> Run | None:
@@ -551,7 +547,7 @@ def _make_baseline_record(
     ordered = sorted(records, key=_step_sort_key)
     producers = fold_producers(
         ((record.node_name, record.status, record.folded_producers) for record in ordered),
-        carrier_node_name=_BASELINE_NODE_NAME,
+        carrier_node_name=BASELINE_NODE_NAME,
     )
     created_at = min(record.created_at for record in records)
     completed_candidates = [record.completed_at for record in records if record.completed_at is not None]
@@ -559,13 +555,13 @@ def _make_baseline_record(
     return StepRecord(
         run_id=run_id,
         superstep=baseline_superstep,
-        node_name=_BASELINE_NODE_NAME,
+        node_name=BASELINE_NODE_NAME,
         index=min(record.index for record in records),
         status=StepStatus.COMPLETED,
         input_versions={},
         values=values,
         created_at=created_at,
         completed_at=completed_at,
-        node_type=_BASELINE_NODE_TYPE,
+        node_type=BASELINE_NODE_TYPE,
         folded_producers=producers,
     )

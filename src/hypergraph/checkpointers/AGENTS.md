@@ -10,10 +10,21 @@ row-count shortcuts.
   arguments is a module-level builder returning `(sql, params)`; a record's
   bind values come from `_rows`. Both halves then execute the same text — the
   only way a sync/async pair can stay honest when only one of them is edited.
-- Add a column by editing its list in `_rows` and its decoder, nothing else.
-  Rows are decoded BY NAME against the list the SELECT projects; never index a
-  row positionally, and never guard a trailing column with a length check —
-  a short row is a bug to raise on, not a legacy shape to tolerate.
+- The `*_COLS` lists in `_rows` govern READS, not writes. Rows are decoded BY
+  NAME against the list the SELECT projects; never index a row positionally,
+  and never guard a trailing column with a length check — a short row is a bug
+  to raise on, not a legacy shape to tolerate.
+- Adding a column is therefore never one edit. Every table: the migration in
+  `_migrate`, then its `*_COLS` list and its `row_to_*` decoder. Then the write
+  side, which the lists do NOT cover — the INSERTs interpolate a column list
+  but spell their own `?` run, so a new column needs a placeholder added by
+  hand plus its value in the matching `*_insert_params`. `steps` is the
+  expensive one: `_STEP_UPSERT_SQL` spells its own column list, its `?` run AND
+  its `ON CONFLICT ... DO UPDATE SET` clause, and `step_upsert_params` must bind
+  in that same order. Afterwards grep the column name across the package and
+  check it appears in all four places — the migration, the `*_COLS` list, the
+  decoder, and every clause of the write. A column missing from `DO UPDATE SET`
+  is the silent one: it inserts correctly and is never updated again.
 - Retention is `_retention`: `plan_retention` decides what a run keeps for
   EVERY backend, and `compaction_deletes` is the one statement stream that
   carries a plan out. Neither backend may re-derive either.
