@@ -943,11 +943,13 @@ class HyperTable:
     def sync(self, items: list[dict[str, Any]]) -> TableReceipt | Awaitable[TableReceipt]:
         """Reconcile: insert new, update changed, delete missing, skip unchanged.
 
-        Unchanged parents self-repair child loss (#204): sync() inspects each
-        child table once per unchanged parent row — recorded fan-out count vs
-        physically present deduplicated child rows — and rebuilds only the
-        missing children, reporting the row as ``HEALED``. All children
-        present stays a zero-execution, zero-write ``SKIPPED``.
+        Unchanged parents self-repair child damage (#204, #314): sync()
+        inspects each child table once per unchanged parent row — recorded
+        fan-out count and stored ``_status`` vs physically present
+        deduplicated child rows — and re-runs only the children that are
+        missing or stored as an error row (``on_error="store"``), reporting
+        the row as ``HEALED``. All children present and complete stays a
+        zero-execution, zero-write ``SKIPPED``.
         """
         self._ensure_analyzed()
         operation = self._write_planner.sync(items)

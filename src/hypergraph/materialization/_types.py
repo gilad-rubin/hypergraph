@@ -27,10 +27,11 @@ class WriteOutcome(Enum):
     UPDATED = "updated"
     SKIPPED = "skipped"
     HEALED = "healed"
-    """An unchanged parent whose physically missing child rows were rebuilt.
+    """An unchanged parent whose damaged child rows were rebuilt — rows
+    physically missing, or stored in error under ``on_error="store"``.
 
     ``sync()`` reports the repair distinctly: a receipt is never ``SKIPPED``
-    on a path that wrote rows (#204).
+    on a path that wrote rows (#204, #314).
     """
 
 
