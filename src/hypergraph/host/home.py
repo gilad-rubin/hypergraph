@@ -687,6 +687,33 @@ def _fact_says_fresh(payload_row: tuple[Any, ...] | None) -> bool:
     return bool(json.loads(payload_row[0]).get("fresh", False))
 
 
+def _drop_history(checkpoint: Checkpoint) -> Checkpoint:
+    """The same lineage, none of the work — a fresh repeat's seed.
+
+    Everything that says WHOSE repeat this is (``retry_of``,
+    ``retry_index``, ``source_run_id``) is kept, so the runs row, the
+    RunStartEvent and the span attributes read exactly as a default
+    repeat's do. Everything that says WHAT ALREADY RAN is dropped, so no
+    node is skipped. The run's own values then come from the pinned inputs
+    the worker passes alongside.
+    """
+    checkpoint.values = {}
+    checkpoint.steps = []
+    return checkpoint
+
+
+def _require_fresh_retry_source(*, fresh: bool, retry_of: str | None) -> None:
+    """A fresh attempt is a repeat of something, or it is not fresh."""
+    if fresh and retry_of is None:
+        raise ValueError(
+            "A submission cannot be fresh without naming the run it repeats.\n\n"
+            "fresh=True says 'repeat this work without reusing its completed steps', "
+            "which is meaningless for a submission that repeats nothing.\n\n"
+            "How to fix: pass retry_of=<source workflow_id>, or drop fresh=True — "
+            "an ordinary submit already starts from nothing."
+        )
+
+
 def _require_retry_source(retry_of: str | None) -> str:
     """Guard the "mint me an id" contract: only a rerun may omit one."""
     if retry_of is None:
@@ -1507,13 +1534,15 @@ class RunHome(SqliteCheckpointer):
         resubmission dedupes into the stored row and never rewrites the
         builder address it was accepted with.
 
-        ``fresh`` is meaningful only with ``retry_of``: it says this repeat
-        must DO the work again rather than inherit the source's
-        completed-step checkpoints. It rides the ``submitted`` acceptance
-        fact rather than a submission column, so the intent commits in the
-        same transaction that accepts the repeat — a crash between the two
-        is not a state the store can hold — and an existing database needs
-        no migration to carry it. ``_rerun_is_fresh`` reads it back.
+        ``fresh`` requires ``retry_of`` (a ``ValueError`` otherwise): it
+        says this repeat must DO the work again rather than inherit the
+        source's completed-step checkpoints, which is meaningless for a
+        submission that repeats nothing. It rides the ``submitted``
+        acceptance fact rather than a submission column, so the intent
+        commits in the same transaction that accepts the repeat — a crash
+        between the two is not a state the store can hold — and an existing
+        database needs no migration to carry it. ``retry_workflow`` reads
+        it back and empties the seed checkpoint, keeping its lineage.
 
         Returns ``(created, row)``. When a submission already exists for
         ``workflow_id`` nothing is written: a fingerprint-identical
@@ -1526,6 +1555,7 @@ class RunHome(SqliteCheckpointer):
         host-less (Tier-0) runs row is refused last, once the host rows have
         had their say (``refuse_tier0_reuse``).
         """
+        _require_fresh_retry_source(fresh=fresh, retry_of=retry_of)
         with self._sync_lock:
             db = self._sync_db()
             try:
@@ -1638,6 +1668,7 @@ class RunHome(SqliteCheckpointer):
         fresh: bool = False,
     ) -> tuple[bool, dict[str, Any]]:
         """Async mirror of ``_submit_sync``."""
+        _require_fresh_retry_source(fresh=fresh, retry_of=retry_of)
         await self._ensure_db()
         async with self._txn_lock():
             try:
@@ -1758,24 +1789,22 @@ class RunHome(SqliteCheckpointer):
 
     _ACCEPTED_RETRY_INDEX_SQL = "SELECT retry_index FROM host_submissions WHERE workflow_id = ? AND retry_of = ?"
 
-    # Whether an accepted repeat asked to do the work again. The answer is
-    # the acceptance fact the submit transaction wrote — the same durable
-    # sequence ``_dead_letter_reasons`` reads a retirement's reason from —
-    # so it is as atomic as the acceptance and needs no extra column.
+    # === A fresh repeat: the same lineage, none of the history ===
+    #
+    # ``rerun(fresh=True)`` asks for a fresh ATTEMPT UNDER LINEAGE, so it
+    # takes the ordinary ``retry_from`` path — the runs row, RunStartEvent
+    # and the OTel span attributes all read their retry_of/retry_index off
+    # the checkpoint this method returns, and a repeat whose trace has lost
+    # its lineage is not the thing that was asked for. The one thing a
+    # fresh repeat drops is the source's WORK: the checkpoint comes back
+    # emptied, so every node executes and the run still records whose
+    # repeat it is.
+    #
+    # Whether a repeat is fresh is the acceptance fact the submit
+    # transaction wrote — the same durable sequence ``_dead_letter_reasons``
+    # reads a retirement's reason from — so it is as atomic as the
+    # acceptance and needs no extra column.
     _FRESH_REPEAT_SQL = "SELECT payload FROM run_updates WHERE run_id = ? AND kind = 'submitted' ORDER BY seq LIMIT 1"
-
-    async def _rerun_is_fresh(self, workflow_id: str) -> bool:
-        """Did this repeat ask to re-execute rather than reuse steps?
-
-        Worker-side only, like the other claim-time reads: ``rerun_sync``
-        ACCEPTS a repeat, but every repeat EXECUTES through the async
-        worker, so there is no sync caller to mirror for.
-        """
-        await self._ensure_db()
-        async with self._txn_lock():
-            cursor = await self._db.execute(self._FRESH_REPEAT_SQL, (workflow_id,))
-            row = await cursor.fetchone()
-        return _fact_says_fresh(row)
 
     def retry_workflow(self, source_run_id: str, *, workflow_id: str | None = None, superstep: int | None = None) -> tuple[str, Checkpoint]:
         """``SqliteCheckpointer.retry_workflow`` with the ACCEPTED ordinal."""
@@ -1783,9 +1812,10 @@ class RunHome(SqliteCheckpointer):
         with self._sync_lock:
             db = self._sync_db()
             row = db.execute(self._ACCEPTED_RETRY_INDEX_SQL, (new_workflow_id, source_run_id)).fetchone()
+            fresh_row = db.execute(self._FRESH_REPEAT_SQL, (new_workflow_id,)).fetchone()
         if row is not None and row[0] is not None:
             checkpoint.retry_index = int(row[0])
-        return new_workflow_id, checkpoint
+        return new_workflow_id, _drop_history(checkpoint) if _fact_says_fresh(fresh_row) else checkpoint
 
     async def retry_workflow_async(
         self, source_run_id: str, *, workflow_id: str | None = None, superstep: int | None = None
@@ -1795,9 +1825,11 @@ class RunHome(SqliteCheckpointer):
         async with self._txn_lock():
             cursor = await self._db.execute(self._ACCEPTED_RETRY_INDEX_SQL, (new_workflow_id, source_run_id))
             row = await cursor.fetchone()
+            fresh_cursor = await self._db.execute(self._FRESH_REPEAT_SQL, (new_workflow_id,))
+            fresh_row = await fresh_cursor.fetchone()
         if row is not None and row[0] is not None:
             checkpoint.retry_index = int(row[0])
-        return new_workflow_id, checkpoint
+        return new_workflow_id, _drop_history(checkpoint) if _fact_says_fresh(fresh_row) else checkpoint
 
     # === Batches (ticket 05) ===
 

@@ -1593,10 +1593,11 @@ class RunHomeClient:
         and is the ``retry_index`` the runs row records, so the id and the
         lineage agree whatever order the reruns execute in. The worker
         executes the submission with ``retry_from=<source>``: the new runs
-        row records ``retry_of`` and that same ``retry_index``, and
-        **completed-step checkpoints from the source are reused**. That is
-        what makes a rerun the verb for reviving braked, dead-lettered, or
-        failed work — the steps that did finish are not paid for twice.
+        row records ``retry_of`` and that same ``retry_index``, and **by
+        default completed-step checkpoints from the source are reused**.
+        That reuse is what makes a rerun the verb for reviving braked,
+        dead-lettered, or failed work — the steps that did finish are not
+        paid for twice.
 
         ``fresh=True`` is the other case the verb's name suggests: repeat
         settled work FOR REAL, because a human approved the cost of doing
@@ -1604,12 +1605,14 @@ class RunHomeClient:
 
             receipt = await client.rerun(ref, fresh=True)
 
-        It keeps every other guarantee — the ``<source>-retry-N`` id minted
-        inside the acceptance transaction, ``retry_of`` lineage on the
-        submission and on the view, the source's pinned ``DefinitionId``
-        and inputs verbatim — and changes exactly one thing: the worker
-        does not seed the new run from the source's checkpoint, so every
-        node executes. Without it, a rerun of a COMPLETED source settles
+        It is a fresh ATTEMPT UNDER LINEAGE, and keeps every other
+        guarantee — the ``<source>-retry-N`` id minted inside the
+        acceptance transaction, ``retry_of`` / ``retry_index`` recorded
+        everywhere a default repeat records them (the submission, the runs
+        row, ``RunView``, ``RunStartEvent``, the OTel span attributes), the
+        source's pinned ``DefinitionId`` and inputs verbatim. It changes
+        exactly one thing: the seed checkpoint arrives EMPTY, so every node
+        executes. Without it, a rerun of a COMPLETED source settles
         ``completed`` in a millisecond carrying the first run's outcome,
         and nothing runs. ``fresh`` is not ``fork()``: fork changes which
         code runs, ``fresh`` changes only whether history is reused.

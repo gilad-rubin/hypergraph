@@ -35,6 +35,7 @@ from hypergraph import (
     serve,
 )
 from hypergraph.checkpointers.types import WorkflowStatus
+from hypergraph.events import TypedEventProcessor
 from hypergraph.host import host as host_module
 from tests._interrupt_questions import StringQuestion
 from tests.test_host._batch_api import serve_graphs, submit_keyed, submit_keyed_sync
@@ -570,6 +571,84 @@ class TestFreshRerun:
         assert second.workflow_id == "acct-3-retry-2"
         assert home._get_submission_sync(second.workflow_id)["retry_index"] == 2
 
+    async def test_fresh_repeat_records_lineage_wherever_a_default_repeat_does(self, home):
+        """A fresh ATTEMPT UNDER LINEAGE — the trace must still say whose.
+
+        The submission and ``RunView`` are not the only readers: the runs
+        row is what ``checkpointers/presenters.py`` renders and what
+        ``events/otel.py`` copies into ``hypergraph.retry_of`` /
+        ``hypergraph.retry_index``. A repeat whose span has lost its
+        lineage is not a repeat under lineage.
+        """
+        starts: list = []
+
+        class _Spy(TypedEventProcessor):
+            def on_run_start(self, event):
+                starts.append(event)
+
+        calls = {"n": 0}
+
+        @node(output_name="out")
+        def counted(x: int, item: str = "") -> int:
+            calls["n"] += 1
+            return x * 2
+
+        graph = Graph([counted], name="acct").with_runner(SyncRunner())
+        host, served = serve_graphs(graph, home=home, event_processors=[_Spy()])
+        receipt = await host.submit(served["acct"], {"x": 21}, workflow_id="e-1")
+        async with _worker(host):
+            await host.client.follow(receipt.run_ref, deadline=30)
+        starts.clear()
+
+        repeat = await host.client.rerun(receipt.run_ref, fresh=True)
+        async with _worker(host, "w-2"):
+            await host.client.follow(repeat.run_ref, deadline=30)
+
+        assert calls["n"] == 2, "the fresh repeat really re-executed"
+        run = home.get_run(repeat.workflow_id)
+        assert (run.retry_of, run.retry_index) == ("e-1", 1), "the RUNS ROW carries the lineage"
+        event = next(e for e in starts if e.workflow_id == repeat.workflow_id)
+        assert (event.retry_of, event.retry_index) == ("e-1", 1), "so does the event stream"
+        assert event.is_resume is False
+
+    async def test_fresh_repeat_spans_carry_the_retry_attributes(self, home):
+        """The OTel attributes are copied off the RunStartEvent verbatim."""
+        from opentelemetry import context as otel_context
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        from hypergraph.events.otel import OpenTelemetryProcessor
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        token = otel_context.attach(otel_context.Context())
+        try:
+            host, served = serve_graphs(
+                _sync_graph("acct"),
+                home=home,
+                event_processors=[OpenTelemetryProcessor(tracer_provider=provider)],
+            )
+            receipt = await host.submit(served["acct"], {"x": 21}, workflow_id="e-2")
+            async with _worker(host):
+                await host.client.follow(receipt.run_ref, deadline=30)
+
+            repeat = await host.client.rerun(receipt.run_ref, fresh=True)
+            exporter.clear()
+            async with _worker(host, "w-2"):
+                await host.client.follow(repeat.run_ref, deadline=30)
+
+            attributes = [
+                (span.attributes.get("hypergraph.retry_of"), span.attributes.get("hypergraph.retry_index"))
+                for span in exporter.get_finished_spans()
+                if span.attributes.get("hypergraph.workflow_id") == repeat.workflow_id and span.attributes.get("hypergraph.span.role") == "graph"
+            ]
+            assert attributes == [("e-2", 1)]
+        finally:
+            otel_context.detach(token)
+            exporter.clear()
+
     async def test_fresh_rerun_sync_mirror_re_executes(self, home):
         calls = {"n": 0}
         host, receipt = await self._settled_counter(home, "acct-4", calls)
@@ -637,6 +716,19 @@ class TestFreshRerun:
             host.client.rerun_sync(receipt.run_ref, fresh=1)
         # A refused request accepted nothing.
         assert home._get_submission_sync("acct-5-retry-1") is None
+
+    async def test_a_submission_cannot_be_fresh_without_a_source(self, home):
+        """ "Do it again without reusing steps" needs something to repeat."""
+        arguments = ("wf-plain", "dbl", "v1", "h" * 64, '{"x": 1}', None, None)
+        with pytest.raises(ValueError, match="cannot be fresh without naming the run it repeats"):
+            home._submit_sync(*arguments, fingerprint="fp", fresh=True)
+        with pytest.raises(ValueError, match="cannot be fresh without naming the run it repeats"):
+            await home._submit(*arguments, fingerprint="fp", fresh=True)
+        assert home._get_submission_sync("wf-plain") is None, "the refusal wrote nothing"
+        # The same call without fresh is accepted, so the guard is the
+        # only thing that refused it.
+        created, _row = home._submit_sync(*arguments, fingerprint="fp")
+        assert created is True
 
 
 # === 5. host.fork: migration with fork lineage and recorded reason ===
