@@ -173,7 +173,8 @@ Key files:
 - `src/hypergraph/runners/_shared/pause_slots.py`
 - `src/hypergraph/runners/_shared/validation.py`
 - `src/hypergraph/runners/_shared/input_normalization.py`
-- `src/hypergraph/runners/_shared/run_log.py`
+- `src/hypergraph/runners/_shared/run_log.py` (execution-trace types + collector)
+- `src/hypergraph/runners/_shared/run_teardown.py`
 
 ### Execution Model
 
@@ -580,7 +581,7 @@ src/hypergraph/
 │   │   ├── map_resume.py
 │   │   ├── handles.py
 │   │   ├── stop.py
-│   │   ├── results.py
+│   │   ├── results.py                result + status types
 │   │   ├── state.py
 │   │   ├── types.py                  compatibility re-exports
 │   │   ├── protocols.py
@@ -594,7 +595,8 @@ src/hypergraph/
 │   │   ├── caching.py
 │   │   ├── cache_observer.py
 │   │   ├── event_helpers.py
-│   │   └── run_log.py
+│   │   ├── run_log.py                execution-trace types + collector
+│   │   └── run_teardown.py           the one exit ladder both templates take
 │   ├── sync/
 │   │   ├── runner.py
 │   │   ├── superstep.py
