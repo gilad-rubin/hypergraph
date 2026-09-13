@@ -692,17 +692,25 @@ class Checkpointer(ABC):
 
     # === Node-authored durable facts ===
 
-    def append_run_fact_sync(self, run_id: str, kind: str, payload: dict[str, Any]) -> int | None:
+    def append_run_fact_sync(self, run_id: str, kind: str, payload: dict[str, Any]) -> None:  # noqa: B027
         """Append one node-authored fact to this run's durable log.
 
-        The seam behind ``NodeContext.record``. Returns the fact's gap-free
-        ``seq``, or ``None`` when this store keeps no run log — only a Run
-        Home does, so a plain checkpointer no-ops here and the node's own
-        code runs unchanged. Deliberately synchronous: a node body calls
-        ``ctx.record(...)`` the same way whether it is a ``def`` or an
-        ``async def``, so both runner families reach one implementation.
+        The seam behind ``NodeContext.record`` for a node body running on a
+        THREAD — a sync runner's node, or a sync callable an async runner
+        dispatched. No-op unless this store keeps a run log; only a Run Home
+        does, so a plain checkpointer leaves the node's own code unchanged.
         """
-        return None
+
+    async def append_run_fact(self, run_id: str, kind: str, payload: dict[str, Any]) -> None:  # noqa: B027
+        """Async mirror, for a node body running ON THE EVENT LOOP.
+
+        The distinction is not stylistic. A coroutine node calling the sync
+        mirror would hold a blocking SQLite write on the loop thread, and an
+        async store's own transaction cannot commit without that loop — the
+        two wait for each other until ``busy_timeout`` expires and the RUN
+        fails. So the async executor schedules this as a loop task and
+        awaits it before the node's step record is written.
+        """
 
     # === Lifecycle ===
 

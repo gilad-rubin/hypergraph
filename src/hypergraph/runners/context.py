@@ -63,6 +63,8 @@ class NodeContext:
         "_item_index",
         "_parent_span_id",
         "_checkpointer",
+        "_records_on_loop",
+        "_record_tasks",
     )
 
     def __init__(
@@ -77,6 +79,7 @@ class NodeContext:
         item_index: int | None = None,
         parent_span_id: str | None = None,
         checkpointer: Checkpointer | None = None,
+        records_on_loop: bool = False,
     ) -> None:
         self._stop_signal = stop_signal
         self._emit_fn = emit_fn
@@ -87,6 +90,8 @@ class NodeContext:
         self._item_index = item_index
         self._parent_span_id = parent_span_id
         self._checkpointer = checkpointer
+        self._records_on_loop = records_on_loop
+        self._record_tasks: list[Any] = []
 
     @property
     def stop_requested(self) -> bool:
@@ -114,8 +119,8 @@ class NodeContext:
                 )
             )
 
-    def record(self, kind: str, payload: dict[str, Any]) -> int | None:
-        """Append one DURABLE fact to this run's log; return its ``seq``.
+    def record(self, kind: str, payload: dict[str, Any]) -> None:
+        """Append one DURABLE fact to this run's log.
 
         Where ``stream`` offers a best-effort preview that nothing keeps,
         this commits: the fact lands on the run's own gap-free sequence
@@ -124,15 +129,21 @@ class NodeContext:
         watcher that connects after the node finished still sees it.
 
         ``kind`` is the node's own vocabulary — any string except the
-        framework's own (see ``RESERVED_FACT_KINDS``), which raises
+        framework's own (the refusal lists them), which raises
         ``ReservedFactKindError`` wherever the node runs. ``payload`` must
         be a JSON-safe dict.
 
-        Returns ``None`` when this run has no durable log — a Tier-0 run,
-        or any store that is not a Run Home. That is a no-op, not a raise:
-        a node must run the same in-process as it does under a host, and
+        Does nothing when this run has no durable log — a Tier-0 run, or
+        any store that is not a Run Home. That is a no-op, not a raise: a
+        node must run the same in-process as it does under a host, and
         "nobody is keeping a log" is a deployment fact, not a bug in the
         node.
+
+        The call itself never blocks the event loop. A coroutine node's
+        fact is written by a task on the loop and awaited by the executor
+        before the node's step record is written — so the fact is durable
+        by the time the step that produced it is — while a node body on a
+        thread writes straight through.
 
         ::
 
@@ -150,8 +161,32 @@ class NodeContext:
                 f"record() payload must be a dict, got {type(payload).__name__}.\n\nHow to fix: wrap the value in a dict, e.g. ctx.record({kind!r}, {{'value': ...}}). A fact's payload is a JSON object every watcher reads by key."
             )
         if self._checkpointer is None or self._workflow_id is None:
+            return
+        loop = self._running_loop()
+        if loop is None:
+            self._checkpointer.append_run_fact_sync(self._workflow_id, kind, payload)
+            return
+        # Created in call order, and each append takes the store's write lock
+        # in the order it reaches it, so the facts commit in the order the
+        # node recorded them.
+        self._record_tasks.append(loop.create_task(self._checkpointer.append_run_fact(self._workflow_id, kind, payload)))
+
+    def _running_loop(self) -> Any:
+        """The loop this node body runs ON, or None when it runs on a thread.
+
+        Only the async executor sets ``records_on_loop``: it is the one that
+        awaits the resulting tasks. A sync runner's node has no such flush,
+        so it writes through even if some caller happens to have a loop
+        running on this thread.
+        """
+        if not self._records_on_loop:
             return None
-        return self._checkpointer.append_run_fact_sync(self._workflow_id, kind, payload)
+        import asyncio
+
+        try:
+            return asyncio.get_running_loop()
+        except RuntimeError:
+            return None
 
 
 # Register NodeContext as a framework-injectable type.

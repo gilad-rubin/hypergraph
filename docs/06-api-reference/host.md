@@ -946,11 +946,17 @@ terminates immediately with no updates — matching `get()`'s honest `None`
 
 ### What the kinds are
 
-`update.kind` names the fact. The framework's own vocabulary is closed —
+`update.kind` names the fact, and `update.durable` says who may have written it.
+
+A **durable** update is either a framework fact — the closed vocabulary
 `submitted`, `run_started`, `step`, `status`, `command`, `answer`,
-`recovery_exhausted`, `dead_lettered`, `run_reset` — and everything else on the
-stream was written by a **node**, through
-[`ctx.record(kind, payload)`](nodes.md#nodecontext):
+`recovery_exhausted`, `dead_lettered`, `run_reset` — or a fact a **node** wrote
+through [`ctx.record(kind, payload)`](nodes.md#nodecontext), which is any other
+name. A **non-durable** update is a live preview, and its `kind` is the class
+name of the event behind it (`StreamingChunkEvent`, `NodeStartEvent`, …) — never
+a node's vocabulary, and never a framework fact. So `update.durable` is the check
+that separates the two worlds; `kind` separates framework from node inside the
+durable one:
 
 ```python
 @node(output_name="answer")

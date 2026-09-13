@@ -31,6 +31,7 @@ def build_node_context(
     item_index: int | None = None,
     parent_span_id: str | None = None,
     checkpointer: Checkpointer | None = None,
+    records_on_loop: bool = False,
 ) -> NodeContext:
     """Build a NodeContext for executor injection.
 
@@ -42,6 +43,8 @@ def build_node_context(
     ``checkpointer`` is ``ExecutionContext.checkpointer`` — the active
     persistence for THIS run, already ``None`` unless a checkpointer and a
     workflow_id are both present — and is what ``record`` writes through.
+    ``records_on_loop`` is the async executor's promise to call
+    ``flush_node_records`` on this context; only it may defer a write.
     """
     from hypergraph.runners._shared.stop import StopSignal, get_stop_signal
 
@@ -56,4 +59,43 @@ def build_node_context(
         item_index=item_index,
         parent_span_id=parent_span_id,
         checkpointer=checkpointer,
+        records_on_loop=records_on_loop,
     )
+
+
+async def flush_node_records(context: Any, *, node_failed: bool) -> None:
+    """Await every fact a coroutine node recorded. No-op for anything else.
+
+    Called by the async executor after the node body settles and BEFORE the
+    step record is written, so a fact is durable by the time the step that
+    produced it is, and the log reads ``fact… step`` the way the sync family
+    writes it.
+
+    A failed append is the NODE's failure when the node itself succeeded: a
+    node that believes its fact is durable must not report success over a
+    write that never landed. When the node is already failing, its own
+    exception is the one worth seeing, so the append error is logged instead
+    of replacing it.
+    """
+    tasks = getattr(context, "_record_tasks", None)
+    if not tasks:
+        return
+    import asyncio
+
+    pending = list(tasks)
+    tasks.clear()
+    results = await asyncio.gather(*pending, return_exceptions=True)
+    failures = [outcome for outcome in results if isinstance(outcome, BaseException)]
+    if not failures:
+        return
+    if node_failed:
+        import logging
+
+        logging.getLogger("hypergraph.runners").warning(
+            "node %r failed and %d of its recorded facts could not be written: %r",
+            getattr(context, "_node_name", "?"),
+            len(failures),
+            failures[0],
+        )
+        return
+    raise failures[0]

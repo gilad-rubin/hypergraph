@@ -15,13 +15,16 @@ no-op when there is no log to append to.
 
 from __future__ import annotations
 
+import ast
 import asyncio
-import re
+import pathlib
 from contextlib import aclosing
 
 import pytest
 import pytest_asyncio
 
+import hypergraph.checkpointers.sqlite
+import hypergraph.host.home
 from hypergraph import (
     AsyncRunner,
     Graph,
@@ -51,6 +54,35 @@ async def home(tmp_path):
     h = RunHome.open(_home_uri(tmp_path))
     yield h
     await h.close()
+
+
+def _run_update_kinds_written_in_source() -> set[str]:
+    """Every literal ``kind`` handed to a run_updates append, read from the AST.
+
+    The four entry points take ``kind`` third (the ``_sync`` mirrors, which
+    lead with the open connection) or second (the async ones). A name rather
+    than a literal is resolved against the defining module, so a call site
+    using a constant still counts.
+    """
+    appenders = {"_after_run_mutation_sync": 2, "_append_run_update_sync": 2, "_after_run_mutation": 1, "_append_run_update": 1}
+    kinds: set[str] = set()
+    for module in (hypergraph.host.home, hypergraph.checkpointers.sqlite):
+        tree = ast.parse(pathlib.Path(module.__file__).read_text())
+        for call in (n for n in ast.walk(tree) if isinstance(n, ast.Call)):
+            name = call.func.attr if isinstance(call.func, ast.Attribute) else getattr(call.func, "id", None)
+            position = appenders.get(name or "")
+            if position is None:
+                continue
+            argument = next((kw.value for kw in call.keywords if kw.arg == "kind"), None)
+            if argument is None and len(call.args) > position:
+                argument = call.args[position]
+            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                kinds.add(argument.value)
+            elif isinstance(argument, ast.Name):
+                resolved = getattr(module, argument.id, None)
+                if isinstance(resolved, str):
+                    kinds.add(resolved)
+    return kinds
 
 
 def _recording_graph(name: str, *, runner, kind: str = "tool_call", payload=None, then_raise: bool = False) -> Graph:
@@ -236,6 +268,155 @@ class TestNodeFactsInTheRunLog:
         assert "tool_call" not in _kinds(await _facts(host.client, receipt.run_ref))
 
 
+# === Contention: the loop must stay free ===
+
+
+class TestUnderContention:
+    """The case a single uncontended run cannot see.
+
+    A coroutine node recording through a blocking SQLite write would hold the
+    event loop inside the store, while the store's own async transaction can
+    only commit when that loop runs again — the two wait for each other until
+    ``busy_timeout`` expires and the RUN fails with "database is locked". So
+    the async family hands the write to a loop task and the executor awaits it
+    before the step record; these two tests are the ones that fail if it ever
+    goes back to writing straight through.
+    """
+
+    @pytest.mark.parametrize("runner_factory", [SyncRunner, AsyncRunner], ids=["sync", "async"])
+    async def test_concurrent_hosted_runs_land_every_record(self, home, runner_factory):
+        """3 runs x 2 nodes x 30 facts: all 180 land, in order, no failures.
+
+        Parametrized over both families because that is exactly where the
+        contract's parity claim was untested: uncontended they were already
+        identical, and only a second run in flight tells them apart.
+        """
+        beats = 30
+
+        @node(output_name="first")
+        def step_one(prompt: str, ctx: NodeContext) -> str:
+            for index in range(beats):
+                ctx.record("beat", {"node": "one", "i": index})
+            return prompt
+
+        @node(output_name="answer")
+        def step_two(first: str, ctx: NodeContext) -> str:
+            for index in range(beats):
+                ctx.record("beat", {"node": "two", "i": index})
+            return first.upper()
+
+        @node(output_name="first")
+        async def step_one_async(prompt: str, ctx: NodeContext) -> str:
+            for index in range(beats):
+                ctx.record("beat", {"node": "one", "i": index})
+            return prompt
+
+        @node(output_name="answer")
+        async def step_two_async(first: str, ctx: NodeContext) -> str:
+            for index in range(beats):
+                ctx.record("beat", {"node": "two", "i": index})
+            return first.upper()
+
+        runner = runner_factory()
+        bodies = [step_one_async, step_two_async] if isinstance(runner, AsyncRunner) else [step_one, step_two]
+        graph = Graph(bodies, name="chatty").with_runner(runner)
+        host = serve(graph, home=home)
+        receipts = [await host.submit(graph, {"prompt": f"hi-{n}"}, workflow_id=f"chatty-{n}") for n in range(3)]
+
+        task = await _worker(host)
+        try:
+            views = await asyncio.gather(*(host.client.follow(r.run_ref, deadline=60) for r in receipts))
+        finally:
+            host.shutdown()
+            await asyncio.wait_for(task, timeout=20)
+
+        assert [v.status for v in views] == [WorkflowStatus.COMPLETED] * 3
+
+        landed = 0
+        for receipt in receipts:
+            updates = await _facts(host.client, receipt.run_ref)
+            recorded = [u.payload for u in updates if u.durable and u.kind == "beat"]
+            assert recorded == [{"node": "one", "i": i} for i in range(beats)] + [{"node": "two", "i": i} for i in range(beats)]
+            landed += len(recorded)
+            # Each node's facts precede its OWN step record, still on one sequence.
+            kinds = _kinds(updates)
+            assert kinds.index("beat") < kinds.index("step")
+            assert [_seq(u) for u in updates if u.durable] == list(range(1, len(kinds) + 1))
+        assert landed == 3 * 2 * beats
+
+    async def test_a_node_records_while_a_host_write_transaction_is_held(self, home):
+        """A held transaction delays the fact; it never stalls the loop.
+
+        The seam-level repro of the three-party cycle: a writer holds
+        ``BEGIN IMMEDIATE`` across an ``await`` while a node records in the
+        middle of it. A heartbeat proves the loop keeps running throughout —
+        a blocking write would freeze it for the full ``busy_timeout`` — and
+        the run finishes as soon as the writer commits, rather than failing.
+        """
+        node_started = asyncio.Event()
+        writer_holds = asyncio.Event()
+        release_writer = asyncio.Event()
+
+        @node(output_name="answer")
+        async def agent_turn(prompt: str, ctx: NodeContext) -> str:
+            node_started.set()
+            await writer_holds.wait()
+            ctx.record("tool_call", {"name": "search"})
+            return prompt.upper()
+
+        graph = Graph([agent_turn], name="contended").with_runner(AsyncRunner())
+        host = serve(graph, home=home)
+        receipt = await host.submit(graph, {"prompt": "hi"})
+        task = await _worker(host)
+
+        async def hold_a_write_transaction():
+            await home._ensure_db()
+            async with home._txn_lock():
+                await home._db.execute("BEGIN IMMEDIATE")
+                await home._db.execute(
+                    "INSERT INTO run_updates (run_id, seq, kind, payload, created_at) VALUES (?, 1, 'status', '{}', '2026-01-01T00:00:00+00:00')",
+                    ("some-other-run",),
+                )
+                writer_holds.set()
+                await release_writer.wait()
+                await home._db.commit()
+
+        beats = 0
+
+        async def heartbeat():
+            nonlocal beats
+            while True:
+                await asyncio.sleep(0.01)
+                beats += 1
+
+        writer = None
+        pulse = asyncio.create_task(heartbeat())
+        try:
+            # The node must be RUNNING before the transaction is held: the
+            # worker's own claim needs the same lock to start it.
+            await asyncio.wait_for(node_started.wait(), timeout=20)
+            writer = asyncio.create_task(hold_a_write_transaction())
+            await asyncio.wait_for(writer_holds.wait(), timeout=20)
+
+            before = beats
+            await asyncio.sleep(0.3)
+            # A loop stuck inside a synchronous SQLite write cannot tick.
+            assert beats - before >= 10, f"loop stalled: {beats - before} ticks in 0.3s"
+
+            release_writer.set()
+            view = await asyncio.wait_for(host.client.follow(receipt.run_ref, deadline=20), timeout=25)
+        finally:
+            pulse.cancel()
+            release_writer.set()
+            if writer is not None:
+                await asyncio.wait_for(writer, timeout=20)
+            host.shutdown()
+            await asyncio.wait_for(task, timeout=20)
+
+        assert view.status is WorkflowStatus.COMPLETED
+        assert "tool_call" in _kinds(await _facts(host.client, receipt.run_ref))
+
+
 # === The closed framework vocabulary ===
 
 
@@ -273,7 +454,15 @@ class TestReservedKinds:
             SyncRunner().run(graph, prompt="hi")
 
     def test_every_kind_the_framework_writes_is_reserved(self):
-        """The mirror guard: a new framework kind must join the closed set."""
+        """The mirror guard: a new framework kind must join the closed set.
+
+        Read from the CODE, not from prose. The Batch vocabulary has named
+        constants; the run vocabulary is spelled as literals at the mutation
+        hooks, so this walks the AST of the two modules that write them and
+        collects the ``kind`` argument of every append. A kind added to a new
+        call site and not to ``RESERVED_FACT_KINDS`` fails here instead of
+        becoming a name a node could borrow.
+        """
         from hypergraph.host import _batch_store
 
         batch_kinds = {
@@ -287,16 +476,11 @@ class TestReservedKinds:
         }
         assert batch_kinds <= RESERVED_FACT_KINDS
 
-        # The run vocabulary has no constants — it is spelled as literals at
-        # the mutation hooks and documented ONCE on `RunUpdate.kind`. Read it
-        # from there, so a kind added to the docs but not to the closed set
-        # fails here instead of becoming a name a node could borrow.
-        from hypergraph.host.views import RunUpdate
-
-        sentence = (RunUpdate.__doc__ or "").split("kind: Fact kind", 1)[1].split("or an event class name", 1)[0]
-        documented = set(re.findall(r"``(\w+)``", sentence))
-        assert documented >= {"submitted", "run_started", "step", "status"}, documented
-        assert documented <= RESERVED_FACT_KINDS, documented - RESERVED_FACT_KINDS
+        written = _run_update_kinds_written_in_source()
+        # A sanity floor, so a parser that silently matched nothing cannot
+        # pass this test by finding an empty set.
+        assert {"submitted", "run_started", "step", "status", "answer", "command"} <= written, written
+        assert written <= RESERVED_FACT_KINDS, written - RESERVED_FACT_KINDS
 
 
 # === No log to append to ===
@@ -306,7 +490,7 @@ class TestWithoutADurableLog:
     @pytest.mark.parametrize("runner_factory", [SyncRunner, AsyncRunner], ids=["sync", "async"])
     async def test_a_tier0_run_records_nothing_and_does_not_raise(self, runner_factory):
         """The same node body runs in-process; ``record`` returns ``None``."""
-        seen: list[int | None] = []
+        seen: list[None] = []
 
         @node(output_name="answer")
         def agent_turn(prompt: str, ctx: NodeContext) -> str:
@@ -326,17 +510,24 @@ class TestWithoutADurableLog:
         assert result["answer"] == "HI"
         assert seen == [None]
 
-    async def test_a_plain_checkpointer_keeps_no_run_log(self, tmp_path):
+    async def test_a_plain_checkpointer_writes_nothing_at_either_seam(self, tmp_path):
         """Only a Run Home keeps a run log; a plain store no-ops honestly."""
         checkpointer = SqliteCheckpointer(str(tmp_path / "plain.db"))
         try:
-            assert checkpointer.append_run_fact_sync("wf-1", "tool_call", {"name": "search"}) is None
+            checkpointer.append_run_fact_sync("wf-1", "tool_call", {"name": "search"})
+            await checkpointer.append_run_fact("wf-1", "tool_call", {"name": "search"})
+            rows = checkpointer._sync_db().execute("SELECT COUNT(*) FROM run_updates WHERE run_id = ?", ("wf-1",)).fetchone()
+            assert rows[0] == 0
         finally:
             await checkpointer.close()
 
-    async def test_a_run_home_returns_the_seq_it_allocated(self, home):
-        """The seam itself: gap-free seqs, in call order."""
-        assert home.append_run_fact_sync("wf-1", "tool_call", {"name": "search"}) == 1
-        assert home.append_run_fact_sync("wf-1", "progress", {"pct": 10}) == 2
+    async def test_both_run_home_seams_write_one_gap_free_sequence(self, home):
+        """The thread mirror and the loop mirror share one per-Run sequence."""
+        home.append_run_fact_sync("wf-1", "tool_call", {"name": "search"})
+        await home.append_run_fact("wf-1", "progress", {"pct": 10})
+        home.append_run_fact_sync("wf-1", "tool_call", {"name": "again"})
+        rows = await home._read_run_updates("wf-1")
+        assert [(seq, kind) for seq, kind, _payload, _at in rows] == [(1, "tool_call"), (2, "progress"), (3, "tool_call")]
         # Per-run sequences are independent.
-        assert home.append_run_fact_sync("wf-2", "tool_call", {"name": "other"}) == 1
+        await home.append_run_fact("wf-2", "tool_call", {"name": "other"})
+        assert [seq for seq, *_ in await home._read_run_updates("wf-2")] == [1]

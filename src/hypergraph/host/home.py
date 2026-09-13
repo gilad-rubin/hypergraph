@@ -1049,36 +1049,53 @@ class RunHome(SqliteCheckpointer):
             (run_id, kind, json.dumps(payload), _now_iso(), run_id),
         )
 
-    def append_run_fact_sync(self, run_id: str, kind: str, payload: dict[str, Any]) -> int:
-        """Append one NODE-authored fact to this run's log; return its ``seq``.
+    # === Node-authored durable facts ===
+    #
+    # The seam behind ``NodeContext.record``, and the only caller-reachable
+    # entry point to ``run_updates``. Both mirrors share the framework's
+    # gap-free allocation — one ``INSERT…SELECT`` — so a node's fact and a
+    # host fact land on ONE per-Run sequence that ``watch(after=cursor)``
+    # replays in order, and each commits its own short transaction, so a
+    # node that records ten times loses at most the one that had not
+    # committed.
+    #
+    # Neither goes through ``_after_run_mutation{,_sync}``: that hook reads
+    # the framework's own vocabulary (committed progress resets the recovery
+    # brake, a terminal status settles a Batch child), and a node's fact is
+    # none of those things. ``ctx.record`` observes the run; it never moves
+    # it.
+    #
+    # WHICH mirror a node reaches is decided by where its body runs, not by
+    # taste — see ``Checkpointer.append_run_fact``.
 
-        The seam behind ``NodeContext.record``, and the only caller-reachable
-        entry point to ``run_updates``. It shares the framework's gap-free
-        allocation — one ``INSERT…SELECT`` — so a node's fact and a host
-        fact land on ONE per-Run sequence that ``watch(after=cursor)``
-        replays in order.
-
-        It does NOT go through ``_after_run_mutation_sync``: that hook reads
-        the framework's own vocabulary (committed progress resets the
-        recovery brake, a terminal status settles a Batch child), and a
-        node's fact is none of those things. ``ctx.record`` observes the
-        run; it never moves it.
-
-        Its own short write transaction, on this THREAD's connection, so a
-        node that records ten times commits ten facts: a crash loses at most
-        the one that had not committed.
-        """
+    def append_run_fact_sync(self, run_id: str, kind: str, payload: dict[str, Any]) -> None:
+        """Append one node fact from a THREAD, on that thread's connection."""
         with self._sync_lock:
             db = self._sync_db()
             try:
-                cursor = db.execute(_INSERT_RUN_UPDATE, (run_id, kind, json.dumps(payload), _now_iso(), run_id))
-                row_id = cursor.lastrowid
+                db.execute("BEGIN IMMEDIATE")
+                db.execute(_INSERT_RUN_UPDATE, (run_id, kind, json.dumps(payload), _now_iso(), run_id))
                 db.commit()
             except BaseException:
                 self._rollback_sync(db)
                 raise
-            seq = db.execute("SELECT seq FROM run_updates WHERE rowid = ?", (row_id,)).fetchone()
-        return int(seq[0])
+
+    async def append_run_fact(self, run_id: str, kind: str, payload: dict[str, Any]) -> None:
+        """Append one node fact from the EVENT LOOP, on the async connection.
+
+        Takes the same ``_txn_lock`` every other async write takes, so it
+        queues behind an in-flight host transaction instead of blocking the
+        loop that transaction needs in order to finish.
+        """
+        await self._ensure_db()
+        async with self._txn_lock():
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                await self._db.execute(_INSERT_RUN_UPDATE, (run_id, kind, json.dumps(payload), _now_iso(), run_id))
+                await self._db.commit()
+            except BaseException:
+                await self._rollback_async()
+                raise
 
     def _reset_recovery_attempts_sync(self, db: Any, run_id: str) -> None:
         """Reset the recovery brake on NEW committed progress (same transaction)."""

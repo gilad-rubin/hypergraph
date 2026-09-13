@@ -1475,11 +1475,11 @@ async def generate(prompt: str, ctx: NodeContext) -> str:
 
 Streaming is a side-channel. The framework doesn't accumulate chunks, manage reducers, or touch output types. `ctx.stream()` is silently skipped if `stop_requested` is `True`.
 
-#### `record(kind: str, payload: dict) -> int | None`
+#### `record(kind: str, payload: dict) -> None`
 
-Append one **durable** fact to this run's log and return its `seq`. Where
-`stream()` offers a preview nothing keeps, `record()` commits: the fact lands on
-the run's own gap-free sequence beside the host's `step` and `status` facts, so
+Append one **durable** fact to this run's log. Where `stream()` offers a preview
+nothing keeps, `record()` commits: the fact lands on the run's own gap-free
+sequence beside the host's `step` and `status` facts, so
 [`client.watch(ref, after=cursor)`](host.md#inspecting-and-watching) replays it in
 order — and a watcher that connects after the node finished still sees it.
 
@@ -1507,7 +1507,12 @@ async for update in client.watch(run_ref):
 - `payload` must be a JSON-safe `dict`.
 - Each call is its own short transaction, so a crash loses at most the fact that
   had not committed.
-- Returns `None` when the run has no durable log — a run with no checkpointer, or
+- The call never blocks the event loop, and it never waits on the write. An
+  `async def` body's fact is written by a task on the loop and settled by the
+  framework before that node's step record — so a fact is durable by the time the
+  step that produced it is, and the log reads `fact… step`. A `def` body (which
+  runs on a thread) writes straight through. If the write fails, the node fails.
+- Does nothing when the run has no durable log — a run with no checkpointer, or
   any store that is not a [Run Home](host.md). That is a no-op, not a raise: a node
   must run the same in-process as it does under a host.
 - Inside a nested graph, the fact goes to that child run's log — the same address
