@@ -842,6 +842,14 @@ settled, and watching again from the stored cursor resumes exactly where the
 resting stream stopped. `BatchView.resting` is the same predicate for a
 caller that polls instead of watching.
 
+`WaitingCondition` is a closed enum — `QUEUED`, `SCHEDULED`, `PAUSED`,
+`VERSION_INCOMPATIBLE`, `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED`,
+`DEAD_LETTER` — so waiting work never looks alike and callers branch on
+typed values. `waiting`
+is `None` while a Run executes or is terminal — including while a running
+Run is queued behind a [provider permit](#provider-resource-admission),
+which is execution, not waiting.
+
 ### Following one ref to its arrival
 
 `watch` streams the facts along the way. A caller that wants the **outcome** —
@@ -886,14 +894,6 @@ other half of this surface and answers a different question: many refs at
 once, drawn as a live picture, with the drawing deadline in minutes and a
 `stop_after_minutes` that logs and returns the last snapshot rather than
 raising. `follow` is one ref, no picture, and a refusal a test can assert on.
-
-`WaitingCondition` is a closed enum — `QUEUED`, `SCHEDULED`, `PAUSED`,
-`VERSION_INCOMPATIBLE`, `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED`,
-`DEAD_LETTER` — so waiting work never looks alike and callers branch on
-typed values. `waiting`
-is `None` while a Run executes or is terminal — including while a running
-Run is queued behind a [provider permit](#provider-resource-admission),
-which is execution, not waiting.
 
 ### Serving truthful UI read models
 

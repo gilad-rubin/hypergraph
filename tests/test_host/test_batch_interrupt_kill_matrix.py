@@ -170,6 +170,8 @@ async def drive_to_completion(db: str, ledger: str, batch_ref, *, answer: dict |
         if answer is not None:
             slot = await until(lambda: _open_slot(home))
             await client.answer(_ref(home), pause_id=slot.pause_id, value=answer)
+        # 45s is this suite's own `until` default, unchanged: a restart has to
+        # outwait the SIGKILLed worker's lease before it may adopt the claim.
         view = await client.follow(batch_ref, deadline=45)
         return view, home
     finally:

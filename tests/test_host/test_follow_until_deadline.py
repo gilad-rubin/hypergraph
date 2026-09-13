@@ -55,8 +55,10 @@ async def test_follow_raises_at_its_deadline_with_the_last_view_attached(home, l
             await host.client.follow(receipt.batch_ref, deadline=0.2)
         elapsed = loop.time() - started
 
-    # It gives up at its own deadline — a gate never answers itself.
-    assert 0.2 <= elapsed < 5.0
+    # It gives up at ITS OWN deadline, not at some multiple of the stream's
+    # poll interval — a gate never answers itself, so the only bound here is
+    # the one the caller set.
+    assert 0.2 <= elapsed < 2.0
     error = raised.value
     assert isinstance(error, HostError)
     assert error.ref == receipt.batch_ref
