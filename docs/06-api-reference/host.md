@@ -1161,7 +1161,11 @@ keeps it: the product said where its recipe runs belong. And a table driven
 itself — records nothing, exactly as before; inheritance belongs to the Run,
 not to the table. The cost is real write volume: a page node is a step row,
 and the Run Home commits every mutation synchronously, so a wide sweep buys
-its per-page cost with per-page rows. Recipe runs still carry **generated**
+its per-page cost with per-page rows. That commit is also on the **data
+path**: every page recipe run now writes to the Run Home synchronously while
+the document is being derived, so a Run Home write failure can fail a
+document that previously could not fail for that reason. Recipe runs still
+carry **generated**
 workflow ids rather than ids derived from the row being built; addressing
 them is the remaining half of
 [issue #386](https://github.com/gilad-rubin/hypergraph/issues/386).

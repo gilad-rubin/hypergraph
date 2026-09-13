@@ -28,9 +28,11 @@ should fail loudly, not pass quietly.
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 import pytest
 
-from hypergraph import AsyncRunner, Graph, RunHome, RunHomeClient, RunHomeReadModel, SyncRunner, node, serve
+from hypergraph import AsyncRunner, Graph, RunHome, RunHomeClient, RunHomeReadModel, SqliteCheckpointer, SyncRunner, node, serve
 from hypergraph.materialization._lancedb_store import LanceDBStore
 from tests.test_host._batch_interrupt import submit_ids, worker
 
@@ -75,6 +77,61 @@ def ingest_graph(tmp_path, *, table_runner=TABLE_DEFAULT, outer_runner=None, boo
 
     materialize = table.as_node(name="materialize_pages", output_name="materialization")
     return Graph([stage, pick_page, materialize, publish], name="ingest_document").with_runner(outer_runner or AsyncRunner())
+
+
+class Page(TypedDict):
+    page_id: str
+    page: str
+
+
+def paged_ingest_graph(tmp_path, *, pages: int, page_max_concurrency: int) -> Graph:
+    """The real fan-out shape: ONE document deriving MANY child pages.
+
+    The recipe's ``map_over`` child node is what makes the write plan yield a
+    ``RunOperations`` instead of a lone ``RunGraph``, and the async driver
+    turns each page into its own ``asyncio.create_task``. That task boundary
+    is where an inherited-by-context Run Home either survives or silently
+    does not, which is the whole reason this shape needs its own test.
+    """
+
+    @node(output_name="text")
+    def render_page(page: str) -> str:
+        return f"rendered-{page}"
+
+    @node(output_name="length")
+    def measure(text: str) -> int:
+        return len(text)
+
+    page_recipe = Graph([render_page, measure], name="page_recipe")
+
+    @node(output_name="pages")
+    def split_pages(source: str) -> list[Page]:
+        return [{"page_id": f"{source}-p{index}", "page": f"{source}-p{index}"} for index in range(pages)]
+
+    table = Graph(
+        [split_pages, page_recipe.as_node(name="derive_page").map_over("pages", identity="page_id")],
+        name="doc_recipe",
+    ).as_table(
+        identity="doc_id",
+        store=LanceDBStore(str(tmp_path / "paged")),
+        runner=AsyncRunner(),
+        page_max_concurrency=page_max_concurrency,
+    )
+
+    @node(output_name="doc_id")
+    def stage(work_item_id: str) -> str:
+        return work_item_id
+
+    @node(output_name="source")
+    def pick_source(work_item_id: str) -> str:
+        return work_item_id
+
+    @node(output_name="published")
+    def publish(materialization) -> str:
+        return f"published:{materialization.id}"
+
+    materialize = table.as_node(name="materialize_doc", output_name="materialization")
+    return Graph([stage, pick_source, materialize, publish], name="ingest_document").with_runner(AsyncRunner())
 
 
 async def settled_ingest(host, graph, workflow_id: str = "sweep"):
@@ -134,6 +191,39 @@ async def test_the_default_table_runner_is_recorded_too(tmp_path, home, ledger):
     assert_fan_out_recorded(timings)
 
 
+async def test_every_page_of_a_wide_fan_out_is_attributed_across_the_task_boundary(tmp_path, home, ledger):
+    """Many pages, run concurrently, each in its own task — all attributed.
+
+    A single-page fan-out never reaches `RunOperations`, so it cannot tell
+    whether the inherited Run Home survives `asyncio.create_task`. This one
+    yields one `RunOperations` of twelve, so the driver creates twelve tasks
+    at once and a semaphore of four lets them run in waves — twelve chances
+    for a page to execute somewhere other than the task that published the
+    recorder.
+    """
+    pages = 12
+    graph = paged_ingest_graph(tmp_path, pages=pages, page_max_concurrency=4)
+    host = serve(graph, home=home, deployment_version="v1")
+    await settled_ingest(host, graph)
+
+    timings = await RunHomeReadModel(host.client).node_timings()
+
+    by_name = {timing.node_name: timing for timing in timings.nodes}
+    assert by_name["render_page"].executions == pages
+    assert by_name["measure"].executions == pages
+
+    recipe_steps = [step for step in timings.steps if step.node_name in RECIPE_NODES]
+    assert len(recipe_steps) == pages * len(RECIPE_NODES)
+    # EVERY one of them, not most: a page whose task lost the recorder would
+    # leave no row here at all, and the counts above would simply be smaller.
+    assert {step.root_workflow_id for step in recipe_steps} == {"sweep:doc-1"}
+    assert {step.item_key for step in recipe_steps} == {"doc-1"}
+    # One inner run per page, each parented to the Host Run.
+    assert len({step.workflow_id for step in recipe_steps}) == pages
+    assert len([run for run in home.runs(limit=None) if run.graph_name == "page_recipe"]) == pages
+    assert next(run for run in timings.runs if run.workflow_id == "sweep:doc-1").node_count == 4
+
+
 async def test_a_sync_host_run_records_its_fan_out_the_same_way(tmp_path, home, ledger):
     """Sync/async parity: the outer graph carries a SyncRunner this time."""
     graph = ingest_graph(tmp_path, table_runner=SyncRunner(), outer_runner=SyncRunner())
@@ -145,15 +235,29 @@ async def test_a_sync_host_run_records_its_fan_out_the_same_way(tmp_path, home, 
     assert_fan_out_recorded(timings)
 
 
-async def test_a_recipe_runner_holding_the_run_home_records_inner_steps_under_the_host_run(tmp_path, home, ledger):
-    """An explicit `checkpointer=` still wins: the product said where these go."""
-    graph = ingest_graph(tmp_path, table_runner=AsyncRunner(checkpointer=home))
-    host = serve(graph, home=home, deployment_version="v1")
-    await settled_ingest(host, graph)
+async def test_a_recipe_runner_holding_its_own_checkpointer_keeps_it(tmp_path, home, ledger):
+    """An explicit `checkpointer=` still wins: the product said where these go.
 
-    timings = await RunHomeReadModel(host.client).node_timings()
+    The store it names is a DIFFERENT database from the Run Home, so the
+    assertion can tell "the table's own checkpointer won" from "the host
+    overrode it" — passing the Home itself would read the same either way.
+    """
+    elsewhere = SqliteCheckpointer(f"file:{tmp_path / 'elsewhere.db'}")
+    try:
+        graph = ingest_graph(tmp_path, table_runner=AsyncRunner(checkpointer=elsewhere))
+        host = serve(graph, home=home, deployment_version="v1")
+        await settled_ingest(host, graph)
 
-    assert_fan_out_recorded(timings)
+        timings = await RunHomeReadModel(host.client).node_timings()
+
+        # The recipe rows went where the product said, not where the host is.
+        recipe_runs = elsewhere.runs(limit=None)
+        assert [run.graph_name for run in recipe_runs] == ["page_recipe"]
+        assert {step.node_name for step in await elsewhere.get_steps(recipe_runs[0].id)} == RECIPE_NODES
+        assert not RECIPE_NODES & {timing.node_name for timing in timings.nodes}
+        assert [run.graph_name for run in home.runs(limit=None)] == ["ingest_document"]
+    finally:
+        await elsewhere.close()
 
 
 async def test_a_table_driven_outside_a_durable_run_still_records_nothing(tmp_path, home, ledger):
