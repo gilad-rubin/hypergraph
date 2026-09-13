@@ -11,6 +11,7 @@ import hashlib
 import html as _html
 import itertools
 import os
+from dataclasses import dataclass, fields, is_dataclass
 from typing import Any
 
 from hypergraph._utils import format_datetime, format_duration_ms, plural
@@ -649,52 +650,228 @@ def datetime_html(dt) -> str:
 # Value rendering
 # ---------------------------------------------------------------------------
 
-_MAX_VALUE_LEN = 200
 _MAX_ITEMS = 8
+_MAX_STRING_PREVIEW = 120
+_MAX_SEQUENCE_PREVIEW = 6
+_MAX_MAPPING_PREVIEW = 6
+_MAX_VALUE_REPR = 240
+_MAX_SKETCH_LEN = 200
+_MAX_SKETCH_KEYS = 4
+
+
+@dataclass(frozen=True)
+class _CompactStyle:
+    """How far a value compaction descends and how long its pieces may be.
+
+    Two styles exist, and they are the only difference between the text and
+    the HTML rendering of a value — the traversal itself is one function.
+
+    ``_FULL`` is what the text reprs print: nested values rendered two levels
+    deep, sizes inline, because a terminal line is all the reader gets.
+    ``_SKETCH`` is what a notebook table cell shows: containers elided to their
+    shape, because :func:`_compact_html` prints the size in a muted span beside
+    the cell and the real value is one click away. Expanding there would put a
+    run's whole payload — nested rows, addresses, embeddings — into every
+    ``_repr_html_``, uncapped.
+    """
+
+    max_string: int
+    max_repr: int
+    ellipsis: str
+    reserve_ellipsis: bool
+    max_depth: int
+    sketch: bool
+
+    def shorten(self, text: str, limit: int) -> str:
+        """Cut text to limit, marking the cut with this style's ellipsis."""
+        if len(text) <= limit:
+            return text
+        cut = limit - len(self.ellipsis) if self.reserve_ellipsis else limit
+        return text[:cut] + self.ellipsis
+
+
+_FULL = _CompactStyle(
+    max_string=_MAX_STRING_PREVIEW,
+    max_repr=_MAX_VALUE_REPR,
+    ellipsis="...",
+    reserve_ellipsis=True,
+    max_depth=2,
+    sketch=False,
+)
+_SKETCH = _CompactStyle(
+    max_string=_MAX_SKETCH_LEN,
+    max_repr=_MAX_SKETCH_LEN,
+    ellipsis="…",
+    reserve_ellipsis=False,
+    max_depth=0,
+    sketch=True,
+)
+
+
+def _truncate_text(text: str, max_length: int) -> str:
+    """Truncate text to max_length and append an ellipsis when needed."""
+    return _FULL.shorten(text, max_length)
+
+
+def _safe_repr(value: Any) -> str:
+    """Return repr(value), falling back to a safe placeholder."""
+    try:
+        return repr(value)
+    except Exception as exc:
+        return f"<unreprable {type(value).__name__}: {exc}>"
+
+
+def _compact_string(text: str, style: _CompactStyle) -> str:
+    """Compact long strings while preserving quote style."""
+    if len(text) <= style.max_string:
+        return repr(text)
+    if style.sketch:
+        # The length is reported by the caller's muted annotation, not inline.
+        return repr(text[: style.max_string]) + style.ellipsis
+    preview = style.shorten(text, style.max_string)
+    return f"{preview!r} (len={len(text)})"
+
+
+def _compact_mapping(mapping: dict[Any, Any], depth: int, seen: set[int], style: _CompactStyle) -> str:
+    """Return a compact representation for dict-like values."""
+    items = list(mapping.items())
+    preview_items = items[:_MAX_MAPPING_PREVIEW]
+    parts = [f"{style.shorten(_safe_repr(k), 80)}: {_compact_value(v, depth + 1, seen, style=style)}" for k, v in preview_items]
+    remaining = len(items) - len(preview_items)
+    if remaining > 0:
+        parts.append(f"... (+{remaining} more)")
+    return "{" + ", ".join(parts) + "}"
+
+
+def _compact_sequence(values: list[Any], sequence_type: str, depth: int, seen: set[int], style: _CompactStyle) -> str:
+    """Return a compact representation for long sequence-like values."""
+    if len(values) <= _MAX_SEQUENCE_PREVIEW:
+        compact_items = [_compact_value(v, depth + 1, seen, style=style) for v in values]
+        if sequence_type == "tuple":
+            if len(compact_items) == 1:
+                return f"({compact_items[0]},)"
+            return "(" + ", ".join(compact_items) + ")"
+        if sequence_type == "set":
+            if not compact_items:
+                return "set()"
+            return "{" + ", ".join(compact_items) + "}"
+        if sequence_type == "frozenset":
+            if not compact_items:
+                return "frozenset()"
+            return "frozenset({" + ", ".join(compact_items) + "})"
+        return "[" + ", ".join(compact_items) + "]"
+    preview = ", ".join(_compact_value(v, depth + 1, seen, style=style) for v in values[:_MAX_SEQUENCE_PREVIEW])
+    return f"<{sequence_type} len={len(values)} preview=[{preview}, ...]>"
+
+
+def _compact_value(value: Any, depth: int = 0, seen: set[int] | None = None, *, style: _CompactStyle = _FULL) -> str:
+    """Build a compact, recursion-safe representation for nested values.
+
+    This is the single value traversal in the package. The text reprs in
+    ``_runner_repr`` call it with the default ``_FULL`` style;
+    :func:`_compact_html` calls it with ``_SKETCH`` and adds HTML presentation.
+    Add traversal policy here, never in a renderer.
+    """
+    if seen is None:
+        seen = set()
+
+    if isinstance(value, str):
+        return _compact_string(value, style)
+
+    if isinstance(value, (int, float, bool, type(None))):
+        return repr(value)
+
+    if isinstance(value, bytes):
+        return style.shorten(repr(value), style.max_repr)
+
+    if style.sketch:
+        # Depth 0 only: name the shape, leave the contents to the click-through.
+        shape = getattr(value, "shape", None)
+        if shape is not None and hasattr(value, "dtype"):
+            dtype = getattr(value, "dtype", None)
+            return f"<{type(value).__name__} shape={shape!r} dtype={dtype!r}>"
+        if isinstance(value, dict):
+            if not value:
+                return "{}"
+            keys = ", ".join(_safe_repr(k) for k in list(value)[:_MAX_SKETCH_KEYS])
+            remaining = len(value) - _MAX_SKETCH_KEYS
+            suffix = f" {style.ellipsis} (+{remaining})" if remaining > 0 else ""
+            return "{" + keys + suffix + "}"
+        if isinstance(value, (list, tuple)):
+            brackets = "[]" if isinstance(value, list) else "()"
+            if not value:
+                return brackets
+            return brackets[0] + style.ellipsis + brackets[1]
+        return style.shorten(_safe_repr(value), style.max_repr)
+
+    if depth >= style.max_depth:
+        return style.shorten(_safe_repr(value), style.max_repr)
+
+    is_recursive_candidate = isinstance(value, (dict, list, tuple, set, frozenset)) or (is_dataclass(value) and not isinstance(value, type))
+    if is_recursive_candidate:
+        object_id = id(value)
+        if object_id in seen:
+            return f"<recursive {type(value).__name__}>"
+        seen.add(object_id)
+
+    try:
+        if is_dataclass(value) and not isinstance(value, type):
+            field_map = {f.name: getattr(value, f.name) for f in fields(value)}
+            return f"<{type(value).__name__} {_compact_mapping(field_map, depth, seen, style)}>"
+
+        if isinstance(value, dict):
+            return _compact_mapping(value, depth, seen, style)
+
+        if isinstance(value, list):
+            return _compact_sequence(value, "list", depth, seen, style)
+
+        if isinstance(value, tuple):
+            return _compact_sequence(list(value), "tuple", depth, seen, style)
+
+        if isinstance(value, (set, frozenset)):
+            preview_list = list(value)
+            return _compact_sequence(preview_list, type(value).__name__, depth, seen, style)
+
+        shape = getattr(value, "shape", None)
+        if shape is not None and hasattr(value, "dtype"):
+            dtype = getattr(value, "dtype", None)
+            return f"<{type(value).__name__} shape={shape!r} dtype={dtype!r}>"
+
+        return style.shorten(_safe_repr(value), style.max_repr)
+    finally:
+        if is_recursive_candidate:
+            seen.discard(id(value))
+
+
+def _size_annotation_html(value: Any, style: _CompactStyle) -> str:
+    """Return the muted size annotation printed beside a sketched value.
+
+    The sketch body never repeats this: a long string's body stops at the cut
+    and a container's body is elided, so the count appears exactly once.
+    """
+    if isinstance(value, str):
+        if len(value) <= style.max_string:
+            return ""
+        return f'<span style="color:{MUTED_COLOR}">(len={len(value)})</span>'
+    if isinstance(value, dict) and value:
+        return f'<span style="color:{MUTED_COLOR}">({plural(len(value), "key")})</span>'
+    if isinstance(value, (list, tuple)) and value:
+        return f'<span style="color:{MUTED_COLOR}">({plural(len(value), "item")})</span>'
+    return ""
 
 
 def _compact_html(value: Any) -> str:
-    """Render a single Python value as compact, HTML-safe text."""
+    """Render a single Python value as compact, HTML-safe text.
+
+    Traversal policy lives in :func:`_compact_value`; this adds the HTML
+    presentation only — escaping, the ``<code>`` wrapper, and the muted size
+    annotation.
+    """
     if value is None:
         return f'<span style="color:{MUTED_COLOR}">None</span>'
-
-    if isinstance(value, str):
-        if len(value) <= _MAX_VALUE_LEN:
-            return _code(_html.escape(repr(value)))
-        preview = repr(value[:_MAX_VALUE_LEN])
-        return f'{_code(_html.escape(preview) + "…")} <span style="color:{MUTED_COLOR}">(len={len(value)})</span>'
-
-    if isinstance(value, (int, float, bool)):
-        return _code(f"{value!r}")
-
-    # numpy-like arrays
-    shape = getattr(value, "shape", None)
-    if shape is not None and hasattr(value, "dtype"):
-        dtype = getattr(value, "dtype", None)
-        return _code(f"&lt;{type(value).__name__} shape={shape!r} dtype={dtype!r}&gt;")
-
-    # dict preview
-    if isinstance(value, dict):
-        n = len(value)
-        if n == 0:
-            return _code("{}")
-        keys = ", ".join(_html.escape(repr(k)) for k in list(value)[:4])
-        suffix = f" … (+{n - 4})" if n > 4 else ""
-        return f'{_code("{" + keys + suffix + "}")} <span style="color:{MUTED_COLOR}">({plural(n, "key")})</span>'
-
-    # list/tuple preview
-    if isinstance(value, (list, tuple)):
-        n = len(value)
-        bracket = "[]" if isinstance(value, list) else "()"
-        if n == 0:
-            return _code(bracket)
-        return f'{_code(bracket[0] + "…" + bracket[1])} <span style="color:{MUTED_COLOR}">({plural(n, "item")})</span>'
-
-    # fallback
-    text = repr(value)
-    if len(text) > _MAX_VALUE_LEN:
-        text = text[:_MAX_VALUE_LEN] + "…"
-    return _code(_html.escape(text))
+    body = _code(_html.escape(_compact_value(value, style=_SKETCH)))
+    annotation = _size_annotation_html(value, _SKETCH)
+    return f"{body} {annotation}" if annotation else body
 
 
 def values_html(values: dict[str, Any], *, max_items: int = _MAX_ITEMS) -> str:
@@ -720,104 +897,3 @@ def error_html(error: BaseException | str | None) -> str:
     text = f"{type(error).__name__}: {error}" if isinstance(error, BaseException) else str(error)
     escaped = _html.escape(text)
     return f'<div style="color:{ERROR_COLOR}; {_FONT}; font-size:0.85em; padding:4px 8px; background:{_ERROR_BG}; {_RADIUS}; margin-top:4px"><b>Error:</b> {escaped}</div>'
-
-
-# ---------------------------------------------------------------------------
-# Runner presentation boundary
-# ---------------------------------------------------------------------------
-
-
-def render_run_result_repr(result: Any) -> str:
-    from hypergraph._runner_repr import render_run_result_repr as render
-
-    return render(result)
-
-
-def render_run_result_pretty(result: Any, pretty_printer: Any, cycle: bool) -> None:
-    from hypergraph._runner_repr import render_run_result_pretty as render
-
-    render(result, pretty_printer, cycle)
-
-
-def render_run_result_html(result: Any) -> str:
-    from hypergraph._runner_repr import render_run_result_html as render
-
-    return render(result)
-
-
-def render_map_result_repr(result: Any) -> str:
-    from hypergraph._runner_repr import render_map_result_repr as render
-
-    return render(result)
-
-
-def render_map_result_pretty(result: Any, pretty_printer: Any, cycle: bool) -> None:
-    from hypergraph._runner_repr import render_map_result_pretty as render
-
-    render(result, pretty_printer, cycle)
-
-
-def render_map_result_html(result: Any) -> str:
-    from hypergraph._runner_repr import render_map_result_html as render
-
-    return render(result)
-
-
-def render_node_record_repr(record: Any) -> str:
-    from hypergraph._runner_repr import render_node_record_repr as render
-
-    return render(record)
-
-
-def render_node_stats_repr(stats: Any) -> str:
-    from hypergraph._runner_repr import render_node_stats_repr as render
-
-    return render(stats)
-
-
-def render_run_log_str(log: Any) -> str:
-    from hypergraph._runner_repr import render_run_log_str as render
-
-    return render(log)
-
-
-def render_run_log_repr(log: Any) -> str:
-    from hypergraph._runner_repr import render_run_log_repr as render
-
-    return render(log)
-
-
-def render_run_log_pretty(log: Any, pretty_printer: Any, cycle: bool) -> None:
-    from hypergraph._runner_repr import render_run_log_pretty as render
-
-    render(log, pretty_printer, cycle)
-
-
-def render_run_log_html(log: Any) -> str:
-    from hypergraph._runner_repr import render_run_log_html as render
-
-    return render(log)
-
-
-def render_map_log_str(log: Any) -> str:
-    from hypergraph._runner_repr import render_map_log_str as render
-
-    return render(log)
-
-
-def render_map_log_repr(log: Any) -> str:
-    from hypergraph._runner_repr import render_map_log_repr as render
-
-    return render(log)
-
-
-def render_map_log_pretty(log: Any, pretty_printer: Any, cycle: bool) -> None:
-    from hypergraph._runner_repr import render_map_log_pretty as render
-
-    render(log, pretty_printer, cycle)
-
-
-def render_map_log_html(log: Any) -> str:
-    from hypergraph._runner_repr import render_map_log_html as render
-
-    return render(log)
