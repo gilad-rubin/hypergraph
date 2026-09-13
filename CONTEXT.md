@@ -164,7 +164,7 @@ _Avoid_: Stopped result, skipped run
 
 ## Durable host
 
-Vocabulary for the Durable Host V1 program ([PRD 0017](docs/prd/0017-durable-host-v1-program.md); decisions in ADRs 0005–0008 and the [2026-07-23 amendment package](docs/research/2026-07-23-durable-host-amendments.md)). Intent, not shipped behavior, until the ticket tree lands.
+Vocabulary for the Durable Host V1 program ([PRD 0017](docs/prd/0017-durable-host-v1-program.md); decisions in ADRs 0005–0008 and the [2026-07-23 amendment package](docs/research/2026-07-23-durable-host-amendments.md)). Shipped behavior, not intent: `serve()`, `Host`, `HostRuntime`, `RunHome`, `RunHomeClient`, and `RunHomeReadModel` are public API — see [Host](docs/06-api-reference/host.md). The one term below that is still intent is **Unknown effect outcome**: declared-effect nodes are PRD 0014, `BoundaryState.UNKNOWN_EFFECT` is reserved for them, and nothing writes the `dispatched_at` mark that would produce one yet.
 
 **Definition**:
 A root graph bound to its runner and deployment identity, accepted by `serve(...)`. New submission is **graph-first**: it passes the served `Graph` object, which resolves to its Definition by name and structural hash. A name string is never a selector.
@@ -247,7 +247,7 @@ The surfaced state of a declared external effect that was dispatched but whose s
 _Avoid_: Failed effect, lost effect, retryable error
 
 **Waiting condition**:
-The closed typed vocabulary (`WaitingCondition` enum: `QUEUED`, `SCHEDULED`, `PAUSED`, `VERSION_INCOMPATIBLE`, `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED`) naming why a Run waits, exposed as `RunView.waiting: WaitingCondition | None` and accepted by `RunQuery` filters. Never a free string.
+The closed typed vocabulary (`WaitingCondition` enum: `QUEUED`, `SCHEDULED`, `PAUSED`, `VERSION_INCOMPATIBLE`, `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED`, `DEAD_LETTER`) naming why a Run waits, exposed as `RunView.waiting: WaitingCondition | None` and accepted by `RunQuery` filters. Never a free string. `DEAD_LETTER` is the one member that is not waiting for anything: nothing alive can execute the submission, so it reads settled and only rerun revives it.
 _Avoid_: Status string, hold reason, parked state
 
 **Durable update sequence**:
@@ -266,6 +266,22 @@ _Avoid_: Event offset, log position (no OutputLog exists), progress counter
 - A **paused child** is in flight, not settled: its Batch reports `settled=False` and its watch stream stays open. `child_paused` / `child_runnable` are lifecycle facts that may repeat (a second interrupt mints a new PauseSlot); only `child_settled`, `child_unstarted`, and a trip's `unstarted_items` account an item for good.
 - **Answer re-admission** resumes the *same* checkpointed Run with only `{response_key: answer}`. Pinned start inputs are never resupplied — strict checkpoint resume would refuse them as an input override.
 - Stopping a **paused child** is a stop, not a duplicate-resolution decision: the Run settles `STOPPED` and the domain question stays unanswered.
+
+### Durable stores
+
+Three things in this library persist, and none of their names says which fact it owns. One line each, so an author asking "where does this fact live?" never has to guess. A store that does not own a fact does not hold a second copy of it either — it reads the owner.
+
+**Run Home** (`RunHome`):
+Owns **coordination** facts — which work exists and who may execute it next: submissions with their pinned Definition identity, claims and leases, durable PauseSlots, Batch manifests and their child facts, stop commands, dead-letter retirements, the Home-scoped `max_active_runs` cap, and the Durable update sequence `watch(after=cursor)` resumes from. It never owns what a node produced: a `RunHome` is also an ordinary checkpointer, so the journal sits in the same transactional store, and coordination reads it rather than restating it.
+_Avoid_: Second journal, event store, broker state
+
+**Checkpointer / StepRecord journal** (`SqliteCheckpointer`, `MemoryCheckpointer`):
+Owns **execution** facts for one workflow id — each node boundary's StepRecord (status, values, input versions, timing, privacy-safe failure projection), pending-node intent, and fork/retry lineage. It is the sole execution journal, which is why `client.result()` reconstructs a Run's outputs from these rows and no second store. It never owns admission, claim ownership, or Batch membership (those are the Run Home's), and never owns derived domain rows.
+_Avoid_: Coordination store, submission log, results database
+
+**TableStore / `LanceDBStore`** (`hypergraph.materialization`):
+Owns **domain** facts — the Materialized Artifacts a HyperTable derived: one stored column or child table per Grain, keyed by identity, kept or rebuilt by Content key and Lineage, plus error rows under `on_error="store"`. It never owns run lifecycle: a Run's status, waiting condition, or retry budget is not readable from it, and deleting a derived table settles no Run. Its `Store` name is unrelated to the Run Home — it is a database of results, not of work.
+_Avoid_: Run store, checkpoint store, output journal
 
 ## Materialization
 
