@@ -488,7 +488,14 @@ class BatchUpdate:
             ``item_key``, ``workflow_id``, and ``status`` — a terminal
             ``WorkflowStatus`` value, ``"recovery_exhausted"`` for a parked
             child, or ``"dead_letter"`` for a retired one, exactly the string
-            ``BatchView.outcomes`` reports;
+            ``BatchView.outcomes`` reports — plus ``error`` (and ``node_name``
+            when the step recorded one) when the child failed. ``error`` is
+            the same privacy-safe projection ``RunFailure.error`` carries,
+            byte for byte: an exception type, a stable ``HG_*`` code, and
+            static wording, never raw message text. Both keys are absent for
+            a child that did not fail and for the two non-run outcomes
+            (``recovery_exhausted`` keeps its own meaning, and a dead letter's
+            reason already rides its ``dead_lettered`` run update);
             ``child_paused`` and ``child_runnable`` carry ``item_key``,
             ``workflow_id``, an inert ``run_ref`` dict, and the ``pause_id``
             of the occurrence, so a consumer addresses the item without

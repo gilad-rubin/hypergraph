@@ -34,7 +34,8 @@ from hypergraph import (
     serve,
 )
 from hypergraph.checkpointers.types import StepRecord, StepStatus, WorkflowStatus
-from hypergraph.host.views import BatchOutcome, RunFailure, RunOutcome
+from hypergraph.diagnostics import safe_error_text
+from hypergraph.host.views import BATCH_OUTCOME_RECOVERY_EXHAUSTED, BatchOutcome, RunFailure, RunOutcome
 from tests.test_host._batch_api import serve_graphs, submit_keyed
 
 aiosqlite = pytest.importorskip("aiosqlite")
@@ -349,6 +350,157 @@ class TestBatchOutcome:
         assert len(outcome.items) == 120
         assert all(item is not None and item.outputs for item in outcome.items.values())
         assert len(calls) == 2, f"expected one batched read each, got {calls}"
+
+
+class TestChildSettledNamesWhy:
+    """The ``child_settled`` fact carries the same failure projection ``result()`` does.
+
+    A detached consumer replaying ``batch_updates`` from a cursor learns
+    ``failed`` AND why, without a second read — but only ever the
+    privacy-safe projection, never raw message text.
+    """
+
+    async def test_failed_child_names_the_exception_type_and_a_completed_one_does_not(self, home):
+        host, served = serve_graphs(_leaky_graph(), home=home)
+        receipt = await submit_keyed(
+            host,
+            served["leaky"],
+            {"ok": {"x": 2}, "bad": {"x": 1}},
+            workflow_id="drop-why",
+            tolerance=BatchTolerance(max_failed=5),
+        )
+        async with _worker(host):
+            await _wait_for(lambda: _settled(RunHomeClient(home), receipt.batch_ref))
+
+        client = RunHomeClient(home)
+        facts = {
+            update.payload["item_key"]: update.payload
+            async for update in client.watch(receipt.batch_ref)
+            if update.durable and update.kind == "child_settled"
+        }
+
+        assert facts["bad"]["status"] == "failed"
+        assert facts["bad"]["error"].startswith("ValueError ["), facts["bad"]["error"]
+        assert facts["bad"]["node_name"] == "leaky"
+        # The privacy boundary: the type crosses, the message never does.
+        assert SECRET not in facts["bad"]["error"]
+
+        assert facts["ok"]["status"] == "completed"
+        assert "error" not in facts["ok"], "a child that did not fail carries no reason"
+        assert "node_name" not in facts["ok"]
+
+    async def test_fact_error_is_byte_identical_to_the_result_projection(self, home):
+        """One string, two readers: the stream and ``client.result()``."""
+        host, served = serve_graphs(_leaky_graph(), home=home)
+        receipt = await submit_keyed(
+            host,
+            served["leaky"],
+            {"bad": {"x": 1}},
+            workflow_id="drop-same-string",
+            tolerance=BatchTolerance(max_failed=5),
+        )
+        async with _worker(host):
+            await _wait_for(lambda: _settled(RunHomeClient(home), receipt.batch_ref))
+
+        client = RunHomeClient(home)
+        fact = await anext(update.payload async for update in client.watch(receipt.batch_ref) if update.durable and update.kind == "child_settled")
+        failure = (await client.result(receipt.batch_ref)).items["bad"].failure
+
+        assert fact["error"] == failure.error
+        assert fact["node_name"] == failure.node_name
+
+    async def test_sync_mirror_writes_the_same_fact(self, home):
+        """``_append_child_settled_sync`` and its async twin must not drift."""
+        host, served = serve_graphs(_leaky_graph(), home=home)
+        receipt = await submit_keyed(host, served["leaky"], {"bad": {"x": 1}}, workflow_id="drop-sync-why")
+        child_id = "drop-sync-why:bad"
+        error_text = safe_error_text(ValueError(f"token {SECRET} rejected"), node_name="leaky")
+
+        home.create_run_sync(child_id, graph_name="leaky")
+        home.save_step_sync(
+            StepRecord(
+                run_id=child_id,
+                superstep=0,
+                node_name="leaky",
+                index=0,
+                status=StepStatus.FAILED,
+                input_versions={},
+                error=error_text,
+            )
+        )
+        home.update_run_status_sync(child_id, WorkflowStatus.FAILED)
+
+        payloads = [json.loads(row[2]) for row in home._read_batch_updates_sync(receipt.batch_ref.batch_id) if row[1] == "child_settled"]
+        assert len(payloads) == 1
+        assert payloads[0]["error"] == error_text
+        assert payloads[0]["node_name"] == "leaky"
+        assert SECRET not in payloads[0]["error"]
+        assert RunHomeClient(home).result_sync(receipt.batch_ref).items["bad"].failure.error == error_text
+
+    async def test_a_non_run_outcome_carries_no_reason(self, home):
+        """``recovery_exhausted`` and ``dead_letter`` keep their own facts.
+
+        Duplicating the dead-letter reason onto ``child_settled`` would give
+        one thing two spellings, so these statuses never read steps at all.
+        """
+        host, served = serve_graphs(_leaky_graph(), home=home)
+        receipt = await submit_keyed(host, served["leaky"], {"bad": {"x": 1}}, workflow_id="drop-exhausted")
+        child_id = "drop-exhausted:bad"
+        home.create_run_sync(child_id, graph_name="leaky")
+        home.save_step_sync(
+            StepRecord(
+                run_id=child_id,
+                superstep=0,
+                node_name="leaky",
+                index=0,
+                status=StepStatus.FAILED,
+                input_versions={},
+                error=safe_error_text(ValueError("boom"), node_name="leaky"),
+            )
+        )
+        await home._append_child_settled(child_id, BATCH_OUTCOME_RECOVERY_EXHAUSTED)
+        await home._db.commit()
+
+        payload = next(json.loads(row[2]) for row in home._read_batch_updates_sync(receipt.batch_ref.batch_id) if row[1] == "child_settled")
+        assert payload["status"] == BATCH_OUTCOME_RECOVERY_EXHAUSTED
+        assert "error" not in payload and "node_name" not in payload
+
+    async def test_the_reason_costs_one_statement_in_the_settling_transaction(self, home):
+        """No new transaction, no per-child fan-out: one SELECT, inline."""
+        host, served = serve_graphs(_leaky_graph(), home=home)
+        receipt = await submit_keyed(host, served["leaky"], {"bad": {"x": 1}}, workflow_id="drop-one-read")
+        child_id = "drop-one-read:bad"
+        home.create_run_sync(child_id, graph_name="leaky")
+        home.save_step_sync(
+            StepRecord(
+                run_id=child_id,
+                superstep=0,
+                node_name="leaky",
+                index=0,
+                status=StepStatus.FAILED,
+                input_versions={},
+                error=safe_error_text(ValueError("boom"), node_name="leaky"),
+            )
+        )
+
+        db = home._sync_db()
+        seen: list[str] = []
+        db.set_trace_callback(lambda sql: seen.append(" ".join(str(sql).split())))
+        try:
+            home.update_run_status_sync(child_id, WorkflowStatus.FAILED)
+        finally:
+            db.set_trace_callback(None)
+
+        step_reads = [sql for sql in seen if "FROM steps" in sql]
+        assert len(step_reads) == 1, f"exactly one steps read, got {step_reads}"
+        assert "LIMIT 1" in step_reads[0], "scoped to the first failed step of one run"
+        # One transaction, and the read sits inside the one already settling
+        # the child — never a second BEGIN of its own.
+        assert [sql for sql in seen if sql.startswith("BEGIN")] == ["BEGIN"]
+        assert [sql for sql in seen if sql.startswith("COMMIT")] == ["COMMIT"]
+        assert seen.index("BEGIN") < seen.index(step_reads[0]) < seen.index("COMMIT")
+        payload = next(json.loads(row[2]) for row in home._read_batch_updates_sync(receipt.batch_ref.batch_id) if row[1] == "child_settled")
+        assert payload["node_name"] == "leaky"
 
 
 class TestLineageAndRecovery:

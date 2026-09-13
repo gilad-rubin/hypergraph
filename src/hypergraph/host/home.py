@@ -53,6 +53,7 @@ from hypergraph.host._batch_store import (
     SELECT_BATCH_WORKFLOW_ID,
     SELECT_CHILD_ID_COLLISION,
     SELECT_CHILD_SETTLEMENT,
+    SELECT_FIRST_STEP_FAILURE,
     SELECT_LAST_OCCURRENCE,
     SELECT_MEMBERSHIP,
     SELECT_PENDING_CLOSEOUT,
@@ -68,11 +69,13 @@ from hypergraph.host._batch_store import (
     BatchAcceptance,
     BatchStop,
     ChildSpec,
+    child_settled_fact,
     children_resting_rows,
     children_settled_rows,
     closeout_kind,
     is_repeat_occurrence,
     occurrence_fact,
+    reads_run_failure,
     refuse_child_id_collision,
     refuse_run_owned_id,
     refuse_tier0_reuse,
@@ -1033,6 +1036,15 @@ class RunHome(SqliteCheckpointer):
         the child — the same string ``BatchView.outcomes`` reports, so a
         stream consumer reconstructs the view's outcome verbatim.
 
+        The fact also names WHY, when there is a why: a child that settled on
+        a run status has its first errored step read HERE, in the transaction
+        already settling it, and the ``safe_error_text`` the step persisted
+        goes onto the payload. One extra statement, only for a child that can
+        have a failure behind it, and no second transaction — so a detached
+        consumer replaying ``batch_updates`` learns "failed, TimeoutError in
+        convert_pdf" from the stream alone, and the child's commit path is
+        not backpressured to give it that.
+
         No-op for runs without Batch membership. Idempotent per child: a
         repeated settle write (e.g. a resume path) never duplicates the
         child_settled fact, so the per-Batch sequence stays gap-free without
@@ -1051,11 +1063,12 @@ class RunHome(SqliteCheckpointer):
         ).fetchone()
         if exists is not None:
             return
+        failure = db.execute(SELECT_FIRST_STEP_FAILURE, (run_id,)).fetchone() if reads_run_failure(status) else None
         self._append_batch_update_sync(
             db,
             batch_id,
             SETTLED_UPDATE_KIND,
-            {"item_key": item_key, "workflow_id": run_id, "status": status},
+            child_settled_fact(item_key, run_id, status, failure),
             item_key=item_key,
         )
         self._maybe_trip_tolerance_sync(db, batch_id)
@@ -1076,10 +1089,14 @@ class RunHome(SqliteCheckpointer):
         )
         if await exists_cursor.fetchone() is not None:
             return
+        failure = None
+        if reads_run_failure(status):
+            failure_cursor = await self._db.execute(SELECT_FIRST_STEP_FAILURE, (run_id,))
+            failure = await failure_cursor.fetchone()
         await self._append_batch_update(
             batch_id,
             SETTLED_UPDATE_KIND,
-            {"item_key": item_key, "workflow_id": run_id, "status": status},
+            child_settled_fact(item_key, run_id, status, failure),
             item_key=item_key,
         )
         await self._maybe_trip_tolerance(batch_id)
