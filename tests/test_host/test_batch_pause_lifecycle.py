@@ -130,7 +130,7 @@ class TestPausedChildHoldsNoSlot:
             view = await batch_where(client, receipt.batch_ref, lambda v: len(paused_items(v)) == 1)
             receipt_stop = await client.stop(view.items["work-dup-1"].run_ref, info="cancelled")
             assert receipt_stop.duplicate is False
-            final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            final = await client.follow(receipt.batch_ref, deadline=20)
 
         assert final.outcomes["work-dup-1"] == "stopped"
         assert read_ledger(ledger) == []
@@ -171,7 +171,7 @@ class TestAnsweredChildResumes:
             view = await batch_where(client, receipt.batch_ref, lambda v: len(paused_items(v)) == 1)
             item = view.items["work-dup-1"]
             await answer_item(client, item, "replace_existing", 99)
-            final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            final = await client.follow(receipt.batch_ref, deadline=20)
 
         # SAME workflow id, one runs row, resumed rather than restarted.
         assert final.outcomes["work-dup-1"] == "completed"
@@ -196,7 +196,7 @@ class TestAnsweredChildResumes:
             item = view.items["work-dup-1"]
             # Fill the single slot with unrelated work before answering.
             await answer_item(client, item, "create_new")
-            final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            final = await client.follow(receipt.batch_ref, deadline=20)
 
         assert final.outcomes["work-dup-1"] == "completed"
 
@@ -222,7 +222,7 @@ class TestTypedAnswerRoutesTheDomain:
         async with worker(host):
             view = await batch_where(client, receipt.batch_ref, lambda v: len(paused_items(v)) == 1)
             await answer_item(client, view.items["work-dup-1"], decision, target)
-            final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            final = await client.follow(receipt.batch_ref, deadline=20)
 
         assert final.outcomes["work-dup-1"] == "completed"
         assert read_ledger(ledger) == [effect]
@@ -282,7 +282,7 @@ class TestLoopingOccurrences:
                 await client.answer(item.run_ref, pause_id=first.pause_id, value=answer_value("archive_duplicate"))
 
             await client.answer(item.run_ref, pause_id=second.pause_id, value=answer_value("replace_existing"))
-            final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            final = await client.follow(receipt.batch_ref, deadline=20)
             facts = [u.kind for u in await collect(client.watch(receipt.batch_ref)) if u.durable]
 
         assert final.outcomes["work-loop"] == "completed"

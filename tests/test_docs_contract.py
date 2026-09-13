@@ -1091,6 +1091,11 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert "unstarted_items" in host_api
     assert "bseq" in host_api
 
+    # Issue #384: one ref, followed to its arrival, with the deadline naming
+    # what it was doing when it ran out.
+    assert "client.follow" in host_api
+    assert "FollowDeadlineExpired" in host_api
+
     # Ticket 13: durable pause answers — one occurrence, three refusals.
     assert "client.answer" in host_api
     assert "answer_sync" in host_api
@@ -1228,6 +1233,12 @@ def test_durable_host_docs_pin_public_contract() -> None:
     # watch open forever — issue #386). Deliberately not a caller-supplied
     # predicate: a third answer is one the store cannot evaluate.
     assert tuple(inspect.signature(RunHomeClient.watch).parameters) == ("self", "ref", "after", "poll_interval", "until")
+    # `follow` waits for the SAME two arrivals and returns the view they
+    # arrived at, so it takes `until` and nothing else about the stream:
+    # cursors and poll cadence belong to a caller folding facts, not to one
+    # asking for the outcome. `deadline` is in SECONDS (issue #384) —
+    # `watch_submissions` keeps minutes because it is an operator session.
+    assert tuple(inspect.signature(RunHomeClient.follow).parameters) == ("self", "ref", "until", "deadline")
     # rerun takes item_keys for the Batch form and never an input override.
     # source_ref is audit provenance, recorded on the new submission like
     # submit/stop/fork record it — never a work-definition input.

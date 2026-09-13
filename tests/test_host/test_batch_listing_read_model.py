@@ -15,7 +15,7 @@ import json
 import pytest
 
 from hypergraph import RunHomeReadModel, serve
-from tests.test_host._batch_interrupt import batch_where, submit_ids, worker
+from tests.test_host._batch_interrupt import submit_ids, worker
 from tests.test_host._ingestion_fixture import ingestion_graph
 
 pytest.importorskip("aiosqlite")
@@ -62,7 +62,7 @@ async def test_the_listing_tracks_settlement_and_filters_by_definition(home, led
     assert await read.list_batches(definition="never-served") == []
 
     async with worker(host):
-        await batch_where(host.client, receipt.batch_ref, lambda view: view.settled)
+        await host.client.follow(receipt.batch_ref, deadline=20)
 
     settled = next(row for row in await read.list_batches() if row.workflow_id == "sweep-settling")
     assert settled.settled

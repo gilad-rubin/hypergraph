@@ -90,7 +90,7 @@ class TestSyncAnswerSettlement:
                 assert settled.settled_at is not None
 
                 # The same worker picks the child up again and finishes it.
-                final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+                final = await client.follow(receipt.batch_ref, deadline=20)
 
             # One committed transaction moved BOTH halves, exactly as async.
             kinds = [kind for _seq, kind, _payload, _at in await run_home._read_batch_updates(receipt.batch_ref.batch_id)]

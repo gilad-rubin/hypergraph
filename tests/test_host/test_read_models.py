@@ -94,7 +94,7 @@ async def test_a_settled_unstarted_item_never_looks_queued(home, ledger):
 
     await host.client.stop(receipt.batch_ref, info="withdrawn before pickup")
     async with worker(host):
-        await batch_where(host.client, receipt.batch_ref, lambda value: value.settled)
+        await host.client.follow(receipt.batch_ref, deadline=20)
     row = await read.get_run(item.run_ref)
 
     assert row is not None

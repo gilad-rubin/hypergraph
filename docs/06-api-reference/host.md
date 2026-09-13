@@ -842,6 +842,51 @@ settled, and watching again from the stored cursor resumes exactly where the
 resting stream stopped. `BatchView.resting` is the same predicate for a
 caller that polls instead of watching.
 
+### Following one ref to its arrival
+
+`watch` streams the facts along the way. A caller that wants the **outcome** —
+a test asserting a Batch finished, a notebook cell that submits and then reads
+results, a load simulation that must fail loudly rather than hang — asks for
+the view the work arrived at:
+
+```python
+view = await client.follow(batch_ref, deadline=30)          # BatchView
+assert view.settled
+
+view = await client.follow(run_ref, until="resting", deadline=30)   # RunView
+```
+
+`follow` is `watch`'s wait, not a second poll loop: the arrival rule, the
+durable cursor and the preview unsubscribe are the stream's, and `until` is
+the same closed two-value vocabulary with the same meaning. It returns exactly
+what `get(ref)` returns — `RunView` for a `RunRef`, `BatchView` for a
+`BatchRef`, and `None` for a ref this Run Home does not know, which arrives
+immediately because there is nothing to wait for.
+
+`deadline` is in **seconds**, and `None` — the default — waits as long as the
+work does. Passing one turns "this must have arrived by now" into a typed
+`FollowDeadlineExpired` carrying the last observed view, in its message and as
+`error.view`:
+
+```python
+try:
+    await client.follow(batch_ref, deadline=30)
+except FollowDeadlineExpired as expired:
+    expired.view.counts        # {"completed": 7, "paused": 1, "queued": 2, ...}
+    expired.until              # "settled" — what it was waiting for
+```
+
+"What was it doing when it ran out" is the whole reason a deadline was set, so
+it is never a bare timeout. A Batch holding one child on a human gate never
+reaches `"settled"` on its own, and the fix is `until="resting"` rather than a
+larger deadline.
+
+[`watch_submissions`](#watching-submissions-live-hypergraphhostwatch) is the
+other half of this surface and answers a different question: many refs at
+once, drawn as a live picture, with the drawing deadline in minutes and a
+`stop_after_minutes` that logs and returns the last snapshot rather than
+raising. `follow` is one ref, no picture, and a refusal a test can assert on.
+
 `WaitingCondition` is a closed enum — `QUEUED`, `SCHEDULED`, `PAUSED`,
 `VERSION_INCOMPATIBLE`, `ADMISSION_LIMITED`, `RECOVERY_EXHAUSTED`,
 `DEAD_LETTER` — so waiting work never looks alike and callers branch on
@@ -1679,6 +1724,7 @@ brake counts **progressless re-adoptions**:
 | `NoServingWorkerError` | `submit` or `submit_batch` names a `builder=` key neither this process nor any live worker registers |
 | `BuilderIdentityError` | a registered builder produced a Definition other than the identity the submission pins |
 | `RerunError` | `client.rerun()` names a missing or nonterminal source (recovery-exhausted and dead-lettered sources are allowed) |
+| `FollowDeadlineExpired` | `client.follow(ref, deadline=…)` ran out of seconds before the ref reached `until`; carries the last observed view as `.view` |
 | `HostError` | base class for host-specific errors; also raised directly for an unknown stop target |
 | `AnswerRejectedError` | `client.answer()` named no/unknown occurrence, a run that is not paused, or a value failing `answer_schema` |
 | `PauseAlreadySettledError` | `client.answer()` re-answered a settled occurrence |

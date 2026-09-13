@@ -574,7 +574,7 @@ class TestFreshWorld:
                     pause_id=slot.pause_id,
                     value=answer_value("replace_existing", 3143),
                 )
-                final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+                final = await client.follow(receipt.batch_ref, deadline=20)
 
             assert final.counts["completed"] == 3
             assert list(final.items) == work_item_ids
