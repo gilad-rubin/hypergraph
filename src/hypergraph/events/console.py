@@ -307,7 +307,7 @@ class ConsoleProcessor(TypedEventProcessor):
         step.active.pop(e.span_id, None)
         step.errors += 1
         message = e.error
-        if e.error_detail is not None and getattr(e.error_detail, "message", ""):
+        if e.error_detail is not None and e.error_detail.message:
             message = f"{e.error_type.rsplit('.', 1)[-1]}: {e.error_detail.message}"
         if len(self.failures) < 50:
             self.failures.append({"item": rec.item_label, "step": rec.path[-1], "message": message})
@@ -402,7 +402,7 @@ class ConsoleProcessor(TypedEventProcessor):
             if step.active:
                 started, label = min(step.active.values(), key=lambda t: t[0])
                 slowest = {"label": label, "seconds": now - started}
-            row = {
+            row: dict[str, Any] = {
                 "id": "n" + hashlib.sha1("/".join(path).encode()).hexdigest()[:6],
                 "name": step.name,
                 "depth": depth,
@@ -918,14 +918,14 @@ def _detail_html(payload: dict[str, Any], row: dict[str, Any]) -> str:
             if possible
             else "This node is in the graph and has not started yet. It is drawn from the run's plan, not from a measurement."
         )
-        facts = [("Status", "Not started"), ("Why it is listed", why)]
+        facts: list[tuple[str, str]] = [("Status", "Not started"), ("Why it is listed", why)]
         facts_html = "".join(f'<div class="fact"><dt>{_esc(k)}</dt><dd>{_esc(v)}</dd></div>' for k, v in facts)
         return f'<div class="d-name">{_esc(row["name"])}</div><div class="d-pills">{"".join(pills)}</div><dl class="facts">{facts_html}</dl>'
     pills = [f'<span class="pill" data-tone="accent" title="Share of the run\'s measured work"><b>{_fmt_pct(row["share"])}</b> of wall</span>']
     pills.append(f'<span class="pill" title="{_esc(row["name"])} counts {row["unit"]}">counts <b>{row["unit"]}</b></span>')
     if row.get("flag"):
         pills.append('<span class="pill" data-tone="flag" title="p95 is 3× the median">p95 3× median</span>')
-    facts: list[tuple[str, str]] = []
+    facts = []
     if row["id"] == "root":
         facts.append(
             (
@@ -1337,8 +1337,11 @@ class LiveConsole(ConsoleProcessor):
     def __init__(self, *, refresh_seconds: float = 0.3, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._refresh = refresh_seconds
-        self._handle = None
-        self._ticker = None
+        # Both hold three states: None (not tried yet), False (tried and unavailable
+        # — no front end / no loop), or the live object (an untyped IPython display
+        # handle, an ``asyncio.Task``). ``Any`` is what that union actually is here.
+        self._handle: Any = None
+        self._ticker: Any = None
         self._last_render = 0.0
         self.frames = 0
 
