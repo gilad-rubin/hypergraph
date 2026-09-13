@@ -19,6 +19,8 @@ Assertion map (ticket acceptance items):
 from __future__ import annotations
 
 import inspect
+import json
+from dataclasses import asdict
 
 import pytest
 import pytest_asyncio
@@ -32,6 +34,7 @@ from hypergraph import (
     node,
 )
 from hypergraph.checkpointers import SqliteCheckpointer
+from hypergraph.events import EventProcessor
 from hypergraph.exceptions import GraphChangedError
 from hypergraph.runners._shared.policy_manifest import RetryPolicyManifest
 from hypergraph.runners._shared.results import RunStatus
@@ -40,6 +43,25 @@ aiosqlite = pytest.importorskip("aiosqlite")
 
 
 # === Helpers ===
+
+
+class _EventNameCollector(EventProcessor):
+    """Records the type name of every event the runner dispatches."""
+
+    def __init__(self) -> None:
+        self.names: list[str] = []
+
+    def on_event(self, event) -> None:
+        self.names.append(type(event).__name__)
+
+
+def _rows_snapshot(cp: SqliteCheckpointer) -> str:
+    """Serialize every persisted run row for a literal before/after compare."""
+    return json.dumps(
+        [asdict(run) for run in sorted(cp.runs(), key=lambda run: run.id)],
+        sort_keys=True,
+        default=str,
+    )
 
 
 def _make_runner(family: str, **kwargs):
@@ -179,6 +201,37 @@ class TestMapParentIdentityRejects:
         stored_manifest = RetryPolicyManifest.from_config(cp.get_run("policy-batch").config)
         assert stored_manifest is not None
         assert stored_manifest.entries[0].max_attempts == 3, "the stored manifest must not be overwritten by a rejected resume"
+
+    async def test_a_rejected_resume_emits_nothing_and_writes_nothing(self, family, make_sqlite):
+        """The gate sits BEFORE the run-start event, not just before create_run.
+
+        Placed one step later — immediately before `create_run_sync`, where the
+        ticket originally proposed it — this batch emits `['RunStartEvent']`
+        with no matching `RunEndEvent`: a dangling event and OTel span for every
+        rejected resume. Zero events is the assertion that pins the placement.
+        """
+        cp = make_sqlite()
+        calls: list[int] = []
+        runner = _make_runner(family, checkpointer=cp)
+
+        await _map(runner, _scaling_graph(calls, 2), {"x": [1, 2]}, map_over="x", workflow_id="silent")
+        before = _rows_snapshot(cp)
+
+        calls.clear()
+        collector = _EventNameCollector()
+        with pytest.raises(GraphChangedError):
+            await _map(
+                runner,
+                _scaling_graph(calls, 3),
+                {"x": [1, 2]},
+                map_over="x",
+                workflow_id="silent",
+                event_processors=[collector],
+            )
+
+        assert collector.names == [], "a rejected resume must not dispatch a single event"
+        assert calls == []
+        assert _rows_snapshot(cp) == before, "a rejected resume must not touch any persisted row"
 
     async def test_graph_change_takes_precedence_over_policy_change(self, family, make_sqlite):
         """Both changed at once reports the coarser fact, like the run path."""

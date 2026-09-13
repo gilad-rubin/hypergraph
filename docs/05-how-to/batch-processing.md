@@ -524,7 +524,12 @@ await runner.map(double_graph, {"x": [1, 2]}, map_over="x", workflow_id="batch")
 await runner.map(triple_graph, {"x": [1, 2]}, map_over="x", workflow_id="batch")
 # GraphChangedError: Graph structure changed for workflow 'batch'.
 # Fork instead of resuming in place.
+#
+# How to fix:
+# ...
 ```
+
+Nothing is emitted and nothing is written on a rejected resume: the check runs before the batch's run-start event, so no event processor sees the attempt and every stored row is left exactly as the previous batch left it.
 
 A new lineage adopts the change freely — for a batch that means a fresh `workflow_id` (`map()` has no `override_workflow`/`fork_from` shortcut):
 
