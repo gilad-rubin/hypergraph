@@ -105,6 +105,30 @@ than silently starting a replacement. A later call may start the worker again.
 and closes the Home; queued submissions remain persisted for the next process.
 The same runtime may be used again after closing, which lazily reopens it.
 
+### Rebuilding a ref from a stored id
+
+A `RunRef`/`BatchRef` is an inert pair: the Run Home uri plus an id. An
+application usually persists only the id — the half a person recognises — and
+then needs the uri back to read against it later. `runtime.uri` and
+`client.home_uri` are that string, read-only on both:
+
+```python
+runtime = HostRuntime("./data/runs.db", deployment_version="2026.09.1")
+
+runtime.uri                  # "data/runs.db" — no Home is opened by reading it
+runtime.client.home_uri      # the same string, once the Home is open
+
+ref = BatchRef(home=runtime.uri, batch_id=stored_batch_id)
+view = await runtime.client.get(ref)   # None if this Home never saw that Batch
+```
+
+`runtime.uri == runtime.client.home_uri == receipt.run_ref.home` always, before
+and after the lazy open — so a process that owns its Run Home no longer has to
+keep the location in a second place of its own. The property reports the
+location exactly as the Home does, `":memory:"` included; it does not
+canonicalise or validate anything. `RunHomeClient(home).home_uri` is
+`home.uri`, for a client opened without a runtime.
+
 ## Observing Durable Execution
 
 A durable Run is executed by a runner the library built, so an application

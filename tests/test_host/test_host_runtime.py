@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from hypergraph import AsyncRunner, Graph, HostRuntime, RunHome, WaitingCondition, node, serve
+from hypergraph import AsyncRunner, BatchRef, Graph, HostRuntime, RunHome, RunHomeClient, RunRef, WaitingCondition, node, serve
 from hypergraph.checkpointers.types import WorkflowStatus
 from hypergraph.host.host import Host
 
@@ -562,5 +562,113 @@ class TestLiveCoverage:
                     timeout=10,
                 )
             assert raised.value.__cause__ is failure
+        finally:
+            await runtime.close()
+
+
+class TestPublicHomeUri:
+    """The Run Home location a runtime opens is readable from the runtime.
+
+    Refs are inert addresses: ``BatchRef(home=..., batch_id=...)``. A product
+    that durably stores only the batch id — the half a person recognises —
+    has to rebuild the other half later. Before this, the only public route
+    to that string was still holding a ref somebody handed you earlier, so
+    every such application kept the uri in a second place of its own.
+    """
+
+    def test_uri_is_the_home_location_and_does_not_force_the_lazy_open(self, tmp_path):
+        """Reading the address must not be what opens the Home."""
+        path = tmp_path / "nested" / "runs.db"
+        runtime = HostRuntime(path, deployment_version="v1")
+
+        assert runtime.uri == str(path)
+        assert not path.exists()  # the whole point of HostRuntime is laziness
+        assert not path.parent.exists()
+
+    async def test_uri_equals_what_the_client_and_a_receipt_report(self, tmp_path):
+        """One string, three public places: runtime, client, ref."""
+        path = tmp_path / "runs.db"
+        runtime = HostRuntime(path, deployment_version="v1")
+        try:
+            before_open = runtime.uri
+            host = await runtime.serving(_increment_graph("increment"))
+            receipt = await host.submit(_increment_graph("increment"), {"x": 1}, workflow_id="w-1")
+            await _terminal(runtime.client, receipt.run_ref)
+
+            assert runtime.uri == before_open
+            assert runtime.client.home_uri == runtime.uri
+            assert receipt.run_ref.home == runtime.uri
+        finally:
+            await runtime.close()
+
+    async def test_a_second_client_opened_from_the_uri_sees_the_same_runs(self, tmp_path):
+        """The falsifier: the string has to be re-openable, not just equal."""
+        runtime = HostRuntime(tmp_path / "runs.db", deployment_version="v1")
+        try:
+            host = await runtime.serving(_increment_graph("increment"))
+            receipt = await host.submit(_increment_graph("increment"), {"x": 1}, workflow_id="w-1")
+            await _terminal(runtime.client, receipt.run_ref)
+
+            onlooker = RunHome.open(runtime.uri)
+            try:
+                client = RunHomeClient(onlooker)
+                assert client.home_uri == runtime.uri
+                view = await client.get(RunRef(home=runtime.uri, run_id="w-1"))
+                assert view is not None
+                assert view.status == WorkflowStatus.COMPLETED
+            finally:
+                await onlooker.close()
+        finally:
+            await runtime.close()
+
+    async def test_a_batch_ref_rebuilt_from_the_uri_round_trips(self, tmp_path):
+        """The adopter's case: only the batch id was stored durably."""
+        runtime = HostRuntime(tmp_path / "runs.db", deployment_version="v1")
+        try:
+            graph = _increment_graph("increment")
+            host = await runtime.serving(graph)
+            receipt = await host.submit_batch(graph, {"x": [1, 2]}, map_over="x", identity="x", workflow_id="b-1")
+            stored_batch_id = receipt.batch_ref.batch_id  # all a product keeps
+
+            rebuilt = BatchRef(home=runtime.uri, batch_id=stored_batch_id)
+            view = await runtime.client.get(rebuilt)
+
+            assert view is not None
+            assert view.batch_ref == receipt.batch_ref
+        finally:
+            await runtime.close()
+
+    async def test_a_batch_id_the_home_never_saw_reads_as_unknown(self, tmp_path):
+        """A rebuilt ref is not a promise the Batch exists."""
+        runtime = HostRuntime(tmp_path / "runs.db", deployment_version="v1")
+        try:
+            await runtime.serving(_increment_graph("increment"))
+
+            assert await runtime.client.get(BatchRef(home=runtime.uri, batch_id="never-submitted")) is None
+        finally:
+            await runtime.close()
+
+    async def test_an_in_memory_home_reports_what_run_home_reports(self, tmp_path):
+        """No special-casing in the property: ``:memory:`` is just a string."""
+        reference = RunHome.open(":memory:")
+        try:
+            expected = reference.uri
+        finally:
+            await reference.close()
+
+        runtime = HostRuntime(":memory:", deployment_version="v1")
+        try:
+            assert runtime.uri == expected == ":memory:"
+            assert runtime.client.home_uri == expected
+        finally:
+            await runtime.close()
+
+    async def test_both_addresses_are_read_only(self, tmp_path):
+        runtime = HostRuntime(tmp_path / "runs.db", deployment_version="v1")
+        try:
+            with pytest.raises(AttributeError):
+                runtime.uri = "file:./elsewhere.db"  # type: ignore[misc]
+            with pytest.raises(AttributeError):
+                runtime.client.home_uri = "file:./elsewhere.db"  # type: ignore[misc]
         finally:
             await runtime.close()

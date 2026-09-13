@@ -928,6 +928,19 @@ class RunHomeClient:
         # for this Home URI when a worker lives in the same process.
         self._bus = _bus if _bus is not None else _bus_for(home.uri)
 
+    @property
+    def home_uri(self) -> str:
+        """The Run Home this client reads — the string in every ref.
+
+        The same value this client stamps into the ``RunRef.home`` and
+        ``BatchRef.home`` of every view it builds, so an application holding
+        only a durably stored run or batch id can rebuild the ref to read
+        against::
+
+            ref = BatchRef(home=client.home_uri, batch_id=stored_batch_id)
+        """
+        return self._home.uri
+
     async def get(self, ref: RunRef | BatchRef) -> RunView | BatchView | None:
         """Return persisted facts for ``ref``, or None if unknown.
 
