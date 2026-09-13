@@ -442,6 +442,45 @@ generated child id (`<batch workflow_id>:<item key>`).
 
 `host.submit_sync(...)` is the synchronous mirror.
 
+### One live run per subject
+
+`workflow_id` names the **submission**. `exclusive_key` names the **subject**
+the submission is about, and at most one **live** run may hold one:
+
+```python
+receipt = await host.submit(
+    review_graph,
+    {"document_id": document_id},
+    exclusive_key=f"review:{document_id}",   # one live review per document
+)
+receipt.duplicate        # True when a live run already held the key
+receipt.workflow_id      # that live run's id — not the one this call minted
+```
+
+This is the "make sure exactly one of these is running" ask, and it replaces
+deriving ids from the subject plus an ordinal and scanning the run list
+first. The key is looked up inside the same acceptance transaction as every
+other identity decision, and a partial unique index over the live submission
+states backs it — so two doors minting ids in different series can never both
+be live for one subject, and no caller needs a pre-submit scan.
+
+- **a live run holds the key** → nothing is written and that run's receipt
+  comes back with `duplicate=True`, exactly like `workflow_id` dedup;
+- **the caller's values differ from the holder's** → `WorkflowIdConflictError`
+  naming the key, the holder, and which aspect differs. Adopting would
+  silently discard what this caller asked for, so it refuses instead;
+- **the holder has settled** (finished, recovery-exhausted, dead-lettered) →
+  the key is free and the next submission starts a **new** run. The
+  constraint is one *live* run per key, not one run ever.
+
+Find the holder with [`client.list(RunQuery(key=...))`](#listing-runs). The
+key is not part of the start fingerprint.
+
+`submit_batch()` deliberately does **not** accept `exclusive_key` (passing it
+is a `TypeError`): a Batch already has an exclusive identity — its required
+`workflow_id`, unique in the manifest table — and its children are identified
+by the manifest's item keys.
+
 `submit()` also accepts `start_at` (a `datetime` or ISO string) for a
 one-shot delayed start — no external timer service — see
 [Delayed Start](#delayed-start).
@@ -1556,6 +1595,7 @@ from hypergraph.checkpointers.types import WorkflowStatus
 stuck = await client.list(RunQuery(waiting=WaitingCondition.RECOVERY_EXHAUSTED))
 old = await client.list(RunQuery(older_than=timedelta(hours=1)))
 failed = await client.list(RunQuery(definition="refund", status=WorkflowStatus.FAILED))
+held = await client.list(RunQuery(key="review:doc-41"))   # one subject's runs
 ```
 
 Every field is a typed value — never a free string: `definition` matches
@@ -1565,6 +1605,13 @@ accepts a `BatchRef` or a bare batch id string and restricts results to
 that Batch's children, and `older_than` compares creation time. Omitted
 fields match everything. `limit` must be a positive `int`.
 `client.list_sync(...)` is the synchronous mirror.
+
+`key` is the one filter the **store** answers rather than Python: it narrows
+the read to one [`exclusive_key`](#one-live-run-per-subject) through that
+column's index instead of reading every row and discarding most of them, and
+bare Tier-0 runs — which hold no key — drop out entirely. Every run ever
+submitted under the key matches, newest first, so the live holder (at most
+one) is the first row.
 
 `RunView.created_at` and `RunView.completed_at` expose the Run ledger's own
 timestamps (`None` until the corresponding runs-row event exists). Read the

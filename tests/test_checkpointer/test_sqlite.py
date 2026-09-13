@@ -937,8 +937,8 @@ class TestSearch:
 
 
 class TestMigration:
-    def test_fresh_db_gets_v9_schema(self, tmp_path):
-        """A new database gets v9 schema automatically."""
+    def test_fresh_db_gets_v10_schema(self, tmp_path):
+        """A new database gets v10 schema automatically."""
         cp = SqliteCheckpointer(str(tmp_path / "fresh.db"))
         # Trigger sync schema creation
         assert cp.runs() == []
@@ -1016,7 +1016,7 @@ class TestMigration:
         assert provenance_col[4] is None  # no default
 
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 9
+        assert version == 10
         conn.close()
 
     def test_migration_idempotent(self, tmp_path):
@@ -1030,7 +1030,7 @@ class TestMigration:
         ensure_schema(conn)
         ensure_schema(conn)  # Second time should be a no-op
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 9
+        assert version == 10
         conn.close()
 
     def test_v6_db_gains_pending_nodes_in_place(self, tmp_path):
@@ -1059,7 +1059,7 @@ class TestMigration:
             assert "pending_nodes" in tables
             assert conn.execute("SELECT COUNT(*) FROM pending_nodes").fetchone()[0] == 0
             assert [row[0] for row in conn.execute("SELECT id FROM runs").fetchall()] == ["r-1"]
-            assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 9
+            assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 10
         finally:
             conn.close()
 
@@ -1131,7 +1131,7 @@ class TestMigration:
 
         ensure_schema(conn)
 
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 9
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 10
         cols = {row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()}
         assert {"builder_key", "builder_args_json", "claimed_by", "lease_until"} <= cols
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
@@ -1189,7 +1189,7 @@ class TestMigration:
 
         ensure_schema(conn)
 
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 9
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 10
         step_cols = [row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()]
         assert step_cols[-1] == "folded_producers"
         # Every pre-existing value is identical; the only change is one
@@ -1229,7 +1229,7 @@ class TestMigration:
 
         ensure_schema(conn)
 
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 9
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 10
         boundary_cols = [row[1] for row in conn.execute("PRAGMA table_info(pending_nodes)").fetchall()]
         assert boundary_cols[-1] == "settled_at"
         after = conn.execute("SELECT * FROM pending_nodes ORDER BY node_name").fetchall()
@@ -1276,6 +1276,72 @@ class TestMigration:
         indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='host_commands'").fetchall()}
         assert "idx_host_commands_due" in indexes  # columns land before the index that spans them
         ensure_schema(conn)  # idempotent on the migrated database
+        conn.close()
+
+    def test_v7_db_with_live_work_gains_the_exclusive_key_index_in_place(self, tmp_path):
+        """A REAL v7 Run Home carrying live work becomes v10 untouched (#405).
+
+        The v10 addition is one nullable column plus a partial unique index
+        that spans only rows holding a key. Existing rows hold none, so no
+        row enters the index and the ALTER cannot collide with history —
+        which is exactly what a unique index added to a populated table
+        usually risks.
+        """
+        import sqlite3
+
+        from hypergraph.checkpointers._migrate import ensure_schema
+
+        db_path = str(tmp_path / "live-v7.db")
+        conn = sqlite3.connect(db_path)
+        ensure_schema(conn)
+        # Rewind to a genuine v7 database: drop what v10 added, and say so.
+        conn.execute("DROP INDEX idx_host_submissions_exclusive")
+        conn.execute("ALTER TABLE host_submissions DROP COLUMN exclusive_key")
+        conn.execute("UPDATE _schema_version SET version = 7")
+        conn.execute(
+            "INSERT INTO host_submissions (workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
+            "state, recovery_attempts, claim_seq, created_at, claimed_at, claimed_by, lease_until) "
+            "VALUES ('review-a', 'review', 'v1', 'h1', '{\"document_id\": \"doc-41\"}', 'claimed', 1, 3, "
+            "'2026-09-01T00:00:00+00:00', '2026-09-01T00:01:00+00:00', 'w-1', '2026-09-01T00:06:00+00:00')"
+        )
+        conn.execute(
+            "INSERT INTO host_submissions (workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
+            "state, created_at, finished_at) "
+            "VALUES ('review-old', 'review', 'v1', 'h1', '{}', 'finished', '2026-08-01T00:00:00+00:00', '2026-08-01T00:02:00+00:00')"
+        )
+        conn.commit()
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 7
+
+        ensure_schema(conn)
+
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 10
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()}
+        assert "exclusive_key" in cols
+        indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='host_submissions'").fetchall()}
+        assert "idx_host_submissions_exclusive" in indexes
+
+        # The live claim is exactly as it was, and holds no key.
+        claimed = conn.execute(
+            "SELECT state, recovery_attempts, claim_seq, claimed_at, claimed_by, lease_until, exclusive_key "
+            "FROM host_submissions WHERE workflow_id = 'review-a'"
+        ).fetchone()
+        assert claimed == ("claimed", 1, 3, "2026-09-01T00:01:00+00:00", "w-1", "2026-09-01T00:06:00+00:00", None)
+        assert conn.execute("SELECT state, exclusive_key FROM host_submissions WHERE workflow_id = 'review-old'").fetchone() == ("finished", None)
+
+        # And the migrated index means what it says on this real database:
+        # the claimed row may take the key, a second live row may not, and
+        # the settled row may — it is outside the index.
+        conn.execute("UPDATE host_submissions SET exclusive_key = 'review:doc-41' WHERE workflow_id = 'review-a'")
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO host_submissions (workflow_id, definition_name, inputs_json, created_at, state, exclusive_key) "
+                "VALUES ('review-b', 'review', '{}', '2026-09-13T00:00:00+00:00', 'pending', 'review:doc-41')"
+            )
+        conn.execute("UPDATE host_submissions SET exclusive_key = 'review:doc-41' WHERE workflow_id = 'review-old'")
+        conn.commit()
+
+        ensure_schema(conn)  # idempotent on the migrated database
+        assert conn.execute("SELECT COUNT(*) FROM host_submissions").fetchone()[0] == 2
         conn.close()
 
     def test_unknown_schema_version_raises(self, tmp_path):

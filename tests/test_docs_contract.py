@@ -1252,6 +1252,11 @@ def test_durable_host_docs_pin_public_contract() -> None:
         # Definition can rebuild it. Never a second selector: the pinned
         # identity still decides what executes.
         "builder",
+        # The SUBJECT this run is about (#405), where workflow_id is the
+        # submission's own name. At most one LIVE run holds a key, enforced
+        # in the acceptance transaction. Deliberately absent from
+        # submit_batch: a Batch's exclusive identity is its workflow_id.
+        "exclusive_key",
     )
     assert tuple(inspect.signature(Host.submit_sync).parameters) == tuple(inspect.signature(Host.submit).parameters)
     # Batch submission reuses runner map's expansion vocabulary and freezes
@@ -1313,7 +1318,10 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert tuple(RunRef.__dataclass_fields__) == ("home", "run_id")
     assert tuple(SubmitReceipt.__dataclass_fields__) == ("run_ref", "workflow_id", "duplicate")
     assert tuple(CommandReceipt.__dataclass_fields__) == ("run_ref", "verb", "duplicate")
-    assert tuple(RunQuery.__dataclass_fields__) == ("definition", "status", "waiting", "older_than", "limit", "batch")
+    # `key` is the one RunQuery field answered store-side (#405/#392 H5):
+    # exclusive_key is an indexed column, so "who holds this subject" is a
+    # narrowed read rather than a full scan filtered in Python.
+    assert tuple(RunQuery.__dataclass_fields__) == ("definition", "status", "waiting", "older_than", "limit", "batch", "key")
     assert tuple(DefinitionId.__dataclass_fields__) == ("name", "deployment_version", "structural_hash")
     assert tuple(RunView.__dataclass_fields__) == (
         "run_ref",

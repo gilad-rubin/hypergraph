@@ -780,6 +780,10 @@ def _validate_query(query: RunQuery) -> RunQuery:
         raise ValueError(f"RunQuery.limit must be a positive int, got {query.limit!r}.")
     if query.batch is not None and not isinstance(query.batch, (str, BatchRef)):
         raise TypeError(f"RunQuery.batch must be a BatchRef, a batch id string, or None, got {type(query.batch).__name__}.")
+    if query.key is not None and not isinstance(query.key, str):
+        raise TypeError(f"RunQuery.key must be an exclusive_key string or None, got {type(query.key).__name__}.")
+    if query.key is not None and not query.key.strip():
+        raise ValueError("RunQuery.key must be a non-empty exclusive_key string; omit it to list every run.")
     return query
 
 
@@ -1373,15 +1377,21 @@ class RunHomeClient:
         like ``RunView.waiting``, ``older_than`` compares the row's
         creation time, and ``limit`` caps the result after newest-first
         ordering.
+
+        ``key`` is the one filter the store answers: it narrows the read to
+        one ``exclusive_key`` in SQL instead of reading every row and
+        discarding most of them, and drops bare Tier-0 runs, which hold no
+        key. ``RunQuery(key=...)`` is therefore how a submitter finds the
+        live holder of a subject.
         """
         _validate_query(query)
-        rows = await self._home._list_run_rows()
+        rows = await self._home._list_run_rows(exclusive_key=query.key)
         return _filter_list_rows(self._home.uri, rows, query, admission_full=await self._home._admission_is_full())
 
     def list_sync(self, query: RunQuery) -> builtins.list[RunView]:
         """Sync mirror of ``list``."""
         _validate_query(query)
-        rows = self._home._list_run_rows_sync()
+        rows = self._home._list_run_rows_sync(exclusive_key=query.key)
         return _filter_list_rows(self._home.uri, rows, query, admission_full=self._home._admission_is_full_sync())
 
     async def _list_batch_views(self, definition: str | None, limit: int) -> builtins.list[tuple[BatchView, datetime]]:
@@ -1499,7 +1509,7 @@ class RunHomeClient:
     async def _list_read_model_snapshots(self, query: RunQuery) -> builtins.list[_RunReadSnapshot]:
         """Joined facts used by ``RunHomeReadModel`` for a filtered Run list."""
         _validate_query(query)
-        rows = await self._home._list_run_rows()
+        rows = await self._home._list_run_rows(exclusive_key=query.key)
         views = _filter_list_rows(self._home.uri, rows, query, admission_full=await self._home._admission_is_full())
         by_id: dict[str, tuple[dict[str, Any] | None, Run | None]] = {}
         for submission, run in rows:
@@ -1522,7 +1532,7 @@ class RunHomeClient:
     def _list_read_model_snapshots_sync(self, query: RunQuery) -> builtins.list[_RunReadSnapshot]:
         """Sync mirror of ``_list_read_model_snapshots``."""
         _validate_query(query)
-        rows = self._home._list_run_rows_sync()
+        rows = self._home._list_run_rows_sync(exclusive_key=query.key)
         views = _filter_list_rows(self._home.uri, rows, query, admission_full=self._home._admission_is_full_sync())
         by_id: dict[str, tuple[dict[str, Any] | None, Run | None]] = {}
         for submission, run in rows:

@@ -244,6 +244,12 @@ class RunQuery:
         limit: Maximum views returned, newest first. Defaults to 100.
         batch: Restrict to children of one Batch — a ``BatchRef`` or a bare
             batch id string. Runs without Batch membership never match.
+        key: Restrict to work submitted under one ``exclusive_key`` — the
+            subject, not the submission. Every run ever submitted under it
+            matches, newest first, so the live holder (at most one) is the
+            first row. Unlike every other field this one is answered by the
+            store: the key is an indexed column, and Tier-0 runs, which
+            carry no submission row, can never match.
     """
 
     definition: str | None = None
@@ -252,6 +258,7 @@ class RunQuery:
     older_than: timedelta | None = None
     limit: int = 100
     batch: BatchRef | str | None = None
+    key: str | None = None
 
 
 # THE Batch-level outcome name for a child parked by the recovery brake.

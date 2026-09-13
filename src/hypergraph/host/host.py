@@ -150,6 +150,25 @@ def _validate_recovery_cap(recovery_cap: int) -> None:
         raise ValueError(f"recovery_cap must be an int >= 0 (the progressless re-adoption budget), got {recovery_cap!r}.")
 
 
+def _validate_exclusive_key(exclusive_key: str | None) -> None:
+    """Refuse a subject name that cannot mean one thing.
+
+    An empty or blank key would be a key every caller that forgot to build
+    one shares, which is the opposite of exclusivity — so it is refused at
+    the door rather than stored and enforced.
+    """
+    if exclusive_key is None:
+        return
+    if not isinstance(exclusive_key, str):
+        raise TypeError(f"submit() exclusive_key must be a string naming the subject this run is about, got {type(exclusive_key).__name__}.")
+    if not exclusive_key.strip():
+        raise ValueError(
+            "submit() exclusive_key must be a non-empty string naming the subject this run is about "
+            '(for example "review:doc-41").\n\n'
+            "How to fix: omit exclusive_key for work that has no single live subject, or pass a name derived from the subject."
+        )
+
+
 def _validate_workflow_id_char(workflow_id: str, *, verb: str) -> None:
     """Refuse a caller-chosen id no runner would ever execute under.
 
@@ -363,6 +382,7 @@ class Host:
         source_ref: str | None = None,
         recovery_cap: int = 3,
         builder: tuple[str, Mapping[str, Any]] | None = None,
+        exclusive_key: str | None = None,
     ) -> SubmitReceipt:
         """Accept ONE durable Run into the Run Home BEFORE any execution.
 
@@ -409,13 +429,28 @@ class Host:
                 the dedup fingerprint: a duplicate resubmission returns the
                 stored row and never rewrites the address it was accepted
                 with.
+            exclusive_key: Optional name of the SUBJECT this run is about —
+                ``f"review:{document_id}"`` — where ``workflow_id`` names
+                the submission. At most one LIVE run may hold a key:
+                submitting the same work again while a holder is in flight
+                writes nothing and returns THAT run's receipt with
+                ``duplicate=True``, so "make sure exactly one review of this
+                document is running" is one call and no pre-submit scan. The
+                lookup runs inside the acceptance transaction and a partial
+                unique index backs it, so two doors minting ids in different
+                series can never both be live for one subject. Once the
+                holder settles (finished, recovery-exhausted, dead-lettered)
+                the key is free and the next submit starts a NEW run. Values
+                differing from the live holder's raise
+                ``WorkflowIdConflictError`` rather than being discarded. Not
+                part of the dedup fingerprint.
         """
         address = _normalize_builder(builder)
         definition, inputs_json, start_at_iso, workflow_id = self._prepare_run(
-            graph, values, workflow_id=workflow_id, start_at=start_at, recovery_cap=recovery_cap, builder=address
+            graph, values, workflow_id=workflow_id, start_at=start_at, recovery_cap=recovery_cap, builder=address, exclusive_key=exclusive_key
         )
         await self._require_executor(address)
-        created, _row = await self._home._submit(
+        created, row = await self._home._submit(
             workflow_id,
             definition.name,
             definition.version,
@@ -427,8 +462,11 @@ class Host:
             recovery_cap=recovery_cap,
             builder_key=None if address is None else address.key,
             builder_args_json=None if address is None else address.args_json,
+            exclusive_key=exclusive_key,
         )
-        return self._receipt(workflow_id, created)
+        # The receipt names the row that WON, not the id this call minted:
+        # an adopted exclusive key hands back the live holder's run.
+        return self._receipt(str(row["workflow_id"]), created)
 
     def submit_sync(
         self,
@@ -440,14 +478,15 @@ class Host:
         source_ref: str | None = None,
         recovery_cap: int = 3,
         builder: tuple[str, Mapping[str, Any]] | None = None,
+        exclusive_key: str | None = None,
     ) -> SubmitReceipt:
         """Sync mirror of ``submit``."""
         address = _normalize_builder(builder)
         definition, inputs_json, start_at_iso, workflow_id = self._prepare_run(
-            graph, values, workflow_id=workflow_id, start_at=start_at, recovery_cap=recovery_cap, builder=address
+            graph, values, workflow_id=workflow_id, start_at=start_at, recovery_cap=recovery_cap, builder=address, exclusive_key=exclusive_key
         )
         self._require_executor_sync(address)
-        created, _row = self._home._submit_sync(
+        created, row = self._home._submit_sync(
             workflow_id,
             definition.name,
             definition.version,
@@ -459,8 +498,11 @@ class Host:
             recovery_cap=recovery_cap,
             builder_key=None if address is None else address.key,
             builder_args_json=None if address is None else address.args_json,
+            exclusive_key=exclusive_key,
         )
-        return self._receipt(workflow_id, created)
+        # The receipt names the row that WON, not the id this call minted:
+        # an adopted exclusive key hands back the live holder's run.
+        return self._receipt(str(row["workflow_id"]), created)
 
     def _prepare_run(
         self,
@@ -471,9 +513,11 @@ class Host:
         start_at: datetime | str | None,
         recovery_cap: int,
         builder: _BuilderAddress | None = None,
+        exclusive_key: str | None = None,
     ) -> tuple[_Definition, str, str | None, str]:
         """Validate one Run submission and normalize its stored fields."""
         _validate_recovery_cap(recovery_cap)
+        _validate_exclusive_key(exclusive_key)
         if workflow_id is not None:
             _validate_workflow_id_char(workflow_id, verb="submit")
         definition = self._require_definition(graph, builder)
@@ -604,6 +648,13 @@ class Host:
         ``AlreadyTerminalError``. Run and Batch workflow ids share one
         namespace: reusing an id owned by a plain Run submission is a
         conflict too.
+
+        ``exclusive_key`` is deliberately NOT accepted here (passing it is a
+        ``TypeError`` naming it). "One live sweep per corpus" is a Batch-level
+        subject, and a Batch already has its own exclusive id — the required
+        ``workflow_id``, unique in ``host_batches``. A key on the Batch would
+        be a second identity for the same thing; a key on each CHILD would
+        redefine child identity, which the manifest's item keys already own.
 
         Args:
             graph: A Graph this host serves (see ``submit``). An unserved
