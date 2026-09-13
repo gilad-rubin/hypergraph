@@ -7,6 +7,15 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
+from hypergraph.checkpointers._retention import (
+    BASELINE_NODE_NAME as _BASELINE_NODE_NAME,
+)
+from hypergraph.checkpointers._retention import (
+    BASELINE_NODE_TYPE as _BASELINE_NODE_TYPE,
+)
+from hypergraph.checkpointers._retention import (
+    plan_retention,
+)
 from hypergraph.checkpointers.base import (
     _UNSET,
     Checkpointer,
@@ -40,9 +49,6 @@ from hypergraph.checkpointers.types import (
     derive_boundary_state,
     fold_producers,
 )
-
-_BASELINE_NODE_NAME = "__retained_state__"
-_BASELINE_NODE_TYPE = "RetentionBaseline"
 
 
 def _step_sort_key(record: StepRecord) -> tuple[datetime, datetime, int, str]:
@@ -498,50 +504,29 @@ class MemoryCheckpointer(Checkpointer):
             self._attempt_records.pop(series_id, None)
 
     def _apply_retention_policy(self, run_id: str) -> None:
-        retention = self.policy.retention
-        if retention == "full":
-            return
+        """Compact this run's history to what the configured policy keeps.
 
+        The policy itself is :func:`plan_retention`, shared with the SQLite
+        backend: what "latest" or a window means must not depend on which
+        store a test happens to use. Memory only carries the plan out —
+        rebuild the step map around the carrier, then take the derived
+        records (boundaries, closed attempt history) with the rows that went.
+        """
         run_steps = self._steps.get(run_id)
         if not run_steps:
             return
 
-        if retention == "latest":
-            ordered = sorted(run_steps.values(), key=_step_sort_key)
-            latest_by_node: dict[str, StepRecord] = {}
-            for record in ordered:
-                if record.node_name == _BASELINE_NODE_NAME:
-                    continue
-                latest_by_node[record.node_name] = record
-            kept = list(latest_by_node.values())
-            dropped = [record for record in ordered if record not in kept]
-            baseline = _make_baseline_record(
-                run_id,
-                dropped,
-                baseline_superstep=(min((record.superstep for record in kept), default=0) - 1),
-            )
-            retained = [*([baseline] if baseline is not None else []), *kept]
-            self._steps[run_id] = {(record.superstep, record.node_name): record for record in retained}
-            self._prune_pending_nodes_for_dropped(run_id, dropped)
-            self._prune_attempt_series_for_dropped(dropped)
+        ordered = sorted(run_steps.values(), key=_step_sort_key)
+        plan = plan_retention(ordered, self.policy.retention, self.policy.window)
+        if plan is None:
             return
 
-        if retention == "windowed" and self.policy.window is not None:
-            ordered = sorted(run_steps.values(), key=_step_sort_key)
-            non_baseline = [record for record in ordered if record.node_name != _BASELINE_NODE_NAME]
-            if not non_baseline:
-                return
-            max_superstep = max(record.superstep for record in non_baseline)
-            cutoff = max_superstep - self.policy.window + 1
-            if cutoff <= 0:
-                return
-            kept = [record for record in ordered if record.superstep >= cutoff and record.node_name != _BASELINE_NODE_NAME]
-            dropped = [record for record in ordered if record.node_name == _BASELINE_NODE_NAME or record.superstep < cutoff]
-            baseline = _make_baseline_record(run_id, dropped, baseline_superstep=cutoff - 1)
-            retained = [*([baseline] if baseline is not None else []), *kept]
-            self._steps[run_id] = {(record.superstep, record.node_name): record for record in retained}
-            self._prune_pending_nodes_for_dropped(run_id, dropped)
-            self._prune_attempt_series_for_dropped(dropped)
+        dropped = list(plan.dropped_rows)
+        baseline = _make_baseline_record(run_id, dropped, baseline_superstep=plan.baseline_superstep)
+        retained = [*([baseline] if baseline is not None else []), *plan.kept_rows]
+        self._steps[run_id] = {(record.superstep, record.node_name): record for record in retained}
+        self._prune_pending_nodes_for_dropped(run_id, dropped)
+        self._prune_attempt_series_for_dropped(dropped)
 
 
 def _merge_state(records: list[StepRecord]) -> dict[str, Any]:

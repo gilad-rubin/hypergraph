@@ -3,6 +3,23 @@
 Persistent run history is user-visible state. Prefer convergent compaction over
 row-count shortcuts.
 
+## Statements, Rows, And The Two Halves
+
+- No method in `sqlite.py` spells a statement or a parameter tuple of its own.
+  A fixed statement is a module constant; one whose shape depends on its
+  arguments is a module-level builder returning `(sql, params)`; a record's
+  bind values come from `_rows`. Both halves then execute the same text — the
+  only way a sync/async pair can stay honest when only one of them is edited.
+- Add a column by editing its list in `_rows` and its decoder, nothing else.
+  Rows are decoded BY NAME against the list the SELECT projects; never index a
+  row positionally, and never guard a trailing column with a length check —
+  a short row is a bug to raise on, not a legacy shape to tolerate.
+- Retention is `_retention`: `plan_retention` decides what a run keeps for
+  EVERY backend, and `compaction_deletes` is the one statement stream that
+  carries a plan out. Neither backend may re-derive either.
+- A new write path takes `BEGIN IMMEDIATE`, commits, and rolls back on any
+  `BaseException` — in both halves, or in neither.
+
 ## Retention and Baselines
 
 - Baseline records are state-carrying records, not ordinary node executions.
@@ -77,5 +94,12 @@ row-count shortcuts.
 - Keep memory and SQLite retention semantics aligned unless a test names the
   intentional backend difference.
 - Keep sync and async checkpointer paths behaviorally aligned.
+  `test_sql_builders.py` proves it by writing the same history through both
+  halves and diffing every table; extend it when you add a write path, rather
+  than trusting review to spot the drift.
+- `__del__` reaches into aiosqlite's `_connection` / `_running` because there
+  is no public way to close a connection from a finalizer. Never widen that to
+  a blanket `suppress`: a rename must show up as a failing canary test and a
+  debug log, not as cleanup that silently stopped happening.
 - Tests must pass on Python 3.10. Avoid test helpers that only exist in newer
   stdlib `sqlite3` APIs unless the test guards or falls back explicitly.

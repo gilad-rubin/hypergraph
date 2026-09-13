@@ -1,20 +1,70 @@
-"""SQLite-based checkpointer using aiosqlite."""
+"""SQLite-based checkpointer using aiosqlite.
+
+Two halves live in this file — an async one over ``aiosqlite`` and a sync one
+over stdlib ``sqlite3`` — and they are deliberately NOT copies of each other:
+the sync half takes a per-thread lock and opens ``BEGIN IMMEDIATE``
+explicitly, the async half serializes coroutines on one shared connection.
+What they must never differ about is the SQL and the records. So no method
+here spells a statement or a parameter tuple of its own: statements are the
+module constants and builders below, records are decoded and encoded in
+``_rows``, retention is planned and carried out in ``_retention``. A change
+to what is stored is therefore one edit, and drift between the halves is an
+edit that fails to compile rather than a bug that shows up in production.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import json
+import logging
 import threading
 import time
 import uuid
-from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from collections.abc import Iterable, Sequence
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from hypergraph.checkpointers._lineage import build_lineage
 from hypergraph.checkpointers._migrate import ensure_schema
+from hypergraph.checkpointers._retention import (
+    BASELINE_NODE_NAME,
+    BASELINE_NODE_TYPE,
+    RETENTION_ROW_COLS,
+    RetentionPlan,
+    RetentionRow,
+    baseline_step_params,
+    compaction_deletes,
+    decode_retention_rows,
+    plan_retention,
+)
+from hypergraph.checkpointers._rows import ATTEMPT_RECORD_COLS as _ATTEMPT_RECORD_COLS
+from hypergraph.checkpointers._rows import ATTEMPT_SERIES_COLS as _ATTEMPT_SERIES_COLS
+from hypergraph.checkpointers._rows import NODE_BOUNDARY_COLS as _NODE_BOUNDARY_COLS
+from hypergraph.checkpointers._rows import PAUSE_SLOT_COLS as _PAUSE_SLOT_COLS
+from hypergraph.checkpointers._rows import RUNS_COLS as _RUNS_COLS
+from hypergraph.checkpointers._rows import STEPS_COLS as _STEPS_COLS
+from hypergraph.checkpointers._rows import (
+    attempt_final_params,
+    attempt_outcome_params,
+    attempt_record_insert_params,
+    attempt_series_insert_params,
+    deserialize_run_inputs,
+    pause_slot_insert_params,
+    pending_node_params,
+    placeholders,
+    row_to_attempt_record,
+    row_to_attempt_series,
+    row_to_node_boundary,
+    row_to_pause_slot,
+    row_to_run,
+    row_to_step,
+    run_upsert,
+    serialize_run_inputs,
+    step_upsert_params,
+)
 from hypergraph.checkpointers.base import (
     _UNSET,
     Checkpointer,
@@ -44,7 +94,6 @@ from hypergraph.checkpointers.types import (
     AttemptSeries,
     AttemptStatus,
     Checkpoint,
-    LineageRow,
     LineageView,
     NodeBoundary,
     PauseSlot,
@@ -53,30 +102,18 @@ from hypergraph.checkpointers.types import (
     RunTable,
     RunTotals,
     StepRecord,
-    StepStatus,
     StepTable,
     WorkflowStatus,
-    derive_boundary_state,
-    fold_producers,
 )
 
-# Explicit column lists for SELECT queries — avoids column-order bugs after migration
-_RUNS_COLS = (
-    "id, graph_name, status, duration_ms, node_count, error_count, "
-    "created_at, completed_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config"
-)
-_STEPS_COLS = (
-    "id, run_id, step_index, superstep, node_name, node_type, status, duration_ms, cached, error, decision, "
-    "input_versions, values_data, child_run_id, created_at, completed_at, partial, attempt_series_id, folded_producers"
-)
+_logger = logging.getLogger(__name__)
+
 _STEP_TIME_ORDER = "COALESCE(completed_at, created_at), created_at, id"
 _STEP_TIME_ORDER_DESC = "COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC"
 _STEP_TIME_ORDER_DESC_WITH_ALIAS = "COALESCE(s.completed_at, s.created_at) DESC, s.created_at DESC, s.id DESC"
 # SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999 on older builds; chunk
 # well under it so a large Batch read never trips the host's sqlite limit.
 _MAX_SQL_VARIABLES = 500
-_RETENTION_BASELINE_NODE_NAME = "__retained_state__"
-_RETENTION_BASELINE_NODE_TYPE = "RetentionBaseline"
 
 #: How long a writer waits for another writer's lock before raising
 #: ``database is locked``. Stated rather than inherited, because the driver
@@ -95,56 +132,38 @@ _BUSY_TIMEOUT_PRAGMA = f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}"
 #: How often the WAL conversion re-tries while another connection holds the
 #: database lock. See ``_ensure_wal`` for why it cannot simply wait.
 _WAL_RETRY_INTERVAL = 0.01
-_PUBLIC_STEP_FILTER = f"node_name != '{_RETENTION_BASELINE_NODE_NAME}' AND (node_type IS NULL OR node_type != '{_RETENTION_BASELINE_NODE_TYPE}')"
-_PUBLIC_STEP_FILTER_WITH_ALIAS = (
-    f"s.node_name != '{_RETENTION_BASELINE_NODE_NAME}' AND (s.node_type IS NULL OR s.node_type != '{_RETENTION_BASELINE_NODE_TYPE}')"
-)
-# Compaction reads status and folded_producers too: the carrier's provenance
-# (#277) is derived from which folded rows COMPLETED, and a previous carrier
-# contributes the producers it already recorded.
-_RETENTION_ROW_COLS = "id, step_index, superstep, node_name, values_data, created_at, completed_at, attempt_series_id, status, folded_producers"
-_DELETE_BATCH_SIZE = 500
-# Two binds per row plus the run id — stays under the 999-variable floor.
-_PENDING_DELETE_BATCH_SIZE = 400
+#: Every multi-statement write opens with this: a transaction that takes the
+#: write lock up front, so a competing writer on the OTHER connection blocks
+#: and then re-validates against committed truth instead of deciding on a
+#: stale snapshot.
+_BEGIN_IMMEDIATE = "BEGIN IMMEDIATE"
+#: Defense-in-depth for same-store references (steps.run_id, fork/retry
+#: lineage, attempt ledger); cross-store lineage columns
+#: (runs.parent_run_id, steps.child_run_id) carry no FK since schema v5. Set
+#: on EVERY connection this module opens, and named once so the async and
+#: per-thread sync connections cannot enforce different rules on one
+#: database.
+_FOREIGN_KEYS_PRAGMA = "PRAGMA foreign_keys=ON"
+_PUBLIC_STEP_FILTER = f"node_name != '{BASELINE_NODE_NAME}' AND (node_type IS NULL OR node_type != '{BASELINE_NODE_TYPE}')"
+_PUBLIC_STEP_FILTER_WITH_ALIAS = f"s.node_name != '{BASELINE_NODE_NAME}' AND (s.node_type IS NULL OR s.node_type != '{BASELINE_NODE_TYPE}')"
 
-# === Pending node boundaries (PRD 0013) ===
-#
-# Intent is recorded before the first sibling of a superstep dispatches;
-# the boundary's state is DERIVED by outer-joining the execution journal, so
-# the table can never claim a node ran.
-# ``DO NOTHING`` on conflict: the address IS the boundary occurrence, so a
-# re-record (a history-less run restarting fresh at superstep 0) must not
-# rewrite when it first became pending — and must never clear a
-# ``dispatched_at`` that PRD 0014 will write before a provider call.
-_PENDING_NODE_UPSERT_SQL = """
-    INSERT INTO pending_nodes (run_id, superstep, node_name, node_type, created_at, dispatched_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(run_id, superstep, node_name) DO NOTHING
-"""
-_NODE_BOUNDARY_SELECT_SQL = """
-    SELECT p.run_id, p.superstep, p.node_name, p.node_type, p.created_at, p.dispatched_at, s.status
-    FROM pending_nodes AS p
-    LEFT JOIN steps AS s
-      ON s.run_id = p.run_id AND s.superstep = p.superstep AND s.node_name = p.node_name
-    WHERE p.run_id = ?
-    ORDER BY p.superstep, p.node_name
-"""
-# === Durable pause slots (PRD 0010) ===
-#
-# One row per interrupt occurrence, keyed by its node address, written in the
-# SAME transaction as the paused step's records and the runs-row transition to
-# 'paused'. ``DO NOTHING`` on conflict: the address IS the occurrence, so a
-# replayed pause must not rewrite when it was asked nor clear a settlement.
-# ``rowid DESC`` is commit order, which is occurrence order — the newest row is
-# the current pause.
-_PAUSE_SLOT_COLS = "pause_id, run_id, superstep, node_name, node_path, response_key, question, answer_schema, options, created_at, settled_at, answer"
-_PAUSE_SLOT_INSERT_SQL = f"INSERT INTO pause_slots ({_PAUSE_SLOT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(pause_id) DO NOTHING"
-_PAUSE_SLOT_CURRENT_SQL = f"SELECT {_PAUSE_SLOT_COLS} FROM pause_slots WHERE run_id = ? ORDER BY rowid DESC LIMIT 1"
-_PAUSE_SLOT_BY_ID_SQL = f"SELECT {_PAUSE_SLOT_COLS} FROM pause_slots WHERE run_id = ? AND pause_id = ?"
-_PAUSE_SLOT_IDS_SQL = "SELECT pause_id FROM pause_slots WHERE run_id = ?"
-# Compare-and-set: a competing answer that lost the race matches 0 rows, so the
-# first settlement wins and the loser gets a truthful refusal.
-_PAUSE_SLOT_SETTLE_SQL = "UPDATE pause_slots SET settled_at = ?, answer = ? WHERE pause_id = ? AND settled_at IS NULL"
+# === Runs ===
+_RUN_UPSERT_SQL = (
+    "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config, inputs_data) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, duration_ms = NULL, node_count = 0, "
+    "error_count = 0, completed_at = NULL, parent_run_id = ?, forked_from = ?, "
+    "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?, "
+    "inputs_data = COALESCE(runs.inputs_data, ?)"
+)
+_RUN_BY_ID_SQL = f"SELECT {_RUNS_COLS} FROM runs WHERE id = ?"
+_RUN_EXISTS_SQL = "SELECT 1 FROM runs WHERE id = ?"
+_RUN_STATUS_SQL = "SELECT status FROM runs WHERE id = ?"
+_RUN_INPUTS_SQL = "SELECT inputs_data FROM runs WHERE id = ?"
+_RUN_COUNT_SQL = "SELECT COUNT(*) FROM runs"
+_LINEAGE_CHILDREN_SQL = f"SELECT {_RUNS_COLS} FROM runs WHERE forked_from = ? OR retry_of = ? ORDER BY created_at ASC LIMIT ?"
+
+# === Steps ===
 _STEP_UPSERT_SQL = """
     INSERT INTO steps (
         run_id, superstep, node_name, step_index, status,
@@ -165,13 +184,75 @@ _STEP_UPSERT_SQL = """
         attempt_series_id = excluded.attempt_series_id,
         folded_producers = excluded.folded_producers
 """
+_STEP_COUNT_SQL = f"SELECT COUNT(*) FROM steps WHERE {_PUBLIC_STEP_FILTER}"
+_RETENTION_ROWS_SQL = f"SELECT {RETENTION_ROW_COLS} FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}"
+# Aliased to match _STEPS_COLS order for the FTS join.
+_ALIASED_STEPS_COLS = ", ".join(f"s.{name.strip()}" for name in _STEPS_COLS.split(","))
+_SEARCH_STEPS_SQL = f"""
+    SELECT {_ALIASED_STEPS_COLS} FROM steps s
+    JOIN steps_fts fts ON s.id = fts.rowid
+    WHERE steps_fts MATCH ? AND {_PUBLIC_STEP_FILTER_WITH_ALIAS}
+    ORDER BY {_STEP_TIME_ORDER_DESC_WITH_ALIAS}
+    LIMIT ?
+"""
+_NODE_STATS_SQL = f"""
+    SELECT node_name, node_type,
+           COUNT(*) as step_runs,
+           SUM(duration_ms) as total_ms,
+           AVG(duration_ms) as avg_ms,
+           MAX(duration_ms) as max_ms,
+           SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as errors,
+           SUM(cached) as cache_hits
+    FROM steps WHERE run_id = ? AND {_PUBLIC_STEP_FILTER}
+    GROUP BY node_name
+    ORDER BY total_ms DESC
+"""
+
+# === Pending node boundaries (PRD 0013) ===
+#
+# Intent is recorded before the first sibling of a superstep dispatches;
+# the boundary's state is DERIVED by outer-joining the execution journal, so
+# the table can never claim a node ran.
+# ``DO NOTHING`` on conflict: the address IS the boundary occurrence, so a
+# re-record (a history-less run restarting fresh at superstep 0) must not
+# rewrite when it first became pending — and must never clear a
+# ``dispatched_at`` that PRD 0014 will write before a provider call.
+_PENDING_NODE_UPSERT_SQL = """
+    INSERT INTO pending_nodes (run_id, superstep, node_name, node_type, created_at, dispatched_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(run_id, superstep, node_name) DO NOTHING
+"""
+# The projection IS _NODE_BOUNDARY_COLS, in that order, because that is what
+# the decoder zips against — derived rather than retyped, so the join and the
+# record cannot drift apart. Only the joined status column is aliased: it is
+# the journal's status, read as the boundary's.
+_NODE_BOUNDARY_PROJECTION = ", ".join("s.status AS step_status" if name == "step_status" else f"p.{name}" for name in _NODE_BOUNDARY_COLS.split(", "))
+_NODE_BOUNDARY_SELECT_SQL = f"""
+    SELECT {_NODE_BOUNDARY_PROJECTION}
+    FROM pending_nodes AS p
+    LEFT JOIN steps AS s
+      ON s.run_id = p.run_id AND s.superstep = p.superstep AND s.node_name = p.node_name
+    WHERE p.run_id = ?
+    ORDER BY p.superstep, p.node_name
+"""
+
+# === Durable pause slots (PRD 0010) ===
+#
+# One row per interrupt occurrence, keyed by its node address, written in the
+# SAME transaction as the paused step's records and the runs-row transition to
+# 'paused'. ``DO NOTHING`` on conflict: the address IS the occurrence, so a
+# replayed pause must not rewrite when it was asked nor clear a settlement.
+# ``rowid DESC`` is commit order, which is occurrence order — the newest row is
+# the current pause.
+_PAUSE_SLOT_INSERT_SQL = f"INSERT INTO pause_slots ({_PAUSE_SLOT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(pause_id) DO NOTHING"
+_PAUSE_SLOT_CURRENT_SQL = f"SELECT {_PAUSE_SLOT_COLS} FROM pause_slots WHERE run_id = ? ORDER BY rowid DESC LIMIT 1"
+_PAUSE_SLOT_BY_ID_SQL = f"SELECT {_PAUSE_SLOT_COLS} FROM pause_slots WHERE run_id = ? AND pause_id = ?"
+_PAUSE_SLOT_IDS_SQL = "SELECT pause_id FROM pause_slots WHERE run_id = ?"
+# Compare-and-set: a competing answer that lost the race matches 0 rows, so the
+# first settlement wins and the loser gets a truthful refusal.
+_PAUSE_SLOT_SETTLE_SQL = "UPDATE pause_slots SET settled_at = ?, answer = ? WHERE pause_id = ? AND settled_at IS NULL"
 
 # === Attempt-ledger SQL (shared by async and sync paths) ===
-_ATTEMPT_SERIES_COLS = "id, run_id, node_name, policy_fingerprint, max_attempts, opened_at, deadline_at, committed_superstep, closed_at"
-_ATTEMPT_RECORD_COLS = (
-    "series_id, attempt_number, scheduled_superstep, status, started_at, completed_at, error_type, error_message, "
-    "retry_not_before, sampled_delay, deadline_elapsed, cancellation_requested"
-)
 _ATTEMPT_SERIES_INSERT_SQL = f"INSERT INTO attempt_series ({_ATTEMPT_SERIES_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
 _ATTEMPT_RECORD_INSERT_SQL = f"INSERT INTO attempt_records ({_ATTEMPT_RECORD_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 _ATTEMPT_SERIES_BY_ID_SQL = f"SELECT {_ATTEMPT_SERIES_COLS} FROM attempt_series WHERE id = ?"
@@ -197,7 +278,15 @@ _ATTEMPT_FINAL_SQL = (
 _ATTEMPT_SERIES_CLOSE_SQL = "UPDATE attempt_series SET closed_at = ?, committed_superstep = ? WHERE id = ? AND closed_at IS NULL"
 _ATTEMPT_LIVE_SQL = f"SELECT {_ATTEMPT_RECORD_COLS} FROM attempt_records WHERE series_id = ? AND status = 'started' LIMIT 1"
 _ATTEMPT_MAX_NUMBER_SQL = "SELECT COALESCE(MAX(attempt_number), 0) FROM attempt_records WHERE series_id = ?"
-_RUN_EXISTS_SQL = "SELECT 1 FROM runs WHERE id = ?"
+
+#: The aiosqlite internals ``__del__`` reaches for. aiosqlite offers no way to
+#: shut a connection down from a finalizer — ``close()`` is a coroutine and
+#: there is no loop left to await it — so the fallback names them explicitly
+#: instead of hiding the dependency inside a blanket ``suppress``. A canary
+#: test pins both; if an upgrade renames one, that test fails rather than the
+#: cleanup silently stopping and GC-time unraisable warnings coming back.
+_AIOSQLITE_RAW_CONNECTION = "_connection"
+_AIOSQLITE_RUNNING_FLAG = "_running"
 
 
 def _ensure_wal(conn: Any) -> None:
@@ -229,219 +318,110 @@ def _ensure_wal(conn: Any) -> None:
             time.sleep(_WAL_RETRY_INTERVAL)
 
 
-@dataclass(frozen=True, slots=True)
-class _RetentionRow:
-    id: int
-    step_index: int
-    superstep: int
-    node_name: str
-    values_data: bytes | None
-    created_at: str | None
-    completed_at: str | None
-    attempt_series_id: str | None
-    status: StepStatus
-    folded_producers: tuple[str, ...] | None
+# === Query builders ===
+#
+# Every statement whose shape depends on its arguments is built here, once,
+# and both halves bind the result. A read that one half filters and the other
+# does not is then not something review has to catch.
 
 
-@dataclass(frozen=True, slots=True)
-class _RetentionPlan:
-    kept_rows: tuple[_RetentionRow, ...]
-    dropped_rows: tuple[_RetentionRow, ...]
-    baseline_superstep: int
+def _state_query(run_id: str, superstep: int | None) -> tuple[str, tuple[Any, ...]]:
+    """The value blobs a folded state is computed from, in execution order."""
+    if superstep is None:
+        return f"SELECT values_data FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}", (run_id,)
+    return f"SELECT values_data FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY {_STEP_TIME_ORDER}", (run_id, superstep)
 
 
-def _encode_folded_producers(producers: tuple[str, ...] | None) -> str | None:
-    """Store a carrier's producer provenance (#277) as a JSON name list.
-
-    ``None`` stays SQL NULL, which is what every ordinary step row and every
-    carrier written before the column existed reads back as.
-    """
-    return None if producers is None else json.dumps(list(producers))
+def _states_query(run_ids: Sequence[str]) -> str:
+    """``get_state``'s blobs for several runs at once, grouped by run."""
+    return f"SELECT run_id, values_data FROM steps WHERE run_id IN ({placeholders(run_ids)}) ORDER BY run_id, {_STEP_TIME_ORDER}"
 
 
-def _decode_folded_producers(raw: str | None) -> tuple[str, ...] | None:
-    """Read back what :func:`_encode_folded_producers` stored."""
-    if raw is None:
-        return None
-    return tuple(json.loads(raw))
-
-
-def _decode_retention_rows(rows: Sequence[tuple[Any, ...]]) -> tuple[_RetentionRow, ...]:
-    decoded: list[_RetentionRow] = []
-    for row in rows:
-        row_id, step_index, superstep, node_name, values_data, created_at, completed_at, attempt_series_id, status, producers = row
-        decoded.append(
-            _RetentionRow(
-                id=int(row_id),
-                step_index=int(step_index),
-                superstep=int(superstep),
-                node_name=str(node_name),
-                values_data=values_data,
-                created_at=created_at,
-                completed_at=completed_at,
-                attempt_series_id=attempt_series_id,
-                status=StepStatus(status),
-                folded_producers=_decode_folded_producers(producers),
-            )
-        )
-    return tuple(decoded)
-
-
-def _row_to_attempt_series(row: tuple[Any, ...]) -> AttemptSeries:
-    return AttemptSeries(
-        id=row[0],
-        run_id=row[1],
-        node_name=row[2],
-        policy_fingerprint=row[3],
-        max_attempts=int(row[4]),
-        opened_at=_parse_dt(row[5]),  # type: ignore[arg-type]
-        deadline_at=_parse_dt(row[6]),
-        committed_superstep=row[7],
-        closed_at=_parse_dt(row[8]),
-    )
-
-
-def _row_to_attempt_record(row: tuple[Any, ...]) -> AttemptRecord:
-    error = AttemptError(type_name=row[6], message=row[7] or "") if row[6] is not None else None
-    return AttemptRecord(
-        series_id=row[0],
-        attempt_number=int(row[1]),
-        scheduled_superstep=int(row[2]),
-        status=AttemptStatus(row[3]),
-        started_at=_parse_dt(row[4]),  # type: ignore[arg-type]
-        completed_at=_parse_dt(row[5]),
-        error=error,
-        retry_not_before=_parse_dt(row[8]),
-        sampled_delay=row[9],
-        deadline_elapsed=bool(row[10]),
-        cancellation_requested=bool(row[11]),
-    )
-
-
-def _iso_or_none(value: datetime | None) -> str | None:
-    return value.isoformat() if value is not None else None
-
-
-def _attempt_record_insert_params(record: AttemptRecord) -> tuple[Any, ...]:
+def _failures_query(run_ids: Sequence[str]) -> str:
+    """Errored steps for several runs at once, earliest first per run."""
     return (
-        record.series_id,
-        record.attempt_number,
-        record.scheduled_superstep,
-        record.status.value,
-        record.started_at.isoformat(),
-        _iso_or_none(record.completed_at),
-        record.error.type_name if record.error else None,
-        record.error.message if record.error else None,
-        _iso_or_none(record.retry_not_before),
-        record.sampled_delay,
-        int(record.deadline_elapsed),
-        int(record.cancellation_requested),
+        f"SELECT run_id, error, node_name, superstep FROM steps "
+        f"WHERE run_id IN ({placeholders(run_ids)}) AND error IS NOT NULL ORDER BY run_id, {_STEP_TIME_ORDER}"
     )
 
 
-def _attempt_series_insert_params(series: AttemptSeries) -> tuple[Any, ...]:
-    return (
-        series.id,
-        series.run_id,
-        series.node_name,
-        series.policy_fingerprint,
-        series.max_attempts,
-        series.opened_at.isoformat(),
-        _iso_or_none(series.deadline_at),
-        series.committed_superstep,
-        _iso_or_none(series.closed_at),
-    )
+def _steps_query(run_id: str, *, superstep: int | None, show_internal: bool) -> tuple[str, list[Any]]:
+    """Step records in execution order, internal carriers hidden by default."""
+    conditions = ["run_id = ?"]
+    params: list[Any] = [run_id]
+    if superstep is not None:
+        conditions.append("superstep <= ?")
+        params.append(superstep)
+    if not show_internal:
+        conditions.append(_PUBLIC_STEP_FILTER)
+    return f"SELECT {_STEPS_COLS} FROM steps WHERE {' AND '.join(conditions)} ORDER BY {_STEP_TIME_ORDER}", params
 
 
-def _plan_retention(
-    rows: Sequence[_RetentionRow],
-    retention: Literal["full", "latest", "windowed"],
-    window: int | None,
-) -> _RetentionPlan | None:
-    if retention == "full":
-        return None
+def _run_filters(
+    *,
+    status: WorkflowStatus | None,
+    graph_name: str | None,
+    since: datetime | None,
+    parent_run_id: str | None | object,
+) -> tuple[list[str], list[Any]]:
+    """The WHERE terms every runs read shares, in one order.
 
-    if retention == "latest":
-        latest_by_node: dict[str, _RetentionRow] = {}
-        for row in rows:
-            if row.node_name != _RETENTION_BASELINE_NODE_NAME:
-                latest_by_node[row.node_name] = row
-        kept_rows = tuple(latest_by_node.values())
-        kept_ids = {row.id for row in kept_rows}
-        dropped_rows = tuple(row for row in rows if row.id not in kept_ids)
-        return _RetentionPlan(
-            kept_rows=kept_rows,
-            dropped_rows=dropped_rows,
-            baseline_superstep=min((row.superstep for row in kept_rows), default=0) - 1,
-        )
-
-    if retention == "windowed" and window is not None:
-        non_baseline_rows = tuple(row for row in rows if row.node_name != _RETENTION_BASELINE_NODE_NAME)
-        if not non_baseline_rows:
-            return None
-        max_superstep = max(row.superstep for row in non_baseline_rows)
-        cutoff = max_superstep - window + 1
-        if cutoff <= 0:
-            return None
-        kept_rows = tuple(row for row in non_baseline_rows if row.superstep >= cutoff)
-        dropped_rows = tuple(row for row in rows if row.node_name == _RETENTION_BASELINE_NODE_NAME or row.superstep < cutoff)
-        return _RetentionPlan(
-            kept_rows=kept_rows,
-            dropped_rows=dropped_rows,
-            baseline_superstep=cutoff - 1,
-        )
-
-    return None
-
-
-def _parse_dt(value: str | None) -> datetime | None:
-    """Parse an ISO datetime string, normalising the UTC 'Z' suffix.
-
-    ``datetime.fromisoformat`` only accepts 'Z' on Python 3.11+; SQLite always
-    emits Z-suffixed timestamps, so we normalise to '+00:00' for 3.10 compat.
+    ``parent_run_id`` has three states, not two: absent (every run), ``None``
+    (top-level runs only) and an id (that run's children).
     """
-    if not value:
-        return None
-    if value.endswith("Z"):
-        value = value[:-1] + "+00:00"
-    return datetime.fromisoformat(value)
+    conditions: list[str] = []
+    params: list[Any] = []
+    if status is not None:
+        conditions.append("status = ?")
+        params.append(status.value)
+    if graph_name is not None:
+        conditions.append("graph_name = ?")
+        params.append(graph_name)
+    if since is not None:
+        conditions.append("created_at >= ?")
+        params.append(_normalize_since(since).isoformat())
+    if parent_run_id is not _UNSET:
+        if parent_run_id is None:
+            conditions.append("parent_run_id IS NULL")
+        else:
+            conditions.append("parent_run_id = ?")
+            params.append(parent_run_id)
+    return conditions, params
 
 
-def _row_to_node_boundary(row: Sequence[Any]) -> NodeBoundary:
-    """Build a :class:`NodeBoundary` from the intent-joined-journal row.
-
-    This backend only shapes the row; the state cascade itself lives in
-    :func:`derive_boundary_state` so both backends cannot drift.
-    """
-    dispatched_at = _parse_dt(row[5])
-    step_status = StepStatus(row[6]) if row[6] is not None else None
-    return NodeBoundary(
-        run_id=row[0],
-        superstep=row[1],
-        node_name=row[2],
-        state=derive_boundary_state(step_status, dispatched_at),
-        node_type=row[3],
-        created_at=_parse_dt(row[4]),
-        dispatched_at=dispatched_at,
-        step_status=step_status,
-    )
+def _where(conditions: Sequence[str]) -> str:
+    return f" WHERE {' AND '.join(conditions)}" if conditions else ""
 
 
-def _pause_slot_insert_params(slot: PauseSlot) -> tuple[Any, ...]:
-    return (
-        slot.pause_id,
-        slot.run_id,
-        slot.superstep,
-        slot.node_name,
-        slot.node_path,
-        slot.response_key,
-        json.dumps(slot.question),
-        json.dumps(slot.answer_schema),
-        None if slot.options is None else json.dumps(list(slot.options)),
-        slot.created_at.isoformat(),
-        slot.settled_at.isoformat() if slot.settled_at is not None else None,
-        None if slot.settled_at is None else json.dumps(slot.answer),
-    )
+def _runs_query(
+    *,
+    status: WorkflowStatus | None,
+    graph_name: str | None,
+    since: datetime | None,
+    parent_run_id: str | None | object,
+    limit: int | None,
+) -> tuple[str, list[Any]]:
+    """Run records newest first, optionally filtered and capped."""
+    conditions, params = _run_filters(status=status, graph_name=graph_name, since=since, parent_run_id=parent_run_id)
+    query = f"SELECT {_RUNS_COLS} FROM runs{_where(conditions)} ORDER BY created_at DESC"
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
+    return query, params
+
+
+def _run_count_query(
+    *,
+    status: WorkflowStatus | None = None,
+    parent_run_id: str | None | object = _UNSET,
+    retry_of: str | None = None,
+) -> tuple[str, list[Any]]:
+    """How many runs match, without materialising them."""
+    conditions, params = _run_filters(status=status, graph_name=None, since=None, parent_run_id=parent_run_id)
+    if retry_of is not None:
+        conditions.append("retry_of = ?")
+        params.append(retry_of)
+    return f"{_RUN_COUNT_SQL}{_where(conditions)}", params
 
 
 def _collect_first_failures(
@@ -456,27 +436,6 @@ def _collect_first_failures(
     for run_id, error, node_name, superstep in rows:
         if run_id not in failures:
             failures[run_id] = (error, node_name, None if superstep is None else int(superstep))
-
-
-def _row_to_pause_slot(row: Sequence[Any]) -> PauseSlot:
-    options = json.loads(row[8]) if row[8] is not None else None
-    settled_at = _parse_dt(row[10])
-    created_at = _parse_dt(row[9])
-    return PauseSlot(
-        run_id=row[1],
-        superstep=int(row[2]),
-        node_name=row[3],
-        node_path=row[4],
-        response_key=row[5],
-        question=json.loads(row[6]),
-        answer_schema=json.loads(row[7]),
-        options=None if options is None else tuple(options),
-        created_at=created_at if created_at is not None else datetime.now(timezone.utc),
-        settled_at=settled_at,
-        # The answer column is only meaningful once settled; an unsettled row
-        # must never present a decoded value.
-        answer=json.loads(row[11]) if settled_at is not None and row[11] is not None else None,
-    )
 
 
 def _run_status_update(status: WorkflowStatus, totals: RunTotals) -> tuple[str, list[Any]]:
@@ -504,62 +463,55 @@ def _run_status_update(status: WorkflowStatus, totals: RunTotals) -> tuple[str, 
     return f"UPDATE runs SET {', '.join(sets)} WHERE id = ?", params
 
 
-def _deserialize_run_inputs(serializer: Any, row: Sequence[Any] | None) -> dict[str, Any]:
-    """Decode a stored ``runs.inputs_data`` blob; ``{}`` when absent."""
-    if row is None or row[0] is None:
-        return {}
-    return dict(serializer.deserialize(row[0]) or {})
+def _debug(message: str, *args: Any) -> None:
+    """Log at DEBUG, never letting the log itself escape a finalizer.
 
-
-def _serialize_run_inputs(serializer: Any, run_id: str, inputs: dict[str, Any] | None) -> Any:
-    """Encode a run's graph-boundary inputs, naming what refused to encode.
-
-    Run inputs became durable so a checkpoint can restore them, which turns
-    them into a persisted record rather than a live call argument. The bare
-    ``TypeError`` the serializer raises for one ("Object of type Client is
-    not JSON serializable") names neither the run, nor the input, nor the
-    rule, so a caller cannot tell that the value was refused for being a
-    graph INPUT — node outputs have always had to serialize, graph inputs
-    did not.
-
-    The failure is re-raised as the same type with the offending names, the
-    run they belong to, and the two ways out. Re-encoding key by key to find
-    them runs only on the failing path.
+    ``__del__`` can run during interpreter shutdown, where logging handlers
+    may already be torn down; a raise there becomes exactly the unraisable
+    warning this cleanup exists to prevent.
     """
-    if not inputs:
-        return None
+    with contextlib.suppress(Exception):
+        _logger.debug(message, *args)
+
+
+def _close_orphaned_aiosqlite(db: Any) -> None:
+    """Shut down a dropped aiosqlite connection and its worker thread.
+
+    Reaching for private attributes is deliberate and is the only option:
+    ``Connection.close()`` is a coroutine, and a finalizer has no loop to
+    await it on. What is NOT acceptable is doing so silently — an aiosqlite
+    upgrade that renames either attribute would turn this into a no-op, and
+    the GC-time unraisable warnings it prevents would come back as CI flakes
+    under ``-W error``. So a missing attribute is reported, distinctly from a
+    close that was attempted and failed.
+
+    The two steps are independent on purpose, and in practice the first one
+    usually loses: sqlite3 refuses a connection closed from a thread other
+    than the one that opened it, and the aiosqlite worker opened this one. So
+    clearing the running flag — which is what actually lets that worker's loop
+    exit — must not be skipped because the raw close was refused.
+    """
+    missing = [name for name in (_AIOSQLITE_RAW_CONNECTION, _AIOSQLITE_RUNNING_FLAG) if not hasattr(db, name)]
+    if missing:
+        _debug(
+            "SqliteCheckpointer.__del__ left an aiosqlite connection open: it no longer exposes %s. "
+            "Close checkpointers explicitly with await close().",
+            ", ".join(missing),
+        )
+        return
+
     try:
-        return serializer.serialize(inputs)
-    except TypeError as error:
-        raise TypeError(_run_inputs_type_error(serializer, run_id, inputs, error)) from error
+        raw_conn = getattr(db, _AIOSQLITE_RAW_CONNECTION)
+        if raw_conn is not None:
+            raw_conn.close()
+            setattr(db, _AIOSQLITE_RAW_CONNECTION, None)
+    except Exception as error:
+        _debug("SqliteCheckpointer.__del__ could not close the raw sqlite3 connection: %r", error)
 
-
-def _run_inputs_type_error(serializer: Any, run_id: str, inputs: dict[str, Any], error: TypeError) -> str:
-    """The message for graph inputs the checkpointer cannot store."""
-    offenders = [f"{name} ({type(value).__name__})" for name, value in inputs.items() if not _encodes(serializer, name, value)]
-    return (
-        f"Run {run_id!r} cannot start: a checkpointed run stores its graph inputs, and "
-        f"{', '.join(offenders) if offenders else str(error)} cannot be stored by this checkpointer's serializer.\n\n"
-        "Hypergraph persists a run's graph-boundary inputs so a checkpoint can restore them — a node placed after an "
-        "interrupt has no other way to read a raw graph input when the run resumes.\n\n"
-        "How to fix:\n"
-        "  Pass a storable stand-in as the graph input (an id, a config dict) and build the live object inside a node; or\n"
-        "  give the checkpointer a serializer that accepts it, e.g. SqliteCheckpointer(..., serializer=JsonSerializer(lossy=True))."
-    )
-
-
-def _encodes(serializer: Any, name: str, value: Any) -> bool:
-    """Whether this one input survives the serializer on its own."""
     try:
-        serializer.serialize({name: value})
-    except TypeError:
-        return False
-    return True
-
-
-def _lineage_parent_id(run: Run) -> str | None:
-    """Return the workflow-lineage parent for fork/retry traversal."""
-    return run.forked_from or run.retry_of
+        setattr(db, _AIOSQLITE_RUNNING_FLAG, False)
+    except Exception as error:
+        _debug("SqliteCheckpointer.__del__ could not stop the aiosqlite worker: %r", error)
 
 
 def _require_aiosqlite() -> Any:
@@ -711,17 +663,8 @@ class SqliteCheckpointer(Checkpointer):
                     lock.release()
 
         db = getattr(self, "_db", None)
-        if db is None:
-            return
-
-        with contextlib.suppress(Exception):
-            raw_conn = getattr(db, "_connection", None)
-            if raw_conn is not None:
-                raw_conn.close()
-                db._connection = None
-
-        with contextlib.suppress(Exception):
-            db._running = False
+        if db is not None:
+            _close_orphaned_aiosqlite(db)
 
     def _db_stats(self) -> dict[str, Any]:
         """Gather quick DB stats for display (uses sync connection)."""
@@ -735,8 +678,8 @@ class SqliteCheckpointer(Checkpointer):
                 stats["size_bytes"] = None
             try:
                 db = self._sync_db()
-                (stats["run_count"],) = db.execute("SELECT COUNT(*) FROM runs").fetchone()
-                (stats["step_count"],) = db.execute(f"SELECT COUNT(*) FROM steps WHERE {_PUBLIC_STEP_FILTER}").fetchone()
+                (stats["run_count"],) = db.execute(_RUN_COUNT_SQL).fetchone()
+                (stats["step_count"],) = db.execute(_STEP_COUNT_SQL).fetchone()
             except Exception:
                 stats["run_count"] = None
                 stats["step_count"] = None
@@ -823,10 +766,7 @@ class SqliteCheckpointer(Checkpointer):
                 # so the shared-cache database stays alive across connections.
                 if self._is_memory:
                     self._ensure_sync_schema()
-                # Defense-in-depth for same-store references (steps.run_id, fork/retry
-                # lineage, attempt ledger). Cross-store lineage columns
-                # (runs.parent_run_id, steps.child_run_id) carry no FK since schema v5.
-                await db.execute("PRAGMA foreign_keys=ON")
+                await db.execute(_FOREIGN_KEYS_PRAGMA)
                 await db.commit()
             except BaseException:
                 with contextlib.suppress(Exception):
@@ -896,27 +836,7 @@ class SqliteCheckpointer(Checkpointer):
 
     def _step_upsert_params(self, record: StepRecord) -> tuple[Any, ...]:
         """Build the parameter tuple for ``_STEP_UPSERT_SQL``."""
-        values_blob = self._serializer.serialize(record.values) if record.values is not None else None
-        return (
-            record.run_id,
-            record.superstep,
-            record.node_name,
-            record.index,
-            record.status.value,
-            json.dumps(record.input_versions),
-            values_blob,
-            record.duration_ms,
-            int(record.cached),
-            json.dumps(record.decision) if record.decision is not None else None,
-            record.error,
-            record.node_type,
-            record.created_at.isoformat(),
-            record.completed_at.isoformat() if record.completed_at else None,
-            record.child_run_id,
-            int(record.partial),
-            record.attempt_series_id,
-            _encode_folded_producers(record.folded_producers),
-        )
+        return step_upsert_params(self._serializer, record)
 
     async def save_step(self, record: StepRecord) -> None:
         """Save a step with upsert semantics."""
@@ -925,11 +845,7 @@ class SqliteCheckpointer(Checkpointer):
             try:
                 await self._db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
                 await self._apply_retention_policy_async(record.run_id)
-                await self._after_run_mutation(
-                    record.run_id,
-                    "step",
-                    {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
-                )
+                await self._after_run_mutation(record.run_id, "step", _step_mutation_payload(record))
                 await self._before_step_commit(record)
                 await self._db.commit()
             except BaseException:
@@ -945,17 +861,6 @@ class SqliteCheckpointer(Checkpointer):
 
     # === Pending node boundaries (PRD 0013) ===
 
-    @staticmethod
-    def _pending_node_params(boundary: PendingNode) -> tuple[Any, ...]:
-        return (
-            boundary.run_id,
-            boundary.superstep,
-            boundary.node_name,
-            boundary.node_type,
-            boundary.created_at.isoformat(),
-            boundary.dispatched_at.isoformat() if boundary.dispatched_at is not None else None,
-        )
-
     async def record_pending_nodes(self, boundaries: Sequence[PendingNode]) -> None:
         """Durably record a superstep's runnable node boundaries as pending.
 
@@ -969,7 +874,7 @@ class SqliteCheckpointer(Checkpointer):
             return
         await self._ensure_db()
         async with self._txn_lock():
-            await self._db.executemany(_PENDING_NODE_UPSERT_SQL, [self._pending_node_params(b) for b in boundaries])
+            await self._db.executemany(_PENDING_NODE_UPSERT_SQL, [pending_node_params(b) for b in boundaries])
             await self._db.commit()
 
     async def get_node_boundaries(self, run_id: str) -> list[NodeBoundary]:
@@ -978,7 +883,7 @@ class SqliteCheckpointer(Checkpointer):
         async with self._txn_lock():
             cursor = await self._db.execute(_NODE_BOUNDARY_SELECT_SQL, (run_id,))
             rows = await cursor.fetchall()
-        return [_row_to_node_boundary(row) for row in rows]
+        return [row_to_node_boundary(row) for row in rows]
 
     def record_pending_nodes_sync(self, boundaries: Sequence[PendingNode]) -> None:
         """Sync mirror of :meth:`record_pending_nodes`."""
@@ -986,15 +891,14 @@ class SqliteCheckpointer(Checkpointer):
             return
         with self._sync_lock:
             db = self._sync_db()
-            db.executemany(_PENDING_NODE_UPSERT_SQL, [self._pending_node_params(b) for b in boundaries])
+            db.executemany(_PENDING_NODE_UPSERT_SQL, [pending_node_params(b) for b in boundaries])
             db.commit()
 
     def get_node_boundaries_sync(self, run_id: str) -> list[NodeBoundary]:
         """Sync mirror of :meth:`get_node_boundaries`."""
         with self._sync_lock:
-            db = self._sync_db()
-            rows = db.execute(_NODE_BOUNDARY_SELECT_SQL, (run_id,)).fetchall()
-        return [_row_to_node_boundary(row) for row in rows]
+            rows = self._sync_db().execute(_NODE_BOUNDARY_SELECT_SQL, (run_id,)).fetchall()
+        return [row_to_node_boundary(row) for row in rows]
 
     # === Durable pause slots (PRD 0010) ===
 
@@ -1029,27 +933,19 @@ class SqliteCheckpointer(Checkpointer):
         a replayed occurrence leaves the WHOLE stored row alone.
         """
         await self._ensure_db()
+        sql, params = _run_status_update(WorkflowStatus.PAUSED, totals)
         async with self._txn_lock():
             try:
-                await self._db.execute("BEGIN IMMEDIATE")
+                await self._db.execute(_BEGIN_IMMEDIATE)
                 for record in step_records:
                     await self._db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
                 if step_records:
                     await self._apply_retention_policy_async(slot.run_id)
-                await self._db.execute(_PAUSE_SLOT_INSERT_SQL, _pause_slot_insert_params(slot))
-                sql, params = _run_status_update(WorkflowStatus.PAUSED, totals)
+                await self._db.execute(_PAUSE_SLOT_INSERT_SQL, pause_slot_insert_params(slot))
                 await self._db.execute(sql, [*params, slot.run_id])
                 for record in step_records:
-                    await self._after_run_mutation(
-                        record.run_id,
-                        "step",
-                        {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
-                    )
-                await self._after_run_mutation(
-                    slot.run_id,
-                    "status",
-                    {"status": WorkflowStatus.PAUSED.value, "pause_id": slot.pause_id},
-                )
+                    await self._after_run_mutation(record.run_id, "step", _step_mutation_payload(record))
+                await self._after_run_mutation(slot.run_id, "status", _pause_mutation_payload(slot))
                 await self._db.commit()
             except BaseException:
                 await self._rollback_async()
@@ -1064,7 +960,7 @@ class SqliteCheckpointer(Checkpointer):
             else:
                 cursor = await self._db.execute(_PAUSE_SLOT_BY_ID_SQL, (run_id, pause_id))
             row = await cursor.fetchone()
-        return _row_to_pause_slot(row) if row is not None else None
+        return row_to_pause_slot(row) if row is not None else None
 
     async def _read_settlement_inputs(self, run_id: str) -> tuple[PauseSlot | None, list[str], WorkflowStatus | None]:
         """The three facts ``_check_settlement`` decides on, read in one place.
@@ -1076,20 +972,18 @@ class SqliteCheckpointer(Checkpointer):
         """
         cursor = await self._db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,))
         row = await cursor.fetchone()
-        current = _row_to_pause_slot(row) if row is not None else None
         ids_cursor = await self._db.execute(_PAUSE_SLOT_IDS_SQL, (run_id,))
-        known = [str(item[0]) for item in await ids_cursor.fetchall()]
-        run_cursor = await self._db.execute("SELECT status FROM runs WHERE id = ?", (run_id,))
+        id_rows = await ids_cursor.fetchall()
+        run_cursor = await self._db.execute(_RUN_STATUS_SQL, (run_id,))
         run_row = await run_cursor.fetchone()
-        return current, known, WorkflowStatus(run_row[0]) if run_row is not None else None
+        return _settlement_inputs(row, id_rows, run_row)
 
     def _read_settlement_inputs_sync(self, db: Any, run_id: str) -> tuple[PauseSlot | None, list[str], WorkflowStatus | None]:
         """Sync mirror of :meth:`_read_settlement_inputs`."""
         row = db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,)).fetchone()
-        current = _row_to_pause_slot(row) if row is not None else None
-        known = [str(item[0]) for item in db.execute(_PAUSE_SLOT_IDS_SQL, (run_id,)).fetchall()]
-        run_row = db.execute("SELECT status FROM runs WHERE id = ?", (run_id,)).fetchone()
-        return current, known, WorkflowStatus(run_row[0]) if run_row is not None else None
+        id_rows = db.execute(_PAUSE_SLOT_IDS_SQL, (run_id,)).fetchall()
+        run_row = db.execute(_RUN_STATUS_SQL, (run_id,)).fetchone()
+        return _settlement_inputs(row, id_rows, run_row)
 
     async def _settle_pause_in_txn(self, run_id: str, *, pause_id: str | None, value: Any) -> PauseSlot:
         """THE settlement body, inside a transaction the CALLER owns.
@@ -1113,17 +1007,10 @@ class SqliteCheckpointer(Checkpointer):
             value=value,
         )
         settled_at = datetime.now(timezone.utc)
-        result = await self._db.execute(
-            _PAUSE_SLOT_SETTLE_SQL,
-            (settled_at.isoformat(), json.dumps(value), slot.pause_id),
-        )
+        result = await self._db.execute(_PAUSE_SLOT_SETTLE_SQL, _pause_settle_params(slot, settled_at, value))
         if result.rowcount != 1:
             raise _lost_settlement_race(run_id, slot.pause_id)
-        await self._after_run_mutation(
-            run_id,
-            "answer",
-            {"pause_id": slot.pause_id, "response_key": slot.response_key},
-        )
+        await self._after_run_mutation(run_id, "answer", _answer_mutation_payload(slot))
         return replace(slot, settled_at=settled_at, answer=value)
 
     async def settle_pause(self, run_id: str, *, pause_id: str | None = None, value: Any) -> PauseSlot:
@@ -1144,7 +1031,7 @@ class SqliteCheckpointer(Checkpointer):
         await self._ensure_db()
         async with self._txn_lock():
             try:
-                await self._db.execute("BEGIN IMMEDIATE")
+                await self._db.execute(_BEGIN_IMMEDIATE)
                 slot = await self._settle_pause_in_txn(run_id, pause_id=pause_id, value=value)
                 await self._db.commit()
                 return slot
@@ -1160,30 +1047,20 @@ class SqliteCheckpointer(Checkpointer):
         totals: RunTotals = NO_RUN_TOTALS,
     ) -> None:
         """Sync mirror of :meth:`record_pause`."""
+        status_sql, status_params = _run_status_update(WorkflowStatus.PAUSED, totals)
         with self._sync_lock:
             db = self._sync_db()
             try:
-                db.execute("BEGIN IMMEDIATE")
+                db.execute(_BEGIN_IMMEDIATE)
                 for record in step_records:
                     db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
                 if step_records:
                     self._apply_retention_policy_sync(slot.run_id)
-                db.execute(_PAUSE_SLOT_INSERT_SQL, _pause_slot_insert_params(slot))
-                sql, params = _run_status_update(WorkflowStatus.PAUSED, totals)
-                db.execute(sql, [*params, slot.run_id])
+                db.execute(_PAUSE_SLOT_INSERT_SQL, pause_slot_insert_params(slot))
+                db.execute(status_sql, [*status_params, slot.run_id])
                 for record in step_records:
-                    self._after_run_mutation_sync(
-                        db,
-                        record.run_id,
-                        "step",
-                        {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
-                    )
-                self._after_run_mutation_sync(
-                    db,
-                    slot.run_id,
-                    "status",
-                    {"status": WorkflowStatus.PAUSED.value, "pause_id": slot.pause_id},
-                )
+                    self._after_run_mutation_sync(db, record.run_id, "step", _step_mutation_payload(record))
+                self._after_run_mutation_sync(db, slot.run_id, "status", _pause_mutation_payload(slot))
                 db.commit()
             except BaseException:
                 self._rollback_sync(db)
@@ -1197,7 +1074,7 @@ class SqliteCheckpointer(Checkpointer):
                 row = db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,)).fetchone()
             else:
                 row = db.execute(_PAUSE_SLOT_BY_ID_SQL, (run_id, pause_id)).fetchone()
-        return _row_to_pause_slot(row) if row is not None else None
+        return row_to_pause_slot(row) if row is not None else None
 
     def _settle_pause_in_txn_sync(self, db: Any, run_id: str, *, pause_id: str | None, value: Any) -> PauseSlot:
         """Sync mirror of :meth:`_settle_pause_in_txn`; caller owns the transaction."""
@@ -1211,18 +1088,10 @@ class SqliteCheckpointer(Checkpointer):
             value=value,
         )
         settled_at = datetime.now(timezone.utc)
-        result = db.execute(
-            _PAUSE_SLOT_SETTLE_SQL,
-            (settled_at.isoformat(), json.dumps(value), slot.pause_id),
-        )
+        result = db.execute(_PAUSE_SLOT_SETTLE_SQL, _pause_settle_params(slot, settled_at, value))
         if result.rowcount != 1:
             raise _lost_settlement_race(run_id, slot.pause_id)
-        self._after_run_mutation_sync(
-            db,
-            run_id,
-            "answer",
-            {"pause_id": slot.pause_id, "response_key": slot.response_key},
-        )
+        self._after_run_mutation_sync(db, run_id, "answer", _answer_mutation_payload(slot))
         return replace(slot, settled_at=settled_at, answer=value)
 
     def settle_pause_sync(self, run_id: str, *, pause_id: str | None = None, value: Any) -> PauseSlot:
@@ -1230,7 +1099,7 @@ class SqliteCheckpointer(Checkpointer):
         with self._sync_lock:
             db = self._sync_db()
             try:
-                db.execute("BEGIN IMMEDIATE")
+                db.execute(_BEGIN_IMMEDIATE)
                 slot = self._settle_pause_in_txn_sync(db, run_id, pause_id=pause_id, value=value)
                 db.commit()
                 return slot
@@ -1260,54 +1129,23 @@ class SqliteCheckpointer(Checkpointer):
         the very state resume needs. See ``get_checkpoint``.
         """
         await self._ensure_db()
-        now = datetime.now(timezone.utc)
-        config_json = json.dumps(config) if config is not None else None
-        inputs_blob = _serialize_run_inputs(self._serializer, run_id, inputs)
-        async with self._txn_lock():
-            await self._db.execute(
-                "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config, inputs_data) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, duration_ms = NULL, node_count = 0, "
-                "error_count = 0, completed_at = NULL, parent_run_id = ?, forked_from = ?, "
-                "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?, "
-                "inputs_data = COALESCE(runs.inputs_data, ?)",
-                (
-                    run_id,
-                    WorkflowStatus.ACTIVE.value,
-                    graph_name or "",
-                    now.isoformat(),
-                    parent_run_id,
-                    forked_from,
-                    fork_superstep,
-                    retry_of,
-                    retry_index,
-                    config_json,
-                    inputs_blob,
-                    WorkflowStatus.ACTIVE.value,
-                    graph_name or "",
-                    parent_run_id,
-                    forked_from,
-                    fork_superstep,
-                    retry_of,
-                    retry_index,
-                    config_json,
-                    inputs_blob,
-                ),
-            )
-            await self._after_run_mutation(run_id, "run_started", {"graph_name": graph_name or ""})
-            await self._db.commit()
-        return Run(
-            id=run_id,
-            status=WorkflowStatus.ACTIVE,
+        params, run = run_upsert(
+            run_id,
             graph_name=graph_name,
+            created_at=datetime.now(timezone.utc),
             parent_run_id=parent_run_id,
             forked_from=forked_from,
             fork_superstep=fork_superstep,
             retry_of=retry_of,
             retry_index=retry_index,
             config=config,
-            created_at=now,
+            inputs_blob=serialize_run_inputs(self._serializer, run_id, inputs),
         )
+        async with self._txn_lock():
+            await self._db.execute(_RUN_UPSERT_SQL, params)
+            await self._after_run_mutation(run_id, "run_started", {"graph_name": graph_name or ""})
+            await self._db.commit()
+        return run
 
     async def update_run_status(
         self,
@@ -1336,38 +1174,33 @@ class SqliteCheckpointer(Checkpointer):
         """
         await self._ensure_db()
         async with self._txn_lock():
-            cursor = await self._db.execute("SELECT inputs_data FROM runs WHERE id = ?", (run_id,))
+            cursor = await self._db.execute(_RUN_INPUTS_SQL, (run_id,))
             row = await cursor.fetchone()
-        return _deserialize_run_inputs(self._serializer, row)
+        return deserialize_run_inputs(self._serializer, row)
 
     def get_run_inputs_sync(self, run_id: str) -> dict[str, Any]:
         """Sync mirror of ``get_run_inputs``."""
         with self._sync_lock:
-            row = self._sync_db().execute("SELECT inputs_data FROM runs WHERE id = ?", (run_id,)).fetchone()
-        return _deserialize_run_inputs(self._serializer, row)
+            row = self._sync_db().execute(_RUN_INPUTS_SQL, (run_id,)).fetchone()
+        return deserialize_run_inputs(self._serializer, row)
+
+    def _fold_step_values(self, rows: Iterable[Any]) -> dict[str, Any]:
+        """Fold ``(values_blob,)`` rows into one state, oldest write first."""
+        state: dict[str, Any] = {}
+        for (values_blob,) in rows:
+            if values_blob is not None:
+                values = self._serializer.deserialize(values_blob)
+                if values:
+                    state.update(values)
+        return state
 
     async def get_state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:
         """Compute state by folding step values in timestamp execution order."""
         await self._ensure_db()
+        sql, params = _state_query(run_id, superstep)
         async with self._txn_lock():
-            if superstep is not None:
-                cursor = await self._db.execute(
-                    f"SELECT values_data FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY {_STEP_TIME_ORDER}",
-                    (run_id, superstep),
-                )
-            else:
-                cursor = await self._db.execute(
-                    f"SELECT values_data FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
-                    (run_id,),
-                )
-
-            state: dict[str, Any] = {}
-            async for (values_blob,) in cursor:
-                if values_blob is not None:
-                    values = self._serializer.deserialize(values_blob)
-                    if values:
-                        state.update(values)
-            return state
+            cursor = await self._db.execute(sql, params)
+            return self._fold_step_values(await cursor.fetchall())
 
     # -- Batched projection reads ---------------------------------------------
     #
@@ -1398,12 +1231,8 @@ class SqliteCheckpointer(Checkpointer):
         await self._ensure_db()
         states: dict[str, dict[str, Any]] = {}
         for chunk in self._chunk_run_ids(run_ids):
-            placeholders = ",".join("?" * len(chunk))
             async with self._txn_lock():
-                cursor = await self._db.execute(
-                    f"SELECT run_id, values_data FROM steps WHERE run_id IN ({placeholders}) ORDER BY run_id, {_STEP_TIME_ORDER}",
-                    chunk,
-                )
+                cursor = await self._db.execute(_states_query(chunk), chunk)
                 rows = await cursor.fetchall()
             states.update(self._fold_states(rows))
         return states
@@ -1412,16 +1241,8 @@ class SqliteCheckpointer(Checkpointer):
         """Sync mirror of ``get_states``."""
         states: dict[str, dict[str, Any]] = {}
         for chunk in self._chunk_run_ids(run_ids):
-            placeholders = ",".join("?" * len(chunk))
             with self._sync_lock:
-                rows = (
-                    self._sync_db()
-                    .execute(
-                        f"SELECT run_id, values_data FROM steps WHERE run_id IN ({placeholders}) ORDER BY run_id, {_STEP_TIME_ORDER}",
-                        chunk,
-                    )
-                    .fetchall()
-                )
+                rows = self._sync_db().execute(_states_query(chunk), chunk).fetchall()
             states.update(self._fold_states(rows))
         return states
 
@@ -1434,13 +1255,8 @@ class SqliteCheckpointer(Checkpointer):
         await self._ensure_db()
         failures: dict[str, tuple[str, str | None, int | None]] = {}
         for chunk in self._chunk_run_ids(run_ids):
-            placeholders = ",".join("?" * len(chunk))
             async with self._txn_lock():
-                cursor = await self._db.execute(
-                    f"SELECT run_id, error, node_name, superstep FROM steps "
-                    f"WHERE run_id IN ({placeholders}) AND error IS NOT NULL ORDER BY run_id, {_STEP_TIME_ORDER}",
-                    chunk,
-                )
+                cursor = await self._db.execute(_failures_query(chunk), chunk)
                 rows = await cursor.fetchall()
             _collect_first_failures(rows, failures)
         return failures
@@ -1449,17 +1265,8 @@ class SqliteCheckpointer(Checkpointer):
         """Sync mirror of ``get_step_failures``."""
         failures: dict[str, tuple[str, str | None, int | None]] = {}
         for chunk in self._chunk_run_ids(run_ids):
-            placeholders = ",".join("?" * len(chunk))
             with self._sync_lock:
-                rows = (
-                    self._sync_db()
-                    .execute(
-                        f"SELECT run_id, error, node_name, superstep FROM steps "
-                        f"WHERE run_id IN ({placeholders}) AND error IS NOT NULL ORDER BY run_id, {_STEP_TIME_ORDER}",
-                        chunk,
-                    )
-                    .fetchall()
-                )
+                rows = self._sync_db().execute(_failures_query(chunk), chunk).fetchall()
             _collect_first_failures(rows, failures)
         return failures
 
@@ -1472,22 +1279,10 @@ class SqliteCheckpointer(Checkpointer):
     ) -> list[StepRecord]:
         """Get step records in execution order."""
         await self._ensure_db()
-
-        conditions = ["run_id = ?"]
-        params: list[Any] = [run_id]
-        if superstep is not None:
-            conditions.append("superstep <= ?")
-            params.append(superstep)
-        if not show_internal:
-            conditions.append(_PUBLIC_STEP_FILTER)
-
+        sql, params = _steps_query(run_id, superstep=superstep, show_internal=show_internal)
         async with self._txn_lock():
-            cursor = await self._db.execute(
-                f"SELECT {_STEPS_COLS} FROM steps WHERE {' AND '.join(conditions)} ORDER BY {_STEP_TIME_ORDER}",
-                params,
-            )
-            rows = await cursor.fetchall()
-            return StepTable(self._row_to_step(row) for row in rows)
+            cursor = await self._db.execute(sql, params)
+            return StepTable(self._row_to_step(row) for row in await cursor.fetchall())
 
     async def retry_workflow_async(
         self,
@@ -1501,24 +1296,18 @@ class SqliteCheckpointer(Checkpointer):
         source = await self.get_run_async(source_run_id)
         if source is None:
             raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
+        sql, params = _run_count_query(retry_of=source_run_id)
         async with self._txn_lock():
-            cursor = await self._db.execute("SELECT COUNT(*) FROM runs WHERE retry_of = ?", (source_run_id,))
+            cursor = await self._db.execute(sql, params)
             (retry_count,) = await cursor.fetchone()
-        retry_index = int(retry_count or 0) + 1
         checkpoint = await self.get_checkpoint(source_run_id, superstep=superstep)
-        checkpoint.retry_of = source_run_id
-        checkpoint.retry_index = retry_index
-        new_workflow_id = workflow_id or f"{source_run_id}-retry-{retry_index}"
-        return new_workflow_id, checkpoint
+        return _as_retry(checkpoint, source_run_id, retry_count, workflow_id)
 
     async def get_run_async(self, run_id: str) -> Run | None:
         """Get run metadata, including the run's current pause occurrence."""
         await self._ensure_db()
         async with self._txn_lock():
-            cursor = await self._db.execute(
-                f"SELECT {_RUNS_COLS} FROM runs WHERE id = ?",
-                (run_id,),
-            )
+            cursor = await self._db.execute(_RUN_BY_ID_SQL, (run_id,))
             row = await cursor.fetchone()
             if row is None:
                 return None
@@ -1526,7 +1315,7 @@ class SqliteCheckpointer(Checkpointer):
             slot_cursor = await self._db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,))
             slot_row = await slot_cursor.fetchone()
         if slot_row is not None:
-            run.pause_slot = _row_to_pause_slot(slot_row)
+            run.pause_slot = row_to_pause_slot(slot_row)
         return run
 
     async def list_runs(
@@ -1540,36 +1329,16 @@ class SqliteCheckpointer(Checkpointer):
     ) -> list[Run]:
         """List runs, optionally filtered by status and/or parent."""
         await self._ensure_db()
-
-        conditions: list[str] = []
-        params: list[Any] = []
-
-        if status is not None:
-            conditions.append("status = ?")
-            params.append(status.value)
-        if graph_name is not None:
-            conditions.append("graph_name = ?")
-            params.append(graph_name)
-        if since is not None:
-            conditions.append("created_at >= ?")
-            params.append(_normalize_since(since).isoformat())
-        if parent_run_id is not _UNSET:
-            if parent_run_id is None:
-                conditions.append("parent_run_id IS NULL")
-            else:
-                conditions.append("parent_run_id = ?")
-                params.append(parent_run_id)
-
-        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-        query = f"SELECT {_RUNS_COLS} FROM runs{where} ORDER BY created_at DESC"
-        if limit is not None:
-            query += " LIMIT ?"
-            params.append(limit)
-
+        query, params = _runs_query(
+            status=status,
+            graph_name=graph_name,
+            since=since,
+            parent_run_id=parent_run_id,
+            limit=limit,
+        )
         async with self._txn_lock():
             cursor = await self._db.execute(query, params)
-            rows = await cursor.fetchall()
-            return RunTable(self._row_to_run(row) for row in rows)
+            return RunTable(self._row_to_run(row) for row in await cursor.fetchall())
 
     async def count_runs(
         self,
@@ -1580,52 +1349,27 @@ class SqliteCheckpointer(Checkpointer):
     ) -> int:
         """Count runs without materializing full run records."""
         await self._ensure_db()
-
-        conditions: list[str] = []
-        params: list[Any] = []
-        if status is not None:
-            conditions.append("status = ?")
-            params.append(status.value)
-        if parent_run_id is not _UNSET:
-            if parent_run_id is None:
-                conditions.append("parent_run_id IS NULL")
-            else:
-                conditions.append("parent_run_id = ?")
-                params.append(parent_run_id)
-        if retry_of is not None:
-            conditions.append("retry_of = ?")
-            params.append(retry_of)
-
-        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        query, params = _run_count_query(status=status, parent_run_id=parent_run_id, retry_of=retry_of)
         async with self._txn_lock():
-            cursor = await self._db.execute(f"SELECT COUNT(*) FROM runs{where}", params)
+            cursor = await self._db.execute(query, params)
             (count,) = await cursor.fetchone()
             return int(count or 0)
 
     _FTS_FIELDS = frozenset({"node_name", "error"})
 
+    def _search_query(self, query: str, *, field: str | None, limit: int) -> tuple[str, tuple[Any, ...]]:
+        """The FTS5 step search, refusing a field the index cannot match on."""
+        if field is not None and field not in self._FTS_FIELDS:
+            raise ValueError(f"Invalid search field: {field!r}. Must be one of {sorted(self._FTS_FIELDS)}")
+        return _SEARCH_STEPS_SQL, (f"{field}:{query}" if field else query, limit)
+
     async def search_async(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
         """Search steps using FTS5 (async)."""
         await self._ensure_db()
-
-        if field is not None and field not in self._FTS_FIELDS:
-            raise ValueError(f"Invalid search field: {field!r}. Must be one of {sorted(self._FTS_FIELDS)}")
-        fts_query = f"{field}:{query}" if field else query
-
-        cols = ", ".join(f"s.{c.strip()}" for c in _STEPS_COLS.split(","))
+        sql, params = self._search_query(query, field=field, limit=limit)
         async with self._txn_lock():
-            cursor = await self._db.execute(
-                f"""
-                SELECT {cols} FROM steps s
-                JOIN steps_fts fts ON s.id = fts.rowid
-                WHERE steps_fts MATCH ? AND {_PUBLIC_STEP_FILTER_WITH_ALIAS}
-                ORDER BY {_STEP_TIME_ORDER_DESC_WITH_ALIAS}
-                LIMIT ?
-                """,
-                (fts_query, limit),
-            )
-            rows = await cursor.fetchall()
-            return StepTable(self._row_to_step(row) for row in rows)
+            cursor = await self._db.execute(sql, params)
+            return StepTable(self._row_to_step(row) for row in await cursor.fetchall())
 
     # === Attempt Ledger (async) ===
     #
@@ -1650,22 +1394,22 @@ class SqliteCheckpointer(Checkpointer):
     async def _fetch_attempt_series(self, series_id: str) -> AttemptSeries | None:
         cursor = await self._db.execute(_ATTEMPT_SERIES_BY_ID_SQL, (series_id,))
         row = await cursor.fetchone()
-        return _row_to_attempt_series(row) if row is not None else None
+        return row_to_attempt_series(row) if row is not None else None
 
     async def _fetch_open_series(self, run_id: str, node_name: str) -> AttemptSeries | None:
         cursor = await self._db.execute(_ATTEMPT_SERIES_OPEN_SQL, (run_id, node_name))
         row = await cursor.fetchone()
-        return _row_to_attempt_series(row) if row is not None else None
+        return row_to_attempt_series(row) if row is not None else None
 
     async def _fetch_attempt_record(self, series_id: str, attempt_number: int) -> AttemptRecord | None:
         cursor = await self._db.execute(_ATTEMPT_RECORD_SQL, (series_id, attempt_number))
         row = await cursor.fetchone()
-        return _row_to_attempt_record(row) if row is not None else None
+        return row_to_attempt_record(row) if row is not None else None
 
     async def _fetch_attempt_records(self, series_id: str) -> list[AttemptRecord]:
         cursor = await self._db.execute(_ATTEMPT_RECORDS_SQL, (series_id,))
         rows = await cursor.fetchall()
-        return [_row_to_attempt_record(row) for row in rows]
+        return [row_to_attempt_record(row) for row in rows]
 
     @staticmethod
     def _check_settled_exactly_one(rowcount: int, what: str) -> None:
@@ -1685,20 +1429,12 @@ class SqliteCheckpointer(Checkpointer):
         await self._ensure_db()
         async with self._txn_lock():
             try:
-                await self._db.execute("BEGIN IMMEDIATE")
+                await self._db.execute(_BEGIN_IMMEDIATE)
                 cursor = await self._db.execute(_RUN_EXISTS_SQL, (run_id,))
                 _check_run_exists(await cursor.fetchone() is not None, run_id)
                 _check_no_open_series(await self._fetch_open_series(run_id, node_name), run_id, node_name)
-                series = AttemptSeries(
-                    id=_new_attempt_series_id(),
-                    run_id=run_id,
-                    node_name=node_name,
-                    policy_fingerprint=policy_fingerprint,
-                    max_attempts=max_attempts,
-                    opened_at=datetime.now(timezone.utc),
-                    deadline_at=deadline_at,
-                )
-                await self._db.execute(_ATTEMPT_SERIES_INSERT_SQL, _attempt_series_insert_params(series))
+                series = _new_series(run_id, node_name, policy_fingerprint, max_attempts, deadline_at)
+                await self._db.execute(_ATTEMPT_SERIES_INSERT_SQL, attempt_series_insert_params(series))
                 await self._db.commit()
                 return series
             except BaseException:
@@ -1739,7 +1475,7 @@ class SqliteCheckpointer(Checkpointer):
         now = datetime.now(timezone.utc)
         async with self._txn_lock():
             try:
-                await self._db.execute("BEGIN IMMEDIATE")
+                await self._db.execute(_BEGIN_IMMEDIATE)
                 series = _require_series(await self._fetch_attempt_series(series_id), series_id)
                 cursor = await self._db.execute(_ATTEMPT_COUNT_SQL, (series_id,))
                 (consumed,) = await cursor.fetchone()
@@ -1747,17 +1483,11 @@ class SqliteCheckpointer(Checkpointer):
                 # A STARTED row may belong to a live invocation — never reserve over it.
                 cursor = await self._db.execute(_ATTEMPT_LIVE_SQL, (series_id,))
                 live_row = await cursor.fetchone()
-                _check_no_live_reservation(_row_to_attempt_record(live_row) if live_row is not None else None, series_id)
+                _check_no_live_reservation(row_to_attempt_record(live_row) if live_row is not None else None, series_id)
                 cursor = await self._db.execute(_ATTEMPT_MAX_NUMBER_SQL, (series_id,))
                 (max_number,) = await cursor.fetchone()
-                record = AttemptRecord(
-                    series_id=series_id,
-                    attempt_number=int(max_number) + 1,
-                    scheduled_superstep=scheduled_superstep,
-                    status=AttemptStatus.STARTED,
-                    started_at=now,
-                )
-                await self._db.execute(_ATTEMPT_RECORD_INSERT_SQL, _attempt_record_insert_params(record))
+                record = _next_attempt(series_id, max_number, scheduled_superstep, now)
+                await self._db.execute(_ATTEMPT_RECORD_INSERT_SQL, attempt_record_insert_params(record))
                 await self._db.commit()
                 return record
             except BaseException:
@@ -1779,23 +1509,22 @@ class SqliteCheckpointer(Checkpointer):
         now = datetime.now(timezone.utc)
         async with self._txn_lock():
             try:
-                await self._db.execute("BEGIN IMMEDIATE")
+                await self._db.execute(_BEGIN_IMMEDIATE)
                 _require_series(await self._fetch_attempt_series(series_id), series_id)
                 record = _require_started(await self._fetch_attempt_record(series_id, attempt_number), series_id, attempt_number)
                 cursor = await self._db.execute(
                     _ATTEMPT_OUTCOME_SQL,
-                    (
-                        status.value,
-                        now.isoformat(),
-                        error.type_name if error else None,
-                        error.message if error else None,
-                        _iso_or_none(retry_not_before),
-                        sampled_delay,
+                    attempt_outcome_params(
                         series_id,
                         attempt_number,
+                        status,
+                        now=now,
+                        error=error,
+                        retry_not_before=retry_not_before,
+                        sampled_delay=sampled_delay,
                     ),
                 )
-                self._check_settled_exactly_one(cursor.rowcount, f"Attempt #{attempt_number} in series {series_id!r}")
+                self._check_settled_exactly_one(cursor.rowcount, _attempt_label(series_id, attempt_number))
                 await self._db.commit()
                 return replace(
                     record,
@@ -1817,27 +1546,17 @@ class SqliteCheckpointer(Checkpointer):
         await self._ensure_db()
         async with self._txn_lock():
             try:
-                await self._db.execute("BEGIN IMMEDIATE")
+                await self._db.execute(_BEGIN_IMMEDIATE)
                 _require_series(await self._fetch_attempt_series(series_id), series_id)
                 record = _require_started(
                     await self._fetch_attempt_record(series_id, attempt_number),
                     series_id,
                     attempt_number,
                 )
-                cursor = await self._db.execute(
-                    _ATTEMPT_DEADLINE_SQL,
-                    (series_id, attempt_number),
-                )
-                self._check_settled_exactly_one(
-                    cursor.rowcount,
-                    f"Attempt #{attempt_number} in series {series_id!r}",
-                )
+                cursor = await self._db.execute(_ATTEMPT_DEADLINE_SQL, (series_id, attempt_number))
+                self._check_settled_exactly_one(cursor.rowcount, _attempt_label(series_id, attempt_number))
                 await self._db.commit()
-                return replace(
-                    record,
-                    deadline_elapsed=True,
-                    cancellation_requested=True,
-                )
+                return replace(record, deadline_elapsed=True, cancellation_requested=True)
             except BaseException:
                 await self._rollback_async()
                 raise
@@ -1855,35 +1574,23 @@ class SqliteCheckpointer(Checkpointer):
         now = datetime.now(timezone.utc)
         async with self._txn_lock():
             try:
-                await self._db.execute("BEGIN IMMEDIATE")
+                await self._db.execute(_BEGIN_IMMEDIATE)
                 series = _require_series(await self._fetch_attempt_series(series_id), series_id)
                 _check_close_request(series, status, step_record)
                 record = await self._fetch_attempt_record(series_id, attempt_number)
                 cursor = await self._db.execute(_ATTEMPT_MAX_NUMBER_SQL, (series_id,))
                 (max_number,) = await cursor.fetchone()
-                settle = _check_closable(record, series_id, attempt_number, status, int(max_number))
-                if settle:
+                if _check_closable(record, series_id, attempt_number, status, int(max_number)):
                     cursor = await self._db.execute(
                         _ATTEMPT_FINAL_SQL,
-                        (
-                            status.value,
-                            now.isoformat(),
-                            error.type_name if error else None,
-                            error.message if error else None,
-                            series_id,
-                            attempt_number,
-                        ),
+                        attempt_final_params(series_id, attempt_number, status, now=now, error=error),
                     )
-                    self._check_settled_exactly_one(cursor.rowcount, f"Attempt #{attempt_number} in series {series_id!r}")
+                    self._check_settled_exactly_one(cursor.rowcount, _attempt_label(series_id, attempt_number))
                 await self._db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(step_record))
                 cursor = await self._db.execute(_ATTEMPT_SERIES_CLOSE_SQL, (now.isoformat(), step_record.superstep, series_id))
                 self._check_settled_exactly_one(cursor.rowcount, f"Attempt series {series_id!r}")
                 await self._apply_retention_policy_async(step_record.run_id)
-                await self._after_run_mutation(
-                    step_record.run_id,
-                    "step",
-                    {"node_name": step_record.node_name, "superstep": step_record.superstep, "status": step_record.status.value},
-                )
+                await self._after_run_mutation(step_record.run_id, "step", _step_mutation_payload(step_record))
                 await self._before_step_commit(step_record)
                 await self._db.commit()
             except BaseException:
@@ -1896,12 +1603,9 @@ class SqliteCheckpointer(Checkpointer):
         now = datetime.now(timezone.utc)
         async with self._txn_lock():
             try:
-                await self._db.execute("BEGIN IMMEDIATE")
+                await self._db.execute(_BEGIN_IMMEDIATE)
                 _require_series(await self._fetch_attempt_series(series_id), series_id)
-                await self._db.execute(
-                    _ATTEMPT_SETTLE_STRANDED_SQL,
-                    (AttemptStatus.OUTCOME_UNKNOWN.value, now.isoformat(), series_id, AttemptStatus.STARTED.value),
-                )
+                await self._db.execute(_ATTEMPT_SETTLE_STRANDED_SQL, _stranded_params(series_id, now))
                 await self._db.commit()
                 return await self._fetch_attempt_records(series_id)
             except BaseException:
@@ -1910,63 +1614,13 @@ class SqliteCheckpointer(Checkpointer):
 
     # === Internal ===
 
-    def _row_to_step(self, row: tuple[Any, ...]) -> StepRecord:
-        """Convert a database row (``_STEPS_COLS`` order) to StepRecord.
+    def _row_to_step(self, row: Sequence[Any]) -> StepRecord:
+        """Convert a ``_STEPS_COLS`` row to a StepRecord."""
+        return row_to_step(self._serializer, row)
 
-        Columns: id, run_id, step_index, superstep, node_name, node_type,
-                 status, duration_ms, cached, error, decision, input_versions,
-                 values_data, child_run_id, created_at, completed_at, partial,
-                 attempt_series_id, folded_producers (trailing columns
-                 len-guarded for old rows).
-        """
-        values_blob = row[12]
-        values = self._serializer.deserialize(values_blob) if values_blob is not None else None
-        input_versions = json.loads(row[11]) if row[11] else {}
-        decision_raw = row[10]
-        decision = json.loads(decision_raw) if decision_raw else None
-
-        return StepRecord(
-            run_id=row[1],
-            superstep=row[3],
-            node_name=row[4],
-            index=row[2],
-            status=StepStatus(row[6]),
-            input_versions=input_versions,
-            values=values,
-            duration_ms=row[7],
-            cached=bool(row[8]),
-            decision=decision,
-            error=row[9],
-            node_type=row[5],
-            created_at=_parse_dt(row[14]),  # type: ignore[arg-type]
-            completed_at=_parse_dt(row[15]),
-            child_run_id=row[13],
-            partial=bool(row[16]) if len(row) > 16 and row[16] is not None else False,
-            attempt_series_id=row[17] if len(row) > 17 else None,
-            folded_producers=_decode_folded_producers(row[18]) if len(row) > 18 else None,
-        )
-
-    def _row_to_run(self, row: tuple[Any, ...]) -> Run:
-        """Convert a database row to Run."""
-        config_raw = row[13] if len(row) > 13 else None
-        config = json.loads(config_raw) if config_raw else None
-
-        return Run(
-            id=row[0],
-            graph_name=row[1] or None,
-            status=WorkflowStatus(row[2]),
-            duration_ms=row[3],
-            node_count=row[4] or 0,
-            error_count=row[5] or 0,
-            created_at=_parse_dt(row[6]),  # type: ignore[arg-type]
-            completed_at=_parse_dt(row[7]),
-            parent_run_id=row[8],
-            forked_from=row[9] if len(row) > 9 else None,
-            fork_superstep=row[10] if len(row) > 10 else None,
-            retry_of=row[11] if len(row) > 11 else None,
-            retry_index=row[12] if len(row) > 12 else None,
-            config=config,
-        )
+    def _row_to_run(self, row: Sequence[Any]) -> Run:
+        """Convert a ``_RUNS_COLS`` row to a Run."""
+        return row_to_run(row)
 
     # === Sync Reads ===
 
@@ -1998,10 +1652,9 @@ class SqliteCheckpointer(Checkpointer):
                     _ensure_wal(conn)
                     ensure_schema(conn)
                     self._schema_ready = True
-                # Defense-in-depth for same-store references, mirroring the async
-                # connection. Set after ensure_schema so a v4->v5 table rebuild
-                # runs with foreign keys off.
-                conn.execute("PRAGMA foreign_keys=ON")
+                # After ensure_schema, so a v4->v5 table rebuild runs with
+                # foreign keys off.
+                conn.execute(_FOREIGN_KEYS_PRAGMA)
                 self._sync_conn = conn
                 with self._sync_registry_lock:
                     self._sync_connections.append((self._sync_lock, conn))
@@ -2012,26 +1665,9 @@ class SqliteCheckpointer(Checkpointer):
 
         Same as ``get_state`` but uses stdlib ``sqlite3`` — no await needed.
         """
+        sql, params = _state_query(run_id, superstep)
         with self._sync_lock:
-            db = self._sync_db()
-            if superstep is not None:
-                cursor = db.execute(
-                    f"SELECT values_data FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY {_STEP_TIME_ORDER}",
-                    (run_id, superstep),
-                )
-            else:
-                cursor = db.execute(
-                    f"SELECT values_data FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
-                    (run_id,),
-                )
-
-            state: dict[str, Any] = {}
-            for (values_blob,) in cursor:
-                if values_blob is not None:
-                    values = self._serializer.deserialize(values_blob)
-                    if values:
-                        state.update(values)
-            return state
+            return self._fold_step_values(self._sync_db().execute(sql, params))
 
     def steps(
         self,
@@ -2041,33 +1677,22 @@ class SqliteCheckpointer(Checkpointer):
         show_internal: bool = False,
     ) -> list[StepRecord]:
         """Get step records synchronously."""
+        sql, params = _steps_query(run_id, superstep=superstep, show_internal=show_internal)
         with self._sync_lock:
-            db = self._sync_db()
-            conditions = ["run_id = ?"]
-            params: list[Any] = [run_id]
-            if superstep is not None:
-                conditions.append("superstep <= ?")
-                params.append(superstep)
-            if not show_internal:
-                conditions.append(_PUBLIC_STEP_FILTER)
-            cursor = db.execute(
-                f"SELECT {_STEPS_COLS} FROM steps WHERE {' AND '.join(conditions)} ORDER BY {_STEP_TIME_ORDER}",
-                params,
-            )
-            return StepTable(self._row_to_step(row) for row in cursor.fetchall())
+            rows = self._sync_db().execute(sql, params).fetchall()
+        return StepTable(self._row_to_step(row) for row in rows)
 
     def get_run(self, run_id: str) -> Run | None:
         """Get run metadata synchronously, including its current pause occurrence."""
         with self._sync_lock:
             db = self._sync_db()
-            cursor = db.execute(f"SELECT {_RUNS_COLS} FROM runs WHERE id = ?", (run_id,))
-            row = cursor.fetchone()
+            row = db.execute(_RUN_BY_ID_SQL, (run_id,)).fetchone()
             if row is None:
                 return None
             run = self._row_to_run(row)
             slot_row = db.execute(_PAUSE_SLOT_CURRENT_SQL, (run_id,)).fetchone()
         if slot_row is not None:
-            run.pause_slot = _row_to_pause_slot(slot_row)
+            run.pause_slot = row_to_pause_slot(slot_row)
         return run
 
     def runs(
@@ -2087,35 +1712,16 @@ class SqliteCheckpointer(Checkpointer):
                 None → top-level only (no parent).
                 "X" → children of run X.
         """
+        query, params = _runs_query(
+            status=status,
+            graph_name=graph_name,
+            since=since,
+            parent_run_id=parent_run_id,
+            limit=limit,
+        )
         with self._sync_lock:
-            db = self._sync_db()
-            conditions = []
-            params: list[Any] = []
-
-            if status is not None:
-                conditions.append("status = ?")
-                params.append(status.value)
-            if graph_name is not None:
-                conditions.append("graph_name = ?")
-                params.append(graph_name)
-            if since is not None:
-                conditions.append("created_at >= ?")
-                params.append(_normalize_since(since).isoformat())
-            if parent_run_id is not _UNSET:
-                if parent_run_id is None:
-                    conditions.append("parent_run_id IS NULL")
-                else:
-                    conditions.append("parent_run_id = ?")
-                    params.append(parent_run_id)
-
-            where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-            query = f"SELECT {_RUNS_COLS} FROM runs{where} ORDER BY created_at DESC"
-            if limit is not None:
-                query += " LIMIT ?"
-                params.append(limit)
-
-            cursor = db.execute(query, params)
-            return RunTable(self._row_to_run(row) for row in cursor.fetchall())
+            rows = self._sync_db().execute(query, params).fetchall()
+        return RunTable(self._row_to_run(row) for row in rows)
 
     def lineage(
         self,
@@ -2130,96 +1736,26 @@ class SqliteCheckpointer(Checkpointer):
         ``include_steps=True`` each run can be expanded to inspect its steps.
         """
         with self._sync_lock:
-            selected = self.get_run(workflow_id)
-            if selected is None:
-                raise ValueError(f"Unknown workflow_id: {workflow_id!r}")
-
-            root = selected
-            seen_ancestors = {root.id}
-            while _lineage_parent_id(root):
-                parent_id = _lineage_parent_id(root)
-                if parent_id is None:
-                    break
-                parent = self.get_run(parent_id)
-                if parent is None or parent.id in seen_ancestors:
-                    break
-                root = parent
-                seen_ancestors.add(root.id)
-
-            db = self._sync_db()
-            run_by_id: dict[str, Run] = {root.id: root}
-            children_by_parent: dict[str, list[Run]] = {}
-
-            queue: list[str] = [root.id]
-            while queue and len(run_by_id) < max_runs:
-                parent_id = queue.pop(0)
-                cursor = db.execute(
-                    f"SELECT {_RUNS_COLS} FROM runs WHERE forked_from = ? OR retry_of = ? ORDER BY created_at ASC LIMIT ?",
-                    (parent_id, parent_id, max_runs),
-                )
-                children = [self._row_to_run(row) for row in cursor.fetchall()]
-                children_by_parent[parent_id] = children
-                for child in children:
-                    if child.id in run_by_id:
-                        continue
-                    run_by_id[child.id] = child
-                    if len(run_by_id) >= max_runs:
-                        break
-                    queue.append(child.id)
-
-            rows: list[LineageRow] = [LineageRow(lane="● ", run=root, depth=0, is_selected=(root.id == workflow_id))]
-
-            def _walk(parent_id: str, *, flags: list[bool], depth: int) -> None:
-                children = children_by_parent.get(parent_id, [])
-                for idx, child in enumerate(children):
-                    has_next = idx < len(children) - 1
-                    prefix = "".join("│  " if flag else "   " for flag in flags)
-                    lane = f"{prefix}{'├─ ' if has_next else '└─ '}"
-                    rows.append(
-                        LineageRow(
-                            lane=lane,
-                            run=child,
-                            depth=depth,
-                            is_selected=(child.id == workflow_id),
-                        )
-                    )
-                    _walk(child.id, flags=[*flags, has_next], depth=depth + 1)
-
-            _walk(root.id, flags=[], depth=1)
-
-            steps_by_run: dict[str, StepTable] | None = None
-            if include_steps:
-                steps_by_run = {row.run.id: self.steps(row.run.id) for row in rows}  # type: ignore[misc]
-
-            return LineageView(
-                rows,
-                selected_run_id=workflow_id,
-                root_run_id=root.id,
-                steps_by_run=steps_by_run,
+            return build_lineage(
+                workflow_id,
+                get_run=self.get_run,
+                get_children=self._lineage_children,
+                get_steps=self.steps if include_steps else None,  # type: ignore[arg-type]
+                max_runs=max_runs,
             )
+
+    def _lineage_children(self, parent_id: str, limit: int) -> list[Run]:
+        """Runs forked or retried from ``parent_id``, oldest first."""
+        with self._sync_lock:
+            rows = self._sync_db().execute(_LINEAGE_CHILDREN_SQL, (parent_id, parent_id, limit)).fetchall()
+        return [self._row_to_run(row) for row in rows]
 
     def search(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
         """Search steps using FTS5 (sync)."""
+        sql, params = self._search_query(query, field=field, limit=limit)
         with self._sync_lock:
-            db = self._sync_db()
-
-            if field is not None and field not in self._FTS_FIELDS:
-                raise ValueError(f"Invalid search field: {field!r}. Must be one of {sorted(self._FTS_FIELDS)}")
-            fts_query = f"{field}:{query}" if field else query
-
-            # Use aliased column refs that match _STEPS_COLS order
-            cols = ", ".join(f"s.{c.strip()}" for c in _STEPS_COLS.split(","))
-            cursor = db.execute(
-                f"""
-                SELECT {cols} FROM steps s
-                JOIN steps_fts fts ON s.id = fts.rowid
-                WHERE steps_fts MATCH ? AND {_PUBLIC_STEP_FILTER_WITH_ALIAS}
-                ORDER BY {_STEP_TIME_ORDER_DESC_WITH_ALIAS}
-                LIMIT ?
-                """,
-                (fts_query, limit),
-            )
-            return StepTable(self._row_to_step(row) for row in cursor.fetchall())
+            rows = self._sync_db().execute(sql, params).fetchall()
+        return StepTable(self._row_to_step(row) for row in rows)
 
     def values(self, run_id: str, *, key: str | None = None) -> dict[str, Any]:
         """Get run output values synchronously. Optionally filter to a single key."""
@@ -2232,22 +1768,7 @@ class SqliteCheckpointer(Checkpointer):
     def stats(self, run_id: str) -> dict[str, Any]:
         """Get per-node duration/frequency stats for a run."""
         with self._sync_lock:
-            db = self._sync_db()
-            cursor = db.execute(
-                f"""
-                SELECT node_name, node_type,
-                       COUNT(*) as step_runs,
-                       SUM(duration_ms) as total_ms,
-                       AVG(duration_ms) as avg_ms,
-                       MAX(duration_ms) as max_ms,
-                       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as errors,
-                       SUM(cached) as cache_hits
-                FROM steps WHERE run_id = ? AND {_PUBLIC_STEP_FILTER}
-                GROUP BY node_name
-                ORDER BY total_ms DESC
-                """,
-                (run_id,),
-            )
+            cursor = self._sync_db().execute(_NODE_STATS_SQL, (run_id,))
             return {
                 row[0]: {
                     "node_type": row[1],
@@ -2294,17 +1815,14 @@ class SqliteCheckpointer(Checkpointer):
         superstep: int | None = None,
     ) -> tuple[str, Checkpoint]:
         """Prepare a retry checkpoint + target workflow id (sync)."""
+        sql, params = _run_count_query(retry_of=source_run_id)
         with self._sync_lock:
             db = self._sync_db()
             if self.get_run(source_run_id) is None:
                 raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
-            (retry_count,) = db.execute("SELECT COUNT(*) FROM runs WHERE retry_of = ?", (source_run_id,)).fetchone()
-            retry_index = int(retry_count or 0) + 1
+            (retry_count,) = db.execute(sql, params).fetchone()
             checkpoint = self.checkpoint(source_run_id, superstep=superstep)
-            checkpoint.retry_of = source_run_id
-            checkpoint.retry_index = retry_index
-            new_workflow_id = workflow_id or f"{source_run_id}-retry-{retry_index}"
-            return new_workflow_id, checkpoint
+            return _as_retry(checkpoint, source_run_id, retry_count, workflow_id)
 
     # === Sync Writes (SyncCheckpointerProtocol) ===
 
@@ -2327,53 +1845,22 @@ class SqliteCheckpointer(Checkpointer):
         """
         with self._sync_lock:
             db = self._sync_db()
-            now = datetime.now(timezone.utc)
-            config_json = json.dumps(config) if config is not None else None
-            inputs_blob = _serialize_run_inputs(self._serializer, run_id, inputs)
-            db.execute(
-                "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config, inputs_data) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, duration_ms = NULL, node_count = 0, "
-                "error_count = 0, completed_at = NULL, parent_run_id = ?, forked_from = ?, "
-                "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?, "
-                "inputs_data = COALESCE(runs.inputs_data, ?)",
-                (
-                    run_id,
-                    WorkflowStatus.ACTIVE.value,
-                    graph_name or "",
-                    now.isoformat(),
-                    parent_run_id,
-                    forked_from,
-                    fork_superstep,
-                    retry_of,
-                    retry_index,
-                    config_json,
-                    inputs_blob,
-                    WorkflowStatus.ACTIVE.value,
-                    graph_name or "",
-                    parent_run_id,
-                    forked_from,
-                    fork_superstep,
-                    retry_of,
-                    retry_index,
-                    config_json,
-                    inputs_blob,
-                ),
-            )
-            self._after_run_mutation_sync(db, run_id, "run_started", {"graph_name": graph_name or ""})
-            db.commit()
-            return Run(
-                id=run_id,
-                status=WorkflowStatus.ACTIVE,
+            params, run = run_upsert(
+                run_id,
                 graph_name=graph_name,
+                created_at=datetime.now(timezone.utc),
                 parent_run_id=parent_run_id,
                 forked_from=forked_from,
                 fork_superstep=fork_superstep,
                 retry_of=retry_of,
                 retry_index=retry_index,
                 config=config,
-                created_at=now,
+                inputs_blob=serialize_run_inputs(self._serializer, run_id, inputs),
             )
+            db.execute(_RUN_UPSERT_SQL, params)
+            self._after_run_mutation_sync(db, run_id, "run_started", {"graph_name": graph_name or ""})
+            db.commit()
+            return run
 
     def save_step_sync(self, record: StepRecord) -> None:
         """Save a step with upsert semantics synchronously."""
@@ -2382,12 +1869,7 @@ class SqliteCheckpointer(Checkpointer):
             try:
                 db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(record))
                 self._apply_retention_policy_sync(record.run_id)
-                self._after_run_mutation_sync(
-                    db,
-                    record.run_id,
-                    "step",
-                    {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value},
-                )
+                self._after_run_mutation_sync(db, record.run_id, "step", _step_mutation_payload(record))
                 self._before_step_commit_sync(db, record)
                 db.commit()
             except BaseException:
@@ -2401,228 +1883,54 @@ class SqliteCheckpointer(Checkpointer):
     def _after_step_commit_sync(self, record: StepRecord) -> None:
         """Sync subclass hook that may delay after a committed step."""
 
-    def _merge_retained_state(self, rows: Sequence[_RetentionRow]) -> dict[str, Any]:
-        state: dict[str, Any] = {}
-        for row in rows:
-            values_blob = row.values_data
-            if values_blob is None:
-                continue
-            values = self._serializer.deserialize(values_blob)
-            if values:
-                state.update(values)
-        return state
-
-    def _baseline_timestamp(
-        self,
-        kept_rows: Sequence[_RetentionRow],
-        dropped_rows: Sequence[_RetentionRow],
-    ) -> datetime:
-        if kept_rows:
-            kept_times = [_parse_dt(row.completed_at) or _parse_dt(row.created_at) for row in kept_rows]
-            anchor = min(time for time in kept_times if time is not None)
-            try:
-                return anchor - timedelta(microseconds=1)
-            except OverflowError:
-                return anchor
-
-        dropped_times = [_parse_dt(row.completed_at) or _parse_dt(row.created_at) for row in dropped_rows]
-        return max((time for time in dropped_times if time is not None), default=datetime.now(timezone.utc))
-
-    def _retention_baseline_params(
-        self,
-        run_id: str,
-        *,
-        dropped_rows: Sequence[_RetentionRow],
-        kept_rows: Sequence[_RetentionRow],
-        baseline_superstep: int,
-    ) -> tuple[Any, ...] | None:
-        values = self._merge_retained_state(dropped_rows)
-        if not values:
-            return None
-
-        producers = fold_producers(
-            ((row.node_name, row.status, row.folded_producers) for row in dropped_rows),
-            carrier_node_name=_RETENTION_BASELINE_NODE_NAME,
-        )
-        baseline_at = self._baseline_timestamp(kept_rows, dropped_rows).isoformat()
-        return (
-            run_id,
-            baseline_superstep,
-            _RETENTION_BASELINE_NODE_NAME,
-            min(row.step_index for row in dropped_rows),
-            StepStatus.COMPLETED.value,
-            "{}",
-            self._serializer.serialize(values),
-            0.0,
-            0,
-            None,
-            None,
-            _RETENTION_BASELINE_NODE_TYPE,
-            baseline_at,
-            baseline_at,
-            None,
-            0,
-            None,
-            _encode_folded_producers(producers),
-        )
-
-    @staticmethod
-    def _delete_steps_sql(ids: list[int]) -> str:
-        placeholders = ", ".join("?" for _ in ids)
-        return f"DELETE FROM steps WHERE id IN ({placeholders})"
-
-    @staticmethod
-    def _delete_step_id_batches(ids: Sequence[Any]) -> Iterator[list[Any]]:
-        for start in range(0, len(ids), _DELETE_BATCH_SIZE):
-            yield list(ids[start : start + _DELETE_BATCH_SIZE])
-
-    @staticmethod
-    def _delete_pending_node_batches(
-        rows: Sequence[_RetentionRow],
-    ) -> Iterator[tuple[str, list[Any]]]:
-        """Yield (sql, params) deleting boundary rows for pruned steps.
-
-        A boundary's COMMITTED state is derived from its StepRecord, so a
-        pruned step must take its boundary with it — otherwise retention
-        would silently re-classify settled work as pending. Row-value ``IN``
-        is avoided for old-sqlite portability; the batch size keeps the bind
-        count under the 999-variable floor.
-        """
-        for start in range(0, len(rows), _PENDING_DELETE_BATCH_SIZE):
-            batch = rows[start : start + _PENDING_DELETE_BATCH_SIZE]
-            predicate = " OR ".join("(superstep = ? AND node_name = ?)" for _ in batch)
-            params: list[Any] = []
-            for row in batch:
-                params.extend((row.superstep, row.node_name))
-            yield f"DELETE FROM pending_nodes WHERE run_id = ? AND ({predicate})", params
-
-    @staticmethod
-    def _dropped_series_ids(dropped_rows: Sequence[_RetentionRow]) -> list[str]:
-        return sorted({row.attempt_series_id for row in dropped_rows if row.attempt_series_id is not None})
-
-    @staticmethod
-    def _delete_closed_series_sql(ids: list[str]) -> tuple[str, str]:
-        """SQL pair deleting closed series (+records) whose linked step was dropped.
-
-        Open series are never pruned — the ``closed_at IS NOT NULL`` guard is
-        the enforcement point.
-        """
-        placeholders = ", ".join("?" for _ in ids)
-        records_sql = (
-            f"DELETE FROM attempt_records WHERE series_id IN ({placeholders}) "
-            "AND series_id IN (SELECT id FROM attempt_series WHERE closed_at IS NOT NULL)"
-        )
-        series_sql = f"DELETE FROM attempt_series WHERE id IN ({placeholders}) AND closed_at IS NOT NULL"
-        return records_sql, series_sql
-
-    async def _retention_rows_async(self, run_id: str) -> tuple[_RetentionRow, ...]:
-        cursor = await self._db.execute(
-            f"SELECT {_RETENTION_ROW_COLS} FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
-            (run_id,),
-        )
-        return _decode_retention_rows(await cursor.fetchall())
-
-    def _retention_rows_sync(self, run_id: str) -> tuple[_RetentionRow, ...]:
-        with self._sync_lock:
-            db = self._sync_db()
-            rows = db.execute(
-                f"SELECT {_RETENTION_ROW_COLS} FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
-                (run_id,),
-            ).fetchall()
-            return _decode_retention_rows(rows)
-
-    async def _compact_retention_async(
-        self,
-        run_id: str,
-        *,
-        dropped_rows: Sequence[_RetentionRow],
-        kept_rows: Sequence[_RetentionRow],
-        baseline_superstep: int,
-    ) -> None:
-        if not dropped_rows:
-            return
-
-        baseline_params = self._retention_baseline_params(
-            run_id,
-            dropped_rows=dropped_rows,
-            kept_rows=kept_rows,
-            baseline_superstep=baseline_superstep,
-        )
-        ids = [row.id for row in dropped_rows]
-        for batch in self._delete_step_id_batches(ids):
-            await self._db.execute(self._delete_steps_sql(batch), batch)
-        for sql, params in self._delete_pending_node_batches(dropped_rows):
-            await self._db.execute(sql, [run_id, *params])
-        for series_batch in self._delete_step_id_batches(self._dropped_series_ids(dropped_rows)):
-            records_sql, series_sql = self._delete_closed_series_sql(series_batch)
-            await self._db.execute(records_sql, series_batch)
-            await self._db.execute(series_sql, series_batch)
-        if baseline_params is not None:
-            await self._db.execute(_STEP_UPSERT_SQL, baseline_params)
-
-    def _compact_retention_sync(
-        self,
-        run_id: str,
-        *,
-        dropped_rows: Sequence[_RetentionRow],
-        kept_rows: Sequence[_RetentionRow],
-        baseline_superstep: int,
-    ) -> None:
-        with self._sync_lock:
-            if not dropped_rows:
-                return
-
-            baseline_params = self._retention_baseline_params(
-                run_id,
-                dropped_rows=dropped_rows,
-                kept_rows=kept_rows,
-                baseline_superstep=baseline_superstep,
-            )
-            ids = [row.id for row in dropped_rows]
-            db = self._sync_db()
-            for batch in self._delete_step_id_batches(ids):
-                db.execute(self._delete_steps_sql(batch), batch)
-            for sql, params in self._delete_pending_node_batches(dropped_rows):
-                db.execute(sql, [run_id, *params])
-            for series_batch in self._delete_step_id_batches(self._dropped_series_ids(dropped_rows)):
-                records_sql, series_sql = self._delete_closed_series_sql(series_batch)
-                db.execute(records_sql, series_batch)
-                db.execute(series_sql, series_batch)
-            if baseline_params is not None:
-                db.execute(_STEP_UPSERT_SQL, baseline_params)
+    # === Retention ===
+    #
+    # The policy and the statements live in ``_retention``; these two are the
+    # executors. Whatever the plan says to delete, both halves delete — in the
+    # same order, from the same tables.
 
     async def _apply_retention_policy_async(self, run_id: str) -> None:
         """Apply configured retention policy after persisting a step (async)."""
-        retention = self.policy.retention
-        if retention == "full":
+        if self.policy.retention == "full":
             return
-
-        rows = await self._retention_rows_async(run_id)
-        plan = _plan_retention(rows, retention, self.policy.window)
-        if plan is not None:
-            await self._compact_retention_async(
-                run_id,
-                dropped_rows=plan.dropped_rows,
-                kept_rows=plan.kept_rows,
-                baseline_superstep=plan.baseline_superstep,
-            )
+        cursor = await self._db.execute(_RETENTION_ROWS_SQL, (run_id,))
+        plan = plan_retention(decode_retention_rows(await cursor.fetchall()), self.policy.retention, self.policy.window)
+        if plan is None or not plan.dropped_rows:
+            return
+        baseline = self._baseline_params(run_id, plan)
+        for sql, params in compaction_deletes(run_id, plan.dropped_rows):
+            await self._db.execute(sql, params)
+        if baseline is not None:
+            await self._db.execute(_STEP_UPSERT_SQL, baseline)
 
     def _apply_retention_policy_sync(self, run_id: str) -> None:
         """Apply configured retention policy after persisting a step (sync)."""
         with self._sync_lock:
-            retention = self.policy.retention
-            if retention == "full":
+            if self.policy.retention == "full":
                 return
+            db = self._sync_db()
+            plan = plan_retention(
+                decode_retention_rows(db.execute(_RETENTION_ROWS_SQL, (run_id,)).fetchall()),
+                self.policy.retention,
+                self.policy.window,
+            )
+            if plan is None or not plan.dropped_rows:
+                return
+            baseline = self._baseline_params(run_id, plan)
+            for sql, params in compaction_deletes(run_id, plan.dropped_rows):
+                db.execute(sql, params)
+            if baseline is not None:
+                db.execute(_STEP_UPSERT_SQL, baseline)
 
-            rows = self._retention_rows_sync(run_id)
-            plan = _plan_retention(rows, retention, self.policy.window)
-            if plan is not None:
-                self._compact_retention_sync(
-                    run_id,
-                    dropped_rows=plan.dropped_rows,
-                    kept_rows=plan.kept_rows,
-                    baseline_superstep=plan.baseline_superstep,
-                )
+    def _baseline_params(self, run_id: str, plan: RetentionPlan[RetentionRow]) -> tuple[Any, ...] | None:
+        """The carrier row this plan folds its dropped rows into."""
+        return baseline_step_params(
+            self._serializer,
+            run_id,
+            dropped_rows=plan.dropped_rows,
+            kept_rows=plan.kept_rows,
+            baseline_superstep=plan.baseline_superstep,
+        )
 
     def update_run_status_sync(
         self,
@@ -2655,11 +1963,11 @@ class SqliteCheckpointer(Checkpointer):
 
     def _fetch_attempt_series_sync(self, db: Any, series_id: str) -> AttemptSeries | None:
         row = db.execute(_ATTEMPT_SERIES_BY_ID_SQL, (series_id,)).fetchone()
-        return _row_to_attempt_series(row) if row is not None else None
+        return row_to_attempt_series(row) if row is not None else None
 
     def _fetch_attempt_record_sync(self, db: Any, series_id: str, attempt_number: int) -> AttemptRecord | None:
         row = db.execute(_ATTEMPT_RECORD_SQL, (series_id, attempt_number)).fetchone()
-        return _row_to_attempt_record(row) if row is not None else None
+        return row_to_attempt_record(row) if row is not None else None
 
     def open_attempt_series_sync(
         self,
@@ -2673,20 +1981,12 @@ class SqliteCheckpointer(Checkpointer):
         with self._sync_lock:
             db = self._sync_db()
             try:
-                db.execute("BEGIN IMMEDIATE")
+                db.execute(_BEGIN_IMMEDIATE)
                 _check_run_exists(db.execute(_RUN_EXISTS_SQL, (run_id,)).fetchone() is not None, run_id)
                 open_row = db.execute(_ATTEMPT_SERIES_OPEN_SQL, (run_id, node_name)).fetchone()
-                _check_no_open_series(_row_to_attempt_series(open_row) if open_row is not None else None, run_id, node_name)
-                series = AttemptSeries(
-                    id=_new_attempt_series_id(),
-                    run_id=run_id,
-                    node_name=node_name,
-                    policy_fingerprint=policy_fingerprint,
-                    max_attempts=max_attempts,
-                    opened_at=datetime.now(timezone.utc),
-                    deadline_at=deadline_at,
-                )
-                db.execute(_ATTEMPT_SERIES_INSERT_SQL, _attempt_series_insert_params(series))
+                _check_no_open_series(row_to_attempt_series(open_row) if open_row is not None else None, run_id, node_name)
+                series = _new_series(run_id, node_name, policy_fingerprint, max_attempts, deadline_at)
+                db.execute(_ATTEMPT_SERIES_INSERT_SQL, attempt_series_insert_params(series))
                 db.commit()
                 return series
             except BaseException:
@@ -2700,12 +2000,12 @@ class SqliteCheckpointer(Checkpointer):
     def get_open_attempt_series_sync(self, run_id: str, node_name: str) -> AttemptSeries | None:
         with self._sync_lock:
             row = self._sync_db().execute(_ATTEMPT_SERIES_OPEN_SQL, (run_id, node_name)).fetchone()
-            return _row_to_attempt_series(row) if row is not None else None
+            return row_to_attempt_series(row) if row is not None else None
 
     def get_attempt_records_sync(self, series_id: str) -> list[AttemptRecord]:
         with self._sync_lock:
             rows = self._sync_db().execute(_ATTEMPT_RECORDS_SQL, (series_id,)).fetchall()
-            return [_row_to_attempt_record(row) for row in rows]
+            return [row_to_attempt_record(row) for row in rows]
 
     def remaining_attempts_sync(self, series_id: str) -> int:
         with self._sync_lock:
@@ -2725,22 +2025,16 @@ class SqliteCheckpointer(Checkpointer):
             db = self._sync_db()
             now = datetime.now(timezone.utc)
             try:
-                db.execute("BEGIN IMMEDIATE")
+                db.execute(_BEGIN_IMMEDIATE)
                 series = _require_series(self._fetch_attempt_series_sync(db, series_id), series_id)
                 (consumed,) = db.execute(_ATTEMPT_COUNT_SQL, (series_id,)).fetchone()
                 _check_reservation(series, policy_fingerprint=policy_fingerprint, consumed=int(consumed), now=now)
                 # A STARTED row may belong to a live invocation — never reserve over it.
                 live_row = db.execute(_ATTEMPT_LIVE_SQL, (series_id,)).fetchone()
-                _check_no_live_reservation(_row_to_attempt_record(live_row) if live_row is not None else None, series_id)
+                _check_no_live_reservation(row_to_attempt_record(live_row) if live_row is not None else None, series_id)
                 (max_number,) = db.execute(_ATTEMPT_MAX_NUMBER_SQL, (series_id,)).fetchone()
-                record = AttemptRecord(
-                    series_id=series_id,
-                    attempt_number=int(max_number) + 1,
-                    scheduled_superstep=scheduled_superstep,
-                    status=AttemptStatus.STARTED,
-                    started_at=now,
-                )
-                db.execute(_ATTEMPT_RECORD_INSERT_SQL, _attempt_record_insert_params(record))
+                record = _next_attempt(series_id, max_number, scheduled_superstep, now)
+                db.execute(_ATTEMPT_RECORD_INSERT_SQL, attempt_record_insert_params(record))
                 db.commit()
                 return record
             except BaseException:
@@ -2762,23 +2056,22 @@ class SqliteCheckpointer(Checkpointer):
             db = self._sync_db()
             now = datetime.now(timezone.utc)
             try:
-                db.execute("BEGIN IMMEDIATE")
+                db.execute(_BEGIN_IMMEDIATE)
                 _require_series(self._fetch_attempt_series_sync(db, series_id), series_id)
                 record = _require_started(self._fetch_attempt_record_sync(db, series_id, attempt_number), series_id, attempt_number)
                 cursor = db.execute(
                     _ATTEMPT_OUTCOME_SQL,
-                    (
-                        status.value,
-                        now.isoformat(),
-                        error.type_name if error else None,
-                        error.message if error else None,
-                        _iso_or_none(retry_not_before),
-                        sampled_delay,
+                    attempt_outcome_params(
                         series_id,
                         attempt_number,
+                        status,
+                        now=now,
+                        error=error,
+                        retry_not_before=retry_not_before,
+                        sampled_delay=sampled_delay,
                     ),
                 )
-                self._check_settled_exactly_one(cursor.rowcount, f"Attempt #{attempt_number} in series {series_id!r}")
+                self._check_settled_exactly_one(cursor.rowcount, _attempt_label(series_id, attempt_number))
                 db.commit()
                 return replace(
                     record,
@@ -2805,35 +2098,22 @@ class SqliteCheckpointer(Checkpointer):
             db = self._sync_db()
             now = datetime.now(timezone.utc)
             try:
-                db.execute("BEGIN IMMEDIATE")
+                db.execute(_BEGIN_IMMEDIATE)
                 series = _require_series(self._fetch_attempt_series_sync(db, series_id), series_id)
                 _check_close_request(series, status, step_record)
                 record = self._fetch_attempt_record_sync(db, series_id, attempt_number)
                 (max_number,) = db.execute(_ATTEMPT_MAX_NUMBER_SQL, (series_id,)).fetchone()
-                settle = _check_closable(record, series_id, attempt_number, status, int(max_number))
-                if settle:
+                if _check_closable(record, series_id, attempt_number, status, int(max_number)):
                     cursor = db.execute(
                         _ATTEMPT_FINAL_SQL,
-                        (
-                            status.value,
-                            now.isoformat(),
-                            error.type_name if error else None,
-                            error.message if error else None,
-                            series_id,
-                            attempt_number,
-                        ),
+                        attempt_final_params(series_id, attempt_number, status, now=now, error=error),
                     )
-                    self._check_settled_exactly_one(cursor.rowcount, f"Attempt #{attempt_number} in series {series_id!r}")
+                    self._check_settled_exactly_one(cursor.rowcount, _attempt_label(series_id, attempt_number))
                 db.execute(_STEP_UPSERT_SQL, self._step_upsert_params(step_record))
                 cursor = db.execute(_ATTEMPT_SERIES_CLOSE_SQL, (now.isoformat(), step_record.superstep, series_id))
                 self._check_settled_exactly_one(cursor.rowcount, f"Attempt series {series_id!r}")
                 self._apply_retention_policy_sync(step_record.run_id)
-                self._after_run_mutation_sync(
-                    db,
-                    step_record.run_id,
-                    "step",
-                    {"node_name": step_record.node_name, "superstep": step_record.superstep, "status": step_record.status.value},
-                )
+                self._after_run_mutation_sync(db, step_record.run_id, "step", _step_mutation_payload(step_record))
                 self._before_step_commit_sync(db, step_record)
                 db.commit()
             except BaseException:
@@ -2846,15 +2126,93 @@ class SqliteCheckpointer(Checkpointer):
             db = self._sync_db()
             now = datetime.now(timezone.utc)
             try:
-                db.execute("BEGIN IMMEDIATE")
+                db.execute(_BEGIN_IMMEDIATE)
                 _require_series(self._fetch_attempt_series_sync(db, series_id), series_id)
-                db.execute(
-                    _ATTEMPT_SETTLE_STRANDED_SQL,
-                    (AttemptStatus.OUTCOME_UNKNOWN.value, now.isoformat(), series_id, AttemptStatus.STARTED.value),
-                )
+                db.execute(_ATTEMPT_SETTLE_STRANDED_SQL, _stranded_params(series_id, now))
                 db.commit()
             except BaseException:
                 self._rollback_sync(db)
                 raise
             rows = db.execute(_ATTEMPT_RECORDS_SQL, (series_id,)).fetchall()
-            return [_row_to_attempt_record(row) for row in rows]
+            return [row_to_attempt_record(row) for row in rows]
+
+
+# === Shared bodies for the two halves ===
+#
+# Not SQL, but the same "both halves must say this identically" problem: a
+# payload key, a label in an error, or the record a write returns.
+
+
+def _step_mutation_payload(record: StepRecord) -> dict[str, Any]:
+    """What a run-update subscriber is told about a committed step."""
+    return {"node_name": record.node_name, "superstep": record.superstep, "status": record.status.value}
+
+
+def _pause_mutation_payload(slot: PauseSlot) -> dict[str, Any]:
+    return {"status": WorkflowStatus.PAUSED.value, "pause_id": slot.pause_id}
+
+
+def _answer_mutation_payload(slot: PauseSlot) -> dict[str, Any]:
+    return {"pause_id": slot.pause_id, "response_key": slot.response_key}
+
+
+def _pause_settle_params(slot: PauseSlot, settled_at: datetime, value: Any) -> tuple[Any, ...]:
+    return (settled_at.isoformat(), json.dumps(value), slot.pause_id)
+
+
+def _settlement_inputs(
+    slot_row: Sequence[Any] | None,
+    id_rows: Iterable[Sequence[Any]],
+    run_row: Sequence[Any] | None,
+) -> tuple[PauseSlot | None, list[str], WorkflowStatus | None]:
+    """Shape the three rows ``_check_settlement`` decides on."""
+    return (
+        row_to_pause_slot(slot_row) if slot_row is not None else None,
+        [str(item[0]) for item in id_rows],
+        WorkflowStatus(run_row[0]) if run_row is not None else None,
+    )
+
+
+def _attempt_label(series_id: str, attempt_number: int) -> str:
+    """How a concurrently-modified attempt is named in the refusal."""
+    return f"Attempt #{attempt_number} in series {series_id!r}"
+
+
+def _new_series(
+    run_id: str,
+    node_name: str,
+    policy_fingerprint: str,
+    max_attempts: int,
+    deadline_at: datetime | None,
+) -> AttemptSeries:
+    return AttemptSeries(
+        id=_new_attempt_series_id(),
+        run_id=run_id,
+        node_name=node_name,
+        policy_fingerprint=policy_fingerprint,
+        max_attempts=max_attempts,
+        opened_at=datetime.now(timezone.utc),
+        deadline_at=deadline_at,
+    )
+
+
+def _next_attempt(series_id: str, max_number: Any, scheduled_superstep: int, now: datetime) -> AttemptRecord:
+    return AttemptRecord(
+        series_id=series_id,
+        attempt_number=int(max_number) + 1,
+        scheduled_superstep=scheduled_superstep,
+        status=AttemptStatus.STARTED,
+        started_at=now,
+    )
+
+
+def _stranded_params(series_id: str, now: datetime) -> tuple[Any, ...]:
+    return (AttemptStatus.OUTCOME_UNKNOWN.value, now.isoformat(), series_id, AttemptStatus.STARTED.value)
+
+
+def _as_retry(checkpoint: Checkpoint, source_run_id: str, retry_count: Any, workflow_id: str | None) -> tuple[str, Checkpoint]:
+    """Stamp a checkpoint as the Nth retry of its source and name the target."""
+    retry_index = int(retry_count or 0) + 1
+    checkpoint.retry_of = source_run_id
+    checkpoint.retry_index = retry_index
+    return workflow_id or f"{source_run_id}-retry-{retry_index}", checkpoint

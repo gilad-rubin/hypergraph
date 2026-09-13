@@ -16,6 +16,7 @@ from hypergraph.checkpointers import (
     StepStatus,
     WorkflowStatus,
 )
+from hypergraph.checkpointers._retention import RetentionRow, compaction_deletes
 from hypergraph.checkpointers.serializers import JsonSerializer, Serializer
 
 # Skip all tests if aiosqlite is not installed
@@ -836,7 +837,23 @@ class TestRetentionPolicyBehavior:
             str(tmp_path / "sync-retention-limit.db"),
             policy=CheckpointPolicy(durability="sync", retention="latest"),
         )
-        assert [len(batch) for batch in cp._delete_step_id_batches(list(range(1201)))] == [500, 500, 201]
+        dropped = [
+            RetentionRow(
+                id=index,
+                step_index=index,
+                superstep=index,
+                node_name=f"node_{index}",
+                values_data=None,
+                created_at=None,
+                completed_at=None,
+                attempt_series_id=None,
+                status=StepStatus.COMPLETED,
+                folded_producers=None,
+            )
+            for index in range(1201)
+        ]
+        step_deletes = [params for sql, params in compaction_deletes("wf", dropped) if sql.startswith("DELETE FROM steps")]
+        assert [len(params) for params in step_deletes] == [500, 500, 201]
         cp.create_run_sync("wf-sync-limit")
 
         for index in range(700):
@@ -1232,19 +1249,19 @@ class TestMigration:
         conn.close()
 
     def test_parse_dt_z_suffix(self):
-        """_parse_dt handles Z suffix for Python 3.10 compatibility."""
+        """parse_dt handles Z suffix for Python 3.10 compatibility."""
         from datetime import timezone
 
-        from hypergraph.checkpointers.sqlite import _parse_dt
+        from hypergraph.checkpointers._rows import parse_dt
 
-        dt = _parse_dt("2024-01-15T10:30:00.123Z")
+        dt = parse_dt("2024-01-15T10:30:00.123Z")
         assert dt is not None
         assert dt.tzinfo == timezone.utc
         assert dt.year == 2024 and dt.month == 1 and dt.day == 15
 
     def test_parse_dt_none_returns_none(self):
-        """_parse_dt returns None for None or empty string."""
-        from hypergraph.checkpointers.sqlite import _parse_dt
+        """parse_dt returns None for None or empty string."""
+        from hypergraph.checkpointers._rows import parse_dt
 
-        assert _parse_dt(None) is None
-        assert _parse_dt("") is None
+        assert parse_dt(None) is None
+        assert parse_dt("") is None
