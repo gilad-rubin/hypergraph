@@ -6,6 +6,12 @@ plain values (a scalar such as a segmentation mode) are recipe: they
 parameterize derivation exactly like a component config, so they participate
 in fingerprints and per-column provenance. When any of those change, the row
 re-derives on the next insert/sync; otherwise it is skipped.
+
+Bound values count at EVERY depth. A value bound on a graph mounted as a
+``GraphNode`` — a per-page profile prompt, a child table's recipe — reaches no
+graph-level hash of its own (``Graph.definition_hash`` excludes bindings by
+design) but the run path honors it, so identity has to see it or a profile edit
+silently skips instead of re-deriving.
 """
 
 from __future__ import annotations
@@ -89,10 +95,74 @@ def combine_recipe_fingerprints(fingerprints: Iterable[str]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def nested_bound_payloads(node: Any) -> list[str]:
+    """Recipe payloads for values bound INSIDE a node's nested graph, recursively.
+
+    ``Graph._compute_definition_hash`` deliberately excludes bindings ("runtime
+    values, not structure"), so a ``GraphNode``'s ``definition_hash`` moves when
+    you bind-vs-not-bind a name but never when the bound VALUE changes. For a
+    HyperTable those values ARE recipe — they parameterize derivation exactly
+    like a root binding, and the run path already honors them — so identity has
+    to see them too.
+
+    Payload rules are the root's rules, unchanged at every depth: a
+    ``__component_config__`` first, then a stable plain value, and an object
+    with neither stays excluded (never a repr hash). Inner nodes are
+    name-qualified so two sibling subgraphs cannot swap values unnoticed.
+    Returns ``[]`` for every node that wraps no graph.
+    """
+    return graph_bound_payloads(getattr(node, "graph", None))
+
+
+def graph_bound_payloads(graph: Any) -> list[str]:
+    """Every bound-value payload a graph carries, the graphs nested in it included.
+
+    Same payload rules and same name-qualification as
+    :func:`nested_bound_payloads`, entered from a graph instead of from the node
+    that wraps it — the shape a mounted child graph arrives in.
+    """
+    if graph is None or not hasattr(graph, "iter_nodes"):
+        return []
+    own = dict(getattr(graph, "_bound", None) or {})
+    payloads = [f"{name}={payload}" for name, payload in sorted(_component_config_hashes(own).items())]
+    for inner in graph.iter_nodes():
+        payloads.extend(f"{inner.name}/{part}" for part in nested_bound_payloads(inner))
+    return payloads
+
+
+def compute_node_recipe_hash(node: Any) -> str:
+    """A node's recipe identity: its definition hash plus any nested bindings.
+
+    Identical to :func:`compute_node_definition_hash` for every node that wraps
+    no graph, and for a ``GraphNode`` whose inner graphs bind nothing hashable —
+    so stored stamps only move for the recipes that actually had the hole.
+    """
+    definition_hash = compute_node_definition_hash(node)
+    payloads = nested_bound_payloads(node)
+    if not payloads:
+        return definition_hash
+    return hashlib.sha256("|".join([definition_hash, *sorted(payloads)]).encode()).hexdigest()
+
+
 def _node_definition_hashes(graph: Any) -> list[str]:
     if graph is None:
         return []
-    return [compute_node_definition_hash(n) for n in graph.iter_nodes()]
+    return [compute_node_recipe_hash(n) for n in graph.iter_nodes()]
+
+
+def _recipe_components(graph: Any, components: dict[str, Any]) -> dict[str, Any]:
+    """The caller's components layered OVER the graph's own bindings.
+
+    A graph mounted as a child carries the ``bind(...)`` values it was built
+    with; only the ROOT graph's bindings ever reach ``components``. Layering the
+    caller's on top mirrors ``WritePlanner._bind_child_components`` at run time,
+    where a root bind wins on a shared name. For a root table the components ARE
+    the graph's bindings, so this returns them unchanged.
+    """
+    own = getattr(graph, "_bound", None)
+    if not own:
+        return components
+    return {**own, **components}
 
 
 def _plain_value_payload(value: Any) -> str | None:
@@ -150,15 +220,34 @@ def _fingerprint(inputs: dict[str, Any], node_hashes: list[str], component_hashe
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def compute_row_fingerprint(graph: Any, components: dict[str, Any], graph_inputs: dict[str, Any]) -> str:
-    """Fingerprint a root row from its source inputs, node code, and component configs."""
-    return _fingerprint(graph_inputs, _node_definition_hashes(graph), _component_config_hashes(components))
+def compute_row_fingerprint(
+    graph: Any,
+    components: dict[str, Any],
+    graph_inputs: dict[str, Any],
+    mounted_payloads: Iterable[str] = (),
+) -> str:
+    """Fingerprint a root row from its source inputs, node code, and component configs.
+
+    ``mounted_payloads`` carries the bound-value payloads of graphs mounted as
+    CHILD tables. A ``map_over`` GraphNode is lifted out of the root graph at
+    analysis time, so without them a value bound on the child graph is invisible
+    here and ``sync()`` skips the very row whose children need re-deriving.
+    """
+    return _fingerprint(
+        graph_inputs,
+        [*_node_definition_hashes(graph), *mounted_payloads],
+        _component_config_hashes(_recipe_components(graph, components)),
+    )
 
 
 def compute_child_fingerprint(child_graph: Any, components: dict[str, Any], child_inputs: dict[str, Any]) -> str:
     """Fingerprint a child row, scoped to the child graph (only its components count)."""
     valid_inputs = set(child_graph.inputs.all) if child_graph is not None and hasattr(child_graph.inputs, "all") else set()
-    return _fingerprint(child_inputs, _node_definition_hashes(child_graph), _component_config_hashes(components, valid_inputs))
+    return _fingerprint(
+        child_inputs,
+        _node_definition_hashes(child_graph),
+        _component_config_hashes(_recipe_components(child_graph, components), valid_inputs),
+    )
 
 
 def compute_recipe_fingerprint(node_fn: Any, component_hashes: dict[str, str]) -> str:
@@ -170,7 +259,7 @@ def compute_recipe_fingerprint(node_fn: Any, component_hashes: dict[str, str]) -
     """
     payload = json.dumps(
         {
-            "node": compute_node_definition_hash(node_fn),
+            "node": compute_node_recipe_hash(node_fn),
             "components": component_hashes,
         },
         sort_keys=True,
@@ -178,7 +267,12 @@ def compute_recipe_fingerprint(node_fn: Any, component_hashes: dict[str, str]) -
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def compute_table_recipe_fingerprint(graph: Any, components: dict[str, Any], valid_inputs: set[str] | None = None) -> str:
+def compute_table_recipe_fingerprint(
+    graph: Any,
+    components: dict[str, Any],
+    valid_inputs: set[str] | None = None,
+    mounted_payloads: Iterable[str] = (),
+) -> str:
     """Recipe-only identity for a whole table's derivation: NO input values.
 
     The per-row stamp (``_recipe_fingerprint``) written at derive time: the
@@ -189,8 +283,13 @@ def compute_table_recipe_fingerprint(graph: Any, components: dict[str, Any], val
     comparison. Root tables pass no ``valid_inputs`` (mirroring
     ``compute_row_fingerprint``'s unscoped component set); child tables scope
     to the child graph's inputs (mirroring ``compute_child_fingerprint``).
+    ``mounted_payloads`` mirrors ``compute_row_fingerprint``'s.
     """
-    return _fingerprint({}, _node_definition_hashes(graph), _component_config_hashes(components, valid_inputs))
+    return _fingerprint(
+        {},
+        [*_node_definition_hashes(graph), *mounted_payloads],
+        _component_config_hashes(_recipe_components(graph, components), valid_inputs),
+    )
 
 
 def compute_column_provenance(node_fn: Any, inputs: dict[str, Any], component_hashes: dict[str, str]) -> str:
@@ -201,7 +300,7 @@ def compute_column_provenance(node_fn: Any, inputs: dict[str, Any], component_ha
     """
     payload = json.dumps(
         {
-            "node": compute_node_definition_hash(node_fn),
+            "node": compute_node_recipe_hash(node_fn),
             "inputs": {k: f"{type(v).__name__}:{v}" for k, v in sorted(inputs.items())},
             "components": component_hashes,
         },

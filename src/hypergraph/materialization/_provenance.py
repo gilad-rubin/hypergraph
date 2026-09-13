@@ -9,7 +9,7 @@ results back into the immutable reconcile state, and apply writes elsewhere.
 from __future__ import annotations
 
 import inspect
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -25,6 +25,8 @@ from hypergraph.materialization._fingerprint import (
     compute_recipe_fingerprint,
     compute_row_fingerprint,
     compute_table_recipe_fingerprint,
+    graph_bound_payloads,
+    nested_bound_payloads,
 )
 from hypergraph.materialization._recipe_journal import (
     KIND_BOUND_VALUE,
@@ -64,6 +66,13 @@ def split_boundary_provenance(value: Any) -> tuple[str | None, int | None]:
         return provenance, int(count)
     except ValueError:
         return None, None
+
+
+def iter_child_specs(spec: TableSpec) -> Iterator[TableSpec]:
+    """Every child TableSpec below ``spec``, at any depth."""
+    for child in spec.children:
+        yield child
+        yield from iter_child_specs(child)
 
 
 def find_boundary_node(graph: Any, child_spec: TableSpec) -> Any:
@@ -179,6 +188,8 @@ class Provenance:
         self.spec = spec
         self.components = components
         self._column_graphs = column_graphs
+        self._mounted_payloads_cache: list[str] | None = None
+        self._bound_by_node: dict[int, Mapping[str, Any]] | None = None
 
     def derived_columns(self, spec: TableSpec | None = None) -> list[Any]:
         target = spec or self.spec
@@ -238,9 +249,41 @@ class Provenance:
                 break
         return tuple(ordered)
 
+    def visible_bound(self, node: Any) -> Mapping[str, Any]:
+        """Every bound value visible to one node: this table's components layered
+        over the bindings of the graph that encloses it.
+
+        Only the ROOT graph's bindings ever reach ``self.components``. A graph
+        mounted as a child — or nested inside one — carries its own
+        ``bind(...)`` values, and to the node inside it those are
+        indistinguishable from a root binding: recipe, never a stored source
+        input to be fed back from the row. Every node-level decision reads this
+        instead of ``components``, so a child-bound value is hashed as recipe,
+        bound onto the single-column graph a selective re-derive runs, and kept
+        out of that node's input values. A root binding wins on a shared name,
+        mirroring how ``WritePlanner._bind_child_components`` layers them at run
+        time.
+        """
+        if self._bound_by_node is None:
+            by_node: dict[int, Mapping[str, Any]] = {}
+
+            def walk(graph: Any, inherited: Mapping[str, Any]) -> None:
+                if graph is None or not hasattr(graph, "iter_nodes"):
+                    return
+                visible = {**dict(getattr(graph, "_bound", None) or {}), **inherited}
+                for inner in graph.iter_nodes():
+                    by_node[id(inner)] = visible
+                    walk(getattr(inner, "graph", None), visible)
+
+            walk(self.graph, self.components)
+            for child in iter_child_specs(self.spec):
+                walk(child.child_graph, self.components)
+            self._bound_by_node = by_node
+        return self._bound_by_node.get(id(node), self.components)
+
     def node_provenance(self, node: Any, values: Mapping[str, Any]) -> str | None:
         params = self.node_params(node)
-        components = {name: value for name, value in self.components.items() if name in params}
+        components = {name: value for name, value in self.visible_bound(node).items() if name in params}
         inputs: dict[str, Any] = {}
         for name, parameter in params.items():
             if name in components:
@@ -253,7 +296,7 @@ class Provenance:
 
     def node_recipe(self, node: Any) -> str:
         params = self.node_params(node)
-        components = {name: value for name, value in self.components.items() if name in params}
+        components = {name: value for name, value in self.visible_bound(node).items() if name in params}
         return compute_recipe_fingerprint(node, _component_config_hashes(components))
 
     def column_recipe(self, column: Any) -> str:
@@ -265,8 +308,23 @@ class Provenance:
             return self.node_recipe(producers[0])
         return combine_recipe_fingerprints([self.node_recipe(producer) for producer in producers])
 
+    def mounted_payloads(self) -> list[str]:
+        """Bound-value payloads of every graph mounted as a CHILD table.
+
+        A ``map_over`` GraphNode is lifted out of the root graph when the table
+        is analyzed, so the root graph alone cannot see a value bound on the
+        child. Without these the root row fingerprint never moves for a child
+        recipe change and ``sync()`` reports SKIPPED while the child rows read
+        as drifted — identity saying one thing and execution doing another.
+        """
+        if self._mounted_payloads_cache is None:
+            self._mounted_payloads_cache = [
+                f"{child.name}/{part}" for child in iter_child_specs(self.spec) for part in graph_bound_payloads(child.child_graph)
+            ]
+        return self._mounted_payloads_cache
+
     def root_fingerprint(self, graph_inputs: Mapping[str, Any]) -> str:
-        return compute_row_fingerprint(self.graph, dict(self.components), dict(graph_inputs))
+        return compute_row_fingerprint(self.graph, dict(self.components), dict(graph_inputs), self.mounted_payloads())
 
     def child_fingerprint(self, child_inputs: Mapping[str, Any], child_spec: TableSpec) -> str:
         return compute_child_fingerprint(child_spec.child_graph, dict(self.components), dict(child_inputs))
@@ -275,7 +333,7 @@ class Provenance:
         return bool(self.derived_columns() or self.spec.children)
 
     def current_recipe_fingerprint(self) -> str:
-        return compute_table_recipe_fingerprint(self.graph, dict(self.components))
+        return compute_table_recipe_fingerprint(self.graph, dict(self.components), mounted_payloads=self.mounted_payloads())
 
     def current_child_recipe_fingerprint(self, child_spec: TableSpec) -> str:
         child_graph = child_spec.child_graph
@@ -293,12 +351,17 @@ class Provenance:
         # repr — never as "None").
         entries = [RecipeEntry(compute_node_definition_hash(node), KIND_NODE_SOURCE, self.node_source(func if func is not None else node))]
         params = self.node_params(node)
-        for name, component in self.components.items():
+        for name, component in self.visible_bound(node).items():
             if name not in params:
                 continue
             payload, kind = self.component_payload(component)
             if payload is not None:
                 entries.append(RecipeEntry(compute_payload_hash(payload), kind, payload))
+        # A GraphNode's recipe also covers what its inner graphs bind: those
+        # values never appear in its own signature, so without this the journal
+        # cannot resolve a subgraph stamp back to the prompt text behind it.
+        for payload in sorted(nested_bound_payloads(node)):
+            entries.append(RecipeEntry(compute_payload_hash(payload), KIND_BOUND_VALUE, payload))
         return tuple(entries)
 
     @staticmethod
@@ -323,14 +386,15 @@ class Provenance:
         if graph is None:
             label = getattr(node_func(node), "__name__", None) or getattr(node, "name", "column")
             graph = Graph([node], name=f"{self.spec.name}__{label}")
-            binds = {name: value for name, value in self.components.items() if name in set(graph.inputs.all)}
+            binds = {name: value for name, value in self.visible_bound(node).items() if name in set(graph.inputs.all)}
             if binds:
                 graph = graph.bind(**binds)
             self._column_graphs[id(node)] = graph
         return graph
 
     def node_inputs(self, node: Any, values: Mapping[str, Any]) -> dict[str, Any]:
-        return {name: values[name] for name in self.node_params(node) if name not in self.components and name in values}
+        bound = self.visible_bound(node)
+        return {name: values[name] for name in self.node_params(node) if name not in bound and name in values}
 
     @staticmethod
     def stored_values(row: Mapping[str, Any]) -> dict[str, Any]:
