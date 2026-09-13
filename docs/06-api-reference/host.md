@@ -484,6 +484,10 @@ person*. A paused child holds no active-Run admission slot, so a Batch of
 100 items where 99 are parked on questions still lets the hundredth run
 under `max_active_runs=1`.
 
+The vocabulary stops there. There is deliberately no bucket for a document
+the operator considered and chose *not* to submit — see
+[what the census does not count](#what-the-census-does-not-count).
+
 `view.items` is the per-item view — one `BatchItemView` per manifest key, so
 a caller learns an item's whole situation without cross-referencing three
 maps:
@@ -568,6 +572,35 @@ Reconnecting from a stored cursor replays with no gaps and no repeats,
 across process restarts, with no graph code. A `BatchRef` unknown to the
 Home terminates immediately with no updates. `client.get_sync(batch_ref)`
 is the synchronous mirror of `get()`.
+
+### What the census does not count
+
+Every bucket names an item Hypergraph **accepted**, so
+`sum(view.counts.values())` is the manifest size — the work that was
+submitted, never the size of the corpus that manifest was drawn from. The
+count vocabulary is closed, and it has no `excluded` bucket for a document
+the operator considered and deliberately did not submit.
+
+Such an item has no pinned inputs and no child to run, so there is nothing
+legal to declare in the first place: every required graph boundary input
+must be present on every item, and expanding to zero items is refused
+because [an empty Batch is not a Batch](#submitting-a-batch). A Batch is the
+record of **accepted durable intent**, and *why* a document was held back —
+operator-blocked, out of scope, already handled elsewhere — is product
+policy the Host has no word for.
+
+So the operator line that reconciles a sweep against the corpus is assembled
+product-side, from the one number only the product holds:
+
+```python
+excluded = len(inventory) - len(view.items)   # len(view.items) == sum(view.counts.values())
+```
+
+On a `list_batches` row the same manifest size is already `item_count`, so a
+bulk dashboard does that subtraction per sweep without opening a single
+Batch. Keep each excluded key's reason beside the inventory, next to the
+policy that produced it: the Batch stays the record of what was accepted,
+and the product stays the record of what was considered.
 
 ## Watching Submissions Live: `hypergraph.host.watch`
 
