@@ -511,7 +511,11 @@ def test_checkpointer_semantics_docs_mirror_high_drift_surfaces() -> None:
         assert f"`{field_name}`" in boundaries
     assert PendingNode.__dataclass_fields__["dispatched_at"].default is None
     assert PendingNode.__dataclass_fields__["settled_at"].default is None
-    assert "never claims a node ran" in boundaries
+    # The page must not say "never claims a node ran": `settled_at` says
+    # exactly that. What a record never claims is what a node PRODUCED.
+    assert "never claims a node ran" not in boundaries
+    assert "never claims what a node *produced*" in boundaries
+    assert 'the one exception, and only to "it ran"' in boundaries
 
     # Durable pause slots: the persisted answer contract is user-visible
     # state, and the three refusals must stay distinguishable in the docs.

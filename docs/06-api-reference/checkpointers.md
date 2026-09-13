@@ -611,13 +611,13 @@ boundaries  = intent, written first    # who was runnable
 steps       = the execution journal    # what actually happened
 ```
 
-A pending record is intent, never execution truth — it never claims a node ran. Its state is **derived** by joining the journal, so recovery distinguishes four cases without guessing:
+A pending record is intent, never execution truth — it never claims what a node *produced*. `settled_at` is the one exception, and only to "it ran": the runner sets it per node, so a kill inside a superstep still leaves a finished sibling readable. Its state is **derived** by joining the journal, so recovery distinguishes four cases without guessing:
 
 | State | Meaning |
 |---|---|
 | `COMMITTED` | A `StepRecord` exists at the same address — the outcome was witnessed (completed, failed, or paused). |
 | `PENDING` | No `StepRecord` and neither mark. Nothing started it, so it is safe to dispatch. |
-| `SETTLED_UNRECORDED` | Marked `settled_at` with no `StepRecord`: the node ran to completion and its journal entry died with the superstep the kill landed in. What it produced is gone; that it completed is not. |
+| `SETTLED_UNRECORDED` | Marked `settled_at` with no `StepRecord`: the node ran to completion and its journal entry died with the superstep the kill landed in. What it produced is gone; that it completed is not. Re-dispatched like `PENDING` **for a pure node**; a declared-effect node must not be re-dispatched (PRD 0014). |
 | `UNKNOWN_EFFECT` | Marked dispatched, never settled, no `StepRecord`. Reserved for declared-effect nodes; recovery never re-dispatches these automatically. |
 
 ### Node addressing
@@ -662,7 +662,9 @@ for boundary in checkpointer.get_node_boundaries_sync("wf-kill"):
 # NodeBoundary wf-kill:1:nested | pending                # never started
 ```
 
-Resume itself is unchanged: a `SETTLED_UNRECORDED` pure node has no recorded output to restore, so it is re-executed exactly like a `PENDING` one, which for repeat-safe work only wastes effort. What the state buys is that recovery can now tell the two apart at all — the distinction effectful nodes need, alongside the `dispatched_at` seam.
+Resume itself is unchanged **for a pure node**: a `SETTLED_UNRECORDED` one has no recorded output to restore, so it is re-executed exactly like a `PENDING` one, which for repeat-safe work only wastes effort. A declared-effect node must NOT be re-dispatched on that reading — its effect is known to have landed, which is why `SETTLED_UNRECORDED` outranks `UNKNOWN_EFFECT` in the cascade and is the signal PRD 0014 keys off. What the state buys is that recovery can tell the two cases apart at all.
+
+The mark is bookkeeping, so it never costs a result: the write happens after the node ran, and if it fails the runner logs a warning naming the boundary and keeps the node's value. Only the intent write, which happens *before* dispatch, fails the run — there, failing is the safe answer.
 
 Boundaries follow their step's retention fate: a pruned `StepRecord` takes its boundary with it, so compaction can never silently re-classify settled work as pending. Checkpointers that do not implement the seam keep working; the runners probe for it (`PendingNodeProtocol` / `SyncPendingNodeProtocol` in `hypergraph.checkpointers.protocols`) instead of requiring it.
 

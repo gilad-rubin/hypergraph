@@ -23,6 +23,7 @@ PRD 0014 / ticket 09 needs alongside the ``dispatched_at`` seam.
 
 import asyncio
 import contextlib
+import logging
 import sqlite3
 import subprocess
 import sys
@@ -1071,6 +1072,71 @@ class TestPerNodeSettlement:
         assert by_name["bad"].state is BoundaryState.COMMITTED
         # Its sibling finished, so it did mark itself.
         assert by_name["ok"].settled_at is not None
+
+    @pytest.mark.parametrize("runner_kind", ["sync", "async"])
+    async def test_a_failed_settlement_write_never_costs_the_node_its_result(self, tmp_path, caplog, runner_kind):
+        """The marker is bookkeeping — it must not be able to fail a run.
+
+        This is the ONE boundary write that happens after its node ran.
+        Raising would discard a completed node's value to protect a record
+        whose only job is to improve recovery's reading, and an optional
+        third-party seam could impose that on every run just by failing. The
+        run completes, the value is right, and the gap is logged by address.
+
+        The intent write is deliberately NOT covered by this: it lands before
+        any sibling dispatches, where failing is the safe answer.
+        """
+
+        class SettlementFailsCheckpointer(SqliteCheckpointer):
+            """Fails ONLY the per-node settlement write, never the intent one."""
+
+            @staticmethod
+            def _refuse(boundaries) -> None:
+                if any(b.settled_at is not None for b in boundaries):
+                    raise OSError("disk full")
+
+            async def record_pending_nodes(self, boundaries):
+                self._refuse(boundaries)
+                await super().record_pending_nodes(boundaries)
+
+            def record_pending_nodes_sync(self, boundaries):
+                self._refuse(boundaries)
+                super().record_pending_nodes_sync(boundaries)
+
+        @node(output_name="seeded")
+        def seed(x: int) -> int:
+            return x
+
+        @node(output_name="total")
+        def tail(seeded: int) -> int:
+            return seeded + 41
+
+        graph = Graph([seed, tail], name="brokendef")
+        cp = SettlementFailsCheckpointer(str(tmp_path / f"broken-{runner_kind}.db"))
+        try:
+            with caplog.at_level(logging.WARNING, logger="hypergraph.checkpointers"):
+                if runner_kind == "sync":
+                    result = SyncRunner(checkpointer=cp).run(graph, {"x": 1}, workflow_id="wf-broken")
+                else:
+                    result = await AsyncRunner(checkpointer=cp).run(graph, {"x": 1}, workflow_id="wf-broken")
+
+            assert result["total"] == 42, "a bookkeeping write must not cost the node its result"
+
+            # The gap is reported, by address, once per node that tried.
+            warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+            settlement_warnings = [m for m in warnings if "boundary settlement failed" in m]
+            assert len(settlement_warnings) == 2, warnings
+            assert any("wf-broken:0:seed" in m for m in settlement_warnings)
+            assert any("wf-broken:1:tail" in m for m in settlement_warnings)
+            assert all("disk full" in m for m in settlement_warnings)
+
+            # The marks really were lost — the journal is what saves the
+            # reading here, exactly as it did before #330.
+            boundaries = await cp.get_node_boundaries("wf-broken")
+            assert [b.settled_at for b in boundaries] == [None, None]
+            assert all(b.state is BoundaryState.COMMITTED for b in boundaries)
+        finally:
+            await cp.close()
 
     async def test_a_checkpointer_without_the_seam_settles_nothing(self):
         """The probe governs settlement too — no seam, no per-node write."""
