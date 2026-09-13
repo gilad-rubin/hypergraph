@@ -93,6 +93,35 @@ silently skips past: e.g. test migrations that miss daft- or playwright-only
 fixtures, and `UserWarning`s emitted by code paths only some optional extras
 exercise.
 
+### The OpenTelemetry floor job
+
+`pyproject.toml` declares `opentelemetry-api`/`opentelemetry-sdk` `>=1.24.0`, because 1.24.0
+is the first release whose `Span` has `add_link` — the call the collapsed-lineage spans make
+(`src/hypergraph/events/otel.py`). Every other CI job resolves the *newest* OpenTelemetry, so
+the `otel-floor` job is the only thing that exercises the declared floor. Reproduce it locally
+before changing anything under `src/hypergraph/events/otel.py` or the `otel` extra:
+
+```bash
+uv sync --group dev --python 3.10
+uv pip install --python .venv/bin/python \
+  opentelemetry-api==1.24.0 opentelemetry-sdk==1.24.0 opentelemetry-exporter-otlp-proto-http==1.24.0
+uv run --no-sync --python 3.10 pytest tests/test_run_log \
+  -W error -W 'ignore::pytest.PytestUnraisableExceptionWarning'
+
+uv sync --group dev --extra daft   # restore the newest OpenTelemetry when you are done
+```
+
+Three things about that recipe are load-bearing:
+
+- **`uv pip install` + `--no-sync`, not `uv run --with`.** The `--with` overlay loses to the
+  project environment for a package the project already has, so
+  `uv run --with opentelemetry-sdk==1.24.0 pytest ...` reports a green run against the newest
+  SDK and proves nothing. `--no-sync` then keeps `uv run` from restoring the newest versions.
+- **Pin the OTLP/HTTP exporter too.** It constrains the SDK to its own minor, so leaving it at
+  the newest version either breaks the install or skips the wire tests.
+- **Python 3.10.** `opentelemetry-proto==1.24.0` requires `protobuf<5`, which emits a
+  `DeprecationWarning` on Python 3.12+ that `-W error` turns into a collection error.
+
 ## Workflow
 
 1. Create a feature branch from `master`
