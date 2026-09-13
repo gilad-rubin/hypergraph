@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import json
+import os
+import tempfile
 from abc import ABC, abstractmethod
-from typing import Any
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any, Protocol, runtime_checkable
 
 
 class Serializer(ABC):
@@ -84,3 +90,171 @@ class PickleSerializer(Serializer):
         import pickle
 
         return pickle.loads(data)  # noqa: S301
+
+
+@runtime_checkable
+class BlobStore(Protocol):
+    """Where a ``BlobSerializer`` keeps ``bytes`` values: content-addressed, write-once.
+
+    ``put`` stores the bytes and returns their reference (the hex SHA-256 of the content); storing the same bytes twice
+    returns the same reference. ``get`` returns the bytes for a reference or raises ``KeyError``.
+    """
+
+    def put(self, data: bytes) -> str: ...
+
+    def get(self, ref: str) -> bytes: ...
+
+
+class BlobCorruptError(ValueError):
+    """A stored blob no longer matches the content hash it is filed under."""
+
+
+class FileBlobStore:
+    """A ``BlobStore`` over one folder: ``<root>/<first two hex>/<sha256>``.
+
+    A blob is written to a temporary file, synced to disk, then named: a reference the checkpoint has committed never
+    dangles after a crash. Files are never overwritten (only a corrupt one is healed) and never deleted: prune the
+    folder yourself once the runs that reference it are gone.
+    """
+
+    def __init__(self, root: str | Path):
+        self._root = Path(root)
+
+    @property
+    def root(self) -> Path:
+        return self._root
+
+    def _path(self, ref: str) -> Path:
+        if len(ref) != 64 or any(c not in "0123456789abcdef" for c in ref):
+            raise KeyError(f"not a blob reference: {ref!r}")
+        return self._root / ref[:2] / ref
+
+    def put(self, data: bytes) -> str:
+        ref = hashlib.sha256(data).hexdigest()
+        path = self._path(ref)
+        if path.exists():
+            if path.read_bytes() == data:
+                return ref
+            path.unlink()  # a corrupt file under a content hash is rewritten, never kept
+        new_shard = not path.parent.exists()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".", suffix=".part")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())  # the bytes reach disk before the name does
+            os.replace(tmp, path)
+            _fsync_dir(path.parent)  # ...and the name reaches disk before the checkpoint row can commit it
+            if new_shard:
+                _fsync_dir(self._root)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        return ref
+
+    def get(self, ref: str) -> bytes:
+        path = self._path(ref)
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            raise KeyError(f"no blob {ref!r} under {self._root}") from None
+        if hashlib.sha256(data).hexdigest() != ref:
+            raise BlobCorruptError(f"blob {ref!r} under {self._root} does not match its content hash")
+        return data
+
+
+def _fsync_dir(path: Path) -> None:
+    """Flush a directory entry to disk; a no-op where the platform cannot open a directory (Windows)."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+_BYTES_KEY = "$bytes"
+
+
+class BlobSerializer(Serializer):
+    """JSON, with every ``bytes`` value kept in a ``BlobStore`` and a ``{"$bytes": "<sha256>"}`` reference in its place.
+
+    Lets a node take or return raw bytes (a PDF, an image) across a checkpointed boundary without the bytes living in
+    the checkpoint row: the store holds them once, by content, and the JSON stays small and inspectable. Everything
+    else serializes exactly as ``JsonSerializer`` does (Pydantic models in JSON mode, dataclasses through their
+    fields; ``lossy=True`` falls back to ``str()`` for the rest). Bytes inside a model or dataclass are found too.
+
+    A user value whose keys start with ``$`` is never mistaken for a reference: such keys are written with one more
+    ``$`` and read back without it, so ``{"$bytes": "x"}`` as data round-trips as data.
+    """
+
+    def __init__(self, store: BlobStore, *, lossy: bool = False):
+        self._store = store
+        self._json = JsonSerializer(lossy=lossy)
+
+    @property
+    def store(self) -> BlobStore:
+        return self._store
+
+    def _stash(self, value: Any) -> Any:
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return {_BYTES_KEY: self._store.put(bytes(value))}
+        if isinstance(value, Mapping):
+            return {_escape(k): self._stash(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._stash(v) for v in value]
+        if hasattr(value, "model_dump"):
+            # JSON mode, as JsonSerializer does, so datetimes, UUIDs and field serializers behave the same;
+            # bytes are lifted out first, because JSON mode would decode them as text.
+            return self._stash(_lift_bytes_from_model(value))
+        if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            return self._stash({f.name: getattr(value, f.name) for f in dataclasses.fields(value)})
+        return value
+
+    def _fetch(self, obj: dict[str, Any]) -> Any:
+        if len(obj) == 1 and _BYTES_KEY in obj and isinstance(obj[_BYTES_KEY], str):
+            return self._store.get(obj[_BYTES_KEY])
+        if any(isinstance(k, str) and k.startswith("$$") for k in obj):
+            return {_unescape(k): v for k, v in obj.items()}
+        return obj
+
+    def serialize(self, value: Any) -> bytes:
+        return self._json.serialize(self._stash(value))
+
+    def deserialize(self, data: bytes) -> Any:
+        return json.loads(data.decode("utf-8"), object_hook=self._fetch)
+
+
+def _escape(key: Any) -> Any:
+    return "$" + key if isinstance(key, str) and key.startswith("$") else key
+
+
+def _unescape(key: Any) -> Any:
+    return key[1:] if isinstance(key, str) and key.startswith("$$") else key
+
+
+def _lift_bytes_from_model(model: Any) -> Any:
+    """``model_dump(mode="json")`` with the bytes-typed fields taken from the Python dump instead of decoded as text."""
+    raw = model.model_dump(mode="python")
+    dumped = model.model_dump(mode="json", exclude={k for k, v in raw.items() if _holds_bytes(v)})
+    for k, v in raw.items():
+        if _holds_bytes(v):
+            dumped[k] = v
+    return dumped
+
+
+def _holds_bytes(value: Any) -> bool:
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return True
+    if isinstance(value, Mapping):
+        return any(_holds_bytes(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_holds_bytes(v) for v in value)
+    if hasattr(value, "model_dump"):
+        return _holds_bytes(value.model_dump(mode="python"))
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return any(_holds_bytes(getattr(value, f.name)) for f in dataclasses.fields(value))
+    return False

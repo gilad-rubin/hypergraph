@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- **`BlobSerializer` + `FileBlobStore`: raw bytes across a checkpointed node
+  boundary.** A node may now take or return `bytes` under a checkpointer:
+  the serializer keeps every `bytes` value (top level, nested, or inside a
+  Pydantic model or dataclass) in a content-addressed `BlobStore` and leaves a
+  `{"$bytes": "<sha256>"}` reference in the JSON. `FileBlobStore(dir)` ships;
+  any `put(bytes) -> ref` / `get(ref) -> bytes` object qualifies. Plain values
+  serialize exactly as `JsonSerializer`. `RunHome(..., serializer=...)` accepts
+  it like any serializer.
+
 ### Changed
 
 - **BREAKING (OpenTelemetry): natural names, collapsed nested runs, migrated
