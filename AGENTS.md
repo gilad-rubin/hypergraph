@@ -30,6 +30,9 @@ Worktree bootstrap:
 - On first use of a fresh worktree, if `.venv` is missing or older than `pyproject.toml` / `uv.lock`, run `uv sync --group dev`.
 - Do not reuse another worktree's virtualenv.
 - Prefer `uv run ...` after bootstrap so commands execute against the local worktree environment.
+- A plain `uv run` may re-sync and drop an extra (the daft tests then skip, which CI counts as failure): pass `--extra daft` or use `uv run --no-sync` after the initial sync. `uv run --python 3.10 mypy` recreates the worktree's `.venv` without extras.
+- Never run `git stash` in any form: the stash stack is shared by every worktree of this repo and another agent may be working in a sibling. Commit a WIP instead.
+- Rulings taken during implementation waves live in `docs/agents/rulings.md`; read it before re-opening a settled question.
 
 Core commands:
 ```bash
