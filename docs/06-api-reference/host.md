@@ -461,8 +461,8 @@ This is the "make sure exactly one of these is running" ask, and it replaces
 deriving ids from the subject plus an ordinal and scanning the run list
 first. The key is looked up inside the same acceptance transaction as every
 other identity decision, and a partial unique index over the live submission
-states backs it — so two doors minting ids in different series can never both
-be live for one subject, and no caller needs a pre-submit scan.
+states backs it — so two doors minting ids in different series cannot both be
+live for one subject, and no caller needs a pre-submit scan.
 
 - **a live run holds the key** → nothing is written and that run's receipt
   comes back with `duplicate=True`, exactly like `workflow_id` dedup;
@@ -472,6 +472,18 @@ be live for one subject, and no caller needs a pre-submit scan.
 - **the holder has settled** (finished, recovery-exhausted, dead-lettered) →
   the key is free and the next submission starts a **new** run. The
   constraint is one *live* run per key, not one run ever.
+
+A submission's subject is fixed at acceptance. Resubmitting a known
+`workflow_id` with a **different** `exclusive_key` is therefore
+`WorkflowIdConflictError` with `aspect="exclusive_key"`, not a dedupe that
+drops the key — the key is not part of the start fingerprint, so nothing
+else would have caught it.
+
+[`client.rerun()`](#rerun-repeat-settled-work) carries the source's key onto the
+repeat: a repeat is about the same subject, so it inherits that subject's
+rule instead of escaping it. Settled work has already released the key, so
+the ordinary rerun is simply accepted; if something else has taken the key
+since, the repeat collides at acceptance like any other submission.
 
 Find the holder with [`client.list(RunQuery(key=...))`](#listing-runs). The
 key is not part of the start fingerprint.
@@ -1607,9 +1619,10 @@ fields match everything. `limit` must be a positive `int`.
 `client.list_sync(...)` is the synchronous mirror.
 
 `key` is the one filter the **store** answers rather than Python: it narrows
-the read to one [`exclusive_key`](#one-live-run-per-subject) through that
-column's index instead of reading every row and discarding most of them, and
-bare Tier-0 runs — which hold no key — drop out entirely. Every run ever
+the read to one [`exclusive_key`](#one-live-run-per-subject) through
+`idx_host_submissions_key` — an index SEARCH rather than a table scan
+filtered afterwards — and bare Tier-0 runs, which hold no key, drop out
+entirely. Every run ever
 submitted under the key matches, newest first, so the live holder (at most
 one) is the first row.
 
@@ -1657,6 +1670,14 @@ without a terminal runs row. `rerun()` also takes the same optional opaque
 `source_ref` `submit()` and `stop()` take, recorded on the new submission —
 retry lineage says what was repeated, `source_ref` says who asked.
 `client.rerun_sync(...)` is the synchronous mirror.
+
+A repeat carries the source's [`exclusive_key`](#one-live-run-per-subject),
+because it is about the same subject and must obey that subject's "one live
+run" rule rather than escape it. A settled source has already released its
+key, so the ordinary rerun is accepted; if something else has taken the key
+since, the repeat collides at acceptance like any other submission —
+adopting the live holder (`duplicate=True`), or raising
+`WorkflowIdConflictError` when the values differ.
 
 ### `fresh=True`: repeat the work, not just the lineage
 

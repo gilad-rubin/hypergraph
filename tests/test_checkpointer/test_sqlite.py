@@ -1296,6 +1296,7 @@ class TestMigration:
         ensure_schema(conn)
         # Rewind to a genuine v7 database: drop what v10 added, and say so.
         conn.execute("DROP INDEX idx_host_submissions_exclusive")
+        conn.execute("DROP INDEX idx_host_submissions_key")
         conn.execute("ALTER TABLE host_submissions DROP COLUMN exclusive_key")
         conn.execute("UPDATE _schema_version SET version = 7")
         conn.execute(
@@ -1318,7 +1319,9 @@ class TestMigration:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()}
         assert "exclusive_key" in cols
         indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='host_submissions'").fetchall()}
-        assert "idx_host_submissions_exclusive" in indexes
+        # Both: the partial one CONSTRAINS (one live holder), the plain one
+        # is the only one either exclusive-key read can actually use.
+        assert {"idx_host_submissions_exclusive", "idx_host_submissions_key"} <= indexes
 
         # The live claim is exactly as it was, and holds no key.
         claimed = conn.execute(

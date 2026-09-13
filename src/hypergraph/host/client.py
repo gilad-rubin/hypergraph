@@ -1649,6 +1649,14 @@ class RunHomeClient:
         — unlike ``host.fork()``, which migrates and therefore stays
         Host-side.
 
+        A Run repeat carries the source's ``exclusive_key``: the repeat is
+        about the same subject, so it inherits that subject's "one live run"
+        rule rather than escaping it. Settled work has already released the
+        key, so the ordinary rerun is simply accepted; if something else has
+        taken the key since, the repeat collides at acceptance exactly like
+        any other submission — adopting the live holder, or raising
+        ``WorkflowIdConflictError`` when the values differ.
+
         ``source_ref`` is opaque caller provenance recorded on the NEW
         submission (the new Batch manifest for a ``BatchRef``), exactly as
         ``submit`` and ``stop`` record it (US58) — repeating settled work is
@@ -1707,6 +1715,13 @@ class RunHomeClient:
             fingerprint=start_fingerprint(definition_id, inputs_json, None),
             retry_of=ref.run_id,
             admission_cost=int(submission["admission_cost"]),
+            # A repeat is about the SAME subject, so it carries the source's
+            # exclusive_key. Dropping it would let a rerun and a fresh submit
+            # both be live for one subject — the exact thing the key exists
+            # to prevent. If something else holds the key by now, the repeat
+            # collides at acceptance like any other submission: it adopts the
+            # live holder, or refuses if the values differ.
+            exclusive_key=submission["exclusive_key"],
             fresh=fresh,
         )
         workflow_id = row["workflow_id"]
@@ -1783,6 +1798,13 @@ class RunHomeClient:
             fingerprint=start_fingerprint(definition_id, inputs_json, None),
             retry_of=ref.run_id,
             admission_cost=int(submission["admission_cost"]),
+            # A repeat is about the SAME subject, so it carries the source's
+            # exclusive_key. Dropping it would let a rerun and a fresh submit
+            # both be live for one subject — the exact thing the key exists
+            # to prevent. If something else holds the key by now, the repeat
+            # collides at acceptance like any other submission: it adopts the
+            # live holder, or refuses if the values differ.
+            exclusive_key=submission["exclusive_key"],
             fresh=fresh,
         )
         workflow_id = row["workflow_id"]

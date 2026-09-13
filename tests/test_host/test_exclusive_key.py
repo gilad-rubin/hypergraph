@@ -34,6 +34,7 @@ from hypergraph import (
     serve,
 )
 from hypergraph.checkpointers._migrate import _SETTLED_SUBMISSION_STATE_VALUES
+from hypergraph.host.home import _SELECT_LIVE_EXCLUSIVE_HOLDER, _list_rows_query
 from hypergraph.host.views import SETTLED_SUBMISSION_STATES
 
 pytest.importorskip("aiosqlite")
@@ -317,6 +318,116 @@ async def test_the_index_predicate_is_the_settled_vocabulary(tmp_path):
         await home.close()
 
 
+# === The reads the key exists to make cheap ===
+
+
+async def test_both_exclusive_key_reads_search_the_index_instead_of_scanning(tmp_path):
+    """The claim "answered by the index" has to survive EXPLAIN QUERY PLAN.
+
+    The partial UNIQUE index cannot serve either read: SQLite may only use a
+    partial index when the query IMPLIES its predicate, and neither
+    `WHERE exclusive_key = ?` nor the holder read (whose settled states are
+    bound parameters) does. Without the plain lookup index both are a full
+    `SCAN host_submissions` — the very full-table read this feature exists to
+    remove — and every doc sentence about it would be false.
+    """
+    home = RunHome.open(f"file:{tmp_path / 'runs.db'}")
+    try:
+        db = home._sync_db()
+        listing, list_params = _list_rows_query("review:doc-41")
+        holder_params = ("review:doc-41", *sorted(_SETTLED_SUBMISSION_STATE_VALUES))
+        plans = {
+            "listing": [str(row[-1]) for row in db.execute(f"EXPLAIN QUERY PLAN {listing}", list_params).fetchall()],
+            "holder": [str(row[-1]) for row in db.execute(f"EXPLAIN QUERY PLAN {_SELECT_LIVE_EXCLUSIVE_HOLDER}", holder_params).fetchall()],
+        }
+        for label, plan in plans.items():
+            assert any("SEARCH" in line and "idx_host_submissions_key" in line for line in plan), (label, plan)
+            assert not any(line.startswith("SCAN host_submissions") or line == "SCAN s" for line in plan), (label, plan)
+    finally:
+        await home.close()
+
+
+# === A repeat is about the same subject ===
+
+
+async def test_a_rerun_carries_the_sources_key_onto_the_repeat(home):
+    """Otherwise a rerun and a fresh submit could both be live for one subject."""
+    graph = _graph()
+    host = serve(graph, home=home, deployment_version="v1")
+    first = await host.submit(graph, {"document_id": "doc-41"}, workflow_id="review-a", exclusive_key="review:doc-41")
+    async with _worker(host):
+        await host.client.follow(first.run_ref, deadline=25)
+
+    repeat = await host.client.rerun(first.run_ref, fresh=True)
+    assert repeat.duplicate is False
+    assert repeat.workflow_id == "review-a-retry-1"
+    assert _submission_rows(home) == [("review-a", "review:doc-41"), ("review-a-retry-1", "review:doc-41")]
+
+    # And the repeat now HOLDS the subject: a fresh submit adopts it rather
+    # than starting a second live review of the same document.
+    fresh = await host.submit(graph, {"document_id": "doc-41"}, workflow_id="review-b", exclusive_key="review:doc-41")
+    assert (fresh.duplicate, fresh.workflow_id) == (True, "review-a-retry-1")
+
+
+async def test_a_rerun_collides_when_something_else_took_the_key(home):
+    """The repeat is an ordinary submission at the door, not a bypass."""
+    graph = _graph()
+    host = serve(graph, home=home, deployment_version="v1")
+    first = await host.submit(graph, {"document_id": "doc-41"}, workflow_id="review-a", exclusive_key="review:doc-41")
+    async with _worker(host):
+        await host.client.follow(first.run_ref, deadline=25)
+
+    # A settled source released the key; somebody else took it, with
+    # different values.
+    await host.submit(graph, {"document_id": "doc-99"}, workflow_id="review-live", exclusive_key="review:doc-41")
+
+    with pytest.raises(WorkflowIdConflictError) as raised:
+        await host.client.rerun(first.run_ref, fresh=True)
+    assert raised.value.workflow_id == "review-live"
+    assert "review:doc-41" in str(raised.value)
+    assert [row[0] for row in _submission_rows(home)] == ["review-a", "review-live"]
+
+
+# === A submission's subject is fixed at acceptance ===
+
+
+async def test_a_differing_key_under_a_known_workflow_id_is_refused(home):
+    """The key is not in the fingerprint, so nothing else would catch it."""
+    graph = _graph()
+    host = serve(graph, home=home, deployment_version="v1")
+    await host.submit(graph, {"document_id": "doc-41"}, workflow_id="review-a", exclusive_key="review:doc-41")
+
+    with pytest.raises(WorkflowIdConflictError) as raised:
+        await host.submit(graph, {"document_id": "doc-41"}, workflow_id="review-a", exclusive_key="totally:other-subject")
+
+    error = raised.value
+    assert error.aspect == "exclusive_key"
+    assert error.workflow_id == "review-a"
+    # It names BOTH keys — the one the row holds and the one asked for.
+    assert "review:doc-41" in str(error) and "totally:other-subject" in str(error)
+    # The stored row is untouched, and the key asked for was never taken.
+    assert _submission_rows(home) == [("review-a", "review:doc-41")]
+    assert await host.client.list(RunQuery(key="totally:other-subject")) == []
+
+
+async def test_dropping_or_adding_a_key_on_a_known_id_is_refused_too(home):
+    """Both directions: omitting a held key, and keying a keyless row."""
+    graph = _graph()
+    host = serve(graph, home=home, deployment_version="v1")
+    await host.submit(graph, {"document_id": "doc-41"}, workflow_id="keyed", exclusive_key="review:doc-41")
+    await host.submit(graph, {"document_id": "doc-41"}, workflow_id="keyless")
+
+    with pytest.raises(WorkflowIdConflictError, match="exclusive_key"):
+        await host.submit(graph, {"document_id": "doc-41"}, workflow_id="keyed")
+    with pytest.raises(WorkflowIdConflictError, match="exclusive_key"):
+        await host.submit(graph, {"document_id": "doc-41"}, workflow_id="keyless", exclusive_key="review:doc-41")
+
+    # Resubmitting each id with the key it was accepted under still dedupes.
+    assert (await host.submit(graph, {"document_id": "doc-41"}, workflow_id="keyed", exclusive_key="review:doc-41")).duplicate is True
+    assert (await host.submit(graph, {"document_id": "doc-41"}, workflow_id="keyless")).duplicate is True
+    assert _submission_rows(home) == [("keyed", "review:doc-41"), ("keyless", None)]
+
+
 # === Batches keep their own identity ===
 
 
@@ -353,6 +464,16 @@ async def test_sync_submit_adopts_and_lists_exactly_like_async(tmp_path):
 
         with pytest.raises(WorkflowIdConflictError):
             host.submit_sync(graph, {"document_id": "doc-99"}, workflow_id="review-c", exclusive_key="review:doc-41")
+        with pytest.raises(WorkflowIdConflictError, match="exclusive_key"):
+            host.submit_sync(graph, {"document_id": "doc-41"}, workflow_id="review-a", exclusive_key="other:subject")
         assert _submission_rows(home) == [("review-a", "review:doc-41")]
+
+        # rerun_sync carries the key the same way its async mirror does. A
+        # recovery-exhausted source is the rerun case that needs no runs row.
+        home._sync_db().execute("UPDATE host_submissions SET state = 'exhausted' WHERE workflow_id = 'review-a'")
+        home._sync_db().commit()
+        repeat = host.client.rerun_sync(first.run_ref, fresh=True)
+        assert _submission_rows(home) == [("review-a", "review:doc-41"), ("review-a-retry-1", "review:doc-41")]
+        assert repeat.workflow_id == "review-a-retry-1"
     finally:
         await home.close()

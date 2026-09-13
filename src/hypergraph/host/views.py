@@ -248,7 +248,7 @@ class RunQuery:
             subject, not the submission. Every run ever submitted under it
             matches, newest first, so the live holder (at most one) is the
             first row. Unlike every other field this one is answered by the
-            store: the key is an indexed column, and Tier-0 runs, which
+            store, through ``idx_host_submissions_key``; Tier-0 runs, which
             carry no submission row, can never match.
     """
 

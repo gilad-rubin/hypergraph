@@ -468,13 +468,22 @@ CREATE TABLE IF NOT EXISTS host_submissions (
 # own name. NULL on every submission that does not claim one, which is every
 # submission written before v10 and still the ordinary case.
 #
-# The partial unique index below is what makes it mean anything: at most one
-# LIVE row may hold a given key, and the predicate spans exactly the states
-# the host may still touch. A settled holder drops out of the index, so the
-# key frees itself and the next submission for that subject is accepted as a
-# new run. The index is not the check — the submit transaction SELECTs the
-# live holder and adopts it — it is the backstop for a writer that somehow
-# got past that SELECT.
+# Two indexes, because they answer two different questions.
+#
+# The PARTIAL UNIQUE one is the constraint: at most one LIVE row may hold a
+# given key, and its predicate spans exactly the states the host may still
+# touch. A settled holder drops out of the index, so the key frees itself and
+# the next submission for that subject is accepted as a new run. It is not
+# the check — the submit transaction SELECTs the live holder and adopts it —
+# it is the backstop for a writer that somehow got past that SELECT.
+#
+# The PLAIN one is the lookup, and it is not redundant with the partial one:
+# SQLite may only use a partial index when the query IMPLIES its predicate,
+# and neither `WHERE exclusive_key = ?` (the keyed listing) nor
+# `WHERE exclusive_key = ? AND state NOT IN (?, ?, ?)` (the in-transaction
+# holder read, whose settled states are bound parameters) implies it. Without
+# this second index both of those are a full `SCAN host_submissions` — which
+# is exactly the full-table read `exclusive_key` exists to remove.
 _HOST_SUBMISSIONS_V10_COLUMNS = (("exclusive_key", "exclusive_key TEXT"),)
 
 #: The submission states the host will never touch again, as the index
@@ -486,6 +495,11 @@ _HOST_SUBMISSIONS_V10_COLUMNS = (("exclusive_key", "exclusive_key TEXT"),)
 #: settled state is added on one side only, and widening the index is what
 #: adding one has to do.
 _SETTLED_SUBMISSION_STATE_VALUES: tuple[str, ...] = ("dead_letter", "exhausted", "finished")
+
+
+#: The lookup index over the subject column. See the two-index note above:
+#: the partial unique index cannot serve either exclusive-key query.
+_EXCLUSIVE_KEY_LOOKUP_INDEX_SQL = "CREATE INDEX IF NOT EXISTS idx_host_submissions_key ON host_submissions(exclusive_key)"
 
 
 def _exclusive_key_index_sql() -> str:
@@ -858,13 +872,16 @@ def _migrate_v8_to_v9(conn: Any) -> None:
 def _ensure_v10_objects(conn: Any) -> None:
     """Ensure the exclusive-key column and its live-holder index exist.
 
-    One nullable append to ``host_submissions`` and one partial unique index
-    over it: a v9 database migrates in place, every existing row keeps its
-    exact byte layout and reads NULL for the new column, and no existing row
-    enters the index. The column lands before the index that spans it.
+    One nullable append to ``host_submissions``, the partial unique index
+    that enforces one live holder per key, and the plain index that the two
+    exclusive-key reads actually use: a v9 database migrates in place, every
+    existing row keeps its exact byte layout and reads NULL for the new
+    column, and no existing row enters either index. The column lands before
+    the indexes that span it.
     """
     _add_missing_columns(conn, "host_submissions", _HOST_SUBMISSIONS_V10_COLUMNS)
     conn.execute(_exclusive_key_index_sql())
+    conn.execute(_EXCLUSIVE_KEY_LOOKUP_INDEX_SQL)
     conn.commit()
 
 

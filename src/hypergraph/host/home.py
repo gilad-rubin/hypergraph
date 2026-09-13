@@ -808,6 +808,7 @@ def _raise_on_conflicting_reuse(
     def_struct_hash: str,
     inputs_json: str,
     start_at: str | None,
+    exclusive_key: str | None = None,
 ) -> None:
     """Apply the dedup/conflict contract to an existing submission row.
 
@@ -816,6 +817,15 @@ def _raise_on_conflicting_reuse(
     before first execution). Then fingerprint mismatch is a distinct typed
     conflict; an identical fingerprint falls through to use-existing dedup.
     Caller holds the write transaction and rolls back on raise.
+
+    A differing ``exclusive_key`` is the last check and a conflict of its
+    own. The key is not in the fingerprint — it says which SUBJECT this work
+    is about, not what the work IS — so without this a resubmission of a
+    known id carrying a different key would dedupe and the key would simply
+    vanish: the caller asked for exclusivity over one subject and got
+    exclusivity over another, or none. That is the same "silently answered a
+    different question" the live-holder path refuses, in the other
+    direction, so it refuses too rather than rewriting an accepted row.
     """
     if existing["state"] == "finished":
         raise AlreadyTerminalError(workflow_id)
@@ -829,6 +839,19 @@ def _raise_on_conflicting_reuse(
             start_at=start_at,
         )
         raise WorkflowIdConflictError(workflow_id, aspect)
+    if existing["exclusive_key"] != exclusive_key:
+        raise WorkflowIdConflictError(
+            workflow_id,
+            "exclusive_key",
+            message=(
+                f"workflow_id {workflow_id!r} already exists in this Run Home holding exclusive_key "
+                f"{existing['exclusive_key']!r}; this submission asks for {exclusive_key!r}. A submission's "
+                "subject is fixed at acceptance, so deduping here would discard the exclusivity you asked "
+                "for.\n\n"
+                "How to fix: resubmit this id with the key it was accepted under, or choose a new "
+                "workflow_id for work about a different subject."
+            ),
+        )
 
 
 def _raise_on_conflicting_key_holder(
@@ -1758,6 +1781,7 @@ class RunHome(SqliteCheckpointer):
                         def_struct_hash=def_struct_hash,
                         inputs_json=inputs_json,
                         start_at=start_at,
+                        exclusive_key=exclusive_key,
                     )
                     db.rollback()
                     return False, _row_to_submission(existing_row)
@@ -1894,6 +1918,7 @@ class RunHome(SqliteCheckpointer):
                         def_struct_hash=def_struct_hash,
                         inputs_json=inputs_json,
                         start_at=start_at,
+                        exclusive_key=exclusive_key,
                     )
                     await self._db.rollback()
                     return False, _row_to_submission(existing_row)
@@ -3685,10 +3710,11 @@ class RunHome(SqliteCheckpointer):
         """All submissions with their runs row, plus bare Tier-0 runs.
 
         ``exclusive_key`` is the one listing filter answered in SQL rather
-        than in Python: the key is an indexed column, and asking "who holds
-        this subject" is the question a submitter asks before every
-        submission. Narrowing it here also drops the bare Tier-0 sweep —
-        a run with no submission row can never hold a key.
+        than in Python: ``idx_host_submissions_key`` turns it into a SEARCH
+        instead of a SCAN (verified by an ``EXPLAIN QUERY PLAN`` test), and
+        asking "who holds this subject" is the question a submitter asks
+        before every submission. Narrowing it here also drops the bare
+        Tier-0 sweep — a run with no submission row can never hold a key.
         """
         statement, params = _list_rows_query(exclusive_key)
         with self._sync_lock:
