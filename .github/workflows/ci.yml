@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [master]
+  # Every pull request, whatever branch it targets: stacked PRs (a leaf whose base is
+  # the PR under it) must get the same lint/typecheck/test signal as one against master.
   pull_request:
-    branches: [master]
 
 jobs:
   lint:
