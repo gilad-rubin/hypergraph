@@ -422,6 +422,35 @@ validated** — dataclasses do not check field types, so only a construction
 failure (a missing required field) is caught. Annotate with a Pydantic model
 where the stored shape must be enforced.
 
+## One Async Store per Event Loop
+
+`SqliteCheckpointer` and `RunHome` serialize their async work with an
+`asyncio.Lock`, which belongs to the event loop it was first awaited on.
+Using the same store from a second loop raises immediately:
+
+```python
+home = RunHome.open("file:./runs.db")
+await home.list_runs()                       # binds to this loop
+
+# ...from another thread's asyncio.run(...):
+await home.list_runs()
+# WrongEventLoopError: This store's async connection belongs to event loop
+# <_UnixSelectorEventLoop ...> (id 0x...) and is being used from <...> (id 0x...).
+#
+# How to fix: keep one store per event loop — open a second RunHome/
+# SqliteCheckpointer for the other loop, use the sync API ... from the other
+# thread, or await close() before handing the store to a new loop.
+```
+
+The check is one identity comparison on a path that is about to do I/O. It
+exists because `asyncio.Lock` only notices the wrong loop when two coroutines
+actually *contend*, so a cross-loop caller used to work perfectly until an
+unrelated overlap failed mid-transaction. `close()` releases the loop, so the
+documented reopen-after-close path is free to land on a different one.
+
+The sync API (`get_run`, `state`, `values`, and the host's `*_sync` verbs)
+has no such rule: it uses one SQLite connection per thread.
+
 ## Types
 
 `checkpointer.steps(run_id)` and `checkpointer.get_run(run_id)` (used throughout this page) return these dataclasses:
