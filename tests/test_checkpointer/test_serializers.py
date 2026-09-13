@@ -97,5 +97,53 @@ class TestBlobSerializer:
 
     def test_reference_shape_is_not_mistaken_for_user_data(self, tmp_path):
         s = self._serializer(tmp_path)
-        data = {"$bytes": 5, "other": "x"}
-        assert s.deserialize(s.serialize(data)) == data
+        for data in ({"$bytes": 5, "other": "x"}, {"$bytes": "a" * 64}, {"$$bytes": "x"}, {"$literal": {"$bytes": "y"}}):
+            assert s.deserialize(s.serialize(data)) == data
+
+    def test_models_serialize_in_json_mode_like_json_serializer(self, tmp_path):
+        from datetime import datetime, timezone
+        from uuid import UUID
+
+        from pydantic import BaseModel
+
+        from hypergraph.checkpointers import JsonSerializer
+
+        class Event(BaseModel):
+            at: datetime
+            id: UUID
+            tags: list[str]
+
+        e = Event(at=datetime(2024, 1, 1, tzinfo=timezone.utc), id=UUID(int=7), tags=["a"])
+        s = self._serializer(tmp_path)
+        assert s.serialize({"e": e}) == JsonSerializer().serialize({"e": e})
+
+    def test_dataclass_class_vars_and_init_vars_are_not_data(self, tmp_path):
+        from dataclasses import InitVar, dataclass, field
+        from typing import ClassVar
+
+        @dataclass
+        class Row:
+            kind: ClassVar[str] = "row"
+            seed: InitVar[int] = 0
+            name: str = ""
+            blob: bytes = b""
+            extra: list[int] = field(default_factory=list)
+
+            def __post_init__(self, seed: int) -> None:
+                self.extra = [seed]
+
+        s = self._serializer(tmp_path)
+        assert s.deserialize(s.serialize(Row(seed=3, name="r", blob=b"\x00"))) == {"name": "r", "blob": b"\x00", "extra": [3]}
+
+    def test_corrupt_blob_is_refused(self, tmp_path):
+        from hypergraph.checkpointers import BlobCorruptError
+
+        s = self._serializer(tmp_path)
+        stored = s.serialize({"pdf": b"original"})
+        blob = next(p for p in (tmp_path / "blobs").rglob("*") if p.is_file())
+        blob.write_bytes(b"tampered")
+        with pytest.raises(BlobCorruptError):
+            s.deserialize(stored)
+        # put() heals a corrupt file rather than trusting it
+        s.serialize({"pdf": b"original"})
+        assert blob.read_bytes() == b"original"

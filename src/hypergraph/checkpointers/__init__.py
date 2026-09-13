@@ -8,7 +8,15 @@ from hypergraph.checkpointers.base import Checkpointer, CheckpointPolicy
 from hypergraph.checkpointers.inspection import RunInspector, SqliteRunInspector
 from hypergraph.checkpointers.memory import MemoryCheckpointer
 from hypergraph.checkpointers.protocols import SyncCheckpointerProtocol
-from hypergraph.checkpointers.serializers import BlobSerializer, BlobStore, FileBlobStore, JsonSerializer, PickleSerializer, Serializer
+from hypergraph.checkpointers.serializers import (
+    BlobCorruptError,
+    BlobSerializer,
+    BlobStore,
+    FileBlobStore,
+    JsonSerializer,
+    PickleSerializer,
+    Serializer,
+)
 from hypergraph.checkpointers.sqlite import SqliteCheckpointer
 from hypergraph.checkpointers.types import (
     AnswerRejectedError,
@@ -48,6 +56,7 @@ __all__ = [
     "Checkpointer",
     "CheckpointPolicy",
     "Checkpoint",
+    "BlobCorruptError",
     "BlobSerializer",
     "BlobStore",
     "FileBlobStore",
