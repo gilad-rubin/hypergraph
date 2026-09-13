@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Container, Iterable
+from collections.abc import Collection, Iterable
 from typing import Any
 
 from hypergraph._utils import hash_definition
@@ -95,7 +95,7 @@ def combine_recipe_fingerprints(fingerprints: Iterable[str]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def nested_bound_payloads(node: Any, shadowed: Container[str] = ()) -> list[str]:
+def nested_bound_payloads(node: Any, shadowed: Collection[str] = ()) -> list[str]:
     """Recipe payloads for values bound INSIDE a node's nested graph, recursively.
 
     ``Graph._compute_definition_hash`` deliberately excludes bindings ("runtime
@@ -112,14 +112,15 @@ def nested_bound_payloads(node: Any, shadowed: Container[str] = ()) -> list[str]
     Returns ``[]`` for every node that wraps no graph.
 
     ``shadowed`` names are the ONE precedence rule this module has, applied at
-    every depth: a name bound further out is the value that actually runs (an
-    outer bind flattens down through the boundary), so the inner value it
-    shadows is not recipe and must not move the fingerprint.
+    every depth: the OUTERMOST binding of a name is the value that actually runs
+    (an outer bind flattens down through the boundary — the graph layer even
+    warns "Parent bind for X overrides nested bind from GraphNode Y"), so every
+    inner value it shadows is not recipe and must not move the fingerprint.
     """
     return graph_bound_payloads(getattr(node, "graph", None), shadowed)
 
 
-def graph_bound_payloads(graph: Any, shadowed: Container[str] = ()) -> list[str]:
+def graph_bound_payloads(graph: Any, shadowed: Collection[str] = ()) -> list[str]:
     """Every bound-value payload a graph carries, the graphs nested in it included.
 
     Same payload rules, same name-qualification and the same ``shadowed``
@@ -128,14 +129,20 @@ def graph_bound_payloads(graph: Any, shadowed: Container[str] = ()) -> list[str]
     """
     if graph is None or not hasattr(graph, "iter_nodes"):
         return []
-    own = {name: value for name, value in (getattr(graph, "_bound", None) or {}).items() if name not in shadowed}
+    all_own = getattr(graph, "_bound", None) or {}
+    own = {name: value for name, value in all_own.items() if name not in shadowed}
     payloads = [f"{name}={payload}" for name, payload in sorted(_component_config_hashes(own).items())]
+    # This graph's own bindings shadow the SAME name deeper, exactly as the
+    # caller's shadow it here — precedence is outermost-wins at every hop, not
+    # just at the first one. Carry the union down, including names already
+    # shadowed from further out.
+    deeper = frozenset(shadowed) | frozenset(all_own)
     for inner in graph.iter_nodes():
-        payloads.extend(f"{inner.name}/{part}" for part in nested_bound_payloads(inner, shadowed))
+        payloads.extend(f"{inner.name}/{part}" for part in nested_bound_payloads(inner, deeper))
     return payloads
 
 
-def compute_node_recipe_hash(node: Any, shadowed: Container[str] = ()) -> str:
+def compute_node_recipe_hash(node: Any, shadowed: Collection[str] = ()) -> str:
     """A node's recipe identity: its definition hash plus any nested bindings.
 
     Identical to :func:`compute_node_definition_hash` for every node that wraps
@@ -150,7 +157,7 @@ def compute_node_recipe_hash(node: Any, shadowed: Container[str] = ()) -> str:
     return hashlib.sha256("|".join([definition_hash, *sorted(payloads)]).encode()).hexdigest()
 
 
-def _node_definition_hashes(graph: Any, shadowed: Container[str] = ()) -> list[str]:
+def _node_definition_hashes(graph: Any, shadowed: Collection[str] = ()) -> list[str]:
     if graph is None:
         return []
     return [compute_node_recipe_hash(n, shadowed) for n in graph.iter_nodes()]
@@ -278,7 +285,7 @@ def compute_child_fingerprint(
     )
 
 
-def compute_recipe_fingerprint(node_fn: Any, component_hashes: dict[str, str], shadowed: Container[str] = ()) -> str:
+def compute_recipe_fingerprint(node_fn: Any, component_hashes: dict[str, str], shadowed: Collection[str] = ()) -> str:
     """Recipe identity for a column's producing node: hash(node code + consumed component configs).
 
     Unlike ``compute_column_provenance`` this excludes input values — it names
@@ -325,7 +332,7 @@ def compute_column_provenance(
     node_fn: Any,
     inputs: dict[str, Any],
     component_hashes: dict[str, str],
-    shadowed: Container[str] = (),
+    shadowed: Collection[str] = (),
 ) -> str:
     """Per-column provenance: hash(producing node's code + its direct input values + consumed component configs).
 

@@ -194,6 +194,42 @@ def test_a_root_bind_wins_over_the_child_value_it_shadows(tmp_path):
     assert same.sync([{"doc_id": "d1", "text": "alpha"}]).receipts[0].outcome.value == "skipped"
 
 
+def test_an_intermediate_bind_shadows_the_deeper_value_it_overrides(tmp_path):
+    """Outermost-wins is the rule at EVERY hop, not only the first one.
+
+    A binding on a middle graph overrides one on the graph nested inside it (the
+    graph layer says so out loud: "Parent bind for X overrides nested bind from
+    GraphNode Y"). Two tables differing only in that shadowed deepest value
+    therefore derive identical data, so they must be one recipe — otherwise the
+    shadow set stops growing after the first level and drift orders a re-derive
+    that rewrites the same bytes.
+    """
+
+    @node(output_name="shout")
+    def shout(text: str, suffix: str) -> str:
+        return text.upper() + suffix
+
+    def build(deepest_value: str, path) -> HyperTable:
+        deepest = Graph([shout], name="deepest").bind(suffix=deepest_value)
+        middle = Graph([deepest.as_node(name="inner")], name="middle").bind(suffix="MID")
+        return Graph([middle.as_node(name="outer")]).as_table(identity="doc_id", store=LanceDBStore(str(path)), runner=SyncRunner())
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        bang, question = build("!", tmp_path / "a"), build("?", tmp_path / "b")
+        bang.insert(doc_id="d1", text="hi")
+        question.insert(doc_id="d1", text="hi")
+        # The graph layer states the precedence out loud; identity must agree.
+        assert any("overrides nested bind" in str(w.message) for w in caught)
+        assert bang.get("d1")["shout"] == question.get("d1")["shout"] == "HIMID"
+        assert bang.recipe_fingerprint() == question.recipe_fingerprint()
+
+        # Same store, rebuilt with the other shadowed deepest value: nothing to do.
+        same = build("?", tmp_path / "a")
+        assert same.recipe_drift().drifted == 0
+        assert same.sync([{"doc_id": "d1", "text": "hi"}]).receipts[0].outcome.value == "skipped"
+
+
 def test_recursion_holds_at_two_levels_of_nesting(tmp_path):
     """A graph in a graph in a table: the deepest bind still moves the recipe."""
 

@@ -358,8 +358,18 @@ class Provenance:
         target = spec or self.spec
         cached = self._mounted_payloads_cache.get(target.name)
         if cached is None:
-            shadowed = frozenset(self.components)
-            cached = [f"{child.name}/{part}" for child in iter_child_specs(target) for part in graph_bound_payloads(child.child_graph, shadowed)]
+            payloads: list[str] = []
+
+            def descend(parent: TableSpec, shadowed: frozenset[str]) -> None:
+                # Descend rather than flatten: a grain mounted under another
+                # grain is shadowed by that grain's bindings too, so the shadow
+                # set has to grow on the way down.
+                for child in parent.children:
+                    payloads.extend(f"{child.name}/{part}" for part in graph_bound_payloads(child.child_graph, shadowed))
+                    descend(child, shadowed | frozenset(getattr(child.child_graph, "_bound", None) or {}))
+
+            descend(target, frozenset(self.components))
+            cached = payloads
             self._mounted_payloads_cache[target.name] = cached
         return cached
 
