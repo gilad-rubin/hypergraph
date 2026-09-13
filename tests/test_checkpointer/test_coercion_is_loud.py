@@ -16,6 +16,8 @@ What this file falsifies:
    name whose annotation is not a model, pass through untouched.
 4. A dataclass whose stored dict cannot construct the model raises too,
    rather than half-building it.
+5. A host can catch it: the error is a root export, beside the other
+   restore-time error (`CompactedRetentionError`).
 """
 
 from __future__ import annotations
@@ -25,10 +27,10 @@ from dataclasses import dataclass
 import pytest
 from pydantic import BaseModel
 
-from hypergraph import Graph, node
+import hypergraph
+from hypergraph import CheckpointCoercionError, Graph, node
 from hypergraph.checkpointers.types import Checkpoint
 from hypergraph.runners._shared.state_restore import (
-    CheckpointCoercionError,
     _coerce_single,
     coerce_checkpoint_values,
     initialize_state,
@@ -92,6 +94,23 @@ class TestTheProbe:
 
         with pytest.raises(CheckpointCoercionError, match="score"):
             initialize_state(scored_graph(), {}, checkpoint=checkpoint)
+
+
+class TestAHostCanCatchIt:
+    def test_the_error_is_a_root_export_beside_the_other_restore_time_error(self):
+        assert CheckpointCoercionError is hypergraph.exceptions.CheckpointCoercionError
+        assert "CheckpointCoercionError" in hypergraph.__all__
+        # The canon neighbour: the other restore-time refusal lives here too.
+        assert "CompactedRetentionError" in hypergraph.__all__
+
+    def test_the_caught_error_carries_the_value_the_model_and_the_cause(self):
+        try:
+            coerce_checkpoint_values(scored_graph(), {"score": {"value": "nope", "label": 2}})
+        except CheckpointCoercionError as refused:
+            assert (refused.name, refused.model) == ("score", Score)
+            assert refused.__cause__ is refused.cause
+        else:
+            raise AssertionError("a value that cannot be rebuilt must refuse")
 
 
 class TestWhatStaysQuiet:

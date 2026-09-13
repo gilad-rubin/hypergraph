@@ -397,6 +397,8 @@ producer is not in the forked graph.
 A value that cannot be rebuilt is refused at the restore, not passed on:
 
 ```python
+from hypergraph import CheckpointCoercionError
+
 class Score(BaseModel):
     value: float
     label: str
@@ -422,6 +424,11 @@ validated** — dataclasses do not check field types, so only a construction
 failure (a missing required field) is caught. Annotate with a Pydantic model
 where the stored shape must be enforced.
 
+`CheckpointCoercionError` is a root export (`from hypergraph import
+CheckpointCoercionError`), so a host that wants to handle a stale checkpoint
+itself — dead-letter the run, fork it, tell an operator — can catch it. It
+carries `name`, `model`, and the underlying validation error as `__cause__`.
+
 ## One Async Store per Event Loop
 
 `SqliteCheckpointer` and `RunHome` serialize their async work with an
@@ -434,7 +441,7 @@ await home.list_runs()                       # binds to this loop
 
 # ...from another thread's asyncio.run(...):
 await home.list_runs()
-# WrongEventLoopError: This store's async connection belongs to event loop
+# WrongEventLoopError: This store's async transaction lock belongs to event loop
 # <_UnixSelectorEventLoop ...> (id 0x...) and is being used from <...> (id 0x...).
 #
 # How to fix: keep one store per event loop — open a second RunHome/

@@ -45,6 +45,7 @@ from hypergraph.events.rich_progress import RichProgressProcessor
 from hypergraph.exceptions import (
     AttemptOutcomeUnknownError,
     AttemptTimeoutError,
+    CheckpointCoercionError,
     CompactedRetentionError,
     ExecutionError,
     GraphChangedError,
@@ -195,6 +196,7 @@ __all__ = [
     "AttemptOutcomeUnknownError",
     "AttemptTimeoutError",
     "RetryWindowExpiredError",
+    "CheckpointCoercionError",
     "CompactedRetentionError",
     "MissingInputError",
     "InfiniteLoopError",

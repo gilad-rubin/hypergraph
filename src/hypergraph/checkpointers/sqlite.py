@@ -213,7 +213,7 @@ class WrongEventLoopError(RuntimeError):
         self.opened_on = opened_on
         self.running = running
         super().__init__(
-            f"This store's async connection belongs to event loop {opened_on!r} (id {hex(id(opened_on))}) "
+            f"This store's async transaction lock belongs to event loop {opened_on!r} (id {hex(id(opened_on))}) "
             f"and is being used from {running!r} (id {hex(id(running))}).\n\n"
             "How to fix: keep one store per event loop — open a second RunHome/SqliteCheckpointer for "
             "the other loop, use the sync API (get_run, state, values, the *_sync verbs) from the other "
