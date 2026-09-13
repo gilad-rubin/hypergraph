@@ -9,6 +9,7 @@ from hypergraph.checkpointers import (
     PauseAlreadySettledError,
     PauseSettlementError,
     PauseSlot,
+    ReservedFactKindError,
     SqliteCheckpointer,
     StalePauseError,
 )
@@ -321,6 +322,8 @@ __all__ = [
     "AnswerRejectedError",
     "PauseAlreadySettledError",
     "StalePauseError",
+    # Node-recorded facts (#404)
+    "ReservedFactKindError",
     # Display
     "set_display_mode",
     "get_display_mode",

@@ -159,6 +159,7 @@ ROOT_EXPORTS = (
     "AnswerRejectedError",
     "PauseAlreadySettledError",
     "StalePauseError",
+    "ReservedFactKindError",
     "set_display_mode",
     "get_display_mode",
 )
