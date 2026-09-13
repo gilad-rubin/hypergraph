@@ -183,7 +183,7 @@ The existing checkpointer plus coordination facts in the same transactional stor
 _Avoid_: Second journal, event store, broker state
 
 **RunHomeClient**:
-The single backend-neutral surface for existing work — get, list, watch, stop, rerun, and answer — accepting RunRef or the applicable BatchRef. Constructing one requires no Definition code; it cannot submit new work.
+The single backend-neutral surface for existing work — get, list, watch, follow, stop, rerun, and answer — accepting RunRef or the applicable BatchRef. Constructing one requires no Definition code; it cannot submit new work.
 _Avoid_: Operator wrapper, admin API, app client
 
 **RunRef / BatchRef**:
