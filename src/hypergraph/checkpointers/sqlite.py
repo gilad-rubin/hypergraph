@@ -519,7 +519,8 @@ def _run_inputs_type_error(serializer: Any, run_id: str, inputs: dict[str, Any],
         "interrupt has no other way to read a raw graph input when the run resumes.\n\n"
         "How to fix:\n"
         "  Pass a storable stand-in as the graph input (an id, a config dict) and build the live object inside a node; or\n"
-        "  give the checkpointer a serializer that accepts it, e.g. SqliteCheckpointer(..., serializer=JsonSerializer(lossy=True))."
+        "  give the checkpointer a serializer that accepts it, e.g. SqliteCheckpointer(..., serializer=JsonSerializer(lossy=True)),\n"
+        "  or, for raw bytes, SqliteCheckpointer(..., serializer=BlobSerializer(FileBlobStore(path)))."
     )
 
 

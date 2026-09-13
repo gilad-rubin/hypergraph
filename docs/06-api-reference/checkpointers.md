@@ -200,7 +200,11 @@ consumed a raw graph input could never be satisfied on resume.
   handle passed as a graph input now stops the run at start with a `TypeError`
   naming the run and the offending input. Pass a storable stand-in and build
   the object inside a node, or configure a serializer that accepts it
-  (`SqliteCheckpointer(..., serializer=JsonSerializer(lossy=True))`).
+  (`SqliteCheckpointer(..., serializer=JsonSerializer(lossy=True))`). For raw
+  `bytes` (a PDF, an image) between nodes, use `BlobSerializer(FileBlobStore(dir))`:
+  the bytes live once in the store, by content hash, and the checkpoint keeps a
+  `{"$bytes": "<sha256>"}` reference. Any object with `put(bytes) -> ref` and
+  `get(ref) -> bytes` is a `BlobStore`.
 
 ```python
 await checkpointer.create_run("wf-1", graph_name="demo", inputs={"x": 5})
