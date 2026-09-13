@@ -10,8 +10,11 @@ Two rules hold everywhere below:
 
 - a write plan yields graph execution effects and nothing else, so a runner
   (sync, async, or a test double) can drive it;
-- ``WriteOutcome`` is a claim about physical effect, so ``SKIPPED`` is only ever
-  reported by a path that wrote no rows.
+- ``WriteOutcome`` is a claim about derivation, so ``SKIPPED`` is only ever
+  reported by a path that executed no node for this row and derived no row.
+  Re-stamping an unchanged child row at a newer generation, and retiring the
+  row it replaces, is bookkeeping: it writes, but it derives nothing, and a
+  plan that does only that still reports ``SKIPPED``.
 """
 
 from __future__ import annotations
@@ -60,8 +63,6 @@ from hypergraph.runners import PauseInfo, RunStatus
 
 __all__ = [
     "WritePlanner",
-    "dedup_child_rows",
-    "dedup_rows",
     "normalize_to_dict",
 ]
 
@@ -106,7 +107,7 @@ class ResumeAnswers:
 
 
 @dataclass(frozen=True, slots=True)
-class Reconcile:
+class ReconcileColumns:
     """A stored row can be converged column by column, reusing what is fresh.
 
     Reconciliation can still turn out to be impossible once the planner walks
@@ -126,7 +127,7 @@ class FullDerive:
     parent_skipped: bool
 
 
-WriteClass = SkipWrite | ResumeAnswers | Reconcile | FullDerive
+WriteClass = SkipWrite | ResumeAnswers | ReconcileColumns | FullDerive
 
 
 @dataclass(frozen=True)
@@ -290,7 +291,7 @@ class WritePlanner:
         if provided_answers and not source_provided:
             return ResumeAnswers(existing, frozenset(provided_answers))
         if status is not RowStatus.ERROR:
-            return Reconcile(existing, parent_skipped)
+            return ReconcileColumns(existing, parent_skipped)
         return FullDerive(existing, parent_skipped)
 
     # -- receipts ------------------------------------------------------------
@@ -305,23 +306,24 @@ class WritePlanner:
             return RowReceipt(str(identity_value), outcome, status, error=str(row.get("_error") or ""))
         return RowReceipt(str(identity_value), outcome, status)
 
-    def _unchanged_parent_receipt(self, identity_value: Any, before: ChildWrites) -> RowReceipt:
+    def _unchanged_parent_receipt(self, identity_value: Any, before: ChildWrites, *, rebuilt: bool = False) -> RowReceipt:
         """The receipt for a row whose parent this plan did not re-derive.
 
-        ``SKIPPED`` is a claim about physical effect, so it may only be made
-        when nothing was written. Child rows this plan derived under the
-        unchanged parent are a repair: ``HEALED`` when every one of them landed
-        healthy, and plain ``UPDATED`` when rows were written but a child is
-        still stored in error — a heal that did not heal is not a heal
-        (#204, #314).
+        ``SKIPPED`` claims no derivation happened for this row: no node ran and
+        no row was derived. Re-stamping the unchanged child rows at a newer
+        generation, and retiring the rows they replace, is bookkeeping and
+        keeps the skip.
+
+        Derivation makes it a repair instead — either the fan-out boundary
+        re-ran to rebuild the child item list (``rebuilt``), or a child row was
+        derived. A repair is ``HEALED`` when everything it derived landed
+        healthy, and plain ``UPDATED`` when a child is still stored in error: a
+        heal that did not heal is not a heal (#204, #314).
         """
         repair = self._commit.child_writes.since(before)
-        if repair.healed:
-            outcome = WriteOutcome.HEALED
-        elif repair.wrote:
-            outcome = WriteOutcome.UPDATED
-        else:
-            outcome = WriteOutcome.SKIPPED
+        if not repair.derived and not rebuilt:
+            return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
+        outcome = WriteOutcome.UPDATED if repair.errored else WriteOutcome.HEALED
         return RowReceipt(str(identity_value), outcome, RowStatus.COMPLETE)
 
     # -- column reconciliation -----------------------------------------------
@@ -907,7 +909,7 @@ class WritePlanner:
                 )
             )
 
-        if isinstance(plan, Reconcile):
+        if isinstance(plan, ReconcileColumns):
             receipt = yield from self._reconciled_parent(item, source_inputs, provided_names, plan, outcome, write_gen, child_gens, before)
             if receipt is not None:
                 return receipt
@@ -931,7 +933,7 @@ class WritePlanner:
         item: dict[str, Any],
         source_inputs: dict[str, Any],
         provided_names: set[str],
-        plan: Reconcile,
+        plan: ReconcileColumns,
         outcome: WriteOutcome,
         write_gen: int,
         child_gens: ChildGenerations,
@@ -992,7 +994,13 @@ class WritePlanner:
             child_gens,
         )
         if plan.parent_skipped:
-            return self._unchanged_parent_receipt(identity_value, before)
+            # A DerivedChildren selection means the fan-out boundary re-ran to
+            # regenerate the item list, so this pass DID derive — even when
+            # every child row it then wrote was an unchanged re-stamp and the
+            # only other effect was retiring a stale row (an extra child row
+            # left behind by an interrupted write).
+            rebuilt = any(isinstance(selection, DerivedChildren) for selection in reconciled.children)
+            return self._unchanged_parent_receipt(identity_value, before, rebuilt=rebuilt)
         return RowReceipt(str(identity_value), outcome, RowStatus.COMPLETE)
 
     def _derived_parent(

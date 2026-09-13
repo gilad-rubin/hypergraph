@@ -9,11 +9,12 @@ deletes the generations it superseded (the tombstone half). The #204/#205-class
 bugs all grew in that protocol, so it lives in one place with the invariant
 stated once.
 
-The committer also remembers what it physically did to child tables, which is
-what lets a write plan tell ``SKIPPED`` from ``HEALED`` without re-reading the
-store (#204, #314). It distinguishes the two kinds of child write on purpose:
-re-stamping an unchanged child row at a newer generation is bookkeeping, while
-writing a row the plan actually derived is a repair the receipt must report.
+The committer also remembers what it DERIVED into child tables, which is part
+of what lets a write plan tell ``SKIPPED`` from ``HEALED`` without re-reading
+the store (#204, #314). It distinguishes the two kinds of child write on
+purpose: re-stamping an unchanged child row at a newer generation, and
+retiring the row it replaces, is bookkeeping; writing a row the plan actually
+derived is derivation the receipt must report.
 """
 
 from __future__ import annotations
@@ -62,12 +63,13 @@ def dedup_child_rows(rows: list[dict[str, Any]], identity: str) -> list[dict[str
 
 @dataclass(frozen=True, slots=True)
 class ChildWrites:
-    """How many child rows a plan derived, and how many of those errored.
+    """How many child rows a plan DERIVED, and how many of those errored.
 
     Snapshot it before a stretch of a write plan and subtract with ``since()``
-    to learn what that stretch physically did — which is how a receipt tells
-    ``SKIPPED`` (wrote nothing) from ``HEALED`` (rebuilt damaged rows, all
-    healthy) from ``UPDATED`` (wrote rows, damage remains).
+    to learn what derivation that stretch did to child tables. Re-stamping an
+    unchanged child row at a newer generation is deliberately not counted: it
+    writes a row but derives nothing, so on its own it never turns a skip into
+    a repair.
     """
 
     derived: int = 0
@@ -75,14 +77,6 @@ class ChildWrites:
 
     def since(self, before: ChildWrites) -> ChildWrites:
         return ChildWrites(self.derived - before.derived, self.errored - before.errored)
-
-    @property
-    def wrote(self) -> bool:
-        return self.derived > 0
-
-    @property
-    def healed(self) -> bool:
-        return self.derived > 0 and self.errored == 0
 
 
 class ChildGenerations:

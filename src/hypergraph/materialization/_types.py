@@ -98,10 +98,14 @@ class WriteOutcome(Enum):
     SKIPPED = "skipped"
     HEALED = "healed"
     """An unchanged parent whose damaged child rows were rebuilt — rows
-    physically missing, or stored in error under ``on_error="store"``.
+    physically missing, stored in error under ``on_error="store"``, or extra
+    rows left behind by an interrupted write — with everything the repair
+    derived landing healthy.
 
-    ``sync()`` reports the repair distinctly: a receipt is never ``SKIPPED``
-    on a path that wrote rows (#204, #314).
+    ``sync()`` and ``insert()`` both report the repair distinctly: a receipt is
+    never ``SKIPPED`` on a path that derived something for the row, and a
+    repair whose retry failed again reports ``UPDATED`` rather than claiming a
+    heal (#204, #314).
     """
 
 

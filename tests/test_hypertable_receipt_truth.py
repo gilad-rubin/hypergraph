@@ -132,6 +132,10 @@ def _child_state(store):
     return {row["utterance_id"]: (row["_status"], row.get("clean_word")) for row in store.rows["utterance"]}
 
 
+def _reset_counters():
+    executions["clean"] = executions["split"] = executions["child"] = 0
+
+
 # ---------------------------------------------------------------------------
 # 1. insert() that repairs a child reports the repair, not a skip
 # ---------------------------------------------------------------------------
@@ -168,6 +172,44 @@ def test_insert_over_healthy_children_still_reports_skipped():
 
     assert [(row.outcome.value, row.status.value) for row in receipt.receipts] == [("skipped", "complete")]
     assert executions["child"] == 0
+
+
+def test_an_extra_child_row_is_a_repair_the_receipt_reports():
+    """The other shape of child damage: an interrupted write left one child row
+    too many. The recorded fan-out count no longer matches what is physically
+    there, so the boundary re-runs to rebuild the item list and the orphan is
+    retired. Nothing new is derived per child — every surviving row re-stamps
+    unchanged — but a node DID run for this row, so it is not a skip."""
+
+    store = MemoryStore()
+    table = _fanout_table(store)
+    table.sync([{"doc_id": "d1", "text": "alpha beta"}])
+    orphan = dict(store.rows["utterance"][0])
+    orphan["utterance_id"] = "u9"
+    store.rows["utterance"].append(orphan)
+    _reset_counters()
+
+    fresh = _fanout_table(MemoryStore(store.rows))
+    receipt = fresh.sync([{"doc_id": "d1", "text": "alpha beta"}])
+
+    assert sorted(row["utterance_id"] for row in store.rows["utterance"]) == ["u0", "u1"], "the orphan must be retired"
+    assert [(row.outcome.value, row.status.value) for row in receipt.receipts] == [("healed", "complete")]
+    assert executions["split"] == 1, "the fan-out boundary re-ran to rebuild the item list"
+    assert executions["child"] == 0, "no child row had to be re-derived"
+    assert executions["clean"] == 0, "parent derived columns must not re-derive"
+
+    # insert() repairs the same damage the same way: base reported `skipped`
+    # here while sync() reported `healed` for identical work.
+    orphan = dict(store.rows["utterance"][0])
+    orphan["utterance_id"] = "u8"
+    store.rows["utterance"].append(orphan)
+    _reset_counters()
+
+    receipt = _fanout_table(MemoryStore(store.rows)).insert([{"doc_id": "d1", "text": "alpha beta"}])
+
+    assert sorted(row["utterance_id"] for row in store.rows["utterance"]) == ["u0", "u1"]
+    assert [(row.outcome.value, row.status.value) for row in receipt.receipts] == [("healed", "complete")]
+    assert executions["split"] == 1
 
 
 # ---------------------------------------------------------------------------

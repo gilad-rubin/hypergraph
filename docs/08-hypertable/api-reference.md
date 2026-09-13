@@ -123,11 +123,16 @@ class WriteOutcome(Enum):
 ```
 
 `HEALED` is reported by `sync()` or `insert()` when an unchanged parent row
-had damaged child rows rebuilt — rows physically missing, or stored in error
-under `on_error="store"` — and every rebuilt row landed healthy. A receipt is
-never `SKIPPED` on a path that wrote rows, and a repair whose retry failed
+had damaged child rows rebuilt — rows physically missing, stored in error
+under `on_error="store"`, or extra rows left behind by an interrupted write —
+and everything the repair derived landed healthy. A repair whose retry failed
 again healed nothing, so it reports `UPDATED` and the child stays in error for
 the next attempt to find.
+
+`SKIPPED` is a claim about derivation, not about bytes: it means no node ran
+for that row and no row was derived. A pass over an unchanged parent still
+re-stamps its child rows at a newer generation and retires the rows they
+replace; that is bookkeeping, and such a pass reports `SKIPPED`.
 
 `PARTIAL` is reported under `on_error="store"` when one node failed and the
 other derived columns were produced anyway: those columns are stored, the

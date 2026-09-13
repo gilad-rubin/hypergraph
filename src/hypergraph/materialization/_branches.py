@@ -595,7 +595,7 @@ class MaterializationBranch:
                     grain.spec,
                 ),
                 RECIPE_COLUMN: self._layout.provenance.current_child_recipe_fingerprint(grain.spec),
-                "_status": "complete",
+                "_status": RowStatus.COMPLETE.stored_value,
                 "_error": None,
                 QUESTION_COLUMN: None,
             }
