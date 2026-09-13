@@ -24,7 +24,7 @@ _INSPECT_SCHEMA = "hypergraph.inspect/v1"
 InspectionDeliveryState = Literal["live", "stale", "saved"]
 
 
-_SERIALIZATION_PASS: ContextVar[dict[int, SerializedValue] | None] = ContextVar(
+_SERIALIZATION_PASS: ContextVar[dict[int, tuple[object, SerializedValue]] | None] = ContextVar(
     "hypergraph_inspect_serialization_pass",
     default=None,
 )
@@ -49,13 +49,13 @@ def _serialize_once(value: object) -> SerializedValue:
     pass_cache = _SERIALIZATION_PASS.get()
     if pass_cache is None:
         return serialize_value(value)
-    # The artifact holds every captured value for the whole pass, so identity
-    # stays stable while this cache lives.
+    # The cache keeps a reference to the value it keyed on, so an id cannot be
+    # recycled by a temporary while its entry is still live.
     cached = pass_cache.get(id(value))
     if cached is None:
-        cached = serialize_value(value)
+        cached = (value, serialize_value(value))
         pass_cache[id(value)] = cached
-    return cached
+    return cached[1]
 
 
 def _serialized(value: object) -> dict[str, object]:

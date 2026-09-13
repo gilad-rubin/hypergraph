@@ -17,17 +17,24 @@ What it therefore guarantees:
 * **No import as a side effect.** Library adapters are discovered only through
   :data:`sys.modules`, so inspecting a value never imports pandas, numpy or
   pydantic on the user's behalf.
-* **Exact-type dispatch.** A library adapter runs only when ``type(value)`` *is*
-  the type defined by that library's own module.  A subclass, a look-alike, or
-  a duck-typed stand-in never reaches an adapter; it takes the single labeled
-  ``repr`` fallback instead.
+* **Exact-type dispatch for numpy and pandas.** Those adapters run only when
+  ``type(value)`` *is* the type that library defines, read from the module that
+  really holds it and cross-checked against the public alias.  A subclass, a
+  look-alike, or a duck-typed stand-in never reaches them; it takes the single
+  labeled ``repr`` fallback instead.
+* **Pydantic models are matched by base class, and read without calling them.**
+  A model is only ever a *subclass* of ``BaseModel``, so that adapter accepts
+  any subclass.  It is safe because it never calls the model: fields come from
+  the instance ``__dict__`` through the stored-field reader, so an overridden
+  ``__getattr__``, property, validator or ``model_dump`` does not run.
 
 What it does **not** guarantee: that no user code runs.  Reading a value can
 call code the user controls -- the labeled ``repr`` fallback always could, and
-the pandas reader calls pandas' public API.  A class installed into an
-already-imported library module's own namespace is trusted, because anything
-able to do that already owns the process.  Both are bounded by the budgets
-above.
+the pandas reader calls pandas' public API on the exact ``DataFrame`` class.  A
+class installed into an already-imported library module's *own* namespace is
+trusted, because anything able to do that already owns the process; a
+reassigned public alias is not, and withdraws the adapter.  Everything here is
+bounded by the budgets above.
 """
 
 from __future__ import annotations
@@ -265,34 +272,58 @@ def _declares_type(candidate: object, *, module_name: str, class_name: str) -> b
     )
 
 
-def _canonical_type(module_name: str, class_name: str) -> type | None:
-    """Resolve a library type from an already-imported module, never importing.
+def _canonical_type(
+    declared_module: str,
+    class_name: str,
+    *,
+    defined_in: tuple[str, ...] = (),
+    aliased_in: tuple[str, ...] = (),
+) -> type | None:
+    """Resolve a library type from already-imported modules, never importing.
 
-    Lookup goes through the module that *defines* the class, so replacing a
-    convenience alias (``pandas.DataFrame``, ``numpy.ndarray``) cannot redirect
-    dispatch to another object.
+    ``declared_module`` is the module the real class reports as its own.
+    ``defined_in`` names the modules that actually hold it, newest spelling
+    first, when that differs: ``numpy.ndarray`` reports ``"numpy"`` but lives in
+    a private extension module.  Every module in ``aliased_in`` must still bind
+    that same object, so reassigning a convenience alias cannot redirect
+    dispatch to a substituted class -- it withdraws the adapter instead.
     """
-    cached = _CANONICAL_TYPE_CACHE.get(f"{module_name}.{class_name}")
+    cache_key = f"{declared_module}.{class_name}"
+    cached = _CANONICAL_TYPE_CACHE.get(cache_key)
     if cached is not None:
         return cached
-    candidate = _loaded_module_attribute(module_name, class_name)
-    if not _declares_type(candidate, module_name=module_name, class_name=class_name):
+    candidate: object = _MISSING
+    for source_module in defined_in or (declared_module,):
+        found = _loaded_module_attribute(source_module, class_name)
+        if found is not _MISSING:
+            candidate = found
+            break
+    if candidate is _MISSING:
+        return None
+    if any(_loaded_module_attribute(alias_module, class_name) is not candidate for alias_module in aliased_in):
+        return None
+    if not _declares_type(candidate, module_name=declared_module, class_name=class_name):
         return None
     resolved: type = candidate  # type: ignore[assignment]
-    _CANONICAL_TYPE_CACHE[f"{module_name}.{class_name}"] = resolved
+    _CANONICAL_TYPE_CACHE[cache_key] = resolved
     return resolved
 
 
 def _canonical_ndarray_type() -> type | None:
-    return _canonical_type("numpy", "ndarray")
+    return _canonical_type(
+        "numpy",
+        "ndarray",
+        defined_in=("numpy._core._multiarray_umath", "numpy.core._multiarray_umath"),
+        aliased_in=("numpy",),
+    )
 
 
 def _canonical_pandas_dataframe_type() -> type | None:
-    return _canonical_type("pandas.core.frame", "DataFrame")
+    return _canonical_type("pandas.core.frame", "DataFrame", aliased_in=("pandas",))
 
 
 def _canonical_pydantic_base_model_type() -> type | None:
-    return _canonical_type("pydantic.main", "BaseModel")
+    return _canonical_type("pydantic.main", "BaseModel", aliased_in=("pydantic",))
 
 
 def _is_loaded_pydantic_model(value: object) -> bool:

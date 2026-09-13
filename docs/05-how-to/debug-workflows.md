@@ -240,11 +240,16 @@ limit, so temporary inspection memory stays bounded as the source grows.
 - **After:** the preview remains at most 20,000 characters, reports
   `5,120,000 bytes`, and is explicitly truncated without a whole-value `repr`.
 
-For the NumPy, pandas, and Pydantic adapters, dispatch is on exact class
-identity resolved from the library's own defining module, not on mutable public
-aliases. Reassigning public names such as `numpy.ndarray`, `pandas.DataFrame`,
-or `pydantic.BaseModel` therefore cannot make an unrelated custom class
-trusted, and a subclass is not the exact class.
+For the NumPy and pandas adapters, dispatch is on exact class identity,
+resolved from the module that really defines the class and cross-checked
+against the public alias, not on mutable public aliases. Reassigning public names such as `numpy.ndarray`,
+`pandas.DataFrame`, or `pydantic.BaseModel` therefore cannot make an unrelated
+custom class trusted: a hijacked alias withdraws the adapter instead of
+redirecting it. For NumPy and pandas a subclass is not the exact class and
+takes the `repr` fallback. A Pydantic model is only ever a *subclass* of
+`BaseModel`, so that adapter accepts any subclass; it is safe because it never
+calls the model — fields are read from the instance `__dict__`, so an
+overridden `__getattr__`, property, validator or `model_dump` does not run.
 
 Within the documented rank and size limits, exact NumPy arrays stay
 structured. The package's optional `examples` dependency range currently
@@ -348,6 +353,12 @@ summary. It uses native `<details>` and contains:
 The trust-stripped summary carries facts only. The rerun snippet belongs to the
 inspector that renders in trusted active output; one renderer writes it, so the
 two surfaces cannot drift apart.
+
+Each failed node carries the occurrence key of the run-level failure it
+belongs to, recorded when the node failed rather than re-derived from the
+settled artifact. A nested `GraphNode` re-raising what failed inside it shares
+its leaf's key, so selecting either one selects the same failure, and two peers
+that raised the same exception object still keep separate occurrences.
 
 The compact summary shows the first failure and says how many failures exist;
 it does not imply that one displayed failure is the whole batch. Its count uses

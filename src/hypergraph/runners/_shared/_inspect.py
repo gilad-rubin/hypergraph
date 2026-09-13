@@ -505,9 +505,12 @@ class InspectionSession(_ArtifactPublisher[RunInspection]):
     ) -> tuple[str, ...]:
         """Keep the recorded occurrence keys, in order, for the settled list.
 
-        The terminal list is the same run's failures in the same order, so the
-        keys this session already assigned line up positionally; anything beyond
-        what was recorded opens a fresh occurrence.
+        The caller is a run template, which passes the failures accumulated by
+        ``_NodeExecutionError`` during this same execution -- the same
+        occurrences, in the order this session recorded them -- so the keys
+        already assigned line up positionally.  A shorter supplied list keeps
+        the keys it covers; anything beyond what was recorded opens a fresh
+        occurrence rather than borrowing one.
         """
         recorded = self._artifact.failure_keys
         keys: list[str] = []

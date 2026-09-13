@@ -839,10 +839,11 @@ def test_inspect_docs_pin_observational_serialization_and_background_identity() 
     assert "user-supplied `MappingProxyType`" in normalized_fixed
     assert "backed by an exact `dict`" in normalized_fixed
     assert "proxy backed by a custom mapping" in normalized_fixed
-    assert "canonical class provenance" in normalized_fixed
+    assert "exact class identity" in normalized_fixed
     assert "mutable public aliases" in normalized_fixed
-    assert "standard NumPy-backed storage" in normalized_fixed
-    assert "unsupported extension-backed DataFrame" in normalized_fixed
+    assert "pandas' public API" in normalized_fixed
+    assert "extension-backed and Arrow-backed DataFrames" in normalized_fixed
+    assert "unsupported DataFrame storage" in normalized_fixed
     assert "without calling DataFrame `repr`" in normalized_fixed
 
 
@@ -856,12 +857,10 @@ def test_inspect_docs_pin_array_storage_compatibility_truth() -> None:
     run_inspect = _scoped_section(run_result, "### inspect()")
     fixed = _scoped_section(changelog, "### Fixed")
 
-    # The live pages state the behavior shipping today: the DataFrame reader
-    # goes through pandas' public API, so storage layout no longer decides
-    # whether a frame renders.
     for serialization_docs in (
         " ".join(debug.split()),
         " ".join(run_inspect.split()),
+        " ".join(fixed.split()),
     ):
         assert "exact NumPy" in serialization_docs
         assert "pandas' public API (`shape`, `columns`, `iloc`)" in serialization_docs
@@ -871,15 +870,9 @@ def test_inspect_docs_pin_array_storage_compatibility_truth() -> None:
         assert "unsupported DataFrame storage" in serialization_docs
         assert "without calling DataFrame `repr`" in serialization_docs
         assert "degrades instead of failing the run" in serialization_docs
-        # The private-block-manager vocabulary is gone from the live pages.
+        # The private-block-manager vocabulary describes behavior that is gone.
         assert "unsupported extension-backed DataFrame" not in serialization_docs
         assert "internal storage layout" not in serialization_docs
-
-    # The changelog entry is release history, not a behavior mirror: it keeps
-    # describing the state that shipped in its own release.
-    normalized_fixed = " ".join(fixed.split())
-    assert "unsupported DataFrame storage" in normalized_fixed
-    assert "unsupported extension-backed DataFrame" in normalized_fixed
 
     normalized_debug = " ".join(debug.split())
     assert "optional `examples` dependency range" in normalized_debug

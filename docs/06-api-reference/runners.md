@@ -1472,11 +1472,16 @@ recognized Pydantic models, exact NumPy `ndarray` values, exact pandas
 `DataFrame` values, and a user-supplied `MappingProxyType` backed by an exact
 `dict`.
 
-Trusted NumPy, pandas, and Pydantic adapters dispatch on exact class identity
-resolved from the library's own defining module, not mutable public aliases.
-Replacing `numpy.ndarray`, `pandas.DataFrame`, or `pydantic.BaseModel` with a
-custom class does not make that class trusted, and a subclass is not the exact
-class.
+The NumPy and pandas adapters dispatch on exact class identity, resolved from
+the module that really defines the class and cross-checked against the public
+alias, not on mutable public aliases. Replacing `numpy.ndarray`, `pandas.DataFrame`, or `pydantic.BaseModel`
+with a custom class does not make that class trusted; a hijacked alias
+withdraws the adapter instead of redirecting it. For NumPy and pandas a
+subclass is not the exact class, so it takes the `repr` fallback. A Pydantic
+model is only ever a *subclass* of `BaseModel`, so that adapter accepts any
+subclass; it is safe because it never calls the model — fields are read from
+the instance `__dict__`, so an overridden `__getattr__`, property, validator or
+`model_dump` does not run.
 
 Within the documented rank and size limits, exact NumPy `ndarray` values remain
 structured. An exact pandas `DataFrame` is read through pandas' public API

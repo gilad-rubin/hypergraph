@@ -581,20 +581,22 @@
   as `MappingProxyType`. Separately, structured source-value rendering accepts
   only exact built-in containers, ordinary dataclasses, recognized Pydantic
   models, exact NumPy/pandas adapters, and a user-supplied `MappingProxyType`
-  backed by an exact `dict`. Trusted NumPy, pandas, and Pydantic adapters use
-  canonical class provenance, not mutable public aliases.
-  Within documented rank and size limits, exact arrays with canonical NumPy
-  1.x and 2.x `ndarray` provenance stay structured. Exact pandas DataFrames
-  require a recognized trusted NumPy-backed internal storage layout: standard
-  NumPy-backed storage Hypergraph knows how to inspect. An allowed pandas
-  version with an unrecognized internal storage layout now becomes a bounded
-  `unsupported DataFrame storage` placeholder without calling DataFrame `repr`.
-  An ExtensionArray-backed DataFrame—one whose data blocks, row axis, or column
-  axis use extension storage—gets the narrower
-  `unsupported extension-backed DataFrame` result without invoking extension
-  hooks. This is an implementation
-  safety boundary, not an all-version guarantee. DataFrame `repr` delegates to
-  extension hooks, so both placeholders bypass it. Unsupported subclasses and
+  backed by an exact `dict`. The NumPy and pandas adapters dispatch on exact
+  class identity, resolved from the module that really defines the class and
+  cross-checked against the public alias, not on mutable public aliases; a
+  hijacked alias withdraws the adapter instead of redirecting it. A Pydantic
+  model is only ever a subclass of `BaseModel`, so that adapter accepts any
+  subclass and never calls the model: fields are read from the instance
+  `__dict__`.
+  Within documented rank and size limits, exact NumPy arrays stay structured.
+  An exact pandas DataFrame is read through pandas' public API (`shape`,
+  `columns`, `iloc`), and only for the displayed corner, so storage layout
+  never decides whether a frame renders: NumPy-backed, nullable
+  extension-backed and Arrow-backed DataFrames all render as bounded tables, as
+  do datetime columns. If that bounded read raises, the value becomes a bounded
+  `unsupported DataFrame storage` placeholder without calling DataFrame `repr`,
+  so an unreadable frame degrades instead of failing the run.
+  Unsupported subclasses and
   custom protocols use a bounded whole-value `repr` fallback. A proxy backed by
   a custom mapping uses the same fallback. Custom `repr` remains ordinary
   Python user code, so Hypergraph cannot prevent or undo its side effects;

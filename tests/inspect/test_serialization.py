@@ -23,6 +23,7 @@ from pandas.api.extensions import ExtensionArray, ExtensionDtype, take
 from pydantic import BaseModel, computed_field
 
 from hypergraph.runners._shared._inspect_serialization import (
+    _CANONICAL_TYPE_CACHE,
     SerializedTable,
     SerializedValue,
     dump_serialized_value,
@@ -845,6 +846,139 @@ def test_mutable_public_library_aliases_never_define_trusted_adapters() -> None:
     }
 
 
+def test_forged_public_aliases_never_define_trusted_adapters() -> None:
+    calls = {
+        "columns": 0,
+        "getitem": 0,
+        "iloc": 0,
+        "item": 0,
+        "model_dump": 0,
+        "repr": 0,
+        "shape": 0,
+        "tolist": 0,
+    }
+
+    class ForgedArray:
+        __module__ = "numpy"
+
+        @property
+        def shape(self) -> tuple[int, ...]:
+            calls["shape"] += 1
+            raise AssertionError("a forged numpy alias must not enter the array adapter")
+
+        def item(self, *indexes: int) -> object:
+            calls["item"] += 1
+            raise AssertionError("a forged numpy alias must not enter the array adapter")
+
+        def __getitem__(self, key: object) -> object:
+            calls["getitem"] += 1
+            raise AssertionError("a forged numpy alias must not enter the array adapter")
+
+        def tolist(self) -> list[int]:
+            calls["tolist"] += 1
+            raise AssertionError("a forged numpy alias must not enter the array adapter")
+
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            return "ForgedArray(<redacted>)"
+
+    class ForgedFrame:
+        __module__ = "pandas.core.frame"
+
+        @property
+        def shape(self) -> tuple[int, int]:
+            calls["shape"] += 1
+            raise AssertionError("a forged pandas alias must not enter the frame adapter")
+
+        @property
+        def columns(self) -> tuple[str, ...]:
+            calls["columns"] += 1
+            raise AssertionError("a forged pandas alias must not enter the frame adapter")
+
+        @property
+        def iloc(self) -> object:
+            calls["iloc"] += 1
+            raise AssertionError("a forged pandas alias must not enter the frame adapter")
+
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            return "ForgedFrame(<redacted>)"
+
+    class ForgedModel:
+        __module__ = "pydantic.main"
+
+        def model_dump(self) -> dict[str, object]:
+            calls["model_dump"] += 1
+            raise AssertionError("a forged pydantic alias must not enter the model adapter")
+
+        def __repr__(self) -> str:
+            calls["repr"] += 1
+            return "ForgedModel(<redacted>)"
+
+    ForgedArray.__name__ = "ndarray"
+    ForgedArray.__qualname__ = "ndarray"
+    ForgedFrame.__name__ = "DataFrame"
+    ForgedFrame.__qualname__ = "DataFrame"
+    ForgedModel.__name__ = "BaseModel"
+    ForgedModel.__qualname__ = "BaseModel"
+
+    real_values = {
+        "numpy": np.asarray([1, 2, 3]),
+        "pandas": pd.DataFrame({"score": [0.9]}),
+        "pydantic": None,
+    }
+
+    class RealModel(BaseModel):
+        score: float
+
+    real_values["pydantic"] = RealModel(score=0.9)
+
+    forged: list[SerializedValue] = []
+    while_hijacked: list[str] = []
+    cached_types = dict(_CANONICAL_TYPE_CACHE)
+    for module, alias, forged_type, real_key in (
+        (np, "ndarray", ForgedArray, "numpy"),
+        (pd, "DataFrame", ForgedFrame, "pandas"),
+        (pydantic, "BaseModel", ForgedModel, "pydantic"),
+    ):
+        original = getattr(module, alias)
+        # Resolution is cached, so an already-resolved adapter would hide the
+        # forgery rather than refuse it.
+        _CANONICAL_TYPE_CACHE.clear()
+        setattr(module, alias, forged_type)
+        try:
+            forged.append(serialize_value(forged_type()))
+            while_hijacked.append(serialize_value(real_values[real_key]).kind)
+        finally:
+            setattr(module, alias, original)
+            _CANONICAL_TYPE_CACHE.clear()
+            _CANONICAL_TYPE_CACHE.update(cached_types)
+
+    assert [(value.kind, value.text) for value in forged] == [
+        ("text", "ForgedArray(<redacted>)"),
+        ("text", "ForgedFrame(<redacted>)"),
+        ("text", "ForgedModel(<redacted>)"),
+    ]
+    assert calls == {
+        "columns": 0,
+        "getitem": 0,
+        "iloc": 0,
+        "item": 0,
+        "model_dump": 0,
+        "repr": 3,
+        "shape": 0,
+        "tolist": 0,
+    }
+    # A hijacked alias withdraws the adapter entirely rather than pointing it at
+    # the substituted class: real values fall back to whole-value repr.
+    assert while_hijacked == ["text", "text", "text"]
+
+    # The adapters come back once the real aliases are restored.
+    assert serialize_value(np.asarray([1, 2, 3])).kind == "sequence"
+    assert serialize_value(pd.DataFrame({"score": [0.9]})).kind == "table"
+    assert serialize_value(RealModel(score=0.9)).kind == "mapping"
+
+
 def test_dataframe_serialization_reads_a_bounded_corner_of_the_public_frame() -> None:
     frame = pd.DataFrame(
         {
@@ -1399,7 +1533,8 @@ def test_extension_backed_dataframes_render_as_tables() -> None:
 
 
 def test_arrow_backed_dataframes_render_as_tables() -> None:
-    pytest.importorskip("pyarrow")
+    # Not skipped when pyarrow is absent: Arrow-backed rendering is an
+    # acceptance criterion, so it fails loudly rather than quietly not running.
     frame = pd.DataFrame(
         {
             "quantity": pd.array([3, 4], dtype="int64[pyarrow]"),
