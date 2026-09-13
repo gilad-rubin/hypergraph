@@ -1241,8 +1241,10 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert tuple(inspect.signature(RunHomeClient.follow).parameters) == ("self", "ref", "until", "deadline")
     # rerun takes item_keys for the Batch form and never an input override.
     # source_ref is audit provenance, recorded on the new submission like
-    # submit/stop/fork record it — never a work-definition input.
-    assert tuple(inspect.signature(RunHomeClient.rerun).parameters) == ("self", "ref", "item_keys", "source_ref")
+    # submit/stop/fork record it — never a work-definition input. `fresh`
+    # (issue #407) says whether the repeat re-executes or inherits the
+    # source's completed steps; it is not an input and not a fork.
+    assert tuple(inspect.signature(RunHomeClient.rerun).parameters) == ("self", "ref", "item_keys", "source_ref", "fresh")
     assert tuple(inspect.signature(RunHomeClient.rerun_sync).parameters) == tuple(inspect.signature(RunHomeClient.rerun).parameters)
     assert tuple(inspect.signature(RunHomeClient.stop).parameters) == ("self", "ref", "info", "source_ref")
     assert tuple(inspect.signature(RunHomeClient.stop_sync).parameters) == tuple(inspect.signature(RunHomeClient.stop).parameters)

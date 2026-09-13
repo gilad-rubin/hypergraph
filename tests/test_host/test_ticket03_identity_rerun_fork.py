@@ -494,6 +494,151 @@ class TestRerunIdAllocation:
         assert {home.get_run(r.workflow_id).retry_of for r in (first, second)} == {"wf-lin"}
 
 
+# === 4b. client.rerun(fresh=True): repeat the WORK, not just the lineage ===
+
+
+class TestFreshRerun:
+    """#407: a rerun of COMPLETED work has to be able to do the work again.
+
+    The default reuses the source's completed-step checkpoints — right for
+    reviving braked or failed work, and a trap for a human who approved a
+    costly redo: the repeat settled ``completed`` in a millisecond carrying
+    the first run's outcome and nothing ran. ``fresh=True`` keeps every
+    other rerun guarantee (the ``<source>-retry-N`` id, ``retry_of`` /
+    ``retry_index`` lineage, the pinned Definition and inputs verbatim) and
+    changes exactly one thing: the worker does not seed the new run from
+    the source's checkpoint.
+    """
+
+    async def _settled_counter(self, home, workflow_id: str, calls: dict):
+        @node(output_name="out")
+        def counted(x: int, item: str = "") -> int:
+            calls["n"] += 1
+            return x * 2
+
+        graph = Graph([counted], name="acct").with_runner(SyncRunner())
+        host, served = serve_graphs(graph, home=home, deployment_version="v1")
+        receipt = await host.submit(served["acct"], {"x": 21}, workflow_id=workflow_id)
+        async with _worker(host):
+            view = await host.client.follow(receipt.run_ref, deadline=30)
+        assert view.status is WorkflowStatus.COMPLETED
+        assert calls["n"] == 1
+        return host, receipt
+
+    async def test_fresh_rerun_of_completed_work_re_executes_every_node(self, home):
+        calls = {"n": 0}
+        host, receipt = await self._settled_counter(home, "acct-1", calls)
+
+        repeat = await host.client.rerun(receipt.run_ref, fresh=True)
+        async with _worker(host, "w-2"):
+            view = await host.client.follow(repeat.run_ref, deadline=30)
+
+        assert view.status is WorkflowStatus.COMPLETED
+        assert calls["n"] == 2, "the approved redo actually ran"
+        assert home.values(repeat.workflow_id)["out"] == 42
+
+    async def test_default_rerun_of_completed_work_re_executes_nothing(self, home):
+        calls = {"n": 0}
+        host, receipt = await self._settled_counter(home, "acct-2", calls)
+
+        repeat = await host.client.rerun(receipt.run_ref)
+        async with _worker(host, "w-2"):
+            view = await host.client.follow(repeat.run_ref, deadline=30)
+
+        assert view.status is WorkflowStatus.COMPLETED
+        assert calls["n"] == 1, "the default still reuses completed steps"
+        assert home.get_run(repeat.workflow_id).retry_of == "acct-2"
+
+    async def test_fresh_rerun_keeps_the_id_and_the_retry_lineage(self, home):
+        calls = {"n": 0}
+        host, receipt = await self._settled_counter(home, "acct-3", calls)
+
+        repeat = await host.client.rerun(receipt.run_ref, fresh=True)
+        assert repeat.workflow_id == "acct-3-retry-1"
+        assert repeat.run_ref == RunRef(home=home.uri, run_id="acct-3-retry-1")
+        submission = home._get_submission_sync(repeat.workflow_id)
+        assert (submission["retry_of"], submission["retry_index"]) == ("acct-3", 1)
+        assert submission["inputs_json"] == home._get_submission_sync("acct-3")["inputs_json"]
+
+        async with _worker(host, "w-2"):
+            view = await host.client.follow(repeat.run_ref, deadline=30)
+
+        assert view.retry_of == "acct-3", "lineage survives a fresh repeat"
+        assert view.forked_from is None, "lineage never merges"
+        # The next fresh repeat of the same source still gets the next ordinal.
+        second = await host.client.rerun(receipt.run_ref, fresh=True)
+        assert second.workflow_id == "acct-3-retry-2"
+        assert home._get_submission_sync(second.workflow_id)["retry_index"] == 2
+
+    async def test_fresh_rerun_sync_mirror_re_executes(self, home):
+        calls = {"n": 0}
+        host, receipt = await self._settled_counter(home, "acct-4", calls)
+
+        repeat = host.client.rerun_sync(receipt.run_ref, fresh=True)
+        assert repeat.workflow_id == "acct-4-retry-1"
+        async with _worker(host, "w-2"):
+            view = await host.client.follow(repeat.run_ref, deadline=30)
+
+        assert view.status is WorkflowStatus.COMPLETED
+        assert calls["n"] == 2
+        assert home._get_submission_sync(repeat.workflow_id)["retry_of"] == "acct-4"
+
+    async def test_fresh_batch_rerun_re_executes_its_children(self, home):
+        calls = {"n": 0}
+
+        @node(output_name="out")
+        def counted(x: int, item: str = "") -> int:
+            calls["n"] += 1
+            return x * 2
+
+        graph = Graph([counted], name="acct").with_runner(SyncRunner())
+        host, served = serve_graphs(graph, home=home)
+        source = await submit_keyed(host, served["acct"], {"a": {"x": 21}}, workflow_id="drop-1")
+        async with _worker(host):
+            await host.client.follow(source.batch_ref, deadline=30)
+        assert calls["n"] == 1
+
+        repeat = await host.client.rerun(source.batch_ref, item_keys=["a"], fresh=True)
+        async with _worker(host, "w-2"):
+            view = await host.client.follow(repeat.batch_ref, deadline=30)
+
+        assert view.settled is True
+        assert calls["n"] == 2, "a fresh Batch repeat re-executes the selected child"
+        child = home._get_submission_sync(f"{repeat.workflow_id}:a")
+        assert child["retry_of"] == "drop-1:a", "child lineage survives a fresh repeat"
+
+    async def test_default_batch_rerun_still_reuses_completed_steps(self, home):
+        calls = {"n": 0}
+
+        @node(output_name="out")
+        def counted(x: int, item: str = "") -> int:
+            calls["n"] += 1
+            return x * 2
+
+        graph = Graph([counted], name="acct").with_runner(SyncRunner())
+        host, served = serve_graphs(graph, home=home)
+        source = await submit_keyed(host, served["acct"], {"a": {"x": 21}}, workflow_id="drop-2")
+        async with _worker(host):
+            await host.client.follow(source.batch_ref, deadline=30)
+
+        repeat = await host.client.rerun(source.batch_ref)
+        async with _worker(host, "w-2"):
+            await host.client.follow(repeat.batch_ref, deadline=30)
+
+        assert calls["n"] == 1
+
+    async def test_rerun_refuses_a_non_bool_fresh(self, home):
+        calls = {"n": 0}
+        host, receipt = await self._settled_counter(home, "acct-5", calls)
+
+        with pytest.raises(TypeError, match="fresh must be a bool"):
+            await host.client.rerun(receipt.run_ref, fresh="yes")
+        with pytest.raises(TypeError, match="fresh must be a bool"):
+            host.client.rerun_sync(receipt.run_ref, fresh=1)
+        # A refused request accepted nothing.
+        assert home._get_submission_sync("acct-5-retry-1") is None
+
+
 # === 5. host.fork: migration with fork lineage and recorded reason ===
 
 

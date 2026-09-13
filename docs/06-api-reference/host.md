@@ -1412,6 +1412,39 @@ without a terminal runs row. `rerun()` also takes the same optional opaque
 retry lineage says what was repeated, `source_ref` says who asked.
 `client.rerun_sync(...)` is the synchronous mirror.
 
+### `fresh=True`: repeat the work, not just the lineage
+
+Checkpoint reuse is what makes `rerun()` the verb for reviving braked,
+dead-lettered, or failed work: the steps that did finish are not paid for
+twice. It is a trap for the other reading of the name. A rerun of a
+**COMPLETED** source has no unfinished steps left, so it settles
+`completed` in a millisecond carrying the first run's outcome and nothing
+executes — including when a human approved the cost of a real redo.
+
+```python
+# a human confirmed the costly redo — actually do it again
+receipt = await client.rerun(ref, fresh=True)
+```
+
+`fresh=True` keeps every other rerun guarantee — the `<source>-retry-N` id
+minted inside the acceptance transaction, `retry_of` lineage on the
+submission and on `RunView.retry_of`, the source's pinned `DefinitionId`
+and inputs verbatim, still no input override — and changes exactly one
+thing: the worker does not seed the new run from the source's checkpoint,
+so every node executes. The intent is recorded on the repeat's `submitted`
+acceptance fact, in the same transaction that accepts it.
+
+It applies to `rerun(batch_ref, ...)` the same way: without it a Batch
+repeat's children inherit their source children's completed steps, with it
+they re-execute. `fresh` is not [`fork()`](#fork-migrate-to-new-code) —
+fork changes *which code* runs, `fresh` changes only *whether history is
+reused*. Anything but a `bool` is a `TypeError`.
+
+The lineage a fresh repeat records lives on the submission (`retry_of`,
+`retry_index`, and the minted id), exactly as it does for a rerun whose
+source never executed; the runs row itself carries no `retry_from` seed,
+because there is nothing seeded.
+
 ### Item-scoped Batch rerun
 
 `client.rerun(batch_ref, item_keys=[...])` repeats **named source items**.

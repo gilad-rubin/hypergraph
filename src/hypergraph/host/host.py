@@ -1305,7 +1305,12 @@ class Host:
             # checkpoint reuse. A source that never executed has no runs
             # row — retry_workflow would raise "Unknown source", so fall
             # back to a plain run; lineage stays recorded on the submission.
-            if await self._home.get_run_async(row["retry_of"]) is not None:
+            # A FRESH repeat (rerun(fresh=True), #407) takes that same
+            # fall-back deliberately: a human approved doing the work
+            # again, so the run starts from the pinned inputs and lineage
+            # stays on the submission rather than seeding from a source
+            # checkpoint that already has every step done.
+            if await self._home.get_run_async(row["retry_of"]) is not None and not await self._home._rerun_is_fresh(workflow_id):
                 run_kwargs["retry_from"] = row["retry_of"]
         elif row["forked_from"] and await self._home.get_run_async(row["forked_from"]) is not None:
             # Fork: same legal-combination reasoning; fork_workflow keeps
