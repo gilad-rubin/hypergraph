@@ -46,6 +46,7 @@ from hypergraph import (
 from hypergraph.checkpointers.types import WorkflowStatus
 from hypergraph.events.processor import EventProcessor
 from hypergraph.events.types import NodeAttemptEndEvent, NodeErrorEvent, RunEndEvent
+from hypergraph.host.views import DEAD_LETTER_UNSERVED_IDENTITY
 from hypergraph.host.views import WaitingCondition as _WaitingCondition
 from hypergraph.runners._shared.provider_limits import (
     compose_graph_limits,
@@ -267,6 +268,27 @@ class TestActiveRunCap:
         # Never rejected, never cancelled: no runs row, no command, no lost row.
         assert home.get_run("wf-b") is None
         assert home._sync_db().execute("SELECT COUNT(*) FROM host_commands").fetchone()[0] == 0
+
+    async def test_a_full_cap_never_starves_the_settlements(self, home):
+        """A closed admission gate delays claims; it never hides a dead letter."""
+        host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")
+        gone, gone_served = serve_graphs(_sync_graph("gone"), home=home, deployment_version="v1")
+        home.max_active_runs = 1
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-a")
+        # Scanned after wf-a has taken the only slot, and no live worker
+        # answers to its pinned Definition: admission is closed, but this row
+        # is not waiting for a slot — nothing is coming for it at all.
+        await gone.submit(gone_served["gone"], {"x": 1}, workflow_id="wf-orphan")
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-b")
+
+        claimed = await _claim(host, home)
+
+        assert [row["workflow_id"] for row in claimed] == ["wf-a"]
+        assert _states(home) == {"wf-a": "claimed", "wf-orphan": "dead_letter", "wf-b": "pending"}
+        waiting = {view.workflow_id: view.waiting for view in await host.client.list(RunQuery(limit=10))}
+        assert waiting["wf-orphan"] is WaitingCondition.DEAD_LETTER
+        assert waiting["wf-b"] is WaitingCondition.ADMISSION_LIMITED
+        assert home._dead_letter_reasons_sync(["wf-orphan"]) == {"wf-orphan": DEAD_LETTER_UNSERVED_IDENTITY}
 
     async def test_raising_the_cap_while_work_is_queued_admits_in_claim_order(self, home):
         """PRD 0017: change the cap while work is queued; order is preserved."""
