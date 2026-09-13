@@ -343,9 +343,11 @@ summary. It uses native `<details>` and contains:
 - copy-faithful input and exception whitespace using valid `<pre><code>`
   nesting, with copy-inert wrap opportunities so an unbroken 20,000-character
   value fits a 360px page
-- a short `RunResult` / `MapResult` evidence snippet that reruns with
-  `error_handling="continue"` before reading a result
 - the canonical guide path: `docs/05-how-to/debug-workflows.md`
+
+The trust-stripped summary carries facts only. The rerun snippet belongs to the
+inspector that renders in trusted active output; one renderer writes it, so the
+two surfaces cannot drift apart.
 
 The compact summary shows the first failure and says how many failures exist;
 it does not imply that one displayed failure is the whole batch. Its count uses
@@ -368,7 +370,7 @@ The full inspector and the trust-safe native summary follow the same labels.
 Recovery code follows the captured runner kind. Sync snippets call
 `runner.run(...)` or `runner.map(...)` directly; async snippets use
 `await runner.run(...)` or `await runner.map(...)`. If the runner kind was not
-captured, the summary says recovery code is unavailable instead of guessing
+captured, the inspector says recovery code is unavailable instead of guessing
 sync. Each retry assignment is inside `try`/`except` and uses
 `error_handling="continue"`. A persistent infrastructure exception therefore
 prints its real type and message without reading an unbound result. In the
@@ -485,14 +487,17 @@ After normal host trust:   The same saved record opens the full offline
 
 Hypergraph also has a best-effort compatibility path for the measured
 `jupyter-server-nbmodel==0.1.1a4` executor, which persists ordinary
-`display_data` but drops `update_display_data`. When the **kernel environment**
-reports that exact package version, ordinary coalesced updates are appended as
-payload-only records at the existing four-per-second bound. The notebook
+`display_data` but drops `update_display_data`. The switch is a release range,
+not that one string: when the **kernel environment** reports any version below
+`0.1.2`, ordinary coalesced updates are appended as payload-only records at the existing four-per-second bound. The notebook
 therefore retains hidden payload-only history. Terminal or stale settlement
 adds one terminal physical record containing the same portable inspector. It
 is hidden only after the original iframe accepts the update in a shared Jupyter
 document, but remains visible and interactive when a host isolates each saved
 output record. Terminal and error states can still flush immediately.
+
+A sibling prerelease of that line is therefore not silently treated as fixed;
+an unreadable or newer version keeps the ordinary update path.
 
 - **Before on that executor:** Python reaches the terminal result while the
   iframe can remain at `pending`, `0 completed`, `0 failed`.

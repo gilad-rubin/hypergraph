@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 
 import pytest
-from playwright.sync_api import Browser, Locator, Page, sync_playwright
+from playwright.sync_api import Browser, Page, sync_playwright
 
 from hypergraph.runners._shared._inspect import (
     MapInspection,
@@ -16,6 +16,7 @@ from hypergraph.runners._shared._inspect import (
     NodeInspection,
     RunInspection,
 )
+from hypergraph.runners._shared._inspect_html import _native_failure_markup
 from hypergraph.runners._shared._inspect_serialization import (
     SerializedEntry,
     SerializedTable,
@@ -27,7 +28,6 @@ from hypergraph.runners._shared._inspect_transport import (
     INSPECTION_PROTOCOL_VERSION,
     InspectionDelivery,
     InspectionEnvelope,
-    _native_failure_markup,
     inspection_envelope_to_wire,
     render_notebook_shell,
     render_payload_channel,
@@ -289,11 +289,6 @@ def _strip_active_output(markup: str) -> str:
     while stripped != previous:
         previous, stripped = stripped, _ACTIVE_OUTPUT_TAG.sub("", stripped)
     return _UNTRUSTED_OUTPUT_ATTRIBUTE.sub("", stripped)
-
-
-def _native_recovery_code(failure: Locator) -> Locator:
-    label = failure.locator("p").filter(has_text=re.compile(r"^Smallest useful (?:result evidence|recovery code):$"))
-    return label.locator("xpath=following-sibling::pre[1]/code")
 
 
 def _defer_child_ready(shell: str) -> str:
@@ -811,15 +806,10 @@ def test_untrusted_terminal_map_keeps_native_failure_evidence_after_active_marku
     failure.locator("summary").click()
     assert failure.evaluate("element => element.open") is True
     failure_text = failure.inner_text()
-    evidence_code = _native_recovery_code(failure).inner_text()
     assert "Item 1 failure" in failure_text
     assert "score_customer" in failure_text
     assert "customer_id=maya-23" in failure_text
     assert "ValueError: Customer maya-23 requires manual review" in failure_text
-    assert "item.failure.item_index == 1" in failure_text
-    assert "batch = runner.map(" in evidence_code
-    assert 'error_handling="continue"' in evidence_code
-    compile(evidence_code, "<native-map-failure-evidence>", "exec")
     assert "docs/05-how-to/debug-workflows.md" in failure_text
     assert page.locator("iframe, script, style").count() == 0
     assert errors == []
@@ -878,11 +868,6 @@ def test_untrusted_terminal_run_escapes_hostile_failure_text(
     assert summary.is_visible()
     assert page.locator("img").count() == 0
     assert hostile in failure.inner_text()
-    evidence_code = _native_recovery_code(failure).inner_text()
-    assert "result = runner.run(" in evidence_code
-    assert 'error_handling="continue"' in evidence_code
-    assert "failure = result.failure" in evidence_code
-    compile(evidence_code, "<native-run-failure-evidence>", "exec")
     assert page.evaluate("window.pwned") is None
     assert all(url == "about:blank" for url in requests)
     page.close()
@@ -1154,22 +1139,12 @@ def test_untrusted_map_keeps_run_boundary_error_separate_from_status_only_node(
     failure = summary.locator("details")
     failure.locator("summary").click()
     failure_text = failure.inner_text()
-    evidence_code = _native_recovery_code(failure).inner_text()
 
     assert "Item 0 failure" in failure_text
     assert "Exact run exception: RuntimeError: item dispatch failed" in failure_text
     assert "Qualified node:" not in failure_text
     assert "Captured inputs:" not in failure_text
     assert "wrong-run" not in failure_text
-    assert 'unstarted = getattr(batch, "unstarted_item_indexes", ())' in evidence_code
-    assert 'items = getattr(batch, "results", ())' in evidence_code
-    assert "requested_count = len(items) + len(unstarted)" in evidence_code
-    assert "settled_index = 0 - sum(" in evidence_code
-    assert "items[settled_index]" in evidence_code
-    assert "if 0 not in unstarted" in evidence_code
-    assert "items[0]" not in evidence_code
-    assert 'print(f"{type(failed.error).__name__}: {failed.error}")' in evidence_code
-    compile(evidence_code, "<native-run-boundary-evidence>", "exec")
     page.close()
 
 
@@ -1224,7 +1199,6 @@ def test_untrusted_map_keeps_batch_boundary_error_separate_from_child_facts(
     failure = summary.locator("details")
     failure.locator("summary").click()
     failure_text = failure.inner_text()
-    recovery_code = _native_recovery_code(failure).inner_text()
 
     assert "Batch failure" in failure_text
     assert "Exact batch exception: RuntimeError: batch scheduler unavailable" in failure_text
@@ -1232,13 +1206,6 @@ def test_untrusted_map_keeps_batch_boundary_error_separate_from_child_facts(
     assert "Qualified node:" not in failure_text
     assert "Captured inputs:" not in failure_text
     assert "wrong-batch" not in failure_text
-    assert "try:" in recovery_code
-    assert "runner.map(" in recovery_code
-    assert "map_over='customer_id'" in recovery_code
-    assert "map_mode='zip'" in recovery_code
-    assert "except Exception as error:" in recovery_code
-    assert "print(batch.error)" not in recovery_code
-    compile(recovery_code, "<native-batch-boundary-recovery>", "exec")
     page.close()
 
 
@@ -1407,94 +1374,37 @@ def test_untrusted_terminal_preserves_visible_and_copy_whitespace_exactly(
 def test_untrusted_terminal_adds_copy_inert_wrap_opportunities_at_360px(
     browser: Browser,
 ) -> None:
-    long_input = "i" * 20_000
-    long_error = "e" * 20_000
-    inputs = {
-        "kind": "mapping",
-        "type_name": "dict",
-        "entries": [
-            {
-                "key": {"kind": "text", "type_name": "str", "text": "token"},
-                "value": {
-                    "kind": "text",
-                    "type_name": "str",
-                    "text": long_input,
-                    "original_size": 20_000,
-                },
-            }
-        ],
-    }
-    error = {
-        "kind": "exception",
-        "type_name": "ValueError",
-        "text": long_error,
-        "original_size": 20_000,
-    }
-    failure_wire = {
-        "node_name": "bounded_width",
-        "error": error,
-        "inputs": inputs,
-        "superstep": 0,
-        "graph_name": "workflow",
-        "workflow_id": "workflow-width",
-        "item_index": None,
-    }
-    markup = _native_failure_markup(
-        kind="run",
-        data={
-            "status": "failed",
-            "item_index": None,
-            "failures": [failure_wire],
-            "nodes": [],
-            "error": error,
-        },
-        message={},
+    # Long enough to overflow 360px many times over, short enough that both the
+    # inputs and the exception fit inside the serializer's own text budget.
+    long_input = "i" * 5_000
+    long_error = "e" * 5_000
+    failure = FailureEvidence(
+        node_name="bounded_width",
+        error=ValueError(long_error),
+        inputs={"token": long_input},
+        superstep=0,
+        duration_ms=0.0,
+        graph_name="workflow",
+        workflow_id="workflow-width",
+        item_index=None,
     )
+    artifact = replace(
+        _run(graph_name="workflow", status="failed", terminal=True, node_count=0),
+        failures=(failure,),
+        failure_keys=("failure-0",),
+        error=failure.error,
+    )
+    markup = _native_failure_markup(artifact)
 
     page = browser.new_page(viewport={"width": 360, "height": 700})
     page.set_content(markup, wait_until="load")
-    failure = page.locator("details")
-    failure.locator("summary").click()
+    rendered = page.locator("details")
+    rendered.locator("summary").click()
 
     assert page.evaluate("document.documentElement.scrollWidth") <= 360
-    assert failure.locator("wbr").count() > 0
-    assert f"token={long_input}" in failure.locator("code").all_text_contents()
-    assert f"ValueError: {long_error}" in failure.locator("code").all_text_contents()
-    page.close()
-
-
-def test_untrusted_recovery_code_wraps_a_long_map_field_without_changing_copy(
-    browser: Browser,
-) -> None:
-    long_field = "customer_" + "x" * 20_000
-    markup = _native_failure_markup(
-        kind="map",
-        data={
-            "items": [],
-            "runner_kind": "sync",
-            "error": {
-                "kind": "exception",
-                "type_name": "RuntimeError",
-                "text": "batch setup failed",
-            },
-            "map_over": [long_field],
-            "map_mode": "zip",
-        },
-        message={},
-    )
-
-    page = browser.new_page(viewport={"width": 360, "height": 700})
-    page.set_content(markup, wait_until="load")
-    failure = page.locator("details")
-    failure.locator("summary").click()
-    recovery_code = _native_recovery_code(failure)
-    copied_code = recovery_code.text_content()
-
-    assert copied_code is not None
-    assert f"map_over={long_field!r}" in copied_code
-    compile(copied_code, "<native-long-map-recovery>", "exec")
-    assert recovery_code.locator("wbr").count() > 0
-    assert page.evaluate("document.documentElement.scrollWidth") <= 360
+    assert rendered.locator("wbr").count() > 0
+    assert f"token={long_input}" in rendered.locator("code").all_text_contents()
+    assert f"ValueError: {long_error}" in rendered.locator("code").all_text_contents()
     page.close()
 
 
@@ -1523,13 +1433,7 @@ def test_untrusted_stale_channel_keeps_exact_start_error_in_native_details(
     assert failure.evaluate("element => element.open") is False
     failure.locator("summary").click()
     failure_text = failure.inner_text()
-    recovery_code = _native_recovery_code(failure).inner_text()
     assert "RuntimeError: Notebook display setup failed" in failure_text
-    assert "try:" in recovery_code
-    assert "runner.run(" in recovery_code
-    assert "except Exception as error:" in recovery_code
-    assert "result.inspect()" not in recovery_code
-    compile(recovery_code, "<native-start-failure-recovery>", "exec")
     assert "docs/05-how-to/debug-workflows.md" in failure_text
     page.close()
 

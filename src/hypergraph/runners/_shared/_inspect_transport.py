@@ -21,7 +21,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from importlib.resources import files
-from textwrap import indent
 from typing import Literal, Protocol, cast
 
 from hypergraph._repr import plain_reprs
@@ -33,7 +32,9 @@ from hypergraph.runners._shared._inspect import (
 )
 from hypergraph.runners._shared._inspect_html import (
     build_inspection_payload,
+    one_serialization_pass,
     render_inspection_payload,
+    render_native_summary,
 )
 from hypergraph.runners._shared._inspect_serialization import (
     SerializedValue,
@@ -45,8 +46,6 @@ from hypergraph.runners._shared._wire import sandboxed_child_document, script_sa
 INSPECTION_PROTOCOL_VERSION = 1
 _UPDATE_MESSAGE = "hypergraph.inspect.update"
 _COALESCE_SECONDS = 0.250
-_DEBUG_WORKFLOWS_DOC = "docs/05-how-to/debug-workflows.md"
-_NATIVE_WRAP_CHUNK_SIZE = 32
 _DeliveryState = Literal["live", "stale", "saved"]
 _DeliveryLabel = Literal[
     "Live",
@@ -55,7 +54,6 @@ _DeliveryLabel = Literal[
     "Waiting for live inspection",
 ]
 _InspectionArtifact = RunInspection | MapInspection
-_NativeFailureSource = Literal["node", "run", "batch", "start", "status", "none"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,509 +235,9 @@ def _fallback_markup(envelope: InspectionEnvelope, payload: dict[str, object]) -
     )
 
 
-def _wire_dict(value: object) -> dict[str, object]:
-    return cast(dict[str, object], value) if type(value) is dict else {}
-
-
-def _wire_list(value: object) -> list[object]:
-    return cast(list[object], value) if type(value) is list else []
-
-
-def _native_value_text(value: object) -> str:
-    """Format one already-bounded serialized wire value as inert text."""
-    node = _wire_dict(value)
-    kind = node.get("kind")
-    if kind == "null":
-        return "None"
-    if kind == "boolean":
-        return "True" if node.get("value") is True else "False"
-    if kind == "number":
-        return str(node.get("value"))
-    if kind in {"text", "exception"}:
-        text = str(node.get("text") or "")
-        if node.get("truncated") is True:
-            original_size = node.get("original_size", "unknown")
-            return f"{text} … truncated from {original_size} characters"
-        return text
-    if kind == "placeholder":
-        detail = node.get("text") or node.get("reason") or "value unavailable"
-        return f"{node.get('type_name') or 'value'}: {detail}"
-    if kind == "mapping":
-        parts: list[str] = []
-        for raw_entry in _wire_list(node.get("entries")):
-            entry = _wire_dict(raw_entry)
-            parts.append(f"{_native_value_text(entry.get('key'))}={_native_value_text(entry.get('value'))}")
-        if node.get("truncated") is True:
-            parts.append(f"… truncated from {node.get('original_size', 'unknown')} entries")
-        return "{" + ", ".join(parts) + "}"
-    if kind == "sequence":
-        parts = [_native_value_text(item) for item in _wire_list(node.get("items"))]
-        if node.get("truncated") is True:
-            parts.append(f"… truncated from {node.get('original_size', 'unknown')} items")
-        return "[" + ", ".join(parts) + "]"
-    if kind == "table":
-        table = _wire_dict(node.get("table"))
-        rows = table.get("original_row_count", 0)
-        columns = table.get("original_column_count", 0)
-        return f"{rows} × {columns} table"
-    return str(node.get("text") or node.get("value") or node.get("type_name") or "value unavailable")
-
-
-def _native_wrappable_markup(text: str) -> str:
-    """Escape inert text and add copy-inert line-break opportunities."""
-    return "<wbr>".join(html.escape(text[offset : offset + _NATIVE_WRAP_CHUNK_SIZE]) for offset in range(0, len(text), _NATIVE_WRAP_CHUNK_SIZE))
-
-
-def _native_code_markup(text: str) -> str:
-    """Preserve exact visible/copy text without allowing narrow-page overflow."""
-    escaped = _native_wrappable_markup(text)
-    if text == " ".join(text.split()):
-        return f"<code>{escaped}</code>"
-    return f"<pre><code>{escaped}</code></pre>"
-
-
-def _native_repr_with_type(error_type: str, error_repr: str) -> str:
-    """Keep an anchored repr type once without erasing opaque repr content."""
-    if error_repr.startswith(error_type):
-        remainder = error_repr[len(error_type) :]
-        if not remainder or remainder[0] in " \t\r\n([{<:":
-            return error_repr
-    return f"{error_type}: {error_repr}"
-
-
-def _native_inputs_markup(inputs: object) -> str:
-    serialized = _wire_dict(inputs)
-    if serialized.get("kind") != "mapping":
-        return f"<div>{_native_code_markup(_native_value_text(serialized))}</div>"
-    entries = _wire_list(serialized.get("entries"))
-    if not entries:
-        return f"<div>{_native_code_markup('{}')}</div>"
-    rows = []
-    for raw_entry in entries:
-        entry = _wire_dict(raw_entry)
-        key = _native_value_text(entry.get("key"))
-        value = _native_value_text(entry.get("value"))
-        rows.append(f"<li>{_native_code_markup(f'{key}={value}')}</li>")
-    if serialized.get("truncated") is True:
-        original_size = html.escape(str(serialized.get("original_size", "unknown")))
-        rows.append(f"<li>Inputs truncated from {original_size} entries.</li>")
-    return "<ul>" + "".join(rows) + "</ul>"
-
-
-def _failed_run_and_item(
-    kind: str,
-    data: dict[str, object],
-) -> tuple[dict[str, object], object | None, _NativeFailureSource]:
-    if kind == "run":
-        if _run_has_failure_evidence(data):
-            return data, data.get("item_index"), "node"
-        if data.get("error") is not None:
-            return data, data.get("item_index"), "run"
-        nodes = [_wire_dict(node) for node in _wire_list(data.get("nodes"))]
-        if data.get("status") == "failed" or any(node.get("status") == "failed" for node in nodes):
-            return data, data.get("item_index"), "status"
-        return data, data.get("item_index"), "none"
-
-    item_runs: list[tuple[dict[str, object], dict[str, object]]] = []
-    for raw_item in _wire_list(data.get("items")):
-        item = _wire_dict(raw_item)
-        run = _wire_dict(item.get("run"))
-        if run:
-            item_runs.append((item, run))
-
-    for item, run in item_runs:
-        if _run_has_failure_evidence(run):
-            return run, item.get("item_index"), "node"
-    for item, run in item_runs:
-        if run.get("error") is not None:
-            return run, item.get("item_index"), "run"
-    if data.get("error") is not None:
-        return {}, None, "batch"
-    for item, run in item_runs:
-        nodes = [_wire_dict(node) for node in _wire_list(run.get("nodes"))]
-        if item.get("status") == "failed" or run.get("status") == "failed" or any(node.get("status") == "failed" for node in nodes):
-            return run, item.get("item_index"), "status"
-    return {}, None, "none"
-
-
-def _run_has_failure_evidence(run: dict[str, object]) -> bool:
-    if _wire_list(run.get("failures")):
-        return True
-    return any(_wire_dict(_wire_dict(node).get("failure")) for node in _wire_list(run.get("nodes")))
-
-
-def _first_failure_and_node(
-    run: dict[str, object],
-    *,
-    containing_item_index: object | None,
-) -> tuple[dict[str, object], dict[str, object]]:
-    # Outer/inner projection is resolved into failure_key before serialization.
-    _ = containing_item_index
-    failures = [_wire_dict(failure) for failure in _wire_list(run.get("failures"))]
-    failure = failures[0] if failures else {}
-    nodes = [_wire_dict(node) for node in _wire_list(run.get("nodes"))]
-    if failure:
-        matching_nodes = [node for node in nodes if _node_matches_failure(node, failure)]
-        failed_node = next(
-            (node for node in matching_nodes if node.get("qualified_name") == failure.get("node_name")),
-            {},
-        )
-    else:
-        nodes_with_failure = [node for node in nodes if _wire_dict(node.get("failure"))]
-        failed_node = next(
-            (node for node in nodes_with_failure if node.get("qualified_name") == _wire_dict(node.get("failure")).get("node_name")),
-            {},
-        )
-        if failed_node:
-            failure = _wire_dict(failed_node.get("failure"))
-        elif nodes_with_failure:
-            failure = _wire_dict(nodes_with_failure[0].get("failure"))
-        else:
-            failed_node = next(
-                (node for node in nodes if node.get("status") == "failed"),
-                {},
-            )
-    return failure, failed_node
-
-
-def _node_matches_failure(
-    node: dict[str, object],
-    failure: dict[str, object],
-) -> bool:
-    if not failure:
-        return False
-    node_failure = _wire_dict(node.get("failure"))
-    failure_key = failure.get("failure_key")
-    return type(failure_key) is str and bool(failure_key) and node_failure.get("failure_key") == failure_key
-
-
-def _native_exception_markup(
-    error: dict[str, object],
-    *,
-    exact_label: str,
-) -> str:
-    error_type = str(error.get("type_name") or "Error")
-    kind = error.get("kind")
-    if kind == "placeholder" or (kind in {"text", "exception"} and "text" not in error):
-        detail = str(error.get("reason") or "serialized exception text unavailable")
-        return f"<div>Exception details unavailable: {_native_code_markup(f'{error_type} — {detail}')}</div>"
-
-    if kind == "text":
-        label = "Exception preview (bounded repr)"
-        if error.get("truncated") is True:
-            original_size = error.get("original_size", "unknown")
-            label = f"Exception preview (bounded repr; truncated from {original_size} characters)"
-        error_repr = _native_repr_with_type(error_type, str(error.get("text")))
-        return f"<div>{html.escape(label)}: {_native_code_markup(error_repr)}</div>"
-
-    if kind == "exception":
-        error_text = str(error.get("text"))
-        if error.get("truncated") is True:
-            original_size = error.get("original_size", "unknown")
-            label = f"Exception preview (truncated from {original_size} characters)"
-        else:
-            label = exact_label
-        return f"<div>{html.escape(label)}: {_native_code_markup(f'{error_type}: {error_text}')}</div>"
-
-    return f"<div>Exception preview (serialized value): {_native_code_markup(f'{error_type}: {_native_value_text(error)}')}</div>"
-
-
-def _map_rerun_literals(data: dict[str, object]) -> tuple[str, str]:
-    map_over = [value for value in _wire_list(data.get("map_over")) if type(value) is str]
-    map_over_literal = repr(map_over[0] if len(map_over) == 1 else map_over)
-    map_mode_literal = repr(data.get("map_mode") or "zip")
-    return map_over_literal, map_mode_literal
-
-
-def _runner_await_prefix(data: dict[str, object]) -> str | None:
-    """Return syntax for the captured runner, or refuse unknown provenance."""
-    runner_kind = data.get("runner_kind")
-    if runner_kind == "sync":
-        return ""
-    if runner_kind == "async":
-        return "await "
-    return None
-
-
-def _rerun_call(
-    kind: str,
-    data: dict[str, object],
-    *,
-    indentation: str,
-) -> str | None:
-    await_prefix = _runner_await_prefix(data)
-    if await_prefix is None:
-        return None
-    if kind == "map":
-        map_over_literal, map_mode_literal = _map_rerun_literals(data)
-        return (
-            f"{indentation}batch = {await_prefix}runner.map(\n"
-            f"{indentation}    graph,\n"
-            f"{indentation}    values,\n"
-            f"{indentation}    map_over={map_over_literal},\n"
-            f"{indentation}    map_mode={map_mode_literal},\n"
-            f"{indentation}    inspect=True,\n"
-            f'{indentation}    error_handling="continue",\n'
-            f"{indentation})"
-        )
-    return (
-        f"{indentation}result = {await_prefix}runner.run(\n"
-        f"{indentation}    graph,\n"
-        f"{indentation}    values,\n"
-        f"{indentation}    inspect=True,\n"
-        f'{indentation}    error_handling="continue",\n'
-        f"{indentation})"
-    )
-
-
-def _guarded_rerun_code(
-    kind: str,
-    data: dict[str, object],
-    *,
-    settled_code: str,
-) -> str | None:
-    rerun_call = _rerun_call(kind, data, indentation="    ")
-    if rerun_call is None:
-        return None
-    return f'try:\n{rerun_call}\nexcept Exception as error:\n    print(f"{{type(error).__name__}}: {{error}}")\nelse:\n{indent(settled_code, "    ")}'
-
-
-def _run_failure_count(
-    run: dict[str, object],
-    *,
-    status_failed: bool = False,
-) -> int:
-    failures = _wire_list(run.get("failures"))
-    if failures:
-        return len(failures)
-    embedded_failures = sum(bool(_wire_dict(_wire_dict(node).get("failure"))) for node in _wire_list(run.get("nodes")))
-    if embedded_failures:
-        return embedded_failures
-    if run.get("error") is not None:
-        return 1
-    nodes = [_wire_dict(node) for node in _wire_list(run.get("nodes"))]
-    if status_failed or run.get("status") == "failed" or any(node.get("status") == "failed" for node in nodes):
-        return 1
-    return 0
-
-
-def _failure_count(
-    kind: str,
-    data: dict[str, object],
-    message: dict[str, object],
-) -> int:
-    if kind == "run":
-        return _run_failure_count(data) + int(bool(message))
-    total = 0
-    for raw_item in _wire_list(data.get("items")):
-        item = _wire_dict(raw_item)
-        run = _wire_dict(item.get("run"))
-        if run:
-            total += _run_failure_count(
-                run,
-                status_failed=item.get("status") == "failed",
-            )
-        elif item.get("status") == "failed":
-            total += 1
-    total += int(data.get("error") is not None)
-    total += int(bool(message))
-    return total
-
-
-def _native_failure_markup(
-    *,
-    kind: str,
-    data: dict[str, object],
-    message: dict[str, object],
-) -> str:
-    run, item_index, source = _failed_run_and_item(kind, data)
-    if message and source in {"none", "status"}:
-        run, item_index, source = {}, None, "start"
-    failure, node = (
-        _first_failure_and_node(
-            run,
-            containing_item_index=item_index,
-        )
-        if source in {"node", "status"}
-        else ({}, {})
-    )
-    node_failure = _wire_dict(node.get("failure"))
-    if source == "node":
-        error = _wire_dict(failure.get("error")) or _wire_dict(node_failure.get("error"))
-    elif source == "run":
-        error = _wire_dict(run.get("error"))
-    elif source == "batch":
-        error = _wire_dict(data.get("error"))
-    elif source == "start":
-        error = message
-    else:
-        error = {}
-    inputs = (failure.get("inputs") or node_failure.get("inputs") or node.get("inputs")) if source in {"node", "status"} else None
-    qualified_name = (node.get("qualified_name") or failure.get("node_name")) if source in {"node", "status"} else None
-    if not (error or inputs is not None or qualified_name is not None):
-        return ""
-
-    if item_index is not None:
-        title = f"Item {item_index} failure"
-    elif source == "start":
-        title = "Start failure"
-    elif source == "batch":
-        title = "Batch failure"
-    else:
-        title = "Run failure"
-
-    total_failures = max(1, _failure_count(kind, data, message))
-    title = f"{title} — First failure of {total_failures}"
-    facts: list[str] = []
-    if item_index is not None:
-        facts.append(f"<p>Original item: <code>{html.escape(str(item_index))}</code></p>")
-    if qualified_name is not None:
-        facts.append(f"<p>Qualified node: <code>{html.escape(str(qualified_name))}</code></p>")
-    if inputs is not None:
-        facts.append("<p>Captured inputs:</p>")
-        facts.append(_native_inputs_markup(inputs))
-    if error:
-        exact_label = {
-            "run": "Exact run exception",
-            "batch": "Exact batch exception",
-        }.get(source, "Exact exception")
-        facts.append(_native_exception_markup(error, exact_label=exact_label))
-
-    if kind == "map" and item_index is not None and failure:
-        settled_code = (
-            "failure = next(\n"
-            "    (\n"
-            "        item.failure\n"
-            "        for item in batch.failures\n"
-            "        if item.failure is not None\n"
-            f"        and item.failure.item_index == {item_index!r}\n"
-            "    ),\n"
-            "    None,\n"
-            ")\n"
-            "if failure is None:\n"
-            "    print(batch)\n"
-            "else:\n"
-            "    print(failure.inputs)\n"
-            "    print(failure.error)"
-        )
-        code = _guarded_rerun_code(
-            kind,
-            data,
-            settled_code=settled_code,
-        )
-    elif kind == "run" and failure:
-        code = _guarded_rerun_code(
-            kind,
-            data,
-            settled_code=(
-                "failure = result.failure\nif failure is None:\n    print(result)\nelse:\n    print(failure.inputs)\n    print(failure.error)"
-            ),
-        )
-    elif source == "run" and kind == "map":
-        code = _guarded_rerun_code(
-            kind,
-            data,
-            settled_code=(
-                'unstarted = getattr(batch, "unstarted_item_indexes", ())\n'
-                'items = getattr(batch, "results", ())\n'
-                "requested_count = len(items) + len(unstarted)\n"
-                f"settled_index = {item_index!r} - sum(\n"
-                f"    index < {item_index!r}\n"
-                "    for index in unstarted\n"
-                ")\n"
-                "failed = (\n"
-                "    items[settled_index]\n"
-                f"    if {item_index!r} not in unstarted\n"
-                f"    and 0 <= {item_index!r} < requested_count\n"
-                "    and 0 <= settled_index < len(items)\n"
-                "    else None\n"
-                ")\n"
-                "if failed is None or failed.error is None:\n"
-                "    print(batch)\n"
-                "else:\n"
-                '    print(f"{type(failed.error).__name__}: {failed.error}")'
-            ),
-        )
-    elif kind == "map":
-        code = _guarded_rerun_code(
-            kind,
-            data,
-            settled_code=(
-                "errors = [\n"
-                "    failed.error\n"
-                "    for failed in batch.failures\n"
-                "    if failed.error is not None\n"
-                "]\n"
-                "if not errors:\n"
-                "    print(batch)\n"
-                "else:\n"
-                "    for error in errors:\n"
-                '        print(f"{type(error).__name__}: {error}")'
-            ),
-        )
-    else:
-        code = _guarded_rerun_code(
-            kind,
-            data,
-            settled_code=('if result.error is None:\n    print(result)\nelse:\n    print(f"{type(result.error).__name__}: {result.error}")'),
-        )
-    code_label = "Smallest useful recovery code" if source in {"start", "batch"} else "Smallest useful result evidence"
-    if code is not None:
-        facts.append(f"<p>{code_label}:</p><pre><code>{_native_wrappable_markup(code)}</code></pre>")
-    else:
-        facts.append("<p>Recovery code unavailable: runner kind was not captured.</p>")
-    facts.append(f"<p>Debugging guide: <code>{_DEBUG_WORKFLOWS_DOC}</code></p>")
-    return f"<details data-hg-inspect-native-failure><summary>{html.escape(title)}</summary>{''.join(facts)}</details>"
-
-
-def _native_summary_markup(
-    envelope: InspectionEnvelope,
-    payload: dict[str, object],
-    message: dict[str, object],
-) -> str:
-    kind = cast(str, payload["kind"])
-    data = _wire_dict(payload[kind])
-    delivery = _wire_dict(payload.get("delivery"))
-    delivery_label = html.escape(str(delivery.get("label") or envelope.delivery.label))
-    graph_name = html.escape(str(data.get("graph_name") or "Hypergraph execution"))
-    status = html.escape(str(data.get("status") or "unknown"))
-    if kind == "map":
-        counts = _wire_dict(data.get("counts"))
-        completed = html.escape(str(counts.get("completed", 0)))
-        failed = html.escape(str(counts.get("failed", 0)))
-        unstarted = html.escape(str(counts.get("unstarted", 0)))
-        counts_markup = (
-            f"<dt>Completed</dt><dd data-hg-inspect-native-completed>{completed}</dd>"
-            f"<dt>Failed</dt><dd data-hg-inspect-native-failed>{failed}</dd>"
-            f"<dt>Unstarted</dt><dd>{unstarted}</dd>"
-        )
-    else:
-        nodes = [_wire_dict(node) for node in _wire_list(data.get("nodes"))]
-        completed = sum(node.get("status") == "completed" for node in nodes)
-        failed = sum(node.get("status") == "failed" for node in nodes)
-        counts_markup = (
-            f"<dt>Completed nodes</dt><dd data-hg-inspect-native-completed>{completed}</dd>"
-            f"<dt>Failed nodes</dt><dd data-hg-inspect-native-failed>{failed}</dd>"
-        )
-    failure_markup = _native_failure_markup(
-        kind=kind,
-        data=data,
-        message=message,
-    )
-    return (
-        f'<section data-hg-inspect-native-summary="{html.escape(envelope.widget_id, quote=True)}" '
-        'aria-label="Saved execution summary">'
-        f"<p><strong>{delivery_label}</strong> — {graph_name}</p>"
-        f"<dl><dt>Status</dt><dd><code>{status}</code></dd>{counts_markup}</dl>"
-        f"{failure_markup}"
-        "</section>"
-    )
-
-
 def _portable_fallback_markup(
     envelope: InspectionEnvelope,
     payload: dict[str, object],
-    message: dict[str, object],
 ) -> str:
     renderer = render_inspection_payload(payload)
     child_document = sandboxed_child_document(
@@ -758,7 +256,12 @@ def _portable_fallback_markup(
         if envelope.message is not None
         else ""
     )
-    native_summary = _native_summary_markup(envelope, payload, message)
+    native_summary = render_native_summary(
+        envelope.artifact,
+        widget_id=envelope.widget_id,
+        delivery_label=envelope.delivery.label,
+        message=envelope.message,
+    )
     return (
         f"{exact_error}"
         f'<div data-hg-inspect-channel-fallback="{html.escape(envelope.widget_id, quote=True)}" '
@@ -777,16 +280,20 @@ def _portable_fallback_markup(
 
 def render_payload_channel(envelope: InspectionEnvelope) -> str:
     """Render one display-ID value, portable only at terminal/stale settlement."""
+    with one_serialization_pass():
+        return _payload_channel_markup(envelope)
+
+
+def _payload_channel_markup(envelope: InspectionEnvelope) -> str:
     wire = inspection_envelope_to_wire(envelope)
     payload = cast(dict[str, object], wire["payload"])
-    message = _wire_dict(wire.get("message"))
     encoded = script_safe_json(wire)
     channel_dom_id = _dom_id(envelope.widget_id, f"payload-output-s{envelope.sequence}")
     key = script_safe_json(f"{envelope.widget_id}::{envelope.nonce}")
     fallback_state = "waiting" if envelope.delivery.state == "live" else envelope.delivery.state
     portable = envelope.artifact.terminal or envelope.delivery.state == "stale"
     fallback = (
-        _portable_fallback_markup(envelope, payload, message)
+        _portable_fallback_markup(envelope, payload)
         if portable
         else (
             f'<div data-hg-inspect-channel-fallback="{html.escape(envelope.widget_id, quote=True)}" '
@@ -1220,6 +727,39 @@ class NotebookDisplay(Protocol):
     ) -> _NotebookDisplayHandle: ...
 
 
+_NBMODEL_UPDATE_DISPLAY_FIXED_IN = (0, 1, 2)
+
+
+def _release_numbers(package_version: str) -> tuple[int, ...] | None:
+    """Read the leading numeric release of a version, ignoring pre-release tags."""
+    numbers: list[int] = []
+    for segment in package_version.split(".")[:3]:
+        digits = ""
+        for character in segment:
+            if not character.isdigit():
+                break
+            digits += character
+        if not digits:
+            break
+        numbers.append(int(digits))
+    return tuple(numbers) if numbers else None
+
+
+def nbmodel_appends_payloads(package_version: str | None) -> bool:
+    """Whether this nbmodel release needs appended payloads instead of updates.
+
+    The executor that persists ``display_data`` but drops
+    ``update_display_data`` was measured at 0.1.1a4.  The switch is a range over
+    that release line rather than that one string, so a sibling prerelease is
+    not silently treated as fixed; an unreadable or newer version keeps the
+    ordinary update path.
+    """
+    if package_version is None:
+        return False
+    release = _release_numbers(package_version)
+    return release is not None and release < _NBMODEL_UPDATE_DISPLAY_FIXED_IN
+
+
 class _IPythonDisplayHandle:
     def __init__(
         self,
@@ -1261,10 +801,10 @@ class _IPythonNotebookDisplay:
         from IPython.display import HTML, display
 
         try:
-            package_version = importlib.metadata.version("jupyter-server-nbmodel")
+            package_version: str | None = importlib.metadata.version("jupyter-server-nbmodel")
         except importlib.metadata.PackageNotFoundError:
             package_version = None
-        append_payloads = package_version == "0.1.1a4"
+        append_payloads = nbmodel_appends_payloads(package_version)
         handle = display(HTML(markup), display_id=display_id)
         if handle is None:
             raise RuntimeError("IPython did not return a display-ID handle.")

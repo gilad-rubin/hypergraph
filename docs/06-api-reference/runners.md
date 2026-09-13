@@ -1386,14 +1386,15 @@ channel instead preserves a small native `<details>` summary: delivery,
 status/counts, `First failure of N`, original item, qualified node, bounded
 inputs, and exception evidence labelled exact only for a complete safe payload.
 A representation uses **Exception preview (bounded repr)**; a placeholder uses
-**Exception details unavailable** with its reason. The summary also includes a
-short result-evidence snippet and `docs/05-how-to/debug-workflows.md`. Preview
-truncation includes the original size. An opaque repr retains its exception
-type once; a repr already beginning with that type is not prefixed again. Input
-and exception code is copy-faithful
-and uses valid `<pre><code>` nesting, while copy-inert wrap opportunities keep
-an unbroken 20,000-character value inside a 360px page. Recovery snippets use
-the same copy-inert wrapping without changing the copied Python code.
+**Exception details unavailable** with its reason. The summary also points at
+`docs/05-how-to/debug-workflows.md`. It carries facts only: the rerun snippet
+belongs to the inspector that renders in trusted active output, so one renderer
+writes it and the two surfaces cannot drift apart. Preview truncation includes
+the original size. An opaque repr retains its exception type once; a repr
+already beginning with that type is not prefixed again. Input and exception
+code is copy-faithful and uses valid `<pre><code>` nesting, while copy-inert
+wrap opportunities keep an unbroken 20,000-character value inside a 360px
+page.
 `First failure of N` counts status-only failures once without duplicating
 top-level and embedded evidence. Hypergraph never auto-trusts or signs the
 notebook, calls a server trust endpoint, or weakens its sandbox. When active
@@ -1411,8 +1412,8 @@ uses **Exception details unavailable** and includes the reason.
 Recovery snippets use public runner and result APIs. Sync snippets call
 `runner.run(...)` or `runner.map(...)` directly; async snippets use
 `await runner.run(...)` or `await runner.map(...)`. When the runner kind was
-not captured, inspection says recovery code is unavailable instead of choosing
-sync. Each retry assignment is inside `try`/`except` and uses
+not captured, the inspector says recovery code is unavailable instead of
+choosing sync. Each retry assignment is inside `try`/`except` and uses
 `error_handling="continue"`. A persistent infrastructure exception prints its
 real type and message without reading an unbound result. The `else` branch
 prints the settled successful result or batch when the boundary clears, or the
@@ -1445,10 +1446,12 @@ settled at `partial / 2 completed / 1 failed`. After, Maya can expand native
 **Item 1 failure** and read `score_customer`, `customer_id=maya-23`, and the
 exact `ValueError`; ordinary trusted output still opens the full inspector.
 
-A best-effort internal compatibility path activates only when the kernel
-environment reports `jupyter-server-nbmodel==0.1.1a4`: that measured executor
-drops `update_display_data`, so Hypergraph appends ordinary coalesced payload
-records and the host retains hidden payload-only history. Terminal or stale
+A best-effort internal compatibility path activates for the nbmodel release
+line measured at `jupyter-server-nbmodel==0.1.1a4`: that executor drops
+`update_display_data`, so when the kernel environment reports any version below
+`0.1.2` Hypergraph appends ordinary coalesced payload records and the host
+retains hidden payload-only history. The switch is a range, not that one string, so a sibling
+prerelease is not silently treated as fixed. Terminal or stale
 settlement adds one terminal physical record with the portable inspector;
 shared Jupyter hides it only after the original iframe accepts the update,
 while isolated notebook renderers keep it interactive. Missing or unrecognized

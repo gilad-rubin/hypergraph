@@ -22,6 +22,7 @@ from hypergraph.runners._shared._inspect_transport import (
     NotebookInspectionTransport,
     OwnerThreadScheduler,
     _IPythonNotebookDisplay,
+    nbmodel_appends_payloads,
     open_notebook_inspection_transport,
     render_payload_channel,
 )
@@ -175,8 +176,8 @@ def test_terminal_channel_builds_one_wire_for_bridge_and_portable_frame(
     assert _wire(markup)["sequence"] == 2
 
 
-@pytest.mark.parametrize("reported_version", [None, "0.1.1a5"], ids=["missing", "unrecognized"])
-def test_ipython_channel_uses_display_handle_updates_unless_exact_broken_version(
+@pytest.mark.parametrize("reported_version", [None, "0.1.2"], ids=["missing", "fixed-release"])
+def test_ipython_channel_uses_display_handle_updates_outside_the_affected_release_line(
     monkeypatch: pytest.MonkeyPatch,
     reported_version: str | None,
 ) -> None:
@@ -219,7 +220,7 @@ def test_ipython_channel_uses_display_handle_updates_unless_exact_broken_version
     ]
 
 
-def test_ipython_channel_resends_updates_only_for_exact_broken_server_version(
+def test_ipython_channel_resends_updates_inside_the_affected_release_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from IPython.display import HTML
@@ -263,8 +264,23 @@ def test_ipython_channel_resends_updates_only_for_exact_broken_server_version(
 
 @pytest.mark.parametrize(
     ("reported_version", "expected_display_calls", "expected_handle_updates"),
-    [(None, 2, 2), ("0.1.1a4", 4, 0)],
-    ids=["capable-update", "exact-append"],
+    [
+        (None, 2, 2),
+        ("0.1.1a4", 4, 0),
+        # A sibling prerelease of the measured release line is not a fix.
+        ("0.1.1a5", 4, 0),
+        ("0.1.1", 4, 0),
+        ("0.1.2", 2, 2),
+        ("0.2.0", 2, 2),
+    ],
+    ids=[
+        "missing-keeps-update",
+        "measured-appends",
+        "sibling-prerelease-appends",
+        "release-line-appends",
+        "next-release-keeps-update",
+        "later-release-keeps-update",
+    ],
 )
 def test_ipython_transport_keeps_physical_output_shape_and_only_terminal_is_portable(
     monkeypatch: pytest.MonkeyPatch,
@@ -308,7 +324,7 @@ def test_ipython_transport_keeps_physical_output_shape_and_only_terminal_is_port
 
     assert len(calls) == expected_display_calls
     assert len(updates) == expected_handle_updates
-    if reported_version is None:
+    if expected_handle_updates:
         assert [display_id for _, display_id in calls] == [None, "hg-inspect-ipython-shape-payload"]
         channel_values = [calls[1][0], *updates]
     else:
@@ -1295,3 +1311,22 @@ async def test_owner_scheduler_captures_running_asyncio_loop_for_worker_delivery
     assert callback_threads == [owner_thread]
     assert scheduler.supports_delayed_calls is True
     assert scheduler.supports_cross_thread is True
+
+
+@pytest.mark.parametrize(
+    ("reported_version", "appends"),
+    [
+        (None, False),
+        ("0.1.1a4", True),
+        ("0.1.1a5", True),
+        ("0.1.1", True),
+        ("0.1.2", False),
+        ("1.0.0", False),
+        ("not-a-version", False),
+    ],
+)
+def test_nbmodel_append_switch_is_a_release_range_not_one_string(
+    reported_version: str | None,
+    appends: bool,
+) -> None:
+    assert nbmodel_appends_payloads(reported_version) is appends
