@@ -167,7 +167,7 @@ When nested graphs are expanded, cross-boundary edges remap to the visible inter
 - Containers are visual groups, not executable endpoints.
 - Dashed/control edges should never originate from a container START marker.
 - Shared values (for example `messages`) anchor to the correct internal endpoint and do not create phantom external links or separate INPUT nodes.
-- A renamed boundary output (`with_outputs(item_out="generated")`, `rename_outputs`, `map_over`) keeps its link to the consumer. With `separate_outputs=True` the expanded view routes through the inner producer's own DATA node, labelled with the inner name (`item_out`); collapsing the container returns the link to the container's DATA node under the outer name (`generated`).
+- A renamed boundary output (`with_outputs(item_out="generated")`, `rename_outputs`) keeps its link to the consumer. With `separate_outputs=True` the expanded view routes through the inner producer's own DATA node, labelled with the inner name (`item_out`); collapsing the container returns the link to the container's DATA node under the outer name (`generated`). One caveat, independent of renaming: when a single boundary edge carries values from two different inner producers, the expanded view reconnects through the first producer only.
 
 ## Works Offline
 
