@@ -10,14 +10,19 @@ it would wait on a person).
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from hypergraph import AsyncRunner, Graph, RetryPolicy, node, serve
+from hypergraph.host.refs import BatchRef
 from hypergraph.host.watch import (
     ConsolePanel,
+    ItemProgress,
     LogPanel,
+    SubmissionProgress,
     SubmissionWatcher,
+    WatchSnapshot,
     render_snapshot,
     snapshot_line,
     watch_snapshot,
@@ -359,3 +364,131 @@ def test_an_empty_picture_is_never_resting() -> None:
     from hypergraph.host.watch import WatchSnapshot
 
     assert not WatchSnapshot().resting
+
+
+# ---------------------------------------------------------------------------
+# the pace: settled work per second of wall clock, and what is left at it
+# ---------------------------------------------------------------------------
+
+_T0 = datetime(2026, 9, 13, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _item(key: str, status: str, *, start: float | None = 0.0, elapsed: float = 0.0, gate: str = "") -> ItemProgress:
+    """One item with the instants the Run Home would have read for it."""
+    started = None if start is None else _T0 + timedelta(seconds=start)
+    settled = started + timedelta(seconds=elapsed) if started is not None and status in {"completed", "failed", "partial"} else None
+    return ItemProgress(
+        item_key=key,
+        workflow_id=key,
+        word=status,
+        status=status,
+        elapsed=elapsed,
+        retries=1,
+        error="",
+        question="",
+        gate=gate,
+        started_at=started,
+        settled_at=settled,
+    )
+
+
+def _batch(items: list[ItemProgress]) -> SubmissionProgress:
+    return SubmissionProgress(ref=BatchRef(batch_id="b", home="h"), definition="ingest", settled=False, counts={}, items=items)
+
+
+def test_five_of_ten_items_settled_in_five_seconds_is_one_per_second() -> None:
+    """The arithmetic every consumer was writing itself, done once.
+
+    Ten items, five of them settled across a five-second window: one item
+    per second, and five still to go — so five seconds left.
+    """
+    settled = [_item(f"done-{n}", "completed", start=0.0, elapsed=5.0) for n in range(5)]
+    queued = [_item(f"queued-{n}", "unstarted", start=None) for n in range(5)]
+    batch = _batch(settled + queued)
+
+    assert batch.total == 10 and batch.done == 5
+    assert batch.rate == 1.0
+    assert batch.eta_seconds == 5.0
+    # The same fold survives being merged into the multi-submission picture.
+    snapshot = WatchSnapshot(submissions=[batch])
+    assert snapshot.rate == 1.0 and snapshot.eta_seconds == 5.0
+
+
+def test_the_rate_is_wall_clock_not_one_over_the_median_item() -> None:
+    """Five items that each took 5s but ran four-up are not 0.2 items/s.
+
+    ``1 / median_seconds()`` ignores how many children the admission cap
+    runs at once and is wrong by exactly that factor.
+    """
+    batch = _batch([_item(f"done-{n}", "completed", start=0.0, elapsed=5.0) for n in range(4)] + [_item("late", "completed", start=5.0, elapsed=5.0)])
+
+    assert batch.median_seconds() == 5.0  # each item took five seconds
+    assert batch.rate == 0.5  # but five settled in ten seconds of wall clock
+    assert batch.eta_seconds == 0.0  # nothing left that can move on its own
+
+
+def test_a_parked_item_neither_lengthens_the_eta_nor_stalls_the_rate() -> None:
+    """A human thinking is not throughput, and not remaining work either."""
+    settled = [_item(f"done-{n}", "completed", start=0.0, elapsed=5.0) for n in range(5)]
+    queued = [_item(f"queued-{n}", "unstarted", start=None) for n in range(4)]
+
+    thinking = _batch(settled + queued + [_item("gate", "paused", start=0.0, elapsed=5.0, gate="review")])
+    still_thinking = _batch(settled + queued + [_item("gate", "paused", start=0.0, elapsed=5_000.0, gate="review")])
+
+    # Four items remain that can move on their own; the parked one is not
+    # one of them, so the ETA is 4s rather than the 5s it would be if a
+    # person's open question counted as remaining work.
+    assert thinking.rate == 1.0 and thinking.eta_seconds == 4.0
+    # And an hour and a half of silence on that gate changes NEITHER number.
+    assert still_thinking.rate == thinking.rate
+    assert still_thinking.eta_seconds == thinking.eta_seconds
+    assert len(thinking.parked) == 1  # it stays its own number
+
+
+def test_nothing_settled_yet_reports_none_and_the_console_prints_no_pace() -> None:
+    """The honest failure path: no number beats a made-up one.
+
+    Under the threshold both properties are ``None`` and BOTH renderers
+    leave the pace out — never "∞ items/h".
+    """
+    running = _batch([_item(f"live-{n}", "running", start=0.0, elapsed=3.0) for n in range(3)])
+    assert running.rate is None and running.eta_seconds is None
+
+    # A settled item whose whole window has no width is just as unreportable.
+    instant = _batch([_item("done", "completed", start=0.0, elapsed=0.0)])
+    assert instant.rate is None and instant.eta_seconds is None
+
+    snapshot = WatchSnapshot(submissions=[running])
+    assert snapshot.rate is None and snapshot.eta_seconds is None
+    assert "items/h" not in render_snapshot(snapshot, uid="hgwnone")
+    assert "items/h" not in snapshot_line(snapshot)
+    assert "left" not in snapshot_line(snapshot)
+
+    # Once one settles over a real window, both renderers say the pace.
+    moving = WatchSnapshot(
+        submissions=[_batch([_item("done", "completed", start=0.0, elapsed=2.0), _item("live", "running", start=0.0, elapsed=2.0)])]
+    )
+    assert moving.rate == 0.5
+    assert "1,800.0</b> items/h" in render_snapshot(moving, uid="hgwpace")
+    assert "1,800.0 items/h · ~2.0s left" in snapshot_line(moving)
+
+
+async def test_the_watcher_reads_the_instants_the_pace_is_derived_from(home, ledger):
+    """The wiring: real read-model rows, not hand-built items."""
+    graph = ingestion_graph()
+    host = serve(graph, home=home, deployment_version="v1")
+    receipt = await _submit(host, graph, ["work-clean", "work-clean-2"], "wc-pace")
+
+    async with worker(host):
+        snapshot = await watch_submissions(host.client, [receipt.batch_ref], refresh_seconds=0.05, stop_after_minutes=1.0)
+
+    [batch] = snapshot.submissions
+    assert batch.done == 2
+    for item in batch.items:
+        assert item.started_at is not None and item.settled_at is not None
+        assert item.settled_at >= item.started_at
+    # A real Run Home, a real clock: the pace is a positive number of items
+    # per second, and nothing is left to wait for.
+    assert batch.rate is not None and batch.rate > 0
+    assert batch.eta_seconds == 0.0
+    assert snapshot.rate == batch.rate
