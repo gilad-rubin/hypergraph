@@ -38,6 +38,7 @@ from hypergraph.checkpointers.types import (
     StepStatus,
     WorkflowStatus,
     derive_boundary_state,
+    fold_producers,
 )
 
 _BASELINE_NODE_NAME = "__retained_state__"
@@ -562,6 +563,11 @@ def _make_baseline_record(
     values = _merge_state(records)
     if not values:
         return None
+    ordered = sorted(records, key=_step_sort_key)
+    producers = fold_producers(
+        ((record.node_name, record.status, record.folded_producers) for record in ordered),
+        carrier_node_name=_BASELINE_NODE_NAME,
+    )
     created_at = min(record.created_at for record in records)
     completed_candidates = [record.completed_at for record in records if record.completed_at is not None]
     completed_at = max(completed_candidates) if completed_candidates else created_at
@@ -575,5 +581,6 @@ def _make_baseline_record(
         values=values,
         created_at=created_at,
         completed_at=completed_at,
-        node_type="RetentionBaseline",
+        node_type=_BASELINE_NODE_TYPE,
+        folded_producers=producers,
     )

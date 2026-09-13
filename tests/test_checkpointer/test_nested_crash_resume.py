@@ -139,7 +139,8 @@ def assert_compacted_retention_guidance(error: pytest.ExceptionInfo[BaseExceptio
     assert "retention='full'" in message
     assert "retention='latest'" in message
     assert "fork" in message.lower()
-    assert "#277" in message
+    # #277: the refusal names the producers the baseline recorded folding.
+    assert "the baseline recorded folding" in message
 
 
 def build_two_level_graph():
@@ -770,7 +771,14 @@ class TestCompactedRetentionNestedRecovery:
                 cp._sync_conn.close()
 
     def test_windowed_same_named_shared_value_is_not_completion_evidence(self, tmp_path):
-        """A carrier value from another producer cannot prove child completion."""
+        """A carrier value from another producer cannot prove child completion.
+
+        ``prepare`` and the child both produce ``result``. Before #277 the
+        carrier held a bare ``result`` with no owner, so BOTH nodes read as
+        compacted producers. Now the carrier records that it folded
+        ``prepare`` — and ``child_wf``, which never had a row to fold, is no
+        longer implicated by the shared name.
+        """
         calls: list[int] = []
 
         @node(output_name=("prepared", "result"))
@@ -809,17 +817,165 @@ class TestCompactedRetentionNestedRecovery:
             baseline = next(step for step in internal_steps if step.node_type == "RetentionBaseline")
             assert baseline.values is not None
             assert baseline.values["result"] == 20
+            # The value is attributed: it came from 'prepare', not from the child.
+            assert baseline.folded_producers == ("prepare",)
             assert cp.get_run("wfe/child_wf").status is WorkflowStatus.COMPLETED
 
             cp.armed = False
             with pytest.raises(CompactedRetentionError) as error:
                 runner.run(parent, workflow_id="wfe")
 
+            # 'prepare' really did lose its only row, so the boundary still
+            # refuses — but it no longer accuses 'child_wf' of the same.
+            assert error.value.pruned_nodes == ("prepare",)
             assert_compacted_retention_guidance(error)
             assert calls == [2]
         finally:
             if cp._sync_conn:
                 cp._sync_conn.close()
+
+
+class TestCompactedCrashWindowRestore:
+    """A carrier that did not fold this GraphNode stops blocking its restore.
+
+    ``retention="latest"`` keeps one row per node, so a compacted run under it
+    never loses a node's execution identity — the fork/resume boundary says so
+    explicitly. The in-run guard used to disagree: it refused on the mere
+    PRESENCE of a carrier, so a loop plus a nested crash window was
+    unrecoverable under a policy that had destroyed nothing. With the carrier
+    naming its producers, the guard answers instead of refusing.
+    """
+
+    def _build(self, calls: list[int]):
+        """spin -> gate -> (spin | child_wf); spin and the child both write 'result'."""
+
+        @node(output_name=("turns", "result"))
+        def spin(turns: int = 0) -> tuple[int, int]:
+            return turns + 1, (turns + 1) * 10
+
+        @route(targets=["spin", "child_wf"])
+        def gate(turns: int = 0) -> str:
+            return "spin" if turns < 2 else "child_wf"
+
+        @node(output_name="result")
+        def child_work(turns: int = 0, result: int = 0) -> int:
+            calls.append(turns)
+            return result + 1
+
+        child = Graph(nodes=[child_work], name="child", shared=["result"])
+        return Graph(
+            nodes=[spin, gate, child.as_node(name="child_wf")],
+            name="parent",
+            shared=["result"],
+            entrypoint="spin",
+        )
+
+    def test_sync_latest_retention_restores_the_completed_child(self, tmp_path):
+        calls: list[int] = []
+        parent = self._build(calls)
+        cp = CrashingStepCheckpointer(
+            str(tmp_path / "test.db"),
+            {("wf", "child_wf")},
+            policy=retention_policy("latest"),
+        )
+        cp._sync_db()
+        try:
+            runner = SyncRunner(checkpointer=cp)
+            with pytest.raises(RuntimeError, match=CRASH_MESSAGE):
+                runner.run(parent, {"result": 0}, workflow_id="wf")
+
+            assert calls == [2]
+            carrier = next(step for step in cp.steps("wf", show_internal=True) if step.node_type == "RetentionBaseline")
+            # The carrier holds a 'result' — the child's output name — from the
+            # loop's first turn, and says so.
+            assert carrier.values is not None
+            assert carrier.values["result"] == 10
+            assert carrier.folded_producers == ("spin", "gate")
+            assert cp.get_run("wf/child_wf").status is WorkflowStatus.COMPLETED
+            assert "child_wf" not in {step.node_name for step in cp.steps("wf")}
+
+            cp.armed = False
+            resumed = runner.run(parent, workflow_id="wf")
+
+            assert resumed.status is RunStatus.COMPLETED
+            assert resumed.values["result"] == 21
+            # Restored, not re-invoked: the child ran exactly once, ever.
+            assert calls == [2]
+            child_step = next(step for step in cp.steps("wf") if step.node_name == "child_wf")
+            assert child_step.status is StepStatus.COMPLETED
+            assert child_step.child_run_id == "wf/child_wf"
+        finally:
+            if cp._sync_conn:
+                cp._sync_conn.close()
+
+    def test_a_carrier_written_before_provenance_is_still_refused(self, tmp_path):
+        """A v7-era carrier reads NULL, and NULL is not 'folded nothing'.
+
+        Same witness as above, with the carrier's provenance cleared the way a
+        database migrated from schema v7 carries it. Nothing can attribute its
+        ``result`` any more, so the pre-#277 behaviour returns in full: the
+        value name alone implicates ``child_wf`` and the boundary refuses the
+        resume rather than guessing.
+        """
+        calls: list[int] = []
+        parent = self._build(calls)
+        cp = CrashingStepCheckpointer(
+            str(tmp_path / "test.db"),
+            {("wf", "child_wf")},
+            policy=retention_policy("latest"),
+        )
+        cp._sync_db()
+        try:
+            runner = SyncRunner(checkpointer=cp)
+            with pytest.raises(RuntimeError, match=CRASH_MESSAGE):
+                runner.run(parent, {"result": 0}, workflow_id="wf")
+            assert calls == [2]
+
+            db = cp._sync_db()
+            db.execute("UPDATE steps SET folded_producers = NULL WHERE node_name = '__retained_state__'")
+            db.commit()
+
+            cp.armed = False
+            with pytest.raises(CompactedRetentionError) as error:
+                runner.run(parent, workflow_id="wf")
+
+            # Name-only matching is back, so the child is implicated again.
+            assert error.value.pruned_nodes == ("child_wf",)
+            message = str(error.value)
+            assert "retention='full'" in message
+            assert "retention='latest'" in message
+            assert "can over-report" in message
+            # Refused before restoring anything: the child still ran once.
+            assert calls == [2]
+        finally:
+            if cp._sync_conn:
+                cp._sync_conn.close()
+
+    async def test_async_latest_retention_restores_the_completed_child(self, tmp_path):
+        calls: list[int] = []
+        parent = self._build(calls)
+        cp = CrashingStepCheckpointer(
+            str(tmp_path / "test.db"),
+            {("wf", "child_wf")},
+            policy=retention_policy("latest"),
+        )
+        try:
+            runner = AsyncRunner(checkpointer=cp)
+            with pytest.raises(RuntimeError, match=CRASH_MESSAGE):
+                await runner.run(parent, {"result": 0}, workflow_id="wf")
+
+            assert calls == [2]
+            carrier = next(step for step in await cp.get_steps("wf", show_internal=True) if step.node_type == "RetentionBaseline")
+            assert carrier.folded_producers == ("spin", "gate")
+
+            cp.armed = False
+            resumed = await runner.run(parent, workflow_id="wf")
+
+            assert resumed.status is RunStatus.COMPLETED
+            assert resumed.values["result"] == 21
+            assert calls == [2]
+        finally:
+            await cp.close()
 
 
 class TestDelegatedRunnerCrashResume:

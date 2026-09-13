@@ -5,6 +5,7 @@ from datetime import timedelta
 import pytest
 
 from hypergraph.checkpointers import CheckpointPolicy, Run, StepRecord, StepStatus, WorkflowStatus
+from hypergraph.checkpointers.types import fold_producers
 
 
 class TestCheckpointPolicy:
@@ -103,6 +104,33 @@ class TestStepRecord:
         assert record.error is None
         assert record.child_run_id is None
         assert record.node_type is None
+        assert record.folded_producers is None
+
+    def test_folded_producers_round_trips_through_to_dict(self):
+        """Provenance is JSON-safe and keeps its absent/empty distinction."""
+        carrier = StepRecord(
+            run_id="wf-1",
+            superstep=-1,
+            node_name="__retained_state__",
+            index=0,
+            status=StepStatus.COMPLETED,
+            input_versions={},
+            values={"a_out": 2},
+            node_type="RetentionBaseline",
+            folded_producers=("fetch", "embed"),
+        )
+        assert carrier.to_dict()["folded_producers"] == ["fetch", "embed"]
+
+        ordinary = StepRecord(
+            run_id="wf-1",
+            superstep=0,
+            node_name="embed",
+            index=1,
+            status=StepStatus.COMPLETED,
+            input_versions={},
+        )
+        # None is not [] — "nobody recorded it" versus "it folded nothing".
+        assert ordinary.to_dict()["folded_producers"] is None
 
     def test_node_type_field(self):
         record = StepRecord(
@@ -145,3 +173,57 @@ class TestRun:
         assert d["node_count"] == 3
         assert d["error_count"] == 1
         assert d["parent_run_id"] == "wf-parent"
+
+
+class TestFoldProducers:
+    """THE rule a retention carrier's provenance is built from (#277)."""
+
+    CARRIER = "__retained_state__"
+
+    def test_only_completed_rows_are_producers(self):
+        """A PAUSED or FAILED row is an attempt, not a completion."""
+        assert fold_producers(
+            [
+                ("fetch", StepStatus.COMPLETED, None),
+                ("ask", StepStatus.PAUSED, None),
+                ("flaky", StepStatus.FAILED, None),
+            ],
+            carrier_node_name=self.CARRIER,
+        ) == ("fetch",)
+
+    def test_fold_order_is_kept_and_repeats_collapse(self):
+        """A looping node appears once, where it first folded."""
+        assert fold_producers(
+            [
+                ("spin", StepStatus.COMPLETED, None),
+                ("gate", StepStatus.COMPLETED, None),
+                ("spin", StepStatus.COMPLETED, None),
+            ],
+            carrier_node_name=self.CARRIER,
+        ) == ("spin", "gate")
+
+    def test_a_refolded_carrier_contributes_what_it_recorded(self):
+        """Provenance survives repeated compaction; the carrier name never leaks."""
+        assert fold_producers(
+            [
+                (self.CARRIER, StepStatus.COMPLETED, ("a", "b")),
+                ("c", StepStatus.COMPLETED, None),
+            ],
+            carrier_node_name=self.CARRIER,
+        ) == ("a", "b", "c")
+
+    def test_a_legacy_carrier_makes_the_whole_result_unknown(self):
+        """Partial provenance would read as 'these and no others' — refuse it."""
+        assert (
+            fold_producers(
+                [
+                    (self.CARRIER, StepStatus.COMPLETED, None),
+                    ("c", StepStatus.COMPLETED, None),
+                ],
+                carrier_node_name=self.CARRIER,
+            )
+            is None
+        )
+
+    def test_folding_no_completed_rows_is_empty_not_unknown(self):
+        assert fold_producers([("ask", StepStatus.PAUSED, None)], carrier_node_name=self.CARRIER) == ()

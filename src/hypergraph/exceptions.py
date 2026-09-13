@@ -344,22 +344,30 @@ def _compacted_restore_message(
         "How to fix:\n"
         "  Use retention='full' or retention='latest' for lineages you fork or resume, or\n"
         "  start a new workflow_id and re-run from its inputs instead.\n\n"
-        "The check is node-set-conservative; exact per-node provenance for compacted "
-        "history is tracked in #277."
+        "The named nodes are the ones the baseline recorded folding, so a value another "
+        "node happens to produce under the same name does not implicate them. A baseline "
+        "written before Hypergraph recorded that provenance falls back to matching output "
+        "names, which can over-report."
     )
 
 
 def _compacted_nested_message(node_name: str) -> str:
-    """Wording for the in-run nested crash-window refusal (#235)."""
+    """Wording for the in-run nested crash-window refusal (#235/#277).
+
+    Only an UNATTRIBUTABLE baseline reaches here now: one written before
+    retention carriers recorded which nodes they folded. A carrier that does
+    record it answers the question outright, so windowed retention and nested
+    crash recovery no longer conflict.
+    """
     return (
-        f"Cannot safely recover nested graph '{node_name}': windowed/compacted retention "
-        "may have pruned the parent step history, so Hypergraph cannot distinguish a "
-        "crash-window restore from a legitimate re-execution.\n\n"
+        f"Cannot safely recover nested graph '{node_name}': this run's compacted step "
+        "history predates producer provenance on retention baselines, so Hypergraph "
+        "cannot distinguish a crash-window restore from a legitimate re-execution.\n\n"
         "How to fix:\n"
-        "  Use retention='full' or retention='latest' for workflows that combine nested "
-        "graphs with resume/crash recovery. Forking a compacted lineage is refused for "
-        "the same reason — start a new workflow_id and re-run from its inputs instead.\n\n"
-        "Windowed nested recovery support is tracked in #277."
+        "  Start a new workflow_id and re-run from its inputs: a baseline written by this "
+        "version records which nodes it folded, and windowed retention then recovers "
+        "nested graphs normally. Alternatively use retention='full' or retention='latest', "
+        "which never prune a node's only step record."
     )
 
 
@@ -372,7 +380,8 @@ class CompactedRetentionError(Exception):
       the source run's retention baseline folded away the step records of
       nodes the target would otherwise re-invoke. ``pruned_nodes`` names them.
     - The nested crash-window restore (#235), in-run, when a GraphNode's
-      parent history was compacted and a restore cannot be told apart from a
+      parent history was compacted by a version that did not record which
+      nodes the baseline folded, so a restore cannot be told apart from a
       legitimate re-execution. ``node_name`` names the GraphNode.
 
     Attributes:

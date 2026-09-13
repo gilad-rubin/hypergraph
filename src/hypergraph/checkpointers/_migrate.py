@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def detect_schema_version(conn: Any) -> int:
@@ -16,7 +16,8 @@ def detect_schema_version(conn: Any) -> int:
         4 — v4 schema (attempt ledger tables, false cross-store FKs)
         5 — v5 schema (cross-store lineage columns carry no FK)
         6 — v6 schema (durable-host coordination + pending node boundaries)
-        7 — current v7 schema (submitted work carries a builder address; workers register)
+        7 — v7 schema (submitted work carries a builder address; workers register)
+        8 — current v8 schema (retention carriers record which nodes they folded)
     """
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
@@ -27,8 +28,8 @@ def detect_schema_version(conn: Any) -> int:
     return 0
 
 
-def create_v7_schema(conn: Any) -> None:
-    """Create a fresh v7 schema on an empty database."""
+def create_v8_schema(conn: Any) -> None:
+    """Create a fresh v8 schema on an empty database."""
     conn.execute(_CREATE_RUNS)
     conn.execute(_CREATE_STEPS)
     conn.execute(_CREATE_ATTEMPT_SERIES)
@@ -38,15 +39,17 @@ def create_v7_schema(conn: Any) -> None:
     _create_fts(conn)
     _ensure_v6_objects(conn)
     _ensure_v7_objects(conn)
+    _ensure_v8_objects(conn)
 
     conn.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
     conn.execute("INSERT INTO _schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
     conn.commit()
 
 
-# Backward-compatible aliases: the fresh-create entry points used before v7.
-create_v6_schema = create_v7_schema
-create_v5_schema = create_v7_schema
+# Backward-compatible aliases: the fresh-create entry points used before v8.
+create_v7_schema = create_v8_schema
+create_v6_schema = create_v8_schema
+create_v5_schema = create_v8_schema
 
 
 def ensure_schema(conn: Any) -> None:
@@ -58,9 +61,10 @@ def ensure_schema(conn: Any) -> None:
         _ensure_v4_objects(conn)
         _ensure_v6_objects(conn)
         _ensure_v7_objects(conn)
+        _ensure_v8_objects(conn)
         return
     if version == 0:
-        create_v7_schema(conn)
+        create_v8_schema(conn)
         return
     if version == 2:
         _migrate_v2_to_v3(conn)
@@ -68,24 +72,32 @@ def ensure_schema(conn: Any) -> None:
         _migrate_v4_to_v5(conn)
         _migrate_v5_to_v6(conn)
         _migrate_v6_to_v7(conn)
+        _migrate_v7_to_v8(conn)
         return
     if version == 3:
         _migrate_v3_to_v4(conn)
         _migrate_v4_to_v5(conn)
         _migrate_v5_to_v6(conn)
         _migrate_v6_to_v7(conn)
+        _migrate_v7_to_v8(conn)
         return
     if version == 4:
         _migrate_v4_to_v5(conn)
         _migrate_v5_to_v6(conn)
         _migrate_v6_to_v7(conn)
+        _migrate_v7_to_v8(conn)
         return
     if version == 5:
         _migrate_v5_to_v6(conn)
         _migrate_v6_to_v7(conn)
+        _migrate_v7_to_v8(conn)
         return
     if version == 6:
         _migrate_v6_to_v7(conn)
+        _migrate_v7_to_v8(conn)
+        return
+    if version == 7:
+        _migrate_v7_to_v8(conn)
         return
     raise ValueError(f"Unsupported database schema version {version} (current: {SCHEMA_VERSION}). Please upgrade hypergraph.")
 
@@ -143,9 +155,20 @@ CREATE TABLE IF NOT EXISTS steps (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     completed_at TEXT,
     attempt_series_id TEXT REFERENCES attempt_series(id),
+    folded_producers TEXT,
     UNIQUE(run_id, superstep, node_name)
 )
 """
+
+# === v8: a retention carrier records which nodes it folded ===
+#
+# Compaction folds pruned steps' VALUES into one carrier row. Before this
+# column it did not record WHOSE steps those were, so a same-named value from
+# a different node read as "that node completed" — false completion evidence
+# (#277). ``folded_producers`` is a JSON list of node names; NULL on every
+# ordinary step row and on a carrier written before the column existed, which
+# is exactly the "provenance unknown" case both readers refuse to guess at.
+_STEPS_ADDED_COLUMNS = (("folded_producers", "folded_producers TEXT"),)
 
 _RUNS_COPY_COLS = (
     "id, graph_name, status, duration_ms, node_count, error_count, created_at, completed_at, "
@@ -723,4 +746,22 @@ def _migrate_v6_to_v7(conn: Any) -> None:
     _ensure_v6_objects(conn)
     _ensure_v7_objects(conn)
     conn.execute("UPDATE _schema_version SET version = 7")
+    conn.commit()
+
+
+def _ensure_v8_objects(conn: Any) -> None:
+    """Ensure the retention carrier's provenance column exists (idempotent guard).
+
+    One nullable append to ``steps``: a v7 database migrates in place, every
+    existing row keeps its exact byte layout, and the new column reads NULL
+    until the next compaction writes a carrier.
+    """
+    _add_missing_columns(conn, "steps", _STEPS_ADDED_COLUMNS)
+    conn.commit()
+
+
+def _migrate_v7_to_v8(conn: Any) -> None:
+    """In-place migration from schema v7 to v8 (retention producer provenance)."""
+    _ensure_v8_objects(conn)
+    conn.execute("UPDATE _schema_version SET version = 8")
     conn.commit()
