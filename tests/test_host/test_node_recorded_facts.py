@@ -344,23 +344,31 @@ class TestUnderContention:
         assert landed == 3 * 2 * beats
 
     async def test_finished_writes_do_not_pile_up_on_the_context(self, home):
-        """The in-flight set is bounded by what is actually in flight.
+        """The in-flight set holds writes in flight, never every write made.
 
         A node that records thousands of facts must not hold a handle to every
         one of them; a finished write drops out as soon as it completes.
+
+        "Finished" has to be a fact here, not a timing accident: without a
+        yield the loop never runs a single append, so the node waits for the
+        batch it just issued before measuring again. Each batch must then be
+        gone from the set — if it is not, the batches accumulate and the peak
+        is the total.
         """
-        peak = 0
+        batch, batches = 20, 10
+        peaks: list[int] = []
+        after_draining: list[int] = []
+        contexts: list[NodeContext] = []
 
         @node(output_name="answer")
         async def agent_turn(prompt: str, ctx: NodeContext) -> str:
-            nonlocal peak
-            for index in range(200):
-                ctx.record("beat", {"i": index})
-                peak = max(peak, len(ctx._record_tasks))
-                if index % 10 == 0:
-                    # Any await lets the loop drain what it has finished —
-                    # the shape of every real streaming node.
-                    await asyncio.sleep(0)
+            contexts.append(ctx)
+            for group in range(batches):
+                for index in range(batch):
+                    ctx.record("beat", {"i": group * batch + index})
+                peaks.append(len(ctx._record_tasks))
+                await asyncio.gather(*list(ctx._record_tasks))
+                after_draining.append(len(ctx._record_tasks))
             return prompt.upper()
 
         graph = Graph([agent_turn], name="drains").with_runner(AsyncRunner())
@@ -369,8 +377,13 @@ class TestUnderContention:
         view = await _run_to_arrival(host, receipt)
 
         assert view.status is WorkflowStatus.COMPLETED
-        assert len([u for u in await _facts(host.client, receipt.run_ref) if u.durable and u.kind == "beat"]) == 200
-        assert peak < 200, f"the set grew to {peak}: finished writes are not being dropped"
+        assert len([u for u in await _facts(host.client, receipt.run_ref) if u.durable and u.kind == "beat"]) == batch * batches
+        # Exactly one batch is ever in flight: nothing can complete before the
+        # node yields, and everything has by the time it measures again.
+        assert peaks == [batch] * batches, peaks
+        assert after_draining == [0] * batches, after_draining
+        # And the flush leaves nothing behind.
+        assert contexts[0]._record_tasks == set()
 
     async def test_a_node_records_while_a_host_write_transaction_is_held(self, home):
         """A held transaction delays the fact; it never stalls the loop.
