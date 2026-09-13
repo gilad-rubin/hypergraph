@@ -83,8 +83,13 @@ loop running, and with a loop already running that it does not own.
   marked rather than translated; the sequential fail-fast `map` loop and the
   `SyncCheckpointerProtocol` gate are `sync:only` blocks. Prefer deleting a
   difference over adding a marker.
-- **CI's lint job runs `scripts/gen_sync.py --check`** and fails with the
-  offending hunk. This replaces the manual `diff` in `dev/REVIEW-CHECKLIST.md`.
+- **A pre-commit hook and CI's lint job both run `scripts/gen_sync.py --check`**
+  and fail with the offending hunk. This replaces the manual `diff` in
+  `dev/REVIEW-CHECKLIST.md`.
+- **The generator never writes a file it cannot vouch for.** It proves ruff is
+  present before it starts, refuses an output that does not parse or is no
+  longer than its own header, and refuses a marker found inside a string literal
+  — a generated file's failure mode must be a loud exit, never a shorter file.
 - **Scope is the template only.** `runners/sync/runner.py`,
   `sync/superstep.py`, and `sync/executors/*` stay hand-written for now and are
   candidates once the tool is proven. `checkpointers/sqlite.py` stays out

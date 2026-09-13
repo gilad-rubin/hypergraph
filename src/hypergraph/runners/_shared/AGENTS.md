@@ -8,7 +8,8 @@ modules. Treat `types.py` as a compatibility re-export surface only.
 ## `template_sync.py` Is Generated
 
 Never hand-edit `template_sync.py`. Change `template_async.py`, run
-`uv run python scripts/gen_sync.py`, and commit both; CI runs `--check`.
+`uv run python scripts/gen_sync.py`, and commit both; a pre-commit hook and CI
+both run `--check`.
 A difference the transform cannot express needs a `# sync:skip` /
 `# sync:only` marker WITH a reason — and a marker is a claim that the two
 halves genuinely differ, so prefer deleting the difference over adding one.

@@ -1112,9 +1112,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         try:
             teardown.arm(workflow_id)
 
-            # Parent-boundary identity gate (#309). create_run below upserts the
-            # parent config, so the stored graph/policy evidence has to be read
-            # and judged HERE — before any run event, any item, any rewrite.
+            # Parent-boundary identity gate (#309). The parent run row is upserted
+            # below, so the stored graph/policy evidence has to be read and judged
+            # HERE — before any run event, any item, any rewrite.
             if has_checkpointer:
                 validate_map_parent_identity(
                     existing_run=await checkpointer.get_run_async(workflow_id),

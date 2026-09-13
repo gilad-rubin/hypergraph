@@ -146,10 +146,66 @@ class TestMarkersMustExplainThemselves:
         with pytest.raises(gen_sync.GenerationError, match="bodies must be comments"):
             gen_sync.apply_markers("# sync:only-start: live code by mistake\nx = 1\n# sync:only-end\n")
 
+    def test_a_marker_inside_a_string_literal_is_refused_not_honoured(self) -> None:
+        """Prose that names a marker must not silently delete the line it sits on."""
+        source = 'def run() -> None:\n    """Pass `# sync:skip: reason` to drop a line."""\n    return None\n'
+        with pytest.raises(gen_sync.GenerationError, match="inside a string literal"):
+            gen_sync.apply_markers(source)
+
+    def test_a_region_marker_trailing_code_is_refused(self) -> None:
+        source = "x = 1  # sync:skip-start: this would take the assignment with it\ny = 2\n# sync:skip-end\n"
+        with pytest.raises(gen_sync.GenerationError, match="owns its line"):
+            gen_sync.apply_markers(source)
+
+    def test_a_real_marker_comment_is_still_found(self) -> None:
+        source = "x = 1  # sync:skip: async-only\ny = 2\n"
+        assert gen_sync.apply_markers(source) == "y = 2\n"
+
     def test_a_line_marker_left_on_a_wrapped_statement_is_refused(self) -> None:
         source = "x = f(\n    a=(\n        b\n    ),  # sync:skip: this line closes a paren the next line still needs\n)\n"
         with pytest.raises(gen_sync.GenerationError, match="invalid Python"):
             gen_sync.apply_markers(source)
+
+
+class TestNothingEmptyEverReachesDisk:
+    """A missing tool used to look like a file that formatted into nothing."""
+
+    def test_a_missing_ruff_is_refused_before_anything_is_generated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gen_sync.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(gen_sync.sys, "executable", "/nonexistent/python")
+        with pytest.raises(gen_sync.GenerationError, match="ruff is not available"):
+            gen_sync.ruff_command()
+
+    def test_a_ruff_that_returns_nothing_is_refused(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        empty = tmp_path / "fake-ruff"
+        empty.write_text("#!/bin/sh\nexit 1\n")
+        empty.chmod(0o755)
+        monkeypatch.setattr(gen_sync.shutil, "which", lambda _name: str(empty))
+        monkeypatch.setattr(gen_sync.sys, "executable", "/nonexistent/python")
+        with pytest.raises(gen_sync.GenerationError, match="ruff is not available"):
+            gen_sync.generate()
+
+    def test_an_empty_transform_result_never_reaches_disk(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gen_sync, "_tidy", lambda _source, _filename: "")
+        with pytest.raises(gen_sync.GenerationError, match="no more than the header"):
+            gen_sync.generate()
+
+    def test_a_header_only_result_never_reaches_disk(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gen_sync, "_tidy", lambda _source, _filename: gen_sync.HEADER)
+        with pytest.raises(gen_sync.GenerationError, match="no more than the header"):
+            gen_sync.generate()
+
+    def test_a_result_that_does_not_parse_never_reaches_disk(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gen_sync, "_tidy", lambda _source, _filename: gen_sync.HEADER + "def (:\n    pass\n")
+        with pytest.raises(gen_sync.GenerationError, match="does not parse"):
+            gen_sync.generate()
+
+    def test_the_generated_file_is_never_truncated_by_a_failed_generate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`main` reports and exits 2; it does not write a half-made file."""
+        before = SYNC_TEMPLATE.read_text()
+        monkeypatch.setattr(gen_sync, "_tidy", lambda _source, _filename: "")
+        assert gen_sync.main([]) == 2
+        assert SYNC_TEMPLATE.read_text() == before
 
 
 class TestGeneratedBehaviorIsStillSync:
