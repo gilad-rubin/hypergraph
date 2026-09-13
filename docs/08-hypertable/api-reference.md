@@ -112,6 +112,7 @@ class RowStatus(Enum):
     COMPLETE = "complete"
     WAITING = "waiting"
     ERROR = "error"
+    PARTIAL = "partial"
 
 
 class WriteOutcome(Enum):
@@ -124,6 +125,13 @@ class WriteOutcome(Enum):
 `HEALED` is reported by `sync()` when an unchanged parent row had damaged
 child rows rebuilt — rows physically missing, or stored in error under
 `on_error="store"`. A receipt is never `SKIPPED` on a path that wrote rows.
+
+`PARTIAL` is reported under `on_error="store"` when one node failed and the
+other derived columns were produced anyway: those columns are stored, the
+failed ones are null, and the row records why (see `partial()`). A failure the
+runner cannot blame on a node — a missing input, a plan-level error — and a
+failure that leaves no derived column standing both stay `ERROR`, so a row
+never claims column granularity the run cannot support.
 
 ### `RowReceipt`
 
@@ -180,6 +188,9 @@ class TableReceipt:
 
     @property
     def errors(self) -> tuple[RowReceipt, ...]: ...
+
+    @property
+    def partial(self) -> tuple[RowReceipt, ...]: ...
 
     @property
     def paused(self) -> bool: ...
@@ -324,6 +335,41 @@ class ErroredRow:
     error: str
     row: dict[str, Any]
 ```
+
+### `partial() -> tuple[PartialRow, ...]`
+
+```python
+@dataclass(frozen=True)
+class PartialRow:
+    id: str
+    changes: tuple[ColumnChange, ...]
+    row: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ColumnChange:
+    column: str
+    reason: ChangeReason
+    node: str
+    error: str | None = None
+
+
+class ChangeReason(Enum):
+    NODE_ERROR = "node_error"
+    UPSTREAM_ERROR = "upstream_error"
+```
+
+Rows stored with `on_error="store"` that kept some derived columns and nulled
+the rest. One `ColumnChange` per nulled column: `NODE_ERROR` when the column's
+own producer raised (`error` carries its text), `UPSTREAM_ERROR` when a node it
+depends on raised first, so its producer never ran.
+
+A partial row stays queryable and counts as stale in `status()`, never fresh.
+The next `sync()` re-derives exactly the null columns: the surviving columns
+keep their provenance stamps, so the column-scoped reconcile path reuses them
+and the expensive earlier stages are not paid twice. A retry that fails again
+keeps the columns the first attempt saved. Child rows are not fanned out from
+a partial row — the heal that completes it writes them.
 
 ### `count() -> int`
 

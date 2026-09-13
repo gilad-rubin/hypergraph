@@ -7,8 +7,11 @@ from hypergraph.materialization._hypertable import ChildTable, HyperTable
 from hypergraph.materialization._table import Table
 from hypergraph.materialization._table_store import TableStore, validate_store
 from hypergraph.materialization._types import (
+    ChangeReason,
+    ColumnChange,
     ErroredRow,
     MaterializationReceipt,
+    PartialRow,
     RecipeDrift,
     RowReceipt,
     RowStatus,
@@ -27,8 +30,11 @@ __all__ = [
     "Table",
     "TableStore",
     "validate_store",
+    "ChangeReason",
+    "ColumnChange",
     "ErroredRow",
     "MaterializationReceipt",
+    "PartialRow",
     "RecipeDrift",
     "RowReceipt",
     "RowStatus",

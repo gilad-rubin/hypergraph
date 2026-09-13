@@ -19,6 +19,10 @@ from typing import Any
 FINGERPRINT_COLUMNS = ("_row_fingerprint", "_write_gen")
 STATUS_COLUMNS = ("_status", "_error")
 QUESTION_COLUMN = "_question"
+# Per-column change entries for a PARTIAL row: which derived columns a
+# failure nulled and why. Additive — old stores gain the column via
+# idempotent schema evolution the first time a partial row is written.
+CHANGES_COLUMN = "_changes"
 PARENT_LINK_COLUMN = "_parent_id"
 PROVENANCE_PREFIX = "_provenance_"
 # The per-row RECIPE-ONLY stamp (node code + component configs + bound plain
@@ -29,7 +33,7 @@ RECIPE_COLUMN = "_recipe_fingerprint"
 
 # Names a user may not give an identity/source/derived column. A reserved name is
 # any framework-managed column plus the parent link.
-RESERVED_NAMES = frozenset({*FINGERPRINT_COLUMNS, *STATUS_COLUMNS, PARENT_LINK_COLUMN, RECIPE_COLUMN, QUESTION_COLUMN})
+RESERVED_NAMES = frozenset({*FINGERPRINT_COLUMNS, *STATUS_COLUMNS, PARENT_LINK_COLUMN, RECIPE_COLUMN, QUESTION_COLUMN, CHANGES_COLUMN})
 
 
 def is_reserved_name(name: str) -> bool:
@@ -41,7 +45,7 @@ def is_internal_column(name: str) -> bool:
     return (
         name in FINGERPRINT_COLUMNS
         or name in STATUS_COLUMNS
-        or name in (PARENT_LINK_COLUMN, RECIPE_COLUMN, QUESTION_COLUMN)
+        or name in (PARENT_LINK_COLUMN, RECIPE_COLUMN, QUESTION_COLUMN, CHANGES_COLUMN)
         or name.startswith(PROVENANCE_PREFIX)
     )
 
@@ -250,6 +254,7 @@ def analyze_table(
         _column("_status", role="internal"),
         _column("_error", role="internal"),
         _column(QUESTION_COLUMN, role="internal"),
+        _column(CHANGES_COLUMN, role="internal"),
     ]
 
     return TableSpec(name=name or identity.replace("_id", ""), identity=identity, columns=final_columns, children=child_specs)

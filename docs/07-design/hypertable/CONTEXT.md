@@ -35,7 +35,7 @@ The tagline: **a Hypergraph graph where each node's output is a stored column, a
 
 **Write generation (`_write_gen`)** — a monotonic counter per table, incremented on each mutating operation. Stored as an internal column on every row. Used for crash-safe upserts: new rows are written with the current generation, old rows are deleted by `(logical_key) AND _write_gen < current`. On recovery, duplicates (same logical key, different generation) are resolved by keeping the highest generation. Skipped children (fingerprint match) get their `_write_gen` bumped to survive cleanup.
 
-**Row status (`_status`)** — an internal column on every row: `"complete"` (derivation succeeded) or `"error"` (derivation failed under `on_error="store"`). Rows with `_status=None` are treated as `"complete"` for migration safety — pre-upgrade rows lack this column and must not be re-processed.
+**Row status (`_status`)** — an internal column on every row: `"complete"` (derivation succeeded), `"waiting"` (blocked on a human answer), `"error"` (derivation failed under `on_error="store"`), or `"partial"` (some derived columns succeeded, others were nulled by an attributable node failure). Rows with `_status=None` are treated as `"complete"` for migration safety — pre-upgrade rows lack this column and must not be re-processed.
 
 **Error message (`_error`)** — an internal column storing `None` (success) or `"{ExceptionType}: {message}"` (failure). Only populated when `on_error="store"` and derivation fails.
 
@@ -43,7 +43,11 @@ The tagline: **a Hypergraph graph where each node's output is a stored column, a
 
 **Error row** — a row written under `on_error="store"` when derivation fails. Contains: identity column, source columns (preserved from input), derived columns (`None`), `_row_fingerprint` (computed normally), `_status="error"`, `_error` (exception string), `_write_gen` (current), provenance columns (`None`). On retry, the fingerprint matches but `_status="error"` prevents skipping, so the graph re-runs.
 
-**Reserved names** — column names that collide with internal columns are rejected at graph analysis time: `_status`, `_error`, `_row_fingerprint`, `_write_gen`, `_parent_id`, and any name starting with `_provenance_`. This applies to identity and source columns. Derived column names with a `_` prefix are already rejected by the Graph layer's output name validation.
+**Partial row** — a row written under `on_error="store"` when the runner could blame the failure on a node: the derived columns that succeeded are stored with their provenance stamps, the columns that node produces (and the ones downstream of it) are `None`, and `_status="partial"`. It counts as stale in `status()`, never fresh, and the next `sync()` re-derives exactly the null columns through the column-scoped reconcile path — the columns it kept are not paid for twice. A failure the runner cannot attribute to a node, or one that leaves no derived column standing, is an error row instead: a row never claims column granularity the run cannot support.
+
+**Column change (`_changes`)** — an internal column on a partial row: one JSON entry per nulled column recording the column, the node, and a reason code. `node_error` means that column's own producer raised (the entry carries its message); `upstream_error` means a node it depends on raised first, so its producer never ran. Read as typed `ColumnChange` values through `table.partial()`.
+
+**Reserved names** — column names that collide with internal columns are rejected at graph analysis time: `_status`, `_error`, `_changes`, `_row_fingerprint`, `_write_gen`, `_parent_id`, and any name starting with `_provenance_`. This applies to identity and source columns. Derived column names with a `_` prefix are already rejected by the Graph layer's output name validation.
 
 **`include_status`** — a parameter on `get()`, `children()`, `filter()`, and `filter_children()` that includes `_status` and `_error` in returned rows. Without it, these fields are stripped for backward compatibility.
 

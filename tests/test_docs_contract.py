@@ -35,11 +35,14 @@ from hypergraph.checkpointers import (
 )
 from hypergraph.events import RunEndEvent
 from hypergraph.materialization import (
+    ChangeReason,
+    ColumnChange,
     ErroredRow,
     HyperTable,
     LanceDBStore,
     MaterializationBranch,
     MaterializedArtifact,
+    PartialRow,
     RowReceipt,
     RowStatus,
     TableReceipt,
@@ -254,7 +257,10 @@ def test_hypertable_docs_pin_graph_backed_receipt_contract() -> None:
     assert tuple(TableReceipt.__dataclass_fields__) == ("receipts", "deleted")
     assert tuple(WaitingRow.__dataclass_fields__) == ("id", "pause", "row", "provenance")
     assert tuple(ErroredRow.__dataclass_fields__) == ("id", "error", "row")
-    assert {status.value for status in RowStatus} == {"complete", "waiting", "error"}
+    assert tuple(PartialRow.__dataclass_fields__) == ("id", "changes", "row")
+    assert tuple(ColumnChange.__dataclass_fields__) == ("column", "reason", "node", "error")
+    assert {status.value for status in RowStatus} == {"complete", "waiting", "error", "partial"}
+    assert {reason.value for reason in ChangeReason} == {"node_error", "upstream_error"}
     assert {outcome.value for outcome in WriteOutcome} == {"inserted", "updated", "skipped", "healed"}
     assert LanceDBStore.__module__ == "hypergraph.materialization._lancedb_store"
 
@@ -278,6 +284,8 @@ def test_hypertable_docs_pin_graph_backed_receipt_contract() -> None:
         "TableReceipt",
         "WaitingRow",
         "ErroredRow",
+        "PartialRow",
+        "ColumnChange",
         "provenance: str",
         "result.paused",
         "result.pause.value",
