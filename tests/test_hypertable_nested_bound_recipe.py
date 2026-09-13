@@ -15,6 +15,8 @@ payload is the same inside a nested graph as it is at the root.
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
 from hypergraph import Graph, node
@@ -127,6 +129,69 @@ def test_plain_nested_graphnode_column_drifts_on_an_inner_bind(tmp_path):
     question.sync([{"doc_id": "d1", "text": "hello"}])
     assert question.get("d1")["shout"] == "HELLO?"
     assert question.recipe_drift().stale_total == 0
+
+
+def test_two_levels_of_nesting_inside_a_mounted_child_rederive_to_the_new_value(tmp_path):
+    """The hard two-level shape: the bind sits a level BELOW the graph a
+    ``map_over`` mounts as a child table.
+
+    The child table's schema builds a source column from the child graph's
+    ``inputs``, which still advertise a name the graph BELOW it binds — so that
+    column exists and is permanently NULL. Feeding it back as a run value on a
+    selective re-derive overrides the real binding and derives the row from
+    ``None``: identity moves correctly while the data silently corrupts, which
+    is strictly worse than the staleness this ticket set out to fix. A name
+    bound anywhere in a node's subgraph is therefore never an input for it.
+    """
+
+    def build(tag_value: str) -> HyperTable:
+        deepest = Graph([tag], name="tagger").bind(tag_value=tag_value)
+        mid = Graph([deepest.as_node(name="inner")], name="per_page")
+        per_page = mid.as_node(name="pages").map_over("pages", identity="page_id")
+        return Graph([split, per_page]).as_table(identity="doc_id", store=LanceDBStore(str(tmp_path)), runner=SyncRunner())
+
+    build("d1v").insert(doc_id="d1", text="alpha beta")
+    assert {row["tagged"] for row in LanceDBStore(str(tmp_path)).read_rows("page")} == {"d1v:alpha", "d1v:beta"}
+
+    v2 = build("d2v")
+    assert v2.recipe_drift().children[0].drifted == 2
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        v2.sync([{"doc_id": "d1", "text": "alpha beta"}])
+    overrides = [str(w.message) for w in caught if "overrides bound value" in str(w.message)]
+    assert not overrides, f"the re-derive fed a stored NULL over the real binding: {overrides}"
+    assert {row["tagged"] for row in LanceDBStore(str(tmp_path)).read_rows("page")} == {"d2v:alpha", "d2v:beta"}
+    assert v2.recipe_drift().stale_total == 0
+
+
+def test_a_root_bind_wins_over_the_child_value_it_shadows(tmp_path):
+    """One precedence rule, identity and execution alike.
+
+    When the same name is bound at the root AND on the mounted child graph, the
+    root's value is what runs (it flattens down onto the child graph). Two
+    tables differing only in the SHADOWED child value therefore derive identical
+    data and must carry identical recipe identities — reporting drift for a
+    value the run never honors would order a full re-derive that changes nothing.
+    """
+
+    def build(child_value: str, path) -> HyperTable:
+        inner = Graph([tag], name="per_page").bind(tag_value=child_value)
+        per_page = inner.as_node(name="pages").map_over("pages", identity="page_id")
+        return Graph([split, per_page]).bind(tag_value="ROOT").as_table(identity="doc_id", store=LanceDBStore(str(path)), runner=SyncRunner())
+
+    a, b = build("childA", tmp_path / "a"), build("childB", tmp_path / "b")
+    assert a.recipe_fingerprint() == b.recipe_fingerprint()
+    assert a._provenance_policy.root_fingerprint({"text": "alpha"}) == b._provenance_policy.root_fingerprint({"text": "alpha"})
+
+    a.insert(doc_id="d1", text="alpha")
+    assert [row["tagged"] for row in LanceDBStore(str(tmp_path / "a")).read_rows("page")] == ["ROOT:alpha"]
+
+    # Same store, rebuilt with the other shadowed value: the run is identical.
+    same = build("childB", tmp_path / "a")
+    drift = same.recipe_drift()
+    assert (drift.drifted, drift.children[0].drifted) == (0, 0)
+    assert same.sync([{"doc_id": "d1", "text": "alpha"}]).receipts[0].outcome.value == "skipped"
 
 
 def test_recursion_holds_at_two_levels_of_nesting(tmp_path):
