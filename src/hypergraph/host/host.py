@@ -40,7 +40,7 @@ from hypergraph.host._batch_store import BatchAcceptance, DefinitionPin
 from hypergraph.host._bus import _BusEventProcessor, _PreviewBus, _register_bus
 from hypergraph.host.batch import BatchTolerance, MapMode, expand_batch_items, freeze_batch_items
 from hypergraph.host.client import RunHomeClient
-from hypergraph.host.definition import DefinitionId
+from hypergraph.host.definition import DefinitionId, definition_struct_hash, scope_description
 from hypergraph.host.errors import (
     BuilderIdentityError,
     ForkCompatibilityError,
@@ -811,11 +811,16 @@ class Host:
 
         THE graph-first resolution point, shared by ``submit``,
         ``submit_batch``, and ``fork``. Identity is the Graph's own pinned
-        pair — name plus ``structural_hash`` — never object identity, so
-        the served object and an equivalent rebuild (or the pre-
+        pair — name plus ``definition_struct_hash`` — never object identity,
+        so the served object and an equivalent rebuild (or the pre-
         ``with_runner`` original, which keeps both) resolve alike, while a
         graph whose topology drifted is refused rather than silently
         submitted against a Definition it no longer matches.
+
+        The pinned hash is the Definition's, not the Graph's: it folds in a
+        ``select()`` / ``with_entrypoint()`` narrowing, because the worker
+        executes the SERVED graph object and a narrowing this host never saw
+        would otherwise be discarded in silence (#408).
 
         A ``builder`` address widens where the Definition may COME from,
         never what it has to be: a graph this host does not serve is built
@@ -834,19 +839,21 @@ class Host:
                 "host.submit(graph, values). A Definition-name string is not a selector: the pinned "
                 "identity is the Graph's own name plus structural_hash, which only the object carries."
             )
+        struct_hash = definition_struct_hash(graph)
         definition = self._definitions.get(graph.name or "")
-        if definition is not None and definition.struct_hash == graph.structural_hash:
+        if definition is not None and definition.struct_hash == struct_hash:
             return definition
         if builder is not None and builder.key in self._builders:
             built = self._build_definition(builder)
-            pinned = DefinitionId(graph.name or "", self._deployment_version, graph.structural_hash)
+            pinned = DefinitionId(graph.name or "", self._deployment_version, struct_hash)
             if built.definition_id != pinned:
                 raise BuilderIdentityError(builder.key, pinned, built.definition_id)
             return built
         raise UnservedGraphError(
             graph.name or "",
-            graph.structural_hash,
+            struct_hash,
             {name: served.struct_hash for name, served in self._definitions.items()},
+            scope=scope_description(graph),
         )
 
     def _build_definition(self, builder: _BuilderAddress) -> _Definition:
@@ -1380,7 +1387,7 @@ def _definition_from(graph: Graph, *, home: RunHome, deployment_version: str, ta
         graph=graph,
         runner=bound_runner,
         version=deployment_version,
-        struct_hash=graph.structural_hash,
+        struct_hash=definition_struct_hash(graph),
     )
 
 

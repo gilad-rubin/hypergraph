@@ -555,6 +555,8 @@ print(result.values.keys())  # dict_keys(['answer'])
 
 Runtime `select=` overrides are not supported. Use `graph.select(...)` to configure output scope before calling `run()`.
 
+Because it is scope-defining, `select` is part of durable **Definition identity**: a selected graph and its unselected twin are different Definitions, and submitting one against the other is refused rather than silently running the served graph. `with_entrypoint` is the same. See [Definition Identity](host.md#definition-identity-and-accepts).
+
 **Args:**
 - `*names`: Output names to include. Must be valid graph outputs.
 

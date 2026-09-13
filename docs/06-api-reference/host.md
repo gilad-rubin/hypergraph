@@ -201,6 +201,34 @@ host = serve(ingest, home=RunHome.open("file:./runs.db"),
 #            → this worker now drains runs parked under the old identity
 ```
 
+**A narrowed graph is a different Definition.** `select()` and
+`with_entrypoint()` change what a run produces and what it executes, and a
+worker executes the *served* graph object — so the identity a submission pins
+folds the narrowing in:
+
+```python
+full = Graph([cheap, costly], name="pipeline").with_runner(AsyncRunner())
+host = serve(full, home=home, deployment_version="v1")
+
+await host.submit(full.with_entrypoint("costly"), {"cheap": 2})
+# UnservedGraphError: ... this Graph has <hash>, because it is narrowed by
+# with_entrypoint('costly') and the served one is not. A worker executes the
+# SERVED graph object, so a narrowing this host never saw would be discarded
+# silently and every node would run.
+#
+# How to fix: serve the narrowed graph as its own Definition —
+# serve(graph.with_entrypoint('costly'), ..., home=home) — or drop the
+# with_entrypoint('costly') at the submit call site.
+
+host = serve(full.with_entrypoint("costly"), home=home, deployment_version="v1")
+await host.submit(full.with_entrypoint("costly"), {"cheap": 2})   # accepted; `cheap` never runs
+```
+
+A graph carrying neither modifier pins `graph.structural_hash` byte for
+byte, so nothing already submitted moves. Metadata-only configuration —
+`with_runner()`, `with_provider_limit()` — is *not* identity: it changes no
+structure and no active node set.
+
 Without a matching declaration the worker refuses the submission: it stays
 persisted and unclaimed, its view reports
 `WaitingCondition.VERSION_INCOMPATIBLE`, and the worker logs a warning
@@ -319,7 +347,9 @@ reference to is the code that runs. A graph this host does not serve, or one
 whose structure has drifted from the served Definition, raises
 `UnservedGraphError` at the call site instead of being accepted and parked;
 a bare string raises `TypeError`. The same rule covers `submit_batch()` and
-`fork(..., into=graph)`.
+`fork(..., into=graph)`. A graph narrowed by `select()` or
+`with_entrypoint()` is a Definition of its own — see [Definition Identity and
+`accepts=`](#definition-identity-and-accepts).
 
 The submission commits to the Run Home **before** any execution: process
 loss after `submit()` returns cannot erase durable intent. Each submission
@@ -1756,7 +1786,7 @@ brake counts **progressless re-adoptions**:
 | Error | Raised when |
 |---|---|
 | `WorkerLockError` | **retired** — nothing raises it. A Run Home admits several workers; the name is exported for one release so an old `except` clause still imports |
-| `UnservedGraphError` | `submit`, `submit_batch`, or `fork(into=…)` names a `Graph` this host does not serve, or one whose `structural_hash` drifted from the served Definition |
+| `UnservedGraphError` | `submit`, `submit_batch`, or `fork(into=…)` names a `Graph` this host does not serve, one whose `structural_hash` drifted from the served Definition, or one narrowed by `select()` / `with_entrypoint()` the host did not serve |
 | `ItemKeyError` | `submit_batch` `identity` names a field outside `map_over`, or an item's key is missing, empty, non-scalar, duplicated, or contains `/` (reserved by the child workflow id) |
 | `AlreadyTerminalError` | a terminal `workflow_id` is reused for submit, submit_batch, or stop (including a fully settled Batch) |
 | `WorkflowIdConflictError` | a nonterminal `workflow_id` is reused with a different start fingerprint (Run or Batch), or a Batch id collides with existing work |

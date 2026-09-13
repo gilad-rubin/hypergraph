@@ -127,18 +127,33 @@ class UnservedGraphError(HostError):
     structural hash, names code no worker could execute — so it is refused
     at the call site rather than parked forever as version-incompatible
     work.
+
+    A graph NARROWED by ``select()`` or ``with_entrypoint()`` is refused
+    here too: narrowing changes what runs, so it is part of Definition
+    identity (#408). ``scope`` names the narrowing the submitted object
+    carried, so the message can say what was asked for and how to serve it.
     """
 
-    def __init__(self, graph_name: str, structural_hash: str, served: dict[str, str], message: str | None = None) -> None:
+    def __init__(self, graph_name: str, structural_hash: str, served: dict[str, str], message: str | None = None, *, scope: str = "") -> None:
         self.graph_name = graph_name
         self.structural_hash = structural_hash
         self.served = dict(served)
+        self.scope = scope
         served_hash = self.served.get(graph_name)
         if served_hash is None:
             detail = (
                 f"This host serves: {sorted(self.served)}.\n\n"
                 "How to fix: pass a Graph named in serve(...), or add this one — "
                 "serve(this_graph, ..., home=home) — so a worker can execute it."
+            )
+        elif scope:
+            detail = (
+                f"The served Definition {graph_name!r} pins structural_hash {served_hash!r}, "
+                f"but this Graph has {structural_hash!r}, because it is narrowed by {scope} and the "
+                "served one is not. A worker executes the SERVED graph object, so a narrowing this host "
+                "never saw would be discarded silently and every node would run.\n\n"
+                f"How to fix: serve the narrowed graph as its own Definition — serve(graph.{scope}, ..., home=home) "
+                f"— or drop the {scope} at the submit call site."
             )
         else:
             detail = (
