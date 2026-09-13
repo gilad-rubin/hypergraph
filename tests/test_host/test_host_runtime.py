@@ -585,9 +585,23 @@ class TestPublicHomeUri:
         assert not path.exists()  # the whole point of HostRuntime is laziness
         assert not path.parent.exists()
 
-    async def test_uri_equals_what_the_client_and_a_receipt_report(self, tmp_path):
-        """One string, three public places: runtime, client, ref."""
-        path = tmp_path / "runs.db"
+    @pytest.mark.parametrize("spelling", ["absolute", "relative"])
+    async def test_uri_equals_what_the_client_and_a_receipt_report(self, tmp_path, monkeypatch, spelling):
+        """One string, three public places: runtime, client, ref.
+
+        The relative spelling is the load-bearing case: a property that
+        resolved or absolutised the path would still satisfy every
+        absolute-``tmp_path`` assertion while breaking the one thing the uri
+        is for — being the same string the Home reports into every ref.
+        """
+        if spelling == "relative":
+            monkeypatch.chdir(tmp_path)
+            path = "./sub/runs.db"
+            expected = "sub/runs.db"  # what RunHome.open() reports back
+        else:
+            path = tmp_path / "runs.db"
+            expected = str(path)
+
         runtime = HostRuntime(path, deployment_version="v1")
         try:
             before_open = runtime.uri
@@ -595,9 +609,10 @@ class TestPublicHomeUri:
             receipt = await host.submit(_increment_graph("increment"), {"x": 1}, workflow_id="w-1")
             await _terminal(runtime.client, receipt.run_ref)
 
-            assert runtime.uri == before_open
-            assert runtime.client.home_uri == runtime.uri
-            assert receipt.run_ref.home == runtime.uri
+            assert before_open == expected
+            assert runtime.uri == expected
+            assert runtime.client.home_uri == expected
+            assert receipt.run_ref.home == expected
         finally:
             await runtime.close()
 
