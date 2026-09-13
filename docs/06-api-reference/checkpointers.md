@@ -398,6 +398,29 @@ the check.
 `HG_COMPACTED_RETENTION` code documented in
 [Errors](errors.md#hg-compacted-retention).
 
+### Paused workflows: use `latest` or `full`
+
+A pause is a run that stopped mid-graph, so an interrupt resume goes through
+exactly this boundary. Under `retention="windowed"` a resume is refused
+whenever **any** upstream producer was pruned — the interrupt node keeps its
+own `PAUSED` row, but the nodes that fed it usually do not:
+
+```python
+# prep -> mid -> ask(interrupt) -> post, retention="windowed", window=1
+paused = await runner.run(graph, {"seed": 1}, workflow_id="wf")   # RunStatus.PAUSED
+await runner.run(graph, {"answer": "yes"}, workflow_id="wf")
+# CompactedRetentionError: Cannot resume 'wf': retention='windowed' (window=1)
+# compacted the step records for nodes 'mid', 'prep'.
+```
+
+In practice this makes `retention="windowed"` incompatible with multi-turn
+interrupts, with two exceptions: the interrupt is the graph's entrypoint (no
+upstream producer exists to prune), or the window is wide enough to keep a
+surviving row for every upstream producer. **Use `retention="latest"` or
+`retention="full"` for workflows that pause.** `latest` keeps one row per
+node, which is enough to preserve every producer's execution identity while
+still discarding superseded history.
+
 ## Policy Compatibility on Resume
 
 Every persisted run records the effective retry/timeout policy of each

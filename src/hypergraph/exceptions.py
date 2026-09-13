@@ -324,9 +324,14 @@ def _compacted_restore_message(
     pruned_nodes: tuple[str, ...],
     retention: str | None,
     window: int | None,
+    is_retry: bool,
 ) -> str:
-    """Wording for the fork/resume boundary refusal (#239)."""
-    operation = f"resume '{workflow_id}'" if source_run_id == workflow_id else f"fork '{workflow_id}' from '{source_run_id}'"
+    """Wording for the fork/resume/retry boundary refusal (#239)."""
+    if source_run_id == workflow_id:
+        operation = f"resume '{workflow_id}'"
+    else:
+        verb = "retry" if is_retry else "fork"
+        operation = f"{verb} '{workflow_id}' from '{source_run_id}'"
     policy = f"retention='{retention}'" if retention else "compacting retention"
     if window is not None:
         policy = f"{policy} (window={window})"
@@ -363,19 +368,21 @@ class CompactedRetentionError(Exception):
 
     Two boundaries raise it, and they share one diagnostic vocabulary:
 
-    - The fork/resume boundary (#239), before anything executes, when the
-      source run's retention baseline folded away the step records of nodes
-      the target would otherwise re-invoke. ``pruned_nodes`` names them.
+    - The fork/resume/retry boundary (#239), before anything executes, when
+      the source run's retention baseline folded away the step records of
+      nodes the target would otherwise re-invoke. ``pruned_nodes`` names them.
     - The nested crash-window restore (#235), in-run, when a GraphNode's
       parent history was compacted and a restore cannot be told apart from a
       legitimate re-execution. ``node_name`` names the GraphNode.
 
     Attributes:
         node_name: The GraphNode that could not be recovered, when the nested
-            boundary raised; ``None`` at the fork/resume boundary.
+            boundary raised; ``None`` at the fork/resume/retry boundary.
         workflow_id: The workflow whose restore was refused (boundary form).
         source_run_id: The lineage source the restore read from (boundary form).
         pruned_nodes: Nodes whose execution identity compaction folded away.
+        is_retry: Whether the refused restore was a ``retry_from=``, so the
+            message names the operation the caller actually asked for.
         code: Stable diagnostic code ``"HG_COMPACTED_RETENTION"``.
     """
 
@@ -390,11 +397,13 @@ class CompactedRetentionError(Exception):
         pruned_nodes: tuple[str, ...] = (),
         retention: str | None = None,
         window: int | None = None,
+        is_retry: bool = False,
     ) -> None:
         self.node_name = node_name
         self.workflow_id = workflow_id
         self.source_run_id = source_run_id
         self.pruned_nodes = pruned_nodes
+        self.is_retry = is_retry
         if pruned_nodes:
             super().__init__(
                 _compacted_restore_message(
@@ -403,6 +412,7 @@ class CompactedRetentionError(Exception):
                     pruned_nodes=pruned_nodes,
                     retention=retention,
                     window=window,
+                    is_retry=is_retry,
                 )
             )
         else:

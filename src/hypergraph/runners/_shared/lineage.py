@@ -158,8 +158,9 @@ def validate_restorable_history(
     workflow_id: str | None,
     source_run_id: str,
     policy: CheckpointPolicy | None,
+    is_retry: bool = False,
 ) -> None:
-    """Refuse a fork/resume that compaction would turn into re-execution (#239).
+    """Refuse a fork/resume/retry that compaction would turn into re-execution (#239).
 
     State reconstruction and execution restoration are separate capabilities.
     Run inputs and folded step values rebuild the STATE of a compacted run
@@ -177,6 +178,7 @@ def validate_restorable_history(
         pruned_nodes=pruned,
         retention=getattr(policy, "retention", None),
         window=getattr(policy, "window", None),
+        is_retry=is_retry,
     )
 
 

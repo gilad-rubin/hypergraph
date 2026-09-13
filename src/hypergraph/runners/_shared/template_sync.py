@@ -379,6 +379,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                             workflow_id=workflow_id,
                             source_run_id=source_run_id,
                             policy=retention_policy,
+                            is_retry=resume_checkpoint.retry_of is not None,
                         )
         except BaseException as error:
             if inspection_transport is not None:

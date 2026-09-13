@@ -18,6 +18,8 @@ Assertion map (ticket acceptance items):
     capability: fork missing the producers  TestCompactedRestoreStaysCapable
     capability: resume off baseline values  TestCompactedRestoreStaysCapable
     matrix: latest never refuses            TestCompactedRestoreStaysCapable
+    retry_from names 'retry', not 'fork'    TestCompactedRestoreRefused
+    paused resume refused / admitted        TestWindowedInterruptResume
     nested GraphNode lineage                TestNestedCompactedLineage
     composes with the in-run nested guard   TestNestedCompactedLineage
 """
@@ -28,10 +30,11 @@ import inspect
 
 import pytest
 
-from hypergraph import CompactedRetentionError, Graph, SyncRunner, node, route
+from hypergraph import CompactedRetentionError, Graph, SyncRunner, interrupt, node, route
 from hypergraph.checkpointers import CheckpointPolicy, MemoryCheckpointer, SqliteCheckpointer
 from hypergraph.diagnostics import DIAGNOSTIC_CODES
 from hypergraph.runners._shared.results import RunStatus
+from tests._interrupt_questions import StringQuestion
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -86,9 +89,14 @@ def backend_kind(request) -> str:
     return request.param
 
 
-def build_chain_graph():
-    """a -> b -> c, one superstep each, with invocation counters."""
+def build_chain_graph(fail_c: list[bool] | None = None):
+    """a -> b -> c, one superstep each, with invocation counters.
+
+    ``fail_c`` is a one-element mutable flag: while it is truthy, ``c`` raises,
+    so a caller can persist a FAILED source run and then repair it.
+    """
     calls = {"a": 0, "b": 0, "c": 0}
+    armed = fail_c if fail_c is not None else [False]
 
     @node(output_name="a_out")
     def a(seed: int) -> int:
@@ -103,6 +111,8 @@ def build_chain_graph():
     @node(output_name="c_out")
     def c(b_out: int) -> int:
         calls["c"] += 1
+        if armed[0]:
+            raise RuntimeError("boom")
         return b_out + 1
 
     return Graph(nodes=[a, b, c], name="chain"), calls, (a, b, c)
@@ -198,6 +208,28 @@ class TestCompactedRestoreRefused:
         finally:
             await backend.close()
 
+    async def test_retry_from_refusal_names_the_retry(self, tmp_path, backend_kind):
+        """The message names the operation the caller asked for, not 'fork'."""
+        backend = Backend(backend_kind, tmp_path, retention_policy("windowed"))
+        try:
+            fail_c = [True]
+            graph, calls, _ = build_chain_graph(fail_c)
+            with pytest.raises(RuntimeError, match="boom"):
+                await backend.run(graph, {"seed": 1}, workflow_id="src")
+            assert calls == {"a": 1, "b": 1, "c": 1}
+
+            fail_c[0] = False
+            with pytest.raises(CompactedRetentionError) as error:
+                await backend.run(graph, {}, workflow_id="rt", retry_from="src")
+
+            assert calls == {"a": 1, "b": 1, "c": 1}
+            assert error.value.is_retry is True
+            assert error.value.pruned_nodes == ("a", "b")
+            assert "Cannot retry 'rt' from 'src'" in str(error.value)
+            assert "fork 'rt'" not in str(error.value)
+        finally:
+            await backend.close()
+
     async def test_refusal_carries_the_registered_diagnostic_code(self, tmp_path):
         backend = Backend("sync-sqlite", tmp_path, retention_policy("windowed"))
         try:
@@ -290,6 +322,93 @@ class TestCompactedRestoreStaysCapable:
             assert forked.status is RunStatus.COMPLETED
             assert forked.values == {"a_out": 2, "b_out": 3, "c_out": 4}
             assert calls == {"a": 1, "b": 1, "c": 1}
+        finally:
+            await backend.close()
+
+
+class TestWindowedInterruptResume:
+    """Multi-turn interrupts and windowed retention do not mix.
+
+    A pause is just a run that stopped mid-graph, so the boundary gate sees it
+    like any other resume: whichever upstream producers compaction pruned are
+    the ones a resume would re-invoke. That makes ``retention="windowed"``
+    unusable for paused workflows unless the interrupt is the entrypoint, or
+    the window is wide enough to keep every upstream producer's row.
+    """
+
+    @pytest.fixture(params=["async-sqlite", "async-memory"])
+    def async_backend_kind(self, request) -> str:
+        return request.param
+
+    async def test_resume_after_pause_refuses_when_upstream_was_pruned(self, tmp_path, async_backend_kind):
+        """prep -> mid -> ask -> post with window=1: 'mid' and 'prep' are gone."""
+        calls = {"prep": 0, "mid": 0, "post": 0}
+
+        @node(output_name="prepped")
+        def prep(seed: int) -> int:
+            calls["prep"] += 1
+            return seed + 1
+
+        @node(output_name="middled")
+        def mid(prepped: int) -> int:
+            calls["mid"] += 1
+            return prepped * 2
+
+        @interrupt(answer_name="answer")
+        def ask(middled: int) -> StringQuestion:
+            return StringQuestion(prompt=f"ok with {middled}?")
+
+        @node(output_name="posted")
+        def post(answer: str) -> str:
+            calls["post"] += 1
+            return f"posted:{answer}"
+
+        graph = Graph(nodes=[prep, mid, ask, post], name="turn")
+        backend = Backend(async_backend_kind, tmp_path, retention_policy("windowed"))
+        try:
+            paused = await backend.run(graph, {"seed": 1}, workflow_id="wf")
+            assert paused.status is RunStatus.PAUSED
+            assert calls == {"prep": 1, "mid": 1, "post": 0}
+
+            # The interrupt itself keeps a PAUSED row — it is still on record.
+            raw = await _raw_steps(backend, "wf")
+            assert "ask" in {step.node_name for step in raw}
+
+            with pytest.raises(CompactedRetentionError) as error:
+                await backend.run(graph, {"answer": "yes"}, workflow_id="wf")
+
+            assert calls == {"prep": 1, "mid": 1, "post": 0}
+            assert error.value.pruned_nodes == ("mid", "prep")
+            assert "Cannot resume 'wf'" in str(error.value)
+            assert_boundary_guidance(str(error.value))
+        finally:
+            await backend.close()
+
+    async def test_resume_after_pause_succeeds_when_the_interrupt_is_the_entrypoint(self, tmp_path, async_backend_kind):
+        """Nothing upstream to prune, so windowed retention stays usable."""
+        calls = {"post": 0}
+
+        @interrupt(answer_name="answer")
+        def ask(prompt: str = "next?") -> StringQuestion:
+            return StringQuestion(prompt=prompt)
+
+        @node(output_name="posted")
+        def post(answer: str) -> str:
+            calls["post"] += 1
+            return f"posted:{answer}"
+
+        graph = Graph(nodes=[ask, post], name="turn", entrypoint="ask")
+        backend = Backend(async_backend_kind, tmp_path, retention_policy("windowed"))
+        try:
+            paused = await backend.run(graph, {}, workflow_id="wf")
+            assert paused.status is RunStatus.PAUSED
+            assert calls == {"post": 0}
+
+            resumed = await backend.run(graph, {"answer": "yes"}, workflow_id="wf")
+
+            assert resumed.status is RunStatus.COMPLETED
+            assert resumed.values["posted"] == "posted:yes"
+            assert calls == {"post": 1}
         finally:
             await backend.close()
 
