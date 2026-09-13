@@ -90,10 +90,11 @@ runtime = HostRuntime(
 
 It carries `open()`'s rule exactly: passing it **writes through** (an explicit
 `None` sets unlimited), and omitting it **adopts whatever the store already
-holds** — so a restart never clobbers a cap an operator tuned. Over-limit work
-is not rejected; it waits in claim order as `ADMISSION_LIMITED`. A cap that is
-not a positive int or `None` is refused by `HostRuntime(...)` itself, not
-later by the first `serving()` call.
+holds** — so a restart that names no cap never clobbers one an operator tuned,
+while a restart that names one re-asserts it, which is the point of declaring
+it in code. Over-limit work is not rejected; it waits in claim order as
+`ADMISSION_LIMITED`. A cap that is not a positive int or `None` is refused by
+`HostRuntime(...)` itself, not later by the first `serving()` call.
 
 `client` is the runtime's `RunHomeClient` and is also lazy: accessing it before
 `serving()` opens the Home for detached reads without starting a worker. If the
