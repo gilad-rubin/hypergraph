@@ -1394,7 +1394,9 @@ unnamed.as_node()
 
 ## NodeContext
 
-**NodeContext** provides framework capabilities to nodes that need them: cooperative stop signals and live streaming. Injected automatically when detected in the function signature via type hint.
+**NodeContext** provides framework capabilities to nodes that need them: cooperative stop signals, live streaming, and durable fact recording. Injected automatically when detected in the function signature via type hint.
+
+NodeContext is the one sanctioned seam for runtime-injected per-node capabilities — the things a node cannot obtain any other way because they belong to the live run. Anything a node can receive as an input belongs in its inputs instead.
 
 ### Usage
 
@@ -1472,6 +1474,44 @@ async def generate(prompt: str, ctx: NodeContext) -> str:
 ```
 
 Streaming is a side-channel. The framework doesn't accumulate chunks, manage reducers, or touch output types. `ctx.stream()` is silently skipped if `stop_requested` is `True`.
+
+#### `record(kind: str, payload: dict) -> int | None`
+
+Append one **durable** fact to this run's log and return its `seq`. Where
+`stream()` offers a preview nothing keeps, `record()` commits: the fact lands on
+the run's own gap-free sequence beside the host's `step` and `status` facts, so
+[`client.watch(ref, after=cursor)`](host.md#inspecting-and-watching) replays it in
+order — and a watcher that connects after the node finished still sees it.
+
+```python
+@node(output_name="answer")
+async def agent_turn(prompt: str, ctx: NodeContext) -> str:
+    ctx.record("tool_call", {"name": "search", "args": {"q": prompt}})
+    text = ""
+    async for delta in llm.stream(prompt):
+        text += delta
+        ctx.stream(delta)          # preview, nothing durable
+    return text
+```
+
+```python
+async for update in client.watch(run_ref):
+    if update.durable and update.kind == "tool_call":
+        print(update.payload["name"])
+```
+
+- `kind` is the node's own vocabulary — any string except the framework's own.
+  Recording `step`, `status`, `child_settled`, or any other framework kind raises
+  [`ReservedFactKindError`](host.md#errors) **before any write**, wherever the node
+  runs: a kind collision is a coding mistake, not a deployment difference.
+- `payload` must be a JSON-safe `dict`.
+- Each call is its own short transaction, so a crash loses at most the fact that
+  had not committed.
+- Returns `None` when the run has no durable log — a run with no checkpointer, or
+  any store that is not a [Run Home](host.md). That is a no-op, not a raise: a node
+  must run the same in-process as it does under a host.
+- Inside a nested graph, the fact goes to that child run's log — the same address
+  its `step` facts use.
 
 ### Injection Mechanism
 

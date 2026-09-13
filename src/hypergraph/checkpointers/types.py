@@ -334,6 +334,57 @@ class StalePauseError(PauseSettlementError):
         super().__init__(message)
 
 
+#: Fact kinds the FRAMEWORK writes to a run's durable log, and to the Batch
+#: stream a consumer usually reads beside it. A node's own ``ctx.record``
+#: refuses these, so one flat vocabulary stays unambiguous: a consumer that
+#: switches on ``kind`` can trust that ``step`` or ``child_settled`` means
+#: what the framework says it means and was never authored by user code.
+#:
+#: Adding a framework kind means adding it here — ``tests/test_host``
+#: asserts the host's real vocabularies are covered.
+RESERVED_FACT_KINDS: frozenset[str] = frozenset(
+    {
+        # run_updates (host/views.py RunUpdate)
+        "submitted",
+        "run_started",
+        "step",
+        "status",
+        "command",
+        "answer",
+        "recovery_exhausted",
+        "dead_lettered",
+        "run_reset",
+        # batch_updates (host/_batch_store.py)
+        "manifest",
+        "child_settled",
+        "child_paused",
+        "child_runnable",
+        "tolerance_tripped",
+        "child_unstarted",
+        "child_abandoned",
+    }
+)
+
+
+class ReservedFactKindError(HostError, ValueError):
+    """A node tried to record a fact under a framework-owned ``kind``.
+
+    Raised by ``NodeContext.record`` BEFORE any write, and raised wherever
+    the node runs — under a durable host or in-process with no store at
+    all — because a kind collision is a coding mistake, not a deployment
+    difference. ``kind`` is otherwise a free string the node owns.
+    """
+
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+        super().__init__(
+            f"record() kind {kind!r} is reserved by the framework.\n\n"
+            f"How to fix: pick a name the framework does not write — {kind!r} already means something "
+            "specific to every watcher of this run.\n"
+            f"  Reserved: {', '.join(sorted(RESERVED_FACT_KINDS))}"
+        )
+
+
 class AttemptStatus(Enum):
     """Status of one callable invocation inside an attempt series.
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from hypergraph.checkpointers.types import ReservedFactKindError
 from hypergraph.exceptions import HostError
 from hypergraph.host.refs import BatchRef, RunRef
 from hypergraph.host.views import BatchView, RunView
@@ -29,6 +30,10 @@ __all__ = [
     "ItemKeyError",
     "NoServingWorkerError",
     "RerunError",
+    # Raised by ``NodeContext.record`` in the runners, below the host, so
+    # it is defined beside the store it guards; this module stays the
+    # canonical import site for the host vocabulary it protects.
+    "ReservedFactKindError",
     "UnservedGraphError",
     "WorkerLockError",
     "WorkflowIdConflictError",

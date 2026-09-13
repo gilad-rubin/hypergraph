@@ -133,6 +133,7 @@ class AsyncFunctionNodeExecutor:
                 workflow_id=ctx.workflow_id,
                 item_index=ctx.item_index,
                 parent_span_id=ctx.parent_span_id,
+                checkpointer=ctx.checkpointer,
             )
 
         # Call the function (with cache observer installed for hypercache telemetry)

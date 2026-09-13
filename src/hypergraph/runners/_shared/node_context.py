@@ -9,9 +9,12 @@ existing executor import site keeps one import.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners.context import NodeContext as NodeContext
+
+if TYPE_CHECKING:
+    from hypergraph.checkpointers.base import Checkpointer
 
 
 def _noop_emit(event: Any) -> None:
@@ -27,6 +30,7 @@ def build_node_context(
     workflow_id: str | None = None,
     item_index: int | None = None,
     parent_span_id: str | None = None,
+    checkpointer: Checkpointer | None = None,
 ) -> NodeContext:
     """Build a NodeContext for executor injection.
 
@@ -34,6 +38,10 @@ def build_node_context(
     Falls back to an unset signal if none is active. The correlation
     fields (graph_name, workflow_id, item_index, parent_span_id) are
     stamped onto every ``StreamingChunkEvent`` the node emits.
+
+    ``checkpointer`` is ``ExecutionContext.checkpointer`` — the active
+    persistence for THIS run, already ``None`` unless a checkpointer and a
+    workflow_id are both present — and is what ``record`` writes through.
     """
     from hypergraph.runners._shared.stop import StopSignal, get_stop_signal
 
@@ -47,4 +55,5 @@ def build_node_context(
         workflow_id=workflow_id,
         item_index=item_index,
         parent_span_id=parent_span_id,
+        checkpointer=checkpointer,
     )

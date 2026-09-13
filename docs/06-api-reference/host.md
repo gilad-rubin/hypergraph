@@ -944,6 +944,32 @@ terminates immediately with no updates — matching `get()`'s honest `None`
 — instead of polling forever. `get_sync()` is the synchronous mirror of
 `get()`.
 
+### What the kinds are
+
+`update.kind` names the fact. The framework's own vocabulary is closed —
+`submitted`, `run_started`, `step`, `status`, `command`, `answer`,
+`recovery_exhausted`, `dead_lettered`, `run_reset` — and everything else on the
+stream was written by a **node**, through
+[`ctx.record(kind, payload)`](nodes.md#nodecontext):
+
+```python
+@node(output_name="answer")
+async def agent_turn(prompt: str, ctx: NodeContext) -> str:
+    ctx.record("tool_call", {"name": "search", "args": {"q": prompt}})
+    ...
+
+async for update in client.watch(run_ref):
+    if update.durable and update.kind == "tool_call":
+        show_tool_call(update.payload)
+```
+
+Node facts share the run's one gap-free sequence with host facts, so they
+replay in the order they happened, they arrive for a watcher that connects
+after the node finished, and each one commits on its own. A node may not
+borrow a framework kind — `ctx.record("step", …)` raises
+[`ReservedFactKindError`](#errors) — so a consumer switching on `kind` can
+trust that `step` means what this page says it means.
+
 ### Waiting for work to stop moving
 
 `watch(ref, until=...)` chooses which arrival ends the stream:
@@ -1934,6 +1960,7 @@ brake counts **progressless re-adoptions**:
 | `AnswerRejectedError` | `client.answer()` named no/unknown occurrence, a run that is not paused, or a value failing `answer_schema` |
 | `PauseAlreadySettledError` | `client.answer()` re-answered a settled occurrence |
 | `StalePauseError` | `client.answer()` named an occurrence a later pause superseded |
+| `ReservedFactKindError` | a node's `ctx.record(kind, …)` borrowed a framework-owned `kind` (`step`, `status`, `child_settled`, …); raised before any write, and raised wherever the node runs |
 
 The three pause refusals share the base class `PauseSettlementError` and live
 with the checkpointer that raises them

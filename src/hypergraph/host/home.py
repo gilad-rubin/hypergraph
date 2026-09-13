@@ -1049,6 +1049,37 @@ class RunHome(SqliteCheckpointer):
             (run_id, kind, json.dumps(payload), _now_iso(), run_id),
         )
 
+    def append_run_fact_sync(self, run_id: str, kind: str, payload: dict[str, Any]) -> int:
+        """Append one NODE-authored fact to this run's log; return its ``seq``.
+
+        The seam behind ``NodeContext.record``, and the only caller-reachable
+        entry point to ``run_updates``. It shares the framework's gap-free
+        allocation — one ``INSERT…SELECT`` — so a node's fact and a host
+        fact land on ONE per-Run sequence that ``watch(after=cursor)``
+        replays in order.
+
+        It does NOT go through ``_after_run_mutation_sync``: that hook reads
+        the framework's own vocabulary (committed progress resets the
+        recovery brake, a terminal status settles a Batch child), and a
+        node's fact is none of those things. ``ctx.record`` observes the
+        run; it never moves it.
+
+        Its own short write transaction, on this THREAD's connection, so a
+        node that records ten times commits ten facts: a crash loses at most
+        the one that had not committed.
+        """
+        with self._sync_lock:
+            db = self._sync_db()
+            try:
+                cursor = db.execute(_INSERT_RUN_UPDATE, (run_id, kind, json.dumps(payload), _now_iso(), run_id))
+                row_id = cursor.lastrowid
+                db.commit()
+            except BaseException:
+                self._rollback_sync(db)
+                raise
+            seq = db.execute("SELECT seq FROM run_updates WHERE rowid = ?", (row_id,)).fetchone()
+        return int(seq[0])
+
     def _reset_recovery_attempts_sync(self, db: Any, run_id: str) -> None:
         """Reset the recovery brake on NEW committed progress (same transaction)."""
         db.execute(

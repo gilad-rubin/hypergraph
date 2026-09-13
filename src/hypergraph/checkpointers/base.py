@@ -690,6 +690,20 @@ class Checkpointer(ABC):
         """
         raise self._attempt_ledger_unsupported()
 
+    # === Node-authored durable facts ===
+
+    def append_run_fact_sync(self, run_id: str, kind: str, payload: dict[str, Any]) -> int | None:
+        """Append one node-authored fact to this run's durable log.
+
+        The seam behind ``NodeContext.record``. Returns the fact's gap-free
+        ``seq``, or ``None`` when this store keeps no run log — only a Run
+        Home does, so a plain checkpointer no-ops here and the node's own
+        code runs unchanged. Deliberately synchronous: a node body calls
+        ``ctx.record(...)`` the same way whether it is a ``def`` or an
+        ``async def``, so both runner families reach one implementation.
+        """
+        return None
+
     # === Lifecycle ===
 
     async def initialize(self) -> None:  # noqa: B027
