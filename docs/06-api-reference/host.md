@@ -461,8 +461,13 @@ This is the "make sure exactly one of these is running" ask, and it replaces
 deriving ids from the subject plus an ordinal and scanning the run list
 first. The key is looked up inside the same acceptance transaction as every
 other identity decision, and a partial unique index over the live submission
-states backs it — so two doors minting ids in different series cannot both be
-live for one subject, and no caller needs a pre-submit scan.
+states backs it — so two doors **submitting** (or rerunning) under ids from
+different series cannot both be live for one subject, and no caller needs a
+pre-submit scan. [`host.fork()`](#fork-migrate-to-new-code) is outside that
+rule by design: a fork migrates existing work to a different Definition
+identity rather than submitting new work about the subject, so the forked run
+claims no key — claiming one would make every fork collide with the very run
+it is migrating.
 
 - **a live run holds the key** → nothing is written and that run's receipt
   comes back with `duplicate=True`, exactly like `workflow_id` dedup;
