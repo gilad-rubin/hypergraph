@@ -19,7 +19,12 @@ Parameters:
 
 - `identity: str` — public entity-key column.
 - `store: TableStore` — opened lazily on first use.
-- `runner` — execution policy. Defaults to `SyncRunner()`.
+- `runner` — execution policy. Defaults to `SyncRunner()`. A runner with no
+  `checkpointer` records nothing when you drive the table yourself, but
+  inherits the Run Home when the table is derived inside a durable Run, so
+  the recipe's per-node cost lands under the Host Run that drove it (see
+  [`node_timings`](../06-api-reference/host.md#what-did-the-work-cost)). Pass
+  `checkpointer=` to decide that yourself; the table's own runner always wins.
 - `page_max_concurrency: int` — maximum independent child-page graphs in
   flight for one parent mutation. Defaults to `16`; synchronous runners
   preserve the same results but execute child pages serially.

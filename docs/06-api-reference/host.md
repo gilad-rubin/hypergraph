@@ -1141,10 +1141,43 @@ The selection is identical either way; only the fold narrows. The two
 answers differ by the entire fan-out and neither estimates the other, so a
 report quoting one should say which it read.
 
-Inner runs driven by a runner the *product* owns — a `HyperTable`'s
-derivation runner, for instance — are recorded only if that runner has a
-checkpointer; see [issue #386](https://github.com/gilad-rubin/hypergraph/issues/386)
-for the durable-inner-step design.
+That walk reaches a `HyperTable` fan-out too. A table drives its derivation
+recipe with its **own** runner, so the checkpointer a nested `GraphNode`
+inherits for free never reached the recipe, and the widest, most expensive
+part of an ingestion left no durable cost behind. Inside a durable Run a
+recipe runner that records nowhere now inherits the Run Home the outer graph
+records to, and each page's recipe run lands under the Host Run that drove
+it — same `root_workflow_id`, same `item_key`:
+
+```python
+timings = await read.node_timings(batch=receipt.batch_ref)
+pages = [step for step in timings.steps if step.node_name == "render_page"]
+pages[0].root_workflow_id        # the Host Run — an inner run has no submission of its own
+```
+
+Two boundaries hold. A table whose runner already carries a `checkpointer=`
+keeps it: the product said where its recipe runs belong. And a table driven
+**outside** a durable Run — a notebook calling `insert`/`sync`/`rederive`
+itself — records nothing, exactly as before; inheritance belongs to the Run,
+not to the table. The cost is real write volume: a page node is a step row,
+and the Run Home commits every mutation synchronously, so a wide sweep buys
+its per-page cost with per-page rows. Recipe runs still carry **generated**
+workflow ids rather than ids derived from the row being built; addressing
+them is the remaining half of
+[issue #386](https://github.com/gilad-rubin/hypergraph/issues/386).
+
+**Is this enough to replace a stage-timing recorder?** For cost, yes: per
+node, per Run, per item, `duration_ms`/`cached`/`error`, durable and readable
+by a process that never loaded the graph — including the fan-out stages an
+in-process recorder was usually wrapped around to catch. The one fact it
+does not carry is *live*: a step row is committed when a step **finishes**,
+so nothing here says which node an item is on right now. Stall detection is
+[`watch_submissions`](#watching-submissions-live-hypergraphhostwatch), and it
+answers at item granularity — what is running, how long it has been running,
+and which items are stragglers past `slow_multiple` × median — never a
+per-node guess. A recorder that only accumulated stage durations is
+replaceable; one that also alerted on a *stage* running long keeps that half
+here, one level coarser.
 
 ### Did anything retry?
 

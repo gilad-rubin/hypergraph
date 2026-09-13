@@ -1329,20 +1329,35 @@ class Host:
             # the explicit id and the runs row records forked_from lineage,
             # seeded from the source's recorded history.
             run_kwargs["fork_from"] = row["forked_from"]
-        if asyncio.iscoroutinefunction(run_fn):
-            await run_fn(definition.graph, inputs, **run_kwargs)
-        else:
-            cancellation, cancellation_token = self._home._register_sync_wait_cancellation()
-            try:
-                await asyncio.to_thread(run_fn, definition.graph, inputs, **run_kwargs)
-            except asyncio.CancelledError:
-                # ``to_thread`` cancellation cannot kill the worker thread.
-                # Fence only an exclusion waiter; ordinary sync-node crash
-                # semantics remain at-least-once and are re-adopted.
-                cancellation.set()
-                raise
-            finally:
-                self._home._clear_sync_wait_cancellation(cancellation_token)
+        from hypergraph.materialization._hypertable import pop_host_recorder, push_host_recorder
+
+        # Publish the Run Home for the length of this execution. A nested
+        # GraphNode inherits the executing runner's checkpointer for free; a
+        # HyperTable's derivation recipe does not, because the table drives
+        # it with its own runner — so the widest part of an ingestion used to
+        # leave no durable cost behind. This is the seam it reads; the
+        # context is this task's, and ``asyncio.to_thread`` copies it, so the
+        # sync path inherits it too. Set here rather than in
+        # ``work_forever`` so it covers exactly one submission and nothing
+        # else the worker does.
+        recorder_token = push_host_recorder(self._home)
+        try:
+            if asyncio.iscoroutinefunction(run_fn):
+                await run_fn(definition.graph, inputs, **run_kwargs)
+            else:
+                cancellation, cancellation_token = self._home._register_sync_wait_cancellation()
+                try:
+                    await asyncio.to_thread(run_fn, definition.graph, inputs, **run_kwargs)
+                except asyncio.CancelledError:
+                    # ``to_thread`` cancellation cannot kill the worker thread.
+                    # Fence only an exclusion waiter; ordinary sync-node crash
+                    # semantics remain at-least-once and are re-adopted.
+                    cancellation.set()
+                    raise
+                finally:
+                    self._home._clear_sync_wait_cancellation(cancellation_token)
+        finally:
+            pop_host_recorder(recorder_token)
         # Release the claim only after the run came back: a cancelled or
         # crashed execution leaves the submission claimed for the restart
         # scan. The release settles THIS claim (`row["claim_seq"]`) or
