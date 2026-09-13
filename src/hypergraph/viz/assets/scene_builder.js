@@ -414,7 +414,9 @@
     for (var p = 0; p < ir.edges.length; p++) {
       var irEdge = ir.edges[p];
       var baseSources = [irEdge.source];
+      var sourceRewritten = false;
       if (expansionState[irEdge.source] && irEdge.source_when_expanded) {
+        sourceRewritten = true;
         baseSources = Array.isArray(irEdge.source_when_expanded)
           ? irEdge.source_when_expanded.slice()
           : [irEdge.source_when_expanded];
@@ -451,8 +453,17 @@
       // (src,tgt) merges them). Merged-output mode should still render one
       // visible edge per node pair; separateOutputs mode fans out through
       // one DATA node per value.
+      //
+      // Once the source rewrite has fired, those DATA nodes are the INNER
+      // producer's, keyed by ITS output name — so a container that renamed the
+      // value at its boundary must emit the producer-local names. The length
+      // guard mirrors the Python twin: a payload whose translation does not
+      // line up falls back to value_names in both languages rather than
+      // diverging.
       var valueNames = irEdge.value_names || [];
-      var valuesToEmit = (separateOutputs && irEdge.edge_type === 'data' && valueNames.length > 0) ? valueNames : [null];
+      var localNames = irEdge.value_names_when_expanded || [];
+      var emitNames = (sourceRewritten && localNames.length === valueNames.length) ? localNames : valueNames;
+      var valuesToEmit = (separateOutputs && irEdge.edge_type === 'data' && valueNames.length > 0) ? emitNames : [null];
 
       for (var ti = 0; ti < targets.length; ti++) {
         var tgt = targets[ti];

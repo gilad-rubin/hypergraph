@@ -130,6 +130,18 @@ The IR carries all expansion-rewriting information eagerly:
   and each such pill is flagged ``IRExternalInput.map_fed`` (styled distinctly,
   not as a free-floating external input). Falls back to the container entrypoint
   when the mapped item has no matching field (e.g. ``list[str]``).
+- ``IREdge.value_names_when_expanded`` names those same values the way the
+  INNER producer emits them, index-aligned with ``value_names``. Once the
+  source rewrite fires, the DATA pill in ``separate_outputs`` mode belongs to
+  the node the rewrite landed on and is keyed by THAT node's output name — a
+  container renaming an output at its boundary
+  (``with_outputs(item_out="generated")``) would otherwise compose
+  ``data_<inner producer>_generated``, an id nothing emits, and the edge ships
+  hidden with a dangling source while the consumer loses its only incoming
+  edge. Both twins consume the field ONLY when its length matches
+  ``value_names``, so a malformed payload degrades to ``value_names``
+  identically in Python and JS instead of diverging. Optional, so no schema
+  bump: an old scene builder that ignores it draws the pre-fix picture.
 - A container output NO descendant produces (a mounted HyperTable's receipt:
   the ``MaterializationNode``'s own output is the whole table's completion)
   gets a synthesized ``node_type == "OUTPUT"`` anchor pill INSIDE the
@@ -293,6 +305,7 @@ Generates a scrollable gallery of all notebook visualizations with DialKit contr
 | --- | --- | --- |
 | Edge points to container when expanded | `target_when_expanded` not populated in IR | `renderer/ir_builder.py` |
 | Dagre "setting 'rank'" crash, blank canvas | edge incident to an *expanded* container (dagre compound parent) — usually a renamed boundary param (`map_over`/`rename_inputs`/`rename_outputs`) not translated via the GRAPH node's `input_name_map`/`output_name_map` | `renderer/ir_builder.py` + `renderer/scope.py:get_deepest_consumers` |
+| Consumer loses its incoming edge when a container expands in separate-outputs mode | renamed boundary OUTPUT: the DATA id was composed from the container-level name instead of `IREdge.value_names_when_expanded` | `renderer/ir_builder.py` + both `scene_builder` twins |
 | Input appears outside expanded container | `ownerContainer` not derived from `deepest_owner` | `scene_builder.py` (Python + JS) |
 | Edge starts/ends with visible gap | wrong node-type offset | `assets/viz_runtime.js` (`NODE_TYPE_OFFSETS`) |
 | Incoming edges overlap unexpectedly | dagre route or endpoint padding needs inspection | `assets/viz_layout.js` |
