@@ -11,7 +11,7 @@ import contextvars
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal, cast
+from typing import Any, Generic, Literal, TypeVar, cast
 
 from hypergraph.runners._shared._inspect_serialization import CapturedMapping
 from hypergraph.runners._shared.results import FailureEvidence, MapResult, RunResult
@@ -158,7 +158,77 @@ InspectionSubscriber = Callable[[RunInspection, bool], None]
 MapInspectionSubscriber = Callable[[MapInspection, bool], None]
 
 
-class InspectionSession:
+ArtifactT = TypeVar("ArtifactT", RunInspection, MapInspection)
+
+
+class _ArtifactPublisher(Generic[ArtifactT]):
+    """Thread-safe latest-artifact publication shared by both session kinds."""
+
+    def __init__(self, artifact: ArtifactT) -> None:
+        self._lock = threading.RLock()
+        self._artifact = artifact
+        self._subscribers: dict[int, Callable[[ArtifactT, bool], None]] = {}
+        self._next_subscriber = 0
+
+    def snapshot(self) -> ArtifactT:
+        """Return the latest immutable artifact."""
+        with self._lock:
+            return self._artifact
+
+    def subscribe(self, callback: Callable[[ArtifactT, bool], None]) -> Callable[[], None]:
+        """Subscribe to latest-artifact publications and return an unsubscriber."""
+        with self._lock:
+            return self._subscribe_locked(callback)
+
+    def subscribe_with_snapshot(
+        self,
+        callback: Callable[[ArtifactT, bool], None],
+    ) -> tuple[ArtifactT, Callable[[], None] | None]:
+        """Atomically subscribe and return the snapshot covered by that subscription."""
+        with self._lock:
+            artifact = self._artifact
+            if artifact.terminal:
+                return artifact, None
+            return artifact, self._subscribe_locked(callback)
+
+    def _subscribe_locked(self, callback: Callable[[ArtifactT, bool], None]) -> Callable[[], None]:
+        key = self._next_subscriber
+        self._next_subscriber += 1
+        self._subscribers[key] = callback
+
+        def unsubscribe() -> None:
+            with self._lock:
+                self._subscribers.pop(key, None)
+
+        return unsubscribe
+
+    def _replace_artifact_locked(self, **changes: Any) -> None:
+        self._artifact = replace(
+            self._artifact,
+            revision=self._artifact.revision + 1,
+            **changes,
+        )
+
+    def _publication_locked(
+        self,
+    ) -> tuple[ArtifactT, tuple[Callable[[ArtifactT, bool], None], ...]]:
+        return self._artifact, tuple(self._subscribers.values())
+
+    @staticmethod
+    def _notify(
+        subscribers: tuple[Callable[[ArtifactT, bool], None], ...],
+        artifact: ArtifactT,
+        *,
+        urgent: bool,
+    ) -> None:
+        # Inspection presentation is observational: a broken subscriber must
+        # never change workflow behavior.
+        for callback in subscribers:
+            with contextlib.suppress(Exception):
+                callback(artifact, urgent)
+
+
+class InspectionSession(_ArtifactPublisher[RunInspection]):
     """Thread-safe source of immutable inspection snapshots for one top-level run."""
 
     def __init__(
@@ -169,22 +239,21 @@ class InspectionSession:
         item_index: int | None,
         runner_kind: RunnerKind | None = None,
     ) -> None:
-        self._lock = threading.RLock()
-        self._artifact = RunInspection(
-            run_id="pending",
-            graph_name=graph_name,
-            workflow_id=workflow_id,
-            item_index=item_index,
-            status="running",
-            nodes=(),
-            failures=(),
-            total_duration_ms=0.0,
-            captured=True,
-            terminal=False,
-            _runner_kind=runner_kind,
+        super().__init__(
+            RunInspection(
+                run_id="pending",
+                graph_name=graph_name,
+                workflow_id=workflow_id,
+                item_index=item_index,
+                status="running",
+                nodes=(),
+                failures=(),
+                total_duration_ms=0.0,
+                captured=True,
+                terminal=False,
+                _runner_kind=runner_kind,
+            )
         )
-        self._subscribers: dict[int, InspectionSubscriber] = {}
-        self._next_subscriber = 0
         self._next_sequence = 0
         self._failure_span_ids: set[str] = set()
         self._failure_key_by_span: dict[str, str] = {}
@@ -450,48 +519,6 @@ class InspectionSession:
             self._next_failure_key += 1
         return tuple(keys)
 
-    def snapshot(self) -> RunInspection:
-        """Return the latest immutable artifact."""
-        with self._lock:
-            return self._artifact
-
-    def subscribe(self, callback: InspectionSubscriber) -> Callable[[], None]:
-        """Subscribe to latest-artifact publications and return an unsubscriber."""
-        with self._lock:
-            key = self._next_subscriber
-            self._next_subscriber += 1
-            self._subscribers[key] = callback
-
-        def unsubscribe() -> None:
-            with self._lock:
-                self._subscribers.pop(key, None)
-
-        return unsubscribe
-
-    def subscribe_with_snapshot(
-        self,
-        callback: InspectionSubscriber,
-    ) -> tuple[RunInspection, Callable[[], None] | None]:
-        """Atomically subscribe and return the snapshot covered by that subscription."""
-        with self._lock:
-            artifact = self._artifact
-            if artifact.terminal:
-                return artifact, None
-            key = self._next_subscriber
-            self._next_subscriber += 1
-            self._subscribers[key] = callback
-
-        def unsubscribe() -> None:
-            with self._lock:
-                self._subscribers.pop(key, None)
-
-        return artifact, unsubscribe
-
-    def _publication_locked(
-        self,
-    ) -> tuple[RunInspection, tuple[InspectionSubscriber, ...]]:
-        return self._artifact, tuple(self._subscribers.values())
-
     def _replace_node_locked(self, span_id: str, **changes: Any) -> None:
         nodes = list(self._artifact.nodes)
         for index in range(len(nodes) - 1, -1, -1):
@@ -501,28 +528,8 @@ class InspectionSession:
                 return
         raise RuntimeError(f"No inspected node execution has span_id {span_id!r}.")
 
-    def _replace_artifact_locked(self, **changes: Any) -> None:
-        self._artifact = replace(
-            self._artifact,
-            revision=self._artifact.revision + 1,
-            **changes,
-        )
 
-    @staticmethod
-    def _notify(
-        subscribers: tuple[InspectionSubscriber, ...],
-        artifact: RunInspection,
-        *,
-        urgent: bool,
-    ) -> None:
-        # Inspection presentation is observational: a broken subscriber must
-        # never change workflow behavior.
-        for callback in subscribers:
-            with contextlib.suppress(Exception):
-                callback(artifact, urgent)
-
-
-class MapInspectionSession:
+class MapInspectionSession(_ArtifactPublisher[MapInspection]):
     """Thread-safe aggregation of real child runs into one batch artifact."""
 
     def __init__(
@@ -535,24 +542,23 @@ class MapInspectionSession:
         map_mode: str,
         runner_kind: RunnerKind | None = None,
     ) -> None:
-        self._lock = threading.RLock()
-        self._artifact = MapInspection(
-            run_id="pending",
-            graph_name=graph_name,
-            workflow_id=workflow_id,
-            status="running",
-            map_over=map_over,
-            map_mode=map_mode,
-            requested_count=requested_count,
-            items=(),
-            unstarted_item_indexes=(),
-            total_duration_ms=0.0,
-            captured=True,
-            terminal=False,
-            _runner_kind=runner_kind,
+        super().__init__(
+            MapInspection(
+                run_id="pending",
+                graph_name=graph_name,
+                workflow_id=workflow_id,
+                status="running",
+                map_over=map_over,
+                map_mode=map_mode,
+                requested_count=requested_count,
+                items=(),
+                unstarted_item_indexes=(),
+                total_duration_ms=0.0,
+                captured=True,
+                terminal=False,
+                _runner_kind=runner_kind,
+            )
         )
-        self._subscribers: dict[int, MapInspectionSubscriber] = {}
-        self._next_subscriber = 0
 
     def bind_run(self, run_id: str | None) -> None:
         """Bind the parent batch run ID, including ``None`` for an empty map."""
@@ -683,43 +689,6 @@ class MapInspectionSession:
         self._notify(subscribers, artifact, urgent=True)
         return artifact
 
-    def snapshot(self) -> MapInspection:
-        """Return the latest immutable batch artifact."""
-        with self._lock:
-            return self._artifact
-
-    def subscribe(self, callback: MapInspectionSubscriber) -> Callable[[], None]:
-        """Subscribe to batch publications and return an unsubscriber."""
-        with self._lock:
-            key = self._next_subscriber
-            self._next_subscriber += 1
-            self._subscribers[key] = callback
-
-        def unsubscribe() -> None:
-            with self._lock:
-                self._subscribers.pop(key, None)
-
-        return unsubscribe
-
-    def subscribe_with_snapshot(
-        self,
-        callback: MapInspectionSubscriber,
-    ) -> tuple[MapInspection, Callable[[], None] | None]:
-        """Atomically subscribe and return the snapshot covered by that subscription."""
-        with self._lock:
-            artifact = self._artifact
-            if artifact.terminal:
-                return artifact, None
-            key = self._next_subscriber
-            self._next_subscriber += 1
-            self._subscribers[key] = callback
-
-        def unsubscribe() -> None:
-            with self._lock:
-                self._subscribers.pop(key, None)
-
-        return artifact, unsubscribe
-
     def _publish_child(
         self,
         *,
@@ -758,29 +727,6 @@ class MapInspectionSession:
         self._replace_artifact_locked(
             items=tuple(replacement if item.item_index == item_index else item for item in self._artifact.items),
         )
-
-    def _replace_artifact_locked(self, **changes: Any) -> None:
-        self._artifact = replace(
-            self._artifact,
-            revision=self._artifact.revision + 1,
-            **changes,
-        )
-
-    def _publication_locked(
-        self,
-    ) -> tuple[MapInspection, tuple[MapInspectionSubscriber, ...]]:
-        return self._artifact, tuple(self._subscribers.values())
-
-    @staticmethod
-    def _notify(
-        subscribers: tuple[MapInspectionSubscriber, ...],
-        artifact: MapInspection,
-        *,
-        urgent: bool,
-    ) -> None:
-        for callback in subscribers:
-            with contextlib.suppress(Exception):
-                callback(artifact, urgent)
 
 
 @dataclass(frozen=True, slots=True)
