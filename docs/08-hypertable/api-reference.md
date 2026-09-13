@@ -128,8 +128,9 @@ child rows rebuilt — rows physically missing, or stored in error under
 
 `PARTIAL` is reported under `on_error="store"` when one node failed and the
 other derived columns were produced anyway: those columns are stored, the
-failed ones are null, and the row records why (see `partial()`). A failure the
-runner cannot blame on a node — a missing input, a plan-level error — and a
+failed ones are null, and the row records why (see `partial()`, which also
+names the two derivation paths that still write the whole-row shape). A failure
+the runner cannot blame on a node — a missing input, a plan-level error — and a
 failure that leaves no derived column standing both stay `ERROR`, so a row
 never claims column granularity the run cannot support.
 
@@ -154,7 +155,8 @@ class RowReceipt:
     def failed(self) -> bool: ...
 ```
 
-`pause` is present only for `WAITING`; `error` is present only for `ERROR`.
+`pause` is present only for `WAITING`; `error` is present for `ERROR` and for
+`PARTIAL`, where it carries the first failure the run could attribute.
 The three boolean properties deliberately match `RunResult` serving code.
 
 ### `MaterializationReceipt`
@@ -357,19 +359,35 @@ class ColumnChange:
 class ChangeReason(Enum):
     NODE_ERROR = "node_error"
     UPSTREAM_ERROR = "upstream_error"
+    NOT_RUN = "not_run"
 ```
 
 Rows stored with `on_error="store"` that kept some derived columns and nulled
-the rest. One `ColumnChange` per nulled column: `NODE_ERROR` when the column's
-own producer raised (`error` carries its text), `UPSTREAM_ERROR` when a node it
-depends on raised first, so its producer never ran.
+the rest. One `ColumnChange` per nulled column, and the reason is the true one:
+
+- `NODE_ERROR` — this column's own producer raised; `error` carries its text.
+- `UPSTREAM_ERROR` — a failed node reaches this producer through the graph, so
+  its inputs never arrived.
+- `NOT_RUN` — nothing on this column's own path failed; the run ended before
+  its producer was scheduled. Retrying may well derive it.
+
+A column whose producer ran and returned `None` gets no entry at all: that is a
+value, not a failure, and it is stored with its provenance like any other.
 
 A partial row stays queryable and counts as stale in `status()`, never fresh.
 The next `sync()` re-derives exactly the null columns: the surviving columns
 keep their provenance stamps, so the column-scoped reconcile path reuses them
 and the expensive earlier stages are not paid twice. A retry that fails again
-keeps the columns the first attempt saved. Child rows are not fanned out from
-a partial row — the heal that completes it writes them.
+keeps the columns the first attempt saved.
+
+A partial row does not touch its child rows: the fan-out is not run, and child
+rows written by an earlier generation are left exactly as they are — neither
+re-derived nor deleted, so a child table can read fresh under a parent that is
+not. The heal that completes the parent converges them.
+
+Two failures under `on_error="store"` still write the whole-row `ERROR` shape
+rather than a partial row: one raised by a routed (gate-selected) branch, and
+one raised while deriving the columns that follow an answered interrupt.
 
 ### `count() -> int`
 

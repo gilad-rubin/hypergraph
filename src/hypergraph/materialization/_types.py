@@ -29,12 +29,19 @@ class RowStatus(Enum):
 
 
 class ChangeReason(Enum):
-    """Why one column of a partially derived row holds no value."""
+    """Why one column of a partially derived row holds no value.
+
+    A column whose producer ran and returned ``None`` is not here: that is a
+    value, not a failure, and it is stored with its provenance like any other.
+    """
 
     NODE_ERROR = "node_error"
     """The node that produces this column raised."""
     UPSTREAM_ERROR = "upstream_error"
-    """A node this column depends on raised, so its producer never ran."""
+    """A failed node reaches this column's producer, so its inputs never arrived."""
+    NOT_RUN = "not_run"
+    """Nothing failed on this column's own path — the failure ended the run
+    before its producer was scheduled. Retrying may well derive it."""
 
 
 @dataclass(frozen=True)
@@ -42,8 +49,8 @@ class ColumnChange:
     """One derived column nulled by a failure, and what is known about it.
 
     ``node`` always names the column's own producer. ``error`` carries the
-    raised exception's text for ``NODE_ERROR`` and is ``None`` for
-    ``UPSTREAM_ERROR``, where this producer never ran.
+    raised exception's text for ``NODE_ERROR`` and is ``None`` for the two
+    reasons where this producer never ran.
     """
 
     column: str

@@ -260,7 +260,7 @@ def test_hypertable_docs_pin_graph_backed_receipt_contract() -> None:
     assert tuple(PartialRow.__dataclass_fields__) == ("id", "changes", "row")
     assert tuple(ColumnChange.__dataclass_fields__) == ("column", "reason", "node", "error")
     assert {status.value for status in RowStatus} == {"complete", "waiting", "error", "partial"}
-    assert {reason.value for reason in ChangeReason} == {"node_error", "upstream_error"}
+    assert {reason.value for reason in ChangeReason} == {"node_error", "upstream_error", "not_run"}
     assert {outcome.value for outcome in WriteOutcome} == {"inserted", "updated", "skipped", "healed"}
     assert LanceDBStore.__module__ == "hypergraph.materialization._lancedb_store"
 

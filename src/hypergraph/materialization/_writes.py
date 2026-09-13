@@ -1035,15 +1035,28 @@ class WritePlanner:
                 return failed_name
         return None
 
+    def _downstream_of(self, failures: Mapping[str, str]) -> set[str]:
+        """Node names the failed nodes can reach — the ones whose inputs the
+        failure genuinely destroyed.
+
+        A failure inside a mounted graph is reported under its path
+        (``embed_stage/embed``); the graph knows only the node that owns it."""
+        roots = {name.split("/", 1)[0] for name in failures} & set(self._graph.nodes)
+        return self._node_names_downstream(roots) if roots else set()
+
     def _partial_columns(
         self,
         values: Mapping[str, Any],
         failures: Mapping[str, str],
         kept: Mapping[str, Any],
+        downstream: set[str],
     ) -> tuple[dict[str, Any], tuple[ColumnChange, ...]]:
         """Split this table's derived columns into what survives a failed run and
-        what it nulls, with one change entry per nulled column.
+        what it nulls, with one change entry per nulled column and the true
+        reason it holds no value.
 
+        A column the run produced is kept as it came — a node that ran and
+        returned ``None`` returned a value, not a failure, so it gets no entry.
         A column the run never reached — its node comes after the failure and is
         not the one that failed — keeps whatever ``kept`` already stored for it,
         so a second failure never costs a column the first one saved."""
@@ -1052,14 +1065,20 @@ class WritePlanner:
         for column in self._provenance.derived_columns():
             producers = self._provenance.column_producers(column)
             blamed = next((name for name in (self._blamed(producer, failures) for producer in producers) if name is not None), None)
-            if column.name in values and not self._provenance.column_is_null(values[column.name]):
+            if column.name in values:
                 outputs[column.name] = values[column.name]
-            elif blamed is None and not self._provenance.column_is_null(kept.get(column.name)):
-                outputs[column.name] = kept[column.name]
             elif blamed is not None:
                 changes.append(ColumnChange(column.name, ChangeReason.NODE_ERROR, blamed, failures[blamed]))
+            elif not self._provenance.column_is_null(kept.get(column.name)):
+                outputs[column.name] = kept[column.name]
             else:
-                changes.append(ColumnChange(column.name, ChangeReason.UPSTREAM_ERROR, getattr(producers[0], "name", column.name)))
+                node = getattr(producers[0], "name", column.name)
+                reason = (
+                    ChangeReason.UPSTREAM_ERROR
+                    if any(getattr(producer, "name", None) in downstream for producer in producers)
+                    else ChangeReason.NOT_RUN
+                )
+                changes.append(ColumnChange(column.name, reason, node))
         return outputs, tuple(changes)
 
     def _degraded_parent(
@@ -1080,9 +1099,14 @@ class WritePlanner:
         would be a claim this run cannot support: a failure the runner could
         not attribute to a node, or one that left no derived column standing."""
         kept_values = self._provenance.stored_values(kept) if kept is not None else {}
-        outputs, changes = self._partial_columns(degradation.values, degradation.failures, kept_values)
+        outputs, changes = self._partial_columns(
+            degradation.values,
+            degradation.failures,
+            kept_values,
+            self._downstream_of(degradation.failures),
+        )
         error = next(iter(degradation.failures.values()), None) or f"{type(degradation.error).__name__}: {degradation.error}"
-        if not changes or not outputs:
+        if not degradation.failures or not changes or not outputs:
             failure = degradation.error if degradation.error is not None else RuntimeError(error)
             self._error_parent(item, source_inputs, write_gen, failure, existing)
             return RowReceipt(str(item[self._identity]), outcome, RowStatus.ERROR, error=error)

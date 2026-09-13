@@ -41,6 +41,27 @@ def embed(summary: str) -> str:
     return f"vec({summary})"
 
 
+# A branch the failure cannot reach, and a node that legitimately returns None.
+
+
+@node(output_name="aside")
+def aside(extracted: str) -> str:
+    _record("aside")
+    return f"aside({extracted})"
+
+
+@node(output_name="maybe")
+def maybe(extracted: str) -> str | None:
+    _record("maybe")
+    return None
+
+
+@node(output_name="tail")
+def tail(maybe: str | None) -> str:
+    _record("tail")
+    return f"tail({maybe})"
+
+
 @pytest.fixture(autouse=True)
 def _reset() -> None:
     calls.clear()
@@ -99,6 +120,51 @@ def test_a_column_the_failure_blocked_reads_as_an_upstream_error() -> None:
     assert by_column["embedding"].node == "embed"
     assert by_column["embedding"].error is None
     assert calls.get("embed") is None
+
+
+def test_a_column_the_failure_cannot_reach_reads_as_not_run() -> None:
+    """`aside` does not depend on the failed node — the run simply ended first."""
+    store = MemoryStore()
+    table = Graph([extract, summarize, embed, aside]).as_table(
+        identity="doc_id",
+        store=store,
+        on_error="store",
+        runner=SyncRunner(),
+    )
+    failing.add("summarize")
+
+    table.insert(doc_id="d1", text="hello world")
+
+    assert calls.get("aside") is None, "the superstep ended before aside was scheduled"
+    (partial,) = table.partial()
+    by_column = {change.column: change for change in partial.changes}
+    assert by_column["summary"].reason is ChangeReason.NODE_ERROR
+    assert by_column["embedding"].reason is ChangeReason.UPSTREAM_ERROR
+    assert by_column["aside"].reason is ChangeReason.NOT_RUN
+    assert by_column["aside"].node == "aside"
+    assert by_column["aside"].error is None
+    assert partial.row["extracted"] == "HELLO WORLD"
+
+
+def test_a_node_that_returned_none_is_a_value_not_a_change() -> None:
+    """`maybe` ran and returned None. Nothing failed on it, so nothing is recorded."""
+    store = MemoryStore()
+    table = Graph([extract, maybe, tail]).as_table(
+        identity="doc_id",
+        store=store,
+        on_error="store",
+        runner=SyncRunner(),
+    )
+    failing.add("tail")
+
+    table.insert(doc_id="d1", text="hello world")
+
+    assert calls["maybe"] == 1
+    (partial,) = table.partial()
+    assert [change.column for change in partial.changes] == ["tail"]
+    assert partial.changes[0].reason is ChangeReason.NODE_ERROR
+    assert partial.row["maybe"] is None
+    assert partial.row["extracted"] == "HELLO WORLD"
 
 
 def test_a_partial_row_reads_as_needing_heal() -> None:
