@@ -1122,7 +1122,7 @@ class Graph:
         Raises:
             ValueError: If a key is not a valid graph input in the current scope.
         """
-        from hypergraph.graph.addressing import flatten_subgraph_addressing
+        from hypergraph.graph.addressing import flatten_subgraph_addressing, format_did_you_mean
 
         merged: dict[str, Any] = {}
         if _values is not None:
@@ -1149,7 +1149,9 @@ class Graph:
                         f"    graph = graph.with_entrypoint('<downstream_node>').bind({key}=...)\n"
                         f"  You can also use Graph(..., entrypoint='<downstream_node>') when constructing the graph."
                     )
-                raise ValueError(f"Cannot bind '{key}': not a graph input in the current scope. Valid inputs: {sorted(valid_names)}")
+                suggestion = format_did_you_mean(key, valid_names)
+                hint = f" {suggestion}" if suggestion else ""
+                raise ValueError(f"Cannot bind '{key}': not a graph input in the current scope.{hint} Valid inputs: {sorted(valid_names)}")
 
         new_graph = self._shallow_copy()
         new_graph._bound = {**self._bound, **canonical}
@@ -1191,10 +1193,14 @@ class Graph:
             >>> # As nested node, only "answer" is visible to the parent graph
             >>> outer = Graph([graph.as_node(), postprocess])
         """
+        from hypergraph.graph.addressing import format_did_you_mean
+
         all_outputs = set(self.outputs)
         invalid = [n for n in names if n not in all_outputs]
         if invalid:
-            raise ValueError(f"Cannot select {invalid}: not graph outputs. Valid outputs: {self.outputs}")
+            suggestion = format_did_you_mean(invalid[0], all_outputs)
+            hint = f" {suggestion}" if suggestion else ""
+            raise ValueError(f"Cannot select {invalid}: not graph outputs.{hint} Valid outputs: {self.outputs}")
         if len(names) != len(set(names)):
             raise ValueError(f"select() requires unique output names. Received: {names}")
 

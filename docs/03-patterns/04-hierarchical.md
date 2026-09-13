@@ -442,6 +442,35 @@ Binding directly on the inner graph (`Graph([inner.bind(x=5).as_node(namespaced=
 
 Use the resolved-address form for single-key addressing; reach for the nested-dict form when you're grouping several inputs of the same namespaced `GraphNode`.
 
+### When you get the address wrong
+
+The most common nested mistake is passing the leaf parameter name you see in your own
+function instead of its parent-facing address. Hypergraph reads addresses as paths, so it
+tells you which canonical address you meant:
+
+```python
+inner = Graph([build_index], name="indexer")          # build_index(docs, overwrite)
+middle = Graph([inner.as_node(namespaced=True)], name="embedder")
+outer = Graph([middle.as_node(namespaced=True)], name="outer")
+
+runner.run(outer, {"docs": [...], "overwrite": True})
+# MissingInputError: Missing required inputs:
+#   - 'docs' of subgraph 'embedder.indexer'  (address as 'embedder.indexer.docs')
+#   - 'overwrite' of subgraph 'embedder.indexer'  (address as 'embedder.indexer.overwrite')
+#
+# Provided: 'docs', 'overwrite'
+#
+# Unrecognized inputs:
+#   - 'docs': Did you mean 'embedder.indexer.docs'?
+#   - 'overwrite': Did you mean 'embedder.indexer.overwrite'?
+```
+
+The same suggestions appear for a missing prefix (`'indexer.docs'`), a mistyped segment
+(`'embeder.indexer.docs'`), and on `bind()` and `select()`. A suggestion is always an
+address the graph can actually accept — when a leaf name is exposed by several boundaries
+every one of them is listed, and when nothing is close Hypergraph offers no guess and just
+shows the valid names.
+
 ### Exposing selected ports
 
 `expose(...)` replaces the namespaced address at that boundary with a flat parent-facing address. It targets local port names before projection:

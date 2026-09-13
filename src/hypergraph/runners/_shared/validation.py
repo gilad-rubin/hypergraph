@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import IncompatibleRunnerError, MissingInputError
@@ -190,12 +189,10 @@ def validate_item_inputs(
     if skip_missing_required or not missing_required:
         return
 
-    all_inputs = set(inputs_spec.all)
-    suggestions = _get_suggestions(sorted(missing_required), all_inputs, provided)
     message = _build_missing_input_message(
         missing=sorted(missing_required),
         provided=list(provided),
-        suggestions=suggestions,
+        unrecognized=sorted(unknown),
     )
 
     raise MissingInputError(
@@ -227,36 +224,18 @@ def validate_inputs(
     )
 
 
-def _get_suggestions(
-    missing: list[str],
-    all_inputs: set[str],
-    provided: set[str],
-) -> dict[str, list[str]]:
-    """Find similar names to suggest for typos.
-
-    Checks provided values first (for typo detection), then falls back to
-    valid inputs that weren't provided (for discoverability).
-    """
-    suggestions: dict[str, list[str]] = {}
-    for m in missing:
-        # Check provided values first (typo detection)
-        matches = get_close_matches(m, provided, n=1, cutoff=0.6)
-        # Fall back to valid inputs that weren't provided
-        # Exclude the missing parameter itself to avoid suggesting "embedder -> embedder?"
-        if not matches:
-            matches = get_close_matches(m, all_inputs - provided - {m}, n=1, cutoff=0.6)
-        if matches:
-            suggestions[m] = matches
-    return suggestions
-
-
 def _build_missing_input_message(
     missing: list[str],
     provided: list[str],
-    suggestions: dict[str, list[str]],
+    unrecognized: list[str],
 ) -> str:
-    """Build a helpful error message for missing inputs."""
-    from hypergraph.graph.addressing import describe_addressed_input
+    """Build a helpful error message for missing inputs.
+
+    Suggestions are keyed by the names the user actually typed that the graph
+    does not recognize, and are drawn only from the still-missing addresses --
+    so the answer offered is always a name that would satisfy this run.
+    """
+    from hypergraph.graph.addressing import describe_addressed_input, format_did_you_mean
 
     sorted_missing = sorted(missing)
     any_dotted = any("." in m for m in sorted_missing)
@@ -272,10 +251,12 @@ def _build_missing_input_message(
     if provided:
         msg += f"\n\nProvided: {', '.join(f'{p!r}' for p in sorted(provided))}"
 
-    if suggestions:
-        msg += "\n\nDid you mean:"
-        for m, sugg in suggestions.items():
-            msg += f"\n  - '{m}' -> '{sugg[0]}'?"
+    if unrecognized:
+        lines = []
+        for name in sorted(unrecognized):
+            clause = format_did_you_mean(name, sorted_missing)
+            lines.append(f"  - {name!r}: {clause}" if clause else f"  - {name!r}")
+        msg += "\n\nUnrecognized inputs:\n" + "\n".join(lines)
 
     if not any_dotted:
         # The bind()-returns-new-graph hint applies when the user is wrestling

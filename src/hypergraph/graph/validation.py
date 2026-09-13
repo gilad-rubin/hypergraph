@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 import networkx as nx
 
 from hypergraph._typing import is_type_compatible
+from hypergraph.graph.addressing import format_did_you_mean
 
 if TYPE_CHECKING:
     from hypergraph.nodes.base import HyperNode
@@ -382,7 +383,7 @@ def _validate_gate_targets(nodes: dict[str, HyperNode]) -> None:
             if target is END:
                 continue  # END is always valid
             if target not in nodes:
-                raise GraphConfigError(
+                msg = (
                     f"Gate '{node.name}' targets unknown node '{target}'\n\n"
                     f"  -> Target '{target}' is not in the graph\n"
                     f"  -> Available nodes: {sorted(nodes.keys())}\n\n"
@@ -390,6 +391,10 @@ def _validate_gate_targets(nodes: dict[str, HyperNode]) -> None:
                     f"  1. Add a node named '{target}' to the graph, OR\n"
                     f"  2. Remove '{target}' from the gate's targets"
                 )
+                suggestion = format_did_you_mean(target, nodes.keys())
+                if suggestion:
+                    msg += f"\n\n  {suggestion}"
+                raise GraphConfigError(msg)
 
 
 def _validate_no_gate_self_loop(nodes: dict[str, HyperNode]) -> None:
@@ -441,7 +446,7 @@ def _validate_wait_for_references(nodes: dict[str, HyperNode]) -> None:
     for node in nodes.values():
         for name in node.wait_for:
             if name not in all_outputs:
-                suggestion = _find_similar_names(name, all_outputs)
+                suggestion = format_did_you_mean(name, all_outputs)
                 msg = (
                     f"Node '{node.name}' has wait_for='{name}' but no node produces it\n\n"
                     f"  -> '{name}' is not an output or emit of any node in the graph\n"
@@ -451,16 +456,8 @@ def _validate_wait_for_references(nodes: dict[str, HyperNode]) -> None:
                     f"  2. Fix the wait_for name"
                 )
                 if suggestion:
-                    msg += f"\n\n  Did you mean '{suggestion}'?"
+                    msg += f"\n\n  {suggestion}"
                 raise GraphConfigError(msg)
-
-
-def _find_similar_names(name: str, candidates: set[str]) -> str | None:
-    """Find the most similar name from candidates (for typo suggestions)."""
-    from difflib import get_close_matches
-
-    matches = get_close_matches(name, candidates, n=1, cutoff=0.6)
-    return matches[0] if matches else None
 
 
 def _validate_multi_target_output_conflicts(nodes: dict[str, HyperNode]) -> None:
