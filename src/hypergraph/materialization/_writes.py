@@ -11,10 +11,12 @@ Two rules hold everywhere below:
 - a write plan yields graph execution effects and nothing else, so a runner
   (sync, async, or a test double) can drive it;
 - ``WriteOutcome`` is a claim about derivation, so ``SKIPPED`` is only ever
-  reported by a path that executed no node for this row and derived no row.
-  Re-stamping an unchanged child row at a newer generation, and retiring the
-  row it replaces, is bookkeeping: it writes, but it derives nothing, and a
-  plan that does only that still reports ``SKIPPED``.
+  reported by a path that derived no row and did not re-run a fan-out boundary
+  to repair one. Re-stamping an unchanged child row at a newer generation, and
+  retiring the row it replaces, is bookkeeping: it writes, but it derives
+  nothing, and a plan that does only that still reports ``SKIPPED`` — even
+  when reaching that conclusion required running the graph, as it does for a
+  boundary that also produces a stored parent column.
 """
 
 from __future__ import annotations
@@ -309,16 +311,18 @@ class WritePlanner:
     def _unchanged_parent_receipt(self, identity_value: Any, before: ChildWrites, *, rebuilt: bool = False) -> RowReceipt:
         """The receipt for a row whose parent this plan did not re-derive.
 
-        ``SKIPPED`` claims no derivation happened for this row: no node ran and
-        no row was derived. Re-stamping the unchanged child rows at a newer
-        generation, and retiring the rows they replace, is bookkeeping and
-        keeps the skip.
+        ``SKIPPED`` claims this pass derived nothing that survived: no child
+        row was derived, and no fan-out boundary was re-run to repair one.
+        Re-stamping the unchanged child rows at a newer generation, and
+        retiring the rows they replace, is bookkeeping and keeps the skip —
+        and so does running the graph only to arrive there, which is what a
+        boundary that also produces a stored parent column forces.
 
-        Derivation makes it a repair instead — either the fan-out boundary
-        re-ran to rebuild the child item list (``rebuilt``), or a child row was
-        derived. A repair is ``HEALED`` when everything it derived landed
-        healthy, and plain ``UPDATED`` when a child is still stored in error: a
-        heal that did not heal is not a heal (#204, #314).
+        Repair work is the other case — either the fan-out boundary re-ran to
+        rebuild the child item list (``rebuilt``), or a child row was derived.
+        A repair is ``HEALED`` when everything it derived landed healthy, and
+        plain ``UPDATED`` when a child is still stored in error: a heal that
+        did not heal is not a heal (#204, #314).
         """
         repair = self._commit.child_writes.since(before)
         if not repair.derived and not rebuilt:

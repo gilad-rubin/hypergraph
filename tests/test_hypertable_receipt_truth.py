@@ -179,7 +179,8 @@ def test_an_extra_child_row_is_a_repair_the_receipt_reports():
     too many. The recorded fan-out count no longer matches what is physically
     there, so the boundary re-runs to rebuild the item list and the orphan is
     retired. Nothing new is derived per child — every surviving row re-stamps
-    unchanged — but a node DID run for this row, so it is not a skip."""
+    unchanged — but re-running the fan-out boundary to repair the child set is
+    derivation, so this is a repair and not a skip."""
 
     store = MemoryStore()
     table = _fanout_table(store)
