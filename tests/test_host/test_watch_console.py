@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from hypergraph import AsyncRunner, Graph, RetryPolicy, node, serve
+from hypergraph.host.read_models import RunHomeReadModel
 from hypergraph.host.refs import BatchRef
 from hypergraph.host.watch import (
     ConsolePanel,
@@ -28,7 +29,7 @@ from hypergraph.host.watch import (
     watch_snapshot,
     watch_submissions,
 )
-from tests.test_host._batch_interrupt import worker
+from tests.test_host._batch_interrupt import answer_item, until, worker
 from tests.test_host._ingestion_fixture import ingestion_graph
 
 pytest.importorskip("aiosqlite")
@@ -373,8 +374,22 @@ def test_an_empty_picture_is_never_resting() -> None:
 _T0 = datetime(2026, 9, 13, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def _item(key: str, status: str, *, start: float | None = 0.0, elapsed: float = 0.0, gate: str = "") -> ItemProgress:
-    """One item with the instants the Run Home would have read for it."""
+def _item(
+    key: str,
+    status: str,
+    *,
+    start: float | None = 0.0,
+    elapsed: float = 0.0,
+    gate: str = "",
+    ever_parked: bool | None = None,
+) -> ItemProgress:
+    """One item with the instants the Run Home would have read for it.
+
+    ``ever_parked`` defaults to "whatever the status says now", which is
+    what the Run Home reports for an item nobody has answered yet; pass it
+    explicitly for the one case the status can no longer tell you — an item
+    a person has already answered and which then settled.
+    """
     started = None if start is None else _T0 + timedelta(seconds=start)
     settled = started + timedelta(seconds=elapsed) if started is not None and status in {"completed", "failed", "partial"} else None
     return ItemProgress(
@@ -389,6 +404,7 @@ def _item(key: str, status: str, *, start: float | None = 0.0, elapsed: float = 
         gate=gate,
         started_at=started,
         settled_at=settled,
+        ever_parked=(status == "paused") if ever_parked is None else ever_parked,
     )
 
 
@@ -445,6 +461,48 @@ def test_a_parked_item_neither_lengthens_the_eta_nor_stalls_the_rate() -> None:
     assert len(thinking.parked) == 1  # it stays its own number
 
 
+def test_answering_a_gate_does_not_drop_the_reported_rate() -> None:
+    """The same lie, one step later: a person ANSWERS, and the pace tanks.
+
+    Excluding an item only while its gate is open is not enough. The moment
+    somebody answers, that item settles with a timestamp however many hours
+    past where the machine actually is — and if it is allowed back into the
+    span, the rate collapses in the RESTING frame a saved notebook keeps.
+    So "ever parked" is the test, not "parked right now".
+    """
+    # 100 items the machine moved by itself: one every 10s, last at 1000s.
+    machine = [_item(f"done-{n}", "completed", start=n * 10.0, elapsed=10.0) for n in range(100)]
+    gated = "review"
+
+    open_gate = _batch([*machine, _item("gate", "paused", start=0.0, elapsed=1000.0, gate=gated)])
+    # A person answers 8 hours in; the item then settles at t=30000s.
+    answered = _batch([*machine, _item("gate", "completed", start=0.0, elapsed=30_000.0, ever_parked=True)])
+
+    machine_pace = 100 / 1000.0  # 0.1 items/s — 360 items/h
+    assert open_gate.rate == machine_pace
+    # THE repair: answering changes nothing about the machine's pace.
+    assert answered.rate == machine_pace
+    assert answered.rate == open_gate.rate
+    # Had the answered item re-entered the span it would have read 101
+    # settled over 30,000s — 12.1 items/h against a true 360.
+    assert answered.rate * 3600 == 360.0
+    assert round((101 / 30_000.0) * 3600, 1) == 12.1  # what the console used to say
+
+    # The answered item is no longer remaining work either — it settled.
+    assert answered.done == 101 and answered.eta_seconds == 0.0
+    # While the gate was open it was at rest, so it was not remaining work
+    # and the 100 settled items left nothing to wait for.
+    assert open_gate.eta_seconds == 0.0
+
+
+def test_a_submission_every_item_of_which_was_gated_reports_no_pace() -> None:
+    """Nothing the machine moved alone means no machine pace to report."""
+    batch = _batch([_item(f"gated-{n}", "completed", start=0.0, elapsed=90.0, ever_parked=True) for n in range(5)])
+
+    assert batch.done == 5  # they really did settle
+    assert batch.rate is None and batch.eta_seconds is None  # but not on their own
+
+
 def test_nothing_settled_yet_reports_none_and_the_console_prints_no_pace() -> None:
     """The honest failure path: no number beats a made-up one.
 
@@ -492,3 +550,47 @@ async def test_the_watcher_reads_the_instants_the_pace_is_derived_from(home, led
     assert batch.rate is not None and batch.rate > 0
     assert batch.eta_seconds == 0.0
     assert snapshot.rate == batch.rate
+    # Nobody was ever asked anything, so every item counts toward the pace.
+    assert not any(item.ever_parked for item in batch.items)
+
+
+async def test_an_answered_gate_is_still_remembered_as_ever_parked(home, ledger):
+    """The durable fact the repair rests on, through a real answer.
+
+    ``pause`` is the present tense and is None again once the answer lands.
+    ``ever_paused`` is what outlives it — and without it the watcher could
+    not tell a run a person unblocked from one the machine did alone.
+    """
+    graph = ingestion_graph()
+    host = serve(graph, home=home, deployment_version="v1")
+    receipt = await _submit(host, graph, ["work-dup-1", "work-clean"], "wc-answered")
+    read = RunHomeReadModel(host.client)
+    watcher = SubmissionWatcher(host.client)
+
+    async with worker(host):
+
+        async def parked():
+            census = await read.get_batch(receipt.batch_ref)
+            item = census.items.get("work-dup-1")
+            if item is None:
+                return None
+            row = await read.get_run(item.run_ref)
+            return item if row is not None and row.status == "paused" else None
+
+        item = await until(parked)
+        await answer_item(host.client, item, "create_new")
+        settled = await until(lambda: watch_snapshot(host.client, [receipt.batch_ref]))
+        while not settled.submissions[0].settled:
+            settled = await watch_snapshot(host.client, [receipt.batch_ref])
+            await asyncio.sleep(0.05)
+
+    progress = await watcher.progress(receipt.batch_ref)
+    by_key = {one.item_key: one for one in progress.items}
+    answered, clean = by_key["work-dup-1"], by_key["work-clean"]
+
+    assert answered.settled and not answered.parked  # the gate is behind it
+    assert answered.ever_parked  # but the Run Home still remembers
+    assert not clean.ever_parked
+    # So the pace is the clean item's alone, and the answered one never
+    # drags it down however long the person took.
+    assert progress.rate is not None

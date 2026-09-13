@@ -85,6 +85,12 @@ class RunReadModel:
     #: operator acts on — "nothing serves this" and "a builder drifted" need
     #: different answers from them.
     dead_letter_reason: str | None = None
+    #: Has this Run EVER been parked on a person? ``pause`` answers "is it
+    #: parked right now" and goes back to None the moment the answer lands,
+    #: which loses the one fact a throughput reader needs: the wall clock
+    #: this Run spent waiting on a human is not the machine's pace. The Run
+    #: Home keeps the answered pause slot, so this costs no extra read.
+    ever_paused: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-safe dictionary suitable for an HTTP response."""
@@ -103,6 +109,7 @@ class RunReadModel:
             "retry_of": self.retry_of,
             "forked_from": self.forked_from,
             "dead_letter_reason": self.dead_letter_reason,
+            "ever_paused": self.ever_paused,
         }
 
 
@@ -532,6 +539,9 @@ def _run(snapshot: _RunReadSnapshot, pause: PauseReadModel | None) -> RunReadMod
         retry_of=snapshot.view.retry_of,
         forked_from=snapshot.view.forked_from,
         dead_letter_reason=snapshot.dead_letter_reason,
+        # The Run Home keeps the pause slot after a person answers it, so
+        # "was this ever parked" survives the resume that clears ``pause``.
+        ever_paused=snapshot.ever_paused,
     )
 
 

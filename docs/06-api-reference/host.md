@@ -667,6 +667,12 @@ snapshot = await watch_submissions(host.client, [batch, one], draw=ConsolePanel(
 - `WatchSnapshot` — every watched submission as one picture: `done/total`, merged `counts`, the bounded `running` list, `parked`, `exceptions` (failures, open gates, retried items, stragglers past `slow_multiple` × median), `resting`, and the same `rate` / `eta_seconds` folded across every submission.
 - Drawing: `ConsolePanel()` renders the console frame into ONE IPython display handle (the resting frame is what a saved notebook keeps); `LogPanel(every_seconds)` logs one line; `render_snapshot(snapshot)` / `snapshot_line(snapshot)` are the pure renderers.
 
+Deliberately absent: "which node is it on right now" — the read models do
+not expose per-run pending node boundaries at a cost a poll may pay, so the
+view reports condition, status, elapsed, and attempt count, never a guess.
+A ref this Home never accepted contributes nothing to the picture, and an
+unread submission is *unknown*, never "resting".
+
 ### Throughput and ETA
 
 `rate` (items settled per **second**) and `eta_seconds` live on
@@ -685,25 +691,31 @@ Three rules they keep:
   span the work has *occupied* — never `1 / median`, which reads one item's
   duration as the whole submission's pace and is wrong by however many
   children the admission cap runs at once.
-- **Parked items are at rest, in both halves.** A run waiting on a human
-  answer is not remaining work at the current rate, and the seconds a
-  person spends thinking are not part of the span either — so an open gate
-  can neither inflate the ETA nor drive the rate towards zero. `parked`
-  stays its own number.
+- **`rate` is the MACHINE's pace: human thinking time never enters it.**
+  An item that has **ever** been parked — still waiting, or answered eight
+  hours ago — is in neither half of the rate: not in the settled count, and
+  not in the span, at either edge. "Ever", not "currently", because a
+  resumed item's settlement instant lands however long the person took past
+  the machine's real position, and letting it back in would understate the
+  achieved rate in exactly the resting frame a saved notebook keeps.
+  `eta_seconds` applies that machine pace to everything unsettled except
+  what is parked *right now*; an item whose answer has arrived can move on
+  its own again, so it counts as work remaining. `parked` stays its own
+  number.
 - **`None`, never a guess.** Both are `None` until at least one item has
-  settled over a span with width, and `render_snapshot` / `snapshot_line`
-  print the pace only when both are not `None` — nothing beats
-  "∞ items/h".
+  settled without a person's help, over a span with width, and
+  `render_snapshot` / `snapshot_line` print the pace only when both are not
+  `None` — nothing beats "∞ items/h". A submission where every item passed
+  through a gate reports no rate at all.
+
+`RunReadModel.ever_paused` is the durable fact this rests on: `pause` is the
+present tense and goes back to `None` the moment an answer lands, while the
+Run Home keeps the answered pause slot — so the watch reads "was a person
+ever involved" off the row it already had, with no extra call.
 
 `BatchView` deliberately gains nothing here: it is a projection of durable
 Batch *facts*, and a fact has no elapsed time. The pace is derived, per
 poll, from timestamps the watch already reads.
-
-Deliberately absent: "which node is it on right now" — the read models do
-not expose per-run pending node boundaries at a cost a poll may pay, so the
-view reports condition, status, elapsed, and attempt count, never a guess.
-A ref this Home never accepted contributes nothing to the picture, and an
-unread submission is *unknown*, never "resting".
 
 ## Failure Tolerance and the Trip
 
@@ -873,7 +885,10 @@ Rows also carry pinned inputs, acceptance/start/settlement timestamps, the
 latest durable fact timestamp, and an open `PauseReadModel` when the Run is
 parked on a person. The pause exposes the graph-authored question unchanged
 (`ask`), its exact durable JSON `answer_schema`, and options when the answer
-is option-shaped, so a new gate needs no read-surface change.
+is option-shaped, so a new gate needs no read-surface change. `pause` is
+strictly the present tense; `ever_paused` is the boolean that outlives the
+answer, for readers — [throughput](#throughput-and-eta) above — that must
+keep human deliberation out of a machine number.
 
 `get_batch(batch_ref)` returns a `BatchReadModel`: the existing Batch census
 plus one `BatchItemReadModel.word` per manifest item. Those words come

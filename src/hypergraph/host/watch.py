@@ -94,6 +94,11 @@ class ItemProgress:
     #: because throughput is WALL CLOCK: the span the work occupied, not the
     #: sum of the items' own durations.
     settled_at: datetime | None = None
+    #: Has a person ever had to answer for this item? ``parked`` is the
+    #: present tense and goes false the moment the answer lands; this stays
+    #: true, and it is what keeps the hours somebody spent deciding out of
+    #: the machine's reported pace.
+    ever_parked: bool = False
 
     @property
     def label(self) -> str:
@@ -192,24 +197,30 @@ class SubmissionProgress:
 
     @property
     def rate(self) -> float | None:
-        """Items settled per second of WALL CLOCK, or ``None``.
+        """The MACHINE's pace: items settled per second of wall clock.
 
-        Not ``1 / median_seconds()``: that reads one item's duration as the
-        submission's pace and is wrong by however many children the
-        admission cap runs at once. This is settled work over the span the
-        work has actually occupied, so it already carries the concurrency.
+        Two things it is deliberately not. Not ``1 / median_seconds()``,
+        which reads one item's duration as the submission's pace and is
+        wrong by however many children the admission cap runs at once. And
+        not a number any item that has ever been parked contributes to:
+        those items are out of the settled count and out of the span
+        entirely, whether a person is still deciding or answered eight
+        hours ago. What is left is the work only the machine moved, over
+        the wall clock only the machine spent. ``None`` below the honesty
+        threshold — see ``_rate``.
         """
         return _rate(self.items)
 
     @property
     def eta_seconds(self) -> float | None:
-        """Seconds until the items that can still move on their own settle.
+        """How long the work that can still move on its own should take.
 
-        Parked items are in neither half of this: not in the span, and not
-        in the work remaining. An item waiting on a person is at rest, and
-        counting it would let human response time read as throughput —
-        exactly the mistake the Batch view already refuses to make. ``None``
-        whenever ``rate`` is.
+        The machine's pace (``rate``) applied to the work actually left:
+        every unsettled item EXCEPT the ones parked right now, because an
+        item waiting on a person is at rest and cannot be predicted by a
+        throughput number. An item whose answer has already arrived is back
+        in the count — it can move on its own again. ``None`` whenever
+        ``rate`` is.
         """
         return _eta_seconds(self.items)
 
@@ -380,38 +391,52 @@ def _elapsed(row: Any) -> float:
     return max(0.0, (settled - started).total_seconds())
 
 
-def _span_seconds(items: Sequence[ItemProgress]) -> float:
-    """Wall-clock seconds the watched work has occupied so far.
+def _machine_only(items: Sequence[ItemProgress]) -> list[ItemProgress]:
+    """The items a person never had to touch — the only ones that set a pace.
 
-    It begins when the first item began — a parked item included, because
-    it really did consume capacity before it stopped. It ends at the last
-    moment something was observed still MOVING: a settlement instant, or,
-    for an item in flight, ``started_at + elapsed``, which is the very
-    ``now`` the fold already read that elapsed against. So this needs no
-    clock of its own, and a human taking an hour to answer a gate does not
-    stretch the window and quietly drive the rate to zero.
+    THE rule the whole pace rests on: an item that has ever been parked is
+    not in the rate, in either half of it. Excluding it only while the gate
+    is open would let the lie arrive one step later — the moment somebody
+    answers, that item's settlement instant lands hours past the machine's
+    real position and drags the reported rate down with it, in the RESTING
+    frame a saved notebook keeps. So "ever parked" and not "parked now" is
+    the test, and such an item leaves both the span and the settled count.
     """
-    starts = [_utc(item.started_at) for item in items if item.started_at is not None]
+    return [item for item in items if not item.ever_parked and not item.parked]
+
+
+def _span_seconds(items: Sequence[ItemProgress]) -> float:
+    """Wall-clock seconds the MACHINE-only work has occupied so far.
+
+    Both edges come from the same set (``_machine_only``): it opens when
+    the first such item began and closes at the last moment one was
+    observed still moving — a settlement instant, or, for an item in
+    flight, ``started_at + elapsed``, which is the very ``now`` the fold
+    already read that elapsed against. So this needs no clock of its own,
+    and no stretch of human thinking time — open or already answered — can
+    widen it.
+    """
+    machine = _machine_only(items)
+    starts = [_utc(item.started_at) for item in machine if item.started_at is not None]
     if not starts:
         return 0.0
     ends = [
         _utc(item.settled_at) if item.settled_at is not None else _utc(item.started_at) + timedelta(seconds=item.elapsed)
-        for item in items
-        if item.started_at is not None and not item.parked
+        for item in machine
+        if item.started_at is not None
     ]
-    if not ends:
-        return 0.0
     return max(0.0, (max(ends) - min(starts)).total_seconds())
 
 
 def _rate(items: Sequence[ItemProgress]) -> float | None:
-    """Items settled per second, or ``None`` rather than a guess.
+    """Items settled per second by the machine alone, or ``None``.
 
-    Nothing settled, or a span with no width, means there is no honest
-    number to report yet — and a console that prints nothing beats one that
-    prints "∞ items/h".
+    Nothing settled without a person's help, or a span with no width, means
+    there is no honest number to report yet — and a console that prints
+    nothing beats one that prints "∞ items/h".
     """
-    settled = sum(1 for item in items if item.settled)
+    machine = _machine_only(items)
+    settled = sum(1 for item in machine if item.settled)
     span = _span_seconds(items)
     if not settled or span <= 0:
         return None
@@ -419,7 +444,12 @@ def _rate(items: Sequence[ItemProgress]) -> float | None:
 
 
 def _eta_seconds(items: Sequence[ItemProgress]) -> float | None:
-    """Seconds for the work that can still move on its own, at that rate."""
+    """Seconds for the work that can still move on its own, at that rate.
+
+    Everything unsettled counts here EXCEPT what is parked right now,
+    including items a person has already answered: their gate is behind
+    them, so the machine's pace really is what predicts them.
+    """
     rate = _rate(items)
     if rate is None:
         return None
@@ -447,6 +477,11 @@ def _gate(row: Any) -> str:
     """The NODE this run is parked on — the graph's own name for the question."""
     pause = getattr(row, "pause", None)
     return "" if pause is None else str(getattr(pause, "node_name", "") or "")
+
+
+def _ever_parked(row: Any) -> bool:
+    """Did a person ever have to answer for this run? Survives the resume."""
+    return bool(getattr(row, "ever_paused", False))
 
 
 def _bucket(status: str) -> str:
@@ -515,6 +550,7 @@ class SubmissionWatcher:
                     gate=_gate(row),
                     started_at=_started(row),
                     settled_at=_settled(row),
+                    ever_parked=_ever_parked(row),
                 )
             )
         return SubmissionProgress(
@@ -550,6 +586,7 @@ class SubmissionWatcher:
             gate=_gate(row),
             started_at=_started(row),
             settled_at=_settled(row),
+            ever_parked=_ever_parked(row),
         )
         return SubmissionProgress(
             ref=ref,
