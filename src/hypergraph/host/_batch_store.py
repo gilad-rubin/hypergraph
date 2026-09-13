@@ -478,7 +478,7 @@ def reads_run_failure(status: str) -> bool:
     return status in TERMINAL_STATUS_VALUES
 
 
-def child_settled_fact(item_key: str, run_id: str, status: str, failure: Sequence[Any] | None) -> dict[str, Any]:
+def child_settled_fact(item_key: str, run_id: str, status: str, failure: tuple[str, str | None] | None) -> dict[str, Any]:
     """The ``child_settled`` payload — the outcome, and why when there is a why.
 
     ``failure`` is the ``(error, node_name)`` row of the child's first errored

@@ -493,7 +493,8 @@ class BatchUpdate:
             the same privacy-safe projection ``RunFailure.error`` carries,
             byte for byte: an exception type, a stable ``HG_*`` code, and
             static wording, never raw message text. Both keys are absent for
-            a child that did not fail and for the two non-run outcomes
+            a child with no errored step behind it, and for the two non-run
+            outcomes
             (``recovery_exhausted`` keeps its own meaning, and a dead letter's
             reason already rides its ``dead_lettered`` run update);
             ``child_paused`` and ``child_runnable`` carry ``item_key``,

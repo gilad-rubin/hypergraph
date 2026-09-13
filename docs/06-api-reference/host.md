@@ -608,7 +608,8 @@ exception type, a stable `HG_*` code, and static wording, never raw message
 text (see [errors](errors.md)) — and it is byte-identical to what
 `client.result(batch_ref).items[key].failure.error` reports for that child:
 one string, two readers. `node_name` appears when the step recorded one. Both
-keys are **absent** (not null) for a child that did not fail, and for the two
+keys are **absent** (not null) for a child with no errored step behind it, and
+for the two
 non-run outcomes: `recovery_exhausted` is the brake parking a child rather
 than a node raising, and a dead letter's reason already rides its own
 `dead_lettered` run update. The read happens inside the transaction already

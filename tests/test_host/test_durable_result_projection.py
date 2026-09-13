@@ -23,6 +23,7 @@ import pytest
 import pytest_asyncio
 
 from hypergraph import (
+    AsyncRunner,
     BatchRef,
     BatchTolerance,
     Graph,
@@ -75,6 +76,25 @@ def _empty_graph(name: str = "quiet") -> Graph:
 
 def _leaky_graph(name: str = "leaky") -> Graph:
     return Graph([leaky], name=name).with_runner(SyncRunner())
+
+
+def _async_leaky_graph(name: str = "leaky-async") -> Graph:
+    """The same failure through ``AsyncRunner``.
+
+    The runner family picks which settlement mirror the worker reaches: a
+    sync graph runs in a thread and settles through
+    ``_append_child_settled_sync``, an async one settles through
+    ``_append_child_settled``. A ``SyncRunner`` graph therefore proves
+    nothing about the async mirror's failure read.
+    """
+
+    @node(output_name="out")
+    async def leaky_async(x: int, item: str = "") -> int:
+        if x == 1:
+            raise ValueError(f"token {SECRET} rejected")
+        return x * 10
+
+    return Graph([leaky_async], name=name).with_runner(AsyncRunner())
 
 
 @pytest_asyncio.fixture
@@ -388,6 +408,45 @@ class TestChildSettledNamesWhy:
         assert facts["ok"]["status"] == "completed"
         assert "error" not in facts["ok"], "a child that did not fail carries no reason"
         assert "node_name" not in facts["ok"]
+
+    async def test_async_runner_child_names_the_exception_type_too(self, home):
+        """The ASYNC mirror's own failure read — not reachable through a sync graph.
+
+        A ``SyncRunner`` graph settles in a worker thread through
+        ``_append_child_settled_sync``, so every sync-graph case here stays
+        green even with the async mirror's read deleted. This drives
+        ``AsyncRunner`` so the read in ``_append_child_settled`` is the one
+        under test.
+        """
+        host, served = serve_graphs(_async_leaky_graph(), home=home)
+        receipt = await submit_keyed(
+            host,
+            served["leaky-async"],
+            {"ok": {"x": 2}, "bad": {"x": 1}},
+            workflow_id="drop-why-async",
+            tolerance=BatchTolerance(max_failed=5),
+        )
+        async with _worker(host):
+            await _wait_for(lambda: _settled(RunHomeClient(home), receipt.batch_ref))
+
+        client = RunHomeClient(home)
+        facts = {
+            update.payload["item_key"]: update.payload
+            async for update in client.watch(receipt.batch_ref)
+            if update.durable and update.kind == "child_settled"
+        }
+        failure = (await client.result(receipt.batch_ref)).items["bad"].failure
+
+        assert facts["bad"]["status"] == "failed"
+        assert facts["bad"]["error"].startswith("ValueError ["), facts["bad"]["error"]
+        assert facts["bad"]["node_name"] == "leaky_async"
+        assert SECRET not in facts["bad"]["error"]
+        # Byte-identical to what result() reports, through the async mirror.
+        assert facts["bad"]["error"] == failure.error
+        assert facts["bad"]["node_name"] == failure.node_name
+
+        assert facts["ok"]["status"] == "completed"
+        assert "error" not in facts["ok"] and "node_name" not in facts["ok"]
 
     async def test_fact_error_is_byte_identical_to_the_result_projection(self, home):
         """One string, two readers: the stream and ``client.result()``."""
