@@ -1505,8 +1505,12 @@ async for update in client.watch(run_ref):
   [`ReservedFactKindError`](host.md#errors) **before any write**, wherever the node
   runs: a kind collision is a coding mistake, not a deployment difference.
 - `payload` must be a JSON-safe `dict`.
-- Each call is its own short transaction, so a crash loses at most the fact that
-  had not committed.
+- Each fact commits in its own transaction, and the framework settles a node's
+  facts **before** that node's step record. So the guarantee is not "a crash loses
+  at most one fact" — an `async def` body can have several writes in flight — it
+  is that a crash which loses facts loses that node's step with them, so the node
+  re-executes on resume and records again. You never get a step claiming work
+  whose facts were dropped.
 - The call never blocks the event loop, and it never waits on the write. An
   `async def` body's fact is written by a task on the loop and settled by the
   framework before that node's step record — so a fact is durable by the time the

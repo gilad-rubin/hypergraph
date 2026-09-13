@@ -14,6 +14,7 @@ here rather than in a node's inputs or a module-level global.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -65,6 +66,7 @@ class NodeContext:
         "_checkpointer",
         "_records_on_loop",
         "_record_tasks",
+        "_record_failure",
     )
 
     def __init__(
@@ -91,7 +93,11 @@ class NodeContext:
         self._parent_span_id = parent_span_id
         self._checkpointer = checkpointer
         self._records_on_loop = records_on_loop
-        self._record_tasks: list[Any] = []
+        # IN-FLIGHT writes only: a finished task drops out of the set as soon
+        # as it completes, so a node that records ten thousand facts holds
+        # handles to the ones still going, not to all ten thousand.
+        self._record_tasks: set[Any] = set()
+        self._record_failure: BaseException | None = None
 
     @property
     def stop_requested(self) -> bool:
@@ -160,6 +166,16 @@ class NodeContext:
             raise TypeError(
                 f"record() payload must be a dict, got {type(payload).__name__}.\n\nHow to fix: wrap the value in a dict, e.g. ctx.record({kind!r}, {{'value': ...}}). A fact's payload is a JSON object every watcher reads by key."
             )
+        # Probe the serialization HERE, so an unserializable payload fails at
+        # the offending line in both families. Deferred on the loop, the same
+        # failure would otherwise surface from the flush, pointing at the node
+        # rather than at the call. Worth one extra dumps of a small dict.
+        try:
+            json.dumps(payload)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                f"record() payload for kind {kind!r} is not JSON-safe: {exc}\n\nHow to fix: record what a watcher can read — strings, numbers, booleans, None, and lists/dicts of those. Convert domain objects at the call site."
+            ) from exc
         if self._checkpointer is None or self._workflow_id is None:
             return
         loop = self._running_loop()
@@ -169,7 +185,24 @@ class NodeContext:
         # Created in call order, and each append takes the store's write lock
         # in the order it reaches it, so the facts commit in the order the
         # node recorded them.
-        self._record_tasks.append(loop.create_task(self._checkpointer.append_run_fact(self._workflow_id, kind, payload)))
+        task = loop.create_task(self._checkpointer.append_run_fact(self._workflow_id, kind, payload))
+        self._record_tasks.add(task)
+        task.add_done_callback(self._record_settled)
+
+    def _record_settled(self, task: Any) -> None:
+        """Drop a finished write, keeping only the FIRST failure it left.
+
+        Retrieving the exception here also means a write that failed while
+        the node was still running never surfaces as an unretrieved-task
+        complaint at garbage-collection time; ``flush_node_records`` reads it
+        back from here.
+        """
+        self._record_tasks.discard(task)
+        if task.cancelled():
+            return
+        failure = task.exception()
+        if failure is not None and self._record_failure is None:
+            self._record_failure = failure
 
     def _running_loop(self) -> Any:
         """The loop this node body runs ON, or None when it runs on a thread.

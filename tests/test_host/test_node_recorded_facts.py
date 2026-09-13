@@ -228,10 +228,9 @@ class TestNodeFactsInTheRunLog:
     async def test_each_record_commits_on_its_own(self, home):
         """A node that dies after recording still leaves both facts behind.
 
-        The crash criterion: every ``record`` is its own short transaction, so
-        what is lost is at most the one that had not committed — never the
-        facts already written, and never because the node's own outcome was
-        a failure.
+        Every ``record`` is its own short transaction, and a node's facts are
+        settled before its step record — including on the failure path. So the
+        node's own outcome never retracts what it already reported.
         """
         graph = _recording_graph("dying", runner=AsyncRunner(), then_raise=True)
         host = serve(graph, home=home)
@@ -344,6 +343,35 @@ class TestUnderContention:
             assert [_seq(u) for u in updates if u.durable] == list(range(1, len(kinds) + 1))
         assert landed == 3 * 2 * beats
 
+    async def test_finished_writes_do_not_pile_up_on_the_context(self, home):
+        """The in-flight set is bounded by what is actually in flight.
+
+        A node that records thousands of facts must not hold a handle to every
+        one of them; a finished write drops out as soon as it completes.
+        """
+        peak = 0
+
+        @node(output_name="answer")
+        async def agent_turn(prompt: str, ctx: NodeContext) -> str:
+            nonlocal peak
+            for index in range(200):
+                ctx.record("beat", {"i": index})
+                peak = max(peak, len(ctx._record_tasks))
+                if index % 10 == 0:
+                    # Any await lets the loop drain what it has finished —
+                    # the shape of every real streaming node.
+                    await asyncio.sleep(0)
+            return prompt.upper()
+
+        graph = Graph([agent_turn], name="drains").with_runner(AsyncRunner())
+        host = serve(graph, home=home)
+        receipt = await host.submit(graph, {"prompt": "hi"})
+        view = await _run_to_arrival(host, receipt)
+
+        assert view.status is WorkflowStatus.COMPLETED
+        assert len([u for u in await _facts(host.client, receipt.run_ref) if u.durable and u.kind == "beat"]) == 200
+        assert peak < 200, f"the set grew to {peak}: finished writes are not being dropped"
+
     async def test_a_node_records_while_a_host_write_transaction_is_held(self, home):
         """A held transaction delays the fact; it never stalls the loop.
 
@@ -452,6 +480,39 @@ class TestReservedKinds:
         graph = _recording_graph("sloppy", runner=SyncRunner(), payload=["not", "a", "dict"])
         with pytest.raises(TypeError, match="payload must be a dict"):
             SyncRunner().run(graph, prompt="hi")
+
+    @pytest.mark.parametrize("runner_factory", [SyncRunner, AsyncRunner], ids=["sync", "async"])
+    async def test_an_unserializable_payload_fails_at_the_call(self, runner_factory):
+        """Both families refuse it at ``record``, not later at the flush.
+
+        Deferred on the loop, a payload the store cannot serialize would blow
+        up inside the executor's flush and point at the node rather than at
+        the line that recorded it.
+        """
+
+        class Domain:
+            pass
+
+        @node(output_name="answer")
+        def agent_turn(prompt: str, ctx: NodeContext) -> str:
+            ctx.record("tool_call", {"obj": Domain()})
+            return prompt.upper()
+
+        @node(output_name="answer")
+        async def agent_turn_async(prompt: str, ctx: NodeContext) -> str:
+            ctx.record("tool_call", {"obj": Domain()})
+            return prompt.upper()
+
+        runner = runner_factory()
+        body = agent_turn_async if isinstance(runner, AsyncRunner) else agent_turn
+        graph = Graph([body], name="unserializable")
+        with pytest.raises(Exception, match="not JSON-safe") as caught:
+            if isinstance(runner, SyncRunner):
+                runner.run(graph, prompt="hi", workflow_id="wf-json")
+            else:
+                await runner.run(graph, prompt="hi", workflow_id="wf-json")
+        # The frame that failed is the node's own record call.
+        assert "record" in str(caught.value) or "record" in repr(caught.traceback[-1])
 
     def test_every_kind_the_framework_writes_is_reserved(self):
         """The mirror guard: a new framework kind must join the closed set.

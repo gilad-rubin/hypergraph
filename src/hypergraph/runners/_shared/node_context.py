@@ -78,24 +78,28 @@ async def flush_node_records(context: Any, *, node_failed: bool) -> None:
     of replacing it.
     """
     tasks = getattr(context, "_record_tasks", None)
-    if not tasks:
+    if tasks is None:
         return
     import asyncio
 
+    # Writes that finished while the node ran are already gone from the set,
+    # and any failure they left is on the context. So this awaits only what is
+    # still in flight and then reads the earliest failure from either place —
+    # the context first, since those writes settled first.
     pending = list(tasks)
     tasks.clear()
-    results = await asyncio.gather(*pending, return_exceptions=True)
-    failures = [outcome for outcome in results if isinstance(outcome, BaseException)]
-    if not failures:
+    results = await asyncio.gather(*pending, return_exceptions=True) if pending else []
+    failure = context._record_failure or next((outcome for outcome in results if isinstance(outcome, BaseException)), None)
+    context._record_failure = None
+    if failure is None:
         return
     if node_failed:
         import logging
 
         logging.getLogger("hypergraph.runners").warning(
-            "node %r failed and %d of its recorded facts could not be written: %r",
+            "node %r failed and at least one of its recorded facts could not be written: %r",
             getattr(context, "_node_name", "?"),
-            len(failures),
-            failures[0],
+            failure,
         )
         return
-    raise failures[0]
+    raise failure

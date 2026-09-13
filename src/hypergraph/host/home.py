@@ -1055,9 +1055,10 @@ class RunHome(SqliteCheckpointer):
     # entry point to ``run_updates``. Both mirrors share the framework's
     # gap-free allocation — one ``INSERT…SELECT`` — so a node's fact and a
     # host fact land on ONE per-Run sequence that ``watch(after=cursor)``
-    # replays in order, and each commits its own short transaction, so a
-    # node that records ten times loses at most the one that had not
-    # committed.
+    # replays in order, and each commits its own short transaction — nothing
+    # is batched, so a fact already committed survives whatever the node does
+    # next. How much a CRASH loses is the executor's promise, not this one:
+    # it settles a node's facts before that node's step record.
     #
     # Neither goes through ``_after_run_mutation{,_sync}``: that hook reads
     # the framework's own vocabulary (committed progress resets the recovery
