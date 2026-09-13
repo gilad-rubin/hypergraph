@@ -485,9 +485,15 @@ class TestNestedCompactedLineage:
         assert error.value.pruned_nodes == ()
         assert error.value.code == "HG_COMPACTED_RETENTION"
         message = str(error.value)
+        assert "predates producer provenance" in message
+        # The standing guidance survives the provenance rewrite: recording who
+        # folded what answers THIS question, it does not make a compacted
+        # lineage forkable or resumable.
         assert "retention='full'" in message
         assert "retention='latest'" in message
-        assert "predates producer provenance" in message
+        assert "combine nested graphs with resume/crash recovery" in message
+        assert "new workflow_id" in message
+        assert "does not make windowed retention safe to fork or resume" in message
 
     def test_recorded_provenance_decides_the_in_run_guard(self):
         """A carrier that names the node is evidence; one that does not is not.

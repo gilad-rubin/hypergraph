@@ -155,11 +155,18 @@ carrier.folded_producers   # ("prepare", "child_wf") — names, in fold order
 
 A value the carrier holds is never evidence on its own: two nodes may produce
 the same output name, and only `folded_producers` says which one ran. A carrier
-with `folded_producers is None` was written before that field existed; its
-values cannot be attributed, so recovery refuses rather than guess. Fixing that
-means re-running the workflow under this version, or using `retention="full"` /
-`retention="latest"`, which never prune a node's only step record. Forking a
-compacted lineage follows the same rule — see
+with `folded_producers is None` was written before schema v8; its values cannot
+be attributed, so this gate refuses rather than guess, and the fork/resume
+boundary falls back to matching output names — which is safe but can
+over-report.
+
+Recorded provenance decides *this* question; it does not make compacted
+lineages restorable in general. **Use `retention="full"` or `retention="latest"`
+for workflows that combine nested graphs with resume/crash recovery.** Both keep
+every node's own step record, so the fork/resume boundary admits the restore and
+the crash window heals. `retention="windowed"` still prunes a node's only step
+record, and a lineage that lost one is refused at that boundary before this gate
+is ever consulted — see
 [Retention and restorable history](#retention-and-restorable-history).
 
 With a delegated runner (`as_node(runner=...)`), the child workflow persists

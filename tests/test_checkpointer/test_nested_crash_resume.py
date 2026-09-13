@@ -778,20 +778,31 @@ class TestCompactedRetentionNestedRecovery:
         compacted producers. Now the carrier records that it folded
         ``prepare`` — and ``child_wf``, which never had a row to fold, is no
         longer implicated by the shared name.
+
+        Every node's invocations are counted, not just the child's. Under
+        ``windowed`` retention ``prepare`` loses its only step record, so the
+        fork/resume boundary refuses before this run's in-run guard is ever
+        consulted — and NOTHING re-executes. That is the property this test
+        pins: were the boundary softened to admit recorded folded producers,
+        ``prepare`` would run a second time here (measured: 2) while the
+        restored child stayed at 1, feeding a restored output derived from
+        upstream values that had already been recomputed.
         """
-        calls: list[int] = []
+        calls = {"prepare": 0, "order_after_prepare": 0, "child_work": 0}
 
         @node(output_name=("prepared", "result"))
         def prepare(x: int = 2) -> tuple[int, int]:
+            calls["prepare"] += 1
             return x, x * 10
 
         @node(output_name="ready")
         def order_after_prepare(prepared: int) -> int:
+            calls["order_after_prepare"] += 1
             return prepared
 
         @node(output_name="result")
         def child_work(ready: int, result: int) -> int:
-            calls.append(ready)
+            calls["child_work"] += 1
             return ready * 100 + result
 
         child = Graph(nodes=[child_work], name="child", shared=["result"])
@@ -812,7 +823,7 @@ class TestCompactedRetentionNestedRecovery:
             with pytest.raises(RuntimeError, match=CRASH_MESSAGE):
                 runner.run(parent, {"result": 0}, workflow_id="wfe")
 
-            assert calls == [2]
+            assert calls == {"prepare": 1, "order_after_prepare": 1, "child_work": 1}
             internal_steps = cp.steps("wfe", show_internal=True)
             baseline = next(step for step in internal_steps if step.node_type == "RetentionBaseline")
             assert baseline.values is not None
@@ -829,7 +840,8 @@ class TestCompactedRetentionNestedRecovery:
             # refuses — but it no longer accuses 'child_wf' of the same.
             assert error.value.pruned_nodes == ("prepare",)
             assert_compacted_retention_guidance(error)
-            assert calls == [2]
+            # No folded producer re-executed, and neither did anything else.
+            assert calls == {"prepare": 1, "order_after_prepare": 1, "child_work": 1}
         finally:
             if cp._sync_conn:
                 cp._sync_conn.close()

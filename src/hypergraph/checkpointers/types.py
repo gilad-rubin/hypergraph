@@ -461,6 +461,13 @@ def fold_producers(
     the only one that is completion evidence. A PAUSED or FAILED row is an
     attempt, not a completion, and contributes nothing.
 
+    Fold order is the caller's, and the two backends reach it differently:
+    memory sorts with ``_step_sort_key`` while SQLite orders in SQL by
+    ``_STEP_TIME_ORDER``. Both are (completed-or-created time, created time,
+    row identity), so they agree except on rows sharing a timestamp, where the
+    tiebreak is the step index versus the row id. Read the result as a SET of
+    producers; the order is for a human reading a carrier, not a contract.
+
     A previous carrier being re-folded contributes the producers IT recorded,
     never its own carrier name, so provenance survives repeated compaction.
     If that carrier has none (``None`` — written before this field existed),

@@ -257,12 +257,14 @@ baseline but its step record does not — so a restore sees a node with every
 input available and no execution on record, and re-invokes it for real.
 
 The fork/resume boundary refuses before anything executes and names the
-affected nodes on `error.pruned_nodes` — taken from the carrier's recorded
-`folded_producers`, so a same-named value from another producer does not
-implicate a node. The in-run nested guard raises the same error for a
-`GraphNode` crash window and names it on `error.node_name`; since schema v8 it
-does so only when the carrier recorded no producers at all (a run compacted by
-an older version), because a carrier that did answers the question outright.
+affected nodes on `error.pruned_nodes`. For a carrier written at schema v8 or
+later those names are the carrier's recorded `folded_producers`, so a same-named
+value from another producer does not implicate a node; for an older carrier,
+which recorded none, they come from matching output names against the folded
+values, which is safe but can over-report. The in-run nested guard raises the
+same error for a `GraphNode` crash window and names it on `error.node_name`;
+since schema v8 it does so only for a carrier that recorded no producers at all,
+because a carrier that did answers that question outright.
 
 Use `retention="full"` or `retention="latest"` for lineages you fork or
 resume, or start a new `workflow_id` and re-run from its inputs.
