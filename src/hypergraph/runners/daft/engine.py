@@ -88,7 +88,9 @@ def build_input_dataframe(
     """
     import daft as daft_mod
 
-    columns: dict[str, list[Any]] = {key: [] for key in all_keys}
+    # Every value is a ``list[Any]``; the annotation is widened because
+    # ``from_pydict`` takes an invariant ``dict`` over daft's own value union.
+    columns: dict[str, Any] = {key: [] for key in all_keys}
     for variation in input_variations:
         for key in all_keys:
             columns[key].append(variation.get(key))
