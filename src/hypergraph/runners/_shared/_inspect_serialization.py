@@ -3,6 +3,38 @@
 The runtime artifact keeps the original Python objects.  This module is the
 single conversion seam from those objects to inert JSON-compatible data for
 inspection renderers.
+
+Threat model
+------------
+Inspected values are the workflow author's own data, not attacker-supplied
+input, and this module is the *display* path -- it never feeds rehydration.
+What it therefore guarantees:
+
+* **Bounded work and bounded output.** Every traversal is capped by the
+  ``_MAX_*`` limits and the per-value :class:`_SerializationBudget`; truncation
+  is reported on the node rather than hidden, and the JSON that crosses the
+  wire is script-safe.
+* **No import as a side effect.** Library adapters are discovered only through
+  :data:`sys.modules`, so inspecting a value never imports pandas, numpy or
+  pydantic on the user's behalf.
+* **Exact-type dispatch for numpy and pandas.** Those adapters run only when
+  ``type(value)`` *is* the type that library defines, read from the module that
+  really holds it and cross-checked against the public alias.  A subclass, a
+  look-alike, or a duck-typed stand-in never reaches them; it takes the single
+  labeled ``repr`` fallback instead.
+* **Pydantic models are matched by base class, and read without calling them.**
+  A model is only ever a *subclass* of ``BaseModel``, so that adapter accepts
+  any subclass.  It is safe because it never calls the model: fields come from
+  the instance ``__dict__`` through the stored-field reader, so an overridden
+  ``__getattr__``, property, validator or ``model_dump`` does not run.
+
+What it does **not** guarantee: that no user code runs.  Reading a value can
+call code the user controls -- the labeled ``repr`` fallback always could, and
+the pandas reader calls pandas' public API on the exact ``DataFrame`` class.  A
+class installed into an already-imported library module's *own* namespace is
+trusted, because anything able to do that already owns the process; a
+reassigned public alias is not, and withdraws the adapter.  Everything here is
+bounded by the budgets above.
 """
 
 from __future__ import annotations
@@ -13,18 +45,15 @@ import gc
 import json
 import math
 import sys
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from itertools import islice
 from types import (
-    FunctionType,
     GetSetDescriptorType,
     MappingProxyType,
     MemberDescriptorType,
-    MethodDescriptorType,
     ModuleType,
-    WrapperDescriptorType,
 )
 from typing import Any, Literal, TypeAlias
 
@@ -52,17 +81,13 @@ _MAX_TABLE_ROWS = 200
 _MAX_TABLE_COLUMNS = 20
 _MAX_DEPTH = 6
 _MAX_TYPE_NAME_CHARACTERS = 48
-_MAX_CONTAINER_SIZE = sys.maxsize
 _MAX_JS_SAFE_INTEGER = 2**53 - 1
 _MAX_SERIALIZED_NODES = _MAX_TABLE_ROWS * _MAX_TABLE_COLUMNS + _MAX_MAPPING_ITEMS
 _MAX_SERIALIZED_TEXT_CHARACTERS = _MAX_TEXT_CHARACTERS
 _MAX_EXCEPTION_FORMAT_OVERHEAD = 256
-_MAX_PANDAS_BLOCKS = 1_000
-_MAX_PANDAS_PLACEMENTS_TO_SCAN = 10_000
 _SERIALIZATION_BUDGET_EXHAUSTED = "serialization budget exhausted"
 _TYPE_NAME_TRUNCATION_MARKER = "... (truncated)"
 _HEX_DIGITS = b"0123456789abcdef"
-_PY_TPFLAGS_HEAPTYPE = 1 << 9
 _SAFE_ROW_KEY_TYPES = (str, bytes, int, float, bool, type(None))
 _MISSING = object()
 _CANONICAL_TYPE_CACHE: dict[str, type] = {}
@@ -170,12 +195,10 @@ class _SerializationBudget:
 
 @dataclass(frozen=True, slots=True)
 class _RowTableItem:
-    """One captured row item or its localized access failure."""
+    """One captured row item taken from an exact dict row."""
 
     key: object
     value: object = None
-    failure: SerializedValue | None = None
-    missing: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,305 +272,58 @@ def _declares_type(candidate: object, *, module_name: str, class_name: str) -> b
     )
 
 
-def _descriptor_is_owned_by(
-    candidate: type,
-    name: str,
-    descriptor_types: tuple[type, ...],
-) -> bool:
-    namespace = _class_namespace(candidate)
-    if namespace is None:
-        return False
-    descriptor = namespace.get(name, _MISSING)
-    if not any(type(descriptor) is descriptor_type for descriptor_type in descriptor_types):
-        return False
-    try:
-        return object.__getattribute__(descriptor, "__objclass__") is candidate
-    except (AttributeError, TypeError):
-        return False
-
-
-def _class_owns_canonical_function(
-    candidate: type,
-    *,
-    module_name: str,
+def _canonical_type(
+    declared_module: str,
     class_name: str,
-    function_name: str,
-    closes_over_class: bool = False,
-) -> bool:
-    namespace = _class_namespace(candidate)
-    module_namespace = _loaded_module_namespace(module_name)
-    if namespace is None or module_namespace is None:
-        return False
-    function = namespace.get(function_name, _MISSING)
-    if type(function) is staticmethod:
-        function = object.__getattribute__(function, "__func__")
-    if type(function) is not FunctionType:
-        return False
-    try:
-        declared_module = object.__getattribute__(function, "__module__")
-        qualname = object.__getattribute__(function, "__qualname__")
-        globals_namespace = object.__getattribute__(function, "__globals__")
-        code = object.__getattribute__(function, "__code__")
-        closure = object.__getattribute__(function, "__closure__")
-        freevars = object.__getattribute__(code, "co_freevars")
-    except (AttributeError, TypeError):
-        return False
-    if (
-        type(declared_module) is not str
-        or declared_module != module_name
-        or type(qualname) is not str
-        or qualname != f"{class_name}.{function_name}"
-        or globals_namespace is not module_namespace
-    ):
-        return False
-    if not closes_over_class:
-        return True
-    if type(closure) is not tuple or type(freevars) is not tuple or tuple.__len__(closure) != tuple.__len__(freevars):
-        return False
-    for index, freevar in enumerate(tuple.__iter__(freevars)):
-        if type(freevar) is not str or freevar != "__class__":
-            continue
-        cell = tuple.__getitem__(closure, index)
-        try:
-            return object.__getattribute__(cell, "cell_contents") is candidate
-        except (AttributeError, ValueError):
-            return False
-    return False
-
-
-def _is_static_extension_type(
-    candidate: type,
     *,
-    module_name: str,
-    class_name: str,
-    owned_descriptors: tuple[tuple[str, tuple[type, ...]], ...],
-) -> bool:
-    if not _declares_type(candidate, module_name=module_name, class_name=class_name):
-        return False
-    try:
-        flags = type.__getattribute__(candidate, "__flags__")
-        mro = type.__getattribute__(candidate, "__mro__")
-    except (AttributeError, TypeError):
-        return False
-    return (
-        type(flags) is int
-        and flags & _PY_TPFLAGS_HEAPTYPE == 0
-        and mro[0] is candidate
-        and mro[-1] is object
-        and all(_descriptor_is_owned_by(candidate, name, descriptor_types) for name, descriptor_types in owned_descriptors)
-    )
-
-
-def _resolved_alias_type(
-    cache_key: str,
-    aliases: tuple[tuple[str, str], ...],
-    *,
-    validator: Callable[[type], bool],
+    defined_in: tuple[str, ...] = (),
+    aliased_in: tuple[str, ...] = (),
 ) -> type | None:
+    """Resolve a library type from already-imported modules, never importing.
+
+    ``declared_module`` is the module the real class reports as its own.
+    ``defined_in`` names the modules that actually hold it, newest spelling
+    first, when that differs: ``numpy.ndarray`` reports ``"numpy"`` but lives in
+    a private extension module.  Every module in ``aliased_in`` must still bind
+    that same object, so reassigning a convenience alias cannot redirect
+    dispatch to a substituted class -- it withdraws the adapter instead.
+    """
+    cache_key = f"{declared_module}.{class_name}"
     cached = _CANONICAL_TYPE_CACHE.get(cache_key)
     if cached is not None:
         return cached
-    candidate = _loaded_module_attribute(*aliases[0])
-    try:
-        type.__getattribute__(candidate, "__mro__")
-    except (AttributeError, TypeError):
+    candidate: object = _MISSING
+    for source_module in defined_in or (declared_module,):
+        found = _loaded_module_attribute(source_module, class_name)
+        if found is not _MISSING:
+            candidate = found
+            break
+    if candidate is _MISSING:
         return None
-    if any(_loaded_module_attribute(module_name, class_name) is not candidate for module_name, class_name in aliases[1:]):
+    if any(_loaded_module_attribute(alias_module, class_name) is not candidate for alias_module in aliased_in):
         return None
-    if not validator(candidate):
+    if not _declares_type(candidate, module_name=declared_module, class_name=class_name):
         return None
-    _CANONICAL_TYPE_CACHE[cache_key] = candidate
-    return candidate  # type: ignore[return-value]
+    resolved: type = candidate  # type: ignore[assignment]
+    _CANONICAL_TYPE_CACHE[cache_key] = resolved
+    return resolved
 
 
 def _canonical_ndarray_type() -> type | None:
-    def validates(candidate: type) -> bool:
-        return _is_static_extension_type(
-            candidate,
-            module_name="numpy",
-            class_name="ndarray",
-            owned_descriptors=(
-                ("shape", (GetSetDescriptorType,)),
-                ("__getitem__", (WrapperDescriptorType,)),
-                ("item", (MethodDescriptorType,)),
-                ("tolist", (MethodDescriptorType,)),
-            ),
-        )
-
-    for internal_module in (
-        "numpy._core._multiarray_umath",
-        "numpy.core._multiarray_umath",
-    ):
-        resolved = _resolved_alias_type(
-            "numpy.ndarray",
-            ((internal_module, "ndarray"), ("numpy", "ndarray")),
-            validator=validates,
-        )
-        if resolved is not None:
-            return resolved
-    return None
+    return _canonical_type(
+        "numpy",
+        "ndarray",
+        defined_in=("numpy._core._multiarray_umath", "numpy.core._multiarray_umath"),
+        aliased_in=("numpy",),
+    )
 
 
 def _canonical_pandas_dataframe_type() -> type | None:
-    def validates(candidate: type) -> bool:
-        ndframe = _loaded_module_attribute("pandas.core.generic", "NDFrame")
-        ops_mixin = _loaded_module_attribute("pandas.core.arraylike", "OpsMixin")
-        if not _declares_type(candidate, module_name="pandas.core.frame", class_name="DataFrame"):
-            return False
-        if not _declares_type(ndframe, module_name="pandas.core.generic", class_name="NDFrame"):
-            return False
-        if not _declares_type(ops_mixin, module_name="pandas.core.arraylike", class_name="OpsMixin"):
-            return False
-        try:
-            bases_match = type(candidate) is type and type.__getattribute__(candidate, "__bases__") == (ndframe, ops_mixin)
-        except (AttributeError, TypeError):
-            return False
-        return (
-            bases_match
-            and _class_owns_canonical_function(
-                candidate,
-                module_name="pandas.core.frame",
-                class_name="DataFrame",
-                function_name="__init__",
-            )
-            and _class_owns_canonical_function(
-                candidate,
-                module_name="pandas.core.frame",
-                class_name="DataFrame",
-                function_name="rename",
-                closes_over_class=True,
-            )
-        )
-
-    return _resolved_alias_type(
-        "pandas.DataFrame",
-        (("pandas.core.frame", "DataFrame"), ("pandas", "DataFrame")),
-        validator=validates,
-    )
-
-
-def _canonical_pandas_index_type() -> type | None:
-    def validates(candidate: type) -> bool:
-        if not _declares_type(candidate, module_name="pandas.core.indexes.base", class_name="Index"):
-            return False
-        try:
-            flags = type.__getattribute__(candidate, "__flags__")
-            mro = type.__getattribute__(candidate, "__mro__")
-        except (AttributeError, TypeError):
-            return False
-        return (
-            type(flags) is int
-            and flags & _PY_TPFLAGS_HEAPTYPE != 0
-            and mro[0] is candidate
-            and mro[-1] is object
-            and _class_owns_canonical_function(
-                candidate,
-                module_name="pandas.core.indexes.base",
-                class_name="Index",
-                function_name="__new__",
-            )
-            and _class_owns_canonical_function(
-                candidate,
-                module_name="pandas.core.indexes.base",
-                class_name="Index",
-                function_name="unique",
-                closes_over_class=True,
-            )
-        )
-
-    return _resolved_alias_type(
-        "pandas.Index",
-        (("pandas.core.indexes.base", "Index"), ("pandas", "Index")),
-        validator=validates,
-    )
-
-
-def _canonical_pandas_range_index_type() -> type | None:
-    index_type = _canonical_pandas_index_type()
-
-    def validates(candidate: type) -> bool:
-        if index_type is None or not _declares_type(
-            candidate,
-            module_name="pandas.core.indexes.range",
-            class_name="RangeIndex",
-        ):
-            return False
-        try:
-            mro = type.__getattribute__(candidate, "__mro__")
-        except (AttributeError, TypeError):
-            return False
-        return (
-            type(candidate) is type
-            and mro[0] is candidate
-            and index_type in mro
-            and _class_owns_canonical_function(
-                candidate,
-                module_name="pandas.core.indexes.range",
-                class_name="RangeIndex",
-                function_name="__new__",
-            )
-            and _class_owns_canonical_function(
-                candidate,
-                module_name="pandas.core.indexes.range",
-                class_name="RangeIndex",
-                function_name="equals",
-                closes_over_class=True,
-            )
-        )
-
-    return _resolved_alias_type(
-        "pandas.RangeIndex",
-        (("pandas.core.indexes.range", "RangeIndex"), ("pandas", "RangeIndex")),
-        validator=validates,
-    )
+    return _canonical_type("pandas.core.frame", "DataFrame", aliased_in=("pandas",))
 
 
 def _canonical_pydantic_base_model_type() -> type | None:
-    def validates(candidate: type) -> bool:
-        metaclass = _loaded_module_attribute(
-            "pydantic._internal._model_construction",
-            "ModelMetaclass",
-        )
-        if not _declares_type(candidate, module_name="pydantic.main", class_name="BaseModel"):
-            return False
-        if not _declares_type(
-            metaclass,
-            module_name="pydantic._internal._model_construction",
-            class_name="ModelMetaclass",
-        ):
-            return False
-        try:
-            structure_matches = type(candidate) is metaclass and type.__getattribute__(candidate, "__bases__") == (object,)
-        except (AttributeError, TypeError):
-            return False
-        return (
-            structure_matches
-            and _class_owns_canonical_function(
-                metaclass,
-                module_name="pydantic._internal._model_construction",
-                class_name="ModelMetaclass",
-                function_name="__new__",
-            )
-            and _class_owns_canonical_function(
-                candidate,
-                module_name="pydantic.main",
-                class_name="BaseModel",
-                function_name="__init__",
-            )
-            and _class_owns_canonical_function(
-                candidate,
-                module_name="pydantic.main",
-                class_name="BaseModel",
-                function_name="__getattr__",
-                closes_over_class=True,
-            )
-        )
-
-    return _resolved_alias_type(
-        "pydantic.BaseModel",
-        (("pydantic.main", "BaseModel"), ("pydantic", "BaseModel")),
-        validator=validates,
-    )
+    return _canonical_type("pydantic.main", "BaseModel", aliased_in=("pydantic",))
 
 
 def _is_loaded_pydantic_model(value: object) -> bool:
@@ -716,365 +492,58 @@ def _stored_pydantic_items(
     return source_items, original_size
 
 
-def _canonical_static_type(
-    cache_key: str,
-    module_name: str,
-    class_name: str,
-    *,
-    owned_descriptors: tuple[tuple[str, tuple[type, ...]], ...],
-) -> type | None:
-    return _resolved_alias_type(
-        cache_key,
-        ((module_name, class_name),),
-        validator=lambda candidate: _is_static_extension_type(
-            candidate,
-            module_name=module_name,
-            class_name=class_name,
-            owned_descriptors=owned_descriptors,
-        ),
-    )
-
-
-def _trusted_getset(owner_type: type, value: object, name: str) -> tuple[bool, object]:
-    namespace = _class_namespace(owner_type)
-    if namespace is None:
-        return False, None
-    descriptor = namespace.get(name, _MISSING)
-    if type(descriptor) is not GetSetDescriptorType:
-        return False, None
+def _ndarray_shape(value: object) -> tuple[int, ...] | None:
+    """Read the shape of an exact ``numpy.ndarray`` under a guarded call."""
     try:
-        if object.__getattribute__(descriptor, "__objclass__") is not owner_type:
-            return False, None
-        return True, GetSetDescriptorType.__get__(descriptor, value, type(value))
+        shape = value.shape  # type: ignore[attr-defined]
     except BaseException:
-        return False, None
-
-
-def _trusted_ndarray_shape(value: object, ndarray_type: type) -> tuple[int, ...] | None:
-    found, shape = _trusted_getset(ndarray_type, value, "shape")
-    if not found or type(shape) is not tuple:
+        return None
+    if type(shape) is not tuple:
         return None
     dimensions = tuple(tuple.__iter__(shape))
-    if any(type(dimension) is not int or dimension < 0 or dimension > _MAX_CONTAINER_SIZE for dimension in dimensions):
+    if any(type(dimension) is not int or dimension < 0 for dimension in dimensions):
         return None
     return dimensions
 
 
-def _trusted_ndarray_item(
-    value: object,
-    ndarray_type: type,
-    *indexes: int,
-) -> tuple[bool, object]:
-    namespace = _class_namespace(ndarray_type)
-    if namespace is None:
-        return False, None
-    descriptor = namespace.get("item", _MISSING)
-    if type(descriptor) is not MethodDescriptorType:
-        return False, None
+def _ndarray_item(value: object, *indexes: int) -> tuple[bool, object]:
+    """Read one inert scalar out of an exact ``numpy.ndarray``."""
     try:
-        if object.__getattribute__(descriptor, "__objclass__") is not ndarray_type:
-            return False, None
-        method = MethodDescriptorType.__get__(descriptor, value, ndarray_type)
-        return True, method(*indexes)
+        return True, value.item(*indexes)  # type: ignore[attr-defined]
     except BaseException:
         return False, None
 
 
-def _trusted_python_pandas_type(
-    candidate: type,
-    *,
-    module_name: str,
-    class_name: str,
-    c_base: type,
-) -> bool:
-    if not _declares_type(candidate, module_name=module_name, class_name=class_name):
-        return False
-    if _loaded_module_attribute(module_name, class_name) is not candidate:
-        return False
-    try:
-        mro = type.__getattribute__(candidate, "__mro__")
-    except (AttributeError, TypeError):
-        return False
-    return type(candidate) is type and mro[0] is candidate and c_base in mro
-
-
-def _trusted_pandas_block_type(candidate: type, c_bases: tuple[type, ...]) -> bool:
-    try:
-        module_name = type.__getattribute__(candidate, "__module__")
-        class_name = type.__getattribute__(candidate, "__name__")
-        mro = type.__getattribute__(candidate, "__mro__")
-    except (AttributeError, TypeError):
-        return False
-    return (
-        type(candidate) is type
-        and type(module_name) is str
-        and module_name == "pandas.core.internals.blocks"
-        and type(class_name) is str
-        and _loaded_module_attribute(module_name, class_name) is candidate
-        and type(mro) is tuple
-        and mro[0] is candidate
-        and any(c_base in mro for c_base in c_bases)
-    )
-
-
-def _pandas_block_descriptor_owner(
-    block_type: type,
-    owners: tuple[type, ...],
-) -> type | None:
-    try:
-        mro = type.__getattribute__(block_type, "__mro__")
-    except (AttributeError, TypeError):
-        return None
-    return next((owner for owner in owners if owner in mro), None)
-
-
-def _trusted_pandas_axis(
-    axis: object,
-    *,
-    capture_values: bool,
-    ndarray_type: type,
-    index_type: type,
-    range_index_type: type,
-) -> tuple[int, tuple[object, ...]] | str:
-    storage = _stored_instance_dict(axis)
-    if storage is None:
-        return "unsupported DataFrame storage"
-    if type(axis) is range_index_type:
-        axis_range = dict.get(storage, "_range", _MISSING)
-        if type(axis_range) is not range:
-            return "unsupported DataFrame storage"
-        size = range.__len__(axis_range)
-        values = tuple(islice(range.__iter__(axis_range), _MAX_TABLE_COLUMNS)) if capture_values else ()
-        return size, values
-    if type(axis) is not index_type:
-        return "unsupported DataFrame storage"
-    axis_values = dict.get(storage, "_data", _MISSING)
-    if type(axis_values) is not ndarray_type:
-        return "unsupported extension-backed DataFrame"
-    shape = _trusted_ndarray_shape(axis_values, ndarray_type)
-    if shape is None or len(shape) != 1:
-        return "unsupported DataFrame storage"
-    if not capture_values:
-        return shape[0], ()
-    values: list[object] = []
-    for index in range(min(shape[0], _MAX_TABLE_COLUMNS)):
-        found, item = _trusted_ndarray_item(axis_values, ndarray_type, index)
-        if not found:
-            return "unsupported DataFrame storage"
-        values.append(item)
-    return shape[0], tuple(values)
-
-
-def _trusted_block_placement(
-    placement: object,
-    *,
-    placement_type: type,
-    ndarray_type: type,
-    column_count: int,
-    remaining_scan: int,
-) -> tuple[int, tuple[tuple[int, int], ...], int] | str:
-    found, indexer = _trusted_getset(placement_type, placement, "indexer")
-    if not found:
-        return "unsupported DataFrame storage"
-    displayed: list[tuple[int, int]] = []
-    if type(indexer) is slice:
-        try:
-            positions = range(*slice.indices(indexer, column_count))
-        except (OverflowError, ValueError):
-            return "unsupported DataFrame storage"
-        if positions.step <= 0:
-            return "unsupported DataFrame storage"
-        placement_count = range.__len__(positions)
-        for block_offset, column_index in enumerate(positions):
-            if column_index >= _MAX_TABLE_COLUMNS:
-                break
-            displayed.append((block_offset, column_index))
-        return placement_count, tuple(displayed), 0
-    if type(indexer) is not ndarray_type:
-        return "unsupported DataFrame storage"
-    shape = _trusted_ndarray_shape(indexer, ndarray_type)
-    if shape is None or len(shape) != 1:
-        return "unsupported DataFrame storage"
-    placement_count = shape[0]
-    if placement_count > remaining_scan:
-        return f"DataFrame storage exceeds {_MAX_PANDAS_PLACEMENTS_TO_SCAN}-placement inspection limit"
-    for block_offset in range(placement_count):
-        found, column_index = _trusted_ndarray_item(indexer, ndarray_type, block_offset)
-        if not found or type(column_index) is not int or not 0 <= column_index < column_count:
-            return "unsupported DataFrame storage"
-        if column_index < _MAX_TABLE_COLUMNS:
-            displayed.append((block_offset, column_index))
-    return placement_count, tuple(displayed), placement_count
-
-
 def _pandas_table_storage(value: object) -> _PandasTableStorage | str:
-    ndarray_type = _canonical_ndarray_type()
-    index_type = _canonical_pandas_index_type()
-    range_index_type = _canonical_pandas_range_index_type()
-    manager_base = _canonical_static_type(
-        "pandas._libs.internals.BlockManager",
-        "pandas._libs.internals",
-        "BlockManager",
-        owned_descriptors=(
-            ("blocks", (GetSetDescriptorType,)),
-            ("axes", (GetSetDescriptorType,)),
-        ),
-    )
-    block_values_owner = _canonical_static_type(
-        "pandas._libs.internals.Block.values",
-        "pandas._libs.internals",
-        "Block",
-        owned_descriptors=(("values", (GetSetDescriptorType,)),),
-    )
-    legacy_numpy_values_owner = _canonical_static_type(
-        "pandas._libs.internals.NumpyBlock.values",
-        "pandas._libs.internals",
-        "NumpyBlock",
-        owned_descriptors=(("values", (GetSetDescriptorType,)),),
-    )
-    block_placement_owner = _canonical_static_type(
-        "pandas._libs.internals.Block._mgr_locs",
-        "pandas._libs.internals",
-        "Block",
-        owned_descriptors=(("_mgr_locs", (GetSetDescriptorType,)),),
-    )
-    legacy_placement_owner = _canonical_static_type(
-        "pandas._libs.internals.SharedBlock._mgr_locs",
-        "pandas._libs.internals",
-        "SharedBlock",
-        owned_descriptors=(("_mgr_locs", (GetSetDescriptorType,)),),
-    )
-    placement_type = _canonical_static_type(
-        "pandas._libs.internals.BlockPlacement",
-        "pandas._libs.internals",
-        "BlockPlacement",
-        owned_descriptors=(
-            ("indexer", (GetSetDescriptorType,)),
-            ("as_array", (GetSetDescriptorType,)),
-        ),
-    )
-    if any(
-        candidate is None
-        for candidate in (
-            ndarray_type,
-            index_type,
-            range_index_type,
-            manager_base,
-            placement_type,
-        )
-    ):
-        return "unsupported DataFrame storage"
-    values_owners = tuple(owner for owner in (legacy_numpy_values_owner, block_values_owner) if owner is not None)
-    placement_owners = tuple(owner for owner in (legacy_placement_owner, block_placement_owner) if owner is not None)
-    if not values_owners or not placement_owners:
-        return "unsupported DataFrame storage"
-    c_bases = values_owners + tuple(owner for owner in placement_owners if all(owner is not existing for existing in values_owners))
-    assert ndarray_type is not None
-    assert index_type is not None
-    assert range_index_type is not None
-    assert manager_base is not None
-    assert placement_type is not None
+    """Read a bounded corner of an exact ``pandas.DataFrame`` via its public API.
 
-    storage = _stored_instance_dict(value)
-    if storage is None:
-        return "unsupported DataFrame storage"
-    manager = dict.get(storage, "_mgr", _MISSING)
-    manager_type = type(manager)
-    if not _trusted_python_pandas_type(
-        manager_type,
-        module_name="pandas.core.internals.managers",
-        class_name="BlockManager",
-        c_base=manager_base,
-    ):
-        return "unsupported DataFrame storage"
-
-    found_blocks, blocks = _trusted_getset(manager_base, manager, "blocks")
-    found_axes, axes = _trusted_getset(manager_base, manager, "axes")
-    if not found_blocks or type(blocks) is not tuple or not found_axes or type(axes) is not list or list.__len__(axes) != 2:
-        return "unsupported DataFrame storage"
-    block_count = tuple.__len__(blocks)
-    if block_count > _MAX_PANDAS_BLOCKS:
-        return f"DataFrame storage exceeds {_MAX_PANDAS_BLOCKS}-block inspection limit"
-
-    columns_result = _trusted_pandas_axis(
-        list.__getitem__(axes, 0),
-        capture_values=True,
-        ndarray_type=ndarray_type,
-        index_type=index_type,
-        range_index_type=range_index_type,
-    )
-    if type(columns_result) is str:
-        return columns_result
-    column_count, columns = columns_result
-    rows_result = _trusted_pandas_axis(
-        list.__getitem__(axes, 1),
-        capture_values=False,
-        ndarray_type=ndarray_type,
-        index_type=index_type,
-        range_index_type=range_index_type,
-    )
-    if type(rows_result) is str:
-        return rows_result
-    row_count, _ = rows_result
-
-    displayed_column_count = min(column_count, _MAX_TABLE_COLUMNS)
-    displayed_row_count = min(row_count, _MAX_TABLE_ROWS)
-    matrix: list[list[object]] = [[_MISSING for _ in range(displayed_column_count)] for _ in range(displayed_row_count)]
-    placement_total = 0
-    placements_scanned = 0
-    for block in tuple.__iter__(blocks):
-        block_type = type(block)
-        if not _trusted_pandas_block_type(block_type, c_bases):
+    Only the displayed corner is materialized, so storage layout — numpy blocks,
+    nullable extension arrays, Arrow-backed arrays — never decides whether a
+    frame renders.
+    """
+    try:
+        shape = value.shape  # type: ignore[attr-defined]
+        if type(shape) is not tuple or tuple.__len__(shape) != 2:
             return "unsupported DataFrame storage"
-        values_owner = _pandas_block_descriptor_owner(block_type, values_owners)
-        placement_owner = _pandas_block_descriptor_owner(block_type, placement_owners)
-        if values_owner is None or placement_owner is None:
+        row_count, column_count = shape
+        if type(row_count) is not int or type(column_count) is not int:
             return "unsupported DataFrame storage"
-        found_values, block_values = _trusted_getset(values_owner, block, "values")
-        if not found_values:
+        if row_count < 0 or column_count < 0:
             return "unsupported DataFrame storage"
-        if type(block_values) is not ndarray_type:
-            return "unsupported extension-backed DataFrame"
-        block_shape = _trusted_ndarray_shape(block_values, ndarray_type)
-        if block_shape is None or len(block_shape) != 2 or block_shape[1] != row_count:
+        displayed_row_count = min(row_count, _MAX_TABLE_ROWS)
+        displayed_column_count = min(column_count, _MAX_TABLE_COLUMNS)
+        columns = tuple(value.columns[:displayed_column_count].tolist())  # type: ignore[attr-defined]
+        if tuple.__len__(columns) != displayed_column_count:
             return "unsupported DataFrame storage"
-        found_placement, placement = _trusted_getset(
-            placement_owner,
-            block,
-            "_mgr_locs",
-        )
-        if not found_placement or type(placement) is not placement_type:
-            return "unsupported DataFrame storage"
-        placement_result = _trusted_block_placement(
-            placement,
-            placement_type=placement_type,
-            ndarray_type=ndarray_type,
-            column_count=column_count,
-            remaining_scan=_MAX_PANDAS_PLACEMENTS_TO_SCAN - placements_scanned,
-        )
-        if type(placement_result) is str:
-            return placement_result
-        placement_count, displayed_positions, scanned_count = placement_result
-        if placement_count != block_shape[0]:
-            return "unsupported DataFrame storage"
-        placement_total += placement_count
-        placements_scanned += scanned_count
-        for block_offset, column_index in displayed_positions:
-            for row_index in range(displayed_row_count):
-                if matrix[row_index][column_index] is not _MISSING:
-                    return "unsupported DataFrame storage"
-                found_item, item = _trusted_ndarray_item(
-                    block_values,
-                    ndarray_type,
-                    block_offset,
-                    row_index,
-                )
-                if not found_item:
-                    return "unsupported DataFrame storage"
-                matrix[row_index][column_index] = item
-    if placement_total != column_count:
-        return "unsupported DataFrame storage"
-    if any(item is _MISSING for row in matrix for item in row):
+        corner = value.iloc[:displayed_row_count, :displayed_column_count]  # type: ignore[attr-defined]
+        matrix: list[list[object]] = [[] for _ in range(displayed_row_count)]
+        for column_index in range(displayed_column_count):
+            cells = corner.iloc[:, column_index].tolist()
+            if type(cells) is not list or list.__len__(cells) != displayed_row_count:
+                return "unsupported DataFrame storage"
+            for row_index, cell in enumerate(cells):
+                matrix[row_index].append(cell)
+    except BaseException:
         return "unsupported DataFrame storage"
     return _PandasTableStorage(
         columns=columns,
@@ -1497,7 +966,7 @@ def _row_table_schema(
     *,
     source_rows: tuple[object, ...],
     original_row_count: int,
-) -> tuple[_RowTableSchema | None, SerializedValue | None]:
+) -> _RowTableSchema:
     ordered_keys: list[object] = []
     safe_keys: set[object] = set()
     identity_keys: set[int] = set()
@@ -1531,14 +1000,11 @@ def _row_table_schema(
             ordered_keys.append(key)
 
     original_column_count = len(safe_keys) if exact else max(len(safe_keys), largest_row_count)
-    return (
-        _RowTableSchema(
-            displayed_keys=tuple(ordered_keys[:_MAX_TABLE_COLUMNS]),
-            row_items=tuple(captured_rows),
-            original_column_count=original_column_count,
-            original_column_count_exact=exact,
-        ),
-        None,
+    return _RowTableSchema(
+        displayed_keys=tuple(ordered_keys[:_MAX_TABLE_COLUMNS]),
+        row_items=tuple(captured_rows),
+        original_column_count=original_column_count,
+        original_column_count_exact=exact,
     )
 
 
@@ -1552,14 +1018,11 @@ def _serialize_row_table(
     budget: _SerializationBudget,
 ) -> SerializedValue:
     limit_hits_before = budget.limit_hits
-    schema, schema_failure = _row_table_schema(
+    schema = _row_table_schema(
         value,
         source_rows=source_rows,
         original_row_count=original_row_count,
     )
-    if schema_failure is not None:
-        return schema_failure
-    assert schema is not None
     column_keys = schema.displayed_keys
     columns: list[SerializedValue] = []
     for key in column_keys:
@@ -1582,23 +1045,6 @@ def _serialize_row_table(
                 None,
             )
             if matched_item is None:
-                if budget.claim_node():
-                    cells.append(
-                        SerializedValue(
-                            kind="placeholder",
-                            type_name="missing",
-                            truncated=True,
-                            reason="missing table cell",
-                        )
-                    )
-                else:
-                    cells.append(_budget_placeholder(source_row))
-                    break
-                continue
-            if matched_item.failure is not None:
-                cells.append(matched_item.failure)
-                continue
-            if matched_item.missing:
                 if budget.claim_node():
                     cells.append(
                         SerializedValue(
@@ -1742,11 +1188,6 @@ def _validated_shape(
         return None, _placeholder(value, reason=f"array rank {rank} exceeds supported rank 2")
     if any(type(dimension) is not int or dimension < 0 for dimension in dimensions):
         return None, _placeholder(value, reason="invalid array shape")
-    if any(dimension > _MAX_CONTAINER_SIZE for dimension in dimensions):
-        return None, _placeholder(
-            value,
-            reason="array dimension exceeds platform container size",
-        )
     return dimensions, None
 
 
@@ -1780,7 +1221,7 @@ def _serialize_numpy_array(
     ndarray_type = _canonical_ndarray_type()
     if ndarray_type is None or type(value) is not ndarray_type:
         return _placeholder(value, reason="unsupported NumPy storage")
-    trusted_shape = _trusted_ndarray_shape(value, ndarray_type)
+    trusted_shape = _ndarray_shape(value)
     shape, shape_failure = _validated_shape(value, trusted_shape)
     if shape_failure is not None:
         return shape_failure
@@ -1788,7 +1229,7 @@ def _serialize_numpy_array(
     if len(shape) == 1:
         source_items: list[object] = []
         for index in range(min(shape[0], _MAX_SEQUENCE_ITEMS)):
-            found, item = _trusted_ndarray_item(value, ndarray_type, index)
+            found, item = _ndarray_item(value, index)
             if not found:
                 return _placeholder(value, reason="trusted NumPy storage could not be read")
             source_items.append(item)
@@ -1816,12 +1257,7 @@ def _serialize_numpy_array(
     for row_index in range(min(shape[0], _MAX_TABLE_ROWS)):
         row: list[object] = []
         for column_index in range(min(shape[1], _MAX_TABLE_COLUMNS)):
-            found, item = _trusted_ndarray_item(
-                value,
-                ndarray_type,
-                row_index,
-                column_index,
-            )
+            found, item = _ndarray_item(value, row_index, column_index)
             if not found:
                 return _placeholder(value, reason="trusted NumPy storage could not be read")
             row.append(item)

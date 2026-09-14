@@ -11,9 +11,15 @@ import pytest
 
 from hypergraph.runners._shared._inspect import (
     InspectionSession,
+    MapInspection,
     MapInspectionSession,
+    MapItemInspection,
     NodeInspection,
     RunInspection,
+)
+from hypergraph.runners._shared._inspect_html import (
+    _native_exception_markup,
+    _native_failure_markup,
 )
 from hypergraph.runners._shared._inspect_serialization import (
     serialize_value,
@@ -24,10 +30,9 @@ from hypergraph.runners._shared._inspect_transport import (
     InspectionCoalescer,
     InspectionDelivery,
     InspectionEnvelope,
-    _native_exception_markup,
-    _native_failure_markup,
     inspection_envelope_to_wire,
 )
+from hypergraph.runners._shared.results import FailureEvidence
 
 
 def _node(index: int) -> NodeInspection:
@@ -218,40 +223,35 @@ def test_envelope_has_one_typed_artifact_and_an_explicit_versioned_wire_boundary
 
 
 def test_explicit_failure_without_stable_node_match_never_borrows_node_or_run_facts() -> None:
-    selected_failure = {
-        "node_name": "retry",
-        "error": None,
-        "inputs": serialized_value_to_wire(serialize_value({"attempt": 9})),
-        "superstep": 9,
-        "graph_name": "workflow",
-        "workflow_id": "workflow-live",
-        "item_index": None,
-    }
-    wrong_node_failure = {
-        **selected_failure,
-        "inputs": serialized_value_to_wire(serialize_value({"attempt": 1})),
-        "superstep": 1,
-    }
-    data = {
-        "status": "failed",
-        "item_index": None,
-        "failures": [selected_failure],
-        "nodes": [
-            {
-                "node_name": "retry",
-                "qualified_name": "outer/wrong/retry",
-                "graph_name": "workflow",
-                "item_index": None,
-                "superstep": 1,
-                "status": "failed",
-                "inputs": serialized_value_to_wire(serialize_value({"attempt": 1})),
-                "failure": wrong_node_failure,
-            }
-        ],
-        "error": serialized_value_to_wire(serialize_value(RuntimeError("run boundary error"))),
-    }
+    selected_failure = FailureEvidence(
+        node_name="retry",
+        error=None,
+        inputs={"attempt": 9},
+        superstep=9,
+        duration_ms=0.0,
+        graph_name="workflow",
+        workflow_id="workflow-live",
+        item_index=None,
+    )
+    wrong_node = replace(
+        _node(0),
+        node_name="retry",
+        qualified_name="outer/wrong/retry",
+        status="failed",
+        inputs={"attempt": 1},
+        failure=replace(selected_failure, inputs={"attempt": 1}, superstep=1),
+        failure_key="failure-1",
+    )
+    artifact = replace(
+        _run(1),
+        status="failed",
+        nodes=(wrong_node,),
+        failures=(selected_failure,),
+        failure_keys=("failure-0",),
+        error=RuntimeError("run boundary error"),
+    )
 
-    markup = _native_failure_markup(kind="run", data=data, message={})
+    markup = _native_failure_markup(artifact)
 
     assert "Qualified node: <code>retry</code>" in markup
     assert "attempt=9" in markup
@@ -266,8 +266,8 @@ def test_repr_backed_exception_is_a_single_type_bounded_preview() -> None:
         def __repr__(self) -> str:
             return "CustomError(<redacted>)"
 
-    error = serialized_value_to_wire(serialize_value(CustomError("secret")))
-    assert error["kind"] == "text"
+    error = serialize_value(CustomError("secret"))
+    assert error.kind == "text"
 
     markup = _native_exception_markup(error, exact_label="Exact exception")
 
@@ -282,8 +282,8 @@ def test_opaque_repr_backed_exception_retains_its_type_once() -> None:
         def __repr__(self) -> str:
             return "<redacted>"
 
-    error = serialized_value_to_wire(serialize_value(OpaqueError("secret")))
-    assert error == {
+    error = serialize_value(OpaqueError("secret"))
+    assert serialized_value_to_wire(error) == {
         "kind": "text",
         "type_name": "OpaqueError",
         "text": "<redacted>",
@@ -299,31 +299,45 @@ def test_opaque_repr_backed_exception_retains_its_type_once() -> None:
 
 
 def test_status_only_map_failures_contribute_one_truthful_record_each() -> None:
-    items = []
-    for item_index in range(2):
-        items.append(
-            {
-                "item_index": item_index,
-                "status": "failed",
-                "run": {
-                    "status": "failed",
-                    "failures": [],
-                    "error": None,
-                    "nodes": [
-                        {
-                            "node_name": f"status_only_{item_index}",
-                            "qualified_name": f"workflow/status_only_{item_index}",
-                            "status": "failed",
-                            "inputs": serialized_value_to_wire(serialize_value({"item": item_index})),
-                            "failure": None,
-                        }
-                    ],
-                },
-            }
+    items = tuple(
+        MapItemInspection(
+            item_index=item_index,
+            status="failed",
+            run=replace(
+                _run(1),
+                graph_name="workflow",
+                status="failed",
+                nodes=(
+                    replace(
+                        _node(0),
+                        node_name=f"status_only_{item_index}",
+                        qualified_name=f"workflow/status_only_{item_index}",
+                        status="failed",
+                        inputs={"item": item_index},
+                    ),
+                ),
+                failures=(),
+                failure_keys=(),
+            ),
         )
-    data = {"items": items, "error": None}
+        for item_index in range(2)
+    )
+    artifact = MapInspection(
+        run_id="batch-status-only",
+        graph_name="workflow",
+        workflow_id=None,
+        status="failed",
+        map_over=("item",),
+        map_mode="zip",
+        requested_count=2,
+        items=items,
+        unstarted_item_indexes=(),
+        total_duration_ms=1.0,
+        captured=True,
+        terminal=True,
+    )
 
-    markup = _native_failure_markup(kind="map", data=data, message={})
+    markup = _native_failure_markup(artifact)
 
     assert "Item 0 failure — First failure of 2" in markup
     assert "workflow/status_only_0" in markup

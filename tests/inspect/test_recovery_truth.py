@@ -1,23 +1,19 @@
-"""Executable truth checks for inspect recovery code and nested map identity."""
+"""Truth checks for the facts-only native fallback and nested map identity."""
 
 from __future__ import annotations
 
 import asyncio
-import copy
 import html
-import pickle
-import re
-import textwrap
 from dataclasses import replace
-from types import SimpleNamespace
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from hypergraph import AsyncRunner, Graph, SyncRunner, node
-from hypergraph.runners._shared._inspect import MapInspection, MapItemInspection, RunInspection
-from hypergraph.runners._shared._inspect_html import build_inspection_payload
-from hypergraph.runners._shared._inspect_transport import _native_failure_markup
+from hypergraph.runners._shared import _inspect_transport
+from hypergraph.runners._shared._inspect import MapInspection, RunInspection
+from hypergraph.runners._shared._inspect_html import _DEBUG_WORKFLOWS_DOC, _native_failure_markup
 
 
 def _nested_failure_graph() -> Graph:
@@ -82,26 +78,7 @@ async def test_async_nested_map_public_failures_use_outer_indexes_while_leaf_kee
 
 
 def _failure_markup(artifact: RunInspection | MapInspection) -> str:
-    payload = build_inspection_payload(
-        artifact,
-        delivery_state="saved",
-        delivery_label="Saved snapshot",
-    )
-    kind = payload["kind"]
-    assert kind in {"run", "map"}
-    data = payload[kind]
-    assert isinstance(data, dict)
-    return _native_failure_markup(kind=kind, data=data, message={})
-
-
-def _recovery_code(markup: str) -> str:
-    match = re.search(
-        r"Smallest useful (?:result evidence|recovery code):</p><pre><code>(.*?)</code></pre>",
-        markup,
-        flags=re.DOTALL,
-    )
-    assert match is not None
-    return html.unescape(match.group(1).replace("<wbr>", ""))
+    return _native_failure_markup(artifact)
 
 
 def _failed_graph() -> Graph:
@@ -126,382 +103,38 @@ def _transient_graph() -> Graph:
     return Graph([review], name="transient-recovery-review")
 
 
-def _execute_sync(code: str, *, runner: Any, graph: Graph, values: dict[str, Any]) -> dict[str, Any]:
-    namespace = {"runner": runner, "graph": graph, "values": values}
-    exec(code, namespace)
-    return namespace
-
-
-async def _execute_async(code: str, *, runner: Any, graph: Graph, values: dict[str, Any]) -> dict[str, Any]:
-    namespace: dict[str, Any] = {}
-    source = "async def __snippet(runner, graph, values):\n" + textwrap.indent(code, "    ") + "\n    return locals()\n"
-    exec(source, namespace)
-    return await namespace["__snippet"](runner, graph, values)
-
-
-@pytest.mark.parametrize("runner_kind", ["sync", "async"])
-@pytest.mark.parametrize("artifact_kind", ["run", "map"])
-def test_native_transient_recovery_exposes_success_without_inventing_failure(
-    runner_kind: str,
-    artifact_kind: str,
-) -> None:
-    graph = _transient_graph()
-    values = {
-        "customer_id": ["maya-23"] if artifact_kind == "map" else "maya-23",
-    }
-    if runner_kind == "sync":
-        runner: SyncRunner | AsyncRunner = SyncRunner()
-        settled = (
-            runner.map(
-                graph,
-                values,
-                map_over="customer_id",
-                inspect=True,
-                error_handling="continue",
-            )
-            if artifact_kind == "map"
-            else runner.run(
-                graph,
-                values,
-                inspect=True,
-                error_handling="continue",
-            )
-        )
-    else:
-        runner = AsyncRunner()
-
-        async def execute_first_attempt():
-            if artifact_kind == "map":
-                return await runner.map(
-                    graph,
-                    values,
-                    map_over="customer_id",
-                    inspect=True,
-                    error_handling="continue",
-                )
-            return await runner.run(
-                graph,
-                values,
-                inspect=True,
-                error_handling="continue",
-            )
-
-        settled = asyncio.run(execute_first_attempt())
-
-    code = _recovery_code(_failure_markup(settled.inspect()._artifact))
-    if runner_kind == "sync":
-        namespace = _execute_sync(code, runner=runner, graph=graph, values=values)
-    else:
-        namespace = asyncio.run(_execute_async(code, runner=runner, graph=graph, values=values))
-
-    recovered = namespace["batch" if artifact_kind == "map" else "result"]
-    assert recovered.completed is True
-    assert namespace["failure"] is None
-    assert f"print({'batch' if artifact_kind == 'map' else 'result'})" in code
-
-
-def test_sync_run_and_map_recovery_code_executes_and_private_origin_survives_copy_pickle() -> None:
-    graph = _failed_graph()
-    runner = SyncRunner()
-    run = runner.run(
-        graph,
-        {"customer_id": "maya-23"},
-        inspect=True,
-        error_handling="continue",
-    )
-    batch = runner.map(
-        graph,
-        {"customer_id": ["maya-23"]},
-        map_over="customer_id",
-        inspect=True,
-        error_handling="continue",
-    )
-    started_run = runner.start_run(
-        graph,
-        {"customer_id": "maya-23"},
-        inspect=True,
-    ).result(raise_on_failure=False)
-    started_batch = runner.start_map(
-        graph,
-        {"customer_id": ["maya-23"]},
-        map_over="customer_id",
-        inspect=True,
-    ).result(raise_on_failure=False)
-
-    for result in (run, batch, started_run, started_batch):
-        assert result.inspect()._artifact._runner_kind == "sync"
-    for result in (copy.deepcopy(run), copy.deepcopy(batch), pickle.loads(pickle.dumps(run)), pickle.loads(pickle.dumps(batch))):
-        assert result.inspect()._artifact._runner_kind == "sync"
-
-    for inspected_run in (run, started_run):
-        run_code = _recovery_code(_failure_markup(inspected_run.inspect()._artifact))
-        assert "result = runner.run(" in run_code
-        assert "await runner.run(" not in run_code
-        assert (
-            _execute_sync(
-                run_code,
-                runner=runner,
-                graph=graph,
-                values={"customer_id": "maya-23"},
-            )["failure"].item_index
-            is None
-        )
-    for inspected_batch in (batch, started_batch):
-        map_code = _recovery_code(_failure_markup(inspected_batch.inspect()._artifact))
-        assert "batch = runner.map(" in map_code
-        assert "await runner.map(" not in map_code
-        assert (
-            _execute_sync(
-                map_code,
-                runner=runner,
-                graph=graph,
-                values={"customer_id": ["maya-23"]},
-            )["failure"].item_index
-            == 0
-        )
-
-
-@pytest.mark.asyncio
-async def test_async_run_and_map_recovery_code_executes_and_private_origin_survives_copy_pickle() -> None:
-    graph = _failed_graph()
-    runner = AsyncRunner()
-    run = await runner.run(
-        graph,
-        {"customer_id": "maya-23"},
-        inspect=True,
-        error_handling="continue",
-    )
-    batch = await runner.map(
-        graph,
-        {"customer_id": ["maya-23"]},
-        map_over="customer_id",
-        inspect=True,
-        error_handling="continue",
-    )
-    started_run = await runner.start_run(
-        graph,
-        {"customer_id": "maya-23"},
-        inspect=True,
-    ).result(raise_on_failure=False)
-    started_batch = await runner.start_map(
-        graph,
-        {"customer_id": ["maya-23"]},
-        map_over="customer_id",
-        inspect=True,
-    ).result(raise_on_failure=False)
-
-    for result in (run, batch, started_run, started_batch):
-        assert result.inspect()._artifact._runner_kind == "async"
-    for result in (copy.deepcopy(run), copy.deepcopy(batch), pickle.loads(pickle.dumps(run)), pickle.loads(pickle.dumps(batch))):
-        assert result.inspect()._artifact._runner_kind == "async"
-
-    for inspected_run in (run, started_run):
-        run_code = _recovery_code(_failure_markup(inspected_run.inspect()._artifact))
-        assert "result = await runner.run(" in run_code
-        run_locals = await _execute_async(
-            run_code,
-            runner=runner,
-            graph=graph,
-            values={"customer_id": "maya-23"},
-        )
-        assert run_locals["failure"].item_index is None
-    for inspected_batch in (batch, started_batch):
-        map_code = _recovery_code(_failure_markup(inspected_batch.inspect()._artifact))
-        assert "batch = await runner.map(" in map_code
-        map_locals = await _execute_async(
-            map_code,
-            runner=runner,
-            graph=graph,
-            values={"customer_id": ["maya-23"]},
-        )
-        assert map_locals["failure"].item_index == 0
-
-
-@pytest.mark.parametrize("runner_kind", ["sync", "async"])
-@pytest.mark.parametrize(
-    ("source", "artifact_kind"),
-    [
-        ("start", "run"),
-        ("start", "map"),
-        ("run", "run"),
-        ("run", "map"),
-        ("batch", "map"),
-    ],
-)
-def test_boundary_recovery_code_uses_origin_and_executes_without_unbound_result(
-    runner_kind: str,
-    source: str,
-    artifact_kind: str,
-) -> None:
-    class BoundaryRunner:
-        def run(self, *_args: Any, **kwargs: Any) -> Any:
-            if source == "start":
-                raise RuntimeError("start unavailable")
-            return SimpleNamespace(error=RuntimeError("run boundary"), failure=None, summary=lambda: "failed")
-
-        def map(self, *_args: Any, **kwargs: Any) -> Any:
-            if source in {"start", "batch"}:
-                raise RuntimeError(f"{source} unavailable")
-            return SimpleNamespace(failures=[SimpleNamespace(error=RuntimeError("run boundary"), failure=None)])
-
-    class AsyncBoundaryRunner:
-        async def run(self, *args: Any, **kwargs: Any) -> Any:
-            return BoundaryRunner().run(*args, **kwargs)
-
-        async def map(self, *args: Any, **kwargs: Any) -> Any:
-            return BoundaryRunner().map(*args, **kwargs)
-
-    if artifact_kind == "map":
-        boundary_run = (
-            RunInspection(
-                run_id="run-boundary",
-                graph_name="boundary",
-                workflow_id=None,
-                item_index=0,
-                status="failed",
-                nodes=(),
-                failures=(),
-                total_duration_ms=1.0,
-                captured=True,
-                terminal=True,
-                error=RuntimeError("run unavailable"),
-                _runner_kind=runner_kind,
-            )
-            if source == "run"
-            else None
-        )
-        artifact: RunInspection | MapInspection = MapInspection(
-            run_id="pending" if source == "start" else f"{source}-boundary",
-            graph_name="boundary",
-            workflow_id=None,
-            status="running" if source == "start" else "failed",
-            map_over=("customer_id",),
-            map_mode="zip",
-            requested_count=1,
-            items=(MapItemInspection(0, "failed", {"customer_id": "x"}, boundary_run),) if boundary_run else (),
-            unstarted_item_indexes=(0,) if boundary_run is None else (),
-            total_duration_ms=1.0,
-            captured=True,
-            terminal=source != "start",
-            error=RuntimeError("batch unavailable") if source == "batch" else None,
-            _runner_kind=runner_kind,
-        )
-    else:
-        artifact = RunInspection(
-            run_id="pending" if source == "start" else "run-boundary",
-            graph_name="boundary",
-            workflow_id=None,
-            item_index=None,
-            status="running" if source == "start" else "failed",
-            nodes=(),
-            failures=(),
-            total_duration_ms=1.0,
-            captured=True,
-            terminal=source != "start",
-            error=RuntimeError("run unavailable") if source == "run" else None,
-            _runner_kind=runner_kind,
-        )
-    message: dict[str, object] = {"kind": "exception", "type_name": "RuntimeError", "text": "start unavailable"} if source == "start" else {}
-
-    payload = build_inspection_payload(artifact, delivery_state="saved", delivery_label="Saved snapshot")
-    kind = payload["kind"]
-    data = payload[kind]
-    assert isinstance(kind, str) and isinstance(data, dict)
-    code = _recovery_code(_native_failure_markup(kind=kind, data=data, message=message))
-    if runner_kind == "async":
-        assert "await runner." in code
-        asyncio.run(
-            _execute_async(
-                code,
-                runner=AsyncBoundaryRunner(),
-                graph=_failed_graph(),
-                values={"customer_id": ["x"]},
-            )
-        )
-    else:
-        assert "await runner." not in code
-        _execute_sync(code, runner=BoundaryRunner(), graph=_failed_graph(), values={"customer_id": ["x"]})
-    assert "result.inspect()" not in code
-    assert not re.search(r"^(?:result|batch)\.", code, flags=re.MULTILINE)
-
-
-def test_unknown_degraded_origin_never_silently_emits_a_sync_rerun() -> None:
-    artifact = replace(
+def test_the_native_fallback_emits_facts_and_no_python_source() -> None:
+    artifact = (
         SyncRunner()
         .run(
             _failed_graph(),
             {"customer_id": "maya-23"},
-            error_handling="continue",
-        )
-        .inspect()
-        ._artifact,
-        _runner_kind=None,
-    )
-
-    markup = _failure_markup(artifact)
-
-    assert "runner.run(" not in markup
-    assert "await runner.run(" not in markup
-
-
-@pytest.mark.parametrize("runner_kind", ["sync", "async"])
-def test_nested_map_native_snippets_execute_against_each_containing_outer_item(
-    runner_kind: str,
-) -> None:
-    graph = _nested_failure_graph()
-    values = _nested_values()
-    if runner_kind == "sync":
-        runner: SyncRunner | AsyncRunner = SyncRunner()
-        batch = runner.map(
-            graph,
-            values,
-            map_over="customer_id",
             inspect=True,
             error_handling="continue",
         )
-    else:
-        runner = AsyncRunner()
-
-        async def run_batch():
-            return await runner.map(
-                graph,
-                values,
-                map_over="customer_id",
-                inspect=True,
-                error_handling="continue",
-            )
-
-        batch = asyncio.run(run_batch())
-
-    payload = build_inspection_payload(
-        batch.inspect()._artifact,
-        delivery_state="saved",
-        delivery_label="Saved snapshot",
+        .inspect()
+        ._artifact
     )
-    data = payload["map"]
-    assert isinstance(data, dict)
-    items = data["items"]
-    assert isinstance(items, list)
 
-    for outer_index in (0, 1):
-        selected_data = {**data, "items": [items[outer_index]]}
-        code = _recovery_code(
-            _native_failure_markup(
-                kind="map",
-                data=selected_data,
-                message={},
-            )
-        )
-        assert f"item.failure.item_index == {outer_index}" in code
-        assert f"item.failure.item_index == {1 - outer_index}" not in code
-        if runner_kind == "sync":
-            namespace = _execute_sync(code, runner=runner, graph=graph, values=values)
-        else:
-            assert isinstance(runner, AsyncRunner)
-            namespace = asyncio.run(_execute_async(code, runner=runner, graph=graph, values=values))
-        failure = namespace["failure"]
-        assert failure.item_index == outer_index
-        assert failure.inputs == {"customer_id": f"reject-outer-{outer_index}"}
+    markup = html.unescape(_failure_markup(artifact).replace("<wbr>", ""))
+
+    # Facts the reader needs, straight off the artifact.
+    assert "Qualified node: <code>review</code>" in markup
+    assert "customer_id=maya-23" in markup
+    assert "ValueError: manual review: maya-23" in markup
+    assert _DEBUG_WORKFLOWS_DOC in markup
+    # The rerun snippet belongs to the one renderer, not to the transport.
+    assert "runner.run(" not in markup
+    assert "runner.map(" not in markup
+    assert "try:" not in markup
+    assert "Smallest useful" not in markup
+
+
+def test_the_transport_module_contains_no_python_source_templates() -> None:
+    source = Path(_inspect_transport.__file__).read_text(encoding="utf-8")
+
+    for emitted in ("runner.run(", "runner.map(", "except Exception as error", "batch.failures"):
+        assert emitted not in source, emitted
 
 
 @pytest.mark.parametrize("runner_kind", ["sync", "async"])
@@ -533,21 +166,9 @@ def test_native_primary_failure_names_exact_nested_leaf_and_scalar_input(
 
         batch = asyncio.run(execute_batch())
 
-    payload = build_inspection_payload(
-        batch.inspect()._artifact,
-        delivery_state="saved",
-        delivery_label="Saved snapshot",
-    )
-    data = payload["map"]
-    assert isinstance(data, dict)
-    items = data["items"]
-    assert isinstance(items, list)
-    markup = _native_failure_markup(
-        kind="map",
-        data={**data, "items": [items[outer_index]]},
-        message={},
-    )
-    plain_markup = html.unescape(markup.replace("<wbr>", ""))
+    artifact = batch.inspect()._artifact
+    single_item = replace(artifact, items=(artifact.items[outer_index],))
+    plain_markup = html.unescape(_native_failure_markup(single_item).replace("<wbr>", ""))
 
     assert "Qualified node: <code>review_group/review_customer</code>" in plain_markup
     assert f"customer_id=reject-outer-{outer_index}" in plain_markup

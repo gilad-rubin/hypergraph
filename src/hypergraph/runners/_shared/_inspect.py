@@ -11,7 +11,7 @@ import contextvars
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal, cast
+from typing import Any, Generic, Literal, TypeVar, cast
 
 from hypergraph.runners._shared._inspect_serialization import CapturedMapping
 from hypergraph.runners._shared.results import FailureEvidence, MapResult, RunResult
@@ -44,6 +44,7 @@ class NodeInspection:
     inputs: Mapping[str, Any] | None = field(default=None, repr=False, compare=False)
     outputs: Mapping[str, Any] | None = field(default=None, repr=False, compare=False)
     failure: FailureEvidence | None = field(default=None, repr=False, compare=False)
+    failure_key: str | None = field(default=None, repr=False, compare=False)
     started_at_ms: float | None = None
     ended_at_ms: float | None = None
     duration_ms: float = 0.0
@@ -76,6 +77,7 @@ class RunInspection:
     total_duration_ms: float
     captured: bool
     terminal: bool
+    failure_keys: tuple[str, ...] = field(default=(), repr=False, compare=False)
     error: BaseException | None = field(default=None, repr=False, compare=False)
     revision: int = field(default=0, repr=False, compare=False)
     _runner_kind: RunnerKind | None = field(default=None, repr=False, compare=False)
@@ -156,7 +158,77 @@ InspectionSubscriber = Callable[[RunInspection, bool], None]
 MapInspectionSubscriber = Callable[[MapInspection, bool], None]
 
 
-class InspectionSession:
+ArtifactT = TypeVar("ArtifactT", RunInspection, MapInspection)
+
+
+class _ArtifactPublisher(Generic[ArtifactT]):
+    """Thread-safe latest-artifact publication shared by both session kinds."""
+
+    def __init__(self, artifact: ArtifactT) -> None:
+        self._lock = threading.RLock()
+        self._artifact = artifact
+        self._subscribers: dict[int, Callable[[ArtifactT, bool], None]] = {}
+        self._next_subscriber = 0
+
+    def snapshot(self) -> ArtifactT:
+        """Return the latest immutable artifact."""
+        with self._lock:
+            return self._artifact
+
+    def subscribe(self, callback: Callable[[ArtifactT, bool], None]) -> Callable[[], None]:
+        """Subscribe to latest-artifact publications and return an unsubscriber."""
+        with self._lock:
+            return self._subscribe_locked(callback)
+
+    def subscribe_with_snapshot(
+        self,
+        callback: Callable[[ArtifactT, bool], None],
+    ) -> tuple[ArtifactT, Callable[[], None] | None]:
+        """Atomically subscribe and return the snapshot covered by that subscription."""
+        with self._lock:
+            artifact = self._artifact
+            if artifact.terminal:
+                return artifact, None
+            return artifact, self._subscribe_locked(callback)
+
+    def _subscribe_locked(self, callback: Callable[[ArtifactT, bool], None]) -> Callable[[], None]:
+        key = self._next_subscriber
+        self._next_subscriber += 1
+        self._subscribers[key] = callback
+
+        def unsubscribe() -> None:
+            with self._lock:
+                self._subscribers.pop(key, None)
+
+        return unsubscribe
+
+    def _replace_artifact_locked(self, **changes: Any) -> None:
+        self._artifact = replace(
+            self._artifact,
+            revision=self._artifact.revision + 1,
+            **changes,
+        )
+
+    def _publication_locked(
+        self,
+    ) -> tuple[ArtifactT, tuple[Callable[[ArtifactT, bool], None], ...]]:
+        return self._artifact, tuple(self._subscribers.values())
+
+    @staticmethod
+    def _notify(
+        subscribers: tuple[Callable[[ArtifactT, bool], None], ...],
+        artifact: ArtifactT,
+        *,
+        urgent: bool,
+    ) -> None:
+        # Inspection presentation is observational: a broken subscriber must
+        # never change workflow behavior.
+        for callback in subscribers:
+            with contextlib.suppress(Exception):
+                callback(artifact, urgent)
+
+
+class InspectionSession(_ArtifactPublisher[RunInspection]):
     """Thread-safe source of immutable inspection snapshots for one top-level run."""
 
     def __init__(
@@ -167,24 +239,26 @@ class InspectionSession:
         item_index: int | None,
         runner_kind: RunnerKind | None = None,
     ) -> None:
-        self._lock = threading.RLock()
-        self._artifact = RunInspection(
-            run_id="pending",
-            graph_name=graph_name,
-            workflow_id=workflow_id,
-            item_index=item_index,
-            status="running",
-            nodes=(),
-            failures=(),
-            total_duration_ms=0.0,
-            captured=True,
-            terminal=False,
-            _runner_kind=runner_kind,
+        super().__init__(
+            RunInspection(
+                run_id="pending",
+                graph_name=graph_name,
+                workflow_id=workflow_id,
+                item_index=item_index,
+                status="running",
+                nodes=(),
+                failures=(),
+                total_duration_ms=0.0,
+                captured=True,
+                terminal=False,
+                _runner_kind=runner_kind,
+            )
         )
-        self._subscribers: dict[int, InspectionSubscriber] = {}
-        self._next_subscriber = 0
         self._next_sequence = 0
         self._failure_span_ids: set[str] = set()
+        self._failure_key_by_span: dict[str, str] = {}
+        self._recorded_failure_spans: list[str] = []
+        self._next_failure_key = 0
 
     def bind_run(self, run_id: str, *, workflow_id: str | None = None) -> None:
         """Bind effective run identity before node execution begins."""
@@ -342,21 +416,58 @@ class InspectionSession:
     ) -> None:
         """Mark a failed execution and optionally publish its leaf evidence."""
         with self._lock:
+            failure_key = self._failure_key_locked(span_id, failure, record_failure=record_failure)
             self._replace_node_locked(
                 span_id,
                 status="failed",
                 failure=failure,
+                failure_key=failure_key,
                 ended_at_ms=ended_at_ms,
                 duration_ms=duration_ms,
             )
             if record_failure:
                 self._failure_span_ids.add(span_id)
+                self._recorded_failure_spans.append(span_id)
+            recorded = tuple(node for node in self._artifact.nodes if node.span_id in self._failure_span_ids and node.failure is not None)
             self._replace_artifact_locked(
-                failures=tuple(node.failure for node in self._artifact.nodes if node.span_id in self._failure_span_ids and node.failure is not None),
+                failures=tuple(node.failure for node in recorded),
+                failure_keys=tuple(self._failure_key_by_span[node.span_id] for node in recorded),
                 error=self._artifact.error if self._artifact.error is not None else failure.error,
             )
             artifact, subscribers = self._publication_locked()
         self._notify(subscribers, artifact, urgent=True)
+
+    def _failure_key_locked(
+        self,
+        span_id: str,
+        failure: FailureEvidence,
+        *,
+        record_failure: bool,
+    ) -> str:
+        """Pair this execution with a failure occurrence while the pairing is known.
+
+        A recorded leaf failure opens a new occurrence.  An aggregate execution
+        -- a GraphNode re-raising what failed inside it -- joins the occurrence
+        of the most recent leaf carrying the same error object, which is the
+        one it is re-raising.
+        """
+        existing = self._failure_key_by_span.get(span_id)
+        if existing is not None:
+            return existing
+        if not record_failure:
+            for recorded_span in reversed(self._recorded_failure_spans):
+                recorded_node = next(
+                    (node for node in reversed(self._artifact.nodes) if node.span_id == recorded_span),
+                    None,
+                )
+                if recorded_node is not None and recorded_node.failure is not None and recorded_node.failure.error is failure.error:
+                    key = self._failure_key_by_span[recorded_span]
+                    self._failure_key_by_span[span_id] = key
+                    return key
+        key = f"failure-{self._next_failure_key}"
+        self._next_failure_key += 1
+        self._failure_key_by_span[span_id] = key
+        return key
 
     def finish(
         self,
@@ -369,6 +480,7 @@ class InspectionSession:
         """Publish the terminal snapshot and return it."""
         with self._lock:
             terminal_failures = failures or self._artifact.failures
+            terminal_failure_keys = self._terminal_failure_keys_locked(terminal_failures)
             settled_status = cast(
                 NodeInspectionStatus,
                 status if status in {"completed", "failed", "paused", "stopped"} else "failed",
@@ -378,6 +490,7 @@ class InspectionSession:
                 status=status,
                 nodes=settled_nodes,
                 failures=tuple(terminal_failures),
+                failure_keys=terminal_failure_keys,
                 total_duration_ms=total_duration_ms,
                 terminal=True,
                 error=error,
@@ -386,47 +499,28 @@ class InspectionSession:
         self._notify(subscribers, artifact, urgent=True)
         return artifact
 
-    def snapshot(self) -> RunInspection:
-        """Return the latest immutable artifact."""
-        with self._lock:
-            return self._artifact
-
-    def subscribe(self, callback: InspectionSubscriber) -> Callable[[], None]:
-        """Subscribe to latest-artifact publications and return an unsubscriber."""
-        with self._lock:
-            key = self._next_subscriber
-            self._next_subscriber += 1
-            self._subscribers[key] = callback
-
-        def unsubscribe() -> None:
-            with self._lock:
-                self._subscribers.pop(key, None)
-
-        return unsubscribe
-
-    def subscribe_with_snapshot(
+    def _terminal_failure_keys_locked(
         self,
-        callback: InspectionSubscriber,
-    ) -> tuple[RunInspection, Callable[[], None] | None]:
-        """Atomically subscribe and return the snapshot covered by that subscription."""
-        with self._lock:
-            artifact = self._artifact
-            if artifact.terminal:
-                return artifact, None
-            key = self._next_subscriber
-            self._next_subscriber += 1
-            self._subscribers[key] = callback
+        terminal_failures: tuple[FailureEvidence, ...],
+    ) -> tuple[str, ...]:
+        """Keep the recorded occurrence keys, in order, for the settled list.
 
-        def unsubscribe() -> None:
-            with self._lock:
-                self._subscribers.pop(key, None)
-
-        return artifact, unsubscribe
-
-    def _publication_locked(
-        self,
-    ) -> tuple[RunInspection, tuple[InspectionSubscriber, ...]]:
-        return self._artifact, tuple(self._subscribers.values())
+        The caller is a run template, which passes the failures accumulated by
+        ``_NodeExecutionError`` during this same execution -- the same
+        occurrences, in the order this session recorded them -- so the keys
+        already assigned line up positionally.  A shorter supplied list keeps
+        the keys it covers; anything beyond what was recorded opens a fresh
+        occurrence rather than borrowing one.
+        """
+        recorded = self._artifact.failure_keys
+        keys: list[str] = []
+        for index in range(len(terminal_failures)):
+            if index < len(recorded):
+                keys.append(recorded[index])
+                continue
+            keys.append(f"failure-{self._next_failure_key}")
+            self._next_failure_key += 1
+        return tuple(keys)
 
     def _replace_node_locked(self, span_id: str, **changes: Any) -> None:
         nodes = list(self._artifact.nodes)
@@ -437,28 +531,8 @@ class InspectionSession:
                 return
         raise RuntimeError(f"No inspected node execution has span_id {span_id!r}.")
 
-    def _replace_artifact_locked(self, **changes: Any) -> None:
-        self._artifact = replace(
-            self._artifact,
-            revision=self._artifact.revision + 1,
-            **changes,
-        )
 
-    @staticmethod
-    def _notify(
-        subscribers: tuple[InspectionSubscriber, ...],
-        artifact: RunInspection,
-        *,
-        urgent: bool,
-    ) -> None:
-        # Inspection presentation is observational: a broken subscriber must
-        # never change workflow behavior.
-        for callback in subscribers:
-            with contextlib.suppress(Exception):
-                callback(artifact, urgent)
-
-
-class MapInspectionSession:
+class MapInspectionSession(_ArtifactPublisher[MapInspection]):
     """Thread-safe aggregation of real child runs into one batch artifact."""
 
     def __init__(
@@ -471,24 +545,23 @@ class MapInspectionSession:
         map_mode: str,
         runner_kind: RunnerKind | None = None,
     ) -> None:
-        self._lock = threading.RLock()
-        self._artifact = MapInspection(
-            run_id="pending",
-            graph_name=graph_name,
-            workflow_id=workflow_id,
-            status="running",
-            map_over=map_over,
-            map_mode=map_mode,
-            requested_count=requested_count,
-            items=(),
-            unstarted_item_indexes=(),
-            total_duration_ms=0.0,
-            captured=True,
-            terminal=False,
-            _runner_kind=runner_kind,
+        super().__init__(
+            MapInspection(
+                run_id="pending",
+                graph_name=graph_name,
+                workflow_id=workflow_id,
+                status="running",
+                map_over=map_over,
+                map_mode=map_mode,
+                requested_count=requested_count,
+                items=(),
+                unstarted_item_indexes=(),
+                total_duration_ms=0.0,
+                captured=True,
+                terminal=False,
+                _runner_kind=runner_kind,
+            )
         )
-        self._subscribers: dict[int, MapInspectionSubscriber] = {}
-        self._next_subscriber = 0
 
     def bind_run(self, run_id: str | None) -> None:
         """Bind the parent batch run ID, including ``None`` for an empty map."""
@@ -619,43 +692,6 @@ class MapInspectionSession:
         self._notify(subscribers, artifact, urgent=True)
         return artifact
 
-    def snapshot(self) -> MapInspection:
-        """Return the latest immutable batch artifact."""
-        with self._lock:
-            return self._artifact
-
-    def subscribe(self, callback: MapInspectionSubscriber) -> Callable[[], None]:
-        """Subscribe to batch publications and return an unsubscriber."""
-        with self._lock:
-            key = self._next_subscriber
-            self._next_subscriber += 1
-            self._subscribers[key] = callback
-
-        def unsubscribe() -> None:
-            with self._lock:
-                self._subscribers.pop(key, None)
-
-        return unsubscribe
-
-    def subscribe_with_snapshot(
-        self,
-        callback: MapInspectionSubscriber,
-    ) -> tuple[MapInspection, Callable[[], None] | None]:
-        """Atomically subscribe and return the snapshot covered by that subscription."""
-        with self._lock:
-            artifact = self._artifact
-            if artifact.terminal:
-                return artifact, None
-            key = self._next_subscriber
-            self._next_subscriber += 1
-            self._subscribers[key] = callback
-
-        def unsubscribe() -> None:
-            with self._lock:
-                self._subscribers.pop(key, None)
-
-        return artifact, unsubscribe
-
     def _publish_child(
         self,
         *,
@@ -694,29 +730,6 @@ class MapInspectionSession:
         self._replace_artifact_locked(
             items=tuple(replacement if item.item_index == item_index else item for item in self._artifact.items),
         )
-
-    def _replace_artifact_locked(self, **changes: Any) -> None:
-        self._artifact = replace(
-            self._artifact,
-            revision=self._artifact.revision + 1,
-            **changes,
-        )
-
-    def _publication_locked(
-        self,
-    ) -> tuple[MapInspection, tuple[MapInspectionSubscriber, ...]]:
-        return self._artifact, tuple(self._subscribers.values())
-
-    @staticmethod
-    def _notify(
-        subscribers: tuple[MapInspectionSubscriber, ...],
-        artifact: MapInspection,
-        *,
-        urgent: bool,
-    ) -> None:
-        for callback in subscribers:
-            with contextlib.suppress(Exception):
-                callback(artifact, urgent)
 
 
 @dataclass(frozen=True, slots=True)
@@ -778,6 +791,7 @@ def degraded_run_inspection(result: RunResult) -> RunInspection:
                     values_captured=False,
                     inputs=failure.inputs if failure is not None else None,
                     failure=failure,
+                    failure_key=(f"failure-{failure_index}" if failure_index is not None else None),
                     duration_ms=step.duration_ms,
                     cached=step.cached,
                 )
@@ -799,6 +813,7 @@ def degraded_run_inspection(result: RunResult) -> RunInspection:
                 values_captured=False,
                 inputs=failure.inputs,
                 failure=failure,
+                failure_key=f"failure-{failure_index}",
                 duration_ms=failure.duration_ms,
             )
         )
@@ -810,6 +825,7 @@ def degraded_run_inspection(result: RunResult) -> RunInspection:
         status=result.status.value,
         nodes=tuple(nodes),
         failures=result.node_failures,
+        failure_keys=tuple(f"failure-{index}" for index in range(len(result.node_failures))),
         total_duration_ms=(result.log.total_duration_ms if result.log is not None else 0.0),
         captured=False,
         terminal=True,

@@ -240,33 +240,34 @@ limit, so temporary inspection memory stays bounded as the source grows.
 - **After:** the preview remains at most 20,000 characters, reports
   `5,120,000 bytes`, and is explicitly truncated without a whole-value `repr`.
 
-For the NumPy, pandas, and Pydantic adapters, trust comes from canonical class
-provenance rather than mutable public aliases. Reassigning public names such as
-`numpy.ndarray`, `pandas.DataFrame`, or `pydantic.BaseModel` therefore cannot
-make an unrelated custom class trusted.
+For the NumPy and pandas adapters, dispatch is on exact class identity,
+resolved from the module that really defines the class and cross-checked
+against the public alias, not on mutable public aliases. Reassigning public names such as `numpy.ndarray`,
+`pandas.DataFrame`, or `pydantic.BaseModel` therefore cannot make an unrelated
+custom class trusted: a hijacked alias withdraws the adapter instead of
+redirecting it. For NumPy and pandas a subclass is not the exact class and
+takes the `repr` fallback. A Pydantic model is only ever a *subclass* of
+`BaseModel`, so that adapter accepts any subclass; it is safe because it never
+calls the model — fields are read from the instance `__dict__`, so an
+overridden `__getattr__`, property, validator or `model_dump` does not run.
 
-Within the documented rank and size limits, exact NumPy arrays with canonical
-NumPy 1.x and 2.x `ndarray` provenance stay structured. The package's optional
-`examples` dependency range currently permits `numpy>=1.21.0` and
-`pandas>=1.3.0`. Those ranges describe installation compatibility; they do not
-promise that Hypergraph will traverse every pandas internal layout.
+Within the documented rank and size limits, exact NumPy arrays stay
+structured. The package's optional `examples` dependency range currently
+permits `numpy>=1.21.0` and `pandas>=1.3.0`.
 
-An exact pandas `DataFrame` is structured only when it has a recognized
-trusted NumPy-backed internal storage layout—the standard NumPy-backed storage
-Hypergraph knows how to inspect. An allowed pandas version with an
-unrecognized internal storage layout becomes a bounded
-`unsupported DataFrame storage` placeholder without calling DataFrame `repr`.
-An ExtensionArray-backed DataFrame—one whose data blocks, row axis, or column
-axis use extension storage—gets the narrower
-`unsupported extension-backed DataFrame` result, also without invoking
-extension hooks. This is an
-implementation safety boundary, not an all-version guarantee. DataFrame
-`repr` delegates to extension hooks, so both storage placeholders bypass it.
+An exact pandas `DataFrame` is read through pandas' public API (`shape`,
+`columns`, `iloc`), and only for the displayed corner, so storage layout never
+decides whether a frame renders: NumPy-backed, nullable extension-backed and
+Arrow-backed DataFrames all render as bounded tables, as do datetime columns.
+If that bounded read raises, the value becomes a bounded
+`unsupported DataFrame storage` placeholder without calling DataFrame `repr`,
+so an unreadable frame degrades instead of failing the run.
 
-- **Before:** an unfamiliar internal pandas layout could be described as
-  extension-backed even when Hypergraph had not proved that.
-- **After:** unrecognized storage says `unsupported DataFrame storage`; only
-  proven ExtensionArray-backed data or axes receive the narrower placeholder.
+- **Before:** `Int64`, `string`, Arrow-backed and datetime DataFrames rendered
+  as an unsupported-extension placeholder, because the reader could only follow
+  pandas' private NumPy block layout.
+- **After:** they render as bounded tables; only a frame whose public read
+  actually raises becomes an `unsupported DataFrame storage` placeholder.
 
 For unsupported subclasses and custom protocols—including `bytes` and
 `bytearray` subclasses, plus objects that advertise mapping, sequence, model,
@@ -347,9 +348,17 @@ summary. It uses native `<details>` and contains:
 - copy-faithful input and exception whitespace using valid `<pre><code>`
   nesting, with copy-inert wrap opportunities so an unbroken 20,000-character
   value fits a 360px page
-- a short `RunResult` / `MapResult` evidence snippet that reruns with
-  `error_handling="continue"` before reading a result
 - the canonical guide path: `docs/05-how-to/debug-workflows.md`
+
+The trust-stripped summary carries facts only. The rerun snippet belongs to the
+inspector that renders in trusted active output; one renderer writes it, so the
+two surfaces cannot drift apart.
+
+Each failed node carries the occurrence key of the run-level failure it
+belongs to, recorded when the node failed rather than re-derived from the
+settled artifact. A nested `GraphNode` re-raising what failed inside it shares
+its leaf's key, so selecting either one selects the same failure, and two peers
+that raised the same exception object still keep separate occurrences.
 
 The compact summary shows the first failure and says how many failures exist;
 it does not imply that one displayed failure is the whole batch. Its count uses
@@ -372,7 +381,7 @@ The full inspector and the trust-safe native summary follow the same labels.
 Recovery code follows the captured runner kind. Sync snippets call
 `runner.run(...)` or `runner.map(...)` directly; async snippets use
 `await runner.run(...)` or `await runner.map(...)`. If the runner kind was not
-captured, the summary says recovery code is unavailable instead of guessing
+captured, the inspector says recovery code is unavailable instead of guessing
 sync. Each retry assignment is inside `try`/`except` and uses
 `error_handling="continue"`. A persistent infrastructure exception therefore
 prints its real type and message without reading an unbound result. In the
@@ -489,14 +498,17 @@ After normal host trust:   The same saved record opens the full offline
 
 Hypergraph also has a best-effort compatibility path for the measured
 `jupyter-server-nbmodel==0.1.1a4` executor, which persists ordinary
-`display_data` but drops `update_display_data`. When the **kernel environment**
-reports that exact package version, ordinary coalesced updates are appended as
-payload-only records at the existing four-per-second bound. The notebook
+`display_data` but drops `update_display_data`. The switch is a release range,
+not that one string: when the **kernel environment** reports any version below
+`0.1.2`, ordinary coalesced updates are appended as payload-only records at the existing four-per-second bound. The notebook
 therefore retains hidden payload-only history. Terminal or stale settlement
 adds one terminal physical record containing the same portable inspector. It
 is hidden only after the original iframe accepts the update in a shared Jupyter
 document, but remains visible and interactive when a host isolates each saved
 output record. Terminal and error states can still flush immediately.
+
+A sibling prerelease of that line is therefore not silently treated as fixed;
+an unreadable or newer version keeps the ordinary update path.
 
 - **Before on that executor:** Python reaches the terminal result while the
   iframe can remain at `pending`, `0 completed`, `0 failed`.

@@ -22,21 +22,20 @@ from hypergraph import AsyncRunner, Graph, SyncRunner, node
 from hypergraph.runners._shared import _inspect_transport
 from hypergraph.runners._shared._inspect import MapInspection, RunInspection
 from hypergraph.runners._shared._inspect_html import (
-    _failure_keys,
+    _first_failure_and_node,
+    _native_failure_markup,
     build_inspection_payload,
+    one_serialization_pass,
     render_map_inspection,
     render_run_inspection,
 )
 from hypergraph.runners._shared._inspect_serialization import (
     serialize_value,
-    serialized_value_to_wire,
 )
 from hypergraph.runners._shared._inspect_transport import (
     INSPECTION_PROTOCOL_VERSION,
     InspectionDelivery,
     InspectionEnvelope,
-    _first_failure_and_node,
-    _native_failure_markup,
     render_payload_channel,
 )
 from hypergraph.runners._shared.results import MapResult, RunResult, RunStatus
@@ -161,33 +160,21 @@ def test_unstable_repr_keeps_primary_nested_failure_on_exact_leaf(
     expected_label = f"reject-outer-{outer_index}"
 
     if surface == "native":
-        payload = build_inspection_payload(
-            selected_artifact,
-            delivery_state="saved",
-            delivery_label="Saved snapshot",
-        )
-        data = payload["map"]
-        assert isinstance(data, dict)
-        item = data["items"][0]  # type: ignore[index]
-        run = item["run"]  # type: ignore[index]
-        before_consumer = _repr_counts(values)
+        selected_run = selected_artifact.items[0].run
+        assert selected_run is not None
+        failure, failed_node = _first_failure_and_node(selected_run)
+        # One render consumes each captured value once, so the summary and the
+        # payload cannot disagree about an object whose repr keeps changing.
+        with one_serialization_pass():
+            markup = html.unescape(_native_failure_markup(selected_artifact).replace("<wbr>", ""))
+            before_consumer = _repr_counts(values)
+            html.unescape(_native_failure_markup(selected_artifact).replace("<wbr>", ""))
 
-        failure, failed_node = _first_failure_and_node(
-            run,
-            containing_item_index=outer_index,
-        )
-        markup = html.unescape(
-            _native_failure_markup(
-                kind="map",
-                data=data,
-                message={},
-            ).replace("<wbr>", "")
-        )
-
-        assert failure["node_name"] == "review_group/review_customer"
-        assert failed_node["qualified_name"] == "review_group/review_customer"
-        assert failed_node["item_index"] == 1
-        assert expected_label in str(failed_node["inputs"])
+        assert failure is not None
+        assert failed_node is not None
+        assert failure.node_name == "review_group/review_customer"
+        assert failed_node.qualified_name == "review_group/review_customer"
+        assert failed_node.item_index == 1
         assert "Qualified node: <code>review_group/review_customer</code>" in markup
         assert expected_label in markup
         assert f"ValueError: manual review: {expected_label}" in markup
@@ -305,19 +292,8 @@ def test_missing_exact_leaf_never_borrows_aggregate_container(
         items=(replace(item, run=malformed_run),),
     )
 
-    payload = build_inspection_payload(
-        selected_artifact,
-        delivery_state="saved",
-        delivery_label="Saved snapshot",
-    )
-    map_wire = payload["map"]
-    assert isinstance(map_wire, dict)
-    run_wire = map_wire["items"][0]["run"]  # type: ignore[index]
-    _, failed_node = _first_failure_and_node(
-        run_wire,
-        containing_item_index=0,
-    )
-    assert failed_node == {}
+    _, failed_node = _first_failure_and_node(malformed_run)
+    assert failed_node is None
 
     page = browser.new_page(viewport={"width": 1280, "height": 900})
     page.set_content(render_map_inspection(selected_artifact))
@@ -408,14 +384,7 @@ def _render_failure_surface(
 ) -> str:
     if surface == "full":
         return result.inspect()._repr_html_()
-    payload = build_inspection_payload(
-        result.inspect()._artifact,
-        delivery_state="saved",
-        delivery_label="Saved snapshot",
-    )
-    data = payload["run"]
-    assert isinstance(data, dict)
-    return _native_failure_markup(kind="run", data=data, message={})
+    return _native_failure_markup(result.inspect()._artifact)
 
 
 @pytest.mark.parametrize("runner_kind", ["sync", "async"])
@@ -544,10 +513,8 @@ def test_real_shared_peer_failures_keep_distinct_occurrence_keys(
     assert [node.failure.inputs["customer_id"] is shared_value for node in failed_nodes] == [True, True]  # type: ignore[union-attr]
     assert [node.failure.duration_ms for node in failed_nodes] == [0.0, 0.0]  # type: ignore[union-attr]
 
-    node_keys, public_keys = _failure_keys(item.run)
-    failed_node_keys = [key for node, key in zip(item.run.nodes, node_keys, strict=True) if node.failure is not None]
-    assert failed_node_keys == ["failure-0", "failure-1"]
-    assert list(public_keys) == ["failure-0", "failure-1"]
+    assert [node.failure_key for node in failed_nodes] == ["failure-0", "failure-1"]
+    assert list(item.run.failure_keys) == ["failure-0", "failure-1"]
 
 
 @pytest.mark.parametrize("runner_kind", ["sync", "async"])
@@ -559,6 +526,8 @@ def test_real_shared_peer_selection_removes_only_selected_occurrence(
     surface: _Surface,
 ) -> None:
     batch, _, _ = _run_shared_peer_failures(runner_kind, monkeypatch)
+    typed_run = batch.inspect()._artifact.items[0].run
+    assert typed_run is not None
     run = _shared_peer_run_wire(batch)
     failures = run["failures"]
     nodes = [node for node in run["nodes"] if node["failure"] is not None]
@@ -573,20 +542,19 @@ def test_real_shared_peer_selection_removes_only_selected_occurrence(
         remaining = [failure for failure in failures if failure["failure_key"] != selected_failure["failure_key"]]
         assert [failure["failure_key"] for failure in remaining] == [f"failure-{1 - selected_index}"]
 
-        selected_run = {**run, "failures": [failures[selected_index], failures[1 - selected_index]]}
-        native_failure, native_node = _first_failure_and_node(
-            selected_run,
-            containing_item_index=0,
+        selected_run = replace(
+            typed_run,
+            failures=(typed_run.failures[selected_index], typed_run.failures[1 - selected_index]),
+            failure_keys=(typed_run.failure_keys[selected_index], typed_run.failure_keys[1 - selected_index]),
         )
-        assert native_failure["failure_key"] == f"failure-{selected_index}"
-        assert native_node["item_index"] == selected_index
+        native_failure, native_node = _first_failure_and_node(selected_run)
+        assert native_failure is selected_run.failures[0]
+        assert native_node is not None
+        assert native_node.failure_key == f"failure-{selected_index}"
+        assert native_node.item_index == selected_index
 
     if surface == "native":
-        markup = _native_failure_markup(
-            kind="run",
-            data=run,
-            message={},
-        )
+        markup = _native_failure_markup(typed_run)
         assert "Qualified node: <code>review_group/review_customer</code>" in markup
         return
 
@@ -622,202 +590,41 @@ def test_round_tripped_b20_projection_keeps_outer_public_and_inner_leaf_indexes(
         leaf = next(node for node in item.run.nodes if node.qualified_name == "review_group/review_customer" and node.status == "failed")
         assert leaf.item_index == 1
         assert item.run.failures[0].item_index == outer_index
-        node_keys, public_keys = _failure_keys(item.run)
-        leaf_key = next(key for node, key in zip(item.run.nodes, node_keys, strict=True) if node is leaf)
-        assert leaf_key == public_keys[0]
+        assert leaf.failure_key == item.run.failure_keys[0]
+
+
+def test_real_nested_aggregate_shares_the_leaf_occurrence_key() -> None:
+    batch, _ = _run_unstable_nested_map("sync")
+    item = batch.inspect()._artifact.items[0]
+    assert item.run is not None
+    leaf = next(node for node in item.run.nodes if node.qualified_name == "review_group/review_customer" and node.status == "failed")
+    container = next(node for node in item.run.nodes if node.qualified_name == "review_group" and node.failure is not None)
+
+    # The container re-raises what failed inside it, so both executions point at
+    # the same occurrence -- recorded when the leaf failed, not re-derived later.
+    assert leaf.failure_key == "failure-0"
+    assert container.failure_key == leaf.failure_key
+    assert item.run.failure_keys == ("failure-0",)
 
 
 @pytest.mark.parametrize(
-    ("artifact_item_index", "target_inner_index"),
+    "round_trip",
     [
-        pytest.param(0, 1, id="outer-zero-collides-with-inner-zero"),
-        pytest.param(1, 0, id="outer-one-collides-with-inner-one-reversed"),
+        pytest.param(copy.deepcopy, id="deepcopy"),
+        pytest.param(lambda value: pickle.loads(pickle.dumps(value)), id="pickle"),
     ],
 )
-def test_copied_projected_peer_never_borrows_coincidental_inner_index(
-    monkeypatch: pytest.MonkeyPatch,
-    artifact_item_index: int,
-    target_inner_index: int,
-) -> None:
-    batch, _, _ = _run_shared_peer_failures("sync", monkeypatch)
-    item = batch.inspect()._artifact.items[0]
-    assert item.run is not None
-    target_public = replace(
-        item.run.failures[target_inner_index],
-        item_index=artifact_item_index,
-    )
-    run = replace(
-        item.run,
-        item_index=artifact_item_index,
-        nodes=(tuple(reversed(item.run.nodes)) if artifact_item_index == 1 else item.run.nodes),
-        failures=(target_public,),
-    )
-
-    node_keys, public_keys = _failure_keys(run)
-    failed_node_keys = [key for node, key in zip(run.nodes, node_keys, strict=True) if node.failure is not None]
-
-    assert public_keys == ("failure-0",)
-    assert "failure-0" not in failed_node_keys
-    assert len(set(failed_node_keys)) == 2
-
-
-@pytest.mark.parametrize("malformation", ["projection", "embedded-node-name"])
-def test_public_failure_requires_safe_projection_and_embedded_leaf_name(
-    malformation: str,
+def test_round_tripped_occurrence_keys_survive_without_re_derivation(
+    round_trip: Callable[[MapResult], MapResult],
 ) -> None:
     batch, _ = _run_unstable_nested_map("sync")
-    item = batch.inspect()._artifact.items[0]
-    assert item.run is not None
-    leaf_index = next(
-        index
-        for index, current in enumerate(item.run.nodes)
-        if current.qualified_name == "review_group/review_customer" and current.status == "failed"
-    )
-    leaf = item.run.nodes[leaf_index]
-    assert leaf.failure is not None
-    nodes = list(item.run.nodes)
-    public_failure = item.run.failures[0]
-    if malformation == "projection":
-        public_failure = replace(public_failure, item_index=99)
-    else:
-        nodes[leaf_index] = replace(
-            leaf,
-            failure=replace(leaf.failure, node_name="decoy/review_customer"),
-        )
-    run = replace(
-        item.run,
-        nodes=tuple(nodes),
-        failures=(public_failure,),
-    )
+    before = batch.inspect()._artifact.items[0].run
+    assert before is not None
+    after = round_trip(batch).inspect()._artifact.items[0].run
+    assert after is not None
 
-    node_keys, public_keys = _failure_keys(run)
-
-    assert public_keys == ("failure-0",)
-    assert node_keys[leaf_index] != "failure-0"
-
-
-def _single_map_failure_run() -> RunInspection:
-    @node(output_name="reviewed")
-    def reject(customer_id: str) -> str:
-        raise ValueError(f"manual review: {customer_id}")
-
-    batch = SyncRunner().map(
-        Graph([reject], name="single-map-review"),
-        {"customer_id": ["maya-23"]},
-        map_over="customer_id",
-        inspect=True,
-        error_handling="continue",
-    )
-    item = batch.inspect()._artifact.items[0]
-    assert item.run is not None
-    return item.run
-
-
-def test_public_projection_rejects_foreign_index_when_leaf_equals_container() -> None:
-    base = _single_map_failure_run()
-    assert base.item_index == 0
-    leaf_index = next(index for index, current in enumerate(base.nodes) if current.failure is not None)
-    assert base.nodes[leaf_index].item_index == 0
-    run = replace(
-        base,
-        failures=(replace(base.failures[0], item_index=99),),
-    )
-
-    node_keys, public_keys = _failure_keys(run)
-
-    assert public_keys == ("failure-0",)
-    assert node_keys[leaf_index] != "failure-0"
-
-
-def test_aggregate_projection_rejects_foreign_index_when_leaf_equals_container() -> None:
-    base = _single_map_failure_run()
-    base_leaf = next(current for current in base.nodes if current.failure is not None)
-    assert base_leaf.failure is not None
-    shared_failure = replace(
-        base_leaf.failure,
-        node_name="review_group/reject",
-    )
-    leaf = replace(
-        base_leaf,
-        qualified_name="review_group/reject",
-        failure=shared_failure,
-    )
-    foreign_aggregate = replace(
-        leaf,
-        span_id=f"{leaf.span_id}-foreign-aggregate",
-        node_name="review_group",
-        qualified_name="review_group",
-        item_index=99,
-        sequence=leaf.sequence - 1,
-        failure=replace(shared_failure, item_index=99),
-    )
-    run = replace(
-        base,
-        nodes=(foreign_aggregate, leaf),
-        failures=(shared_failure,),
-    )
-
-    node_keys, public_keys = _failure_keys(run)
-
-    assert public_keys == ("failure-0",)
-    assert node_keys[1] == "failure-0"
-    assert node_keys[0] != "failure-0"
-
-
-@pytest.mark.parametrize(
-    ("duplicate_position", "expected_container_matches"),
-    [
-        pytest.param("before-leaf", 0, id="ambiguous-aggregate-occurrences"),
-        pytest.param("after-leaf", 1, id="later-cycle-occurrence"),
-    ],
-)
-def test_aggregate_alias_requires_unique_preceding_occurrence(
-    duplicate_position: str,
-    expected_container_matches: int,
-) -> None:
-    batch, _ = _run_unstable_nested_map("sync")
-    item = batch.inspect()._artifact.items[0]
-    assert item.run is not None
-    container = next(current for current in item.run.nodes if current.qualified_name == "review_group" and current.failure is not None)
-    leaf = next(current for current in item.run.nodes if current.qualified_name == "review_group/review_customer" and current.status == "failed")
-    duplicate_sequence = leaf.sequence - 1 if duplicate_position == "before-leaf" else leaf.sequence + 1
-    duplicate = replace(
-        container,
-        span_id=f"{container.span_id}-{duplicate_position}",
-        sequence=duplicate_sequence,
-    )
-    run = replace(item.run, nodes=(*item.run.nodes, duplicate))
-
-    node_keys, public_keys = _failure_keys(run)
-    container_keys = [key for node, key in zip(run.nodes, node_keys, strict=True) if node.qualified_name == "review_group"]
-    leaf_key = next(key for node, key in zip(run.nodes, node_keys, strict=True) if node is leaf)
-
-    assert public_keys == ("failure-0",)
-    assert leaf_key == "failure-0"
-    assert container_keys.count("failure-0") == expected_container_matches
-    assert len(set(container_keys)) == len(container_keys)
-
-
-def test_aggregate_alias_requires_matching_embedded_failure_node_name() -> None:
-    batch, _ = _run_unstable_nested_map("sync")
-    item = batch.inspect()._artifact.items[0]
-    assert item.run is not None
-    container_index = next(
-        index for index, current in enumerate(item.run.nodes) if current.qualified_name == "review_group" and current.failure is not None
-    )
-    container = item.run.nodes[container_index]
-    assert container.failure is not None
-    nodes = list(item.run.nodes)
-    nodes[container_index] = replace(
-        container,
-        failure=replace(container.failure, node_name="decoy/review_customer"),
-    )
-    run = replace(item.run, nodes=tuple(nodes))
-
-    node_keys, public_keys = _failure_keys(run)
-
-    assert public_keys == ("failure-0",)
-    assert node_keys[container_index] != "failure-0"
+    assert after.failure_keys == before.failure_keys
+    assert [node.failure_key for node in after.nodes] == [node.failure_key for node in before.nodes]
 
 
 class _RecordingTransport:
@@ -1064,37 +871,6 @@ def _capture_real_boundary(
     return runner, graph, values, artifact, plan.error
 
 
-def _native_recovery_code(
-    artifact: RunInspection | MapInspection,
-    *,
-    source: _BoundarySource,
-    error: RuntimeError,
-) -> str:
-    payload = build_inspection_payload(
-        artifact,
-        delivery_state="saved",
-        delivery_label="Saved snapshot",
-    )
-    kind = payload["kind"]
-    assert kind in {"run", "map"}
-    data = payload[kind]
-    assert isinstance(data, dict)
-    message = serialized_value_to_wire(serialize_value(error)) if source == "start" else {}
-    markup = _native_failure_markup(
-        kind=kind,
-        data=data,
-        message=message,
-    )
-    match = re.search(
-        r"Smallest useful (?:result evidence|recovery code):</p>"
-        r"<pre><code>(.*?)</code></pre>",
-        markup,
-        flags=re.DOTALL,
-    )
-    assert match is not None
-    return html.unescape(match.group(1).replace("<wbr>", ""))
-
-
 def _full_recovery_code(
     page: Page,
     artifact: RunInspection | MapInspection,
@@ -1237,17 +1013,10 @@ def _map_item_boundary_artifact(
 
 def _recovery_code_for_surface(
     browser: Browser,
-    surface: _Surface,
     artifact: MapInspection,
     *,
     error: RuntimeError,
 ) -> str:
-    if surface == "native":
-        return _native_recovery_code(
-            artifact,
-            source="map_item",
-            error=error,
-        )
     page = browser.new_page(viewport={"width": 1280, "height": 900})
     try:
         return _full_recovery_code(
@@ -1260,7 +1029,6 @@ def _recovery_code_for_surface(
         page.close()
 
 
-@pytest.mark.parametrize("surface", ["full", "native"])
 @pytest.mark.parametrize(
     (
         "selected_item_index",
@@ -1276,7 +1044,6 @@ def _recovery_code_for_surface(
 )
 def test_sparse_map_boundary_recovery_maps_original_item_or_fails_closed(
     browser: Browser,
-    surface: _Surface,
     selected_item_index: int,
     unstarted_item_indexes: tuple[int, ...],
     expected_settled_index: int | None,
@@ -1292,7 +1059,6 @@ def test_sparse_map_boundary_recovery_maps_original_item_or_fails_closed(
     runner = _SparseMapBoundaryRunner(batch)
     code = _recovery_code_for_surface(
         browser,
-        surface,
         artifact,
         error=captured_error,
     )
@@ -1314,28 +1080,26 @@ def test_sparse_map_boundary_recovery_maps_original_item_or_fails_closed(
 
 
 _REAL_BOUNDARY_CASES = [
-    pytest.param(source, runner_kind, surface, persistent, id=f"{source}-{runner_kind}-{surface}-{'persistent' if persistent else 'transient'}")
+    pytest.param(source, runner_kind, persistent, id=f"{source}-{runner_kind}-{'persistent' if persistent else 'transient'}")
     for source in ("run", "map_item")
     for runner_kind in ("sync", "async")
-    for surface in ("full", "native")
     for persistent in (False, True)
 ] + [
-    pytest.param("start", "sync", "full", False, id="start-sync-full-transient"),
-    pytest.param("start", "async", "native", True, id="start-async-native-persistent"),
-    pytest.param("batch", "async", "full", False, id="batch-async-full-transient"),
-    pytest.param("batch", "sync", "native", True, id="batch-sync-native-persistent"),
+    pytest.param("start", "sync", False, id="start-sync-transient"),
+    pytest.param("start", "async", True, id="start-async-persistent"),
+    pytest.param("batch", "async", False, id="batch-async-transient"),
+    pytest.param("batch", "sync", True, id="batch-sync-persistent"),
 ]
 
 
 @pytest.mark.parametrize(
-    ("source", "runner_kind", "surface", "persistent"),
+    ("source", "runner_kind", "persistent"),
     _REAL_BOUNDARY_CASES,
 )
 def test_real_boundary_recovery_prints_success_or_caught_error(
     browser: Browser,
     monkeypatch: pytest.MonkeyPatch,
     runner_kind: _RunnerKind,
-    surface: _Surface,
     persistent: bool,
     source: _BoundarySource,
 ) -> None:
@@ -1345,21 +1109,14 @@ def test_real_boundary_recovery_prints_success_or_caught_error(
         source,
         persistent=persistent,
     )
-    if surface == "native":
-        code = _native_recovery_code(
-            artifact,
-            source=source,
-            error=error,
-        )
-    else:
-        page = browser.new_page(viewport={"width": 1280, "height": 900})
-        code = _full_recovery_code(
-            page,
-            artifact,
-            source=source,
-            error=error,
-        )
-        page.close()
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    code = _full_recovery_code(
+        page,
+        artifact,
+        source=source,
+        error=error,
+    )
+    page.close()
 
     assert ".inputs" not in code
     assert "node_name" not in code

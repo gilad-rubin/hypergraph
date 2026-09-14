@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import html
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from importlib.resources import files
-from typing import Literal
+from typing import Any, Literal
 
 from hypergraph.runners._shared._inspect import MapInspection, NodeInspection, RunInspection
 from hypergraph.runners._shared._inspect_serialization import (
+    SerializedValue,
     serialize_value,
     serialized_value_to_wire,
 )
@@ -20,8 +24,42 @@ _INSPECT_SCHEMA = "hypergraph.inspect/v1"
 InspectionDeliveryState = Literal["live", "stale", "saved"]
 
 
+_SERIALIZATION_PASS: ContextVar[dict[int, tuple[object, SerializedValue]] | None] = ContextVar(
+    "hypergraph_inspect_serialization_pass",
+    default=None,
+)
+
+
+@contextmanager
+def one_serialization_pass() -> Iterator[None]:
+    """Serialize each captured value at most once for this render.
+
+    The payload and the no-script summary show the same values.  A value whose
+    ``repr`` changes every call would otherwise read differently in the two
+    places, because each render would consume it twice.
+    """
+    token = _SERIALIZATION_PASS.set({})
+    try:
+        yield
+    finally:
+        _SERIALIZATION_PASS.reset(token)
+
+
+def _serialize_once(value: object) -> SerializedValue:
+    pass_cache = _SERIALIZATION_PASS.get()
+    if pass_cache is None:
+        return serialize_value(value)
+    # The cache keeps a reference to the value it keyed on, so an id cannot be
+    # recycled by a temporary while its entry is still live.
+    cached = pass_cache.get(id(value))
+    if cached is None:
+        cached = (value, serialize_value(value))
+        pass_cache[id(value)] = cached
+    return cached[1]
+
+
 def _serialized(value: object) -> dict[str, object]:
-    return serialized_value_to_wire(serialize_value(value))  # type: ignore[return-value]
+    return serialized_value_to_wire(_serialize_once(value))  # type: ignore[return-value]
 
 
 def _failure_wire(
@@ -72,160 +110,9 @@ def _node_wire(
     }
 
 
-def _same_exact_text(left: object, right: object) -> bool:
-    """Compare framework-owned text without dispatching caller equality."""
-    return type(left) is str and type(right) is str and left == right
-
-
-def _same_exact_item_index(left: object, right: object) -> bool:
-    """Compare framework-owned indexes without dispatching caller equality."""
-    if left is None or right is None:
-        return left is right
-    return type(left) is int and type(right) is int and left == right
-
-
-def _failures_share_raw_aliases(
-    left: FailureEvidence,
-    right: FailureEvidence,
-) -> bool:
-    """Match shallow capture aliases without invoking caller-defined hooks."""
-    if left.error is not right.error:
-        return False
-    if type(left.inputs) is not dict or type(right.inputs) is not dict:
-        return False
-    if len(left.inputs) != len(right.inputs):
-        return False
-    left_items = tuple(left.inputs.items())
-    right_items = tuple(right.inputs.items())
-    return all(
-        _same_exact_text(left_key, right_key) and left_value is right_value
-        for (left_key, left_value), (right_key, right_value) in zip(
-            left_items,
-            right_items,
-            strict=True,
-        )
-    )
-
-
-def _is_aggregate_path(aggregate: object, leaf: object) -> bool:
-    """Return whether one framework path is a strict ancestor of another."""
-    return type(aggregate) is str and type(leaf) is str and leaf.startswith(f"{aggregate}/")
-
-
-def _is_failure_item_projection(
-    evidence_item_index: object,
-    leaf_item_index: object,
-    containing_item_index: int | None,
-) -> bool:
-    """Accept exact leaf identity or an outer containing-item projection."""
-    if _same_exact_item_index(evidence_item_index, leaf_item_index):
-        return True
-    if type(containing_item_index) is not int:
-        return False
-    return _same_exact_item_index(
-        evidence_item_index,
-        containing_item_index,
-    )
-
-
-def _failure_keys(
-    artifact: RunInspection,
-) -> tuple[tuple[str | None, ...], tuple[str, ...]]:
-    """Correlate stable node occurrences, then expose opaque wire ordinals."""
-    public_keys = tuple(f"failure-{index}" for index, _ in enumerate(artifact.failures))
-    node_keys: list[str | None] = [None] * len(artifact.nodes)
-    unclaimed_nodes = {index for index, node in enumerate(artifact.nodes) if node.failure is not None}
-    for failure_index, failure in enumerate(artifact.failures):
-        candidates = [
-            node_index
-            for node_index in sorted(unclaimed_nodes)
-            if (
-                (node := artifact.nodes[node_index]).failure is not None
-                and _same_exact_text(node.qualified_name, failure.node_name)
-                and _same_exact_text(node.failure.node_name, failure.node_name)
-                and _same_exact_item_index(
-                    node.item_index,
-                    node.failure.item_index,
-                )
-                and _is_failure_item_projection(
-                    failure.item_index,
-                    node.item_index,
-                    artifact.item_index,
-                )
-                and (node.failure is failure or _failures_share_raw_aliases(node.failure, failure))
-            )
-        ]
-        identical_candidates = [node_index for node_index in candidates if artifact.nodes[node_index].failure is failure]
-        if len(identical_candidates) == 1:
-            selected_node_index = identical_candidates[0]
-        elif len(candidates) == 1:
-            selected_node_index = candidates[0]
-        else:
-            # Ambiguous evidence must not borrow another real occurrence.
-            continue
-
-        failure_key = public_keys[failure_index]
-        selected_node = artifact.nodes[selected_node_index]
-        selected_failure = selected_node.failure
-        assert selected_failure is not None
-        node_keys[selected_node_index] = failure_key
-        unclaimed_nodes.remove(selected_node_index)
-
-        aggregate_aliases_by_path: dict[str, list[int]] = {}
-        for node_index in sorted(unclaimed_nodes):
-            node = artifact.nodes[node_index]
-            node_failure = node.failure
-            if (
-                node_failure is None
-                or not _is_aggregate_path(
-                    node.qualified_name,
-                    selected_node.qualified_name,
-                )
-                or not _same_exact_text(
-                    node_failure.node_name,
-                    selected_failure.node_name,
-                )
-                or not _same_exact_item_index(
-                    node.item_index,
-                    node_failure.item_index,
-                )
-                or not _failures_share_raw_aliases(
-                    node_failure,
-                    selected_failure,
-                )
-                or not _is_failure_item_projection(
-                    node.item_index,
-                    selected_node.item_index,
-                    artifact.item_index,
-                )
-                or type(node.sequence) is not int
-                or type(selected_node.sequence) is not int
-                or node.sequence >= selected_node.sequence
-            ):
-                continue
-            assert type(node.qualified_name) is str
-            aggregate_aliases_by_path.setdefault(
-                node.qualified_name,
-                [],
-            ).append(node_index)
-
-        for aggregate_aliases in aggregate_aliases_by_path.values():
-            if len(aggregate_aliases) != 1:
-                continue
-            node_index = aggregate_aliases[0]
-            node_keys[node_index] = failure_key
-            unclaimed_nodes.remove(node_index)
-
-    next_key = len(public_keys)
-    for node_index in sorted(unclaimed_nodes):
-        node_keys[node_index] = f"failure-{next_key}"
-        next_key += 1
-    return tuple(node_keys), public_keys
-
-
 def _run_wire(artifact: RunInspection) -> dict[str, object]:
     error = getattr(artifact, "error", None)
-    node_failure_keys, public_failure_keys = _failure_keys(artifact)
+    public_failure_keys = artifact.failure_keys
     return {
         "run_id": artifact.run_id,
         "graph_name": artifact.graph_name,
@@ -237,8 +124,14 @@ def _run_wire(artifact: RunInspection) -> dict[str, object]:
         "terminal": artifact.terminal,
         **({"runner_kind": artifact._runner_kind} if artifact._runner_kind is not None else {}),
         "error": _serialized(error) if error is not None else None,
-        "nodes": [_node_wire(node, failure_key=node_failure_keys[index]) for index, node in enumerate(artifact.nodes)],
-        "failures": [_failure_wire(failure, failure_key=public_failure_keys[index]) for index, failure in enumerate(artifact.failures)],
+        "nodes": [_node_wire(node, failure_key=node.failure_key) for node in artifact.nodes],
+        "failures": [
+            _failure_wire(
+                failure,
+                failure_key=(public_failure_keys[index] if index < len(public_failure_keys) else None),
+            )
+            for index, failure in enumerate(artifact.failures)
+        ],
     }
 
 
@@ -414,6 +307,289 @@ def render_map_inspection(artifact: MapInspection) -> str:
         delivery_label="Saved snapshot",
     )
     return render_inspection_payload(payload)
+
+
+_DEBUG_WORKFLOWS_DOC = "docs/05-how-to/debug-workflows.md"
+_NATIVE_WRAP_CHUNK_SIZE = 32
+_NativeFailureSource = Literal["node", "run", "batch", "status", "start", "none"]
+
+
+def _native_value_text(value: SerializedValue) -> str:
+    """Format one already-bounded serialized value as inert text."""
+    if value.kind == "null":
+        return "None"
+    if value.kind == "boolean":
+        return "True" if value.value is True else "False"
+    if value.kind == "number":
+        return str(value.value)
+    if value.kind in {"text", "exception"}:
+        text = value.text or ""
+        if value.truncated:
+            return f"{text} … truncated from {_native_count(value.original_size)} characters"
+        return text
+    if value.kind == "placeholder":
+        detail = value.text or value.reason or "value unavailable"
+        return f"{value.type_name or 'value'}: {detail}"
+    if value.kind == "mapping":
+        parts = [f"{_native_value_text(entry.key)}={_native_value_text(entry.value)}" for entry in value.entries]
+        if value.truncated:
+            parts.append(f"… truncated from {_native_count(value.original_size)} entries")
+        return "{" + ", ".join(parts) + "}"
+    if value.kind == "sequence":
+        parts = [_native_value_text(item) for item in value.items]
+        if value.truncated:
+            parts.append(f"… truncated from {_native_count(value.original_size)} items")
+        return "[" + ", ".join(parts) + "]"
+    if value.kind == "table" and value.table is not None:
+        return f"{value.table.original_row_count} × {value.table.original_column_count} table"
+    return value.text or str(value.value) or value.type_name or "value unavailable"
+
+
+def _native_count(original_size: int | None) -> str:
+    return "unknown" if original_size is None else str(original_size)
+
+
+def _native_wrappable_markup(text: str) -> str:
+    """Escape inert text and add copy-inert line-break opportunities."""
+    return "<wbr>".join(html.escape(text[offset : offset + _NATIVE_WRAP_CHUNK_SIZE]) for offset in range(0, len(text), _NATIVE_WRAP_CHUNK_SIZE))
+
+
+def _native_code_markup(text: str) -> str:
+    """Preserve exact visible/copy text without allowing narrow-page overflow."""
+    escaped = _native_wrappable_markup(text)
+    if text == " ".join(text.split()):
+        return f"<code>{escaped}</code>"
+    return f"<pre><code>{escaped}</code></pre>"
+
+
+def _native_repr_with_type(error_type: str, error_repr: str) -> str:
+    """Keep an anchored repr type once without erasing opaque repr content."""
+    if error_repr.startswith(error_type):
+        remainder = error_repr[len(error_type) :]
+        if not remainder or remainder[0] in " \t\r\n([{<:":
+            return error_repr
+    return f"{error_type}: {error_repr}"
+
+
+def _native_inputs_markup(inputs: Mapping[str, Any]) -> str:
+    serialized = _serialize_once(inputs)
+    if serialized.kind != "mapping":
+        return f"<div>{_native_code_markup(_native_value_text(serialized))}</div>"
+    if not serialized.entries:
+        return f"<div>{_native_code_markup('{}')}</div>"
+    rows = [f"<li>{_native_code_markup(f'{_native_value_text(entry.key)}={_native_value_text(entry.value)}')}</li>" for entry in serialized.entries]
+    if serialized.truncated:
+        rows.append(f"<li>Inputs truncated from {html.escape(_native_count(serialized.original_size))} entries.</li>")
+    return "<ul>" + "".join(rows) + "</ul>"
+
+
+def _native_exception_markup(error: SerializedValue, *, exact_label: str) -> str:
+    error_type = error.type_name or "Error"
+    if error.kind == "placeholder" or (error.kind in {"text", "exception"} and error.text is None):
+        detail = error.reason or "serialized exception text unavailable"
+        return f"<div>Exception details unavailable: {_native_code_markup(f'{error_type} — {detail}')}</div>"
+    if error.kind == "text":
+        label = "Exception preview (bounded repr)"
+        if error.truncated:
+            label = f"Exception preview (bounded repr; truncated from {_native_count(error.original_size)} characters)"
+        error_repr = _native_repr_with_type(error_type, error.text or "")
+        return f"<div>{html.escape(label)}: {_native_code_markup(error_repr)}</div>"
+    if error.kind == "exception":
+        label = exact_label
+        if error.truncated:
+            label = f"Exception preview (truncated from {_native_count(error.original_size)} characters)"
+        return f"<div>{html.escape(label)}: {_native_code_markup(f'{error_type}: {error.text}')}</div>"
+    return f"<div>Exception preview (serialized value): {_native_code_markup(f'{error_type}: {_native_value_text(error)}')}</div>"
+
+
+def _run_has_failure_evidence(run: RunInspection) -> bool:
+    return bool(run.failures) or any(node.failure is not None for node in run.nodes)
+
+
+def _run_is_failed(run: RunInspection, *, status_failed: bool = False) -> bool:
+    return status_failed or run.status == "failed" or any(node.status == "failed" for node in run.nodes)
+
+
+def _failed_run_and_item(
+    artifact: RunInspection | MapInspection,
+) -> tuple[RunInspection | None, int | None, _NativeFailureSource]:
+    """Pick the one execution the native fallback speaks about."""
+    if isinstance(artifact, RunInspection):
+        if _run_has_failure_evidence(artifact):
+            return artifact, artifact.item_index, "node"
+        if artifact.error is not None:
+            return artifact, artifact.item_index, "run"
+        if _run_is_failed(artifact):
+            return artifact, artifact.item_index, "status"
+        return artifact, artifact.item_index, "none"
+
+    item_runs = [(item, item.run) for item in artifact.items if item.run is not None]
+    for item, run in item_runs:
+        if _run_has_failure_evidence(run):
+            return run, item.item_index, "node"
+    for item, run in item_runs:
+        if run.error is not None:
+            return run, item.item_index, "run"
+    if artifact.error is not None:
+        return None, None, "batch"
+    for item, run in item_runs:
+        if _run_is_failed(run, status_failed=item.status == "failed"):
+            return run, item.item_index, "status"
+    return None, None, "none"
+
+
+def _first_failure_and_node(
+    run: RunInspection,
+) -> tuple[FailureEvidence | None, NodeInspection | None]:
+    """Pair the run's first published failure with the execution that recorded it."""
+    failure = run.failures[0] if run.failures else None
+    if failure is not None:
+        failure_key = run.failure_keys[0] if run.failure_keys else None
+        return failure, next(
+            (
+                node
+                for node in run.nodes
+                if node.failure_key is not None and node.failure_key == failure_key and node.qualified_name == failure.node_name
+            ),
+            None,
+        )
+    nodes_with_failure = [node for node in run.nodes if node.failure is not None]
+    named = next(
+        (node for node in nodes_with_failure if node.failure is not None and node.qualified_name == node.failure.node_name),
+        None,
+    )
+    if named is not None:
+        return named.failure, named
+    if nodes_with_failure:
+        return nodes_with_failure[0].failure, None
+    return None, next((node for node in run.nodes if node.status == "failed"), None)
+
+
+def _run_failure_count(run: RunInspection, *, status_failed: bool = False) -> int:
+    if run.failures:
+        return len(run.failures)
+    embedded = sum(node.failure is not None for node in run.nodes)
+    if embedded:
+        return embedded
+    if run.error is not None:
+        return 1
+    return 1 if _run_is_failed(run, status_failed=status_failed) else 0
+
+
+def _failure_count(
+    artifact: RunInspection | MapInspection,
+    *,
+    has_message: bool,
+) -> int:
+    if isinstance(artifact, RunInspection):
+        return _run_failure_count(artifact) + int(has_message)
+    total = 0
+    for item in artifact.items:
+        if item.run is not None:
+            total += _run_failure_count(item.run, status_failed=item.status == "failed")
+        elif item.status == "failed":
+            total += 1
+    return total + int(artifact.error is not None) + int(has_message)
+
+
+def _native_failure_markup(
+    artifact: RunInspection | MapInspection,
+    *,
+    message: SerializedValue | None = None,
+) -> str:
+    """Render the one failure the settled artifact already knows about, facts only."""
+    run, item_index, source = _failed_run_and_item(artifact)
+    if message is not None and source in {"none", "status"}:
+        run, item_index, source = None, None, "start"
+    failure, node = _first_failure_and_node(run) if run is not None and source in {"node", "status"} else (None, None)
+    node_failure = node.failure if node is not None else None
+    if source == "node":
+        error_value = (failure.error if failure is not None else None) or (node_failure.error if node_failure is not None else None)
+        error = _serialize(error_value)
+    elif source == "run":
+        error = _serialize(run.error if run is not None else None)
+    elif source == "batch":
+        error = _serialize(artifact.error)
+    elif source == "start":
+        error = message
+    else:
+        error = None
+    inputs: Mapping[str, Any] | None = None
+    qualified_name: str | None = None
+    if source in {"node", "status"}:
+        for candidate in (
+            failure.inputs if failure is not None else None,
+            node_failure.inputs if node_failure is not None else None,
+            node.inputs if node is not None else None,
+        ):
+            if candidate:
+                inputs = candidate
+                break
+        qualified_name = (node.qualified_name if node is not None else None) or (failure.node_name if failure is not None else None)
+    if error is None and inputs is None and qualified_name is None:
+        return ""
+
+    if item_index is not None:
+        title = f"Item {item_index} failure"
+    elif source == "start":
+        title = "Start failure"
+    elif source == "batch":
+        title = "Batch failure"
+    else:
+        title = "Run failure"
+    title = f"{title} — First failure of {max(1, _failure_count(artifact, has_message=message is not None))}"
+
+    facts: list[str] = []
+    if item_index is not None:
+        facts.append(f"<p>Original item: <code>{html.escape(str(item_index))}</code></p>")
+    if qualified_name is not None:
+        facts.append(f"<p>Qualified node: <code>{html.escape(qualified_name)}</code></p>")
+    if inputs is not None:
+        facts.append("<p>Captured inputs:</p>")
+        facts.append(_native_inputs_markup(inputs))
+    if error is not None:
+        exact_label = {
+            "run": "Exact run exception",
+            "batch": "Exact batch exception",
+        }.get(source, "Exact exception")
+        facts.append(_native_exception_markup(error, exact_label=exact_label))
+    facts.append(f"<p>Debugging guide: <code>{_DEBUG_WORKFLOWS_DOC}</code></p>")
+    return f"<details data-hg-inspect-native-failure><summary>{html.escape(title)}</summary>{''.join(facts)}</details>"
+
+
+def _serialize(error: BaseException | None) -> SerializedValue | None:
+    return None if error is None else _serialize_once(error)
+
+
+def render_native_summary(
+    artifact: RunInspection | MapInspection,
+    *,
+    widget_id: str,
+    delivery_label: str,
+    message: SerializedValue | None = None,
+) -> str:
+    """Render the no-script settled view: the same facts, no renderer needed."""
+    if isinstance(artifact, MapInspection):
+        counts_markup = (
+            f"<dt>Completed</dt><dd data-hg-inspect-native-completed>{artifact.completed_count}</dd>"
+            f"<dt>Failed</dt><dd data-hg-inspect-native-failed>{artifact.failed_count}</dd>"
+            f"<dt>Unstarted</dt><dd>{artifact.unstarted_count}</dd>"
+        )
+    else:
+        completed = sum(node.status == "completed" for node in artifact.nodes)
+        failed = sum(node.status == "failed" for node in artifact.nodes)
+        counts_markup = (
+            f"<dt>Completed nodes</dt><dd data-hg-inspect-native-completed>{completed}</dd>"
+            f"<dt>Failed nodes</dt><dd data-hg-inspect-native-failed>{failed}</dd>"
+        )
+    return (
+        f'<section data-hg-inspect-native-summary="{html.escape(widget_id, quote=True)}" '
+        'aria-label="Saved execution summary">'
+        f"<p><strong>{html.escape(delivery_label)}</strong> — {html.escape(artifact.graph_name or 'Hypergraph execution')}</p>"
+        f"<dl><dt>Status</dt><dd><code>{html.escape(artifact.status or 'unknown')}</code></dd>{counts_markup}</dl>"
+        f"{_native_failure_markup(artifact, message=message)}"
+        "</section>"
+    )
 
 
 def render_inspection_frame(child_html: str) -> str:
