@@ -127,7 +127,7 @@ receipt = await host.submit_batch(
     ingest_graph,                                  # the served Graph, never its name
     {"protocol_id": protocols, "doc": docs, "doc_meta": metas},
     map_over=["protocol_id", "doc", "doc_meta"],   # runner.map's own vocabulary
-    key_by="protocol_id",                          # the durable logical item key
+    identity="protocol_id",                        # the durable logical item key
     workflow_id="schneider-drop-42",
     tolerance=BatchTolerance(max_failed=2, max_failed_percent=25),
     start_at=None,
@@ -154,7 +154,7 @@ half-accepted (PRD 0019, atomic acceptance).
 ```python
 dup = await host.submit_batch(ingest_graph, {...same values...},
                               map_over=["protocol_id", "doc", "doc_meta"],
-                              key_by="protocol_id",
+                              identity="protocol_id",
                               workflow_id="schneider-drop-42",
                               tolerance=BatchTolerance(max_failed=2, max_failed_percent=25))
 assert dup.duplicate and dup.batch_ref == receipt.batch_ref   # use-existing
@@ -163,7 +163,7 @@ await host.submit(ingest_graph, {"doc": ...}, workflow_id="schneider-drop-42")
 # WorkflowIdConflictError — same id, different fingerprint
 
 # … after the Batch settles terminally:
-await host.submit_batch(ingest_graph, {...same values...}, map_over=[...], key_by="protocol_id",
+await host.submit_batch(ingest_graph, {...same values...}, map_over=[...], identity="protocol_id",
                         workflow_id="schneider-drop-42", ...)
 # AlreadyTerminalError — completed history never changes identity
 ```

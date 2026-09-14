@@ -542,6 +542,56 @@ def _weighted_admission_fits(budget: int, claimed_count: int, claimed_units: int
     return claimed_count < 2 or claimed_units + cost <= budget
 
 
+@dataclass
+class _AdmissionLedger:
+    """What one claim scan may still admit, and what it has already taken.
+
+    Both admission gates — the active-Run cap and the page budget — are
+    decided against numbers that CHANGE as the scan claims: a slot taken is a
+    slot gone, and a reserved cost counts against every later row in the same
+    pass. Keeping the running totals in one object is what lets the scan read
+    as a sequence of dispositions instead of a bundle of counters.
+
+    ``blocked`` is sticky on purpose. Page admission is FIFO, so once the
+    head does not fit, nothing behind it is admitted either: an oversized
+    document drains the queue and then runs alone, rather than starving
+    behind smaller items that happen to fit.
+    """
+
+    free_slots: int | None
+    budget: int | None
+    claimed_count: int
+    claimed_units: int
+    oversized_active: bool
+    blocked: bool = False
+
+    def admits(self, cost: int) -> bool:
+        """Whether the next submission in claim order may be claimed now.
+
+        NOT a pure predicate: a refusal by the page budget CLOSES the budget
+        for the rest of this scan (``blocked``), which is what keeps page
+        admission FIFO. Ask it exactly once per submission, in claim order,
+        and never twice about the same row.
+        """
+        if self.free_slots is not None and self.free_slots <= 0:
+            return False
+        if self.budget is None:
+            return True
+        fits = not self.blocked and not self.oversized_active and _weighted_admission_fits(self.budget, self.claimed_count, self.claimed_units, cost)
+        if not fits:
+            self.blocked = True
+            return False
+        return True
+
+    def record(self, cost: int) -> None:
+        """Account one claim this scan just took."""
+        if self.free_slots is not None:
+            self.free_slots -= 1
+        self.claimed_count += 1
+        self.claimed_units += cost
+        self.oversized_active = self.budget is not None and cost > self.budget
+
+
 # === Durable timing facts (issue #386) ===
 #
 # The execution journal already records what every node cost — a `steps`
@@ -2528,43 +2578,16 @@ class RunHome(SqliteCheckpointer):
                     (now_iso,),
                 )
                 submissions = [_row_to_submission(row) for row in await cursor.fetchall()]
-                free_slots = await self._free_admission_slots()
-                budget_cursor = await self._db.execute(_SELECT_SETTING_SQL, (_MAX_ADMISSION_UNITS_KEY,))
-                admission_budget = _cap_from_row(await budget_cursor.fetchone())
-                usage_cursor = await self._db.execute(
-                    "SELECT COUNT(*), COALESCE(SUM(admission_cost), 0) FROM host_submissions WHERE state = 'claimed'"
-                )
-                usage_row = await usage_cursor.fetchone()
-                claimed_count = int(usage_row[0])
-                claimed_units = int(usage_row[1])
-                oversized_active = admission_budget is not None and claimed_count == 1 and claimed_units > admission_budget
+                ledger = await self._read_admission_ledger()
                 tripped = await self._tripped_batch_ids({s["batch_id"] for s in submissions if s["batch_id"] is not None})
                 claimed: list[dict[str, Any]] = []
-                admission_blocked = False
-                # Both read lazily and at most once per scan: the common pass
-                # claims everything it sees and needs neither.
+                served_names = frozenset(entry.name for entry in served_set)
+                # Read lazily and at most once per scan: the common pass
+                # claims everything it sees and never has to ask.
                 coverage: WorkerCoverage | None = None
-                served_names: frozenset[str] | None = None
                 for submission in submissions:
                     if submission["batch_id"] in tripped:
-                        # A tripped Batch has CLOSED ADMISSION: no pending
-                        # child is newly claimed, and none is re-admitted —
-                        # including one an answered pause just returned to
-                        # claim order. Tolerance is a stop-the-line decision;
-                        # exempting work that happens to have started would
-                        # make the threshold advisory.
-                        result = await self._db.execute(
-                            "UPDATE host_submissions SET state = 'finished', finished_at = ? WHERE workflow_id = ? AND state = 'pending'",
-                            (now_iso, submission["workflow_id"]),
-                        )
-                        if result.rowcount == 1:
-                            # A9: this item settles AFTER the trip fact
-                            # already listed its items, so it gets its own
-                            # durable row in the SAME transaction as the
-                            # state flip. Without it a detached watch()
-                            # would never learn the item's outcome and the
-                            # stream could not reconstruct the view.
-                            await self._append_trip_closeout(submission["workflow_id"])
+                        await self._close_out_tripped_child(submission, now_iso)
                         continue
                     identity = DefinitionId(
                         submission["definition_name"],
@@ -2577,91 +2600,142 @@ class RunHome(SqliteCheckpointer):
                         # that is a wait or a dead end is a question about
                         # everybody, so ask the registry — once per scan, and
                         # only when a row actually needs the answer.
-                        if coverage is None:
-                            cursor = await self._db.execute(_SELECT_LIVE_WORKERS_SQL, (_pulse_cutoff(now_iso),))
-                            coverage = _coverage_from_rows(await cursor.fetchall(), worker_id)
-                        if served_names is None:
-                            served_names = frozenset(entry.name for entry in served_set)
-                        if coverage.covers(identity, builder_key):
-                            # ANOTHER LIVE WORKER can execute this exact
-                            # address. Leave it pending and say nothing: this
-                            # row is simply not this worker's business, and
-                            # the park would HIDE it from the very worker
-                            # that can run it (the claim scan skips
-                            # 'incompatible'). Under one worker that could
-                            # not happen — a row this worker could not serve
-                            # was a row nothing could serve — which is why
-                            # the park used to be the only disposition here.
-                            continue
-                        if coverage.may_yet_cover(identity, builder_key) or identity.name in served_names:
-                            # Somebody serves this Definition NAME but not
-                            # this identity — this worker at another version,
-                            # or another worker outright. That is a rolling
-                            # deployment, and `accepts=` is how it drains, so
-                            # the submission parks exactly as it always has.
-                            # The park is reopened when a worker publishes
-                            # coverage this Home has not seen from it before
-                            # (``_pulse_worker``), which is what a newly
-                            # deployed version arriving looks like.
-                            logger.warning(
-                                "Worker cannot serve submission %s: pinned identity %s is not served here; "
-                                "marking it version-incompatible (it stays parked until a serving worker or explicit migration).",
-                                submission["workflow_id"],
-                                identity.to_dict(),
-                            )
-                            await self._db.execute(
-                                "UPDATE host_submissions SET compat_state = 'incompatible' WHERE workflow_id = ? AND state = 'pending'",
-                                (submission["workflow_id"],),
-                            )
-                            continue
-                        reason = DEAD_LETTER_BUILDER_MISSING if builder_key is not None else DEAD_LETTER_UNSERVED_IDENTITY
-                        await self._dead_letter_in_txn(submission, reason, now_iso, identity=identity)
+                        coverage = await self._live_coverage_in_txn(now_iso, exclude=worker_id) if coverage is None else coverage
+                        await self._park_or_retire_unservable(submission, identity, now_iso, coverage=coverage, served_names=served_names)
                         continue
                     if len(claimed) >= limit:
                         continue
-                    if free_slots is not None and free_slots <= 0:
-                        # Over the active-Run cap: leave it pending. Claim
-                        # order is the scan order, so the oldest waiting
-                        # submission takes the next freed slot.
-                        continue
                     cost = int(submission["admission_cost"])
-                    if admission_budget is not None:
-                        fits_units = (
-                            not admission_blocked
-                            and not oversized_active
-                            and _weighted_admission_fits(admission_budget, claimed_count, claimed_units, cost)
-                        )
-                        if not fits_units:
-                            # Weighted admission remains FIFO. In particular,
-                            # an oversized head drains the queue until it can
-                            # run alone rather than starving behind smaller
-                            # items that happen to fit.
-                            admission_blocked = True
-                            continue
-                    result = await self._db.execute(
-                        "UPDATE host_submissions SET state = 'claimed', claimed_at = ?, claim_seq = claim_seq + 1, "
-                        "claimed_by = ?, lease_until = ? WHERE workflow_id = ? AND state = 'pending'",
-                        (now_iso, worker_id, lease_until, submission["workflow_id"]),
-                    )
-                    if result.rowcount == 1:
-                        # The row was read before the bump, so the claim this
-                        # caller now owns is one past what it says. Handing
-                        # the stale value back would let the releaser match a
-                        # claim it never held.
-                        submission["claim_seq"] = int(submission["claim_seq"]) + 1
-                        submission["claimed_by"] = worker_id
-                        submission["lease_until"] = lease_until
+                    if not ledger.admits(cost):
+                        # Over the active-Run cap or the page budget: leave it
+                        # pending. Claim order is the scan order, so the
+                        # oldest waiting submission takes the next freed slot.
+                        continue
+                    if await self._take_claim_in_txn(submission, now_iso, lease_until=lease_until, worker_id=worker_id):
                         claimed.append(submission)
-                        if free_slots is not None:
-                            free_slots -= 1
-                        claimed_count += 1
-                        claimed_units += cost
-                        oversized_active = cost > admission_budget if admission_budget is not None else False
+                        ledger.record(cost)
                 await self._db.commit()
                 return claimed
             except BaseException:
                 await self._rollback_async()
                 raise
+
+    async def _read_admission_ledger(self) -> _AdmissionLedger:
+        """What this claim scan may admit before it claims anything; caller holds the txn.
+
+        Slots, page budget, and what the claims already outstanding hold, all
+        read inside the scan's own transaction so the admission decision uses
+        the numbers that transaction commits against.
+        """
+        free_slots = await self._free_admission_slots()
+        budget_cursor = await self._db.execute(_SELECT_SETTING_SQL, (_MAX_ADMISSION_UNITS_KEY,))
+        budget = _cap_from_row(await budget_cursor.fetchone())
+        usage_cursor = await self._db.execute("SELECT COUNT(*), COALESCE(SUM(admission_cost), 0) FROM host_submissions WHERE state = 'claimed'")
+        usage_row = await usage_cursor.fetchone()
+        claimed_count = int(usage_row[0])
+        claimed_units = int(usage_row[1])
+        return _AdmissionLedger(
+            free_slots=free_slots,
+            budget=budget,
+            claimed_count=claimed_count,
+            claimed_units=claimed_units,
+            oversized_active=budget is not None and claimed_count == 1 and claimed_units > budget,
+        )
+
+    async def _close_out_tripped_child(self, submission: dict[str, Any], now_iso: str) -> None:
+        """Finish one pending child of a tripped Batch; caller holds the txn.
+
+        A tripped Batch has CLOSED ADMISSION: no pending child is newly
+        claimed, and none is re-admitted — including one an answered pause
+        just returned to claim order. Tolerance is a stop-the-line decision;
+        exempting work that happens to have started would make the threshold
+        advisory.
+        """
+        result = await self._db.execute(
+            "UPDATE host_submissions SET state = 'finished', finished_at = ? WHERE workflow_id = ? AND state = 'pending'",
+            (now_iso, submission["workflow_id"]),
+        )
+        if result.rowcount == 1:
+            # A9: this item settles AFTER the trip fact already listed its
+            # items, so it gets its own durable row in the SAME transaction
+            # as the state flip. Without it a detached watch() would never
+            # learn the item's outcome and the stream could not reconstruct
+            # the view.
+            await self._append_trip_closeout(submission["workflow_id"])
+
+    async def _live_coverage_in_txn(self, now_iso: str, *, exclude: str | None) -> WorkerCoverage:
+        """``_live_worker_coverage`` for a caller that already holds the txn."""
+        cursor = await self._db.execute(_SELECT_LIVE_WORKERS_SQL, (_pulse_cutoff(now_iso),))
+        return _coverage_from_rows(await cursor.fetchall(), exclude)
+
+    async def _park_or_retire_unservable(
+        self,
+        submission: dict[str, Any],
+        identity: DefinitionId,
+        now_iso: str,
+        *,
+        coverage: WorkerCoverage,
+        served_names: frozenset[str],
+    ) -> None:
+        """Dispose of one submission this worker cannot execute; caller holds the txn.
+
+        The three dispositions ``_claim_eligible`` documents, and the only
+        place that tells them apart: left alone for the worker that can run
+        it, parked as version-incompatible while somebody might yet serve the
+        name, or dead-lettered when nothing alive answers to it at all.
+        """
+        builder_key = submission["builder_key"]
+        if coverage.covers(identity, builder_key):
+            # ANOTHER LIVE WORKER can execute this exact address. Leave it
+            # pending and say nothing: this row is simply not this worker's
+            # business, and the park would HIDE it from the very worker that
+            # can run it (the claim scan skips 'incompatible'). Under one
+            # worker that could not happen — a row this worker could not
+            # serve was a row nothing could serve — which is why the park
+            # used to be the only disposition here.
+            return
+        if coverage.may_yet_cover(identity, builder_key) or identity.name in served_names:
+            # Somebody serves this Definition NAME but not this identity —
+            # this worker at another version, or another worker outright.
+            # That is a rolling deployment, and `accepts=` is how it drains,
+            # so the submission parks exactly as it always has. The park is
+            # reopened when a worker publishes coverage this Home has not
+            # seen from it before (``_pulse_worker``), which is what a newly
+            # deployed version arriving looks like.
+            logger.warning(
+                "Worker cannot serve submission %s: pinned identity %s is not served here; "
+                "marking it version-incompatible (it stays parked until a serving worker or explicit migration).",
+                submission["workflow_id"],
+                identity.to_dict(),
+            )
+            await self._db.execute(
+                "UPDATE host_submissions SET compat_state = 'incompatible' WHERE workflow_id = ? AND state = 'pending'",
+                (submission["workflow_id"],),
+            )
+            return
+        reason = DEAD_LETTER_BUILDER_MISSING if builder_key is not None else DEAD_LETTER_UNSERVED_IDENTITY
+        await self._dead_letter_in_txn(submission, reason, now_iso, identity=identity)
+
+    async def _take_claim_in_txn(self, submission: dict[str, Any], now_iso: str, *, lease_until: str, worker_id: str | None) -> bool:
+        """CAS one pending submission to 'claimed'; caller holds the txn.
+
+        Returns True when THIS call was the one that took it, with the row
+        updated in place to carry the claim the caller now owns.
+        """
+        result = await self._db.execute(
+            "UPDATE host_submissions SET state = 'claimed', claimed_at = ?, claim_seq = claim_seq + 1, "
+            "claimed_by = ?, lease_until = ? WHERE workflow_id = ? AND state = 'pending'",
+            (now_iso, worker_id, lease_until, submission["workflow_id"]),
+        )
+        if result.rowcount != 1:
+            return False
+        # The row was read before the bump, so the claim this caller now owns
+        # is one past what it says. Handing the stale value back would let
+        # the releaser match a claim it never held.
+        submission["claim_seq"] = int(submission["claim_seq"]) + 1
+        submission["claimed_by"] = worker_id
+        submission["lease_until"] = lease_until
+        return True
 
     async def _dead_letter_in_txn(
         self,

@@ -30,7 +30,7 @@ receipt = await host.submit_batch(
     ingest_graph,
     {"protocol_id": ["protocol-17", "protocol-18"], "doc": [doc_17, doc_18]},
     map_over=["protocol_id", "doc"],
-    key_by="protocol_id",
+    identity="protocol_id",
     workflow_id="schneider-drop-42",
     tolerance=BatchTolerance(max_failed=2, max_failed_percent=25),  # optional, pinned
 )
@@ -52,7 +52,7 @@ Requirements:
   logical item keys, each mapped to one independent child Run with its
   pinned inputs — never a durable parent `MapResult`. The caller states
   the expansion in `runner.map`'s own vocabulary (`values` plus
-  `map_over` / `map_mode`) and names the key input with `key_by`; the
+  `map_over` / `map_mode`) and names the key input with `identity`; the
   expansion is frozen into `(item_key, inputs)` pairs BEFORE the
   acceptance transaction, so mutating the caller's collection afterwards
   cannot change durable intent. Duplicate, missing, empty, or non-scalar

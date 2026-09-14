@@ -35,9 +35,9 @@
   structurally drifted graph raises the new `UnservedGraphError` at the call
   site instead of being accepted and parked; a bare string raises
   `TypeError`. `submit_batch()` replaces its mapping-of-item-key-to-inputs
-  `items=` parameter with `values` plus `map_over` / `map_mode` / `key_by` —
+  `items=` parameter with `values` plus `map_over` / `map_mode` / `identity` —
   the same input-expansion vocabulary as `runner.map()`, frozen into the same
-  immutable manifest. `key_by` names one expanded input whose JSON-safe
+  immutable manifest. `identity` names one expanded input whose JSON-safe
   scalar value is the logical item key; missing, empty, non-scalar, or
   duplicate keys raise the new `ItemKeyError` before anything is written.
   Runner map's `max_concurrency` and `error_handling` are deliberately not
