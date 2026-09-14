@@ -755,6 +755,16 @@ def _plan_batch_rerun(
     )
 
 
+def _validate_fresh(fresh: bool) -> None:
+    """A repeat either does the work again or it does not — nothing else."""
+    if not isinstance(fresh, bool):
+        raise TypeError(
+            f"rerun() fresh must be a bool, got {type(fresh).__name__}.\n\n"
+            "How to fix: pass fresh=True to re-execute the work under retry lineage, "
+            "or leave it out to reuse the source's completed steps."
+        )
+
+
 def _reject_run_item_keys(item_keys: Sequence[str] | None) -> None:
     if item_keys is not None:
         raise TypeError(
@@ -1563,7 +1573,12 @@ class RunHomeClient:
         return _make_read_snapshot(view, submission, run, inputs, latest_update, pause_slot, dead_letter_reason, ever_paused)
 
     async def rerun(
-        self, ref: RunRef | BatchRef, *, item_keys: Sequence[str] | None = None, source_ref: str | None = None
+        self,
+        ref: RunRef | BatchRef,
+        *,
+        item_keys: Sequence[str] | None = None,
+        source_ref: str | None = None,
+        fresh: bool = False,
     ) -> SubmitReceipt | BatchSubmitReceipt:
         """Repeat settled work under a new id with retry lineage.
 
@@ -1577,7 +1592,30 @@ class RunHomeClient:
         colliding on ``-retry-1``. That ordinal is stored on the submission
         and is the ``retry_index`` the runs row records, so the id and the
         lineage agree whatever order the reruns execute in. The worker
-        executes the submission with ``retry_from=<source>``.
+        executes the submission with ``retry_from=<source>``: the new runs
+        row records ``retry_of`` and that same ``retry_index``, and **by
+        default completed-step checkpoints from the source are reused**.
+        That reuse is what makes a rerun the verb for reviving braked,
+        dead-lettered, or failed work — the steps that did finish are not
+        paid for twice.
+
+        ``fresh=True`` is the other case the verb's name suggests: repeat
+        settled work FOR REAL, because a human approved the cost of doing
+        it again::
+
+            receipt = await client.rerun(ref, fresh=True)
+
+        It is a fresh ATTEMPT UNDER LINEAGE, and keeps every other
+        guarantee — the ``<source>-retry-N`` id minted inside the
+        acceptance transaction, ``retry_of`` / ``retry_index`` recorded
+        everywhere a default repeat records them (the submission, the runs
+        row, ``RunView``, ``RunStartEvent``, the OTel span attributes), the
+        source's pinned ``DefinitionId`` and inputs verbatim. It changes
+        exactly one thing: the seed checkpoint arrives EMPTY, so every node
+        executes. Without it, a rerun of a COMPLETED source settles
+        ``completed`` in a millisecond carrying the first run's outcome,
+        and nothing runs. ``fresh`` is not ``fork()``: fork changes which
+        code runs, ``fresh`` changes only whether history is reused.
 
         For a ``BatchRef``, ``item_keys`` names source item keys to repeat
         (omit it to repeat the whole manifest) and a **new immutable Batch
@@ -1587,7 +1625,9 @@ class RunHomeClient:
         The new Batch records ``retry_of`` against the source Batch and
         each child records ``retry_of`` against its source child. The
         source Batch is never mutated — it stays settled and queryable
-        forever.
+        forever. Its children reuse their source children's completed
+        steps exactly as a Run rerun does, and ``fresh=True`` applies to
+        them the same way.
 
         Raises ``RerunError`` when the source is unknown or not terminal
         (rerun repeats settled work only) — unless the source submission
@@ -1606,6 +1646,7 @@ class RunHomeClient:
         say who asked for it. Audit only: never authentication, never a
         fingerprint input, and never part of dedup.
         """
+        _validate_fresh(fresh)
         if isinstance(ref, BatchRef):
             batch, child_rows = await self._require_batch_source(ref)
             plan = _plan_batch_rerun(batch, child_rows, item_keys)
@@ -1629,6 +1670,7 @@ class RunHomeClient:
                 batch_retry_of=plan.batch_retry_of,
                 child_retry_of=plan.child_retry_of,
                 child_admission_costs=plan.child_admission_costs,
+                fresh=fresh,
             )
             created, row = await self._home._submit_batch(request)
             return BatchSubmitReceipt(
@@ -1655,14 +1697,21 @@ class RunHomeClient:
             fingerprint=start_fingerprint(definition_id, inputs_json, None),
             retry_of=ref.run_id,
             admission_cost=int(submission["admission_cost"]),
+            fresh=fresh,
         )
         workflow_id = row["workflow_id"]
         return SubmitReceipt(run_ref=RunRef(home=self._home.uri, run_id=workflow_id), workflow_id=workflow_id, duplicate=not created)
 
     def rerun_sync(
-        self, ref: RunRef | BatchRef, *, item_keys: Sequence[str] | None = None, source_ref: str | None = None
+        self,
+        ref: RunRef | BatchRef,
+        *,
+        item_keys: Sequence[str] | None = None,
+        source_ref: str | None = None,
+        fresh: bool = False,
     ) -> SubmitReceipt | BatchSubmitReceipt:
         """Sync mirror of ``rerun``."""
+        _validate_fresh(fresh)
         if isinstance(ref, BatchRef):
             batch = self._home._get_batch_sync(ref.batch_id)
             if batch is None:
@@ -1689,6 +1738,7 @@ class RunHomeClient:
                 batch_retry_of=plan.batch_retry_of,
                 child_retry_of=plan.child_retry_of,
                 child_admission_costs=plan.child_admission_costs,
+                fresh=fresh,
             )
             created, row = self._home._submit_batch_sync(request)
             return BatchSubmitReceipt(
@@ -1723,6 +1773,7 @@ class RunHomeClient:
             fingerprint=start_fingerprint(definition_id, inputs_json, None),
             retry_of=ref.run_id,
             admission_cost=int(submission["admission_cost"]),
+            fresh=fresh,
         )
         workflow_id = row["workflow_id"]
         return SubmitReceipt(run_ref=RunRef(home=self._home.uri, run_id=workflow_id), workflow_id=workflow_id, duplicate=not created)

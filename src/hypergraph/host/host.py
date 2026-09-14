@@ -1302,9 +1302,13 @@ class Host:
             # keeps the explicit id and derives the same retry_index the
             # client used (both are COUNT(runs.retry_of=source)+1), and the
             # runs row records retry_of/retry_index with completed-step
-            # checkpoint reuse. A source that never executed has no runs
+            # checkpoint reuse by default. A source that never executed has no runs
             # row — retry_workflow would raise "Unknown source", so fall
             # back to a plain run; lineage stays recorded on the submission.
+            # A FRESH repeat (rerun(fresh=True), #407) comes down this same
+            # path on purpose — it wants the lineage on the runs row and in
+            # the trace — and the Home empties the seed checkpoint it hands
+            # back, so the lineage arrives with none of the source's work.
             if await self._home.get_run_async(row["retry_of"]) is not None:
                 run_kwargs["retry_from"] = row["retry_of"]
         elif row["forked_from"] and await self._home.get_run_async(row["forked_from"]) is not None:

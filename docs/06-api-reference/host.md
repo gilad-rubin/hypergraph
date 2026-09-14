@@ -1434,8 +1434,10 @@ colliding, and concurrent callers each get their own.
 
 The worker executes the rerun with `retry_from` lineage: the new runs row
 records `retry_of` and the **same** `retry_index` the id was minted with —
-whatever order the reruns execute in — and completed-step checkpoints from
-the source are reused. There is deliberately **no input override** — the
+whatever order the reruns execute in — and **by default** completed-step
+checkpoints from the source are reused (see
+[`fresh=True`](#freshtrue-repeat-the-work-not-just-the-lineage) to repeat
+the work instead). There is deliberately **no input override** — the
 signature is `rerun(ref)` and passing `inputs=` is a `TypeError`; changed
 inputs use a normal new `submit()`. The source must exist and be terminal,
 else `RerunError` — with one exception: a **recovery-exhausted** source is
@@ -1444,6 +1446,44 @@ without a terminal runs row. `rerun()` also takes the same optional opaque
 `source_ref` `submit()` and `stop()` take, recorded on the new submission —
 retry lineage says what was repeated, `source_ref` says who asked.
 `client.rerun_sync(...)` is the synchronous mirror.
+
+### `fresh=True`: repeat the work, not just the lineage
+
+Checkpoint reuse is what makes `rerun()` the verb for reviving braked,
+dead-lettered, or failed work: the steps that did finish are not paid for
+twice. It is a trap for the other reading of the name. A rerun of a
+**COMPLETED** source has no unfinished steps left, so it settles
+`completed` in a millisecond carrying the first run's outcome and nothing
+executes — including when a human approved the cost of a real redo.
+
+```python
+# a human confirmed the costly redo — actually do it again
+receipt = await client.rerun(ref, fresh=True)
+```
+
+A fresh repeat is a fresh **attempt under lineage**. It keeps every other
+rerun guarantee — the `<source>-retry-N` id minted inside the acceptance
+transaction, the source's pinned `DefinitionId` and inputs verbatim, still
+no input override — and changes exactly one thing: the seed checkpoint
+arrives empty, so every node executes.
+
+The lineage is recorded everywhere a default repeat records it, so nothing
+downstream can tell the two apart except by what ran:
+
+| | `retry_of` / `retry_index` | node calls |
+|---|---|---|
+| default repeat of a COMPLETED run | submission, runs row, `RunView`, `RunStartEvent`, `hypergraph.retry_of` / `hypergraph.retry_index` span attributes | 0 |
+| `fresh=True` | the same, all of them | every node |
+
+The intent is recorded on the repeat's `submitted` acceptance fact, in the
+same transaction that accepts it, so a process that dies between accepting
+the repeat and running it still runs it fresh.
+
+It applies to `rerun(batch_ref, ...)` the same way: without it a Batch
+repeat's children inherit their source children's completed steps, with it
+they re-execute. `fresh` is not [`fork()`](#fork-migrate-to-new-code) —
+fork changes *which code* runs, `fresh` changes only *whether history is
+reused*. Anything but a `bool` is a `TypeError`.
 
 ### Item-scoped Batch rerun
 

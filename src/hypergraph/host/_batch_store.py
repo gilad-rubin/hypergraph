@@ -200,6 +200,11 @@ class BatchAcceptance:
     #: per-item variation is already the manifest's pinned inputs.
     builder_key: str | None = None
     builder_args_json: str | None = None
+    #: A repeat that must DO the work again instead of inheriting its source
+    #: child's completed-step checkpoints (#407). Meaningful only alongside
+    #: ``child_retry_of``; it rides each child's ``submitted`` acceptance
+    #: fact, exactly as a Run rerun's does.
+    fresh: bool = False
 
     @property
     def items_map(self) -> dict[str, Any]:
@@ -281,12 +286,15 @@ class BatchAcceptance:
 
     def child_submitted_fact(self, spec: ChildSpec) -> dict[str, Any]:
         """The child's own ``submitted`` run update, naming its membership."""
-        return {
+        fact: dict[str, Any] = {
             "definition_name": self.definition.name,
             "workflow_id": spec.workflow_id,
             "batch_id": self.batch_id,
             "item_key": spec.item_key,
         }
+        if self.fresh:
+            fact["fresh"] = True
+        return fact
 
 
 # === Workflow-id ownership: who may reuse an id, and how it is refused ===
