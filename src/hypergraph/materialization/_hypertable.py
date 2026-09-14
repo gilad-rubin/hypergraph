@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable, Mapping
+from contextvars import ContextVar, Token
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -49,10 +50,41 @@ from hypergraph.materialization._write_actions import RunGraph, RunOperations, W
 from hypergraph.materialization._writes import WritePlanner
 
 if TYPE_CHECKING:
+    from hypergraph.checkpointers.base import Checkpointer
     from hypergraph.materialization._branches import MaterializationBranch
     from hypergraph.materialization._table_store import TableStore
     from hypergraph.nodes import HyperNode
     from hypergraph.runners import BaseRunner
+
+
+# The durable store the enclosing Run is recording to, or None outside one.
+#
+# A derivation recipe is a nested run in everything but delegation: the table
+# drives it with its OWN runner, so the enclosing runner's checkpointer —
+# which a GraphNode child inherits for free — never reaches it, and the
+# widest, most expensive part of an ingestion left no durable cost behind.
+# The host worker publishes its Run Home here for the length of one
+# submission and the drive below reads it, so a table nested at any depth
+# inherits it exactly as a graph-scope provider budget crosses the same
+# boundary (``runners/_shared/provider_limits.py``). A ContextVar rather
+# than a constructor argument because the table is built once, by product
+# code, and the Run Home is whichever worker happens to be executing it.
+_HOST_RECORDER: ContextVar[Checkpointer | None] = ContextVar("hypergraph_host_run_recorder", default=None)
+
+
+def host_recorder() -> Checkpointer | None:
+    """The Run Home the enclosing durable Run records to, if any."""
+    return _HOST_RECORDER.get()
+
+
+def push_host_recorder(recorder: Checkpointer | None) -> Token[Checkpointer | None]:
+    """Make ``recorder`` the store recipe runs inherit for this context."""
+    return _HOST_RECORDER.set(recorder)
+
+
+def pop_host_recorder(token: Token[Checkpointer | None]) -> None:
+    """Restore the recorder in force before the matching ``push_host_recorder``."""
+    _HOST_RECORDER.reset(token)
 
 
 def _public_row(row: dict[str, Any], spec: TableSpec | None = None) -> dict[str, Any]:
@@ -259,6 +291,7 @@ class HyperTable:
         self._on_error = on_error
         self._name = name
         self._runner = runner
+        self._inherited_runner: tuple[Checkpointer, BaseRunner] | None = None
         self._page_max_concurrency = page_max_concurrency
         self._components = dict(graph._bound)
         graph_nodes = list(graph.nodes.values()) if isinstance(graph.nodes, dict) else []
@@ -354,6 +387,43 @@ class HyperTable:
 
         return isinstance(self._runner, AsyncRunner)
 
+    def _recipe_runner(self, parent_run_id: str | None) -> BaseRunner:
+        """The runner this table's recipe runs execute under.
+
+        The table's own runner wins whenever it already holds a
+        checkpointer: the product said where its recipe runs belong, and a
+        host must not redirect them. It also wins outside a durable Run
+        (``parent_run_id is None``) — a notebook deriving a table by hand is
+        not durable work and must not start committing runs because a host
+        exists somewhere in the process.
+
+        Inside a durable Run whose table runner records nowhere, the recipe
+        inherits the Run Home the outer graph is recording to, so the
+        fan-out's per-node cost lands under the Host Run that drove it
+        (``RunHomeReadModel.node_timings`` walks ``runs.parent_run_id``).
+        The clone is cached per Run Home — one table is served by one Home
+        in practice, and a fan-out asks for this once per page.
+
+        A runner with no checkpointer seam at all (``DaftRunner``) cannot
+        record and drives the recipe exactly as it did before.
+        """
+        if parent_run_id is None:
+            return self._runner
+        recorder = host_recorder()
+        if recorder is None or getattr(self._runner, "_checkpointer", None) is not None:
+            return self._runner
+        inherited = self._inherited_runner
+        if inherited is not None and inherited[0] is recorder:
+            return inherited[1]
+        try:
+            bound = self._runner.with_checkpointer(recorder)
+        except TypeError:
+            # The one documented raise: this runner class has no
+            # checkpointer seam, so there is nothing to inherit into.
+            bound = self._runner
+        self._inherited_runner = (recorder, bound)
+        return bound
+
     # --- Shared helpers ---
 
     def _drive_sync(
@@ -378,7 +448,7 @@ class HyperTable:
                         nested_options["_parent_run_id"] = parent_run_id
                     if action.degrade:
                         nested_options["error_handling"] = "continue"
-                    response = self._runner.run(
+                    response = self._recipe_runner(parent_run_id).run(
                         action.graph,
                         **nested_options,
                         **action.input_values(),
@@ -443,7 +513,7 @@ class HyperTable:
                         nested_options["_parent_run_id"] = parent_run_id
                     if action.degrade:
                         nested_options["error_handling"] = "continue"
-                    response = await self._runner.run(
+                    response = await self._recipe_runner(parent_run_id).run(
                         action.graph,
                         **nested_options,
                         **action.input_values(),
