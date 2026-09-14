@@ -49,6 +49,8 @@ result = await runner.run(graph, {
 
 `ctx.stream(chunk)` emits a `StreamingChunkEvent` — a side-channel for live UI preview. It does not affect the return value. The node controls its own output type.
 
+Nothing keeps a chunk. When a fact has to survive the process — which tool the agent called, how far a long turn got — use [`ctx.record(kind, payload)`](../06-api-reference/nodes.md#nodecontext) instead: it commits to the run's durable log, so a watcher that reconnects later still sees it.
+
 `ctx.stop_requested` is a cooperative stop signal. The node checks it and decides when to break. See [NodeContext API](../06-api-reference/nodes.md#nodecontext) for details.
 
 Adding `ctx: NodeContext` is optional. Nodes without it work exactly as before — the framework detects the type hint and injects it automatically (same pattern as FastAPI's `Request`).

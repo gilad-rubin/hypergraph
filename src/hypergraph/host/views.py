@@ -153,7 +153,10 @@ class RunUpdate:
         kind: Fact kind — ``submitted``, ``run_started``, ``step``,
             ``status``, ``command``, ``answer``, ``recovery_exhausted``,
             ``dead_lettered``, ``run_reset`` — or an event class name for
-            previews. A ``status`` fact for a pause also carries the
+            previews. A durable update whose kind is none of the above was
+            written by a NODE through ``NodeContext.record``: its vocabulary
+            is the node's own, and it may never borrow one of the framework
+            kinds above. A ``status`` fact for a pause also carries the
             ``pause_id`` it committed with. A ``dead_lettered`` fact carries
             the ``reason`` nothing could execute the work, the pinned
             ``definition_id``, and the recorded ``builder_key``.

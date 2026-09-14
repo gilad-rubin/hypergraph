@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from hypergraph._thread_settle import to_thread_settled
 from hypergraph.runners._shared.cache_observer import node_cache_observer
+from hypergraph.runners._shared.node_context import flush_node_records
 from hypergraph.runners._shared.outputs import wrap_outputs
 from hypergraph.runners._shared.provider_limits import provider_permits
 from hypergraph.runners.async_.superstep import get_concurrency_limiter
@@ -122,10 +123,16 @@ class AsyncFunctionNodeExecutor:
         func_inputs = node.map_inputs_to_params(inputs)
 
         # Inject NodeContext if the node declares one
+        node_context = None
         if getattr(node, "_context_param", None) is not None:
             from hypergraph.runners._shared.node_context import build_node_context
 
-            func_inputs[node._context_param] = build_node_context(  # type: ignore[index]
+            # records_on_loop: a coroutine body here runs ON this loop, and
+            # this executor flushes what it records below — so `ctx.record`
+            # may hand the write to a loop task instead of blocking the loop
+            # inside SQLite (a sync body dispatched to a thread still writes
+            # straight through; `record` checks where it actually runs).
+            node_context = build_node_context(
                 node.name,
                 ctx.emit_fn,
                 run_id=ctx.run_id,
@@ -133,7 +140,10 @@ class AsyncFunctionNodeExecutor:
                 workflow_id=ctx.workflow_id,
                 item_index=ctx.item_index,
                 parent_span_id=ctx.parent_span_id,
+                checkpointer=ctx.checkpointer,
+                records_on_loop=True,
             )
+            func_inputs[node._context_param] = node_context  # type: ignore[index]
 
         # Call the function (with cache observer installed for hypercache telemetry)
         emit_fn = ctx.emit_fn if ctx.emit_fn is not None else lambda _: None
@@ -198,37 +208,47 @@ class AsyncFunctionNodeExecutor:
                     return list(result)
                 return result
 
-            if node.retry is None and node.timeout is None:
-                result = await invoke()
-            else:
-                # The attempt coordinator sits here: below the superstep's
-                # cache lookup, above state application. Timeout wraps only
-                # the callable invocation inside an attempt. The ledger keys
-                # off workflow_id (StepRecords use it as run_id).
-                from hypergraph.runners._shared.attempts import AttemptEventSink, run_attempts_async
+            try:
+                if node.retry is None and node.timeout is None:
+                    result = await invoke()
+                else:
+                    # The attempt coordinator sits here: below the superstep's
+                    # cache lookup, above state application. Timeout wraps only
+                    # the callable invocation inside an attempt. The ledger keys
+                    # off workflow_id (StepRecords use it as run_id).
+                    from hypergraph.runners._shared.attempts import AttemptEventSink, run_attempts_async
 
-                events = None
-                if ctx.emit_fn is not None:
-                    events = AttemptEventSink(
-                        emit=ctx.emit_fn,
-                        run_id=ctx.run_id,
-                        node_span_id=ctx.parent_span_id,
-                        workflow_id=ctx.workflow_id,
-                        item_index=ctx.item_index,
+                    events = None
+                    if ctx.emit_fn is not None:
+                        events = AttemptEventSink(
+                            emit=ctx.emit_fn,
+                            run_id=ctx.run_id,
+                            node_span_id=ctx.parent_span_id,
+                            workflow_id=ctx.workflow_id,
+                            item_index=ctx.item_index,
+                            node_name=node.name,
+                            graph_name=ctx.graph_name,
+                            superstep=ctx.superstep,
+                        )
+                    result = await run_attempts_async(
+                        invoke,
                         node_name=node.name,
-                        graph_name=ctx.graph_name,
-                        superstep=ctx.superstep,
+                        policy=node.retry,
+                        timeout=node.timeout,
+                        checkpointer=ctx.checkpointer,
+                        run_id=ctx.workflow_id,
+                        scheduled_superstep=ctx.superstep_offset + ctx.superstep,
+                        attempt_scope=_attempt_concurrency_scope,
+                        events=events,
                     )
-                result = await run_attempts_async(
-                    invoke,
-                    node_name=node.name,
-                    policy=node.retry,
-                    timeout=node.timeout,
-                    checkpointer=ctx.checkpointer,
-                    run_id=ctx.workflow_id,
-                    scheduled_superstep=ctx.superstep_offset + ctx.superstep,
-                    attempt_scope=_attempt_concurrency_scope,
-                    events=events,
-                )
+            except BaseException:
+                # Facts the node already recorded still belong to the run —
+                # settle them before its failure propagates, but never let a
+                # write error replace the node's own exception.
+                await flush_node_records(node_context, node_failed=True)
+                raise
+            # Before the step record: a fact is durable by the time the step
+            # that produced it is, and the log reads `fact… step`.
+            await flush_node_records(node_context, node_failed=False)
 
         return wrap_outputs(node, result)

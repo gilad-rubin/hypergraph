@@ -67,7 +67,15 @@ class SyncFunctionNodeExecutor:
         # Map renamed inputs back to original function parameter names
         func_inputs = node.map_inputs_to_params(inputs)
 
-        # Inject NodeContext if the node declares one
+        # Inject NodeContext if the node declares one.
+        #
+        # No `records_on_loop` here, and no record flush below — deliberately,
+        # not an oversight for a parity sweep to "fix". This node body runs on
+        # a thread, so `ctx.record` writes straight through and the fact is
+        # durable when the call returns; deferring would need an awaiter this
+        # family does not have. The async executor defers precisely because
+        # its body runs ON the loop, where a blocking write would stall the
+        # store it is writing to.
         if getattr(node, "_context_param", None) is not None:
             from hypergraph.runners._shared.node_context import build_node_context
 
@@ -79,6 +87,7 @@ class SyncFunctionNodeExecutor:
                 workflow_id=ctx.workflow_id,
                 item_index=ctx.item_index,
                 parent_span_id=ctx.parent_span_id,
+                checkpointer=ctx.checkpointer,
             )
 
         # Call the function (with cache observer installed for hypercache telemetry)

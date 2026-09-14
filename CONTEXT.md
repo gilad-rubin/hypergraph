@@ -44,6 +44,10 @@ _Avoid_: Shared input, shared output
 A node where execution is configured to start, excluding upstream nodes from the active graph.
 _Avoid_: Start node, root node
 
+**NodeContext**:
+The one sanctioned seam for runtime-injected per-node capabilities a node cannot obtain any other way — the live run's stop signal, its event stream, its durable log. Anything a node could receive as an input belongs in its inputs instead.
+_Avoid_: Node globals, ambient context, request object
+
 ## Retry execution
 
 **Node attempt**:
@@ -253,6 +257,10 @@ _Avoid_: Status string, hold reason, parked state
 **Durable update sequence**:
 The monotonic per-Run (or per-Batch) sequence assigned to every committed fact in its own transaction. `watch(after=cursor)` resumes from it without gaps; live previews are non-durable and never advance it.
 _Avoid_: Event offset, log position (no OutputLog exists), progress counter
+
+**Node-recorded fact**:
+A fact a node itself appends to its run's log through `ctx.record(kind, payload)`, on the same durable update sequence as the host's own facts. Its `kind` is the node's vocabulary and may never be one the framework writes; with no Run Home to append to, recording is a no-op, not a failure.
+_Avoid_: Node event (events are previews, not facts), custom log, node output
 
 ### Relationships
 
