@@ -9,6 +9,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from hypergraph.exceptions import HostError
+from hypergraph.host.refs import BatchRef, RunRef
+from hypergraph.host.views import BatchView, RunView
 
 if TYPE_CHECKING:
     from collections.abc import Collection
@@ -18,6 +20,7 @@ if TYPE_CHECKING:
 __all__ = [
     "AlreadyTerminalError",
     "BuilderIdentityError",
+    "FollowDeadlineExpired",
     "ForkCompatibilityError",
     # Defined in ``hypergraph.exceptions`` so layers below the host (the
     # checkpointers' pause-settlement refusals) can subclass it without an
@@ -240,4 +243,62 @@ class RerunError(HostError):
     def __init__(self, workflow_id: str, message: str | None = None) -> None:
         self.workflow_id = workflow_id
         self.message = message or f"Cannot rerun {workflow_id!r}."
+        super().__init__(self.message)
+
+
+def _followed(ref: RunRef | BatchRef) -> str:
+    """What the expired follow was waiting on, in the ref's own words."""
+    return f"Batch {ref.batch_id!r}" if isinstance(ref, BatchRef) else f"Run {ref.run_id!r}"
+
+
+def _last_seen(view: RunView | BatchView | None) -> str:
+    """The last observed state, in the view's own closed vocabulary.
+
+    A Batch reports its census — every manifest item is accounted exactly
+    once there, so the non-empty buckets say what is still moving. A Run
+    reports its status and, when it waits, the typed condition naming why.
+    """
+    if isinstance(view, BatchView):
+        census = ", ".join(f"{count} {word}" for word, count in view.counts.items() if count)
+        return f"{census or 'no items'} of {sum(view.counts.values())} items"
+    if isinstance(view, RunView):
+        status = "not started" if view.status is None else view.status.value
+        return status if view.waiting is None else f"{status}, waiting: {view.waiting.value}"
+    return "nothing — this Run Home has no such work"
+
+
+class FollowDeadlineExpired(HostError):
+    """``client.follow()`` ran out of time before its subject arrived.
+
+    The whole point of a deadline is "what was it doing when it ran out",
+    so the last observed ``RunView`` / ``BatchView`` is both named in the
+    message and attached as ``view`` for a caller that wants to branch on
+    it. ``until`` records WHICH arrival was being waited for: a Batch with
+    one child parked on a human gate never reaches ``"settled"``, and the
+    fix is usually ``until="resting"`` rather than a larger deadline.
+
+    Raised only by ``follow(..., deadline=...)``. A follow without a
+    deadline waits as long as the work does.
+    """
+
+    def __init__(
+        self,
+        ref: RunRef | BatchRef,
+        *,
+        deadline: float,
+        until: str,
+        view: RunView | BatchView | None = None,
+        message: str | None = None,
+    ) -> None:
+        self.ref = ref
+        self.deadline = deadline
+        self.until = until
+        self.view = view
+        self.message = message or (
+            f"{_followed(ref)} did not reach {until!r} within {deadline:g}s.\n\n"
+            f"Last seen: {_last_seen(view)}.\n\n"
+            "How to fix: wait longer with a larger deadline=, or follow with "
+            "until='resting' — work parked on a durable interrupt never settles "
+            "on its own, and only client.answer() moves it."
+        )
         super().__init__(self.message)

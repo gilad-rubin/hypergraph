@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 
 from hypergraph import AsyncRunner, Graph, RetryPolicy, RunHomeClient, RunHomeReadModel, SyncRunner, node, serve
-from tests.test_host._batch_interrupt import batch_where, submit_ids, worker
+from tests.test_host._batch_interrupt import submit_ids, worker
 from tests.test_host._ingestion_fixture import ingestion_graph
 
 pytest.importorskip("aiosqlite")
@@ -65,7 +65,7 @@ def fan_out_flaky_graph(name: str = "fanout-flaky") -> Graph:
 async def settled_sweep(host, graph, ids, workflow_id):
     receipt = await submit_ids(host, graph, ids, workflow_id)
     async with worker(host):
-        await batch_where(host.client, receipt.batch_ref, lambda view: view.settled)
+        await host.client.follow(receipt.batch_ref, deadline=20)
     return receipt
 
 

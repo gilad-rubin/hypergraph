@@ -21,7 +21,7 @@ import json
 import pytest
 
 from hypergraph import AsyncRunner, Graph, RunHomeReadModel, node, serve
-from tests.test_host._batch_interrupt import batch_where, submit_ids, worker
+from tests.test_host._batch_interrupt import submit_ids, worker
 from tests.test_host._ingestion_fixture import ingestion_graph
 
 pytest.importorskip("aiosqlite")
@@ -49,7 +49,7 @@ def fan_out_graph(name: str = "fanout") -> Graph:
 async def settled_sweep(host, graph, ids, workflow_id):
     receipt = await submit_ids(host, graph, ids, workflow_id)
     async with worker(host):
-        await batch_where(host.client, receipt.batch_ref, lambda view: view.settled)
+        await host.client.follow(receipt.batch_ref, deadline=20)
     return receipt
 
 

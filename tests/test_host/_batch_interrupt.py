@@ -70,6 +70,16 @@ def paused_items(view) -> list[str]:
 
 
 async def batch_where(client, ref, predicate):
+    """Poll a Batch until a MID-FLIGHT predicate holds.
+
+    "Wait until it stops moving" is not this: that is
+    ``client.follow(ref, deadline=...)``, which the library owns and which
+    raises with the last observed view instead of a bare "timed out"
+    (issue #384). What stays here is the moments in BETWEEN, which the
+    closed settled/resting vocabulary deliberately cannot name — "exactly
+    one item is parked", "this item failed while that one completed".
+    """
+
     async def check():
         view = await client.get(ref)
         return view if view is not None and predicate(view) else None

@@ -150,7 +150,7 @@ class TestItemScopedControl:
             # watch, from the same ref
             kinds = [update.kind for update in await collect(client.watch(item.run_ref)) if update.durable]
             assert "answer" in kinds and kinds[-1] == "status"
-            final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            final = await client.follow(receipt.batch_ref, deadline=20)
 
             # rerun the settled item, still from the ref
             rerun = await client.rerun(item.run_ref)
@@ -197,7 +197,7 @@ class TestItemScopedControl:
                 set_display_mode("rich")
 
             await answer_item(client, parked, "create_new")
-            final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            final = await client.follow(receipt.batch_ref, deadline=20)
 
         # A settled item leads with its outcome, not with how it got there.
         assert repr(final.items["work-dup-1"]) == "BatchItem: work-dup-1 | completed | drop-repr:work-dup-1"
@@ -212,7 +212,7 @@ class TestItemScopedControl:
         accepted = await client.get(receipt.batch_ref)
         await client.stop(accepted.items["work-a"].run_ref, info="withdrawn before pickup")
         async with worker(host):
-            view = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            view = await client.follow(receipt.batch_ref, deadline=20)
 
         never_ran = view.items["work-a"]
         assert never_ran.started is False and never_ran.outcome is None
@@ -246,7 +246,7 @@ class TestBatchSettlementWithPausedChildren:
                 await asyncio.wait_for(_drain_batch_watch(client, receipt.batch_ref), timeout=0.6)
 
             await answer_item(client, view.items["work-dup-1"], "create_new")
-            final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            final = await client.follow(receipt.batch_ref, deadline=20)
 
         assert final.settled is True
         assert await asyncio.wait_for(_drain_batch_watch(client, receipt.batch_ref), timeout=25) is not None
@@ -281,7 +281,7 @@ class TestDurableBatchStream:
         async with worker(host):
             view = await batch_where(client, receipt.batch_ref, lambda v: len(paused_items(v)) == 1)
             await answer_item(client, view.items["work-dup-1"], "archive_duplicate", 7)
-            await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            await client.follow(receipt.batch_ref, deadline=20)
             facts = [(u.cursor, u.kind, u.payload) for u in await collect(client.watch(receipt.batch_ref)) if u.durable]
 
         kinds = [kind for _c, kind, _p in facts]
@@ -315,7 +315,7 @@ class TestDurableBatchStream:
 
             view = await client.get(receipt.batch_ref)
             await answer_item(client, view.items["work-dup-1"], "create_new")
-            await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            await client.follow(receipt.batch_ref, deadline=20)
 
             rest = [(u.cursor, u.kind) for u in await collect(client.watch(receipt.batch_ref, after=cursor)) if u.durable]
 
@@ -347,7 +347,7 @@ class TestTerminalSiblingsNeverReplay:
             )
             before = await home.get_run_async("drop-replay:work-clean-a")
             await answer_item(client, view.items["work-dup-1"], "create_new")
-            await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            await client.follow(receipt.batch_ref, deadline=20)
             after = await home.get_run_async("drop-replay:work-clean-a")
 
         assert before.status is WorkflowStatus.COMPLETED and before.completed_at is not None

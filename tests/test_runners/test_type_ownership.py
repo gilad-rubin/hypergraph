@@ -137,6 +137,7 @@ ROOT_EXPORTS = (
     "DefinitionId",
     "WorkflowIdConflictError",
     "ForkCompatibilityError",
+    "FollowDeadlineExpired",
     "RerunError",
     "UnservedGraphError",
     "NoServingWorkerError",

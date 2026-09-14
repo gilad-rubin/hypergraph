@@ -11,6 +11,7 @@ from hypergraph.host.definition import DefinitionId
 from hypergraph.host.errors import (
     AlreadyTerminalError,
     BuilderIdentityError,
+    FollowDeadlineExpired,
     ForkCompatibilityError,
     HostError,
     ItemKeyError,
@@ -78,6 +79,7 @@ __all__ = [
     "BuilderIdentityError",
     "CommandReceipt",
     "DefinitionId",
+    "FollowDeadlineExpired",
     "ForkCompatibilityError",
     "GraphBuilder",
     "Host",

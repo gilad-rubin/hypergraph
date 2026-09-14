@@ -83,7 +83,7 @@ class TestClosedAdmission:
         async with worker(host):
             view = await batch_where(client, receipt.batch_ref, lambda v: v.tolerance_tripped and len(paused_items(v)) == 1)
             await answer_item(client, view.items["work-dup-1"], "create_new")
-            final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            final = await client.follow(receipt.batch_ref, deadline=20)
 
         assert final.outcomes["work-dup-1"] == "abandoned"
         assert final.counts["failed"] == 2 and final.counts["abandoned"] == 1
@@ -112,7 +112,7 @@ class TestClosedAdmission:
         )
 
         async with worker(host):
-            final = await batch_where(host.client, receipt.batch_ref, lambda v: v.settled)
+            final = await host.client.follow(receipt.batch_ref, deadline=20)
 
         assert final.tolerance_tripped is True
         assert final.counts["abandoned"] == 0
@@ -134,7 +134,7 @@ class TestStopIsNotADecision:
             view = await batch_where(client, receipt.batch_ref, lambda v: len(paused_items(v)) == 2)
             await client.stop(view.items["work-dup-1"].run_ref, info="cancelled")
             await answer_item(client, view.items["work-dup-2"], "archive_duplicate", 5)
-            final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            final = await client.follow(receipt.batch_ref, deadline=20)
 
         assert final.outcomes == {"work-dup-1": "stopped", "work-dup-2": "completed"}
         # A stop produced NO create/replace/archive effect; only the answer did.
@@ -151,7 +151,7 @@ class TestStopIsNotADecision:
             item = view.items["work-dup-1"]
             slot = await client.get_run_slot(item.run_ref)
             await client.stop(item.run_ref, info="cancelled")
-            await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            await client.follow(receipt.batch_ref, deadline=20)
 
             with pytest.raises(AnswerRejectedError, match="is stopped, not paused"):
                 await client.answer(item.run_ref, pause_id=slot.pause_id, value=answer_value("create_new"))
@@ -214,7 +214,7 @@ class TestRaces:
             stop_task = asyncio.create_task(stop())
             ready.set()
             answered, _stopped = await asyncio.gather(answer_task, stop_task, return_exceptions=True)
-            final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            final = await client.follow(receipt.batch_ref, deadline=20)
 
         # Both commands are legal against a parked run; commit order decides
         # which terminal outcome the child reaches — and only one is recorded.
@@ -293,7 +293,7 @@ class TestTheReleaseWindowIsNotARace:
         home._release_submission = answer_first  # type: ignore[method-assign]
         try:
             async with worker(host):
-                final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+                final = await client.follow(receipt.batch_ref, deadline=20)
         finally:
             home._release_submission = original  # type: ignore[method-assign]
 
@@ -376,7 +376,7 @@ class TestTheReleaseWindowIsNotARace:
 
         # The item runs to its own outcome and the stream accounts it ONCE.
         async with worker(host, "w-342-b"):
-            final = await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            final = await client.follow(receipt.batch_ref, deadline=20)
 
         assert final.outcomes["work-dup-1"] == "completed"
         assert read_ledger(ledger) == ["created:work-dup-1"]
@@ -395,7 +395,7 @@ class TestTheReleaseWindowIsNotARace:
         async with worker(host):
             view = await batch_where(client, receipt.batch_ref, lambda v: len(paused_items(v)) == 1)
             await answer_item(client, view.items["work-dup-1"], "create_new")
-            await batch_where(client, receipt.batch_ref, lambda v: v.settled)
+            await client.follow(receipt.batch_ref, deadline=20)
             replayed = [u.kind for u in await collect(client.watch(receipt.batch_ref)) if u.durable]
 
         assert replayed.count("child_paused") == 1

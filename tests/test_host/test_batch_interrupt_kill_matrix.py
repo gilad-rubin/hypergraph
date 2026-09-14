@@ -170,7 +170,9 @@ async def drive_to_completion(db: str, ledger: str, batch_ref, *, answer: dict |
         if answer is not None:
             slot = await until(lambda: _open_slot(home))
             await client.answer(_ref(home), pause_id=slot.pause_id, value=answer)
-        view = await until(lambda: _settled(client, batch_ref))
+        # 45s is this suite's own `until` default, unchanged: a restart has to
+        # outwait the SIGKILLed worker's lease before it may adopt the claim.
+        view = await client.follow(batch_ref, deadline=45)
         return view, home
     finally:
         host.shutdown()
@@ -188,11 +190,6 @@ async def _open_slot(home):
     if slot is None or not slot.is_open or run is None or run.status is not WorkflowStatus.PAUSED:
         return None
     return slot
-
-
-async def _settled(client, batch_ref):
-    view = await client.get(batch_ref)
-    return view if view is not None and view.settled else None
 
 
 def assert_clean_siblings(view):

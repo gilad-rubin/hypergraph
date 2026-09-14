@@ -29,7 +29,7 @@ import pytest
 
 from hypergraph import AsyncRunner, Graph, RunHomeReadModel, node, serve
 from hypergraph.materialization._lancedb_store import LanceDBStore
-from tests.test_host._batch_interrupt import batch_where, submit_ids, worker
+from tests.test_host._batch_interrupt import submit_ids, worker
 
 pytest.importorskip("aiosqlite")
 
@@ -70,7 +70,7 @@ def ingest_graph(tmp_path, *, checkpointer, name: str = "ingest_document") -> Gr
 async def settled_ingest(host, graph):
     receipt = await submit_ids(host, graph, ["doc-1"], "sweep")
     async with worker(host):
-        await batch_where(host.client, receipt.batch_ref, lambda view: view.settled)
+        await host.client.follow(receipt.batch_ref, deadline=20)
     return receipt
 
 

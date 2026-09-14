@@ -24,7 +24,7 @@ from hypergraph.host._batch_store import BatchAcceptance, DefinitionPin
 from hypergraph.host._bus import _bus_for, _PreviewBus
 from hypergraph.host.batch import BatchTolerance
 from hypergraph.host.definition import DefinitionId
-from hypergraph.host.errors import RerunError
+from hypergraph.host.errors import FollowDeadlineExpired, RerunError
 from hypergraph.host.fingerprint import batch_fingerprint, start_fingerprint
 from hypergraph.host.refs import BatchCommandReceipt, BatchRef, BatchSubmitReceipt, CommandReceipt, RunRef, SubmitReceipt
 from hypergraph.host.views import (
@@ -66,10 +66,16 @@ WATCH_UNTIL_RESTING = "resting"
 WATCH_UNTIL_VALUES: frozenset[str] = frozenset({WATCH_UNTIL_SETTLED, WATCH_UNTIL_RESTING})
 
 
-def _validate_until(until: str) -> None:
+def _validate_until(until: str, verb: str = "watch") -> None:
+    """One vocabulary check for every verb that takes ``until``.
+
+    ``verb`` only names the call site in the message: ``watch`` and
+    ``follow`` wait for the same two arrivals, and a second rule is how they
+    would drift apart.
+    """
     if until not in WATCH_UNTIL_VALUES:
         raise ValueError(
-            f"watch() until must be {WATCH_UNTIL_SETTLED!r} or {WATCH_UNTIL_RESTING!r}, got {until!r}.\n\n"
+            f"{verb}() until must be {WATCH_UNTIL_SETTLED!r} or {WATCH_UNTIL_RESTING!r}, got {until!r}.\n\n"
             f"How to fix:\n"
             f"  until={WATCH_UNTIL_SETTLED!r}  # (the default) end when the work is accounted for good\n"
             f"  until={WATCH_UNTIL_RESTING!r}  # also end when the only thing left is parked on a person"
@@ -1809,6 +1815,66 @@ class RunHomeClient:
         async with aclosing(stream) as updates:
             async for update in updates:
                 yield update
+
+    async def follow(
+        self,
+        ref: RunRef | BatchRef,
+        *,
+        until: str = WATCH_UNTIL_SETTLED,
+        deadline: float | None = None,
+    ) -> RunView | BatchView | None:
+        """Wait for ``ref`` to arrive, then return the view it arrived at.
+
+        The one-line form of ``watch`` for a caller that wants the OUTCOME,
+        not the facts along the way — a test asserting a Batch finished, a
+        notebook cell that submits and then reads results, a load simulation
+        that must fail loudly rather than hang::
+
+            view = await client.follow(batch_ref, deadline=30)   # BatchView
+            assert view.settled
+
+        ``until`` is ``watch``'s own two-value vocabulary and means exactly
+        the same thing here: ``"settled"`` (the default) waits for the work
+        to be accounted for good, ``"resting"`` also returns once the only
+        thing left is parked on a person. A Batch holding one child on a
+        human gate never reaches ``"settled"`` on its own, so a caller that
+        wants "nothing is running or queued" asks for ``"resting"``.
+
+        ``deadline`` is in SECONDS, and ``None`` — the default — waits as
+        long as the work does. Passing one turns "this must arrive by now"
+        into a typed ``FollowDeadlineExpired`` carrying the LAST OBSERVED
+        view, both in its message and as ``error.view``: what it was doing
+        when it ran out is the whole reason a deadline was set.
+
+        Returns the same view ``get(ref)`` returns — ``RunView`` for a
+        ``RunRef``, ``BatchView`` for a ``BatchRef``, and ``None`` for a ref
+        this Run Home does not know, which arrives immediately because
+        there is nothing to wait for.
+
+        Implemented over ``watch``, never a second poll loop: the arrival
+        rule, the durable cursor and the preview unsubscribe are the
+        stream's, and this verb only drains it and reads the result.
+        """
+        _validate_until(until, verb="follow")
+        if not isinstance(ref, (RunRef, BatchRef)):
+            raise TypeError(f"follow() expects a RunRef or BatchRef, got {type(ref).__name__}.")
+        # Typed as a generator for the same reason `watch` is: aclosing()
+        # needs the `aclose` AsyncIterator does not declare.
+        stream = cast(AsyncGenerator[RunUpdate | BatchUpdate, None], self.watch(ref, until=until))
+
+        async def drain() -> None:
+            async for _update in stream:
+                pass
+
+        async with aclosing(stream):
+            if deadline is None:
+                await drain()
+            else:
+                try:
+                    await asyncio.wait_for(drain(), timeout=deadline)
+                except asyncio.TimeoutError:
+                    raise FollowDeadlineExpired(ref, deadline=deadline, until=until, view=await self.get(ref)) from None
+        return await self.get(ref)
 
     async def _run_updates_since(self, run_id: str, cursor: int, queue: asyncio.Queue | None) -> tuple[builtins.list[RunUpdate], int, bool]:
         """Durable facts after ``cursor``, then whatever previews are queued.
