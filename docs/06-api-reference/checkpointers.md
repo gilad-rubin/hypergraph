@@ -143,15 +143,31 @@ re-executing the failed child nodes and resurfacing their error under the
 run's `error_handling` mode.
 
 Recovery is evidence-gated so it never shadows a legitimate re-execution. A
-real persisted `COMPLETED` parent step is proof that the nested graph completed;
-folded carrier values are not, because they lack producer provenance.
-Windowed/compacted retention with nested crash-window recovery is therefore
-explicitly rejected once parent history has been compacted. Use
-`retention="full"` or `retention="latest"` for workflows that combine nested
-graphs with resume/crash recovery. Forking a compacted lineage is refused for
-the same reason — see
-[Retention and restorable history](#retention-and-restorable-history). Windowed
-support is tracked in #277.
+real persisted `COMPLETED` parent step is proof that the nested graph completed
+— and so is a retention carrier that *records folding this node*, because
+compaction now writes down whose step records it folded:
+
+```python
+raw = await cp.get_steps(run_id, show_internal=True)
+carrier = next(s for s in raw if s.node_type == "RetentionBaseline")
+carrier.folded_producers   # ("prepare", "child_wf") — names, in fold order
+```
+
+A value the carrier holds is never evidence on its own: two nodes may produce
+the same output name, and only `folded_producers` says which one ran. A carrier
+with `folded_producers is None` was written before schema v8; its values cannot
+be attributed, so this gate refuses rather than guess, and the fork/resume
+boundary falls back to matching output names — which is safe but can
+over-report.
+
+Recorded provenance decides *this* question; it does not make compacted
+lineages restorable in general. **Use `retention="full"` or `retention="latest"`
+for workflows that combine nested graphs with resume/crash recovery.** Both keep
+every node's own step record, so the fork/resume boundary admits the restore and
+the crash window heals. `retention="windowed"` still prunes a node's only step
+record, and a lineage that lost one is refused at that boundary before this gate
+is ever consulted — see
+[Retention and restorable history](#retention-and-restorable-history).
 
 With a delegated runner (`as_node(runner=...)`), the child workflow persists
 in the delegated runner's checkpointer. Crash recovery reads the child's
@@ -216,6 +232,8 @@ contract. A custom checkpointer shared by overlapping handles is responsible
 for making each logical operation concurrency-safe.
 
 Steps are the source of truth — state is always computed by folding steps, never stored as a separate mutable blob. Public step views hide internal `__retained_state__` / `RetentionBaseline` carrier rows by default, while state reconstruction folds the raw internal stream. This keeps `latest` and `windowed` retention reconstructible without showing phantom nodes in checkpoints, search, statistics, or lineage views. Use `show_internal=True` only when debugging the retention mechanism itself.
+
+A carrier row also records `StepRecord.folded_producers`: the node names whose `COMPLETED` step records it folded, in fold order, carried forward when one carrier is folded into the next. It is `None` on every ordinary step record, and on a carrier written before schema v8 — `None` means "not recorded", never "folded nothing".
 
 ## CheckpointPolicy
 
@@ -388,11 +406,15 @@ How to fix:
 
 The check is capability-based, not a blanket ban on compacted lineages. It
 refuses only when a node in the target's active scope both lost its step
-record and produces a value the baseline carries. A fork whose scope never
-reaches a pruned producer is admitted, and so is a resume whose folded values
-all still have a surviving producer row (a loop node compacted between turns,
-for example). `retention="latest"` keeps one row per node, so it never trips
-the check.
+record and was folded into the baseline. A fork whose scope never reaches a
+pruned producer is admitted, and so is a resume whose folded producers all
+still have a surviving row (a loop node compacted between turns, for example).
+`retention="latest"` keeps one row per node, so it never trips the check.
+
+The named nodes come from the carrier's `folded_producers`, so a value another
+node happens to produce under the same name does not implicate them. A carrier
+written before schema v8 recorded no producers; for it the check falls back to
+matching output names, which is safe but can over-report.
 
 `error.pruned_nodes` names the nodes; the error carries the stable
 `HG_COMPACTED_RETENTION` code documented in

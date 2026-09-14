@@ -919,8 +919,8 @@ class TestSearch:
 
 
 class TestMigration:
-    def test_fresh_db_gets_v7_schema(self, tmp_path):
-        """A new database gets v7 schema automatically."""
+    def test_fresh_db_gets_v8_schema(self, tmp_path):
+        """A new database gets v8 schema automatically."""
         cp = SqliteCheckpointer(str(tmp_path / "fresh.db"))
         # Trigger sync schema creation
         assert cp.runs() == []
@@ -987,8 +987,16 @@ class TestMigration:
             "outcome",
         }
 
+        # v8 retention provenance (#277): the carrier's producer names ride a
+        # nullable column on steps, invisible to every ordinary step row.
+        step_cols = {row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()}
+        assert "folded_producers" in step_cols
+        provenance_col = next(row for row in conn.execute("PRAGMA table_info(steps)").fetchall() if row[1] == "folded_producers")
+        assert provenance_col[3] == 0  # notnull flag: nullable
+        assert provenance_col[4] is None  # no default
+
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 7
+        assert version == 8
         conn.close()
 
     def test_migration_idempotent(self, tmp_path):
@@ -1002,7 +1010,7 @@ class TestMigration:
         ensure_schema(conn)
         ensure_schema(conn)  # Second time should be a no-op
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 7
+        assert version == 8
         conn.close()
 
     def test_v6_db_gains_pending_nodes_in_place(self, tmp_path):
@@ -1031,7 +1039,7 @@ class TestMigration:
             assert "pending_nodes" in tables
             assert conn.execute("SELECT COUNT(*) FROM pending_nodes").fetchone()[0] == 0
             assert [row[0] for row in conn.execute("SELECT id FROM runs").fetchall()] == ["r-1"]
-            assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 7
+            assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 8
         finally:
             conn.close()
 
@@ -1065,7 +1073,7 @@ class TestMigration:
         ensure_schema(conn)  # idempotent on the migrated database
         conn.close()
 
-    def test_v6_db_with_in_flight_work_migrates_to_v7_in_place(self, tmp_path):
+    def test_v6_db_with_in_flight_work_migrates_forward_in_place(self, tmp_path):
         """A REAL v6 database carrying unfinished work becomes v7 untouched.
 
         The migration that adds the builder address and the worker registry
@@ -1103,7 +1111,7 @@ class TestMigration:
 
         ensure_schema(conn)
 
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 7
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 8
         cols = {row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()}
         assert {"builder_key", "builder_args_json", "claimed_by", "lease_until"} <= cols
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
@@ -1124,6 +1132,53 @@ class TestMigration:
         ensure_schema(conn)  # idempotent on the migrated database
         _ensure_v6_objects(conn)  # and the v6 guard still runs harmlessly
         assert conn.execute("SELECT COUNT(*) FROM host_submissions").fetchone()[0] == 2
+        conn.close()
+
+    def test_v7_db_with_a_compacted_run_gains_provenance_in_place(self, tmp_path):
+        """A v7 database keeps every row and only gains the new column (#277).
+
+        The interesting row is the retention carrier a v7 install wrote: it
+        folded real step records without recording whose they were. Migration
+        must not invent provenance for it — NULL is the honest answer, and it
+        is what both readers treat as "undecidable" rather than as "folded
+        nothing".
+        """
+        import sqlite3
+
+        from hypergraph.checkpointers._migrate import ensure_schema
+
+        db_path = str(tmp_path / "compacted-v7.db")
+        conn = sqlite3.connect(db_path)
+        ensure_schema(conn)
+        # Rewind to a genuine v7 database: drop what v8 added, and say so.
+        conn.execute("ALTER TABLE steps DROP COLUMN folded_producers")
+        conn.execute("UPDATE _schema_version SET version = 7")
+        conn.execute("INSERT INTO runs (id, graph_name, status, created_at) VALUES ('wf-old', 'chain', 'failed', '2026-08-01T00:00:00Z')")
+        conn.execute(
+            "INSERT INTO steps (run_id, step_index, superstep, node_name, node_type, status, input_versions, created_at, completed_at) "
+            "VALUES ('wf-old', 0, -1, '__retained_state__', 'RetentionBaseline', 'completed', '{}', "
+            "'2026-08-01T00:00:01Z', '2026-08-01T00:00:01Z')"
+        )
+        conn.execute(
+            "INSERT INTO steps (run_id, step_index, superstep, node_name, node_type, status, input_versions, created_at, completed_at) "
+            "VALUES ('wf-old', 1, 2, 'c', 'FunctionNode', 'completed', '{}', '2026-08-01T00:00:02Z', '2026-08-01T00:00:02Z')"
+        )
+        conn.commit()
+        before = conn.execute("SELECT * FROM steps ORDER BY step_index").fetchall()
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 7
+
+        ensure_schema(conn)
+
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 8
+        step_cols = [row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()]
+        assert step_cols[-1] == "folded_producers"
+        # Every pre-existing value is identical; the only change is one
+        # appended NULL per row.
+        after = conn.execute("SELECT * FROM steps ORDER BY step_index").fetchall()
+        assert [row[:-1] for row in after] == before
+        assert [row[-1] for row in after] == [None, None]
+
+        ensure_schema(conn)  # idempotent on the migrated database
         conn.close()
 
     def test_v6_db_gains_ticket14_command_columns_in_place(self, tmp_path):

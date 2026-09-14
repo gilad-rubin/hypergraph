@@ -5,10 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from hypergraph._utils import format_duration_ms, plural
 from hypergraph.exceptions import HostError
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 def _utcnow() -> datetime:
@@ -442,6 +445,58 @@ class WorkflowStatus(Enum):
     FAILED = "failed"
 
 
+def fold_producers(
+    folded: Iterable[tuple[str, StepStatus, tuple[str, ...] | None]],
+    *,
+    carrier_node_name: str,
+) -> tuple[str, ...] | None:
+    """THE rule for a retention carrier's producer provenance (#277).
+
+    Both checkpointer backends call this instead of deriving it themselves,
+    so memory and SQLite can never disagree about what a baseline claims.
+
+    ``folded`` is the step rows this compaction pass is about to delete, in
+    fold order, as ``(node_name, status, folded_producers)``. A COMPLETED row
+    contributes its own node name — the only status that carries values, and
+    the only one that is completion evidence. A PAUSED or FAILED row is an
+    attempt, not a completion, and contributes nothing.
+
+    Fold order is the caller's, and the two backends reach it differently:
+    memory sorts with ``_step_sort_key`` while SQLite orders in SQL by
+    ``_STEP_TIME_ORDER``. Both are (completed-or-created time, created time,
+    row identity), so they agree except on rows sharing a timestamp, where the
+    tiebreak is the step index versus the row id. Read the result as a SET of
+    producers; the order is for a human reading a carrier, not a contract.
+
+    A previous carrier being re-folded contributes the producers IT recorded,
+    never its own carrier name, so provenance survives repeated compaction.
+    If that carrier has none (``None`` — written before this field existed),
+    the whole result is ``None``: partial provenance would read as "these and
+    no others", which is exactly the false evidence this field exists to
+    prevent.
+
+    Returns:
+        Distinct producer names in fold order, or ``None`` when a folded
+        legacy carrier makes the provenance incomplete.
+    """
+    producers: list[str] = []
+    seen: set[str] = set()
+    for node_name, status, carried in folded:
+        if node_name == carrier_node_name:
+            if carried is None:
+                return None
+            names: tuple[str, ...] = carried
+        elif status is StepStatus.COMPLETED:
+            names = (node_name,)
+        else:
+            continue
+        for producer in names:
+            if producer not in seen:
+                seen.add(producer)
+                producers.append(producer)
+    return tuple(producers)
+
+
 @dataclass(frozen=True)
 class StepRecord:
     """Single atomic record of a node execution.
@@ -449,6 +504,13 @@ class StepRecord:
     Contains both metadata and output values. The checkpointer
     saves each StepRecord atomically — either all data is saved
     or nothing.
+
+    ``folded_producers`` is meaningful only on a retention-compaction carrier
+    (see :func:`fold_producers`): it names the nodes whose completed step
+    records the carrier folded, so a reader can tell "this value came from
+    that node" apart from "some node produced a value of the same name".
+    ``None`` on every ordinary step, and on a carrier written before the
+    field existed — legacy provenance is absent, not empty.
     """
 
     run_id: str
@@ -468,6 +530,7 @@ class StepRecord:
     child_run_id: str | None = None
     partial: bool = False
     attempt_series_id: str | None = None
+    folded_producers: tuple[str, ...] | None = None
 
     def __repr__(self) -> str:
         status = "cached" if self.cached else self.status.value
@@ -507,6 +570,7 @@ class StepRecord:
             "child_run_id": self.child_run_id,
             "partial": self.partial,
             "attempt_series_id": self.attempt_series_id,
+            "folded_producers": None if self.folded_producers is None else list(self.folded_producers),
         }
 
 

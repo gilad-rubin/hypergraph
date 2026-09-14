@@ -120,32 +120,41 @@ def find_compacted_producers(
     row that says which values outlived their producer's step record.
 
     A node qualifies when it is in the target's active scope, has no surviving
-    row of its own at ANY status, and produces at least one value the baseline
-    carries. Restore then sees a node with every input available and no
-    execution on record — and runs it again.
+    row of its own at ANY status, and the baseline folded its step record.
+    Restore then sees a node with every input available and no execution on
+    record — and runs it again.
 
-    Status is deliberately not part of the test. A node whose newest row is
-    PAUSED or FAILED is still on record: compaction pruned older attempts, not
-    the node's identity, and re-executing it is the ordinary resume path.
+    Status is deliberately not part of the surviving-row test. A node whose
+    newest row is PAUSED or FAILED is still on record: compaction pruned older
+    attempts, not the node's identity, and re-executing it is the ordinary
+    resume path.
 
-    Node-set-conservative by construction: the baseline stores values without
-    producer provenance, so a name collision between two producers of the same
-    output can over-report. #277 makes it exact.
+    Exact by provenance (#277): the baseline records WHICH nodes it folded, so
+    two producers of the same output name are told apart. A baseline written
+    before that field existed carries values with no producer attached; for it
+    the check falls back to matching output names, which is the older
+    node-set-conservative behaviour and can over-report.
     """
     folded: set[str] = set()
+    unattributed_values: set[str] = set()
     on_record: set[str] = set()
     for step in steps:
         if is_retention_baseline(step):
-            folded.update(step.values or {})
+            if step.folded_producers is None:
+                unattributed_values.update(step.values or {})
+            else:
+                folded.update(step.folded_producers)
         else:
             on_record.add(step.node_name)
-    if not folded:
+    if not folded and not unattributed_values:
         return ()
     return tuple(
         sorted(
             name
             for name, node in graph._nodes.items()
-            if name not in on_record and (active_nodes is None or name in active_nodes) and folded.intersection(node.outputs)
+            if name not in on_record
+            and (active_nodes is None or name in active_nodes)
+            and (name in folded or unattributed_values.intersection(node.outputs))
         )
     )
 

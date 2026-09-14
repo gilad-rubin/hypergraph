@@ -22,6 +22,16 @@ Assertion map (ticket acceptance items):
     paused resume refused / admitted        TestWindowedInterruptResume
     nested GraphNode lineage                TestNestedCompactedLineage
     composes with the in-run nested guard   TestNestedCompactedLineage
+
+#277 extends the same witness: the carrier now records WHICH nodes it folded,
+so the refusal is per-producer instead of per-value-name, and the in-run guard
+can answer instead of refusing.
+
+    carrier records its folded producers    TestFoldedProducerProvenance
+    provenance survives re-compaction       TestFoldedProducerProvenance
+    memory/sqlite agree on the set          TestFoldedProducerProvenance
+    recorded provenance decides the guard   TestNestedCompactedLineage
+    only a legacy carrier still refuses     TestNestedCompactedLineage
 """
 
 from __future__ import annotations
@@ -147,14 +157,15 @@ def build_accumulator_graph(fail_first: list[bool]):
 
 
 def assert_boundary_guidance(message: str) -> None:
-    """The refusal names the cause, both supported fixes, and the descope."""
+    """The refusal names the cause, both supported fixes, and its precision."""
     assert "compacted" in message
     assert "retention='windowed'" in message
     assert "EXECUTION" in message
     assert "retention='full'" in message
     assert "retention='latest'" in message
     assert "new workflow_id" in message
-    assert "#277" in message
+    # #277: the names come from recorded provenance, not from value names.
+    assert "the baseline recorded folding" in message
 
 
 # === Tests ===
@@ -457,35 +468,113 @@ class TestNestedCompactedLineage:
 
         ``has_prior_completion_evidence`` is the in-run last-mile check for a
         GraphNode crash window; the boundary gate above cannot see compaction
-        that lands mid-run. Both refuse as ``CompactedRetentionError``.
+        that lands mid-run. Both refuse as ``CompactedRetentionError`` — and
+        since #277 the in-run one refuses only what it genuinely cannot
+        decide: a carrier written before provenance existed.
         """
-        from hypergraph.checkpointers.types import StepRecord, StepStatus, _utcnow
         from hypergraph.runners._shared.state_restore import has_prior_completion_evidence
 
         child = Graph(nodes=[_noop_node()], name="child")
         graph_node = child.as_node(name="child_wf")
 
-        baseline = StepRecord(
-            run_id="wf",
-            superstep=0,
-            node_name="__retained_state__",
-            index=0,
-            status=StepStatus.COMPLETED,
-            input_versions={},
-            values={"doubled": 4},
-            created_at=_utcnow(),
-            node_type="RetentionBaseline",
-        )
+        legacy = _carrier(values={"doubled": 4}, folded_producers=None)
         with pytest.raises(CompactedRetentionError) as error:
-            has_prior_completion_evidence([baseline], graph_node)
+            has_prior_completion_evidence([legacy], graph_node)
 
         assert error.value.node_name == "child_wf"
         assert error.value.pruned_nodes == ()
         assert error.value.code == "HG_COMPACTED_RETENTION"
         message = str(error.value)
+        assert "predates producer provenance" in message
+        # The standing guidance survives the provenance rewrite: recording who
+        # folded what answers THIS question, it does not make a compacted
+        # lineage forkable or resumable.
         assert "retention='full'" in message
         assert "retention='latest'" in message
-        assert "#277" in message
+        assert "combine nested graphs with resume/crash recovery" in message
+        assert "new workflow_id" in message
+        assert "does not make windowed retention safe to fork or resume" in message
+
+    def test_recorded_provenance_decides_the_in_run_guard(self):
+        """A carrier that names the node is evidence; one that does not is not.
+
+        Both carriers hold a value called ``doubled`` — the GraphNode's own
+        output name. Before #277 that alone was enough to make the restore
+        ambiguous; now only the recorded producer answers the question.
+        """
+        from hypergraph.runners._shared.state_restore import has_prior_completion_evidence
+
+        child = Graph(nodes=[_noop_node()], name="child")
+        graph_node = child.as_node(name="child_wf")
+
+        folded_this_node = _carrier(values={"doubled": 4}, folded_producers=("prepare", "child_wf"))
+        assert has_prior_completion_evidence([folded_this_node], graph_node) is True
+
+        same_name_other_producer = _carrier(values={"doubled": 4}, folded_producers=("prepare",))
+        assert has_prior_completion_evidence([same_name_other_producer], graph_node) is False
+
+
+class TestFoldedProducerProvenance:
+    """The carrier records WHOSE steps it folded, identically on every backend."""
+
+    async def test_carrier_names_its_folded_producers(self, tmp_path, backend_kind):
+        """Memory and SQLite agree: same graph, same retention, same set.
+
+        Two compaction passes happen here (once after 'b', once after 'c'), so
+        this also witnesses provenance surviving a carrier being re-folded:
+        'a' is only reachable through the first carrier's own record.
+        """
+        backend = Backend(backend_kind, tmp_path, retention_policy("windowed"))
+        try:
+            graph, _calls, _ = build_chain_graph()
+            await backend.run(graph, {"seed": 1}, workflow_id="src")
+
+            raw = await _raw_steps(backend, "src")
+            carrier = next(step for step in raw if step.node_type == "RetentionBaseline")
+            assert carrier.folded_producers == ("a", "b")
+            assert set(carrier.values or {}) == {"a_out", "b_out"}
+            # Provenance is a carrier-only fact: ordinary rows record none.
+            assert [step.folded_producers for step in raw if step.node_type != "RetentionBaseline"] == [None]
+        finally:
+            await backend.close()
+
+    async def test_a_surviving_producer_is_not_named_by_the_refusal(self, tmp_path, backend_kind):
+        """retention='latest' folds a loop's older rows and refuses nothing."""
+        backend = Backend(backend_kind, tmp_path, retention_policy("latest"))
+        fail_first = [True]
+        try:
+            graph, calls = build_accumulator_graph(fail_first)
+            with pytest.raises(RuntimeError, match="boom"):
+                await backend.run(graph, {}, workflow_id="loop")
+
+            raw = await _raw_steps(backend, "loop")
+            carrier = next(step for step in raw if step.node_type == "RetentionBaseline")
+            assert carrier.folded_producers == ("accumulate", "gate")
+
+            fail_first[0] = False
+            resumed = await backend.run(graph, workflow_id="loop")
+            assert resumed.status is RunStatus.COMPLETED
+            assert calls == {"accumulate": 3, "finish": 2}
+        finally:
+            await backend.close()
+
+
+def _carrier(*, values: dict, folded_producers: tuple[str, ...] | None):
+    """A retention carrier row exactly as compaction writes it."""
+    from hypergraph.checkpointers.types import StepRecord, StepStatus, _utcnow
+
+    return StepRecord(
+        run_id="wf",
+        superstep=0,
+        node_name="__retained_state__",
+        index=0,
+        status=StepStatus.COMPLETED,
+        input_versions={},
+        values=values,
+        created_at=_utcnow(),
+        node_type="RetentionBaseline",
+        folded_producers=folded_producers,
+    )
 
 
 def _noop_node():

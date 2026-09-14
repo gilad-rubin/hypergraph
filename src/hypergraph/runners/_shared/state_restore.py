@@ -408,13 +408,19 @@ def has_prior_completion_evidence(
 
     A COMPLETED StepRecord for the node itself is durable evidence (normally
     consumed by checkpoint replay before the executor runs; kept here as
-    belt-and-suspenders). A retention-baseline carrier is not evidence: it
-    folds values without producer provenance. Without the node's own row,
-    compacted history makes restore versus re-execution ambiguous and must be
-    rejected until provenance support tracked in #277 exists.
+    belt-and-suspenders). A retention-baseline carrier is evidence too, but
+    only through its recorded provenance (#277): the carrier names the nodes
+    whose COMPLETED rows it folded, so this node counts as completed exactly
+    when the carrier says it folded THIS node — never because some other
+    producer's value happens to share a name with one of its outputs.
+
+    A carrier with no provenance at all (``folded_producers is None``) was
+    written before that field existed. Its values cannot be attributed, so
+    restore versus re-execution stays ambiguous and is rejected.
 
     PAUSED/FAILED rows for the node are attempt evidence, not completion
-    evidence: the crash window legitimately contains them.
+    evidence: the crash window legitimately contains them. The carrier folds
+    COMPLETED rows only, for the same reason.
 
     This is the in-run last-mile guard. ``lineage.validate_restorable_history``
     refuses the same ambiguity earlier and names every affected node, but it
@@ -422,12 +428,16 @@ def has_prior_completion_evidence(
     checkpointer whose raw history the boundary could not read, still arrives
     here.
     """
-    has_retention_baseline = False
+    has_unattributable_baseline = False
     for step in steps:
         if step.node_name == node.name and step.status is StepStatus.COMPLETED:
             return True
-        has_retention_baseline = has_retention_baseline or is_retention_baseline(step)
-    if has_retention_baseline:
+        if is_retention_baseline(step):
+            if step.folded_producers is None:
+                has_unattributable_baseline = True
+            elif node.name in step.folded_producers:
+                return True
+    if has_unattributable_baseline:
         raise CompactedRetentionError(node.name)
     return False
 

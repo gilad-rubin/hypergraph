@@ -57,6 +57,7 @@ from hypergraph.checkpointers.types import (
     StepTable,
     WorkflowStatus,
     derive_boundary_state,
+    fold_producers,
 )
 
 # Explicit column lists for SELECT queries — avoids column-order bugs after migration
@@ -66,7 +67,7 @@ _RUNS_COLS = (
 )
 _STEPS_COLS = (
     "id, run_id, step_index, superstep, node_name, node_type, status, duration_ms, cached, error, decision, "
-    "input_versions, values_data, child_run_id, created_at, completed_at, partial, attempt_series_id"
+    "input_versions, values_data, child_run_id, created_at, completed_at, partial, attempt_series_id, folded_producers"
 )
 _STEP_TIME_ORDER = "COALESCE(completed_at, created_at), created_at, id"
 _STEP_TIME_ORDER_DESC = "COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC"
@@ -98,7 +99,10 @@ _PUBLIC_STEP_FILTER = f"node_name != '{_RETENTION_BASELINE_NODE_NAME}' AND (node
 _PUBLIC_STEP_FILTER_WITH_ALIAS = (
     f"s.node_name != '{_RETENTION_BASELINE_NODE_NAME}' AND (s.node_type IS NULL OR s.node_type != '{_RETENTION_BASELINE_NODE_TYPE}')"
 )
-_RETENTION_ROW_COLS = "id, step_index, superstep, node_name, values_data, created_at, completed_at, attempt_series_id"
+# Compaction reads status and folded_producers too: the carrier's provenance
+# (#277) is derived from which folded rows COMPLETED, and a previous carrier
+# contributes the producers it already recorded.
+_RETENTION_ROW_COLS = "id, step_index, superstep, node_name, values_data, created_at, completed_at, attempt_series_id, status, folded_producers"
 _DELETE_BATCH_SIZE = 500
 # Two binds per row plus the run id — stays under the 999-variable floor.
 _PENDING_DELETE_BATCH_SIZE = 400
@@ -146,8 +150,8 @@ _STEP_UPSERT_SQL = """
         run_id, superstep, node_name, step_index, status,
         input_versions, values_data, duration_ms, cached,
         decision, error, node_type, created_at, completed_at, child_run_id, partial,
-        attempt_series_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        attempt_series_id, folded_producers
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(run_id, superstep, node_name) DO UPDATE SET
         status = excluded.status,
         values_data = excluded.values_data,
@@ -158,7 +162,8 @@ _STEP_UPSERT_SQL = """
         node_type = excluded.node_type,
         completed_at = excluded.completed_at,
         partial = excluded.partial,
-        attempt_series_id = excluded.attempt_series_id
+        attempt_series_id = excluded.attempt_series_id,
+        folded_producers = excluded.folded_producers
 """
 
 # === Attempt-ledger SQL (shared by async and sync paths) ===
@@ -234,6 +239,8 @@ class _RetentionRow:
     created_at: str | None
     completed_at: str | None
     attempt_series_id: str | None
+    status: StepStatus
+    folded_producers: tuple[str, ...] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,10 +250,26 @@ class _RetentionPlan:
     baseline_superstep: int
 
 
+def _encode_folded_producers(producers: tuple[str, ...] | None) -> str | None:
+    """Store a carrier's producer provenance (#277) as a JSON name list.
+
+    ``None`` stays SQL NULL, which is what every ordinary step row and every
+    carrier written before the column existed reads back as.
+    """
+    return None if producers is None else json.dumps(list(producers))
+
+
+def _decode_folded_producers(raw: str | None) -> tuple[str, ...] | None:
+    """Read back what :func:`_encode_folded_producers` stored."""
+    if raw is None:
+        return None
+    return tuple(json.loads(raw))
+
+
 def _decode_retention_rows(rows: Sequence[tuple[Any, ...]]) -> tuple[_RetentionRow, ...]:
     decoded: list[_RetentionRow] = []
     for row in rows:
-        row_id, step_index, superstep, node_name, values_data, created_at, completed_at, attempt_series_id = row
+        row_id, step_index, superstep, node_name, values_data, created_at, completed_at, attempt_series_id, status, producers = row
         decoded.append(
             _RetentionRow(
                 id=int(row_id),
@@ -257,6 +280,8 @@ def _decode_retention_rows(rows: Sequence[tuple[Any, ...]]) -> tuple[_RetentionR
                 created_at=created_at,
                 completed_at=completed_at,
                 attempt_series_id=attempt_series_id,
+                status=StepStatus(status),
+                folded_producers=_decode_folded_producers(producers),
             )
         )
     return tuple(decoded)
@@ -890,6 +915,7 @@ class SqliteCheckpointer(Checkpointer):
             record.child_run_id,
             int(record.partial),
             record.attempt_series_id,
+            _encode_folded_producers(record.folded_producers),
         )
 
     async def save_step(self, record: StepRecord) -> None:
@@ -1890,7 +1916,8 @@ class SqliteCheckpointer(Checkpointer):
         Columns: id, run_id, step_index, superstep, node_name, node_type,
                  status, duration_ms, cached, error, decision, input_versions,
                  values_data, child_run_id, created_at, completed_at, partial,
-                 attempt_series_id (trailing columns len-guarded for old rows).
+                 attempt_series_id, folded_producers (trailing columns
+                 len-guarded for old rows).
         """
         values_blob = row[12]
         values = self._serializer.deserialize(values_blob) if values_blob is not None else None
@@ -1916,6 +1943,7 @@ class SqliteCheckpointer(Checkpointer):
             child_run_id=row[13],
             partial=bool(row[16]) if len(row) > 16 and row[16] is not None else False,
             attempt_series_id=row[17] if len(row) > 17 else None,
+            folded_producers=_decode_folded_producers(row[18]) if len(row) > 18 else None,
         )
 
     def _row_to_run(self, row: tuple[Any, ...]) -> Run:
@@ -2412,6 +2440,10 @@ class SqliteCheckpointer(Checkpointer):
         if not values:
             return None
 
+        producers = fold_producers(
+            ((row.node_name, row.status, row.folded_producers) for row in dropped_rows),
+            carrier_node_name=_RETENTION_BASELINE_NODE_NAME,
+        )
         baseline_at = self._baseline_timestamp(kept_rows, dropped_rows).isoformat()
         return (
             run_id,
@@ -2431,6 +2463,7 @@ class SqliteCheckpointer(Checkpointer):
             None,
             0,
             None,
+            _encode_folded_producers(producers),
         )
 
     @staticmethod
