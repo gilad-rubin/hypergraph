@@ -112,6 +112,7 @@ Key files:
 - `src/hypergraph/graph/core.py`
 - `src/hypergraph/graph/input_spec.py`
 - `src/hypergraph/graph/validation.py`
+- `src/hypergraph/graph/addressing.py`
 - `src/hypergraph/graph/_helpers.py`
 - `src/hypergraph/graph/_conflict.py`
 
@@ -559,6 +560,7 @@ src/hypergraph/
 │   ├── core.py
 │   ├── input_spec.py
 │   ├── validation.py
+│   ├── addressing.py
 │   ├── _helpers.py
 │   └── _conflict.py
 │

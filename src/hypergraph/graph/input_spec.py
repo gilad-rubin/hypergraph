@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING, Any
 
 import networkx as nx
 
-from hypergraph.graph._helpers import get_edge_produced_values, sources_of
+from hypergraph.graph._helpers import sources_of
+from hypergraph.graph.addressing import get_edge_produced_values
 
 if TYPE_CHECKING:
     from hypergraph.nodes.base import HyperNode
