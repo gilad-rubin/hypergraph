@@ -406,6 +406,7 @@ class SyncRunner(SyncRunnerTemplate):
             emit_fn=dispatcher.emit if dispatcher.active else None,
             checkpointer=sync_cp,
             superstep_offset=superstep_offset,
+            persist_boundaries=persist_boundaries,
             provider_limits=graph_limits,
         )
 

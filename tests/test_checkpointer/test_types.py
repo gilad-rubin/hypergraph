@@ -1,11 +1,14 @@
 """Tests for checkpointer types and CheckpointPolicy validation."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from hypergraph.checkpointers import CheckpointPolicy, Run, StepRecord, StepStatus, WorkflowStatus
-from hypergraph.checkpointers.types import fold_producers
+from hypergraph.checkpointers import BoundaryState, CheckpointPolicy, Run, StepRecord, StepStatus, WorkflowStatus
+from hypergraph.checkpointers.types import derive_boundary_state, fold_producers
+
+#: Any timestamp: the cascade reads presence, never the clock value.
+_MARK = datetime(2026, 9, 13, tzinfo=timezone.utc)
 
 
 class TestCheckpointPolicy:
@@ -227,3 +230,36 @@ class TestFoldProducers:
 
     def test_folding_no_completed_rows_is_empty_not_unknown(self):
         assert fold_producers([("ask", StepStatus.PAUSED, None)], carrier_node_name=self.CARRIER) == ()
+
+
+class TestDeriveBoundaryState:
+    """The one cascade every backend calls instead of re-deriving it."""
+
+    def test_a_recorded_boundary_with_no_mark_is_pending(self):
+        assert derive_boundary_state(None, None, None) is BoundaryState.PENDING
+
+    def test_a_step_record_of_any_status_is_committed(self):
+        for status in StepStatus:
+            assert derive_boundary_state(status, None, None) is BoundaryState.COMMITTED
+
+    def test_a_settlement_mark_without_a_step_record_says_the_node_completed(self):
+        assert derive_boundary_state(None, None, _MARK) is BoundaryState.SETTLED_UNRECORDED
+
+    def test_a_dispatch_mark_alone_is_an_unknown_effect(self):
+        assert derive_boundary_state(None, _MARK, None) is BoundaryState.UNKNOWN_EFFECT
+
+    def test_settlement_outranks_dispatch_because_the_node_returned(self):
+        """A dispatched boundary that later settled is not an unknown effect.
+
+        The node returned, so the effect is known to have landed; only the
+        recorded value was lost with the killed superstep.
+        """
+        assert derive_boundary_state(None, _MARK, _MARK) is BoundaryState.SETTLED_UNRECORDED
+
+    def test_the_journal_outranks_every_mark(self):
+        assert derive_boundary_state(StepStatus.FAILED, _MARK, _MARK) is BoundaryState.COMMITTED
+
+    def test_dispatch_stays_the_default_third_argument(self):
+        """Callers written before the marker keep their exact meaning."""
+        assert derive_boundary_state(None, None) is BoundaryState.PENDING
+        assert derive_boundary_state(None, _MARK) is BoundaryState.UNKNOWN_EFFECT

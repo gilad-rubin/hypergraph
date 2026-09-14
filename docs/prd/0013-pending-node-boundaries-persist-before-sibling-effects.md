@@ -36,16 +36,26 @@ After:
 # Unfinished siblings stay attributable; nothing is inferred from silence.
 ```
 
+StepRecords still commit per superstep, not per node, so a sibling that ran
+to completion inside the killed superstep has no StepRecord; it marks its own
+boundary `settled_at` as its result lands and therefore reads
+`settled_unrecorded` — the node completed, its recorded value did not survive
+— instead of being indistinguishable from a sibling that never started (#330).
+
 Requirements:
 
 - Every runnable sibling boundary is persisted as pending before any
   sibling in that superstep can cause external work.
 - A pending boundary is intent, not execution truth: StepRecords remain the
   sole execution journal, and a pending record never claims a node ran.
+  *(As of this PRD. #330 added a per-node settlement mark, so a record now
+  never claims what a node PRODUCED — `settled_at` says only that it ran.
+  See the After block.)*
 - Recovery distinguishes three states per boundary without guessing:
   committed (StepRecord present), pending (recorded, never dispatched or
   never settled), and unknown effect (PRD 0014, declared effectful nodes
-  only).
+  only). *(As of this PRD; #330 added a fourth, `settled_unrecorded` — see
+  the After block.)*
 - A real kill between sibling boundaries preserves completed facts and
   leaves unfinished siblings recoverable and visible.
 - Nested graphs and loops retain the same parent-facing execution identity;

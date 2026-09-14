@@ -213,14 +213,20 @@ _NODE_STATS_SQL = f"""
 # Intent is recorded before the first sibling of a superstep dispatches;
 # the boundary's state is DERIVED by outer-joining the execution journal, so
 # the table can never claim a node ran.
-# ``DO NOTHING`` on conflict: the address IS the boundary occurrence, so a
-# re-record (a history-less run restarting fresh at superstep 0) must not
-# rewrite when it first became pending — and must never clear a
-# ``dispatched_at`` that PRD 0014 will write before a provider call.
+# One statement carries BOTH writes to a boundary, because they address the
+# same row: recording intent (``settled_at`` NULL) and the runner's per-node
+# settlement (``settled_at`` set). The ``ON CONFLICT`` branch tells them
+# apart, and its guard is why a re-record is still harmless: the address IS
+# the boundary occurrence, so re-recording intent (a history-less run
+# restarting fresh at superstep 0) must not rewrite when it first became
+# pending, must never clear a ``dispatched_at`` that PRD 0014 will write
+# before a provider call, and must never un-settle a node that ran. First
+# settlement wins; a node can only complete once per occurrence.
 _PENDING_NODE_UPSERT_SQL = """
-    INSERT INTO pending_nodes (run_id, superstep, node_name, node_type, created_at, dispatched_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(run_id, superstep, node_name) DO NOTHING
+    INSERT INTO pending_nodes (run_id, superstep, node_name, node_type, created_at, dispatched_at, settled_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(run_id, superstep, node_name) DO UPDATE SET settled_at = excluded.settled_at
+    WHERE pending_nodes.settled_at IS NULL AND excluded.settled_at IS NOT NULL
 """
 # The projection IS _NODE_BOUNDARY_COLS, in that order, because that is what
 # the decoder zips against — derived rather than retyped, so the join and the
@@ -862,7 +868,13 @@ class SqliteCheckpointer(Checkpointer):
     # === Pending node boundaries (PRD 0013) ===
 
     async def record_pending_nodes(self, boundaries: Sequence[PendingNode]) -> None:
-        """Durably record a superstep's runnable node boundaries as pending.
+        """Durably record what is true of these node boundaries right now.
+
+        Two writes share this verb because they address the same rows: the
+        superstep's runnable siblings recorded as pending intent, and one
+        node marking itself settled the moment its result is in hand. A
+        record whose ``settled_at`` is ``None`` can only create; one carrying
+        a ``settled_at`` can only settle a boundary that is not settled yet.
 
         Writes through immediately whatever ``CheckpointPolicy.durability``
         says about StepRecord timing: a buffered boundary would not survive

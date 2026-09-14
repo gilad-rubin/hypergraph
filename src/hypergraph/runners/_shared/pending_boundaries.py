@@ -13,9 +13,23 @@ runner calls :func:`build_pending_nodes` and then its own thin dispatch
 helper at the SAME place in the superstep loop: after the runnable batch is
 fixed, before the first sibling dispatches.
 
+A superstep's StepRecords still commit together, so a kill inside a
+superstep takes the journal entry of a sibling that had already finished.
+That sibling marks its OWN boundary settled the instant its result is in
+hand (:func:`settle_node_boundary_sync` / :func:`settle_node_boundary_async`),
+which is the only trace of it that survives: recovery then reads
+``SETTLED_UNRECORDED`` rather than being unable to tell it from a sibling
+that never started.
+
 A pending record is never execution truth. StepRecords remain the sole
 execution journal; the boundary's state is derived by joining the two
-(:class:`hypergraph.checkpointers.types.BoundaryState`).
+(:class:`hypergraph.checkpointers.types.BoundaryState`). A settlement mark is
+not an exception to that: it says the node completed, never what it produced.
+
+The two writes fail differently, and deliberately: the intent write happens
+before any sibling dispatches, so a failure there stops the run; the
+settlement write happens after its node already ran, so a failure there is
+logged and the node's value is kept.
 
 ``durability="exit"`` records NO boundaries at all. That mode buffers every
 StepRecord to run exit and advertises no mid-run recovery, so a boundary
@@ -26,7 +40,9 @@ is unaffected by the exclusion.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import logging
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, cast
 
 from hypergraph.checkpointers.protocols import PendingNodeProtocol, SyncPendingNodeProtocol, probe_seam
 from hypergraph.checkpointers.types import PendingNode
@@ -35,6 +51,11 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from hypergraph.nodes.base import HyperNode
+    from hypergraph.runners._shared.state import ExecutionContext
+
+#: Named for the subsystem, not this module, so a durability gap reads as one
+#: stream wherever it was noticed (the async step-save path logs here too).
+_logger = logging.getLogger("hypergraph.checkpointers")
 
 #: Every method of each seam, not just the one the write path calls — see
 #: ``probe_seam``: ``runtime_checkable`` matches on attribute PRESENCE only.
@@ -109,3 +130,83 @@ async def record_superstep_boundaries_async(
 ) -> None:
     """Async mirror of :func:`record_superstep_boundaries_sync`."""
     await checkpointer.record_pending_nodes(build_pending_nodes(workflow_id, superstep_idx, ready_nodes))
+
+
+def build_settled_node(ctx: ExecutionContext, superstep_idx: int | None, node: HyperNode) -> PendingNode | None:
+    """The settlement record for one finished node, or ``None`` to skip.
+
+    ``None`` answers every reason not to write — no seam, no checkpointer, no
+    ``workflow_id`` — so neither superstep needs its own guard and the two
+    cannot come to disagree about when a node settles.
+
+    The address is the SAME ``superstep_idx + superstep_offset`` the intent
+    write and the StepRecord carry; ``superstep_idx`` is the raw loop index
+    the superstep functions already receive, so the offset arithmetic lives
+    here once instead of at each call site.
+    """
+    if not ctx.persist_boundaries or ctx.checkpointer is None or ctx.workflow_id is None:
+        return None
+    return PendingNode(
+        run_id=ctx.workflow_id,
+        superstep=(superstep_idx if superstep_idx is not None else 0) + ctx.superstep_offset,
+        node_name=node.name,
+        node_type=type(node).__name__,
+        settled_at=datetime.now(timezone.utc),
+    )
+
+
+def report_settlement_failure(boundary: PendingNode, error: Exception) -> None:
+    """A settlement mark is bookkeeping: losing it must never lose the node.
+
+    This is the one boundary write that happens AFTER its node ran. Raising
+    here would throw away a completed node's value to protect a record whose
+    only job is to make recovery's reading better — the wrong trade, and one
+    a third-party checkpointer could impose on every run just by failing on
+    an optional seam. The run continues; recovery simply falls back to what
+    it read before #330 (``PENDING``, indistinguishable from never-started).
+
+    The intent write is the opposite case and still fails the run: it happens
+    BEFORE any sibling dispatches, so refusing to proceed is the safe answer.
+
+    Lives here rather than at the two call sites so sync and async cannot come
+    to disagree about what a failed mark costs.
+    """
+    _logger.warning(
+        "Node boundary settlement failed for %s: the node completed and its result is kept, but a crash "
+        "before this superstep commits will read the boundary as pending instead of settled (%r).",
+        boundary.address,
+        error,
+    )
+
+
+def settle_node_boundary_sync(ctx: ExecutionContext, superstep_idx: int | None, node: HyperNode) -> None:
+    """Mark this node's boundary settled, before its result is folded.
+
+    Written the moment the node's result is in hand rather than after the
+    fold, for one reason that decides both runners: the async fold cannot
+    start until EVERY sibling has returned, so a mark written there would
+    never survive the very kill it exists to describe. Folding is a
+    shared-state operation involving the other siblings; completing is this
+    node's own fact, and that is what the marker records.
+
+    Never raises on a write failure — see :func:`report_settlement_failure`.
+    ``Exception`` only, so cancellation still propagates.
+    """
+    boundary = build_settled_node(ctx, superstep_idx, node)
+    if boundary is None:
+        return
+    try:
+        cast(SyncPendingNodeProtocol, ctx.checkpointer).record_pending_nodes_sync([boundary])
+    except Exception as error:
+        report_settlement_failure(boundary, error)
+
+
+async def settle_node_boundary_async(ctx: ExecutionContext, superstep_idx: int | None, node: HyperNode) -> None:
+    """Async mirror of :func:`settle_node_boundary_sync`."""
+    boundary = build_settled_node(ctx, superstep_idx, node)
+    if boundary is None:
+        return
+    try:
+        await cast(PendingNodeProtocol, ctx.checkpointer).record_pending_nodes([boundary])
+    except Exception as error:
+        report_settlement_failure(boundary, error)

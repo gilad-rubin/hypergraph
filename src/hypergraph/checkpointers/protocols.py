@@ -120,6 +120,11 @@ class PendingNodeProtocol(Protocol):
     when it is absent, so a third-party checkpointer without the seam keeps
     working instead of hard-failing. Both methods belong to the seam: writing
     intent nobody can read back is not a usable capability.
+
+    ``record_pending_nodes`` carries both writes a boundary ever takes —
+    intent (``PendingNode.settled_at`` is ``None``) and per-node settlement
+    (it is set) — so an implementation must make the settlement idempotent
+    and must never let an intent write clear an existing mark.
     """
 
     async def record_pending_nodes(self, boundaries: Sequence[PendingNode]) -> None: ...

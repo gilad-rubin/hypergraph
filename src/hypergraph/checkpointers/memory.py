@@ -80,14 +80,22 @@ class MemoryCheckpointer(Checkpointer):
     # === Pending node boundaries (PRD 0013) ===
 
     async def record_pending_nodes(self, boundaries: Sequence[PendingNode]) -> None:
-        """Record a superstep's runnable node boundaries as pending intent.
+        """Record what is true of these node boundaries right now.
 
-        First record wins per address: a re-record must not rewrite when the
-        boundary first became pending, nor clear a dispatch mark.
+        The same two writes SQLite's single upsert carries: recording a
+        superstep's runnable siblings as pending intent (``settled_at`` is
+        ``None``), and one node marking itself settled once its result is in
+        hand. First record wins per address — a re-record must not rewrite
+        when the boundary first became pending, nor clear a dispatch mark —
+        and first settlement wins, since a node completes once per
+        occurrence.
         """
         for boundary in boundaries:
             run_boundaries = self._pending_nodes.setdefault(boundary.run_id, {})
-            run_boundaries.setdefault((boundary.superstep, boundary.node_name), boundary)
+            key = (boundary.superstep, boundary.node_name)
+            existing = run_boundaries.setdefault(key, boundary)
+            if boundary.settled_at is not None and existing.settled_at is None:
+                run_boundaries[key] = replace(existing, settled_at=boundary.settled_at)
 
     async def get_node_boundaries(self, run_id: str) -> list[NodeBoundary]:
         """Recovery view: every recorded boundary of a run, state derived.
@@ -107,10 +115,11 @@ class MemoryCheckpointer(Checkpointer):
                     run_id=boundary.run_id,
                     superstep=boundary.superstep,
                     node_name=boundary.node_name,
-                    state=derive_boundary_state(step_status, boundary.dispatched_at),
+                    state=derive_boundary_state(step_status, boundary.dispatched_at, boundary.settled_at),
                     node_type=boundary.node_type,
                     created_at=boundary.created_at,
                     dispatched_at=boundary.dispatched_at,
+                    settled_at=boundary.settled_at,
                     step_status=step_status,
                 )
             )

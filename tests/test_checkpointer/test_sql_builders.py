@@ -200,7 +200,7 @@ async def test_every_projection_matches_the_list_its_decoder_zips(store):
 _VOLATILE = {
     "runs": {"created_at", "completed_at"},
     "steps": {"id", "created_at", "completed_at", "attempt_series_id"},
-    "pending_nodes": {"created_at", "dispatched_at"},
+    "pending_nodes": {"created_at", "dispatched_at", "settled_at"},
     "pause_slots": {"created_at", "settled_at"},
     "attempt_series": {"id", "opened_at", "closed_at"},
     "attempt_records": {"series_id", "started_at", "completed_at"},

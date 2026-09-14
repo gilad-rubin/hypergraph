@@ -54,7 +54,7 @@ ATTEMPT_RECORD_COLS = (
 #: The intent-joined-journal row behind a NodeBoundary: the pending_nodes row
 #: plus the outer-joined step status. Not a table's column list, so it is
 #: spelled here rather than derived from one.
-NODE_BOUNDARY_COLS = "run_id, superstep, node_name, node_type, created_at, dispatched_at, step_status"
+NODE_BOUNDARY_COLS = "run_id, superstep, node_name, node_type, created_at, dispatched_at, settled_at, step_status"
 
 
 def _names(columns: str) -> tuple[str, ...]:
@@ -214,16 +214,18 @@ def row_to_node_boundary(row: Sequence[Any]) -> NodeBoundary:
     """
     values = named_row(_NODE_BOUNDARY_NAMES, row, cols="NODE_BOUNDARY_COLS")
     dispatched_at = parse_dt(values["dispatched_at"])
+    settled_at = parse_dt(values["settled_at"])
     raw_status = values["step_status"]
     step_status = StepStatus(raw_status) if raw_status is not None else None
     return NodeBoundary(
         run_id=values["run_id"],
         superstep=values["superstep"],
         node_name=values["node_name"],
-        state=derive_boundary_state(step_status, dispatched_at),
+        state=derive_boundary_state(step_status, dispatched_at, settled_at),
         node_type=values["node_type"],
         created_at=parse_dt(values["created_at"]),
         dispatched_at=dispatched_at,
+        settled_at=settled_at,
         step_status=step_status,
     )
 
@@ -291,6 +293,13 @@ def step_upsert_params(serializer: Any, record: StepRecord) -> tuple[Any, ...]:
 
 
 def pending_node_params(boundary: PendingNode) -> tuple[Any, ...]:
+    """Params for the pending-node upsert — intent write and settlement alike.
+
+    One record shape carries both: a boundary-intent write leaves
+    ``settled_at`` ``None``, and the runner's per-node settlement write sets
+    it. The statement's ``ON CONFLICT`` branch decides which of the two a
+    given row is (see ``_PENDING_NODE_UPSERT_SQL``).
+    """
     return (
         boundary.run_id,
         boundary.superstep,
@@ -298,6 +307,7 @@ def pending_node_params(boundary: PendingNode) -> tuple[Any, ...]:
         boundary.node_type,
         boundary.created_at.isoformat(),
         iso_or_none(boundary.dispatched_at),
+        iso_or_none(boundary.settled_at),
     )
 
 

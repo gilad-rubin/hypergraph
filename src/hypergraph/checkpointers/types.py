@@ -63,8 +63,12 @@ class BoundaryState(Enum):
 
     ``COMMITTED`` — a StepRecord exists for the address; the journal
     witnessed the outcome (completed, failed, or paused).
-    ``PENDING`` — the boundary was recorded as runnable and no StepRecord
-    settled it. Nothing dispatched it, so it is safe to dispatch.
+    ``PENDING`` — the boundary was recorded as runnable and nothing marked it
+    settled or dispatched. It never started, so it is safe to dispatch.
+    ``SETTLED_UNRECORDED`` — the node ran to completion and said so, but its
+    StepRecord died with the superstep that was killed before it committed
+    (StepRecords commit per superstep, the marker per node). The outcome
+    value is gone; the fact that the node completed is not.
     ``UNKNOWN_EFFECT`` — reserved for declared-effect nodes (PRD 0014): the
     boundary was marked dispatched and never settled, so recovery must not
     dispatch it again automatically.
@@ -72,21 +76,34 @@ class BoundaryState(Enum):
 
     PENDING = "pending"
     COMMITTED = "committed"
+    SETTLED_UNRECORDED = "settled_unrecorded"
     UNKNOWN_EFFECT = "unknown_effect"
 
 
-def derive_boundary_state(step_status: StepStatus | None, dispatched_at: datetime | None) -> BoundaryState:
+def derive_boundary_state(
+    step_status: StepStatus | None,
+    dispatched_at: datetime | None,
+    settled_at: datetime | None = None,
+) -> BoundaryState:
     """Classify one boundary by joining recorded intent with the journal.
 
     The single definition of the cascade — every backend calls this instead
-    of re-deriving it, so a fourth state means editing exactly one place.
+    of re-deriving it, so a fifth state means editing exactly one place.
 
-    A StepRecord of any status is a witnessed settlement; its absence with no
-    dispatch mark is safe pending work; its absence WITH a dispatch mark is an
-    unknown effect (PRD 0014).
+    A StepRecord of any status is a witnessed settlement. Without one, a
+    settlement mark still says the node ran to completion
+    (``SETTLED_UNRECORDED``); a dispatch mark alone says only that a provider
+    was called and the outcome is unknown (``UNKNOWN_EFFECT``, PRD 0014);
+    neither mark is safe, untouched, pending work.
+
+    Settlement outranks dispatch deliberately: a dispatched boundary that
+    later settled is not an unknown effect — the node returned, so the effect
+    is known to have landed. Only its recorded value was lost.
     """
     if step_status is not None:
         return BoundaryState.COMMITTED
+    if settled_at is not None:
+        return BoundaryState.SETTLED_UNRECORDED
     if dispatched_at is not None:
         return BoundaryState.UNKNOWN_EFFECT
     return BoundaryState.PENDING
@@ -104,6 +121,12 @@ class PendingNode:
     ``dispatched_at`` is the declared-effect seam (PRD 0014) and stays
     ``None`` on the boundary-record write path: only effect reservation, made
     before a provider call, may mark a boundary dispatched.
+
+    ``settled_at`` is the per-node settlement marker: the runner sets it the
+    moment a node's result is in hand, before that result is folded into
+    shared state and long before the superstep's StepRecords commit. It is
+    the only thing that survives a kill inside a superstep, and it still
+    claims nothing about the node's OUTPUT — only that the node completed.
     """
 
     run_id: str
@@ -112,6 +135,7 @@ class PendingNode:
     node_type: str | None = None
     created_at: datetime = field(default_factory=_utcnow)
     dispatched_at: datetime | None = None
+    settled_at: datetime | None = None
 
     @property
     def address(self) -> str:
@@ -127,8 +151,9 @@ class NodeBoundary:
     """Recovery view of one node boundary: intent joined with the journal.
 
     ``state`` is derived, never stored: a boundary is ``COMMITTED`` exactly
-    when its StepRecord exists. ``dispatched_at`` stays ``None`` until
-    declared-effect reservation (PRD 0014) sets it.
+    when its StepRecord exists, and ``SETTLED_UNRECORDED`` when the runner
+    marked the node complete but no StepRecord followed. ``dispatched_at``
+    stays ``None`` until declared-effect reservation (PRD 0014) sets it.
     """
 
     run_id: str
@@ -138,6 +163,7 @@ class NodeBoundary:
     node_type: str | None = None
     created_at: datetime | None = None
     dispatched_at: datetime | None = None
+    settled_at: datetime | None = None
     step_status: StepStatus | None = None
 
     @property

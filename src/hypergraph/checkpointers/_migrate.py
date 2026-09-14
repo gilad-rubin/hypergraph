@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def detect_schema_version(conn: Any) -> int:
@@ -17,7 +17,8 @@ def detect_schema_version(conn: Any) -> int:
         5 — v5 schema (cross-store lineage columns carry no FK)
         6 — v6 schema (durable-host coordination + pending node boundaries)
         7 — v7 schema (submitted work carries a builder address; workers register)
-        8 — current v8 schema (retention carriers record which nodes they folded)
+        8 — v8 schema (retention carriers record which nodes they folded)
+        9 — current v9 schema (a node boundary records its own settlement)
     """
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
@@ -28,8 +29,8 @@ def detect_schema_version(conn: Any) -> int:
     return 0
 
 
-def create_v8_schema(conn: Any) -> None:
-    """Create a fresh v8 schema on an empty database."""
+def create_v9_schema(conn: Any) -> None:
+    """Create a fresh v9 schema on an empty database."""
     conn.execute(_CREATE_RUNS)
     conn.execute(_CREATE_STEPS)
     conn.execute(_CREATE_ATTEMPT_SERIES)
@@ -40,16 +41,18 @@ def create_v8_schema(conn: Any) -> None:
     _ensure_v6_objects(conn)
     _ensure_v7_objects(conn)
     _ensure_v8_objects(conn)
+    _ensure_v9_objects(conn)
 
     conn.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
     conn.execute("INSERT INTO _schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
     conn.commit()
 
 
-# Backward-compatible aliases: the fresh-create entry points used before v8.
-create_v7_schema = create_v8_schema
-create_v6_schema = create_v8_schema
-create_v5_schema = create_v8_schema
+# Backward-compatible aliases: the fresh-create entry points used before v9.
+create_v8_schema = create_v9_schema
+create_v7_schema = create_v9_schema
+create_v6_schema = create_v9_schema
+create_v5_schema = create_v9_schema
 
 
 def ensure_schema(conn: Any) -> None:
@@ -62,9 +65,10 @@ def ensure_schema(conn: Any) -> None:
         _ensure_v6_objects(conn)
         _ensure_v7_objects(conn)
         _ensure_v8_objects(conn)
+        _ensure_v9_objects(conn)
         return
     if version == 0:
-        create_v8_schema(conn)
+        create_v9_schema(conn)
         return
     if version == 2:
         _migrate_v2_to_v3(conn)
@@ -73,6 +77,7 @@ def ensure_schema(conn: Any) -> None:
         _migrate_v5_to_v6(conn)
         _migrate_v6_to_v7(conn)
         _migrate_v7_to_v8(conn)
+        _migrate_v8_to_v9(conn)
         return
     if version == 3:
         _migrate_v3_to_v4(conn)
@@ -80,24 +85,32 @@ def ensure_schema(conn: Any) -> None:
         _migrate_v5_to_v6(conn)
         _migrate_v6_to_v7(conn)
         _migrate_v7_to_v8(conn)
+        _migrate_v8_to_v9(conn)
         return
     if version == 4:
         _migrate_v4_to_v5(conn)
         _migrate_v5_to_v6(conn)
         _migrate_v6_to_v7(conn)
         _migrate_v7_to_v8(conn)
+        _migrate_v8_to_v9(conn)
         return
     if version == 5:
         _migrate_v5_to_v6(conn)
         _migrate_v6_to_v7(conn)
         _migrate_v7_to_v8(conn)
+        _migrate_v8_to_v9(conn)
         return
     if version == 6:
         _migrate_v6_to_v7(conn)
         _migrate_v7_to_v8(conn)
+        _migrate_v8_to_v9(conn)
         return
     if version == 7:
         _migrate_v7_to_v8(conn)
+        _migrate_v8_to_v9(conn)
+        return
+    if version == 8:
+        _migrate_v8_to_v9(conn)
         return
     raise ValueError(f"Unsupported database schema version {version} (current: {SCHEMA_VERSION}). Please upgrade hypergraph.")
 
@@ -570,9 +583,10 @@ CREATE TABLE IF NOT EXISTS host_settings (
 #
 # The primary key is exactly the tuple ``steps`` is unique on, so recovery
 # joins boundary intent against the execution journal with no guessing:
-# a matching steps row means committed; no steps row and no dispatched_at
-# means pending; dispatched_at without a steps row is reserved for declared
-# effects (PRD 0014) and nothing sets it yet.
+# a matching steps row means committed; no steps row and neither mark means
+# pending; ``settled_at`` without a steps row means the node completed and
+# its StepRecord died with the killed superstep (#330); ``dispatched_at``
+# without either is reserved for declared effects (PRD 0014).
 #
 # Deliberately NO foreign key to runs(id): a claimed run lost before its
 # first committed step has its history-less runs row deleted and restarts
@@ -586,9 +600,13 @@ CREATE TABLE IF NOT EXISTS pending_nodes (
     node_type TEXT,
     created_at TEXT NOT NULL,
     dispatched_at TEXT,
+    settled_at TEXT,
     PRIMARY KEY (run_id, superstep, node_name)
 )
 """
+
+#: The v9 append to ``pending_nodes``: the per-node settlement marker (#330).
+_PENDING_NODES_ADDED_COLUMNS = (("settled_at", "settled_at TEXT"),)
 
 
 def _ensure_pending_node_objects(conn: Any) -> None:
@@ -764,4 +782,23 @@ def _migrate_v7_to_v8(conn: Any) -> None:
     """In-place migration from schema v7 to v8 (retention producer provenance)."""
     _ensure_v8_objects(conn)
     conn.execute("UPDATE _schema_version SET version = 8")
+    conn.commit()
+
+
+def _ensure_v9_objects(conn: Any) -> None:
+    """Ensure the node boundary's settlement marker exists (idempotent guard).
+
+    One nullable append to ``pending_nodes``: a v8 database migrates in
+    place, every existing row keeps its exact byte layout, and the new column
+    reads NULL until a runner settles a node — which is exactly what an
+    already-recorded boundary from an older process means.
+    """
+    _add_missing_columns(conn, "pending_nodes", _PENDING_NODES_ADDED_COLUMNS)
+    conn.commit()
+
+
+def _migrate_v8_to_v9(conn: Any) -> None:
+    """In-place migration from schema v8 to v9 (per-node settlement marker)."""
+    _ensure_v9_objects(conn)
+    conn.execute("UPDATE _schema_version SET version = 9")
     conn.commit()

@@ -45,7 +45,12 @@ row-count shortcuts.
 
 - A pending node boundary is intent; its `BoundaryState` is derived by
   joining `steps` on `(run_id, superstep, node_name)`. Never store the
-  derived state, and never let a boundary row assert that a node ran.
+  derived state, and never let a boundary row assert what a node produced.
+- `pending_nodes.settled_at` is the one exception, and only to "a node ran":
+  the runner sets it per node, so a kill inside a superstep still leaves a
+  finished sibling readable. `record_pending_nodes` carries both writes —
+  intent (`settled_at` is None) and settlement — so a new backend must make
+  settlement idempotent and must never let an intent write clear a mark.
 - The state cascade itself lives once, in `types.derive_boundary_state`.
   Backends shape rows and call it; they must not re-derive the states, or a
   new state would have to be added in every backend.
