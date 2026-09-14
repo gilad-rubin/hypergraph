@@ -82,14 +82,26 @@ def _validate_single_target_decision(node: RouteNode, decision: Any) -> None:
 
 def _validate_single_target(node: RouteNode, target: Any) -> None:
     """Validate a single target is in the valid targets list."""
+    from hypergraph.graph.addressing import format_did_you_mean
     from hypergraph.nodes.gate import END
 
     valid_targets = set(node.targets)
     if target not in valid_targets:
         target_str = "END" if target is END else repr(target)
-        valid_str = sorted(str(t) if t is END else repr(t) for t in node.targets)
-        raise ValueError(
+        # str(), not repr(): the f-string below already quotes each list entry,
+        # and repr here made it read ["'step_a'", 'END'].
+        valid_str = sorted("END" if t is END else str(t) for t in node.targets)
+        message = (
             f"Gate '{node.name}' returned invalid target {target_str}\n\n"
             f"  -> Valid targets: {valid_str}\n\n"
             f"How to fix: Return one of the targets listed in @route(targets=[...])"
         )
+        # A routing function usually returns a near-miss of a declared target,
+        # so the same engine that answers misspelled input addresses answers
+        # here. README and docs/03-patterns/02-routing.md have advertised this
+        # line since before it existed.
+        if isinstance(target, str):
+            suggestion = format_did_you_mean(target, [t for t in node.targets if t is not END])
+            if suggestion:
+                message += f"\n\n  {suggestion}"
+        raise ValueError(message)

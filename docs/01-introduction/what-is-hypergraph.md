@@ -124,14 +124,16 @@ def test_embed():
 Catch errors when you build the graph, not at 2am in production:
 
 ```python
-@route(targets=["step_a", "step_b", END])
+@route(targets=["step_c", END])  # Typo: the node is called 'step_b'
 def decide(x: int) -> str:
-    return "step_c"  # Typo
+    return "step_c"
 
 graph = Graph([decide, step_a, step_b])
-# GraphConfigError: Route target 'step_c' not found.
-# Valid targets: ['step_a', 'step_b', 'END']
-# Did you mean 'step_a'?
+# GraphConfigError: Gate 'decide' targets unknown node 'step_c'
+#
+#   -> Available nodes: ['decide', 'step_a', 'step_b']
+#
+#   Did you mean 'step_a' or 'step_b'?
 ```
 
 ### 6. Think Singular, Scale with Map
