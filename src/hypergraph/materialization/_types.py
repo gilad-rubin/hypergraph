@@ -18,6 +18,45 @@ class RowStatus(Enum):
     COMPLETE = "complete"
     WAITING = "waiting"
     ERROR = "error"
+    PARTIAL = "partial"
+    """Some derived columns are stored, others are null with a recorded reason.
+
+    Written only under ``on_error="store"`` and only when the runner could
+    attribute the failure to the node that produces a column. The row stays
+    queryable, counts as needing heal in ``status()``, and the next ``sync()``
+    re-derives exactly the null columns.
+    """
+
+
+class ChangeReason(Enum):
+    """Why one column of a partially derived row holds no value.
+
+    A column whose producer ran and returned ``None`` is not here: that is a
+    value, not a failure, and it is stored with its provenance like any other.
+    """
+
+    NODE_ERROR = "node_error"
+    """The node that produces this column raised."""
+    UPSTREAM_ERROR = "upstream_error"
+    """A failed node reaches this column's producer, so its inputs never arrived."""
+    NOT_RUN = "not_run"
+    """Nothing failed on this column's own path — the failure ended the run
+    before its producer was scheduled. Retrying may well derive it."""
+
+
+@dataclass(frozen=True)
+class ColumnChange:
+    """One derived column nulled by a failure, and what is known about it.
+
+    ``node`` always names the column's own producer. ``error`` carries the
+    raised exception's text for ``NODE_ERROR`` and is ``None`` for the two
+    reasons where this producer never ran.
+    """
+
+    column: str
+    reason: ChangeReason
+    node: str
+    error: str | None = None
 
 
 class WriteOutcome(Enum):
@@ -158,6 +197,10 @@ class TableReceipt:
         return tuple(receipt for receipt in self.receipts if receipt.failed)
 
     @property
+    def partial(self) -> tuple[RowReceipt, ...]:
+        return tuple(receipt for receipt in self.receipts if receipt.status is RowStatus.PARTIAL)
+
+    @property
     def paused(self) -> bool:
         return bool(self.waiting)
 
@@ -186,6 +229,15 @@ class ErroredRow:
 
     id: str
     error: str
+    row: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PartialRow:
+    """A row that kept its derived columns except the ones a failure nulled."""
+
+    id: str
+    changes: tuple[ColumnChange, ...]
     row: dict[str, Any]
 
 
@@ -260,6 +312,29 @@ def deserialize_question(value: Any) -> tuple[PauseInfo, str]:
             response_key=envelope["response_key"],
         ),
         envelope["provenance"],
+    )
+
+
+def serialize_changes(changes: tuple[ColumnChange, ...]) -> str:
+    """Serialize a partial row's change entries for storage."""
+    return json.dumps(
+        [{"column": change.column, "reason": change.reason.value, "node": change.node, "error": change.error} for change in changes],
+        separators=(",", ":"),
+    )
+
+
+def deserialize_changes(value: Any) -> tuple[ColumnChange, ...]:
+    """Rebuild a partial row's change entries from storage, or ``()``."""
+    if not isinstance(value, str) or not value:
+        return ()
+    return tuple(
+        ColumnChange(
+            column=entry["column"],
+            reason=ChangeReason(entry["reason"]),
+            node=entry["node"],
+            error=entry["error"],
+        )
+        for entry in json.loads(value)
     )
 
 

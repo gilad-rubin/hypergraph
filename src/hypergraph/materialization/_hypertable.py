@@ -17,6 +17,7 @@ from hypergraph.materialization._indexes import IndexPolicy
 from hypergraph.materialization._provenance import Provenance
 from hypergraph.materialization._provenance import normalize_value as _normalize_value
 from hypergraph.materialization._schema import (
+    CHANGES_COLUMN,
     PARENT_LINK_COLUMN,
     QUESTION_COLUMN,
     RECIPE_COLUMN,
@@ -28,12 +29,14 @@ from hypergraph.materialization._schema import (
 )
 from hypergraph.materialization._types import (
     ErroredRow,
+    PartialRow,
     RecipeDrift,
     RowReceipt,
     RowStatus,
     TableReceipt,
     TableStatus,
     WaitingRow,
+    deserialize_changes,
     deserialize_question,
 )
 from hypergraph.materialization._write_actions import RunGraph, RunOperations, WriteOperation
@@ -373,6 +376,8 @@ class HyperTable:
                     if parent_span_id is not None:
                         nested_options["_parent_span_id"] = parent_span_id
                         nested_options["_parent_run_id"] = parent_run_id
+                    if action.degrade:
+                        nested_options["error_handling"] = "continue"
                     response = self._runner.run(
                         action.graph,
                         **nested_options,
@@ -436,6 +441,8 @@ class HyperTable:
                     if parent_span_id is not None:
                         nested_options["_parent_span_id"] = parent_span_id
                         nested_options["_parent_run_id"] = parent_run_id
+                    if action.degrade:
+                        nested_options["error_handling"] = "continue"
                     response = await self._runner.run(
                         action.graph,
                         **nested_options,
@@ -663,6 +670,13 @@ class HyperTable:
             if row.get("_status") == "error":
                 errored += 1
                 errored_ids.append(id_val)
+            elif row.get("_status") == RowStatus.PARTIAL.value:
+                # Its sources still fingerprint clean, but columns are missing:
+                # report the work sync() would redo, never "fresh".
+                stale += 1
+                stale_ids.append(id_val)
+                if on_stale is not None:
+                    on_stale(row)
             elif row.get("_row_fingerprint") == fingerprint_of(row):
                 fresh += 1
             else:
@@ -778,6 +792,21 @@ class HyperTable:
             self._identity,
         )
         return tuple(ErroredRow(str(row[self._identity]), str(row.get("_error") or ""), _public_row(row, self._spec)) for row in rows)
+
+    def partial(self) -> tuple[PartialRow, ...]:
+        """Return rows that kept some derived columns and nulled the rest.
+
+        Written only under ``on_error="store"``. Each row carries one
+        ``ColumnChange`` per nulled column naming the column, the node, and
+        why it holds no value. ``status()`` counts these rows as needing heal
+        and the next ``sync()`` re-derives exactly the nulled columns.
+        """
+        self._ensure_analyzed()
+        rows = _dedup_rows(
+            self._store.read_rows(self._spec.name, [("_status", "eq", RowStatus.PARTIAL.value)]),
+            self._identity,
+        )
+        return tuple(PartialRow(str(row[self._identity]), deserialize_changes(row.get(CHANGES_COLUMN)), _public_row(row, self._spec)) for row in rows)
 
     def child(self, name: str) -> ChildTable:
         """Return the handle for one child grain by physical name or identity."""

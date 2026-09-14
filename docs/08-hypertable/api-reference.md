@@ -112,6 +112,7 @@ class RowStatus(Enum):
     COMPLETE = "complete"
     WAITING = "waiting"
     ERROR = "error"
+    PARTIAL = "partial"
 
 
 class WriteOutcome(Enum):
@@ -124,6 +125,14 @@ class WriteOutcome(Enum):
 `HEALED` is reported by `sync()` when an unchanged parent row had damaged
 child rows rebuilt — rows physically missing, or stored in error under
 `on_error="store"`. A receipt is never `SKIPPED` on a path that wrote rows.
+
+`PARTIAL` is reported under `on_error="store"` when one node failed and the
+other derived columns were produced anyway: those columns are stored, the
+failed ones are null, and the row records why (see `partial()`, which also
+names the two derivation paths that still write the whole-row shape). A failure
+the runner cannot blame on a node — a missing input, a plan-level error — and a
+failure that leaves no derived column standing both stay `ERROR`, so a row
+never claims column granularity the run cannot support.
 
 ### `RowReceipt`
 
@@ -146,7 +155,8 @@ class RowReceipt:
     def failed(self) -> bool: ...
 ```
 
-`pause` is present only for `WAITING`; `error` is present only for `ERROR`.
+`pause` is present only for `WAITING`; `error` is present for `ERROR` and for
+`PARTIAL`, where it carries the first failure the run could attribute.
 The three boolean properties deliberately match `RunResult` serving code.
 
 ### `MaterializationReceipt`
@@ -180,6 +190,9 @@ class TableReceipt:
 
     @property
     def errors(self) -> tuple[RowReceipt, ...]: ...
+
+    @property
+    def partial(self) -> tuple[RowReceipt, ...]: ...
 
     @property
     def paused(self) -> bool: ...
@@ -324,6 +337,57 @@ class ErroredRow:
     error: str
     row: dict[str, Any]
 ```
+
+### `partial() -> tuple[PartialRow, ...]`
+
+```python
+@dataclass(frozen=True)
+class PartialRow:
+    id: str
+    changes: tuple[ColumnChange, ...]
+    row: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ColumnChange:
+    column: str
+    reason: ChangeReason
+    node: str
+    error: str | None = None
+
+
+class ChangeReason(Enum):
+    NODE_ERROR = "node_error"
+    UPSTREAM_ERROR = "upstream_error"
+    NOT_RUN = "not_run"
+```
+
+Rows stored with `on_error="store"` that kept some derived columns and nulled
+the rest. One `ColumnChange` per nulled column, and the reason is the true one:
+
+- `NODE_ERROR` — this column's own producer raised; `error` carries its text.
+- `UPSTREAM_ERROR` — a failed node reaches this producer through the graph, so
+  its inputs never arrived.
+- `NOT_RUN` — nothing on this column's own path failed; the run ended before
+  its producer was scheduled. Retrying may well derive it.
+
+A column whose producer ran and returned `None` gets no entry at all: that is a
+value, not a failure, and it is stored with its provenance like any other.
+
+A partial row stays queryable and counts as stale in `status()`, never fresh.
+The next `sync()` re-derives exactly the null columns: the surviving columns
+keep their provenance stamps, so the column-scoped reconcile path reuses them
+and the expensive earlier stages are not paid twice. A retry that fails again
+keeps the columns the first attempt saved.
+
+A partial row does not touch its child rows: the fan-out is not run, and child
+rows written by an earlier generation are left exactly as they are — neither
+re-derived nor deleted, so a child table can read fresh under a parent that is
+not. The heal that completes the parent converges them.
+
+Two failures under `on_error="store"` still write the whole-row `ERROR` shape
+rather than a partial row: one raised by a routed (gate-selected) branch, and
+one raised while deriving the columns that follow an answered interrupt.
 
 ### `count() -> int`
 

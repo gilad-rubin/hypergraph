@@ -335,10 +335,14 @@ Total: ~1 week of focused work. No runner-level changes needed.
 
 | Feature | Why Deferred | Prerequisite |
 |---------|-------------|-------------|
-| **Per-column error tracking** | `runner.run()` is atomic; need runner-level partial-result reporting | Runner V2 (ExecutionContext, per-node error capture) |
 | **`invalidate_columns()`** | Needs column dependency graph + cascade invalidation + scoped re-derivation | Per-column errors + provenance-based dependency tracking |
 | **Two-phase write (source-first)** | LanceDB append model creates dedup ties; single-write error row is simpler | Store-level upsert support or explicit dedup tie-breaking |
 | **Async `on_error`** | Panda uses AsyncRunner; `on_error` sketch is sync-only | AsyncRunner parity for error handling path |
+
+**Per-column error tracking** left this table in #323. It never needed Runner V2:
+`error_handling="continue"` already returns `result.values` plus
+`result.node_failures`, so a failed node's column is nulled with a reason code
+while the rest of the row is stored (`_status="partial"`).
 
 ---
 

@@ -19,6 +19,7 @@ from hypergraph.materialization._provenance import (
 )
 from hypergraph.materialization._recipe_journal import RecipeJournal
 from hypergraph.materialization._schema import (
+    CHANGES_COLUMN,
     QUESTION_COLUMN,
     RECIPE_COLUMN,
     TableSpec,
@@ -28,15 +29,18 @@ from hypergraph.materialization._schema import (
     return_type,
 )
 from hypergraph.materialization._types import (
+    ChangeReason,
+    ColumnChange,
     RowReceipt,
     RowStatus,
     TableReceipt,
     WriteOutcome,
     deserialize_question,
+    serialize_changes,
     serialize_question,
 )
 from hypergraph.materialization._write_actions import RunGraph, RunOperations, WriteOperation, _Predicate
-from hypergraph.runners import PauseInfo
+from hypergraph.runners import PauseInfo, RunStatus
 
 
 def normalize_to_dict(item: Any) -> dict[str, Any]:
@@ -80,6 +84,35 @@ class _PausedConvergence:
     outputs: dict[str, Any]
     provenances: dict[str, str]
     provenance: str
+
+
+@dataclass(frozen=True)
+class _Degradation:
+    """What a failed degradable run left behind.
+
+    ``values`` are the outputs the other nodes still produced; ``failures``
+    maps each node the runner could blame to its error text. An empty
+    ``failures`` means the run failed with nothing to attribute (a plan-level
+    error), and the caller must fall back to a total-loss error row."""
+
+    values: dict[str, Any]
+    failures: dict[str, str]
+    error: BaseException | None
+
+
+@dataclass(frozen=True)
+class _DegradedConvergence:
+    """Column reconciliation stopped at a node that failed.
+
+    ``outputs`` and ``provenances`` cover every column reconciliation settled
+    BEFORE the failure — reused-fresh ones included. Columns after it were
+    never reached, so the caller keeps whatever the stored row already had
+    for them."""
+
+    outputs: dict[str, Any]
+    provenances: dict[str, str]
+    failures: dict[str, str]
+    error: BaseException | None
 
 
 class _ChildGenerations:
@@ -150,6 +183,7 @@ class WritePlanner:
         self._provenance = provenance
         self._page_max_concurrency = page_max_concurrency
         self._recipe_column_ready: set[str] = set()
+        self._changes_column_ready: set[str] = set()
         self._journal = RecipeJournal(store)
         self._answer_graphs: dict[tuple[str, ...], Graph] = {}
         self._routed_graphs: dict[tuple[str, str], Graph] = {}
@@ -202,6 +236,14 @@ class WritePlanner:
             self._store.evolve_schema(table_name, {RECIPE_COLUMN: python_type_to_arrow(str)})
         self._recipe_column_ready.add(table_name)
 
+    def _ensure_changes_column(self, table_name: str) -> None:
+        if table_name in self._changes_column_ready:
+            return
+        physical = self._store.column_names(table_name)
+        if physical and CHANGES_COLUMN not in physical:
+            self._store.evolve_schema(table_name, {CHANGES_COLUMN: python_type_to_arrow(str)})
+        self._changes_column_ready.add(table_name)
+
     def _stamp_recipe(self, row: dict[str, Any], table_name: str, child_spec: TableSpec | None = None) -> None:
         if not self._provenance.table_stamps_recipe():
             return
@@ -236,12 +278,13 @@ class WritePlanner:
         source_inputs: Mapping[str, Any],
         outputs: Mapping[str, Any],
         write_gen: int,
-        mode: Literal["complete", "waiting", "error"],
+        mode: Literal["complete", "waiting", "error", "partial"],
         *,
         provenances: Mapping[str, str] | None = None,
         error: str | None = None,
         pause: PauseInfo | None = None,
         pause_provenance: str | None = None,
+        changes: tuple[ColumnChange, ...] = (),
     ) -> dict[str, Any]:
         row: dict[str, Any] = {self._identity: item[self._identity]}
         row.update({key: value for key, value in item.items() if key != self._identity})
@@ -253,13 +296,15 @@ class WritePlanner:
             for column in derived_columns:
                 if column.name in outputs:
                     row[column.name] = outputs[column.name]
-                elif mode == "waiting" and column.role == "answer":
+                elif mode == "partial" or (mode == "waiting" and column.role == "answer"):
                     row[column.name] = None
         row["_row_fingerprint"] = self._provenance.root_fingerprint(source_inputs)
         row["_write_gen"] = write_gen
         self._stamp_recipe(row, self._spec.name)
 
         if mode != "error":
+            if provenances is None and mode == "partial":
+                raise RuntimeError("partial row requires the provenances of the columns that survived")
             if provenances is None:
                 values = {**{key: value for key, value in item.items() if key != self._identity}, **outputs}
                 provenances = {
@@ -281,13 +326,16 @@ class WritePlanner:
                     self._record_node_recipe(node)
 
         row["_status"] = mode
-        row["_error"] = error if mode == "error" else None
+        row["_error"] = error if mode in ("error", "partial") else None
         if mode == "waiting":
             if pause is None or pause_provenance is None:
                 raise RuntimeError("waiting row requires a pause and provenance")
             row[QUESTION_COLUMN] = serialize_question(pause, pause_provenance)
         else:
             row[QUESTION_COLUMN] = None
+        if mode == "partial":
+            self._ensure_changes_column(self._spec.name)
+            row[CHANGES_COLUMN] = serialize_changes(changes)
         return row
 
     def _build_child_row(
@@ -476,11 +524,13 @@ class WritePlanner:
         existing: dict[str, Any],
         spec: TableSpec | None = None,
         provided: set[str] | None = None,
-    ) -> Generator[RunGraph, Any, ReconcileResult | _PausedConvergence | None]:
+    ) -> Generator[RunGraph, Any, ReconcileResult | _PausedConvergence | _DegradedConvergence | None]:
         target = spec or self._spec
         target_graph = target.child_graph if spec is not None else self._graph
         if target_graph is None:
             return None
+        # Only the parent table stores partial rows; a child row is whole or errored (#314).
+        degrade = self._degrade() and spec is None
         boundary_counts: dict[str, int] = {}
         for child_spec in target.children:
             rows = self._read_rows(
@@ -569,7 +619,17 @@ class WritePlanner:
             result = yield RunGraph(
                 self._provenance.column_graph(step.node),
                 step.input_values(),
+                degrade=degrade,
             )
+            if degrade:
+                degradation = self._run_degradation(result)
+                if degradation is not None:
+                    return _DegradedConvergence(
+                        outputs=dict(state.outputs),
+                        provenances=dict(state.provenances),
+                        failures=degradation.failures,
+                        error=degradation.error,
+                    )
             pause = _run_pause(result)
             if pause is not None:
                 provenances = dict(state.provenances)
@@ -900,6 +960,13 @@ class WritePlanner:
                 RowStatus.ERROR,
                 error=str(row.get("_error") or ""),
             )
+        if row.get("_status") == "partial":
+            return RowReceipt(
+                str(identity_value),
+                outcome,
+                RowStatus.PARTIAL,
+                error=str(row.get("_error") or ""),
+            )
         return RowReceipt(str(identity_value), outcome, RowStatus.COMPLETE)
 
     def _write_waiting_parent(
@@ -933,12 +1000,143 @@ class WritePlanner:
             self._cleanup_children(identity_value, child_gens)
         return RowReceipt(str(identity_value), outcome, RowStatus.WAITING, pause=pause)
 
+    def _degrade(self) -> bool:
+        """Whether a node failure should keep the columns that succeeded."""
+        return self._on_error == "store"
+
+    @staticmethod
+    def _run_degradation(result: Any) -> _Degradation | None:
+        """Read a degradable run's outcome; ``None`` when it did not fail."""
+        if getattr(result, "status", None) is not RunStatus.FAILED:
+            return None
+        failures: dict[str, str] = {}
+        first: BaseException | None = None
+        for failure in getattr(result, "node_failures", ()):
+            failures.setdefault(failure.node_name, f"{type(failure.error).__name__}: {failure.error}")
+            first = first if first is not None else failure.error
+        return _Degradation(
+            values=_run_values(result),
+            failures=failures,
+            error=first if first is not None else getattr(result, "error", None),
+        )
+
+    @staticmethod
+    def _blamed(producer: Any, failures: Mapping[str, str]) -> str | None:
+        """The failure key blaming this producer, if one does.
+
+        A failure raised inside a mounted graph is reported under the path of
+        the node that owns it (``embed_stage/embed``), so a GraphNode column
+        producer is blamed by its own prefix too."""
+        name = getattr(producer, "name", None)
+        if name is None:
+            return None
+        for failed_name in failures:
+            if failed_name == name or failed_name.startswith(f"{name}/"):
+                return failed_name
+        return None
+
+    def _downstream_of(self, failures: Mapping[str, str]) -> set[str]:
+        """Node names the failed nodes can reach — the ones whose inputs the
+        failure genuinely destroyed.
+
+        A failure inside a mounted graph is reported under its path
+        (``embed_stage/embed``); the graph knows only the node that owns it."""
+        roots = {name.split("/", 1)[0] for name in failures} & set(self._graph.nodes)
+        return self._node_names_downstream(roots) if roots else set()
+
+    def _partial_columns(
+        self,
+        values: Mapping[str, Any],
+        failures: Mapping[str, str],
+        kept: Mapping[str, Any],
+        downstream: set[str],
+    ) -> tuple[dict[str, Any], tuple[ColumnChange, ...]]:
+        """Split this table's derived columns into what survives a failed run and
+        what it nulls, with one change entry per nulled column and the true
+        reason it holds no value.
+
+        A column the run produced is kept as it came — a node that ran and
+        returned ``None`` returned a value, not a failure, so it gets no entry.
+        A column the run never reached — its node comes after the failure and is
+        not the one that failed — keeps whatever ``kept`` already stored for it,
+        so a second failure never costs a column the first one saved."""
+        outputs: dict[str, Any] = {}
+        changes: list[ColumnChange] = []
+        for column in self._provenance.derived_columns():
+            producers = self._provenance.column_producers(column)
+            blamed = next((name for name in (self._blamed(producer, failures) for producer in producers) if name is not None), None)
+            if column.name in values:
+                outputs[column.name] = values[column.name]
+            elif blamed is not None:
+                changes.append(ColumnChange(column.name, ChangeReason.NODE_ERROR, blamed, failures[blamed]))
+            elif not self._provenance.column_is_null(kept.get(column.name)):
+                outputs[column.name] = kept[column.name]
+            else:
+                node = getattr(producers[0], "name", column.name)
+                reason = (
+                    ChangeReason.UPSTREAM_ERROR
+                    if any(getattr(producer, "name", None) in downstream for producer in producers)
+                    else ChangeReason.NOT_RUN
+                )
+                changes.append(ColumnChange(column.name, reason, node))
+        return outputs, tuple(changes)
+
+    def _degraded_parent(
+        self,
+        item: dict[str, Any],
+        source_inputs: dict[str, Any],
+        write_gen: int,
+        existing: dict[str, Any] | None,
+        outcome: WriteOutcome,
+        degradation: _Degradation,
+        *,
+        provenances: Mapping[str, str] | None = None,
+        kept: Mapping[str, Any] | None = None,
+    ) -> RowReceipt:
+        """Store what a failed run still derived, as one PARTIAL row.
+
+        Falls back to the total-loss error row whenever column granularity
+        would be a claim this run cannot support: a failure the runner could
+        not attribute to a node, or one that left no derived column standing."""
+        kept_values = self._provenance.stored_values(kept) if kept is not None else {}
+        outputs, changes = self._partial_columns(
+            degradation.values,
+            degradation.failures,
+            kept_values,
+            self._downstream_of(degradation.failures),
+        )
+        error = next(iter(degradation.failures.values()), None) or f"{type(degradation.error).__name__}: {degradation.error}"
+        if not degradation.failures or not changes or not outputs:
+            failure = degradation.error if degradation.error is not None else RuntimeError(error)
+            self._error_parent(item, source_inputs, write_gen, failure, existing)
+            return RowReceipt(str(item[self._identity]), outcome, RowStatus.ERROR, error=error)
+        stamps = dict(provenances) if provenances is not None else self._provenances_for_values({**item, **outputs})
+        if kept is not None:
+            for name in outputs:
+                if name not in stamps and kept.get(f"_provenance_{name}") is not None:
+                    stamps[name] = kept[f"_provenance_{name}"]
+        self._evolve_for_metadata(item)
+        row = self._build_parent_row(
+            item,
+            source_inputs,
+            outputs,
+            write_gen,
+            "partial",
+            provenances={name: stamp for name, stamp in stamps.items() if stamp is not None and name in outputs},
+            error=error,
+            changes=changes,
+        )
+        self._store.write_rows(self._spec.name, [row])
+        if existing is not None:
+            self._cleanup_parent(item[self._identity], write_gen)
+        return RowReceipt(str(item[self._identity]), outcome, RowStatus.PARTIAL, error=error)
+
     def _error_parent(
         self,
         item: dict[str, Any],
         graph_inputs: dict[str, Any],
         write_gen: int,
-        error: Exception,
+        error: BaseException,
         existing: dict[str, Any] | None,
     ) -> None:
         self._evolve_for_metadata(item)
@@ -1090,6 +1288,19 @@ class WritePlanner:
                     existing,
                     outcome,
                 )
+            if isinstance(reconciled, _DegradedConvergence):
+                if parent_skipped:
+                    return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
+                return self._degraded_parent(
+                    item,
+                    source_inputs,
+                    write_gen,
+                    existing,
+                    outcome,
+                    _Degradation(reconciled.outputs, reconciled.failures, reconciled.error),
+                    provenances=reconciled.provenances,
+                    kept=existing,
+                )
             if reconciled is not None:
                 reconciled_outcome = yield from self._apply_reconciled(
                     item,
@@ -1107,7 +1318,7 @@ class WritePlanner:
                 )
 
         try:
-            result = yield RunGraph(self._graph, graph_inputs)
+            result = yield RunGraph(self._graph, graph_inputs, degrade=self._degrade())
         except Exception as error:
             if self._on_error == "raise":
                 raise
@@ -1115,6 +1326,12 @@ class WritePlanner:
                 return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
             self._error_parent(item, source_inputs, write_gen, error, existing)
             return RowReceipt(str(identity_value), outcome, RowStatus.ERROR, error=f"{type(error).__name__}: {error}")
+
+        degradation = self._run_degradation(result)
+        if degradation is not None:
+            if parent_skipped:
+                return RowReceipt(str(identity_value), WriteOutcome.SKIPPED, RowStatus.COMPLETE)
+            return self._degraded_parent(item, source_inputs, write_gen, existing, outcome, degradation)
 
         outputs = _run_values(result)
         pause = _run_pause(result)
@@ -1375,6 +1592,20 @@ class WritePlanner:
                         WriteOutcome.UPDATED,
                         RowStatus.ERROR,
                         error=f"{type(error).__name__}: {error}",
+                    )
+                )
+                continue
+            if isinstance(reconciled, _DegradedConvergence):
+                receipts.append(
+                    self._degraded_parent(
+                        item,
+                        source_inputs,
+                        write_gen,
+                        existing,
+                        WriteOutcome.UPDATED,
+                        _Degradation(reconciled.outputs, reconciled.failures, reconciled.error),
+                        provenances=reconciled.provenances,
+                        kept=existing,
                     )
                 )
                 continue
