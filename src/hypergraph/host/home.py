@@ -406,6 +406,23 @@ class _Unset:
 _UNSET = _Unset()
 
 
+def _validate_max_active_runs(value: int | None) -> None:
+    """Reject an active-Run cap that is not a positive int or ``None``.
+
+    Shared with :class:`~hypergraph.host.runtime.HostRuntime`, which takes the
+    cap at construction but opens its Home lazily: checking here lets the
+    constructor refuse a bad cap immediately, with the one error text, instead
+    of raising it much later out of an unrelated ``serving()`` call.
+    """
+    if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
+        raise ValueError(
+            f"max_active_runs must be an int >= 1 concurrent Runs, or None for unlimited; got {value!r}.\n\n"
+            "How to fix:\n"
+            "  home.max_active_runs = 4     # this Home admits 4 Runs at once\n"
+            "  home.max_active_runs = None  # unlimited (the default)"
+        )
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -792,13 +809,7 @@ class RunHome(SqliteCheckpointer):
 
     @max_active_runs.setter
     def max_active_runs(self, value: int | None) -> None:
-        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
-            raise ValueError(
-                f"max_active_runs must be an int >= 1 concurrent Runs, or None for unlimited; got {value!r}.\n\n"
-                "How to fix:\n"
-                "  home.max_active_runs = 4     # this Home admits 4 Runs at once\n"
-                "  home.max_active_runs = None  # unlimited (the default)"
-            )
+        _validate_max_active_runs(value)
         with self._sync_lock:
             db = self._sync_db()
             db.execute(_UPSERT_SETTING_SQL, (_MAX_ACTIVE_RUNS_KEY, None if value is None else str(value), _now_iso()))

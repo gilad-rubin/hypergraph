@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from hypergraph.host._bus import _PreviewBus, _register_bus
 from hypergraph.host.client import RunHomeClient
-from hypergraph.host.home import RunHome
+from hypergraph.host.home import _UNSET, RunHome, _Unset, _validate_max_active_runs
 from hypergraph.host.host import GraphBuilder, Host, _normalize_event_processors
 
 if TYPE_CHECKING:
@@ -46,6 +46,16 @@ class HostRuntime:
             claims at once and waits out their lease instead. A deployment
             that is restarted by a supervisor should name itself after the
             DEPLOYMENT rather than the process.
+        max_active_runs: Host work admission for the Home this runtime opens
+            — how many Runs its worker executes at once. The cap is a fact in
+            the store, so **passing it writes through** (including an explicit
+            ``None`` for unlimited) and **omitting it adopts whatever the
+            store already holds**, exactly as on
+            :meth:`RunHome.open <hypergraph.RunHome.open>`. Omitting is the
+            default because a plain ``None`` default would silently overwrite
+            an operator's stored cap on every restart. Over-limit Runs are
+            never rejected: they wait in claim order as
+            ``WaitingCondition.ADMISSION_LIMITED``.
     """
 
     def __init__(
@@ -55,7 +65,14 @@ class HostRuntime:
         deployment_version: str = "",
         event_processors: Sequence[EventProcessor] | None = None,
         worker_id: str = "",
+        max_active_runs: int | None | _Unset = _UNSET,
     ) -> None:
+        if not isinstance(max_active_runs, _Unset):
+            # Refuse at construction rather than out of the first serving()
+            # call: this runtime opens its Home lazily, and a bad cap would
+            # otherwise surface far from the argument that caused it.
+            _validate_max_active_runs(max_active_runs)
+        self._max_active_runs = max_active_runs
         self._path = Path(path)
         self._deployment_version = deployment_version
         self._event_processors = _normalize_event_processors(event_processors, caller="HostRuntime()")
@@ -262,7 +279,7 @@ class HostRuntime:
         if self._home is None:
             if str(self._path) != ":memory:":
                 self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._home = RunHome.open(self._path)
+            self._home = RunHome.open(self._path, max_active_runs=self._max_active_runs)
         return self._home
 
     def _ensure_worker(self, host: Host) -> None:

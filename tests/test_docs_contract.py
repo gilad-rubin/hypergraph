@@ -1194,7 +1194,16 @@ def test_durable_host_docs_pin_public_contract() -> None:
     # `worker_id` is what makes a SUPERVISED restart reclaim its own claims at
     # once instead of waiting out their lease, so it has to be nameable by the
     # deployment rather than derived from the process.
-    assert tuple(inspect.signature(HostRuntime).parameters) == ("path", "deployment_version", "event_processors", "worker_id")
+    # `max_active_runs` is the cap the runtime writes into the Home it opens —
+    # a process that lets the runtime own the Home has no other place to
+    # declare it, since `serve()`'s caller opened the Home themselves.
+    assert tuple(inspect.signature(HostRuntime).parameters) == (
+        "path",
+        "deployment_version",
+        "event_processors",
+        "worker_id",
+        "max_active_runs",
+    )
     # The seam an embedding application observes durable execution through: the
     # runners that execute durable Runs are built by the library, so the Host
     # takes the processors rather than one runner carrying them.

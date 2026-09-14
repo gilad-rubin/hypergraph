@@ -75,6 +75,26 @@ supervised one: a restart under a new name is a stranger to its own
 outstanding claims and waits out their lease instead of reclaiming them at
 once. Name a supervised deployment after the DEPLOYMENT.
 
+`max_active_runs=` declares [Host work admission](#host-work-admission) for
+the Home this runtime opens, so a process that lets the runtime own the Home
+does not need a cap-writer at boot:
+
+```python
+runtime = HostRuntime(
+    "./data/runs.db",
+    deployment_version="2026.09.1",
+    worker_id="panda-api",
+    max_active_runs=4,    # this deployment executes 4 Runs at once
+)
+```
+
+It carries `open()`'s rule exactly: passing it **writes through** (an explicit
+`None` sets unlimited), and omitting it **adopts whatever the store already
+holds** — so a restart never clobbers a cap an operator tuned. Over-limit work
+is not rejected; it waits in claim order as `ADMISSION_LIMITED`. A cap that is
+not a positive int or `None` is refused by `HostRuntime(...)` itself, not
+later by the first `serving()` call.
+
 `client` is the runtime's `RunHomeClient` and is also lazy: accessing it before
 `serving()` opens the Home for detached reads without starting a worker. If the
 worker task exits with an exception, the next `serving()`, `client`, or
@@ -1411,6 +1431,10 @@ RunHome.open("file:./runs.db", max_active_runs=4)     # sets the cap to 4
 RunHome.open("file:./runs.db", max_active_runs=None)  # sets it to unlimited
 RunHome.open("file:./runs.db")                        # adopts the stored cap
 ```
+
+A process that never opens the Home itself declares the same cap on
+[`HostRuntime`](#owning-a-host-process), which forwards it to the `open()`
+call it makes: `HostRuntime("./data/runs.db", max_active_runs=4)`.
 
 For differently sized Runs, `max_admission_units` adds a durable weighted
 budget while `max_active_runs` remains an independent safety cap:
