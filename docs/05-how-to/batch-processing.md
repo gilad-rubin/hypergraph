@@ -209,6 +209,18 @@ background map, `len(results)` counts only real claimed outcomes while
 `requested_count` preserves the original scope. No placeholder `RunResult` is
 created for an input that never started.
 
+`requested_count` is the number of inputs you handed `map()` — not the size
+of the collection you filtered them out of. Items you skipped before calling
+`map()` are yours to account for:
+
+```python
+skipped = len(inventory) - results.requested_count
+```
+
+Keep the reason for each skip beside the inventory, next to the policy that
+produced it. Durable Batches draw the same line — see
+[what the census does not count](../06-api-reference/host.md#what-the-census-does-not-count).
+
 ## Error Handling
 
 Control what happens when individual items fail using the `error_handling` parameter.
