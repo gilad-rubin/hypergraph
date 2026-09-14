@@ -5,6 +5,23 @@ The scheduling and state engine. Read this before modifying the focused
 `outputs.py`, `map_inputs.py`, `results.py`, `state.py`, or `template_*.py`
 modules. Treat `types.py` as a compatibility re-export surface only.
 
+## Template Exit Ladder (`run_teardown.py`)
+
+Both templates leave through `run_teardown.py`. Never write `reservation.release()`,
+`reset_stop_signal(...)`, a dispatcher shutdown, or `inspection_session.finish(...)`
+inline in a template: each of the nine exits per file is one `teardown.settle(...)`
+or `teardown.settle_completely(...)` call, and a terminal inspection snapshot is one
+`InspectionSettlement.publish(...)` or `.abort(...)`.
+
+Pick the exit policy by where you are: an ordinary exit calls `settle(...)`, where
+the first failing step stops the rest and the template's `finally` finishes the job;
+a setup-failure handler and the template's own `finally` call `settle_completely(...)`,
+where every step runs. Both list the same steps in the same order, and
+`test_run_teardown.py` pins that order and the resulting effect sequence — a new
+teardown step goes into `RunTeardown` AND `AsyncRunTeardown`, into both of their
+exit policies, at the same position. Adding it at a call site is how the nine exits
+grew three spellings of one guard.
+
 ## Node Readiness (`get_ready_nodes`)
 
 A node is ready when ALL of these pass (checked in order):

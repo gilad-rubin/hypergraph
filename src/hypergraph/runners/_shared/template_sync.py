@@ -69,6 +69,7 @@ from hypergraph.runners._shared.results import (
     build_terminal_run_result,
 )
 from hypergraph.runners._shared.run_log import RunLogCollector
+from hypergraph.runners._shared.run_teardown import InspectionSettlement, RunTeardown
 from hypergraph.runners._shared.scheduling import compute_execution_scope
 from hypergraph.runners._shared.state import GraphState, PauseExecution
 from hypergraph.runners._shared.state_restore import (
@@ -79,8 +80,6 @@ from hypergraph.runners._shared.state_restore import (
 from hypergraph.runners._shared.stop import (
     _WorkflowReservation,
     get_stop_signal,
-    reset_stop_signal,
-    set_stop_signal,
 )
 from hypergraph.runners._shared.validation import (
     precompute_input_validation,
@@ -458,6 +457,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 inspection_transport.attach(inspection_session)
             except Exception:
                 inspection_transport = None
+        inspection_settlement = InspectionSettlement(
+            inspection_session if owns_inspection else None,
+            transport=inspection_transport,
+        )
         try:
             effective_show_progress = show_progress if show_progress is not None else getattr(self, "_show_progress", False)
             if effective_show_progress:
@@ -473,30 +476,15 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 # GraphNode sub-runs, exactly like call-site processors.
                 event_processors = [*graph.default_event_processors, *(event_processors or [])]
         except BaseException as error:
-            if owns_inspection and inspection_session is not None:
-                inspection_session.finish(
-                    status=RunStatus.FAILED.value,
-                    total_duration_ms=0.0,
-                    error=error,
-                )
-            elif inspection_transport is not None:
-                inspection_transport.fail_to_start(error)
+            inspection_settlement.abort(error)
             raise
         try:
             reservation = _reservation or self._active_workflows.reserve(workflow_id)
         except BaseException as error:
-            if owns_inspection and inspection_session is not None:
-                inspection_session.finish(
-                    status=RunStatus.FAILED.value,
-                    total_duration_ms=0.0,
-                    error=error,
-                )
-            elif inspection_transport is not None:
-                inspection_transport.fail_to_start(error)
+            inspection_settlement.abort(error)
             raise
-        inspection_started_at = time.time()
+        inspection_settlement.start()
         dispatcher = None
-        signal_token = None
         run_row_created = False
         step_buffer: list[Any] = []
 
@@ -515,9 +503,15 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 step_offset=step_offset,
             )
 
+        teardown = RunTeardown(
+            reservation,
+            parent_span_id=_parent_span_id,
+            shutdown_dispatcher=self._shutdown_dispatcher_sync,
+            settle_run_row=settle_created_run_failed,
+        )
+
         try:
-            reservation.bind(workflow_id)
-            signal_token = set_stop_signal(reservation.signal)
+            teardown.arm(workflow_id)
             collector = RunLogCollector()
             all_processors = [collector] + (event_processors or [])
             dispatcher = self._create_dispatcher(all_processors)
@@ -571,34 +565,11 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 run_row_created = True
         except BaseException as error:
             try:
-                try:
-                    try:
-                        settle_created_run_failed()
-                    finally:
-                        if dispatcher is not None and _parent_span_id is None and dispatcher.active:
-                            self._shutdown_dispatcher_sync(dispatcher)
-                finally:
-                    try:
-                        if signal_token is not None:
-                            reset_stop_signal(signal_token)
-                    finally:
-                        reservation.release()
+                teardown.settle_completely(dispatcher, settle_run_row=True)
             except BaseException as final_error:
-                if owns_inspection and inspection_session is not None and not inspection_session.snapshot().terminal:
-                    inspection_session.finish(
-                        status=RunStatus.FAILED.value,
-                        total_duration_ms=(time.time() - inspection_started_at) * 1000,
-                        error=final_error,
-                    )
-                elif inspection_transport is not None:
-                    inspection_transport.fail_to_start(final_error)
+                inspection_settlement.abort(final_error)
                 raise
-            if owns_inspection and inspection_session is not None and not inspection_session.snapshot().terminal:
-                inspection_session.finish(
-                    status=RunStatus.FAILED.value,
-                    total_duration_ms=(time.time() - inspection_started_at) * 1000,
-                    error=error,
-                )
+            inspection_settlement.abort(error)
             raise
 
         terminal_error: BaseException | None = None
@@ -666,23 +637,13 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     status=WorkflowStatus.STOPPED if status == RunStatus.STOPPED else WorkflowStatus.COMPLETED,
                 )
             try:
-                if _parent_span_id is None:
-                    self._shutdown_dispatcher_sync(dispatcher)
-                    dispatcher = None
-                if signal_token is not None:
-                    reset_stop_signal(signal_token)
-                    signal_token = None
-                reservation.release()
+                dispatcher = teardown.settle(dispatcher)
             except BaseException as final_error:
                 terminal_error = final_error
                 raise
-            inspection = (
-                inspection_session.finish(
-                    status=status.value,
-                    total_duration_ms=total_duration_ms,
-                )
-                if owns_inspection and inspection_session is not None
-                else None
+            inspection = inspection_settlement.publish(
+                status=status.value,
+                total_duration_ms=total_duration_ms,
             )
             return build_terminal_run_result(
                 values=output_values,
@@ -743,23 +704,13 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                         step_buffer,
                         RunTotals(total_duration_ms, step_count, error_count),
                     )
-                if dispatcher is not None and _parent_span_id is None:
-                    self._shutdown_dispatcher_sync(dispatcher)
-                    dispatcher = None
-                if signal_token is not None:
-                    reset_stop_signal(signal_token)
-                    signal_token = None
-                reservation.release()
+                dispatcher = teardown.settle(dispatcher)
             except BaseException as final_error:
                 terminal_error = final_error
                 raise
-            inspection = (
-                inspection_session.finish(
-                    status=RunStatus.PAUSED.value,
-                    total_duration_ms=total_duration_ms,
-                )
-                if owns_inspection and inspection_session is not None
-                else None
+            inspection = inspection_settlement.publish(
+                status=RunStatus.PAUSED.value,
+                total_duration_ms=total_duration_ms,
             )
             return build_paused_run_result(
                 values=partial_values,
@@ -805,27 +756,17 @@ class SyncRunnerTemplate(BaseRunner, ABC):
 
                     _, _step_off = _cp_offsets(resume_checkpoint)
                     _flush_and_fail(sync_cp, workflow_id, step_buffer, collector, start_time, step_offset=_step_off)
-                if dispatcher is not None and _parent_span_id is None:
-                    self._shutdown_dispatcher_sync(dispatcher)
-                    dispatcher = None
-                if signal_token is not None:
-                    reset_stop_signal(signal_token)
-                    signal_token = None
-                reservation.release()
+                dispatcher = teardown.settle(dispatcher)
             except BaseException as final_error:
                 terminal_error = final_error
                 raise
 
             total_duration_ms = (time.time() - start_time) * 1000
-            inspection = (
-                inspection_session.finish(
-                    status=RunStatus.FAILED.value,
-                    total_duration_ms=total_duration_ms,
-                    failures=tuple(node_failures),
-                    error=error,
-                )
-                if owns_inspection and inspection_session is not None
-                else None
+            inspection = inspection_settlement.publish(
+                status=RunStatus.FAILED.value,
+                total_duration_ms=total_duration_ms,
+                failures=tuple(node_failures),
+                error=error,
             )
             if error_handling == "raise":
                 raise error from None
@@ -845,33 +786,12 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             raise
         finally:
             try:
-                try:
-                    try:
-                        if terminal_error is not None:
-                            settle_created_run_failed()
-                    finally:
-                        if dispatcher is not None and _parent_span_id is None:
-                            self._shutdown_dispatcher_sync(dispatcher)
-                finally:
-                    try:
-                        if signal_token is not None:
-                            reset_stop_signal(signal_token)
-                    finally:
-                        reservation.release()
+                teardown.settle_completely(dispatcher, settle_run_row=terminal_error is not None)
             except BaseException as final_error:
-                if owns_inspection and inspection_session is not None and not inspection_session.snapshot().terminal:
-                    inspection_session.finish(
-                        status=RunStatus.FAILED.value,
-                        total_duration_ms=(time.time() - inspection_started_at) * 1000,
-                        error=final_error,
-                    )
+                inspection_settlement.abort(final_error)
                 raise
-            if terminal_error is not None and owns_inspection and inspection_session is not None and not inspection_session.snapshot().terminal:
-                inspection_session.finish(
-                    status=RunStatus.FAILED.value,
-                    total_duration_ms=(time.time() - inspection_started_at) * 1000,
-                    error=terminal_error,
-                )
+            if terminal_error is not None:
+                inspection_settlement.abort(terminal_error)
 
     def map(
         self,
@@ -1000,7 +920,11 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     inspection_transport.attach(map_inspection_session)
             except Exception:
                 inspection_transport = None
-        map_inspection_started_at = time.time()
+        inspection_settlement = InspectionSettlement(
+            map_inspection_session,
+            transport=inspection_transport,
+        )
+        inspection_settlement.start()
         if not input_variations:
             map_result = MapResult(
                 results=(),
@@ -1014,7 +938,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 map_inspection_session.bind_run(None)
                 map_result = replace(
                     map_result,
-                    _inspection=map_inspection_session.finish(
+                    _inspection=inspection_settlement.publish(
                         status=map_result.status.value,
                         total_duration_ms=0.0,
                     ),
@@ -1024,18 +948,9 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         try:
             reservation = _reservation or self._active_workflows.reserve(workflow_id)
         except BaseException as error:
-            if map_inspection_session is not None:
-                map_inspection_session.finish(
-                    status=RunStatus.FAILED.value,
-                    total_duration_ms=(time.time() - map_inspection_started_at) * 1000,
-                    unstarted_item_indexes=tuple(range(len(input_variations))),
-                    error=error,
-                )
-            elif inspection_transport is not None:
-                inspection_transport.fail_to_start(error)
+            inspection_settlement.abort(error, unstarted_item_indexes=tuple(range(len(input_variations))))
             raise
         dispatcher = None
-        signal_token = None
         parent_run_row_created = False
         claimed_indexes: set[int] = set()
         results: list[RunResult] = []
@@ -1054,9 +969,15 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 error_count=error_count,
             )
 
+        teardown = RunTeardown(
+            reservation,
+            parent_span_id=_parent_span_id,
+            shutdown_dispatcher=self._shutdown_dispatcher_sync,
+            settle_run_row=settle_created_parent_run_failed,
+        )
+
         try:
-            reservation.bind(workflow_id)
-            signal_token = set_stop_signal(reservation.signal)
+            teardown.arm(workflow_id)
 
             # Parent-boundary identity gate (#309). create_run_sync below upserts
             # the parent config, so the stored graph/policy evidence has to be read
@@ -1106,36 +1027,11 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             map_stop_signal = get_stop_signal()
         except BaseException as error:
             try:
-                try:
-                    try:
-                        settle_created_parent_run_failed()
-                    finally:
-                        if dispatcher is not None and _parent_span_id is None and dispatcher.active:
-                            self._shutdown_dispatcher_sync(dispatcher)
-                finally:
-                    try:
-                        if signal_token is not None:
-                            reset_stop_signal(signal_token)
-                    finally:
-                        reservation.release()
+                teardown.settle_completely(dispatcher, settle_run_row=True)
             except BaseException as final_error:
-                if map_inspection_session is not None and not map_inspection_session.snapshot().terminal:
-                    map_inspection_session.finish(
-                        status=RunStatus.FAILED.value,
-                        total_duration_ms=(time.time() - map_inspection_started_at) * 1000,
-                        unstarted_item_indexes=tuple(range(len(input_variations))),
-                        error=final_error,
-                    )
-                elif inspection_transport is not None:
-                    inspection_transport.fail_to_start(final_error)
+                inspection_settlement.abort(final_error, unstarted_item_indexes=tuple(range(len(input_variations))))
                 raise
-            if map_inspection_session is not None and not map_inspection_session.snapshot().terminal:
-                map_inspection_session.finish(
-                    status=RunStatus.FAILED.value,
-                    total_duration_ms=(time.time() - map_inspection_started_at) * 1000,
-                    unstarted_item_indexes=tuple(range(len(input_variations))),
-                    error=error,
-                )
+            inspection_settlement.abort(error, unstarted_item_indexes=tuple(range(len(input_variations))))
             raise
 
         terminal_error: BaseException | None = None
@@ -1279,18 +1175,12 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     error_count=error_count,
                 )
 
-            if _parent_span_id is None:
-                self._shutdown_dispatcher_sync(dispatcher)
-                dispatcher = None
-            if signal_token is not None:
-                reset_stop_signal(signal_token)
-                signal_token = None
-            reservation.release()
+            dispatcher = teardown.settle(dispatcher)
 
             if map_inspection_session is not None:
                 map_result = replace(
                     map_result,
-                    _inspection=map_inspection_session.finish(
+                    _inspection=inspection_settlement.publish(
                         status=map_result.status.value,
                         total_duration_ms=total_duration_ms,
                         unstarted_item_indexes=unstarted_item_indexes,
@@ -1314,20 +1204,14 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     )
                 # Mark parent batch run as failed
                 settle_created_parent_run_failed()
-                if dispatcher is not None and _parent_span_id is None:
-                    self._shutdown_dispatcher_sync(dispatcher)
-                    dispatcher = None
-                if signal_token is not None:
-                    reset_stop_signal(signal_token)
-                    signal_token = None
-                reservation.release()
+                dispatcher = teardown.settle(dispatcher)
             except BaseException as final_error:
                 terminal_error = final_error
                 raise
             if map_inspection_session is not None:
                 unstarted_item_indexes = tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes)
                 batch_error = None if any(result.error is e for result in results) else e
-                map_inspection_session.finish(
+                inspection_settlement.publish(
                     status=RunStatus.FAILED.value,
                     total_duration_ms=total_ms,
                     unstarted_item_indexes=unstarted_item_indexes,
@@ -1339,34 +1223,17 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             raise
         finally:
             try:
-                try:
-                    try:
-                        if terminal_error is not None:
-                            settle_created_parent_run_failed()
-                    finally:
-                        if dispatcher is not None and _parent_span_id is None:
-                            self._shutdown_dispatcher_sync(dispatcher)
-                finally:
-                    try:
-                        if signal_token is not None:
-                            reset_stop_signal(signal_token)
-                    finally:
-                        reservation.release()
+                teardown.settle_completely(dispatcher, settle_run_row=terminal_error is not None)
             except BaseException as final_error:
-                if map_inspection_session is not None and not map_inspection_session.snapshot().terminal:
-                    map_inspection_session.finish(
-                        status=RunStatus.FAILED.value,
-                        total_duration_ms=(time.time() - map_inspection_started_at) * 1000,
-                        unstarted_item_indexes=tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes),
-                        error=final_error,
-                    )
-                raise
-            if terminal_error is not None and map_inspection_session is not None and not map_inspection_session.snapshot().terminal:
-                map_inspection_session.finish(
-                    status=RunStatus.FAILED.value,
-                    total_duration_ms=(time.time() - map_inspection_started_at) * 1000,
+                inspection_settlement.abort(
+                    final_error,
                     unstarted_item_indexes=tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes),
-                    error=terminal_error,
+                )
+                raise
+            if terminal_error is not None:
+                inspection_settlement.abort(
+                    terminal_error,
+                    unstarted_item_indexes=tuple(idx for idx in range(len(input_variations)) if idx not in claimed_indexes),
                 )
 
     def map_iter(
