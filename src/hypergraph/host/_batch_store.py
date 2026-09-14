@@ -31,6 +31,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+# The step ordering `get_step_failures` uses. Imported rather than retyped so
+# the fact and `client.result()` pick the SAME first failed step: two spellings
+# of "first" is exactly how one failure becomes two different strings.
+from hypergraph.checkpointers.sqlite import _STEP_TIME_ORDER
 from hypergraph.host._pause_lifecycle import STOP_VERB
 from hypergraph.host.batch import BatchTolerance, tolerance_trips
 from hypergraph.host.definition import DefinitionId
@@ -115,6 +119,11 @@ INSERT_BATCH_UPDATE = (
 #: The once-per-item accounting guard: has this item already been settled,
 #: reported unstarted, or reported abandoned?
 SELECT_ACCOUNTED = "SELECT 1 FROM batch_updates WHERE batch_id = ? AND kind = ? AND item_key = ? LIMIT 1"
+#: Why one child failed, for the ``child_settled`` fact. Same rows, same
+#: ordering, same "first errored step wins" rule as ``get_step_failures`` —
+#: but scoped to ONE run and stopped at the first row, so it costs a single
+#: statement inside the transaction that is already settling the child.
+SELECT_FIRST_STEP_FAILURE = f"SELECT error, node_name FROM steps WHERE run_id = ? AND error IS NOT NULL ORDER BY {_STEP_TIME_ORDER} LIMIT 1"
 
 
 def row_to_batch(row: Sequence[Any]) -> dict[str, Any]:
@@ -455,6 +464,44 @@ def split_closeout(rows: Sequence[Sequence[Any]]) -> tuple[list[str], list[str]]
 def closeout_kind(started: bool) -> str:
     """Which accounting fact a closed-admission child earns."""
     return ABANDONED_UPDATE_KIND if started else UNSTARTED_UPDATE_KIND
+
+
+def reads_run_failure(status: str) -> bool:
+    """True when a settling child's status can have a failed step behind it.
+
+    The two non-run outcomes are excluded on purpose. ``recovery_exhausted``
+    is the brake parking a child, not a node raising; ``dead_letter`` already
+    carries its reason on its own ``dead_lettered`` run update, and repeating
+    it here would give one thing two spellings. Neither is a
+    ``WorkflowStatus``, so neither has steps to speak for it.
+    """
+    return status in TERMINAL_STATUS_VALUES
+
+
+def child_settled_fact(item_key: str, run_id: str, status: str, failure: tuple[str, str | None] | None) -> dict[str, Any]:
+    """The ``child_settled`` payload — the outcome, and why when there is a why.
+
+    ``failure`` is the ``(error, node_name)`` row of the child's first errored
+    step, or None when nothing errored (a completed child) or when the status
+    is not a run status at all (see ``reads_run_failure``).
+
+    ``error`` is whatever the step persisted: the ``safe_error_text``
+    projection — exception type, stable ``HG_*`` code, static wording — and
+    never raw exception message text. It is therefore byte-identical to the
+    ``RunFailure.error`` ``client.result()`` reports for the same child, which
+    is the whole point: one string, two readers, so a detached consumer
+    replaying ``batch_updates`` from a cursor never needs a second query to
+    say why an item failed.
+
+    Absent keys rather than null ones: a completed child's fact says nothing
+    about failure, instead of saying "failure: nothing".
+    """
+    fact: dict[str, Any] = {"item_key": item_key, "workflow_id": run_id, "status": status}
+    if failure is not None:
+        fact["error"] = failure[0]
+        if failure[1] is not None:
+            fact["node_name"] = failure[1]
+    return fact
 
 
 # === Occurrence-scoped lifecycle facts (child_paused / child_runnable) ===

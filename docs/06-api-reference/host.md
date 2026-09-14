@@ -573,7 +573,8 @@ together, they land in the same transaction.
 Batch update writes are append-only and never backpressure child execution.
 Durable facts are `manifest` (bseq 1), `child_settled` (a child settled for
 good, with `item_key`, `workflow_id`, and `status` — a terminal status, or
-`"recovery_exhausted"` when the recovery brake parked the child),
+`"recovery_exhausted"` when the recovery brake parked the child — plus
+`error` and `node_name` when it failed, see below),
 `child_paused` (a child parked on a human, with `item_key`, `workflow_id`,
 `run_ref`, and the `pause_id` of the occurrence), `child_runnable` (that
 child's answer settled and it is claimable again, naming the `pause_id` that
@@ -592,6 +593,31 @@ async for update in client.watch(receipt.batch_ref, after=cursor):
     if update.durable:
         cursor = update.cursor             # "bseq:N" — store this
 ```
+
+A failed child's `child_settled` fact also says **why**, so a reconnecting
+consumer that only replays `batch_updates` from a cursor renders
+`"failed: TimeoutError"` without a second read:
+
+```python
+async for update in client.watch(receipt.batch_ref):
+    if update.durable and update.kind == "child_settled":
+        print(update.payload["item_key"], update.payload["status"])
+        # work-a81f43c129 failed
+        print(update.payload.get("error"), update.payload.get("node_name"))
+        # TimeoutError [HG_NODE_FAILED]: Node 'convert_pdf' raised TimeoutError.  convert_pdf
+```
+
+`error` is the same privacy-safe projection `RunFailure.error` carries — the
+exception type, a stable `HG_*` code, and static wording, never raw message
+text (see [errors](errors.md)) — and it is byte-identical to what
+`client.result(batch_ref).items[key].failure.error` reports for that child:
+one string, two readers. `node_name` appears when the step recorded one. Both
+keys are **absent** (not null) for a child with no errored step behind it, and
+for the two
+non-run outcomes: `recovery_exhausted` is the brake parking a child rather
+than a node raising, and a dead letter's reason already rides its own
+`dead_lettered` run update. The read happens inside the transaction already
+settling the child, so it never backpressures the child's commit path.
 
 `child_paused` and `child_runnable` are **lifecycle** facts, not
 end-of-stream facts: a child can pause, be answered, resume, and pause again
