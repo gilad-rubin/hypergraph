@@ -3434,6 +3434,37 @@ class RunHome(SqliteCheckpointer):
             owners.update({str(run_id): str(root_id) for run_id, root_id in rows})
         return owners
 
+    def _ever_paused_ids_sync(self, run_ids: Sequence[str]) -> set[str]:
+        """Which of these Runs a person was EVER asked about, in one read.
+
+        The pause slot outlives its answer, so this is the durable record of
+        "a human was in this Run's loop" — which ``RunReadModel.pause``
+        cannot carry, because it goes back to None the moment the answer
+        lands. Chunked and keyed like every other bulk read here: one
+        statement per chunk, never one per Run.
+        """
+        found: set[str] = set()
+        for chunk in self._chunk_run_ids(run_ids):
+            placeholders = ", ".join("?" for _ in chunk)
+            with self._sync_lock:
+                rows = self._sync_db().execute(f"SELECT DISTINCT run_id FROM pause_slots WHERE run_id IN ({placeholders})", tuple(chunk)).fetchall()
+            found.update(str(row[0]) for row in rows)
+        return found
+
+    async def _ever_paused_ids(self, run_ids: Sequence[str]) -> set[str]:
+        """Async mirror of ``_ever_paused_ids_sync``."""
+        found: set[str] = set()
+        if not run_ids:
+            return found
+        await self._ensure_db()
+        for chunk in self._chunk_run_ids(run_ids):
+            placeholders = ", ".join("?" for _ in chunk)
+            async with self._txn_lock():
+                cursor = await self._db.execute(f"SELECT DISTINCT run_id FROM pause_slots WHERE run_id IN ({placeholders})", tuple(chunk))
+                rows = await cursor.fetchall()
+            found.update(str(row[0]) for row in rows)
+        return found
+
     def _step_timing_rows_sync(self, run_ids: Sequence[str]) -> list[tuple[Any, ...]]:
         """Durable step facts for these runs, in execution order."""
         facts: list[tuple[Any, ...]] = []

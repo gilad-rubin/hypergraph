@@ -38,7 +38,7 @@ import logging
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -87,6 +87,18 @@ class ItemProgress:
     question: str
     #: The NODE whose interrupt this item is parked on, when it is parked.
     gate: str = ""
+    #: When the Run Home says this item began — its start, or its acceptance
+    #: for a row that has no start yet. ``None`` until it is admitted.
+    started_at: datetime | None = None
+    #: The instant it settled, or ``None`` while it can still move. Kept
+    #: because throughput is WALL CLOCK: the span the work occupied, not the
+    #: sum of the items' own durations.
+    settled_at: datetime | None = None
+    #: Has a person ever had to answer for this item? ``parked`` is the
+    #: present tense and goes false the moment the answer lands; this stays
+    #: true, and it is what keeps the hours somebody spent deciding out of
+    #: the machine's reported pace.
+    ever_parked: bool = False
 
     @property
     def label(self) -> str:
@@ -183,6 +195,35 @@ class SubmissionProgress:
         middle = len(done) // 2
         return done[middle] if len(done) % 2 else (done[middle - 1] + done[middle]) / 2
 
+    @property
+    def rate(self) -> float | None:
+        """The MACHINE's pace: items settled per second of wall clock.
+
+        Two things it is deliberately not. Not ``1 / median_seconds()``,
+        which reads one item's duration as the submission's pace and is
+        wrong by however many children the admission cap runs at once. And
+        not a number any item that has ever been parked contributes to:
+        those items are out of the settled count and out of the span
+        entirely, whether a person is still deciding or answered eight
+        hours ago. What is left is the work only the machine moved, over
+        the wall clock only the machine spent. ``None`` below the honesty
+        threshold — see ``_rate``.
+        """
+        return _rate(self.items)
+
+    @property
+    def eta_seconds(self) -> float | None:
+        """How long the work that can still move on its own should take.
+
+        The machine's pace (``rate``) applied to the work actually left:
+        every unsettled item EXCEPT the ones parked right now, because an
+        item waiting on a person is at rest and cannot be predicted by a
+        throughput number. An item whose answer has already arrived is back
+        in the count — it can move on its own again. ``None`` whenever
+        ``rate`` is.
+        """
+        return _eta_seconds(self.items)
+
 
 @dataclass(frozen=True)
 class Attention:
@@ -277,6 +318,26 @@ class WatchSnapshot:
         return self.slow_multiple * max((one.median_seconds() for one in self.submissions), default=0.0)
 
     @property
+    def _items(self) -> list[ItemProgress]:
+        """Every watched item, whichever submission holds it."""
+        return [item for one in self.submissions for item in one.items]
+
+    @property
+    def rate(self) -> float | None:
+        """The same fold as ``SubmissionProgress.rate``, across every submission.
+
+        Folded over the union of the items rather than averaged over the
+        submissions: two Batches running side by side settle work twice as
+        fast as one, and the span they share says so.
+        """
+        return _rate(self._items)
+
+    @property
+    def eta_seconds(self) -> float | None:
+        """When the self-moving half of everything watched should be done."""
+        return _eta_seconds(self._items)
+
+    @property
     def running(self) -> list[ItemProgress]:
         return sorted(
             (item for one in self.submissions for item in one.running),
@@ -298,24 +359,101 @@ class WatchSnapshot:
         return bool(self.submissions) and all(one.resting for one in self.submissions)
 
 
+def _utc(moment: datetime) -> datetime:
+    """The same instant, made comparable. A naive row is read as UTC."""
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
 def _seconds_since(moment: datetime | None) -> float:
     if moment is None:
         return 0.0
-    now = datetime.now(timezone.utc)
-    when = moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
-    return max(0.0, (now - when).total_seconds())
+    return max(0.0, (datetime.now(timezone.utc) - _utc(moment)).total_seconds())
+
+
+def _started(row: Any) -> datetime | None:
+    """When this item began — its start, or its acceptance if it has none."""
+    started = getattr(row, "started_at", None) or getattr(row, "accepted_at", None)
+    return None if started is None else _utc(started)
+
+
+def _settled(row: Any) -> datetime | None:
+    settled = getattr(row, "settled_at", None)
+    return None if settled is None else _utc(settled)
 
 
 def _elapsed(row: Any) -> float:
-    started = getattr(row, "started_at", None) or getattr(row, "accepted_at", None)
+    started = _started(row)
     if started is None:
         return 0.0
-    settled = getattr(row, "settled_at", None)
+    settled = _settled(row)
     if settled is None:
         return _seconds_since(started)
-    start = started if started.tzinfo else started.replace(tzinfo=timezone.utc)
-    end = settled if settled.tzinfo else settled.replace(tzinfo=timezone.utc)
-    return max(0.0, (end - start).total_seconds())
+    return max(0.0, (settled - started).total_seconds())
+
+
+def _machine_only(items: Sequence[ItemProgress]) -> list[ItemProgress]:
+    """The items a person never had to touch — the only ones that set a pace.
+
+    THE rule the whole pace rests on: an item that has ever been parked is
+    not in the rate, in either half of it. Excluding it only while the gate
+    is open would let the lie arrive one step later — the moment somebody
+    answers, that item's settlement instant lands hours past the machine's
+    real position and drags the reported rate down with it, in the RESTING
+    frame a saved notebook keeps. So "ever parked" and not "parked now" is
+    the test, and such an item leaves both the span and the settled count.
+    """
+    return [item for item in items if not item.ever_parked and not item.parked]
+
+
+def _span_seconds(items: Sequence[ItemProgress]) -> float:
+    """Wall-clock seconds the MACHINE-only work has occupied so far.
+
+    Both edges come from the same set (``_machine_only``): it opens when
+    the first such item began and closes at the last moment one was
+    observed still moving — a settlement instant, or, for an item in
+    flight, ``started_at + elapsed``, which is the very ``now`` the fold
+    already read that elapsed against. So this needs no clock of its own,
+    and no stretch of human thinking time — open or already answered — can
+    widen it.
+    """
+    machine = _machine_only(items)
+    starts = [_utc(item.started_at) for item in machine if item.started_at is not None]
+    if not starts:
+        return 0.0
+    ends = [
+        _utc(item.settled_at) if item.settled_at is not None else _utc(item.started_at) + timedelta(seconds=item.elapsed)
+        for item in machine
+        if item.started_at is not None
+    ]
+    return max(0.0, (max(ends) - min(starts)).total_seconds())
+
+
+def _rate(items: Sequence[ItemProgress]) -> float | None:
+    """Items settled per second by the machine alone, or ``None``.
+
+    Nothing settled without a person's help, or a span with no width, means
+    there is no honest number to report yet — and a console that prints
+    nothing beats one that prints "∞ items/h".
+    """
+    machine = _machine_only(items)
+    settled = sum(1 for item in machine if item.settled)
+    span = _span_seconds(items)
+    if not settled or span <= 0:
+        return None
+    return settled / span
+
+
+def _eta_seconds(items: Sequence[ItemProgress]) -> float | None:
+    """Seconds for the work that can still move on its own, at that rate.
+
+    Everything unsettled counts here EXCEPT what is parked right now,
+    including items a person has already answered: their gate is behind
+    them, so the machine's pace really is what predicts them.
+    """
+    rate = _rate(items)
+    if rate is None:
+        return None
+    return sum(1 for item in items if not item.settled and not item.parked) / rate
 
 
 def _failure_text(outcome: Any) -> str:
@@ -339,6 +477,11 @@ def _gate(row: Any) -> str:
     """The NODE this run is parked on — the graph's own name for the question."""
     pause = getattr(row, "pause", None)
     return "" if pause is None else str(getattr(pause, "node_name", "") or "")
+
+
+def _ever_parked(row: Any) -> bool:
+    """Did a person ever have to answer for this run? Survives the resume."""
+    return bool(getattr(row, "ever_paused", False))
 
 
 def _bucket(status: str) -> str:
@@ -405,6 +548,9 @@ class SubmissionWatcher:
                     error=_failure_text(results.get(key)),
                     question=_question(row),
                     gate=_gate(row),
+                    started_at=_started(row),
+                    settled_at=_settled(row),
+                    ever_parked=_ever_parked(row),
                 )
             )
         return SubmissionProgress(
@@ -438,6 +584,9 @@ class SubmissionWatcher:
             error=_failure_text(outcome),
             question=_question(row),
             gate=_gate(row),
+            started_at=_started(row),
+            settled_at=_settled(row),
+            ever_parked=_ever_parked(row),
         )
         return SubmissionProgress(
             ref=ref,
@@ -618,11 +767,17 @@ def render_snapshot(
             '<span class="bc-chip" data-tone="running">Running</span>'
         )
 
+    # The pace, only when BOTH halves are honest. Below the threshold the
+    # header simply ends at "parked" rather than printing a made-up number.
+    rate, eta = snapshot.rate, snapshot.eta_seconds
+    pace = "" if rate is None or eta is None else f" · <b>{rate * 3600:,.1f}</b> {unit}/h · <b>~{_fmt_s(eta)}</b> left"
+
     header_line = (
         f'<span class="bc-sub bc-agg"><b>{snapshot.done:,}/{total:,}</b> {unit}'
         f" · <b>{failed:,}</b> failed"
         f" · <b>{snapshot.retried:,}</b> retried"
-        f" · <b>{parked_n:,}</b> parked</span>"
+        f" · <b>{parked_n:,}</b> parked"
+        f"{pace}</span>"
     )
 
     stats = [
@@ -761,13 +916,17 @@ def render_snapshot(
 
 def snapshot_line(snapshot: WatchSnapshot) -> str:
     """The same facts as one log line — the headless rendering."""
+    from hypergraph.events.console import _fmt_s
+
     counts = " · ".join(f"{word} {number}" for word, number in sorted(snapshot.counts.items()) if number) or "-"
     trouble = snapshot.exceptions
     adopted = f" ({snapshot.adopted} adopted)" if snapshot.adopted else ""
+    rate, eta = snapshot.rate, snapshot.eta_seconds
+    pace = "" if rate is None or eta is None else f" · {rate * 3600:,.1f} items/h · ~{_fmt_s(eta)} left"
     return (
         f"{len(snapshot.submissions)} submission(s){adopted} · items "
         f"{snapshot.done}/{snapshot.total} settled · in flight {len(snapshot.running)} · "
-        f"{counts}" + (f" · needs attention {len(trouble)}" if trouble else "") + (f" · {snapshot.note}" if snapshot.note else "")
+        f"{counts}" + pace + (f" · needs attention {len(trouble)}" if trouble else "") + (f" · {snapshot.note}" if snapshot.note else "")
     )
 
 

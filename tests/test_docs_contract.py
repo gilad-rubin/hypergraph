@@ -1105,6 +1105,9 @@ def test_durable_host_docs_pin_public_contract() -> None:
         "retry_of",
         "forked_from",
         "dead_letter_reason",
+        # `pause` is the present tense; this outlives the answer, so a
+        # throughput reader can keep human deliberation out of its numbers.
+        "ever_paused",
     )
     assert tuple(PauseReadModel.__dataclass_fields__) == (
         "run_ref",

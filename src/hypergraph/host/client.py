@@ -509,6 +509,10 @@ class _RunReadSnapshot:
     updated_at: datetime
     pause_slot: PauseSlot | None
     dead_letter_reason: str | None = None
+    #: Was a person EVER asked about this Run? ``pause_slot`` answers it on
+    #: the single-Run path, where the slot is loaded whether or not it is
+    #: still open; a listing reads it in one bulk statement instead.
+    ever_paused: bool = False
 
 
 @dataclass(frozen=True)
@@ -841,6 +845,7 @@ def _make_read_snapshot(
     latest_update: str | None,
     pause_slot: PauseSlot | None,
     dead_letter_reason: str | None = None,
+    ever_paused: bool | None = None,
 ) -> _RunReadSnapshot:
     """Shape joined storage facts without deriving a UI status word."""
     accepted_at = _parse_iso(submission["created_at"]) if submission is not None else None
@@ -869,6 +874,9 @@ def _make_read_snapshot(
         updated_at=max(timestamps),
         pause_slot=pause_slot,
         dead_letter_reason=dead_letter_reason,
+        # A loaded slot proves it by itself; a listing, which does not load
+        # slots, passes what its one bulk pause read found.
+        ever_paused=(pause_slot is not None) if ever_paused is None else ever_paused,
     )
 
 
@@ -1485,7 +1493,15 @@ class RunHomeClient:
                 by_id[run.id] = (None, run)
         latest = await self._home._latest_run_update_times([view.workflow_id for view in views])
         reasons = await self._home._dead_letter_reasons(_retired_ids(views, {key: pair[0] for key, pair in by_id.items()}))
-        return [await self._snapshot(view, *by_id[view.workflow_id], latest.get(view.workflow_id), reasons.get(view.workflow_id)) for view in views]
+        # A listing does not load pause slots, so "was a person ever asked"
+        # comes from one bulk statement rather than a slot read per row.
+        gated = await self._home._ever_paused_ids([view.workflow_id for view in views])
+        return [
+            await self._snapshot(
+                view, *by_id[view.workflow_id], latest.get(view.workflow_id), reasons.get(view.workflow_id), view.workflow_id in gated
+            )
+            for view in views
+        ]
 
     def _list_read_model_snapshots_sync(self, query: RunQuery) -> builtins.list[_RunReadSnapshot]:
         """Sync mirror of ``_list_read_model_snapshots``."""
@@ -1500,7 +1516,13 @@ class RunHomeClient:
                 by_id[run.id] = (None, run)
         latest = self._home._latest_run_update_times_sync([view.workflow_id for view in views])
         reasons = self._home._dead_letter_reasons_sync(_retired_ids(views, {key: pair[0] for key, pair in by_id.items()}))
-        return [self._snapshot_sync(view, *by_id[view.workflow_id], latest.get(view.workflow_id), reasons.get(view.workflow_id)) for view in views]
+        gated = self._home._ever_paused_ids_sync([view.workflow_id for view in views])
+        return [
+            self._snapshot_sync(
+                view, *by_id[view.workflow_id], latest.get(view.workflow_id), reasons.get(view.workflow_id), view.workflow_id in gated
+            )
+            for view in views
+        ]
 
     async def _snapshot(
         self,
@@ -1509,13 +1531,14 @@ class RunHomeClient:
         run: Run | None,
         latest_update: str | None,
         dead_letter_reason: str | None = None,
+        ever_paused: bool | None = None,
     ) -> _RunReadSnapshot:
         inputs = json.loads(submission["inputs_json"]) if submission is not None else await self._home.get_run_inputs(view.workflow_id)
         pause_slot = run.pause_slot if run is not None else None
         if pause_slot is None and view.waiting is WaitingCondition.PAUSED:
             pause_slot = await self._home.get_pause_slot(view.workflow_id)
         view = _reconcile_pause_view(view, pause_slot)
-        return _make_read_snapshot(view, submission, run, inputs, latest_update, pause_slot, dead_letter_reason)
+        return _make_read_snapshot(view, submission, run, inputs, latest_update, pause_slot, dead_letter_reason, ever_paused)
 
     def _snapshot_sync(
         self,
@@ -1524,13 +1547,14 @@ class RunHomeClient:
         run: Run | None,
         latest_update: str | None,
         dead_letter_reason: str | None = None,
+        ever_paused: bool | None = None,
     ) -> _RunReadSnapshot:
         inputs = json.loads(submission["inputs_json"]) if submission is not None else self._home.get_run_inputs_sync(view.workflow_id)
         pause_slot = run.pause_slot if run is not None else None
         if pause_slot is None and view.waiting is WaitingCondition.PAUSED:
             pause_slot = self._home.get_pause_slot_sync(view.workflow_id)
         view = _reconcile_pause_view(view, pause_slot)
-        return _make_read_snapshot(view, submission, run, inputs, latest_update, pause_slot, dead_letter_reason)
+        return _make_read_snapshot(view, submission, run, inputs, latest_update, pause_slot, dead_letter_reason, ever_paused)
 
     async def rerun(
         self, ref: RunRef | BatchRef, *, item_keys: Sequence[str] | None = None, source_ref: str | None = None
