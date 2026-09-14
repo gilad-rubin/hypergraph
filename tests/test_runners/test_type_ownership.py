@@ -49,6 +49,7 @@ ROOT_EXPORTS = (
     "AttemptOutcomeUnknownError",
     "AttemptTimeoutError",
     "RetryWindowExpiredError",
+    "CheckpointCoercionError",
     "CompactedRetentionError",
     "MissingInputError",
     "InfiniteLoopError",

@@ -201,15 +201,108 @@ host = serve(ingest, home=RunHome.open("file:./runs.db"),
 #            → this worker now drains runs parked under the old identity
 ```
 
+**A narrowed graph is a different Definition.** `select()` and
+`with_entrypoint()` change what a run produces and what it executes, and a
+worker executes the *served* graph object — so the identity a submission pins
+folds the narrowing in:
+
+```python
+full = Graph([cheap, costly], name="pipeline").with_runner(AsyncRunner())
+host = serve(full, home=home, deployment_version="v1")
+
+await host.submit(full.with_entrypoint("costly"), {"cheap": 2})
+# UnservedGraphError: ... this Graph has <hash>, because it is narrowed by
+# with_entrypoint('costly') and the served one is not. Narrowing is part of
+# Definition identity: a worker executes the SERVED graph object, so a
+# narrowing this host never saw would be discarded silently.
+#
+# How to fix: serve the narrowed graph as its own Definition —
+# serve(graph.with_entrypoint('costly'), ..., home=home) — or drop the
+# with_entrypoint('costly') at the submit call site.
+
+host = serve(full.with_entrypoint("costly"), home=home, deployment_version="v1")
+await host.submit(full.with_entrypoint("costly"), {"cheap": 2})   # accepted; `cheap` never runs
+```
+
+The refusal names **both** narrowings, so a host that serves one narrowing
+and is handed another is told what it actually serves rather than advised to
+drop a modifier that would still not match.
+
+A graph carrying neither modifier pins `graph.structural_hash` byte for
+byte, so nothing already submitted moves. Configuration that changes no
+structure and no active node set is *not* identity: `with_runner()` and
+`with_provider_limit()` are excluded, and so is `bind()` — a bound value
+pre-fills an input, and which values belong in a recipe fingerprint is
+tracked separately in #368.
+
+### Computing the pinned hash
+
+`definition_struct_hash(graph)` is the hash a Definition pins — the value
+that must appear in an `accepts=` entry, and the value stored on every
+submission (`RunView.definition_id.structural_hash`):
+
+```python
+from hypergraph.host import definition_struct_hash
+
+definition_struct_hash(full) == full.structural_hash                   # True — not narrowed
+definition_struct_hash(full.select("costly")) == full.structural_hash  # False
+```
+
+Use it whenever you need the identity of a graph you hold *without* a Host:
+building an `accepts=` declaration, or matching rows you read out of an
+existing Run Home.
+
 Without a matching declaration the worker refuses the submission: it stays
 persisted and unclaimed, its view reports
 `WaitingCondition.VERSION_INCOMPATIBLE`, and the worker logs a warning
 naming the pinned identity it cannot serve. Every `accepts=` entry must be
 a `DefinitionId` (anything else is a `TypeError` at `serve()`), and each
 entry is validated structurally at `serve()` time: it must name a
-Definition this host serves and its structural hash must equal the served
-Definition's hash — anything else is a `ValueError`, because an
-undrainable declaration would park submissions forever (ADR 0007).
+Definition this host serves and its structural hash must equal that
+Definition's pinned hash — `definition_struct_hash(graph)`, which for a
+narrowed graph is **not** `graph.structural_hash` — and anything else is a
+`ValueError`, because an undrainable declaration would park submissions
+forever (ADR 0007).
+
+### Upgrading: hosts that serve a narrowed graph
+
+Before narrowing became identity-bearing, a host serving
+`graph.select(...)` or `graph.with_entrypoint(...)` pinned the *unnarrowed*
+`graph.structural_hash`. After upgrading, the same code serving the same
+object pins `definition_struct_hash(graph)` — a different value — so
+submissions already stored under the old hash no longer match:
+
+```python
+view = await client.get(ref)
+view.waiting      # WaitingCondition.VERSION_INCOMPATIBLE — parked, never lost
+```
+
+Only hosts that serve a **narrowed** graph are affected; an unnarrowed
+Definition's hash is unchanged, so its stored work keeps draining. If yours
+serves one:
+
+- **Drain (or stop) the queue before upgrading.** Nothing parks, and there is
+  nothing to migrate.
+- **Already parked, and the narrowing is a `select()`?** Serve the
+  *unnarrowed* graph — its identity is still the old hash — from a worker
+  deployment of its own, and the backlog drains there; retire that deployment
+  once it is empty. A selection takes the same inputs the whole graph takes,
+  so the stored inputs still fit (check that they satisfy every *required*
+  input: a selection that narrowed the input surface leaves the unnarrowed
+  run short of one). Be deliberate: those runs execute unnarrowed, which is
+  more than the old host ran, because the old pinned hash could not tell the
+  two apart — that is the bug being fixed.
+- **Already parked, and the narrowing is a `with_entrypoint()`?** There is no
+  drain: that backlog's stored inputs are mid-graph values, which the
+  unnarrowed Definition refuses (`Providing values for internal parameters:
+  ['cheap']`). Stop and resubmit.
+- **Stop them and resubmit** against the narrowed Definition with a new
+  `workflow_id` and the same inputs — always available, and the only path
+  that runs exactly what the narrowing says.
+
+`accepts=` cannot bridge the two, and neither can `host.fork(into=…)`: both
+require structural compatibility, because seeding history from recorded
+checkpoints means the structures have to agree (ADR 0007).
 
 ## Serving Builders: work that travels as data
 
@@ -319,7 +412,9 @@ reference to is the code that runs. A graph this host does not serve, or one
 whose structure has drifted from the served Definition, raises
 `UnservedGraphError` at the call site instead of being accepted and parked;
 a bare string raises `TypeError`. The same rule covers `submit_batch()` and
-`fork(..., into=graph)`.
+`fork(..., into=graph)`. A graph narrowed by `select()` or
+`with_entrypoint()` is a Definition of its own — see [Definition Identity and
+`accepts=`](#definition-identity-and-accepts).
 
 The submission commits to the Run Home **before** any execution: process
 loss after `submit()` returns cannot erase durable intent. Each submission
@@ -1789,7 +1884,7 @@ brake counts **progressless re-adoptions**:
 | Error | Raised when |
 |---|---|
 | `WorkerLockError` | **retired** — nothing raises it. A Run Home admits several workers; the name is exported for one release so an old `except` clause still imports |
-| `UnservedGraphError` | `submit`, `submit_batch`, or `fork(into=…)` names a `Graph` this host does not serve, or one whose `structural_hash` drifted from the served Definition |
+| `UnservedGraphError` | `submit`, `submit_batch`, or `fork(into=…)` names a `Graph` this host does not serve, one whose `structural_hash` drifted from the served Definition, or one narrowed by `select()` / `with_entrypoint()` the host did not serve |
 | `ItemKeyError` | `submit_batch` `identity` names a field outside `map_over`, or an item's key is missing, empty, non-scalar, duplicated, or contains `/` (reserved by the child workflow id) |
 | `AlreadyTerminalError` | a terminal `workflow_id` is reused for submit, submit_batch, or stop (including a fully settled Batch) |
 | `WorkflowIdConflictError` | a nonterminal `workflow_id` is reused with a different start fingerprint (Run or Batch), or a Batch id collides with existing work |

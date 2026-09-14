@@ -127,18 +127,60 @@ class UnservedGraphError(HostError):
     structural hash, names code no worker could execute — so it is refused
     at the call site rather than parked forever as version-incompatible
     work.
+
+    A graph NARROWED by ``select()`` or ``with_entrypoint()`` is refused
+    here too: narrowing changes what runs, so it is part of Definition
+    identity (#408). ``narrowing`` and ``served_narrowing`` name what the
+    submitted object and the served Definition each asked for — either may
+    be empty, and the message says both, because "serve the narrowed graph"
+    is the wrong advice when the host already serves a DIFFERENT narrowing
+    of the same topology.
     """
 
-    def __init__(self, graph_name: str, structural_hash: str, served: dict[str, str], message: str | None = None) -> None:
+    def __init__(
+        self,
+        graph_name: str,
+        structural_hash: str,
+        served: dict[str, str],
+        message: str | None = None,
+        *,
+        narrowing: str = "",
+        served_narrowing: str = "",
+    ) -> None:
         self.graph_name = graph_name
         self.structural_hash = structural_hash
         self.served = dict(served)
+        self.narrowing = narrowing
+        self.served_narrowing = served_narrowing
         served_hash = self.served.get(graph_name)
         if served_hash is None:
             detail = (
                 f"This host serves: {sorted(self.served)}.\n\n"
                 "How to fix: pass a Graph named in serve(...), or add this one — "
                 "serve(this_graph, ..., home=home) — so a worker can execute it."
+            )
+        elif narrowing or served_narrowing:
+            if not narrowing:
+                difference = f"this Graph is not narrowed and the served Definition is narrowed by {served_narrowing}"
+                fix = f"submit the narrowing this host serves — graph.{served_narrowing} — or serve this unnarrowed Graph as a Definition of its own."
+            elif not served_narrowing:
+                difference = f"it is narrowed by {narrowing} and the served one is not"
+                fix = (
+                    f"serve the narrowed graph as its own Definition — serve(graph.{narrowing}, ..., home=home) "
+                    f"— or drop the {narrowing} at the submit call site."
+                )
+            else:
+                difference = f"it is narrowed by {narrowing} and the served one is narrowed by {served_narrowing}"
+                fix = (
+                    f"submit the narrowing this host serves — graph.{served_narrowing} — or serve "
+                    f"graph.{narrowing} as a Definition of its own. Dropping the {narrowing} will not match: "
+                    "the served Definition is narrowed too."
+                )
+            detail = (
+                f"The served Definition {graph_name!r} pins structural_hash {served_hash!r}, "
+                f"but this Graph has {structural_hash!r}, because {difference}. Narrowing is part of "
+                "Definition identity: a worker executes the SERVED graph object, so a narrowing this host "
+                f"never saw would be discarded silently.\n\nHow to fix: {fix}"
             )
         else:
             detail = (

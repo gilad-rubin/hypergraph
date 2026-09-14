@@ -295,6 +295,32 @@ _AIOSQLITE_RAW_CONNECTION = "_connection"
 _AIOSQLITE_RUNNING_FLAG = "_running"
 
 
+class WrongEventLoopError(RuntimeError):
+    """An async store bound to one event loop was used from another.
+
+    The store's transaction lock is an ``asyncio.Lock``, which belongs to the
+    loop it was first awaited on. ``Lock.acquire()`` only consults that loop
+    on the CONTENDED branch, so a caller on a second loop worked perfectly
+    until two coroutines overlapped — and then failed deep inside somebody
+    else's transaction, naming neither the caller nor the mistake (#408).
+    This is that mistake, raised on the first operation instead.
+
+    A ``RuntimeError`` because that is what asyncio itself raises for
+    cross-loop misuse: a caller already catching one keeps working.
+    """
+
+    def __init__(self, opened_on: asyncio.AbstractEventLoop, running: asyncio.AbstractEventLoop) -> None:
+        self.opened_on = opened_on
+        self.running = running
+        super().__init__(
+            f"This store's async transaction lock belongs to event loop {opened_on!r} (id {hex(id(opened_on))}) "
+            f"and is being used from {running!r} (id {hex(id(running))}).\n\n"
+            "How to fix: keep one store per event loop — open a second RunHome/SqliteCheckpointer for "
+            "the other loop, use the sync API (get_run, state, values, the *_sync verbs) from the other "
+            "thread, or await close() before handing the store to a new loop."
+        )
+
+
 def _ensure_wal(conn: Any) -> None:
     """Put the DATABASE in WAL — waiting out another connection's lock.
 
@@ -587,6 +613,7 @@ class SqliteCheckpointer(Checkpointer):
         self._schema_ready = False
         self._init_lock: asyncio.Lock | None = None
         self._async_txn_lock: asyncio.Lock | None = None
+        self._async_txn_loop: asyncio.AbstractEventLoop | None = None
         self._aiosqlite = _require_aiosqlite()
 
     # === The synchronous connection: one per THREAD ===
@@ -807,6 +834,7 @@ class SqliteCheckpointer(Checkpointer):
         self._schema_ready = False
         self._init_lock = None
         self._async_txn_lock = None
+        self._async_txn_loop = None
 
     async def _ensure_db(self) -> None:
         """Lazy-initialize on first use."""
@@ -819,10 +847,25 @@ class SqliteCheckpointer(Checkpointer):
         lock an interleaved coroutine observes uncommitted half-state and its
         ``commit()`` can commit another coroutine's half-open transaction.
         Every async operation on the shared connection must hold it.
+
+        The lock stays LAZY — there is no loop to bind to at construction —
+        so the loop it binds to is recorded here, beside it, and every later
+        call compares: one identity check on a path that is about to do I/O,
+        in exchange for a cross-loop caller failing at the mistake instead of
+        at the first contention (``WrongEventLoopError``). ``close()`` clears
+        both, so the documented reopen-after-close path is free to land on a
+        different loop.
         """
-        if self._async_txn_lock is None:
-            self._async_txn_lock = asyncio.Lock()
-        return self._async_txn_lock
+        running = asyncio.get_running_loop()
+        lock = self._async_txn_lock
+        if lock is None:
+            lock = self._async_txn_lock = asyncio.Lock()
+            self._async_txn_loop = running
+            return lock
+        opened_on = self._async_txn_loop
+        if opened_on is not None and opened_on is not running:
+            raise WrongEventLoopError(opened_on, running)
+        return lock
 
     # === Run-mutation hooks (no-op in base) ===
     #

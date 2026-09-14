@@ -491,6 +491,77 @@ attempt ledger's `begin_attempt()` still verifies the series
 `policy_fingerprint` before any durable reservation, so a mismatched policy
 can never silently consume budget.
 
+## Restoring Typed Values
+
+A checkpoint stores JSON, so a Pydantic model or dataclass comes back as a
+plain `dict`. Resume rebuilds it from the graph's own annotations: the
+producing node's output type, or a consuming node's input type when the
+producer is not in the forked graph.
+
+A value that cannot be rebuilt is refused at the restore, not passed on:
+
+```python
+from hypergraph import CheckpointCoercionError
+
+class Score(BaseModel):
+    value: float
+    label: str
+
+# A run checkpointed before `label` existed, resumed against the new model:
+await runner.run(graph, workflow_id="report-7")
+# CheckpointCoercionError: Cannot restore checkpoint value 'score' as Score:
+# ValidationError: 1 validation error for Score
+# label
+#   Field required ...
+#
+# How to fix: if the model changed shape since this run was checkpointed, fork
+# the run into the new Definition (host.fork) or start a fresh one ...
+```
+
+Before, the raw `dict` was handed on and the run failed several nodes later
+with an `AttributeError` that named nothing about the restore.
+
+Values with nothing to rebuild stay silent and untouched: one already of the
+model's type, one that is not a `dict`, and any name whose annotation is
+neither a Pydantic model nor a dataclass. A **dataclass is constructed, not
+validated** — dataclasses do not check field types, so only a construction
+failure (a missing required field) is caught. Annotate with a Pydantic model
+where the stored shape must be enforced.
+
+`CheckpointCoercionError` is a root export (`from hypergraph import
+CheckpointCoercionError`), so a host that wants to handle a stale checkpoint
+itself — dead-letter the run, fork it, tell an operator — can catch it. It
+carries `name`, `model`, and the underlying validation error as `__cause__`.
+
+## One Async Store per Event Loop
+
+`SqliteCheckpointer` and `RunHome` serialize their async work with an
+`asyncio.Lock`, which belongs to the event loop it was first awaited on.
+Using the same store from a second loop raises immediately:
+
+```python
+home = RunHome.open("file:./runs.db")
+await home.list_runs()                       # binds to this loop
+
+# ...from another thread's asyncio.run(...):
+await home.list_runs()
+# WrongEventLoopError: This store's async transaction lock belongs to event loop
+# <_UnixSelectorEventLoop ...> (id 0x...) and is being used from <...> (id 0x...).
+#
+# How to fix: keep one store per event loop — open a second RunHome/
+# SqliteCheckpointer for the other loop, use the sync API ... from the other
+# thread, or await close() before handing the store to a new loop.
+```
+
+The check is one identity comparison on a path that is about to do I/O. It
+exists because `asyncio.Lock` only notices the wrong loop when two coroutines
+actually *contend*, so a cross-loop caller used to work perfectly until an
+unrelated overlap failed mid-transaction. `close()` releases the loop, so the
+documented reopen-after-close path is free to land on a different one.
+
+The sync API (`get_run`, `state`, `values`, and the host's `*_sync` verbs)
+has no such rule: it uses one SQLite connection per thread.
+
 ## Types
 
 `checkpointer.steps(run_id)` and `checkpointer.get_run(run_id)` (used throughout this page) return these dataclasses:

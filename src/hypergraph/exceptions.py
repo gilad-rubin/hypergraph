@@ -433,6 +433,34 @@ class CompactedRetentionError(Exception):
             super().__init__(_compacted_nested_message(node_name or ""))
 
 
+class CheckpointCoercionError(Exception):
+    """A stored checkpoint value could not be rebuilt as its annotated model.
+
+    Restore re-mints typed models from the graph's annotations. When that
+    fails — a model whose shape changed since the run was checkpointed, a
+    hand-written value, a serializer that lost a field — the value is
+    refused there rather than passed on as a raw ``dict`` for a node to trip
+    over several supersteps later (#408).
+
+    ``name`` is filled in by ``coerce_checkpoint_values``, which is the level
+    that knows which value it was reading; the raising level knows only the
+    model. The underlying validation error is kept as ``__cause__``.
+    """
+
+    def __init__(self, model: type, cause: BaseException, name: str | None = None) -> None:
+        self.model = model
+        self.cause = cause
+        self.name = name
+        subject = f"checkpoint value {name!r}" if name else "a checkpoint value"
+        self.message = (
+            f"Cannot restore {subject} as {model.__name__}: {type(cause).__name__}: {cause}\n\n"
+            "How to fix: if the model changed shape since this run was checkpointed, fork the run into "
+            "the new Definition (host.fork) or start a fresh one — a resumed run must be able to rebuild "
+            "the values it stored. If the annotation is wrong, correct it and re-run."
+        )
+        super().__init__(self.message)
+
+
 class WorkflowStoppedError(Exception):
     """Raised when a stopped workflow is rerun without an explicit signal."""
 
