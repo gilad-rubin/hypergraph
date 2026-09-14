@@ -36,6 +36,56 @@ jobs:
       # Same command as documented in [tool.mypy] in pyproject.toml.
       - run: uv run --python 3.10 mypy
 
+  otel-floor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+      - run: uv sync --group dev --python 3.10
+      # pyproject.toml declares an OpenTelemetry floor of >=1.24.0 (the first release
+      # whose Span has add_link, which the collapsed-lineage spans call). Every other
+      # job resolves the newest OpenTelemetry, so this job is the only place the floor
+      # is exercised. The OTLP/HTTP exporter constrains the SDK to its own minor, so it
+      # comes down to the floor too -- otherwise its wire tests would skip.
+      # Python 3.10 is deliberate: opentelemetry-proto==1.24.0 needs protobuf<5, which
+      # emits a DeprecationWarning on 3.12+ that `-W error` turns into a collection error.
+      - name: Pin the declared OpenTelemetry floor
+        run: >-
+          uv pip install --python .venv/bin/python
+          opentelemetry-api==1.24.0
+          opentelemetry-sdk==1.24.0
+          opentelemetry-exporter-otlp-proto-http==1.24.0
+      # `uv run --with ...` cannot do this: the overlay loses to the project environment
+      # for a package the project already has, and the suite then runs green against the
+      # newest SDK. `--no-sync` keeps `uv run` from restoring it.
+      - name: Verify the floor is what the tests will import
+        run: |
+          uv run --no-sync --python 3.10 python - <<'PY'
+          import importlib.metadata as md
+
+          FLOOR = "1.24.0"
+          PINNED = ("opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp-proto-http")
+
+          drifted = {name: md.version(name) for name in PINNED if md.version(name) != FLOOR}
+          if drifted:
+              raise SystemExit(f"The floor pin did not take: expected OpenTelemetry {FLOOR} everywhere, got {drifted}")
+
+          from opentelemetry.sdk.trace import Span
+
+          if not hasattr(Span, "add_link"):
+              raise SystemExit(f"opentelemetry-sdk {FLOOR} has no Span.add_link, so the >=1.24.0 floor in pyproject.toml is wrong")
+          print(f"OpenTelemetry {FLOOR} installed; Span.add_link present.")
+          PY
+      - run: >-
+          uv run --no-sync --python 3.10 pytest tests/test_run_log
+          -W error
+          -W 'ignore::pytest.PytestUnraisableExceptionWarning'
+
   test:
     runs-on: ubuntu-latest
     strategy:
