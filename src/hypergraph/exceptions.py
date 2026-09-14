@@ -352,7 +352,14 @@ class GraphChangedError(Exception):
 
     def __init__(self, workflow_id: str) -> None:
         self.workflow_id = workflow_id
-        super().__init__(f"Graph structure changed for workflow '{workflow_id}'. Fork instead of resuming in place.")
+        super().__init__(
+            f"Graph structure changed for workflow '{workflow_id}'. Fork instead of resuming in place.\n\n"
+            "How to fix:\n"
+            "  Resume with the stored graph, or adopt the changed graph on a fresh\n"
+            "  lineage: fork_from=..., override_workflow=True, or a new workflow_id.\n"
+            "  A map() batch has only the last of these: fork_from and\n"
+            "  override_workflow are run() options."
+        )
 
 
 class RetryPolicyChangedError(Exception):
@@ -389,6 +396,8 @@ class RetryPolicyChangedError(Exception):
             "How to fix:\n"
             "  Resume with the original policy, or adopt the new policy on a fresh\n"
             "  lineage: fork_from=..., override_workflow=True, or a new workflow_id.\n"
+            "  A map() batch has only the last of these: fork_from and\n"
+            "  override_workflow are run() options.\n"
             "  Cached successful outputs remain valid either way."
         )
 

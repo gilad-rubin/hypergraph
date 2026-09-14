@@ -44,6 +44,61 @@ def validate_lineage_request(
         raise ValueError("Cannot combine checkpoint with fork_from/retry_from. Use one forking mechanism.")
 
 
+def _validate_run_identity(
+    *,
+    existing_run: Run,
+    workflow_id: str,
+    graph_hash: str,
+    graph: Graph,
+) -> None:
+    """Reject a same-lineage resume whose graph or retry policy changed.
+
+    Graph identity is checked before policy identity: a structural change is
+    the coarser fact, and reporting a policy diff for a graph the workflow
+    never ran would be noise.
+    """
+    previous_hash = (existing_run.config or {}).get("graph_struct_hash")
+    if previous_hash is not None and previous_hash != graph_hash:
+        raise GraphChangedError(workflow_id)
+    # Policy compatibility (#232): validated here — before checkpoint
+    # restoration and before create_run() can overwrite the stored config.
+    # A missing manifest is a legacy config; the attempt ledger's
+    # begin_attempt() fingerprint check remains its durable backstop.
+    stored_manifest = RetryPolicyManifest.from_config(existing_run.config)
+    if stored_manifest is not None:
+        changes = diff_policy_manifests(stored_manifest, RetryPolicyManifest.from_graph(graph))
+        if changes:
+            raise RetryPolicyChangedError(workflow_id, changes)
+
+
+def validate_map_parent_identity(
+    *,
+    existing_run: Run | None,
+    workflow_id: str,
+    graph_hash: str,
+    graph: Graph,
+) -> None:
+    """Gate a crash-resumed ``map()`` at the parent batch boundary (#309).
+
+    ``map()`` persists its parent row with an upsert, so the stored evidence
+    of the previous batch is overwritten the moment that row is written. This
+    reads that evidence first and applies the run path's identity rules to it
+    — before any item executes and before the row can be rewritten.
+
+    Identity only. A re-admitted batch is still allowed to be topped up, so
+    the run path's non-identity rejections (already-completed, stopped,
+    input-override-requires-fork) deliberately stay out of this boundary.
+    """
+    if existing_run is None:
+        return
+    _validate_run_identity(
+        existing_run=existing_run,
+        workflow_id=workflow_id,
+        graph_hash=graph_hash,
+        graph=graph,
+    )
+
+
 def resolve_existing_run(
     *,
     existing_run: Run | None,
@@ -66,18 +121,12 @@ def resolve_existing_run(
     if override_workflow:
         return ResumeAction.FORK_EXISTING
 
-    previous_hash = (existing_run.config or {}).get("graph_struct_hash")
-    if previous_hash is not None and previous_hash != graph_hash:
-        raise GraphChangedError(workflow_id)
-    # Policy compatibility (#232): validated here — before checkpoint
-    # restoration and before create_run() can overwrite the stored config.
-    # A missing manifest is a legacy config; the attempt ledger's
-    # begin_attempt() fingerprint check remains its durable backstop.
-    stored_manifest = RetryPolicyManifest.from_config(existing_run.config)
-    if stored_manifest is not None:
-        changes = diff_policy_manifests(stored_manifest, RetryPolicyManifest.from_graph(graph))
-        if changes:
-            raise RetryPolicyChangedError(workflow_id, changes)
+    _validate_run_identity(
+        existing_run=existing_run,
+        workflow_id=workflow_id,
+        graph_hash=graph_hash,
+        graph=graph,
+    )
     if existing_run.status.value == "stopped":
         if not resume_values:
             raise WorkflowStoppedError(workflow_id)

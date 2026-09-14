@@ -39,6 +39,7 @@ from hypergraph.runners._shared.lineage import (
     plan_lineage,
     resolve_existing_run,
     validate_lineage_request,
+    validate_map_parent_identity,
 )
 from hypergraph.runners._shared.map_inputs import generate_map_inputs
 from hypergraph.runners._shared.map_resume import (
@@ -1040,6 +1041,17 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         try:
             reservation.bind(workflow_id)
             signal_token = set_stop_signal(reservation.signal)
+
+            # Parent-boundary identity gate (#309). create_run_sync below upserts
+            # the parent config, so the stored graph/policy evidence has to be read
+            # and judged HERE — before any run event, any item, any rewrite.
+            if sync_cp is not None:
+                validate_map_parent_identity(
+                    existing_run=sync_cp.get_run(workflow_id),
+                    workflow_id=workflow_id,
+                    graph_hash=graph.structural_hash,
+                    graph=graph,
+                )
 
             # Graph-carried processors merge into the top-level map dispatcher only;
             # the per-item self.run(...) calls below re-merge them per item, so

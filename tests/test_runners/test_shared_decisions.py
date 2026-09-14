@@ -19,6 +19,7 @@ from hypergraph.runners._shared.lineage import (
     plan_lineage,
     resolve_existing_run,
     validate_lineage_request,
+    validate_map_parent_identity,
 )
 from hypergraph.runners._shared.map_resume import (
     MAP_SIGNATURE_CONFIG_KEY,
@@ -247,6 +248,42 @@ def test_existing_run_rejections_keep_exception_precedence(run, checkpoint, valu
             graph_hash=graph.structural_hash,
             graph=graph,
             resume_values=values,
+        )
+
+
+@pytest.mark.parametrize(
+    "status",
+    [WorkflowStatus.ACTIVE, WorkflowStatus.FAILED, WorkflowStatus.STOPPED, WorkflowStatus.COMPLETED],
+)
+def test_map_parent_identity_admits_every_status_when_identity_holds(status) -> None:
+    """map() re-admits a batch to top it up; only identity gates it (#309)."""
+    graph = Graph([])
+    validate_map_parent_identity(
+        existing_run=Run(id="batch", status=status, config={"graph_struct_hash": graph.structural_hash}),
+        workflow_id="batch",
+        graph_hash=graph.structural_hash,
+        graph=graph,
+    )
+
+
+def test_map_parent_identity_is_a_no_op_for_a_first_batch() -> None:
+    graph = Graph([])
+    validate_map_parent_identity(
+        existing_run=None,
+        workflow_id="batch",
+        graph_hash=graph.structural_hash,
+        graph=graph,
+    )
+
+
+def test_map_parent_identity_rejects_a_changed_graph() -> None:
+    graph = Graph([])
+    with pytest.raises(GraphChangedError):
+        validate_map_parent_identity(
+            existing_run=Run(id="batch", status=WorkflowStatus.COMPLETED, config={"graph_struct_hash": "old"}),
+            workflow_id="batch",
+            graph_hash=graph.structural_hash,
+            graph=graph,
         )
 
 
