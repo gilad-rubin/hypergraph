@@ -108,10 +108,17 @@ from hypergraph.host import (
     WaitingCondition,
     WatchSnapshot,
     WorkerCoverage,
-    WorkerLockError,
     WorkflowIdConflictError,
     serve,
     watch_submissions,
+)
+from hypergraph.host import (
+    # Retired by ADR 0006 and raised by nothing. Imported — so an existing
+    # ``except hypergraph.WorkerLockError`` still resolves for its one
+    # deprecation release — but deliberately absent from ``__all__``: a star
+    # import must not hand out a name that can never fire. Its documented door
+    # is ``hypergraph.host``.
+    WorkerLockError as WorkerLockError,
 )
 from hypergraph.limits import ProcessLocalLimiter
 from hypergraph.nodes import (
@@ -142,7 +149,9 @@ from hypergraph.runners import (
     InspectionDisplay,
     MapLog,
     MapResult,
+    NodeContext,
     NodeRecord,
+    NodeSpanRef,
     NodeStats,
     PauseInfo,
     RunLog,
@@ -150,9 +159,8 @@ from hypergraph.runners import (
     RunStatus,
     SyncHandle,
     SyncRunner,
+    current_node_span,
 )
-from hypergraph.runners._shared.node_context import NodeContext
-from hypergraph.runners._shared.observability import NodeSpanRef, current_node_span
 
 __all__ = [
     # Decorators and node types
@@ -286,7 +294,6 @@ __all__ = [
     "RUN_READ_STATUS_VALUES",
     "WaitingCondition",
     "HostError",
-    "WorkerLockError",
     "AlreadyTerminalError",
     "DefinitionId",
     "WorkflowIdConflictError",

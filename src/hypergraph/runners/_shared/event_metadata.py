@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from hypergraph.events.types import RunStatus
     from hypergraph.runners._shared.results import MapResult, RunResult
 
 
@@ -74,9 +75,11 @@ class BatchSummary:
         return replace(summary, outcome=result.status.value)
 
     @property
-    def event_status_value(self) -> str:
-        """Status value to export on the parent RunEndEvent."""
-        return self.workflow_status_value
+    def event_status(self) -> RunStatus:
+        """Status to export on the parent ``RunEndEvent``."""
+        from hypergraph.events.types import RunStatus
+
+        return RunStatus(self.workflow_status_value)
 
     @property
     def workflow_status_value(self) -> str:

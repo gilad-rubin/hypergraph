@@ -21,6 +21,7 @@ from hypergraph.runners._shared.event_metadata import (
 if TYPE_CHECKING:
     from hypergraph.events.dispatcher import EventDispatcher
     from hypergraph.events.processor import EventProcessor
+    from hypergraph.events.types import RunStatus
     from hypergraph.graph import Graph
     from hypergraph.nodes.base import HyperNode
     from hypergraph.runners._shared.state import GraphState
@@ -290,11 +291,15 @@ def build_run_end_event(
     parent_span_id: str | None,
     *,
     context: RunContext = DEFAULT_RUN_CONTEXT,
-    status: str | None = None,
+    status: RunStatus | None = None,
     error: BaseException | None = None,
     batch_summary: BatchSummary | None = None,
 ) -> Any:
     """Build a RunEndEvent.
+
+    ``status`` is the one ``RunStatus`` enum — the same object a ``RunResult``
+    carries. It used to be a string because the runner and the event each had
+    their own enum; they are one type now, so callers pass the member itself.
 
     ``error`` carries the privacy-safe projection — never ``str(exception)`` —
     and is what durable surfaces store. ``error_detail`` carries the
@@ -312,7 +317,7 @@ def build_run_end_event(
         workflow_id=context.workflow_id,
         item_index=context.item_index,
         graph_name=graph.name,
-        status=RunStatus(status) if status is not None else (RunStatus.FAILED if error else RunStatus.COMPLETED),
+        status=status if status is not None else (RunStatus.FAILED if error else RunStatus.COMPLETED),
         error=safe_error_text(error) if error else None,
         error_detail=full_error_detail(error) if error else None,
         duration_ms=duration_ms,

@@ -30,16 +30,16 @@ from hypergraph.runners._shared.event_helpers import (
     build_node_start_event,
     build_route_decision_event,
 )
-from hypergraph.runners._shared.observability import (
-    NodeSpanRef,
-    reset_current_node_span,
-    set_current_node_span,
-)
 from hypergraph.runners._shared.pending_boundaries import settle_node_boundary_async
 from hypergraph.runners._shared.readiness import apply_node_result
 from hypergraph.runners._shared.results import FailureEvidence
 from hypergraph.runners._shared.state import ExecutionContext, GraphState, PauseExecution
 from hypergraph.runners._shared.value_resolution import address_for_node_input, collect_inputs_for_node
+from hypergraph.runners.observability import (
+    NodeSpanRef,
+    reset_current_node_span,
+    set_current_node_span,
+)
 
 if TYPE_CHECKING:
     from hypergraph.cache import CacheBackend

@@ -1,4 +1,18 @@
-"""Compatibility re-exports for the canonical runner result and state types."""
+"""Compatibility re-exports for the canonical runner result and state types.
+
+REMOVED IN 0.3.0. Nothing in ``src/`` imports this module — a test enforces
+that — and no new code may. It exists for one reason: a checkpointed value
+pickled before the types moved to ``results.py`` / ``state.py`` names
+``hypergraph.runners._shared.types`` in its payload, and unpickling it needs
+that module path to still resolve. 0.3.0 is the release that drops it, matching
+the one-release window the host's retired ``WorkerLockError`` gets; a run
+history that must survive that boundary has to be re-read and re-written before
+upgrading.
+
+Import the canonical modules directly: :mod:`hypergraph.runners._shared.results`
+for results, logs and ``RunStatus``; :mod:`hypergraph.runners._shared.state` for
+execution state.
+"""
 
 from __future__ import annotations
 

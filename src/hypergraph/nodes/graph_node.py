@@ -31,8 +31,12 @@ class _DefaultResolution:
 # TypeVar for self-referential return types (Python 3.10 compatible)
 _GN = TypeVar("_GN", bound="GraphNode")
 
-# Duplicated from runners._shared.results to avoid circular import
-# (graph_node -> runners -> graph -> nodes -> graph_node)
+# The one definition of the mapped-execution error policy. It lives here, not in
+# ``runners._shared.results``, because ``graph_node`` cannot import the runners
+# package at runtime (graph_node -> runners -> graph -> nodes -> graph_node) while
+# ``results`` can import ``nodes`` freely — nothing under ``hypergraph/nodes/``
+# imports ``hypergraph.runners`` or ``hypergraph.graph`` at runtime. ``results``
+# re-exports this alias, so ``hypergraph.ErrorHandling`` is unchanged.
 ErrorHandling = Literal["raise", "continue"]
 
 

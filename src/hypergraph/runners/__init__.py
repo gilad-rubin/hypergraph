@@ -21,8 +21,10 @@ from hypergraph.runners._shared.state import (
 )
 from hypergraph.runners.async_ import AsyncRunner
 from hypergraph.runners.base import BaseRunner
+from hypergraph.runners.context import NodeContext
 from hypergraph.runners.daft import DaftRunner
 from hypergraph.runners.inspection import InspectionDisplay
+from hypergraph.runners.observability import NodeSpanRef, current_node_span
 from hypergraph.runners.sync import SyncRunner
 
 __all__ = [
@@ -50,4 +52,9 @@ __all__ = [
     "SyncRunner",
     "AsyncRunner",
     "DaftRunner",
+    # Injected into a node's own signature, and the span a node's own
+    # telemetry belongs to: user-facing, so neither lives behind an underscore.
+    "NodeContext",
+    "NodeSpanRef",
+    "current_node_span",
 ]

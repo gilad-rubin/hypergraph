@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Checkpoint
     from hypergraph.events.dispatcher import EventDispatcher
     from hypergraph.events.processor import EventProcessor
+    from hypergraph.events.types import RunStatus
     from hypergraph.graph import Graph
 
 # Default max iterations for cyclic graphs
@@ -574,7 +575,7 @@ class SyncRunner(SyncRunnerTemplate):
         parent_span_id: str | None,
         *,
         context: RunContext = DEFAULT_RUN_CONTEXT,
-        status: str | None = None,
+        status: RunStatus | None = None,
         error: BaseException | None = None,
         batch_summary: BatchSummary | None = None,
     ) -> None:
@@ -708,7 +709,7 @@ def _emit_run_end(
     parent_span_id: str | None,
     *,
     context: RunContext = DEFAULT_RUN_CONTEXT,
-    status: str | None = None,
+    status: RunStatus | None = None,
     error: BaseException | None = None,
     batch_summary: BatchSummary | None = None,
 ) -> None:

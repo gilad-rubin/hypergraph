@@ -1416,6 +1416,15 @@ async def llm_reply(messages: list, ctx: NodeContext) -> str:
 
 The framework detects `NodeContext` in the signature and injects it at execution time. The parameter is excluded from the node's inputs — it never appears in `node.inputs` and cannot be provided via `bind()` or `values`.
 
+Import it from `hypergraph`. Its defining module is `hypergraph.runners.context`,
+which is a public path you can type against or re-export:
+
+```python
+from hypergraph import NodeContext                    # preferred
+from hypergraph.runners import NodeContext            # same object
+from hypergraph.runners.context import NodeContext    # same object
+```
+
 ```python
 llm_reply.inputs   # ("messages",) — ctx is not a graph input
 llm_reply.outputs  # ("response",)
