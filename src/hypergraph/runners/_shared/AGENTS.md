@@ -5,6 +5,18 @@ The scheduling and state engine. Read this before modifying the focused
 `outputs.py`, `map_inputs.py`, `results.py`, `state.py`, or `template_*.py`
 modules. Treat `types.py` as a compatibility re-export surface only.
 
+## `template_sync.py` Is Generated
+
+Never hand-edit `template_sync.py`. Change `template_async.py`, run
+`uv run python scripts/gen_sync.py`, and commit both; a pre-commit hook and CI
+both run `--check`.
+A difference the transform cannot express needs a `# sync:skip` /
+`# sync:only` marker WITH a reason — and a marker is a claim that the two
+halves genuinely differ, so prefer deleting the difference over adding one.
+The constraint behind every existing marker: a sync run must never require
+an event loop (`docs/adr/0009-a-sync-run-must-never-require-an-event-loop.md`;
+workflow in `dev/CONTRIBUTING.md`).
+
 ## Template Exit Ladder (`run_teardown.py`)
 
 Both templates leave through `run_teardown.py`. Never write `reservation.release()`,

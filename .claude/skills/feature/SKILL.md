@@ -120,7 +120,9 @@ Claim the implementation task (`TaskUpdate` → `in_progress`).
    - Read `dev/REVIEW-CHECKLIST.md` structural sweeps section
    - Run applicable sweeps based on what you changed:
      - Changed a signature/default? → mirror sweep (`rg -F -- '<old_value>' docs/ README.md examples/ notebooks/ src/hypergraph/`)
-     - Touched sync or async template? → parity check (`diff template_sync.py template_async.py`)
+     - Touched `template_async.py`? → regenerate the sync half and prove no drift
+       (`uv run python scripts/gen_sync.py && uv run python scripts/gen_sync.py --check`).
+       Never hand-edit `template_sync.py` — it is generated (ADR 0009).
      - Added/modified enum variant or shared contract? → consumer grep (`rg -F -- '<existing_variant>' src/ tests/`)
      - Changed validation logic? → verify a test covers the new validation-runtime path
    - Fix any issues found before proceeding

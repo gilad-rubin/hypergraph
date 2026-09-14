@@ -21,6 +21,9 @@ jobs:
       - run: uv sync --group dev
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      # template_sync.py is generated from template_async.py. A hand-edit to
+      # either half that the other did not get fails here with the hunk.
+      - run: uv run python scripts/gen_sync.py --check
 
   typecheck:
     runs-on: ubuntu-latest

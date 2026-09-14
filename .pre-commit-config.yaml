@@ -25,3 +25,13 @@ repos:
         args: [--check]
         pass_filenames: false
         always_run: true
+  # template_sync.py is generated from template_async.py (ADR 0009). Catch a
+  # hand-edit to either half at commit time, not one CI round-trip later.
+  - repo: local
+    hooks:
+      - id: gen-sync-check
+        name: template_sync.py matches template_async.py
+        entry: uv run python scripts/gen_sync.py --check
+        language: system
+        pass_filenames: false
+        files: ^(src/hypergraph/runners/_shared/template_(a)?sync\.py|scripts/gen_sync\.py)$

@@ -95,7 +95,52 @@ uv run pre-commit run --all-files          # all hooks
 
 # Viz tests
 uv run pytest tests/viz/                   # requires Playwright
+
+# Generated sync runner template (see "The sync template is generated" below)
+uv run python scripts/gen_sync.py          # regenerate after editing template_async.py
+uv run python scripts/gen_sync.py --check  # what CI's lint job runs
 ```
+
+### The sync template is generated
+
+`src/hypergraph/runners/_shared/template_sync.py` is **generated** from
+`template_async.py` by `scripts/gen_sync.py`. Do not hand-edit it: change the
+async template, run the generator, and commit both files. A pre-commit hook and
+CI's lint job both run `--check` and fail with the offending hunk if they
+disagree — so drift is caught at commit time, not one CI round-trip later.
+
+The transform is `async def` -> `def`, `await x` -> `x`, a rename table for the
+names that genuinely differ (the checkpointer's sync half, `AsyncRunTeardown` ->
+`RunTeardown`, the `_async` / `_sync` hook pairs), and three markers for the
+places where the two halves are not the same code at all:
+
+| marker | meaning |
+|---|---|
+| `# sync:skip: <reason>` | drop this one line from the sync file |
+| `# sync:skip-start: <reason>` … `# sync:skip-end` | drop this region |
+| `# sync:only-start: <reason>` … `# sync:only-end` | emit this commented block as live sync code |
+
+Every marker must carry a reason; the generator refuses one that does not. It
+also refuses a marker that appears inside a string literal (where it is prose,
+not an instruction), a region marker trailing code, and any transform whose
+result fails to parse — which is what catches a `# sync:skip:` suffix left on a
+statement `ruff format` has wrapped across several lines, *when* dropping that
+one line leaves unbalanced Python. A drop that happens to leave valid but
+different code is not caught, so prefer a region whenever the statement spans
+more than one line.
+
+**The constraint the whole design rests on: a sync run must never require an
+event loop.** See
+[ADR 0009](../docs/adr/0009-a-sync-run-must-never-require-an-event-loop.md) for
+why that rules out a blocking facade over the async engine: `asyncio.run` inside
+a running loop breaks in Jupyter, ContextVars do not cross a portal thread
+cleanly, and sync's fail-fast sequential `map` is user-visible behavior a shared
+concurrent engine would change. So wherever the mechanical transform would
+produce loop-dependent code — the concurrent `map` fan-out, the backpressured
+`map_iter` worker pool, the shared concurrency limiter, the background
+checkpoint-error sink — the sync side is marked, not translated. A new marker is
+a claim that the two halves genuinely differ; prefer deleting the difference over
+adding one.
 
 ### CI parity — install ALL extras before the gate
 
