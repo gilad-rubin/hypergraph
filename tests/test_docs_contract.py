@@ -448,6 +448,47 @@ def test_streaming_chunk_event_docs_mirror_correlation_fields() -> None:
     assert "span of the emitting node" in streaming
 
 
+def test_streaming_chunk_routing_recipe_documents_the_public_key() -> None:
+    """The nested/concurrent routing recipe (issue #110) stays honest.
+
+    Mirrored by ``TestChunkRouterRecipe`` in ``tests/test_stop_and_stream.py``,
+    which runs this exact key against nested and mapped runs.
+    """
+    observe = _read("docs/05-how-to/observe-execution.md")
+    events = _read("docs/06-api-reference/events.md")
+
+    recipe = _section(observe, "### Route Interleaved Chunks From Nested Graphs and Map Items")
+    flat = " ".join(recipe.split())
+
+    # The documented key is the pair, and the recipe says why each half is needed.
+    assert "(event.workflow_id, event.node_name)" in recipe
+    assert "def on_streaming_chunk(self, event: StreamingChunkEvent) -> None:" in recipe
+    assert "<batch>/<item>/<child>" in recipe
+    assert "node's *local* name inside its own graph" in flat
+
+    # item_index is never part of the route, and None runs are handled.
+    assert "you never add `item_index` to the key" in flat
+    assert "`item_index` is `None` for an ordinary `run()`" in flat
+
+    # parent_span_id is offered, never required.
+    assert "the route above does not need it" in flat
+
+    # workflow_id is caller-supplied, so the recipe names the always-set fallback.
+    assert "(event.workflow_id or event.run_id, event.node_name)" in recipe
+    assert "`map_iter()` has no `workflow_id` parameter at all" in flat
+
+    # The inherited drop policy (ADR 0002) is stated, not implied.
+    assert "the oldest queued `StreamingChunkEvent` is discarded first" in flat
+    assert "`handle.dropped_chunks`" in recipe
+    assert "never backpressures graph execution" in flat
+    assert "../03-patterns/06-streaming.md" in recipe
+
+    # The API reference points at the same key.
+    streaming = _scoped_section(events, "### StreamingChunkEvent")
+    assert "`(workflow_id, node_name)`" in streaming
+    assert "qualified" in streaming
+
+
 def test_checkpointer_semantics_docs_mirror_high_drift_surfaces() -> None:
     checkpointers = _read("docs/06-api-reference/checkpointers.md")
     runners = _read("docs/06-api-reference/runners.md")

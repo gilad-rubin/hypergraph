@@ -308,6 +308,14 @@ with its run, persisted workflow, and mapped item. Inherited `parent_span_id`
 is the span of the emitting node, so consumers can attach chunks to the exact
 node execution even when siblings run concurrently.
 
+`workflow_id` is the **qualified** path — `<batch>/<item>/<child>/...` — so it
+already encodes the mapped item index and the whole nesting path. It is `None`
+when the caller supplied no `workflow_id`; `run_id` is always set. `node_name`
+is the node's **local** name inside its own graph (`'streamer'`, never
+`'child.streamer'`). Route interleaved chunks by the pair
+`(workflow_id, node_name)`; see
+[Route Interleaved Chunks From Nested Graphs and Map Items](../05-how-to/observe-execution.md#route-interleaved-chunks-from-nested-graphs-and-map-items).
+
 ### CacheHitEvent
 
 Emitted when a node result is served from cache instead of being executed.
