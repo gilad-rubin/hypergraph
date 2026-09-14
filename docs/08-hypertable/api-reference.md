@@ -121,9 +121,9 @@ class WriteOutcome(Enum):
     HEALED = "healed"
 ```
 
-`HEALED` is reported by `sync()` when an unchanged parent row had physically
-missing child rows rebuilt. A receipt is never `SKIPPED` on a path that wrote
-rows.
+`HEALED` is reported by `sync()` when an unchanged parent row had damaged
+child rows rebuilt — rows physically missing, or stored in error under
+`on_error="store"`. A receipt is never `SKIPPED` on a path that wrote rows.
 
 ### `RowReceipt`
 
@@ -254,15 +254,21 @@ Converge a complete collection: insert new identities, update changed ones,
 skip fresh ones, and delete missing ones.
 
 Unchanged parents are also self-repairing: a successful parent must not make
-child loss permanent, so `sync()` rebuilds physically missing child rows and
-reports the row as `HEALED`. To detect loss, `sync()` inspects each child
-table once per unchanged parent row — it compares the fan-out count recorded
-on the parent row against the deduplicated child rows physically present
-(one child-table read per parent; no writes). When every child row is
-present, the row is a zero-execution, zero-write `SKIPPED`; when rows are
-missing, the fan-out boundary re-runs once to regenerate the item list and
-only the missing children run the child graph — present children and parent
-derived columns are not re-derived.
+child damage permanent, so `sync()` rebuilds child rows that are physically
+missing or stored as an error row (`on_error="store"`) and reports the row as
+`HEALED`. To detect damage, `sync()` inspects each child table once per
+unchanged parent row — it compares the fan-out count recorded on the parent
+row against the deduplicated child rows physically present, and reads their
+`_status` so a stored failure never counts as a healthy child (one child-table
+read per parent; no writes). When every child row is present and complete, the
+row is a zero-execution, zero-write `SKIPPED`; when a child is damaged, only
+that child runs the child graph — present children and parent derived columns
+are not re-derived, though present child rows are rewritten at the repair's
+generation. A physically missing row leaves nothing to rebuild the item list
+from, so the fan-out boundary re-runs once to regenerate it; a stored error
+row still carries its own item, so the stored list is reused and the boundary
+does not re-run. A retry that fails again leaves the child in error, and
+the next `sync()` tries it again.
 
 ### `delete(id) -> None`
 

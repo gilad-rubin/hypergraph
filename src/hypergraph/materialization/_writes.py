@@ -1222,17 +1222,20 @@ class WritePlanner:
         inputs = self._source_inputs(item)
         return existing.get("_row_fingerprint") == self._provenance.root_fingerprint(inputs)
 
-    def _children_missing(self, existing: dict[str, Any]) -> bool:
-        """Read-only completeness probe for the unchanged-parent sync fast path (#204).
+    def _children_need_repair(self, existing: dict[str, Any]) -> bool:
+        """Read-only damage probe for the unchanged-parent sync fast path (#204, #314).
 
-        Compares each child table's recorded fan-out count (the
+        A child is damaged when it is physically absent or when it is stored as
+        an error row: both are repaired by re-running only that child. The probe
+        compares each child table's recorded fan-out count (the
         ``<provenance>#<count>`` value stamped on the parent row) against the
-        physically present deduplicated child rows. One ``read_rows`` per child
-        table per parent row; never writes. Child specs whose boundary cannot
-        be reconciled column-scoped (no boundary node, or the boundary also
-        produces a stored parent column) are skipped — for them a heal could
-        not honor the "present children and parent are not re-derived"
-        contract, so the fast path is preserved unchanged.
+        physically present deduplicated child rows, and reads their ``_status``
+        so a stored failure is not counted as a healthy child (#314). One
+        ``read_rows`` per child table per parent row; never writes. Child specs
+        whose boundary cannot be reconciled column-scoped (no boundary node, or
+        the boundary also produces a stored parent column) are skipped — for
+        them a repair could not honor the "present children and parent are not
+        re-derived" contract, so the fast path is preserved unchanged.
         """
         identity_value = existing[self._identity]
         for child_spec in self._spec.children:
@@ -1247,20 +1250,23 @@ class WritePlanner:
             rows = self._read_rows(
                 child_spec.name,
                 (("_parent_id", "eq", identity_value),),
-                columns=(child_spec.identity, "_parent_id", "_write_gen"),
+                columns=(child_spec.identity, "_parent_id", "_write_gen", "_status"),
             )
-            if len(dedup_child_rows(rows, child_spec.identity)) != expected:
+            present = dedup_child_rows(rows, child_spec.identity)
+            if len(present) != expected or any(row.get("_status") == "error" for row in present):
                 return True
         return False
 
-    def _heal_missing_children(self, item: dict[str, Any], write_gen: int) -> Generator[RunGraph, Any, RowReceipt]:
-        """Rebuild physically missing child rows under an unchanged parent (#204).
+    def _heal_damaged_children(self, item: dict[str, Any], write_gen: int) -> Generator[RunGraph, Any, RowReceipt]:
+        """Rebuild missing or errored child rows under an unchanged parent (#204, #314).
 
         Delegates to the ordinary reconcile path: fresh parent columns are
-        reused, the fan-out boundary re-runs once to regenerate the item list,
-        and only children without a matching physical row run the child graph.
-        The receipt reports the repair as ``HEALED`` whenever child rows were
-        written — never ``SKIPPED`` on a path that wrote rows.
+        reused, the fan-out boundary re-runs once to regenerate the item list
+        when rows are physically missing (a stored error row still carries its
+        item, so the list is reused instead), and only children without a
+        healthy physical row run the child graph. The receipt reports the repair
+        as ``HEALED`` whenever child rows were written — never ``SKIPPED`` on a
+        path that wrote rows.
         """
         gens_before = {child_spec.name: self._store.max_write_gen(child_spec.name) for child_spec in self._spec.children}
         receipt = yield from self._insert_one(item, write_gen)
@@ -1285,8 +1291,8 @@ class WritePlanner:
             elif self._row_unchanged(item, existing) and existing.get("_status") in (None, "complete"):
                 if self._provenance.row_missing_stamp(existing, RECIPE_COLUMN):
                     self._refresh_missing_stamps(existing)
-                if self._children_missing(existing):
-                    receipts.append((yield from self._heal_missing_children(item, write_gen)))
+                if self._children_need_repair(existing):
+                    receipts.append((yield from self._heal_damaged_children(item, write_gen)))
                 else:
                     receipts.append(RowReceipt(identity_value, WriteOutcome.SKIPPED, RowStatus.COMPLETE))
             else:

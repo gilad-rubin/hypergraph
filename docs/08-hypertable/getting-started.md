@@ -184,10 +184,10 @@ for row_receipt in receipt.errors:
 
 `sync()` inserts new identities, converges changed ones, skips fresh ones,
 and deletes identities absent from the incoming collection. An unchanged
-parent whose child rows were physically lost is self-repairing: `sync()`
-compares each child table's recorded fan-out count against the child rows
-physically present and rebuilds only the missing children, reporting the row
-as `healed` instead of `skipped`.
+parent whose child rows were damaged is self-repairing: `sync()` compares each
+child table's recorded fan-out count against the child rows physically present
+and reads their status, then re-runs only the children that are missing or
+stored as an error row, reporting the row as `healed` instead of `skipped`.
 
 ## Stored errors
 
@@ -208,6 +208,13 @@ if receipt.failed:
 for failed in documents.errors():
     print(failed.id, failed.error, failed.row)
 ```
+
+A stored error is a retry, not a verdict. Once the cause is fixed, the next
+`insert()` of the same item re-runs exactly the failed row — root rows and
+child rows alike — and nothing that already succeeded is re-derived. `sync()`
+retries a failed child too, except where the fan-out boundary also feeds a
+stored parent column; there the row stays `skipped` and `insert()` is the
+repair path.
 
 ## Child grains
 
