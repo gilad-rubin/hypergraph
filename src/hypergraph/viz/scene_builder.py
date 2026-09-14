@@ -251,7 +251,9 @@ def build_initial_scene(
         # instead of vanishing with the hidden node. Several endpoints
         # resolving to one ancestor collapse to one edge.
         base_sources = [ir_edge.source]
+        source_rewritten = False
         if expansion_state.get(ir_edge.source) and ir_edge.source_when_expanded:
+            source_rewritten = True
             expanded_sources = ir_edge.source_when_expanded
             base_sources = list(expanded_sources) if isinstance(expanded_sources, tuple) else [expanded_sources]
             base_sources = _resolve_rewritten_endpoints(base_sources, parent_map, expansion_state, visible_ids)
@@ -273,10 +275,20 @@ def build_initial_scene(
         # (src,tgt) merges them). Merged-output mode should still render one
         # visible edge per node pair; separate_outputs mode fans out through
         # one DATA node per value.
+        #
+        # Once the source rewrite has fired, those DATA nodes are the INNER
+        # producer's, keyed by ITS output name — so a container that renamed
+        # the value at its boundary must emit the producer-local names. The
+        # length guard mirrors the JS twin: a payload whose translation does
+        # not line up falls back to ``value_names`` in both languages rather
+        # than diverging.
+        emit_value_names = ir_edge.value_names
+        if source_rewritten and len(ir_edge.value_names_when_expanded) == len(ir_edge.value_names):
+            emit_value_names = ir_edge.value_names_when_expanded
         for target in targets:
             for base_source in base_sources:
                 if separate_outputs and ir_edge.edge_type == "data" and ir_edge.value_names:
-                    edges_to_emit = [(value_name, base_source) for value_name in ir_edge.value_names]
+                    edges_to_emit = [(value_name, base_source) for value_name in emit_value_names]
                 else:
                     edges_to_emit = [(None, base_source)]  # type: ignore[list-item]
 

@@ -428,12 +428,21 @@ def _build_ir_edge(
     value_names = tuple(attrs.get("value_names", ()))
 
     src_attrs = flat_graph.nodes.get(src, {})
+    value_names_when_expanded: tuple[str, ...] = ()
     if src_attrs.get("node_type") == "GRAPH":
+        # One pass answers both questions: which inner nodes this edge leaves
+        # from once the container expands (the FIRST carried value that has any
+        # producer wins, as before — the rewrite is per-edge, not per-value),
+        # and what each carried value is called down there, since that is the
+        # name its DATA pill is keyed by.
+        local_names: list[str] = []
         for value_name in value_names:
-            internal = _find_deepest_internal_producers(src, value_name, flat_graph)
-            if internal:
+            internal, local_name = _deepest_internal_producers(src, value_name, flat_graph)
+            local_names.append(local_name)
+            if internal and source_when_expanded is None:
                 source_when_expanded = internal[0] if len(internal) == 1 else internal
-                break
+        if tuple(local_names) != value_names:
+            value_names_when_expanded = tuple(local_names)
         if source_when_expanded is None:
             # No descendant produces any carried value (a mounted table's
             # receipt): source from the synthesized OUTPUT anchor, never the
@@ -498,6 +507,7 @@ def _build_ir_edge(
         source_when_expanded=source_when_expanded,
         target_when_expanded=target_when_expanded,
         value_names=value_names,
+        value_names_when_expanded=value_names_when_expanded,
         label=label,
         exclusive=exclusive,
         is_back_edge=(src, tgt) in back_edges,
@@ -573,19 +583,35 @@ def _find_deepest_internal_producer(container_id: str, value_name: str, flat_gra
     return None
 
 
-def _find_deepest_internal_producers(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> tuple[str, ...]:
-    """Return all deepest internal producers for a container output."""
+def _deepest_internal_producers(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> tuple[tuple[str, ...], str]:
+    """All deepest internal producers of a container output, AND the local
+    output name they emit it under.
+
+    The exact rename recorded on the GRAPH node is applied first (e.g.
+    ``with_outputs(item_out="generated")``); fuzzy substring matching remains
+    the fallback for renames that cross several boundaries (container exposes
+    ``recall_scores``, inner node produces ``recall_score``). The local name is
+    what the producer's DATA pill is keyed by, so a separate-outputs edge needs
+    it once the container expands — returning it alongside the producers keeps
+    one matcher instead of a second one guessing the same answer.
+    """
     inner_name = _inner_output_name(container_id, value_name, flat_graph)
     descendants = [(node_id, attrs) for node_id, attrs in flat_graph.nodes(data=True) if _is_descendant(node_id, container_id, flat_graph)]
 
-    candidates = [node_id for node_id, attrs in descendants if inner_name in attrs.get("outputs", ())]
-    if not candidates:
-        candidates = [node_id for node_id, attrs in descendants for out in attrs.get("outputs", ()) if out in inner_name or inner_name in out]
-    if not candidates:
-        return ()
+    matches = [(node_id, inner_name) for node_id, attrs in descendants if inner_name in attrs.get("outputs", ())]
+    if not matches:
+        matches = [(node_id, out) for node_id, attrs in descendants for out in attrs.get("outputs", ()) if out in inner_name or inner_name in out]
+    if not matches:
+        return (), inner_name
 
-    max_depth = max(_depth_below(node_id, container_id, flat_graph) for node_id in candidates)
-    return tuple(node_id for node_id in candidates if _depth_below(node_id, container_id, flat_graph) == max_depth)
+    max_depth = max(_depth_below(node_id, container_id, flat_graph) for node_id, _ in matches)
+    deepest = [(node_id, local) for node_id, local in matches if _depth_below(node_id, container_id, flat_graph) == max_depth]
+    return tuple(node_id for node_id, _ in deepest), deepest[0][1]
+
+
+def _find_deepest_internal_producers(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> tuple[str, ...]:
+    """Return all deepest internal producers for a container output."""
+    return _deepest_internal_producers(container_id, value_name, flat_graph)[0]
 
 
 def find_internal_consumers(container_id: str, value_name: str, flat_graph: nx.DiGraph, *, include_fuzzy: bool = True) -> tuple[str, ...]:

@@ -42,6 +42,20 @@ class IREdge:
     # the data flow goes producer -> data_node -> consumer instead of
     # producer -> consumer directly).
     value_names: tuple[str, ...] = ()
+    # The same values under the names their INNER producer emits them by, for
+    # when the source container is expanded. A container that renames an output
+    # at its boundary (``with_outputs(item_out="generated")``) exposes
+    # ``generated`` while the inner producer's DATA pill stays keyed
+    # ``item_out`` — composing ``data_<inner producer>_generated`` names a node
+    # nothing emits, so the edge ships hidden with a dangling source and the
+    # consumer loses its only incoming edge. Aligned index-wise with
+    # ``value_names``; empty when no boundary rename applies. Consumed ONLY
+    # when the length matches ``value_names`` — the same guard the JS twin
+    # applies (and the same one ``IRExternalInput.synthetic_id`` uses for
+    # ``id_segments``), so a malformed payload degrades to ``value_names``
+    # identically in both languages instead of diverging. An optional field an
+    # old scene builder simply ignores needs no schema bump.
+    value_names_when_expanded: tuple[str, ...] = ()
     # Branch label for control edges originating from a gate (e.g. "True"
     # / "False" for an ifelse, or the route key for a route).
     label: str | None = None

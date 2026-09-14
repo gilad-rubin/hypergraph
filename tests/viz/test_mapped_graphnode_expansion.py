@@ -163,3 +163,45 @@ def test_swapped_input_renames_route_to_correct_inner_consumers():
     assert ("input_x", "inner/consume_x") not in visible_edges
     assert ("input_y", "inner/consume_y") not in visible_edges
     assert_scene_layoutable(scene)
+
+
+def test_separate_outputs_renamed_boundary_reaches_its_consumer_when_expanded():
+    """Expanded + ``separate_outputs``: the renamed boundary output must reach
+    its consumer through the INNER producer's own value pill.
+
+    ``with_outputs(item_out="generated")`` exposes ``generated`` at the
+    container while the inner node's pill is keyed ``item_out``. Composing
+    ``data_<inner producer>_generated`` names a node nothing ever emits, so the
+    edge shipped hidden with a dangling source and ``save`` lost its only
+    incoming edge — a silently wrong picture rather than a crash. Asserting on
+    hidden edges is the point: ``assert_scene_layoutable`` skips them."""
+    scene = scene_for_state(
+        make_mapped_gate_graph(),
+        expansion_state={"create_items": True},
+        separate_outputs=True,
+    )
+    node_ids = {n["id"] for n in scene["nodes"]}
+    for edge in scene["edges"]:
+        assert edge["source"] in node_ids, f"edge {edge['id']} has dangling source {edge['source']!r}"
+        assert edge["target"] in node_ids, f"edge {edge['id']} has dangling target {edge['target']!r}"
+
+    data_id = "data_create_items/process_item_out"
+    edges_by_id = {e["id"]: e for e in scene["edges"]}
+    assert f"{data_id}__save__item_out" in edges_by_id
+    assert not edges_by_id[f"{data_id}__save__item_out"]["hidden"]
+    assert not next(n for n in scene["nodes"] if n["id"] == data_id)["hidden"]
+    assert [e for e in scene["edges"] if e["target"] == "save" and not e["hidden"]]
+
+
+def test_separate_outputs_collapsed_boundary_keeps_the_container_pill():
+    """Collapsed, the value pill belongs to the container and keeps its
+    container-level name — the expanded-state translation must not leak here."""
+    scene = scene_for_state(make_mapped_gate_graph(), expansion_state={}, separate_outputs=True)
+    node_ids = {n["id"] for n in scene["nodes"]}
+    visible_pairs = {(e["source"], e["target"]) for e in scene["edges"] if not e["hidden"]}
+    assert ("create_items", "data_create_items_generated") in visible_pairs
+    assert ("data_create_items_generated", "save") in visible_pairs
+    assert "data_create_items_item_out" not in node_ids
+    for edge in scene["edges"]:
+        assert edge["source"] in node_ids, f"edge {edge['id']} has dangling source {edge['source']!r}"
+        assert edge["target"] in node_ids, f"edge {edge['id']} has dangling target {edge['target']!r}"

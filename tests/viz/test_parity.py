@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from itertools import product
 from pathlib import Path
 from typing import Any, TypedDict
@@ -31,6 +31,7 @@ from tests.viz.conftest import (
     make_simple_graph,
     make_workflow,
 )
+from tests.viz.test_mapped_graphnode_expansion import make_mapped_gate_graph
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNNER = Path(__file__).resolve().parent / "_parity_runner.js"
@@ -279,6 +280,10 @@ FIXTURES = {
     "hidden_sibling_dependency": make_hidden_sibling_dependency_graph,
     "renamed_boundary_entrypoint": make_renamed_boundary_entrypoint_graph,
     "selected_subgraph_entrypoint": make_selected_subgraph_entrypoint_graph,
+    # Renamed boundary OUTPUT behind a mapped container: expanded +
+    # separate_outputs, the DATA pill is the inner producer's and carries the
+    # inner name, so both twins must read value_names_when_expanded.
+    "mapped_renamed_boundary_output": make_mapped_gate_graph,
 }
 
 
@@ -320,6 +325,41 @@ def test_python_js_scenes_match(fixture_name: str, separate_outputs: bool, show_
         assert py_edges == js_edges, (
             f"Edge-set drift for {ctx}\nOnly in Python: {sorted(py_edges - js_edges)}\nOnly in JS:     {sorted(js_edges - py_edges)}"
         )
+
+
+def test_mismatched_value_names_when_expanded_degrades_the_same_in_both_twins() -> None:
+    """``value_names_when_expanded`` is positional, so a tuple that does not
+    line up with ``value_names`` carries no usable answer at all.
+
+    Both twins must then fall back to ``value_names`` — the same length guard
+    ``IRExternalInput.synthetic_id`` applies to ``id_segments``. Without it
+    Python and JS would key DATA ids off different names for the same payload
+    and the notebook would draw a scene the test oracle never saw."""
+    ir = build_graph_ir(make_mapped_gate_graph().to_flat_graph())
+    mismatched = replace(
+        ir,
+        edges=[replace(edge, value_names_when_expanded=("item_out", "surplus")) if edge.value_names_when_expanded else edge for edge in ir.edges],
+    )
+    assert any(edge.value_names_when_expanded == ("item_out", "surplus") for edge in mismatched.edges), (
+        "fixture no longer carries a translated boundary output — the guard is untested"
+    )
+
+    expansion_state = {"create_items": True}
+    py_scene = build_initial_scene(mismatched, expansion_state=expansion_state, separate_outputs=True)
+    js_scene = _node_scene(
+        asdict(mismatched),
+        {
+            "expansionState": expansion_state,
+            "separateOutputs": True,
+            "showInputs": True,
+            "showBoundedInputs": False,
+        },
+    )
+
+    assert _project(py_scene) == _project(js_scene)
+    # Honest degradation: the pre-fix container-level name, identically in both
+    # languages, not a different wrong picture per language.
+    assert any(edge["source"] == "data_create_items/process_generated" for edge in py_scene["edges"])
 
 
 class _FanoutItem(TypedDict):
