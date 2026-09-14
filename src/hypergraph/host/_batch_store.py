@@ -282,6 +282,11 @@ class BatchAcceptance:
             self.builder_args_json,
             None,  # claimed_by / lease_until: nobody holds the claim yet
             None,
+            # exclusive_key: a Batch child's subject is its item_key, which
+            # the manifest already makes unique within the Batch. Whether a
+            # CORPUS may hold one live sweep is #346's question, not this
+            # column's — so no child claims a key (#405).
+            None,
         )
 
     def child_submitted_fact(self, spec: ChildSpec) -> dict[str, Any]:

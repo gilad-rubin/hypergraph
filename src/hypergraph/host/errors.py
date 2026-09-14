@@ -83,13 +83,30 @@ class AlreadyTerminalError(HostError):
 
 
 class WorkflowIdConflictError(HostError):
-    """A workflow_id was resubmitted with a different start fingerprint.
+    """A submission means something different from the accepted work it met.
 
-    Same id, different meaning: the pinned Definition identity, the
-    normalized inputs, or the requested ``start_at`` differs from the stored
-    submission. This is distinct from ``AlreadyTerminalError`` (the existing
-    run is still nonterminal) and from a fingerprint-identical resubmission
-    (which dedupes with ``duplicate=True``).
+    THE typed refusal for "adopting this would answer a different question
+    than the one asked". ``aspect`` names which thing differs, and
+    ``workflow_id`` always names the ACCEPTED run the new submission
+    collided with — which is not necessarily the id the caller passed. Three
+    collisions raise it:
+
+    - **Same id, different start fingerprint.** The pinned Definition
+      identity (``aspect="definition identity"``), the normalized inputs
+      (``"inputs"``), or the requested start time (``"start_at"``) differs
+      from the stored submission.
+    - **Same id, different subject.** The stored submission was accepted
+      holding one ``exclusive_key`` and this one asks for another
+      (``aspect="exclusive_key"``). A submission's subject is fixed at
+      acceptance; deduping would silently drop the exclusivity asked for.
+    - **Different id, same live subject.** A live run already holds this
+      submission's ``exclusive_key`` and was submitted with a different
+      start fingerprint, so the caller's values cannot be adopted into it.
+      ``aspect`` is the differing fingerprint aspect and ``workflow_id`` is
+      the HOLDER's id.
+
+    Distinct from ``AlreadyTerminalError`` (the existing run is terminal)
+    and from a matching resubmission, which dedupes with ``duplicate=True``.
     """
 
     def __init__(self, workflow_id: str, aspect: str | None = None, message: str | None = None) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def detect_schema_version(conn: Any) -> int:
@@ -18,7 +18,8 @@ def detect_schema_version(conn: Any) -> int:
         6 — v6 schema (durable-host coordination + pending node boundaries)
         7 — v7 schema (submitted work carries a builder address; workers register)
         8 — v8 schema (retention carriers record which nodes they folded)
-        9 — current v9 schema (a node boundary records its own settlement)
+        9 — v9 schema (a node boundary records its own settlement)
+        10 — current v10 schema (a live submission can hold an exclusive key)
     """
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
@@ -29,8 +30,8 @@ def detect_schema_version(conn: Any) -> int:
     return 0
 
 
-def create_v9_schema(conn: Any) -> None:
-    """Create a fresh v9 schema on an empty database."""
+def create_v10_schema(conn: Any) -> None:
+    """Create a fresh v10 schema on an empty database."""
     conn.execute(_CREATE_RUNS)
     conn.execute(_CREATE_STEPS)
     conn.execute(_CREATE_ATTEMPT_SERIES)
@@ -42,17 +43,19 @@ def create_v9_schema(conn: Any) -> None:
     _ensure_v7_objects(conn)
     _ensure_v8_objects(conn)
     _ensure_v9_objects(conn)
+    _ensure_v10_objects(conn)
 
     conn.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
     conn.execute("INSERT INTO _schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
     conn.commit()
 
 
-# Backward-compatible aliases: the fresh-create entry points used before v9.
-create_v8_schema = create_v9_schema
-create_v7_schema = create_v9_schema
-create_v6_schema = create_v9_schema
-create_v5_schema = create_v9_schema
+# Backward-compatible aliases: the fresh-create entry points used before v10.
+create_v9_schema = create_v10_schema
+create_v8_schema = create_v10_schema
+create_v7_schema = create_v10_schema
+create_v6_schema = create_v10_schema
+create_v5_schema = create_v10_schema
 
 
 def ensure_schema(conn: Any) -> None:
@@ -66,9 +69,10 @@ def ensure_schema(conn: Any) -> None:
         _ensure_v7_objects(conn)
         _ensure_v8_objects(conn)
         _ensure_v9_objects(conn)
+        _ensure_v10_objects(conn)
         return
     if version == 0:
-        create_v9_schema(conn)
+        create_v10_schema(conn)
         return
     if version == 2:
         _migrate_v2_to_v3(conn)
@@ -78,6 +82,7 @@ def ensure_schema(conn: Any) -> None:
         _migrate_v6_to_v7(conn)
         _migrate_v7_to_v8(conn)
         _migrate_v8_to_v9(conn)
+        _migrate_v9_to_v10(conn)
         return
     if version == 3:
         _migrate_v3_to_v4(conn)
@@ -86,6 +91,7 @@ def ensure_schema(conn: Any) -> None:
         _migrate_v6_to_v7(conn)
         _migrate_v7_to_v8(conn)
         _migrate_v8_to_v9(conn)
+        _migrate_v9_to_v10(conn)
         return
     if version == 4:
         _migrate_v4_to_v5(conn)
@@ -93,24 +99,32 @@ def ensure_schema(conn: Any) -> None:
         _migrate_v6_to_v7(conn)
         _migrate_v7_to_v8(conn)
         _migrate_v8_to_v9(conn)
+        _migrate_v9_to_v10(conn)
         return
     if version == 5:
         _migrate_v5_to_v6(conn)
         _migrate_v6_to_v7(conn)
         _migrate_v7_to_v8(conn)
         _migrate_v8_to_v9(conn)
+        _migrate_v9_to_v10(conn)
         return
     if version == 6:
         _migrate_v6_to_v7(conn)
         _migrate_v7_to_v8(conn)
         _migrate_v8_to_v9(conn)
+        _migrate_v9_to_v10(conn)
         return
     if version == 7:
         _migrate_v7_to_v8(conn)
         _migrate_v8_to_v9(conn)
+        _migrate_v9_to_v10(conn)
         return
     if version == 8:
         _migrate_v8_to_v9(conn)
+        _migrate_v9_to_v10(conn)
+        return
+    if version == 9:
+        _migrate_v9_to_v10(conn)
         return
     raise ValueError(f"Unsupported database schema version {version} (current: {SCHEMA_VERSION}). Please upgrade hypergraph.")
 
@@ -442,9 +456,60 @@ CREATE TABLE IF NOT EXISTS host_submissions (
     builder_key TEXT,
     builder_args_json TEXT,
     claimed_by TEXT,
-    lease_until TEXT
+    lease_until TEXT,
+    exclusive_key TEXT
 )
 """
+
+# === v10: one live run per subject ===
+#
+# ``exclusive_key`` is the SUBJECT a submission is about — "review:doc-41",
+# "sync:account-9" — as opposed to ``workflow_id``, which is the submission's
+# own name. NULL on every submission that does not claim one, which is every
+# submission written before v10 and still the ordinary case.
+#
+# Two indexes, because they answer two different questions.
+#
+# The PARTIAL UNIQUE one is the constraint: at most one LIVE row may hold a
+# given key, and its predicate spans exactly the states the host may still
+# touch. A settled holder drops out of the index, so the key frees itself and
+# the next submission for that subject is accepted as a new run. It is not
+# the check — the submit transaction SELECTs the live holder and adopts it —
+# it is the backstop for a writer that somehow got past that SELECT.
+#
+# The PLAIN one is the lookup, and it is not redundant with the partial one:
+# SQLite may only use a partial index when the query IMPLIES its predicate,
+# and neither `WHERE exclusive_key = ?` (the keyed listing) nor
+# `WHERE exclusive_key = ? AND state NOT IN (?, ?, ?)` (the in-transaction
+# holder read, whose settled states are bound parameters) implies it. Without
+# this second index both of those are a full `SCAN host_submissions` — which
+# is exactly the full-table read `exclusive_key` exists to remove.
+_HOST_SUBMISSIONS_V10_COLUMNS = (("exclusive_key", "exclusive_key TEXT"),)
+
+#: The submission states the host will never touch again, as the index
+#: predicate spans them. This restates ``SETTLED_SUBMISSION_STATES`` from
+#: ``hypergraph.host.views``, which is where that vocabulary is DEFINED and
+#: documented, because this layer must not import the host: ``host/`` imports
+#: ``checkpointers/``, never the other way round. The two cannot drift —
+#: ``test_the_index_predicate_is_the_settled_vocabulary`` fails the moment a
+#: settled state is added on one side only, and widening the index is what
+#: adding one has to do.
+_SETTLED_SUBMISSION_STATE_VALUES: tuple[str, ...] = ("dead_letter", "exhausted", "finished")
+
+
+#: The lookup index over the subject column. See the two-index note above:
+#: the partial unique index cannot serve either exclusive-key query.
+_EXCLUSIVE_KEY_LOOKUP_INDEX_SQL = "CREATE INDEX IF NOT EXISTS idx_host_submissions_key ON host_submissions(exclusive_key)"
+
+
+def _exclusive_key_index_sql() -> str:
+    """The partial unique index over LIVE exclusive-key holders."""
+    settled = ", ".join(f"'{state}'" for state in sorted(_SETTLED_SUBMISSION_STATE_VALUES))
+    return (
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_host_submissions_exclusive "
+        f"ON host_submissions(exclusive_key) WHERE exclusive_key IS NOT NULL AND state NOT IN ({settled})"
+    )
+
 
 # === v7: submitted work carries a builder address, and workers register ===
 #
@@ -801,4 +866,27 @@ def _migrate_v8_to_v9(conn: Any) -> None:
     """In-place migration from schema v8 to v9 (per-node settlement marker)."""
     _ensure_v9_objects(conn)
     conn.execute("UPDATE _schema_version SET version = 9")
+    conn.commit()
+
+
+def _ensure_v10_objects(conn: Any) -> None:
+    """Ensure the exclusive-key column and its live-holder index exist.
+
+    One nullable append to ``host_submissions``, the partial unique index
+    that enforces one live holder per key, and the plain index that the two
+    exclusive-key reads actually use: a v9 database migrates in place, every
+    existing row keeps its exact byte layout and reads NULL for the new
+    column, and no existing row enters either index. The column lands before
+    the indexes that span it.
+    """
+    _add_missing_columns(conn, "host_submissions", _HOST_SUBMISSIONS_V10_COLUMNS)
+    conn.execute(_exclusive_key_index_sql())
+    conn.execute(_EXCLUSIVE_KEY_LOOKUP_INDEX_SQL)
+    conn.commit()
+
+
+def _migrate_v9_to_v10(conn: Any) -> None:
+    """In-place migration to schema v10 (one live run per exclusive key)."""
+    _ensure_v10_objects(conn)
+    conn.execute("UPDATE _schema_version SET version = 10")
     conn.commit()

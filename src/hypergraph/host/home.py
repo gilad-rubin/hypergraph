@@ -1,7 +1,7 @@
 """RunHome — the SQLite Run Home for the durable host (Tier 1).
 
 A RunHome IS the existing SQLite checkpointer plus coordination tables
-(schema v7): durable submissions, the per-Run durable update sequence, the
+(schema v10): durable submissions, the per-Run durable update sequence, the
 host command channel, the worker registry, and the Home-scoped coordination
 settings every process that opens the store agrees on
 (``max_active_runs``). Steps stay the
@@ -114,6 +114,7 @@ from hypergraph.host.views import (
     DEAD_LETTER_BUILDER_MISSING,
     DEAD_LETTER_UNSERVED_IDENTITY,
     DEAD_LETTERED_UPDATE_KIND,
+    SETTLED_SUBMISSION_STATES,
     SUBMISSION_STATE_DEAD_LETTER,
     SUBMISSION_STATE_FINISHED,
     SUBMISSION_STATE_PAUSED,
@@ -131,7 +132,7 @@ _SUBMISSION_COLS = (
     "workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
     "start_at, state, recovery_attempts, recovery_cap, source_ref, created_at, claimed_at, finished_at, "
     "fingerprint, compat_state, retry_of, retry_index, forked_from, fork_reason, last_progress_step_count, batch_id, item_key, claim_seq, "
-    "admission_cost, builder_key, builder_args_json, claimed_by, lease_until"
+    "admission_cost, builder_key, builder_args_json, claimed_by, lease_until, exclusive_key"
 )
 _SUBMISSION_PLACEHOLDERS = ", ".join("?" for _ in _SUBMISSION_COLS.split(", "))
 _SELECT_SUBMISSION = f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE workflow_id = ?"
@@ -139,6 +140,7 @@ _SELECT_SUBMISSION_STATE = "SELECT state FROM host_submissions WHERE workflow_id
 _INSERT_SUBMISSION = f"INSERT INTO host_submissions ({_SUBMISSION_COLS}) VALUES ({_SUBMISSION_PLACEHOLDERS})"
 _RESET_RECOVERY_ATTEMPTS = "UPDATE host_submissions SET recovery_attempts = 0 WHERE workflow_id = ? AND recovery_attempts > 0"
 _SELECT_RUN_EXISTS = "SELECT 1 FROM runs WHERE id = ?"
+_SELECT_BARE_TIER0_RUNS = f"SELECT {_RUNS_COLS} FROM runs WHERE id NOT IN (SELECT workflow_id FROM host_submissions)"
 #: The seq allocation and the insert are ONE statement, so two writers can
 #: never read the same max and both claim it.
 _INSERT_RUN_UPDATE = (
@@ -174,6 +176,19 @@ _CURRENT_SLOT_SQL = "SELECT pause_id, settled_at, response_key, answer FROM paus
 # checks it AFTER the host rows, so a runs row that answers here belongs to
 # Tier-0 work no host submission or Batch owns (see refuse_tier0_reuse).
 _SELECT_RUN_STATUS = "SELECT status FROM runs WHERE id = ?"
+
+# === Exclusive keys: one live run per subject (schema v10) ===
+#
+# ``exclusive_key`` names the SUBJECT ("review:doc-41"), where workflow_id
+# names the submission. The settled vocabulary is derived, never retyped, so
+# this SELECT and the partial unique index backing it span exactly the same
+# rows: a holder that finished, exhausted its recovery budget, or was dead-
+# lettered has released the key.
+_SETTLED_STATE_PARAMS = tuple(sorted(SETTLED_SUBMISSION_STATES))
+_SELECT_LIVE_EXCLUSIVE_HOLDER = (
+    f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE exclusive_key = ? "
+    f"AND state NOT IN ({', '.join('?' for _ in _SETTLED_STATE_PARAMS)}) ORDER BY created_at, workflow_id LIMIT 1"
+)
 
 # Rerun ordinal allocation. Both counts run INSIDE the transaction that
 # inserts the new submission or Batch, over rows that exist at ACCEPTANCE
@@ -685,6 +700,14 @@ def _batch_children_query(batch_ids: Sequence[str]) -> tuple[str, Sequence[str]]
     )
 
 
+def _list_rows_query(exclusive_key: str | None) -> tuple[str, tuple[Any, ...]]:
+    """The joined submission+run listing statement, optionally keyed."""
+    statement = f"SELECT {_QUALIFIED_SUBMISSION_COLS}, {_QUALIFIED_RUN_COLS} FROM host_submissions s LEFT JOIN runs r ON r.id = s.workflow_id"
+    if exclusive_key is None:
+        return statement, ()
+    return f"{statement} WHERE s.exclusive_key = ?", (exclusive_key,)
+
+
 def _row_to_submission(row: tuple[Any, ...]) -> dict[str, Any]:
     return dict(zip(_SUBMISSION_COLS.split(", "), row, strict=True))
 
@@ -785,6 +808,7 @@ def _raise_on_conflicting_reuse(
     def_struct_hash: str,
     inputs_json: str,
     start_at: str | None,
+    exclusive_key: str | None = None,
 ) -> None:
     """Apply the dedup/conflict contract to an existing submission row.
 
@@ -793,6 +817,15 @@ def _raise_on_conflicting_reuse(
     before first execution). Then fingerprint mismatch is a distinct typed
     conflict; an identical fingerprint falls through to use-existing dedup.
     Caller holds the write transaction and rolls back on raise.
+
+    A differing ``exclusive_key`` is the last check and a conflict of its
+    own. The key is not in the fingerprint — it says which SUBJECT this work
+    is about, not what the work IS — so without this a resubmission of a
+    known id carrying a different key would dedupe and the key would simply
+    vanish: the caller asked for exclusivity over one subject and got
+    exclusivity over another, or none. That is the same "silently answered a
+    different question" the live-holder path refuses, in the other
+    direction, so it refuses too rather than rewriting an accepted row.
     """
     if existing["state"] == "finished":
         raise AlreadyTerminalError(workflow_id)
@@ -806,6 +839,66 @@ def _raise_on_conflicting_reuse(
             start_at=start_at,
         )
         raise WorkflowIdConflictError(workflow_id, aspect)
+    if existing["exclusive_key"] != exclusive_key:
+        raise WorkflowIdConflictError(
+            workflow_id,
+            "exclusive_key",
+            message=(
+                f"workflow_id {workflow_id!r} already exists in this Run Home holding exclusive_key "
+                f"{existing['exclusive_key']!r}; this submission asks for {exclusive_key!r}. A submission's "
+                "subject is fixed at acceptance, so deduping here would discard the exclusivity you asked "
+                "for.\n\n"
+                "How to fix: resubmit this id with the key it was accepted under, or choose a new "
+                "workflow_id for work about a different subject."
+            ),
+        )
+
+
+def _raise_on_conflicting_key_holder(
+    live: dict[str, Any],
+    *,
+    exclusive_key: str,
+    fingerprint: str,
+    definition_name: str,
+    def_version: str,
+    def_struct_hash: str,
+    inputs_json: str,
+    start_at: str | None,
+) -> None:
+    """Refuse to adopt a live key holder that means something else.
+
+    Adoption is the point of an exclusive key — "make sure one review of
+    this document is running" is an idempotency ask, and a second submit of
+    the same work returns the live receipt. But adoption DISCARDS the
+    caller's values, and silently discarding values that differ from the
+    holder's would answer a different question than the one asked. So the
+    same start fingerprint that decides workflow_id dedup decides this:
+    identical falls through to adoption, different is the typed conflict.
+
+    Caller holds the write transaction and rolls back on raise.
+    """
+    if live["fingerprint"] == fingerprint:
+        return
+    aspect = fingerprint_mismatch_aspect(
+        live,
+        definition_name=definition_name,
+        def_version=def_version,
+        def_struct_hash=def_struct_hash,
+        inputs_json=inputs_json,
+        start_at=start_at,
+    )
+    holder = str(live["workflow_id"])
+    raise WorkflowIdConflictError(
+        holder,
+        aspect,
+        message=(
+            f"exclusive_key {exclusive_key!r} is held by the live run {holder!r}, which was submitted "
+            f"with a different start fingerprint ({aspect} differs). Adopting it would discard the values "
+            "you passed.\n\n"
+            "How to fix: wait for the holder to settle, stop it with client.stop(), or submit this work "
+            "under a different exclusive_key."
+        ),
+    )
 
 
 class RunHome(SqliteCheckpointer):
@@ -1614,6 +1707,7 @@ class RunHome(SqliteCheckpointer):
         admission_cost: int = 1,
         builder_key: str | None = None,
         builder_args_json: str | None = None,
+        exclusive_key: str | None = None,
         fresh: bool = False,
     ) -> tuple[bool, dict[str, Any]]:
         """Insert one submission plus its 'submitted' update, atomically.
@@ -1632,6 +1726,16 @@ class RunHome(SqliteCheckpointer):
         runs, and these only say how to reconstitute it — so a duplicate
         resubmission dedupes into the stored row and never rewrites the
         builder address it was accepted with.
+
+        ``exclusive_key`` names the SUBJECT the work is about, and at most
+        one LIVE submission may hold one (schema v10). A second submit for a
+        key a live run already holds writes nothing and returns that run —
+        ``(False, live_row)``, the same adoption shape workflow_id dedup
+        uses — unless the caller's start fingerprint differs from the
+        holder's, which is a ``WorkflowIdConflictError`` rather than a
+        silent discard of the caller's values. The lookup runs inside this
+        transaction, so two doors cannot both pass it; the partial unique
+        index is the backstop.
 
         ``fresh`` requires ``retry_of`` (a ``ValueError`` otherwise): it
         says this repeat must DO the work again rather than inherit the
@@ -1677,6 +1781,7 @@ class RunHome(SqliteCheckpointer):
                         def_struct_hash=def_struct_hash,
                         inputs_json=inputs_json,
                         start_at=start_at,
+                        exclusive_key=exclusive_key,
                     )
                     db.rollback()
                     return False, _row_to_submission(existing_row)
@@ -1696,6 +1801,25 @@ class RunHome(SqliteCheckpointer):
                 run_row = db.execute(_SELECT_RUN_STATUS, (workflow_id,)).fetchone()
                 if run_row is not None:
                     refuse_tier0_reuse(str(run_row[0]), workflow_id=workflow_id)
+                if exclusive_key is not None:
+                    holder_row = db.execute(
+                        _SELECT_LIVE_EXCLUSIVE_HOLDER,
+                        (exclusive_key, *_SETTLED_STATE_PARAMS),
+                    ).fetchone()
+                    if holder_row is not None:
+                        live = _row_to_submission(holder_row)
+                        _raise_on_conflicting_key_holder(
+                            live,
+                            exclusive_key=exclusive_key,
+                            fingerprint=fingerprint,
+                            definition_name=definition_name,
+                            def_version=def_version,
+                            def_struct_hash=def_struct_hash,
+                            inputs_json=inputs_json,
+                            start_at=start_at,
+                        )
+                        db.rollback()
+                        return False, live
                 now = _now_iso()
                 db.execute(
                     _INSERT_SUBMISSION,
@@ -1728,6 +1852,7 @@ class RunHome(SqliteCheckpointer):
                         builder_args_json,
                         None,  # claimed_by / lease_until: nobody holds the claim yet
                         None,
+                        exclusive_key,
                     ),
                 )
                 self._append_run_update_sync(
@@ -1764,6 +1889,7 @@ class RunHome(SqliteCheckpointer):
         admission_cost: int = 1,
         builder_key: str | None = None,
         builder_args_json: str | None = None,
+        exclusive_key: str | None = None,
         fresh: bool = False,
     ) -> tuple[bool, dict[str, Any]]:
         """Async mirror of ``_submit_sync``."""
@@ -1792,6 +1918,7 @@ class RunHome(SqliteCheckpointer):
                         def_struct_hash=def_struct_hash,
                         inputs_json=inputs_json,
                         start_at=start_at,
+                        exclusive_key=exclusive_key,
                     )
                     await self._db.rollback()
                     return False, _row_to_submission(existing_row)
@@ -1812,6 +1939,26 @@ class RunHome(SqliteCheckpointer):
                 run_row = await run_cursor.fetchone()
                 if run_row is not None:
                     refuse_tier0_reuse(str(run_row[0]), workflow_id=workflow_id)
+                if exclusive_key is not None:
+                    holder_cursor = await self._db.execute(
+                        _SELECT_LIVE_EXCLUSIVE_HOLDER,
+                        (exclusive_key, *_SETTLED_STATE_PARAMS),
+                    )
+                    holder_row = await holder_cursor.fetchone()
+                    if holder_row is not None:
+                        live = _row_to_submission(holder_row)
+                        _raise_on_conflicting_key_holder(
+                            live,
+                            exclusive_key=exclusive_key,
+                            fingerprint=fingerprint,
+                            definition_name=definition_name,
+                            def_version=def_version,
+                            def_struct_hash=def_struct_hash,
+                            inputs_json=inputs_json,
+                            start_at=start_at,
+                        )
+                        await self._db.rollback()
+                        return False, live
                 now = _now_iso()
                 await self._db.execute(
                     _INSERT_SUBMISSION,
@@ -1844,6 +1991,7 @@ class RunHome(SqliteCheckpointer):
                         builder_args_json,
                         None,  # claimed_by / lease_until: nobody holds the claim yet
                         None,
+                        exclusive_key,
                     ),
                 )
                 await self._append_run_update(
@@ -3558,38 +3706,46 @@ class RunHome(SqliteCheckpointer):
 
     # === listing (client.list) ===
 
-    def _list_run_rows_sync(self) -> list[tuple[dict[str, Any] | None, Run | None]]:
-        """All submissions with their runs row, plus bare Tier-0 runs."""
+    def _list_run_rows_sync(self, *, exclusive_key: str | None = None) -> list[tuple[dict[str, Any] | None, Run | None]]:
+        """All submissions with their runs row, plus bare Tier-0 runs.
+
+        ``exclusive_key`` is the one listing filter answered in SQL rather
+        than in Python: ``idx_host_submissions_key`` turns it into a SEARCH
+        instead of a SCAN (verified by an ``EXPLAIN QUERY PLAN`` test), and
+        asking "who holds this subject" is the question a submitter asks
+        before every submission. Narrowing it here also drops the bare
+        Tier-0 sweep — a run with no submission row can never hold a key.
+        """
+        statement, params = _list_rows_query(exclusive_key)
         with self._sync_lock:
             db = self._sync_db()
             rows: list[tuple[dict[str, Any] | None, Run | None]] = []
-            cursor = db.execute(
-                f"SELECT {_QUALIFIED_SUBMISSION_COLS}, {_QUALIFIED_RUN_COLS} FROM host_submissions s LEFT JOIN runs r ON r.id = s.workflow_id"
-            )
             sub_count = len(_SUBMISSION_COLS.split(", "))
-            for row in cursor.fetchall():
+            for row in db.execute(statement, params).fetchall():
                 submission = _row_to_submission(row[:sub_count])
                 run = self._row_to_run(row[sub_count:]) if row[sub_count] is not None else None
                 rows.append((submission, run))
-            cursor = db.execute(f"SELECT {_RUNS_COLS} FROM runs WHERE id NOT IN (SELECT workflow_id FROM host_submissions)")
-            for row in cursor.fetchall():
+            if exclusive_key is not None:
+                return rows
+            for row in db.execute(_SELECT_BARE_TIER0_RUNS).fetchall():
                 rows.append((None, self._row_to_run(row)))
             return rows
 
-    async def _list_run_rows(self) -> list[tuple[dict[str, Any] | None, Run | None]]:
+    async def _list_run_rows(self, *, exclusive_key: str | None = None) -> list[tuple[dict[str, Any] | None, Run | None]]:
         """Async mirror of ``_list_run_rows_sync``."""
+        statement, params = _list_rows_query(exclusive_key)
         await self._ensure_db()
         async with self._txn_lock():
             rows: list[tuple[dict[str, Any] | None, Run | None]] = []
-            cursor = await self._db.execute(
-                f"SELECT {_QUALIFIED_SUBMISSION_COLS}, {_QUALIFIED_RUN_COLS} FROM host_submissions s LEFT JOIN runs r ON r.id = s.workflow_id"
-            )
+            cursor = await self._db.execute(statement, params)
             sub_count = len(_SUBMISSION_COLS.split(", "))
             for row in await cursor.fetchall():
                 submission = _row_to_submission(row[:sub_count])
                 run = self._row_to_run(row[sub_count:]) if row[sub_count] is not None else None
                 rows.append((submission, run))
-            cursor = await self._db.execute(f"SELECT {_RUNS_COLS} FROM runs WHERE id NOT IN (SELECT workflow_id FROM host_submissions)")
+            if exclusive_key is not None:
+                return rows
+            cursor = await self._db.execute(_SELECT_BARE_TIER0_RUNS)
             for row in await cursor.fetchall():
                 rows.append((None, self._row_to_run(row)))
             return rows
