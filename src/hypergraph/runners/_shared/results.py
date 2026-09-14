@@ -285,18 +285,19 @@ class RunResult:
 
     def __repr__(self) -> str:
         """Compact repr to avoid extremely large notebook output."""
-        from hypergraph._repr import render_run_result_repr
+        from hypergraph._runner_repr import render_run_result_repr
 
         return render_run_result_repr(self)
 
     def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
         """Use the compact repr for IPython pretty display."""
-        from hypergraph._repr import render_run_result_pretty
+        from hypergraph._runner_repr import render_run_result_pretty
 
         render_run_result_pretty(self, pretty_printer, cycle)
 
     def _repr_html_(self) -> str | None:
-        from hypergraph._repr import plain_reprs, render_run_result_html
+        from hypergraph._repr import plain_reprs
+        from hypergraph._runner_repr import render_run_result_html
 
         if plain_reprs():
             return None
@@ -668,17 +669,18 @@ class MapResult:
         }
 
     def __repr__(self) -> str:
-        from hypergraph._repr import render_map_result_repr
+        from hypergraph._runner_repr import render_map_result_repr
 
         return render_map_result_repr(self)
 
     def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
-        from hypergraph._repr import render_map_result_pretty
+        from hypergraph._runner_repr import render_map_result_pretty
 
         render_map_result_pretty(self, pretty_printer, cycle)
 
     def _repr_html_(self) -> str | None:
-        from hypergraph._repr import plain_reprs, render_map_result_html
+        from hypergraph._repr import plain_reprs
+        from hypergraph._runner_repr import render_map_result_html
 
         if plain_reprs():
             return None

@@ -8,7 +8,10 @@ from enum import Enum
 import pytest
 
 from hypergraph._repr import (
+    _CODE_STYLE,
+    MUTED_COLOR,
     _compact_html,
+    _compact_value,
     error_html,
     html_detail,
     html_table_controls_script,
@@ -476,6 +479,139 @@ class TestCompactHtml:
 
     def test_empty_list(self):
         assert "[]" in _compact_html([])
+
+    def test_html_is_master_byte_identical_except_escaping(self):
+        """Golden: every shape renders exactly the bytes master rendered, bar one fix.
+
+        Captured from a base checkout of master @ 6bf2f05d. 23 of the 25 shapes
+        exercised in that capture are byte-identical; the two below differ, and
+        only here:
+
+        - ndarray: master wrote ``dtype=dtype('int64')`` with live quotes,
+          because its array branch hand-wrote ``&lt;``/``&gt;`` and never
+          escaped the interpolated ``shape``/``dtype``. Ours escapes them, so
+          those two bytes become ``&#x27;``. Same glyphs in a browser.
+        - an object whose ``shape``/``dtype`` repr contains markup: master put
+          that markup into the notebook verbatim (see
+          ``test_markup_in_a_dtype_repr_is_escaped``). Ours escapes it.
+
+        Everything else — the keys-only dict sketch, the elided list, the
+        200-char string cut, the muted size annotations — is master's policy
+        byte-for-byte, because the HTML cell is a preview beside a size, not
+        the value itself.
+        """
+        import numpy as np
+
+        def code(text: str) -> str:
+            return f'<code style="{_CODE_STYLE}">{text}</code>'
+
+        def muted(text: str) -> str:
+            return f' <span style="color:{MUTED_COLOR}">{text}</span>'
+
+        # Byte-identical to master.
+        assert _compact_html("hello") == code("&#x27;hello&#x27;")
+        assert _compact_html("a" * 300) == code("&#x27;" + "a" * 200 + "&#x27;…") + muted("(len=300)")
+        assert _compact_html({"a": 1, "b": 2}) == code("{&#x27;a&#x27;, &#x27;b&#x27;}") + muted("(2 keys)")
+        assert _compact_html({f"k{i}": i for i in range(6)}) == code(
+            "{&#x27;k0&#x27;, &#x27;k1&#x27;, &#x27;k2&#x27;, &#x27;k3&#x27; … (+2)}"
+        ) + muted("(6 keys)")
+        assert _compact_html({}) == code("{}")
+        assert _compact_html([1, 2, 3]) == code("[…]") + muted("(3 items)")
+        assert _compact_html([]) == code("[]")
+        assert _compact_html((1, 2, 3)) == code("(…)") + muted("(3 items)")
+        assert _compact_html({1, 2, 3}) == code("{1, 2, 3}")
+        assert _compact_html(b"abc") == code("b&#x27;abc&#x27;")
+
+        # The one documented departure: quotes inside the array branch are escaped.
+        assert _compact_html(np.arange(3, dtype=np.int64)) == code("&lt;ndarray shape=(3,) dtype=dtype(&#x27;int64&#x27;)&gt;")
+
+    def test_nested_values_stay_out_of_the_html(self):
+        """A cell sketches the shape; the payload does not land in every notebook."""
+        html = _compact_html({"rows": [{"email": "user@example.com"}]})
+
+        assert "user@example.com" not in html
+        assert html.endswith("(1 key)</span>")
+
+    def test_size_is_annotated_once(self):
+        """The muted annotation carries the count; the body never repeats it."""
+        html = _compact_html(list(range(10)))
+
+        assert html.count("10") == 1
+        assert "len=10" not in html
+
+    def test_markup_in_a_dtype_repr_is_escaped(self):
+        """Array-like metadata goes through the same escaping seam as everything else."""
+
+        class Hostile:
+            shape = "<script>alert(1)</script>"
+            dtype = "<img onerror=x>"
+
+        html = _compact_html(Hostile())
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+
+    def test_self_referential_value_does_not_recurse(self):
+        """A cyclic value renders in both reprs — expanded in text, elided in HTML."""
+        cyclic: list[object] = [1, 2]
+        cyclic.append(cyclic)
+
+        assert _compact_value(cyclic) == "[1, 2, <recursive list>]"
+        assert _compact_html(cyclic).endswith("(3 items)</span>")
+
+    def test_unreprable_value_is_reported_not_raised(self):
+        """A __repr__ that blows the stack yields an honest placeholder, not a RecursionError."""
+
+        class Unreprable:
+            def __repr__(self) -> str:
+                return repr(self)
+
+        value = Unreprable()
+        assert _compact_value(value).startswith("<unreprable Unreprable:")
+        assert "&lt;unreprable Unreprable:" in _compact_html(value)
+
+
+class TestOneTraversal:
+    def test_the_text_and_html_reprs_share_one_function(self):
+        import hypergraph._repr as repr_module
+        import hypergraph._runner_repr as runner_repr_module
+
+        assert runner_repr_module._compact_value is repr_module._compact_value
+
+    def test_shortening_once_shortens_both_reprs(self, monkeypatch):
+        """Falsifier: the shared cut is shared.
+
+        The two styles cannot share a single length constant — master's HTML
+        cuts strings at 200 and the text repr at 120, and both goldens pin
+        that. What they do share is the cut itself, so moving
+        ``_CompactStyle.shorten`` has to move both outputs. If a second
+        traversal ever reappears, one of these assertions goes quiet.
+        """
+        from hypergraph._repr import _CompactStyle
+
+        monkeypatch.setattr(_CompactStyle, "shorten", lambda self, text, limit: "CUT")
+
+        long_bytes = b"x" * 400
+        assert _compact_value(long_bytes) == "CUT"
+        assert "CUT" in _compact_html(long_bytes)
+
+
+class TestRunnerRendererBoundary:
+    def test_repr_module_has_no_forwarding_layer(self):
+        """_repr.py holds presentation primitives, not lazy forwarders to _runner_repr."""
+        import hypergraph._repr as repr_module
+
+        forwarded = [name for name in dir(repr_module) if name.startswith("render_")]
+        assert forwarded == []
+
+    def test_results_render_through_runner_repr(self):
+        """The result types call the real renderers directly."""
+        import inspect
+
+        from hypergraph.runners._shared import results as results_module
+
+        source = inspect.getsource(results_module)
+        assert "from hypergraph._repr import render_" not in source
+        assert "from hypergraph._runner_repr import render_run_result_repr" in source
 
 
 class TestValuesHtml:

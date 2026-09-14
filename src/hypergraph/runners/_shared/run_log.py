@@ -65,7 +65,7 @@ class NodeRecord:
         object.__setattr__(self, "duration_ms", round(self.duration_ms, DURATION_PRECISION))
 
     def __repr__(self) -> str:
-        from hypergraph._repr import render_node_record_repr
+        from hypergraph._runner_repr import render_node_record_repr
 
         return render_node_record_repr(self)
 
@@ -109,7 +109,7 @@ class NodeStats:
         return self.total_ms / self.succeeded if self.succeeded > 0 else 0.0
 
     def __repr__(self) -> str:
-        from hypergraph._repr import render_node_stats_repr
+        from hypergraph._runner_repr import render_node_stats_repr
 
         return render_node_stats_repr(self)
 
@@ -225,24 +225,25 @@ class RunLog:
 
     def __str__(self) -> str:
         """Formatted table output for terminal / print()."""
-        from hypergraph._repr import render_run_log_str
+        from hypergraph._runner_repr import render_run_log_str
 
         return render_run_log_str(self)
 
     def __repr__(self) -> str:
         """Concise repr for REPL/debugger."""
-        from hypergraph._repr import render_run_log_repr
+        from hypergraph._runner_repr import render_run_log_repr
 
         return render_run_log_repr(self)
 
     def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
         """Show full table in IPython/Jupyter notebooks."""
-        from hypergraph._repr import render_run_log_pretty
+        from hypergraph._runner_repr import render_run_log_pretty
 
         render_run_log_pretty(self, pretty_printer, cycle)
 
     def _repr_html_(self) -> str | None:
-        from hypergraph._repr import plain_reprs, render_run_log_html
+        from hypergraph._repr import plain_reprs
+        from hypergraph._runner_repr import render_run_log_html
 
         if plain_reprs():
             return None
@@ -391,23 +392,24 @@ class MapLog:
 
     def __str__(self) -> str:
         """Per-item table with footer."""
-        from hypergraph._repr import render_map_log_str
+        from hypergraph._runner_repr import render_map_log_str
 
         return render_map_log_str(self)
 
     def __repr__(self) -> str:
-        from hypergraph._repr import render_map_log_repr
+        from hypergraph._runner_repr import render_map_log_repr
 
         return render_map_log_repr(self)
 
     def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
         """Show table in IPython/Jupyter notebooks."""
-        from hypergraph._repr import render_map_log_pretty
+        from hypergraph._runner_repr import render_map_log_pretty
 
         render_map_log_pretty(self, pretty_printer, cycle)
 
     def _repr_html_(self) -> str | None:
-        from hypergraph._repr import plain_reprs, render_map_log_html
+        from hypergraph._repr import plain_reprs
+        from hypergraph._runner_repr import render_map_log_html
 
         if plain_reprs():
             return None

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import fields, is_dataclass
 from typing import TYPE_CHECKING, Any
 
 from hypergraph._repr import (
@@ -11,6 +10,8 @@ from hypergraph._repr import (
     MUTED_COLOR,
     SURFACE_COLOR,
     _code,
+    _compact_value,
+    _truncate_text,
     duration_html,
     error_html,
     html_detail,
@@ -38,120 +39,8 @@ if TYPE_CHECKING:
         RunResult,
     )
 
-_MAX_STRING_PREVIEW = 120
-_MAX_SEQUENCE_PREVIEW = 6
-_MAX_MAPPING_PREVIEW = 6
-_MAX_VALUE_REPR = 240
 _MAX_RUN_RESULT_REPR = 4_000
 _MAX_MAP_LOG_ROWS = 20
-
-
-def _truncate_text(text: str, max_length: int) -> str:
-    """Truncate text to max_length and append an ellipsis when needed."""
-    if len(text) <= max_length:
-        return text
-    return text[: max_length - 3] + "..."
-
-
-def _safe_repr(value: Any) -> str:
-    """Return repr(value), falling back to a safe placeholder."""
-    try:
-        return repr(value)
-    except Exception as exc:  # pragma: no cover - defensive fallback
-        return f"<unreprable {type(value).__name__}: {exc}>"
-
-
-def _compact_string(text: str) -> str:
-    """Compact long strings while preserving quote style."""
-    if len(text) <= _MAX_STRING_PREVIEW:
-        return repr(text)
-    preview = _truncate_text(text, _MAX_STRING_PREVIEW)
-    return f"{preview!r} (len={len(text)})"
-
-
-def _compact_mapping(mapping: dict[Any, Any], depth: int, seen: set[int]) -> str:
-    """Return a compact representation for dict-like values."""
-    items = list(mapping.items())
-    preview_items = items[:_MAX_MAPPING_PREVIEW]
-    parts = [f"{_truncate_text(_safe_repr(k), 80)}: {_compact_value(v, depth + 1, seen)}" for k, v in preview_items]
-    remaining = len(items) - len(preview_items)
-    if remaining > 0:
-        parts.append(f"... (+{remaining} more)")
-    return "{" + ", ".join(parts) + "}"
-
-
-def _compact_sequence(values: list[Any], sequence_type: str, depth: int, seen: set[int]) -> str:
-    """Return a compact representation for long sequence-like values."""
-    if len(values) <= _MAX_SEQUENCE_PREVIEW:
-        compact_items = [_compact_value(v, depth + 1, seen) for v in values]
-        if sequence_type == "tuple":
-            if len(compact_items) == 1:
-                return f"({compact_items[0]},)"
-            return "(" + ", ".join(compact_items) + ")"
-        if sequence_type == "set":
-            if not compact_items:
-                return "set()"
-            return "{" + ", ".join(compact_items) + "}"
-        if sequence_type == "frozenset":
-            if not compact_items:
-                return "frozenset()"
-            return "frozenset({" + ", ".join(compact_items) + "})"
-        return "[" + ", ".join(compact_items) + "]"
-    preview = ", ".join(_compact_value(v, depth + 1, seen) for v in values[:_MAX_SEQUENCE_PREVIEW])
-    return f"<{sequence_type} len={len(values)} preview=[{preview}, ...]>"
-
-
-def _compact_value(value: Any, depth: int = 0, seen: set[int] | None = None) -> str:
-    """Build a compact, recursion-safe representation for nested values."""
-    if seen is None:
-        seen = set()
-
-    if isinstance(value, str):
-        return _compact_string(value)
-
-    if isinstance(value, (int, float, bool, type(None))):
-        return repr(value)
-
-    if isinstance(value, bytes):
-        return _truncate_text(repr(value), _MAX_VALUE_REPR)
-
-    if depth >= 2:
-        return _truncate_text(_safe_repr(value), _MAX_VALUE_REPR)
-
-    is_recursive_candidate = isinstance(value, (dict, list, tuple, set, frozenset)) or (is_dataclass(value) and not isinstance(value, type))
-    if is_recursive_candidate:
-        object_id = id(value)
-        if object_id in seen:
-            return f"<recursive {type(value).__name__}>"
-        seen.add(object_id)
-
-    try:
-        if is_dataclass(value) and not isinstance(value, type):
-            field_map = {f.name: getattr(value, f.name) for f in fields(value)}
-            return f"<{type(value).__name__} {_compact_mapping(field_map, depth, seen)}>"
-
-        if isinstance(value, dict):
-            return _compact_mapping(value, depth, seen)
-
-        if isinstance(value, list):
-            return _compact_sequence(value, "list", depth, seen)
-
-        if isinstance(value, tuple):
-            return _compact_sequence(list(value), "tuple", depth, seen)
-
-        if isinstance(value, (set, frozenset)):
-            preview_list = list(value)
-            return _compact_sequence(preview_list, type(value).__name__, depth, seen)
-
-        shape = getattr(value, "shape", None)
-        if shape is not None and hasattr(value, "dtype"):
-            dtype = getattr(value, "dtype", None)
-            return f"<{type(value).__name__} shape={shape!r} dtype={dtype!r}>"
-
-        return _truncate_text(_safe_repr(value), _MAX_VALUE_REPR)
-    finally:
-        if is_recursive_candidate:
-            seen.discard(id(value))
 
 
 def render_run_result_repr(result: RunResult) -> str:
