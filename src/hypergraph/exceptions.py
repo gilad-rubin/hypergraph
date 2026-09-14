@@ -317,20 +317,106 @@ class WorkflowAlreadyCompletedError(Exception):
         super().__init__(f"Workflow '{workflow_id}' is already completed. Fork to create a new lineage.")
 
 
-class CompactedRetentionError(Exception):
-    """Raised when compacted history makes nested recovery ambiguous."""
+def _compacted_restore_message(
+    *,
+    workflow_id: str,
+    source_run_id: str,
+    pruned_nodes: tuple[str, ...],
+    retention: str | None,
+    window: int | None,
+    is_retry: bool,
+) -> str:
+    """Wording for the fork/resume/retry boundary refusal (#239)."""
+    if source_run_id == workflow_id:
+        operation = f"resume '{workflow_id}'"
+    else:
+        verb = "retry" if is_retry else "fork"
+        operation = f"{verb} '{workflow_id}' from '{source_run_id}'"
+    policy = f"retention='{retention}'" if retention else "compacting retention"
+    if window is not None:
+        policy = f"{policy} (window={window})"
+    names = ", ".join(repr(name) for name in pruned_nodes)
+    label = "node" if len(pruned_nodes) == 1 else "nodes"
+    return (
+        f"Cannot {operation}: {policy} compacted the step records for {label} "
+        f"{names}. Their VALUES were folded into the retention baseline, but their EXECUTION "
+        "identity was not — restoring here would silently re-invoke them.\n\n"
+        "How to fix:\n"
+        "  Use retention='full' or retention='latest' for lineages you fork or resume, or\n"
+        "  start a new workflow_id and re-run from its inputs instead.\n\n"
+        "The check is node-set-conservative; exact per-node provenance for compacted "
+        "history is tracked in #277."
+    )
 
-    def __init__(self, node_name: str) -> None:
+
+def _compacted_nested_message(node_name: str) -> str:
+    """Wording for the in-run nested crash-window refusal (#235)."""
+    return (
+        f"Cannot safely recover nested graph '{node_name}': windowed/compacted retention "
+        "may have pruned the parent step history, so Hypergraph cannot distinguish a "
+        "crash-window restore from a legitimate re-execution.\n\n"
+        "How to fix:\n"
+        "  Use retention='full' or retention='latest' for workflows that combine nested "
+        "graphs with resume/crash recovery. Forking a compacted lineage is refused for "
+        "the same reason — start a new workflow_id and re-run from its inputs instead.\n\n"
+        "Windowed nested recovery support is tracked in #277."
+    )
+
+
+class CompactedRetentionError(Exception):
+    """Raised when compacted history makes execution restoration ambiguous.
+
+    Two boundaries raise it, and they share one diagnostic vocabulary:
+
+    - The fork/resume/retry boundary (#239), before anything executes, when
+      the source run's retention baseline folded away the step records of
+      nodes the target would otherwise re-invoke. ``pruned_nodes`` names them.
+    - The nested crash-window restore (#235), in-run, when a GraphNode's
+      parent history was compacted and a restore cannot be told apart from a
+      legitimate re-execution. ``node_name`` names the GraphNode.
+
+    Attributes:
+        node_name: The GraphNode that could not be recovered, when the nested
+            boundary raised; ``None`` at the fork/resume/retry boundary.
+        workflow_id: The workflow whose restore was refused (boundary form).
+        source_run_id: The lineage source the restore read from (boundary form).
+        pruned_nodes: Nodes whose execution identity compaction folded away.
+        is_retry: Whether the refused restore was a ``retry_from=``, so the
+            message names the operation the caller actually asked for.
+        code: Stable diagnostic code ``"HG_COMPACTED_RETENTION"``.
+    """
+
+    code = "HG_COMPACTED_RETENTION"
+
+    def __init__(
+        self,
+        node_name: str | None = None,
+        *,
+        workflow_id: str | None = None,
+        source_run_id: str | None = None,
+        pruned_nodes: tuple[str, ...] = (),
+        retention: str | None = None,
+        window: int | None = None,
+        is_retry: bool = False,
+    ) -> None:
         self.node_name = node_name
-        super().__init__(
-            f"Cannot safely recover nested graph '{node_name}': windowed/compacted retention "
-            "may have pruned the parent step history, so Hypergraph cannot distinguish a "
-            "crash-window restore from a legitimate re-execution.\n\n"
-            "How to fix:\n"
-            "  Use retention='full' or retention='latest' for workflows that combine nested "
-            "graphs with resume/crash recovery, or fork the workflow.\n\n"
-            "Windowed nested recovery support is tracked in #277."
-        )
+        self.workflow_id = workflow_id
+        self.source_run_id = source_run_id
+        self.pruned_nodes = pruned_nodes
+        self.is_retry = is_retry
+        if pruned_nodes:
+            super().__init__(
+                _compacted_restore_message(
+                    workflow_id=workflow_id or "",
+                    source_run_id=source_run_id or "",
+                    pruned_nodes=pruned_nodes,
+                    retention=retention,
+                    window=window,
+                    is_retry=is_retry,
+                )
+            )
+        else:
+            super().__init__(_compacted_nested_message(node_name or ""))
 
 
 class WorkflowStoppedError(Exception):

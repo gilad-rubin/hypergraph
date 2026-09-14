@@ -247,3 +247,17 @@ The selected runner cannot execute a node's declared retry/timeout policy
 (for example, generic Hypergraph policy under `DaftRunner`). Run
 policy-bearing nodes on `SyncRunner`/`AsyncRunner`, or use the runner's
 native options where offered.
+
+### <a id="hg-compacted-retention"></a>HG_COMPACTED_RETENTION
+
+A fork or resume was refused because retention compaction destroyed the
+execution identity it would need (`CompactedRetentionError`). Under
+`retention="windowed"`, a pruned step's VALUES survive in the retention
+baseline but its step record does not — so a restore sees a node with every
+input available and no execution on record, and re-invokes it for real.
+
+The fork/resume boundary refuses before anything executes and names the
+affected nodes on `error.pruned_nodes`. The in-run nested guard raises the
+same error for a `GraphNode` crash window and names it on `error.node_name`.
+Use `retention="full"` or `retention="latest"` for lineages you fork or
+resume, or start a new `workflow_id` and re-run from its inputs.

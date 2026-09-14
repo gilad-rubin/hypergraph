@@ -386,9 +386,15 @@ def graphnode_child_workflow_id(
 
 
 # Mirrors the private retention-carrier constants in
-# checkpointers/sqlite.py and checkpointers/memory.py.
-_RETENTION_BASELINE_NODE_NAME = "__retained_state__"
-_RETENTION_BASELINE_NODE_TYPE = "RetentionBaseline"
+# checkpointers/sqlite.py and checkpointers/memory.py. Unprefixed: they are a
+# cross-module internal contract, read from lineage.py as well as from here.
+RETENTION_BASELINE_NODE_NAME = "__retained_state__"
+RETENTION_BASELINE_NODE_TYPE = "RetentionBaseline"
+
+
+def is_retention_baseline(step: StepRecord) -> bool:
+    """Whether this raw step row is a retention-compaction carrier."""
+    return step.node_name == RETENTION_BASELINE_NODE_NAME or step.node_type == RETENTION_BASELINE_NODE_TYPE
 
 
 def has_prior_completion_evidence(
@@ -409,13 +415,18 @@ def has_prior_completion_evidence(
 
     PAUSED/FAILED rows for the node are attempt evidence, not completion
     evidence: the crash window legitimately contains them.
+
+    This is the in-run last-mile guard. ``lineage.validate_restorable_history``
+    refuses the same ambiguity earlier and names every affected node, but it
+    only sees a fork/resume boundary — compaction that lands mid-run, or a
+    checkpointer whose raw history the boundary could not read, still arrives
+    here.
     """
     has_retention_baseline = False
     for step in steps:
         if step.node_name == node.name and step.status is StepStatus.COMPLETED:
             return True
-        is_baseline = step.node_name == _RETENTION_BASELINE_NODE_NAME or step.node_type == _RETENTION_BASELINE_NODE_TYPE
-        has_retention_baseline = has_retention_baseline or is_baseline
+        has_retention_baseline = has_retention_baseline or is_retention_baseline(step)
     if has_retention_baseline:
         raise CompactedRetentionError(node.name)
     return False

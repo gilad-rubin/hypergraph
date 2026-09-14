@@ -54,6 +54,7 @@ ALL_CODES = {
     "HG_RETRY_POLICY_CHANGED",
     "HG_ATTEMPT_PERSISTENCE_FAILED",
     "HG_RUNNER_POLICY_UNSUPPORTED",
+    "HG_COMPACTED_RETENTION",
 }
 
 
@@ -154,7 +155,7 @@ def test_diagnostic_wire_schema_snapshot():
     }
 
 
-def test_registry_covers_all_ten_codes_with_docs_anchors():
+def test_registry_covers_every_locked_code_with_docs_anchors():
     """Every locked code has a registry entry whose docs_ref anchor exists."""
     assert set(DIAGNOSTIC_CODES) == ALL_CODES
     errors_md = (REPO_ROOT / "docs" / "06-api-reference" / "errors.md").read_text()

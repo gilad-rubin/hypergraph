@@ -148,8 +148,10 @@ folded carrier values are not, because they lack producer provenance.
 Windowed/compacted retention with nested crash-window recovery is therefore
 explicitly rejected once parent history has been compacted. Use
 `retention="full"` or `retention="latest"` for workflows that combine nested
-graphs with resume/crash recovery, or fork the workflow. Windowed support is
-tracked in #277.
+graphs with resume/crash recovery. Forking a compacted lineage is refused for
+the same reason — see
+[Retention and restorable history](#retention-and-restorable-history). Windowed
+support is tracked in #277.
 
 With a delegated runner (`as_node(runner=...)`), the child workflow persists
 in the delegated runner's checkpointer. Crash recovery reads the child's
@@ -338,6 +340,86 @@ except WorkflowForkError as e:
 ```
 
 See also `GraphChangedError`, `WorkflowAlreadyCompletedError`, and `InputOverrideRequiresForkError`, covered in [Batch Processing — Run Lineage](../05-how-to/batch-processing.md#run-lineage-resume-vs-fork).
+
+## Retention and restorable history
+
+Restoring a run needs two different things, and retention treats them
+differently:
+
+- **State reconstruction** — the values a restored run starts from. Durable
+  run inputs plus the folded `__retained_state__` baseline rebuild these even
+  after compaction, so a compacted checkpoint still carries the right values.
+- **Execution restoration** — the proof that a node already ran. That lives in
+  the node's own `StepRecord`, and `retention="windowed"` deletes it once the
+  step leaves the window.
+
+Compaction keeps the first and destroys the second. A restore that only had
+the first would see a node with every input available and no execution on
+record — and run it again, side effects and all, while still reporting
+`COMPLETED`. The fork/resume boundary therefore refuses instead, before
+anything executes:
+
+```python
+cp = SqliteCheckpointer("./runs.db", policy=CheckpointPolicy(retention="windowed", window=1))
+runner = SyncRunner(checkpointer=cp)
+
+runner.run(graph, {"seed": 1}, workflow_id="src")   # calls == {a: 1, b: 1, c: 1}
+runner.run(graph, {}, workflow_id="forked", fork_from="src")
+```
+
+Before:
+
+```
+RunStatus.COMPLETED — values look right, calls == {a: 2, b: 2, c: 1}
+```
+
+`a` and `b` silently ran a second time. After:
+
+```
+CompactedRetentionError: Cannot fork 'forked' from 'src': retention='windowed'
+(window=1) compacted the step records for nodes 'a', 'b'. Their VALUES were
+folded into the retention baseline, but their EXECUTION identity was not —
+restoring here would silently re-invoke them.
+
+How to fix:
+  Use retention='full' or retention='latest' for lineages you fork or resume, or
+  start a new workflow_id and re-run from its inputs instead.
+```
+
+The check is capability-based, not a blanket ban on compacted lineages. It
+refuses only when a node in the target's active scope both lost its step
+record and produces a value the baseline carries. A fork whose scope never
+reaches a pruned producer is admitted, and so is a resume whose folded values
+all still have a surviving producer row (a loop node compacted between turns,
+for example). `retention="latest"` keeps one row per node, so it never trips
+the check.
+
+`error.pruned_nodes` names the nodes; the error carries the stable
+`HG_COMPACTED_RETENTION` code documented in
+[Errors](errors.md#hg-compacted-retention).
+
+### Paused workflows: use `latest` or `full`
+
+A pause is a run that stopped mid-graph, so an interrupt resume goes through
+exactly this boundary. Under `retention="windowed"` a resume is refused
+whenever **any** upstream producer was pruned — the interrupt node keeps its
+own `PAUSED` row, but the nodes that fed it usually do not:
+
+```python
+# prep -> mid -> ask(interrupt) -> post, retention="windowed", window=1
+paused = await runner.run(graph, {"seed": 1}, workflow_id="wf")   # RunStatus.PAUSED
+await runner.run(graph, {"answer": "yes"}, workflow_id="wf")
+# CompactedRetentionError: Cannot resume 'wf': retention='windowed' (window=1)
+# compacted the step records for nodes 'mid', 'prep'.
+```
+
+In practice this makes `retention="windowed"` incompatible with multi-turn
+interrupts, with two exceptions: the interrupt is the graph's entrypoint (no
+upstream producer exists to prune), or the window is wide enough to keep a
+surviving row for every upstream producer. **Use `retention="latest"` or
+`retention="full"` for workflows that pause.** `latest` keeps one row per
+node, which is enough to preserve every producer's execution identity while
+still discarding superseded history.
 
 ## Policy Compatibility on Resume
 
