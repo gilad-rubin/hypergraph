@@ -19,6 +19,7 @@ from hypergraph.materialization._branch_registry import (
     load_branch_records,
     save_branch_record,
 )
+from hypergraph.materialization._commit import dedup_child_rows, dedup_rows
 from hypergraph.materialization._indexes import BranchIndexBinding, IndexPolicy
 from hypergraph.materialization._provenance import Provenance, normalize_value, split_boundary_provenance
 from hypergraph.materialization._recipe_journal import RecipeJournal
@@ -33,7 +34,7 @@ from hypergraph.materialization._schema import (
 )
 from hypergraph.materialization._types import RowReceipt, RowStatus, TableReceipt, TableStatus, WriteOutcome
 from hypergraph.materialization._write_actions import RunGraph, WriteOperation
-from hypergraph.materialization._writes import dedup_child_rows, dedup_rows, normalize_to_dict
+from hypergraph.materialization._writes import normalize_to_dict
 
 if TYPE_CHECKING:
     from hypergraph.materialization._hypertable import HyperTable
@@ -594,7 +595,7 @@ class MaterializationBranch:
                     grain.spec,
                 ),
                 RECIPE_COLUMN: self._layout.provenance.current_child_recipe_fingerprint(grain.spec),
-                "_status": "complete",
+                "_status": RowStatus.COMPLETE.stored_value,
                 "_error": None,
                 QUESTION_COLUMN: None,
             }
@@ -725,7 +726,7 @@ class MaterializationBranch:
             errored_ids: list[str] = []
             for row in rows:
                 identity_value = str(row.get(grain.spec.identity, ""))
-                if row.get("_status") == "error":
+                if RowStatus.of_stored(row) is RowStatus.ERROR:
                     errored_ids.append(identity_value)
                     continue
                 child_stale_names = self._stale_columns(grain, grain.key, row)

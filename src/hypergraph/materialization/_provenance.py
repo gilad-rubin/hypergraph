@@ -203,6 +203,8 @@ class Provenance:
         self._column_graphs = column_graphs
         self._mounted_payloads_cache: dict[str, list[str]] = {}
         self._bound_by_node: dict[int, tuple[Mapping[str, Any], frozenset[str]]] | None = None
+        self._answer_graphs: dict[tuple[str, ...], Any] = {}
+        self._routed_graphs: dict[tuple[str, str], Any] = {}
 
     def derived_columns(self, spec: TableSpec | None = None) -> list[Any]:
         target = spec or self.spec
@@ -274,7 +276,7 @@ class Provenance:
         The two halves answer different questions and must not be conflated.
         VALUES are what can be hashed and re-bound, so they come from the graphs
         at or ABOVE the node (a root binding wins on a shared name, mirroring
-        ``WritePlanner._bind_child_components``). NAMES are what the node must
+        ``Provenance.bind_child_components``). NAMES are what the node must
         never receive as a run value, and that set is strictly larger: a
         ``GraphNode`` still advertises in ``inputs`` a name its own subgraph
         binds, and the child-table schema turns such a name into a
@@ -450,6 +452,103 @@ class Provenance:
     def node_inputs(self, node: Any, values: Mapping[str, Any]) -> dict[str, Any]:
         bound = self.bound_names(node)
         return {name: values[name] for name in self.node_params(node) if name not in bound and name in values}
+
+    # -- graph slicing -------------------------------------------------------
+    #
+    # Three of a HyperTable's write paths need a *part* of the table's graph,
+    # not the whole of it: resuming an answer runs the interrupt and everything
+    # below it, a routed reconcile runs a gate and everything it can reach, and
+    # a column reconcile runs one node. All three are cuts of the same graph
+    # decided from the same recipe knowledge, so they are cut here (cached, and
+    # re-bound to the table's components) rather than in the write plan.
+
+    def _bind_components(self, graph: Any) -> Any:
+        bindings = {name: value for name, value in self.components.items() if name in set(graph.inputs.all)}
+        return graph.bind(**bindings) if bindings else graph
+
+    def bind_child_components(self, child_graph: Any) -> Any:
+        """Bind the table's components into a child graph that accepts them."""
+        if not self.components:
+            return child_graph
+        return self._bind_components(child_graph)
+
+    def node_names_downstream(self, roots: set[str], graph: Any | None = None) -> set[str]:
+        """``roots`` plus every node reachable from them."""
+        target_graph = graph or self.graph
+        selected = set(roots)
+        pending = list(roots)
+        while pending:
+            node_name = pending.pop()
+            for successor in target_graph.nx_graph.successors(node_name):
+                if successor not in selected:
+                    selected.add(successor)
+                    pending.append(successor)
+        return selected
+
+    def answer_graph(self, answer_names: set[str]) -> Any:
+        """The slice that re-runs the interrupts owning ``answer_names``, downward."""
+        key = tuple(sorted(answer_names))
+        cached = self._answer_graphs.get(key)
+        if cached is not None:
+            return cached
+
+        roots: set[str] = set()
+        for column in self.spec.columns:
+            if column.role != "answer" or column.name not in answer_names:
+                continue
+            for producer in self.column_producers(column):
+                roots.add(producer.name)
+        selected = self.node_names_downstream(roots)
+        if not selected:
+            raise RuntimeError(
+                "HyperTable could not locate the interrupt that owns an answer column.\n\n"
+                f"Answer columns: {', '.join(key)}\n\n"
+                "How to fix: keep each answer_name on an interrupt node in the graph passed to as_table()."
+            )
+
+        graph = self._bind_components(
+            Graph(
+                [node for name, node in self.graph.nodes.items() if name in selected],
+                name=f"{self.spec.name}__answer",
+            )
+        )
+        self._answer_graphs[key] = graph
+        return graph
+
+    def routing_gate(self, node: Any, graph: Any) -> Any | None:
+        """The nearest gate at or above ``node``, if its execution is routed."""
+        if getattr(node, "is_gate", False):
+            return node
+        seen = {node.name}
+        frontier = [node.name]
+        while frontier:
+            predecessors: list[str] = []
+            for name in frontier:
+                predecessors.extend(graph.nx_graph.predecessors(name))
+            predecessors = [name for name in predecessors if name not in seen]
+            for name in predecessors:
+                candidate = graph.nodes[name]
+                if getattr(candidate, "is_gate", False):
+                    return candidate
+            seen.update(predecessors)
+            frontier = predecessors
+        return None
+
+    def routed_graph(self, gate: Any, source: Any, table_name: str) -> Any:
+        """The slice a gate decides: the gate and everything it can reach."""
+        cache_key = (table_name, gate.name)
+        cached = self._routed_graphs.get(cache_key)
+        if cached is not None:
+            return cached
+        selected = self.node_names_downstream({gate.name}, source)
+        graph = self._bind_components(
+            Graph(
+                [node for name, node in source.nodes.items() if name in selected],
+                name=f"{table_name}__{gate.name}",
+            )
+        )
+        self._routed_graphs[cache_key] = graph
+        return graph
 
     @staticmethod
     def stored_values(row: Mapping[str, Any]) -> dict[str, Any]:
