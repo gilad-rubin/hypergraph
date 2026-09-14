@@ -91,6 +91,19 @@ class HostRuntime:
         self._task_name = f"hypergraph-host-{runtime_id}"
 
     @property
+    def uri(self) -> str:
+        """The Run Home URI this runtime opens — the string in every ref.
+
+        Reading it does not open the Home, so it is available from the moment
+        the runtime is constructed. It is what
+        :attr:`RunHomeClient.home_uri <hypergraph.RunHomeClient.home_uri>` and
+        every ``RunRef.home`` / ``BatchRef.home`` this runtime mints report,
+        which is what lets an application that durably stored only a run or
+        batch id rebuild the whole ref later.
+        """
+        return str(self._path)
+
+    @property
     def client(self) -> RunHomeClient:
         """The client for this runtime's Run Home, opened on first access."""
         self._require_not_closing()

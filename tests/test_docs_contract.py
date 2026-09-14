@@ -1216,6 +1216,16 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert tuple(inspect.signature(HostRuntime.registering_builder).parameters) == ("self", "key", "builder")
     assert tuple(inspect.signature(HostRuntime.close).parameters) == ("self",)
     assert isinstance(HostRuntime.client, property)
+    # A ref is a (home uri, id) pair and an application persists only the id,
+    # so the uri has to be readable back from the thing that owns the Home —
+    # otherwise every embedding app keeps the same string in a second place.
+    # Read-only on both, and reading it must not force the runtime's lazy open.
+    assert isinstance(HostRuntime.uri, property)
+    assert HostRuntime.uri.fset is None
+    assert isinstance(RunHomeClient.home_uri, property)
+    assert RunHomeClient.home_uri.fset is None
+    assert "runtime.uri" in host_api
+    assert "home_uri" in host_api
     assert tuple(inspect.signature(Host.add_definition).parameters) == ("self", "graph")
 
     # Graph-first submission (#342): the served Graph object IS the selector,

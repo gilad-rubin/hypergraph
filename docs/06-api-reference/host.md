@@ -90,10 +90,11 @@ runtime = HostRuntime(
 
 It carries `open()`'s rule exactly: passing it **writes through** (an explicit
 `None` sets unlimited), and omitting it **adopts whatever the store already
-holds** — so a restart never clobbers a cap an operator tuned. Over-limit work
-is not rejected; it waits in claim order as `ADMISSION_LIMITED`. A cap that is
-not a positive int or `None` is refused by `HostRuntime(...)` itself, not
-later by the first `serving()` call.
+holds** — so a restart that names no cap never clobbers one an operator tuned,
+while a restart that names one re-asserts it, which is the point of declaring
+it in code. Over-limit work is not rejected; it waits in claim order as
+`ADMISSION_LIMITED`. A cap that is not a positive int or `None` is refused by
+`HostRuntime(...)` itself, not later by the first `serving()` call.
 
 `client` is the runtime's `RunHomeClient` and is also lazy: accessing it before
 `serving()` opens the Home for detached reads without starting a worker. If the
@@ -104,6 +105,30 @@ than silently starting a replacement. A later call may start the worker again.
 `close()` is idempotent. It stops new claims, uses the Host's bounded drain,
 and closes the Home; queued submissions remain persisted for the next process.
 The same runtime may be used again after closing, which lazily reopens it.
+
+### Rebuilding a ref from a stored id
+
+A `RunRef`/`BatchRef` is an inert pair: the Run Home uri plus an id. An
+application usually persists only the id — the half a person recognises — and
+then needs the uri back to read against it later. `runtime.uri` and
+`client.home_uri` are that string, read-only on both:
+
+```python
+runtime = HostRuntime("./data/runs.db", deployment_version="2026.09.1")
+
+runtime.uri                  # "data/runs.db" — no Home is opened by reading it
+runtime.client.home_uri      # the same string, once the Home is open
+
+ref = BatchRef(home=runtime.uri, batch_id=stored_batch_id)
+view = await runtime.client.get(ref)   # None if this Home never saw that Batch
+```
+
+`runtime.uri == runtime.client.home_uri == receipt.run_ref.home` always, before
+and after the lazy open — so a process that owns its Run Home no longer has to
+keep the location in a second place of its own. The property reports the
+location exactly as the Home does, `":memory:"` included; it does not
+canonicalise or validate anything. `RunHomeClient(home).home_uri` is
+`home.uri`, for a client opened without a runtime.
 
 ## Observing Durable Execution
 
