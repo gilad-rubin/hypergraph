@@ -127,7 +127,10 @@ result fails to parse — which is what catches a `# sync:skip:` suffix left on 
 statement `ruff format` has wrapped across several lines, *when* dropping that
 one line leaves unbalanced Python. A drop that happens to leave valid but
 different code is not caught, so prefer a region whenever the statement spans
-more than one line.
+more than one line. It also refuses a rename-table name written as a keyword
+argument (`f(checkpointer=x)`), because it rewrites names and not the signatures
+they bind to — pass such an argument positionally. The refusal fires even inside a
+`sync:skip` region, since names are rewritten before markers are applied.
 
 **The constraint the whole design rests on: a sync run must never require an
 event loop.** See
