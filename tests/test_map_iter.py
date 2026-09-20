@@ -9,8 +9,6 @@ import pytest
 
 from hypergraph import (
     Graph,
-    GraphNode,
-    NodeContext,
     RunResult,
     RunStatus,
     StreamingChunkEvent,
@@ -19,6 +17,7 @@ from hypergraph import (
 )
 from hypergraph.checkpointers import MemoryCheckpointer
 from hypergraph.runners import AsyncRunner, SyncRunner
+from tests._streaming_graphs import drafting_graph, nested_streaming_graph
 
 
 @node(output_name="doubled")
@@ -292,41 +291,6 @@ async def test_async_propagates_node_base_exception():
 # ---------------------------------------------------------------------------
 
 
-def _drafting_graph() -> Graph:
-    """Child graph that streams from two different nodes."""
-
-    @node(output_name="draft")
-    def streamer(topic: str, ctx: NodeContext) -> str:
-        ctx.stream(f"drafting:streamer:{topic}")
-        return topic
-
-    @node(output_name="drafted")
-    def polisher(draft: str, ctx: NodeContext) -> str:
-        ctx.stream(f"drafting:polisher:{draft}")
-        return draft
-
-    return Graph([streamer, polisher], name="drafting")
-
-
-def _summary_graph() -> Graph:
-    """Sibling child graph whose streaming node shares the local name 'streamer'."""
-
-    @node(output_name="summarized")
-    def streamer(topic: str, ctx: NodeContext) -> str:
-        ctx.stream(f"summary:streamer:{topic}")
-        return topic
-
-    return Graph([streamer], name="summary")
-
-
-def _nested_streaming_graph() -> Graph:
-    """Parent graph with two nested GraphNodes, both streaming."""
-    return Graph(
-        [GraphNode(_drafting_graph(), name="left"), GraphNode(_summary_graph(), name="right")],
-        name="outer",
-    )
-
-
 class _ChunkCollector(TypedEventProcessor):
     """Real EventProcessor subclass, so `graph.with_processors()` accepts it."""
 
@@ -357,7 +321,7 @@ def _expected_routes(prefix: str) -> set[tuple[str, str]]:
 def test_sync_map_iter_workflow_id_qualifies_every_chunk_source(workflow_id):
     """Each item runs as <workflow_id>/<i>, so six chunk sources get six routes."""
     collector = _ChunkCollector()
-    graph = _nested_streaming_graph().with_processors(collector)
+    graph = nested_streaming_graph().with_processors(collector)
 
     list(SyncRunner().map_iter(graph, {"topic": ["a", "b"]}, map_over="topic", workflow_id=workflow_id))
 
@@ -369,7 +333,7 @@ def test_sync_map_iter_workflow_id_qualifies_every_chunk_source(workflow_id):
 async def test_async_map_iter_workflow_id_qualifies_every_chunk_source(workflow_id):
     """The async runner produces the identical route set."""
     collector = _ChunkCollector()
-    graph = _nested_streaming_graph().with_processors(collector)
+    graph = nested_streaming_graph().with_processors(collector)
 
     async for _index, _result in AsyncRunner().map_iter(graph, {"topic": ["a", "b"]}, map_over="topic", workflow_id=workflow_id):
         pass
@@ -382,7 +346,7 @@ def test_sync_map_iter_matches_map_route_set():
     """map_iter(workflow_id=...) routes byte-identically to map(workflow_id=...)."""
     from_map = _ChunkCollector()
     SyncRunner().map(
-        _nested_streaming_graph(),
+        nested_streaming_graph(),
         {"topic": ["a", "b"]},
         map_over="topic",
         workflow_id="wf",
@@ -392,7 +356,7 @@ def test_sync_map_iter_matches_map_route_set():
     from_iter = _ChunkCollector()
     list(
         SyncRunner().map_iter(
-            _nested_streaming_graph().with_processors(from_iter),
+            nested_streaming_graph().with_processors(from_iter),
             {"topic": ["a", "b"]},
             map_over="topic",
             workflow_id="wf",
@@ -405,7 +369,7 @@ def test_sync_map_iter_matches_map_route_set():
 def test_sync_map_iter_without_workflow_id_is_unchanged():
     """Omitting workflow_id keeps master's behavior: None everywhere, run_id fallback needed."""
     collector = _ChunkCollector()
-    graph = _nested_streaming_graph().with_processors(collector)
+    graph = nested_streaming_graph().with_processors(collector)
 
     list(SyncRunner().map_iter(graph, {"topic": ["a", "b"]}, map_over="topic"))
 
@@ -418,7 +382,7 @@ def test_sync_map_iter_without_workflow_id_is_unchanged():
 async def test_async_map_iter_without_workflow_id_is_unchanged():
     """Same for the async runner."""
     collector = _ChunkCollector()
-    graph = _nested_streaming_graph().with_processors(collector)
+    graph = nested_streaming_graph().with_processors(collector)
 
     async for _index, _result in AsyncRunner().map_iter(graph, {"topic": ["a", "b"]}, map_over="topic"):
         pass
@@ -516,6 +480,46 @@ async def test_map_iter_without_workflow_id_still_runs_with_a_checkpointer():
 
     assert [r["doubled"] for _, r in pairs] == [2, 4]
     assert await checkpointer.list_runs() == []
+
+
+def test_empty_workflow_id_behaves_exactly_like_none_with_a_checkpointer():
+    """`workflow_id=""` names nothing, so both runners treat it as None, not as a refusal."""
+    sync_collector = _ChunkCollector()
+    sync_cp = MemoryCheckpointer()
+    sync_pairs = list(
+        SyncRunner(checkpointer=sync_cp).map_iter(
+            drafting_graph().with_processors(sync_collector),
+            {"topic": ["a", "b"]},
+            map_over="topic",
+            workflow_id="",
+        )
+    )
+
+    async_collector = _ChunkCollector()
+    async_cp = MemoryCheckpointer()
+
+    async def _drive() -> tuple[list, list]:
+        async for _index, _result in AsyncRunner(checkpointer=async_cp).map_iter(
+            drafting_graph().with_processors(async_collector),
+            {"topic": ["a", "b"]},
+            map_over="topic",
+            workflow_id="",
+        ):
+            pass
+        return await async_cp.list_runs(), await sync_cp.list_runs()
+
+    async_runs, sync_runs = asyncio.run(_drive())
+
+    # Not refused, and identical to the workflow_id=None path: the items run, every
+    # chunk carries workflow_id=None, and the two nodes collapse onto two routes.
+    assert [result["drafted"] for _, result in sync_pairs] == ["a", "b"]
+    for collector in (sync_collector, async_collector):
+        assert len(collector.events) == 4
+        assert {event.workflow_id for event in collector.events} == {None}
+        assert len(_routes(collector)) == 2
+    # And nothing persisted, because no run ever got a name.
+    assert async_runs == []
+    assert sync_runs == []
 
 
 def test_sync_map_iter_signature_gained_workflow_id_but_not_max_concurrency():

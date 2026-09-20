@@ -1322,7 +1322,9 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         # under _validation_ctx, which skips the re-check. Only the caller's own
         # id is screened, exactly as map() screens its own.
         validate_workflow_id(workflow_id, None)
-        if workflow_id is not None and self._checkpointer is not None:
+        # Truthiness, not `is not None`: the child ids below are built the same
+        # way, so an empty id names nothing and behaves exactly like None.
+        if workflow_id and self._checkpointer is not None:
             raise ValueError(
                 f"runner.map_iter() cannot take workflow_id={workflow_id!r} while a checkpointer is attached.\n\n"
                 "map_iter() names a stream for routing only: it writes no parent batch row, does not "
