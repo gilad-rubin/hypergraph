@@ -88,7 +88,9 @@ loop running, and with a loop already running that it does not own.
   `dev/REVIEW-CHECKLIST.md`.
 - **The generator never writes a file it cannot vouch for.** It proves ruff is
   present before it starts, refuses an output that does not parse or is no
-  longer than its own header, and refuses a marker found inside a string literal
+  longer than its own header, refuses a marker found inside a string literal,
+  and refuses a rename-table name used as a keyword argument (it rewrites names,
+  not the signatures they bind to; pass such an argument positionally)
   — a generated file's failure mode must be a loud exit, never a shorter file.
 - **Scope is the template only.** `runners/sync/runner.py`,
   `sync/superstep.py`, and `sync/executors/*` stay hand-written for now and are

@@ -118,6 +118,59 @@ class TestTransformRules:
         )
         assert gen_sync.apply_markers(gen_sync.rewrite_tokens(source)) == "checkpointer = self._get_sync_checkpointer(w)\n"
 
+    def test_a_renamed_name_used_as_a_keyword_argument_is_refused(self) -> None:
+        """A kwarg target names the *callee's* parameter, which this file may not own."""
+        with pytest.raises(gen_sync.GenerationError, match="keyword argument"):
+            gen_sync.rewrite_tokens("f(checkpointer=x, create_run=1)\n")
+
+    def test_the_refusal_names_the_offending_argument(self) -> None:
+        with pytest.raises(gen_sync.GenerationError) as caught:
+            gen_sync.rewrite_tokens("f(checkpointer=x)\n")
+        message = str(caught.value)
+        assert "line 1" in message
+        assert "checkpointer=" in message
+        assert "positionally" in message
+
+    def test_the_refusal_reports_the_line_the_argument_is_on(self) -> None:
+        with pytest.raises(gen_sync.GenerationError) as caught:
+            gen_sync.rewrite_tokens("f(\n    a=1,\n    create_run=2,\n)\n")
+        assert "line 3" in str(caught.value)
+
+    def test_a_keyword_argument_not_in_the_table_is_untouched(self) -> None:
+        """The gate keys on the rename table, not on "is a keyword argument"."""
+        assert gen_sync.rewrite_tokens("cp.create_run(workflow_id=w, inputs=i)\n") == "cp.create_run_sync(workflow_id=w, inputs=i)\n"
+
+    def test_a_default_parameter_of_the_same_name_is_still_renamed(self) -> None:
+        """A def parameter is a name this file binds, so it must keep renaming."""
+        source = "def f(checkpointer=None, get_state=None):\n    return checkpointer\n"
+        assert gen_sync.rewrite_tokens(source) == "def f(sync_cp=None, state=None):\n    return sync_cp\n"
+
+    def test_a_dict_key_of_the_same_name_is_still_untouched(self) -> None:
+        source = "d = {'checkpointer': 1}\n"
+        assert gen_sync.rewrite_tokens(source) == source
+
+    def test_a_kwarg_trap_added_to_the_async_template_exits_two_without_writing(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The failure path an author meets: the generator refuses and writes nothing."""
+        stand_in = tmp_path / "template_async.py"
+        stand_in.write_text(ASYNC_TEMPLATE.read_text() + "\n\n_trap = AsyncRunTeardown(reservation, checkpointer=cp)\n")
+        target = tmp_path / "template_sync.py"
+        target.write_text(SYNC_TEMPLATE.read_text())
+        generate = gen_sync.generate
+        monkeypatch.setattr(gen_sync, "TARGET", target)
+        monkeypatch.setattr(gen_sync, "generate", lambda *_args, **_kwargs: generate(stand_in, target))
+
+        assert gen_sync.main([]) == 2
+
+        reported = capsys.readouterr().err
+        assert "checkpointer=" in reported
+        assert "positionally" in reported
+        assert target.read_text() == SYNC_TEMPLATE.read_text()
+
 
 class TestMarkersMustExplainThemselves:
     def test_every_marker_in_the_async_template_carries_a_reason(self) -> None:

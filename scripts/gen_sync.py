@@ -37,7 +37,10 @@ How the transform works
    - ``async def`` -> ``def``, ``async with`` -> ``with``, ``async for`` -> ``for``
    - ``await x`` -> ``x``
    - the name table in ``TOKEN_RENAMES`` below (one entry per genuine
-     async/sync API difference, each with the reason it exists)
+     async/sync API difference, each with the reason it exists). A name from
+     that table written as a keyword argument — ``f(checkpointer=x)`` — is
+     *refused* rather than rewritten: that name belongs to the callee's
+     signature, which this transform does not resolve. Pass it positionally.
    - the string table in ``STRING_RENAMES`` — the few literals that name the
      family, matched whole so prose is never rewritten
 
@@ -269,9 +272,34 @@ def _uncomment(line: str, lineno: int) -> str:
     return f"{indent}{body}\n" if body else "\n"
 
 
+def _keyword_argument_targets(source: str) -> dict[tuple[int, int], str]:
+    """Map ``(row, col)`` -> arg name, for every ``name=`` written at a call site.
+
+    A keyword-argument target is the only identifier in the file that names a
+    *parameter of something else*. ``tokenize`` cannot tell it apart from any
+    other NAME, so the position of every ``ast.keyword`` is collected here and
+    matched against the token that starts there.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as error:
+        raise GenerationError(f"the async template does not parse: {error}") from error
+
+    targets: dict[tuple[int, int], str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for keyword in node.keywords:
+                # `**kwargs` has no name to rewrite, and a def parameter's
+                # default is not an `ast.keyword` at all — both stay renameable.
+                if keyword.arg is not None:
+                    targets[(keyword.lineno, keyword.col_offset)] = keyword.arg
+    return targets
+
+
 def rewrite_tokens(source: str) -> str:
     """Apply the async->sync token transform, leaving strings and layout alone."""
     lines = source.splitlines(keepends=True)
+    kwarg_targets = _keyword_argument_targets(source)
     replacements: list[_Replacement] = []
     tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     for index, token in enumerate(tokens):
@@ -281,6 +309,13 @@ def rewrite_tokens(source: str) -> str:
                 raise GenerationError(f"line {token.start[0]}: `{token.string}` is the last token on its line; the rewriter cannot join lines")
             replacements.append(_Replacement(token.start[0], token.start[1], following.start[1], ""))
         elif token.type == tokenize.NAME and token.string in TOKEN_RENAMES:
+            if kwarg_targets.get(token.start) == token.string:
+                raise GenerationError(
+                    f"line {token.start[0]}: `{token.string}=` is a keyword argument whose name is in "
+                    f"the rename table. The generator rewrites names, not the signatures they bind to, "
+                    f"so it cannot know whether the callee's parameter is renamed too. Pass it "
+                    f"positionally, or choose a different name."
+                )
             replacements.append(_Replacement(token.start[0], token.start[1], token.end[1], TOKEN_RENAMES[token.string]))
         elif token.type == tokenize.STRING and token.string in STRING_RENAMES:
             replacements.append(_Replacement(token.start[0], token.start[1], token.end[1], STRING_RENAMES[token.string]))
