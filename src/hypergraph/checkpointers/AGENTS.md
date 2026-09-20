@@ -28,8 +28,18 @@ row-count shortcuts.
 - Retention is `_retention`: `plan_retention` decides what a run keeps for
   EVERY backend, and `compaction_deletes` is the one statement stream that
   carries a plan out. Neither backend may re-derive either.
-- A new write path takes `BEGIN IMMEDIATE`, commits, and rolls back on any
-  `BaseException` — in both halves, or in neither.
+- A new write path does not remember to take `BEGIN IMMEDIATE`, commit, and
+  roll back on any `BaseException`: it opens `_write_txn()` (async) or
+  `_write_txn_sync()` (sync), which own all four obligations plus the half's
+  lock, and writes only its body. Four methods still spell `BEGIN IMMEDIATE`
+  themselves (and those four plus `save_step{,_sync}` call a `_rollback_*`
+  directly); both lists are closed: `resolve_stranded_attempts{,_sync}` read the settled records after
+  the commit but still under the same lock hold, which a commit-and-release
+  context manager cannot express, and `save_step{,_sync}` deliberately ride
+  sqlite3's implicit deferred transaction rather than take the database write
+  lock early on the hottest write path.
+  `test_sql_builders.test_every_write_transaction_is_opened_by_the_one_context_manager`
+  fails if a fifth method names `_BEGIN_IMMEDIATE` or calls a `_rollback_*`.
 
 ## Retention and Baselines
 

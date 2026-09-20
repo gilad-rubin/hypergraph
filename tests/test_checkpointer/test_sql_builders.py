@@ -1,15 +1,19 @@
 """The checkpointer says each thing once, and says it the same way twice.
 
-Three claims are pinned here, because all three are invisible at runtime
+Four claims are pinned here, because all four are invisible at runtime
 until they are already wrong:
 
 1. No two methods of ``sqlite.py`` spell the same statement. A statement in
    two places is two places to change and one place to forget.
-2. Rows are decoded against the column list the SELECT projects, by name. A
+2. No method opens a write transaction of its own: each half enters one
+   through ``_write_txn`` / ``_write_txn_sync``, which own the lock, the
+   ``BEGIN IMMEDIATE``, the commit and the rollback.
+3. Rows are decoded against the column list the SELECT projects, by name. A
    list that drifts from its decoder fails loudly instead of shifting every
    field by one.
-3. The async half and the sync half store the SAME rows, for the ordinary
-   run/step path and for the attempt ledger.
+4. The async half and the sync half store the SAME rows and drive the SAME
+   statement stream, for the ordinary run/step path and for the attempt
+   ledger.
 
 Plus the two narrower guarantees this file is the natural home for: the
 retention policy has one implementation across backends, and ``__del__``
@@ -19,6 +23,7 @@ still knows how to shut an orphaned aiosqlite connection down.
 from __future__ import annotations
 
 import ast
+import asyncio
 import logging
 import re
 import sqlite3
@@ -52,6 +57,7 @@ from hypergraph.checkpointers._rows import (
     PAUSE_SLOT_COLS,
     RUNS_COLS,
     STEPS_COLS,
+    pause_slot_insert_params,
     row_to_attempt_record,
     row_to_attempt_series,
     row_to_node_boundary,
@@ -123,7 +129,329 @@ def test_the_duplicate_statement_check_can_actually_fail():
     assert owners["SELECT 1 FROM runs WHERE id = ?"] == ["a", "b"]
 
 
-# === 2. Rows decoded by name ===
+# === 2. One write transaction, one context manager ===
+#
+# The scaffold 15 write methods used to hand-write — take the half's lock,
+# BEGIN IMMEDIATE, commit, roll back on any BaseException — now lives in
+# ``_write_txn`` / ``_write_txn_sync``. These tests keep it there, keep it
+# honest about cancellation, and keep the two halves saying the same things
+# to SQLite in the same order.
+
+
+_TXN_OWNERS = {"_write_txn", "_write_txn_sync", "resolve_stranded_attempts", "resolve_stranded_attempts_sync"}
+_ROLLBACK_OWNERS = _TXN_OWNERS | {"save_step", "save_step_sync"}
+
+_WHY_THESE_ARE_EXCEPTED = (
+    "Every write path opens _write_txn()/_write_txn_sync() and writes only its body. The exceptions are "
+    "deliberate, not unfinished work: resolve_stranded_attempts{,_sync} read the settled records AFTER the "
+    "commit but STILL under the same lock hold, which a commit-and-release context manager cannot express; "
+    "save_step{,_sync} deliberately ride sqlite3's implicit deferred transaction and must not take the "
+    "database write lock early on the library's hottest write path. Do not 'finish the job' by converting "
+    "them, and do not hand-write a third scaffold."
+)
+
+
+def _functions_naming(source: str, name: str) -> set[str]:
+    """Every function in ``source`` whose body mentions the name ``name``."""
+    owners: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+            isinstance(inner, ast.Name) and inner.id == name for inner in ast.walk(node)
+        ):
+            owners.add(node.name)
+    return owners
+
+
+def _functions_calling(source: str, names: set[str]) -> set[str]:
+    """Every function in ``source`` that calls ``<something>.<name>(...)``."""
+    owners: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute) and inner.func.attr in names:
+                    owners.add(node.name)
+    return owners
+
+
+def test_every_write_transaction_is_opened_by_the_one_context_manager():
+    """``BEGIN IMMEDIATE`` has four owners and rollback six (the two step writers roll back too); both lists are closed."""
+    assert _functions_naming(_SQLITE_SOURCE, "_BEGIN_IMMEDIATE") == _TXN_OWNERS, _WHY_THESE_ARE_EXCEPTED
+    assert _functions_calling(_SQLITE_SOURCE, {"_rollback_async", "_rollback_sync"}) == _ROLLBACK_OWNERS, _WHY_THESE_ARE_EXCEPTED
+
+
+def test_the_write_transaction_guard_can_actually_fail():
+    """The two detectors above are not vacuously green."""
+    reintroduced = "class C:\n    def a_third_scaffold(self, db):\n        db.execute(_BEGIN_IMMEDIATE)\n        self._rollback_sync(db)\n"
+    assert _functions_naming(reintroduced, "_BEGIN_IMMEDIATE") == {"a_third_scaffold"}
+    assert _functions_calling(reintroduced, {"_rollback_async", "_rollback_sync"}) == {"a_third_scaffold"}
+
+
+def _txn_slot(run_id: str = "wf") -> PauseSlot:
+    return PauseSlot(
+        run_id=run_id,
+        superstep=0,
+        node_name="ask",
+        node_path="ask",
+        response_key="answer",
+        question={"text": "which?"},
+        answer_schema={"type": "string"},
+    )
+
+
+def _insert_slot_sync(db: Any, slot: PauseSlot) -> None:
+    db.execute(sqlite_module._PAUSE_SLOT_INSERT_SQL, pause_slot_insert_params(slot))
+
+
+async def test_the_write_transactions_commit_on_normal_exit(tmp_path):
+    """Leaving the block normally commits — the OTHER connection can see it."""
+    store = SqliteCheckpointer(str(tmp_path / "commit.db"))
+    slot = _txn_slot()
+    try:
+        await store.initialize()
+        await store.create_run("wf")
+        async with store._write_txn() as db:
+            await db.execute(sqlite_module._PAUSE_SLOT_INSERT_SQL, pause_slot_insert_params(slot))
+        assert store.get_pause_slot_sync("wf") is not None
+
+        store.create_run_sync("wf2")
+        with store._write_txn_sync() as db:
+            _insert_slot_sync(db, _txn_slot("wf2"))
+        assert await store.get_pause_slot("wf2") is not None
+    finally:
+        await store.close()
+
+
+@pytest.mark.parametrize("failure", [ValueError, asyncio.CancelledError, KeyboardInterrupt])
+async def test_the_async_write_transaction_rolls_back_and_re_raises(tmp_path, failure):
+    """Any BaseException out of the body: roll back, re-raise, leave no half-state."""
+    store = SqliteCheckpointer(str(tmp_path / "async-rollback.db"))
+    slot = _txn_slot()
+    try:
+        await store.initialize()
+        await store.create_run("wf")
+        with pytest.raises(failure):
+            async with store._write_txn() as db:
+                await db.execute(sqlite_module._PAUSE_SLOT_INSERT_SQL, pause_slot_insert_params(slot))
+                raise failure()
+
+        # A concurrent reader on a SECOND connection never sees the write...
+        assert store.get_pause_slot_sync("wf") is None
+        # ...and the transaction really closed: a nested BEGIN would raise here.
+        async with store._write_txn() as db:
+            await db.execute(sqlite_module._PAUSE_SLOT_INSERT_SQL, pause_slot_insert_params(slot))
+        assert store.get_pause_slot_sync("wf") is not None
+    finally:
+        await store.close()
+
+
+@pytest.mark.parametrize("failure", [ValueError, asyncio.CancelledError, KeyboardInterrupt])
+async def test_the_sync_write_transaction_rolls_back_and_re_raises(tmp_path, failure):
+    """The sync mirror of the rollback contract, checked from the async connection."""
+    store = SqliteCheckpointer(str(tmp_path / "sync-rollback.db"))
+    slot = _txn_slot()
+    try:
+        store.create_run_sync("wf")
+        with pytest.raises(failure), store._write_txn_sync() as db:
+            _insert_slot_sync(db, slot)
+            raise failure()
+
+        assert store._sync_db().in_transaction is False
+        assert await store.get_pause_slot("wf") is None
+        with store._write_txn_sync() as db:
+            _insert_slot_sync(db, slot)
+        assert await store.get_pause_slot("wf") is not None
+    finally:
+        await store.close()
+
+
+async def test_the_write_transactions_hold_their_lock_for_the_whole_block(tmp_path):
+    """The lock spans the body, not just the BEGIN — that is what it is for."""
+    store = SqliteCheckpointer(str(tmp_path / "locks.db"))
+    try:
+        await store.initialize()
+        await store.create_run("wf")
+        async_lock = store._txn_lock()
+        assert async_lock.locked() is False
+        async with store._write_txn():
+            assert async_lock.locked() is True
+        assert async_lock.locked() is False
+
+        sync_lock = store._sync_lock
+        assert sync_lock._is_owned() is False
+        with store._write_txn_sync():
+            assert sync_lock._is_owned() is True
+        assert sync_lock._is_owned() is False
+    finally:
+        await store.close()
+
+
+def _mask(statement: Any) -> str:
+    """One statement, quoted literals and long integers folded away."""
+    collapsed = re.sub(r"'[^']*'", "'?'", " ".join(str(statement).split()))
+    return re.sub(r"\b\d{2,}\b", "N", collapsed)
+
+
+_TRANSACTION_CONTROL = ("BEGIN", "COMMIT", "ROLLBACK")
+_STORE_PRAGMAS = frozenset({_mask(sqlite_module._BUSY_TIMEOUT_PRAGMA), _mask(sqlite_module._FOREIGN_KEYS_PRAGMA)})
+
+
+def _checkpointer_statements(seen: list[str]) -> list[str]:
+    """Only what the CHECKPOINTER said; SQLite's own bookkeeping dropped.
+
+    The trace hook also reports statements SQLite runs for ITSELF — the FTS
+    and statement-journal writes (``REPLACE INTO '?'.'?'(id, block)``,
+    ``INSERT INTO '?'.'?'(segid,term,pgno)``), a schema-version read
+    (``PRAGMA '?'.data_version``), a key/value read (``SELECT k, v FROM
+    '?'.'?'``). Which of those appear, where in the stream, and whether the
+    build prefixes them with ``--`` are all properties of the bundled SQLite
+    version, not of this code: CI's build and a developer's disagree, so
+    comparing raw streams pins the test to one SQLite.
+
+    The line between the two is not the ``--`` marker, which only some builds
+    write. It is the schema: every statement the checkpointer spells names one
+    of ITS OWN tables, and every statement SQLite invents addresses an internal
+    object that the mask renders as ``'?'``. Transaction control and the two
+    pragmas the store issues itself are kept by name.
+
+    The owned-table list is ``_VOLATILE``'s keys (section 4 below), which is
+    already this file's answer to "every table the checkpointer writes" — so
+    a new table joins both claims in one edit.
+    """
+    owned = re.compile(r"\b(" + "|".join(sorted(_VOLATILE)) + r")\b")
+
+    def is_ours(statement: str) -> bool:
+        if statement.startswith(_TRANSACTION_CONTROL) or statement in _STORE_PRAGMAS:
+            return True
+        return not statement.startswith("--") and owned.search(statement) is not None
+
+    return [statement for statement in seen if is_ours(statement)]
+
+
+def _transaction_shape(statements: list[str]) -> tuple[list[int], int]:
+    """How many statements each transaction carries, and how many ride outside.
+
+    This is what pins the transaction BOUNDARIES without pinning an absolute
+    index: move a ``BEGIN IMMEDIATE`` or a ``COMMIT`` one statement in either
+    direction and a count changes.
+    """
+    inside: list[int] = []
+    outside = 0
+    open_count: int | None = None
+    for statement in statements:
+        if statement.startswith("BEGIN"):
+            assert open_count is None, f"nested BEGIN: {statements}"
+            open_count = 0
+        elif statement in ("COMMIT", "ROLLBACK"):
+            assert open_count is not None, f"{statement} with no open transaction: {statements}"
+            inside.append(open_count)
+            open_count = None
+        elif open_count is None:
+            outside += 1
+        else:
+            open_count += 1
+    assert open_count is None, f"transaction left open: {statements}"
+    return inside, outside
+
+
+def test_the_statement_filter_keeps_only_what_the_checkpointer_said():
+    """The filter is neither a no-op nor a drop-all, in either SQLite spelling."""
+    spoken = [
+        "BEGIN IMMEDIATE",
+        "SELECT 1 FROM runs WHERE id = '?'",
+        "INSERT INTO attempt_records (series_id, attempt_number) VALUES ('?', 1)",
+        "UPDATE attempt_series SET closed_at = '?' WHERE id = '?'",
+        "INSERT INTO steps ( run_id, superstep ) VALUES ('?', 1)",
+        "COMMIT",
+    ]
+    # SQLite's own bookkeeping, as seen on a developer's build and on CI's:
+    # the same statements, and only SOME builds mark them with ``--``.
+    internal = [
+        "-- REPLACE INTO '?'.'?'(id, block) VALUES(?,?)",
+        "REPLACE INTO '?'.'?'(id, block) VALUES(?,?)",
+        "-- INSERT INTO '?'.'?'(segid,term,pgno) VALUES(?,?,?)",
+        "-- PRAGMA '?'.data_version",
+        "PRAGMA '?'.data_version",
+        "-- SELECT k, v FROM '?'.'?'",
+        "SELECT k, v FROM '?'.'?'",
+    ]
+    for noise in internal:
+        assert _checkpointer_statements([noise]) == [], noise
+    assert _checkpointer_statements(spoken) == spoken
+    assert _checkpointer_statements([*spoken, *internal]) == spoken
+
+
+def _drive_ledger_sync(store: SqliteCheckpointer, error: AttemptError) -> None:
+    series = store.open_attempt_series_sync("wf", "flaky", policy_fingerprint="fp", max_attempts=3)
+    first = store.begin_attempt_sync(series.id, policy_fingerprint="fp", scheduled_superstep=0)
+    store.record_attempt_outcome_sync(series.id, first.attempt_number, AttemptStatus.FAILED, error=error)
+    store.resolve_stranded_attempts_sync(series.id)
+    store.remaining_attempts_sync(series.id)
+    second = store.begin_attempt_sync(series.id, policy_fingerprint="fp", scheduled_superstep=1)
+    store.close_attempt_series_sync(
+        series.id,
+        second.attempt_number,
+        AttemptStatus.FAILED,
+        step_record=_step("wf", 1, "flaky", attempt_series_id=series.id),
+        error=error,
+    )
+
+
+async def _drive_ledger_async(store: SqliteCheckpointer, error: AttemptError) -> None:
+    # record_attempt_deadline is skipped on purpose: it is async-only by
+    # ADR 0009 and has no sync twin to compare against.
+    series = await store.open_attempt_series("wf", "flaky", policy_fingerprint="fp", max_attempts=3)
+    first = await store.begin_attempt(series.id, policy_fingerprint="fp", scheduled_superstep=0)
+    await store.record_attempt_outcome(series.id, first.attempt_number, AttemptStatus.FAILED, error=error)
+    await store.resolve_stranded_attempts(series.id)
+    await store.remaining_attempts(series.id)
+    second = await store.begin_attempt(series.id, policy_fingerprint="fp", scheduled_superstep=1)
+    await store.close_attempt_series(
+        series.id,
+        second.attempt_number,
+        AttemptStatus.FAILED,
+        step_record=_step("wf", 1, "flaky", attempt_series_id=series.id),
+        error=error,
+    )
+
+
+async def test_the_ledger_drives_the_same_statement_stream_sync_and_async(tmp_path):
+    """Same statements, same order, same transaction boundaries, both halves."""
+    error = AttemptError(type_name="ValueError", message="boom")
+    async_store = SqliteCheckpointer(str(tmp_path / "async.db"))
+    sync_store = SqliteCheckpointer(str(tmp_path / "sync.db"))
+    seen_async: list[str] = []
+    seen_sync: list[str] = []
+    try:
+        await async_store.initialize()
+        await async_store.create_run("wf")
+        # aiosqlite owns its sqlite3 object on a worker THREAD, so the trace
+        # callback has to be installed there, through the same submit path
+        # every aiosqlite call uses.
+        await async_store._db._execute(async_store._db._conn.set_trace_callback, lambda sql: seen_async.append(_mask(sql)))
+        await _drive_ledger_async(async_store, error)
+        await async_store._db._execute(async_store._db._conn.set_trace_callback, None)
+
+        sync_store.create_run_sync("wf")
+        connection = sync_store._sync_db()
+        connection.set_trace_callback(lambda sql: seen_sync.append(_mask(sql)))
+        try:
+            _drive_ledger_sync(sync_store, error)
+        finally:
+            connection.set_trace_callback(None)
+    finally:
+        await async_store.close()
+        await sync_store.close()
+
+    spoken_async = _checkpointer_statements(seen_async)
+    spoken_sync = _checkpointer_statements(seen_sync)
+    assert spoken_async == spoken_sync
+
+    assert [statement for statement in spoken_sync if statement.startswith(_TRANSACTION_CONTROL)] == ["BEGIN IMMEDIATE", "COMMIT"] * 6
+    assert _transaction_shape(spoken_sync) == ([3, 5, 3, 2, 5, 8], 3)
+    assert _transaction_shape(spoken_async) == _transaction_shape(spoken_sync)
+
+
+# === 3. Rows decoded by name ===
 
 
 def test_no_positional_row_length_guards_remain():
@@ -194,7 +522,7 @@ async def test_every_projection_matches_the_list_its_decoder_zips(store):
         assert projected == [name.strip() for name in columns.split(",")], sql
 
 
-# === 3. The two halves store the same rows ===
+# === 4. The two halves store the same rows ===
 
 
 _VOLATILE = {
@@ -337,7 +665,7 @@ def _pending(run_id: str, superstep: int):
     return PendingNode(run_id=run_id, superstep=superstep, node_name="loop", node_type="FunctionNode")
 
 
-# === 4. One retention policy, both backends ===
+# === 5. One retention policy, both backends ===
 
 
 def test_memory_carries_no_retention_policy_of_its_own():
@@ -398,7 +726,7 @@ def test_plan_retention_decides_by_position_not_equality():
     assert [(row.node_name, row.superstep) for row in plan.dropped_rows] == [("a", 0)]
 
 
-# === 5. __del__ can still close an orphaned aiosqlite connection ===
+# === 6. __del__ can still close an orphaned aiosqlite connection ===
 
 
 async def test_aiosqlite_still_exposes_the_internals_del_depends_on(tmp_path):
