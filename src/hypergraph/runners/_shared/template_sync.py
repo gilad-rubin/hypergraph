@@ -252,6 +252,11 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
+        # Runner-level processors are carried-before-call-site, and only the
+        # user-initiated outer call merges them: nested and mapped child runs
+        # are handed the merged list already.
+        if _parent_span_id is None and _parent_run_id is None:
+            event_processors = [*getattr(self, "_event_processors", ()), *(event_processors or [])]
         if not isinstance(inspect, bool):
             raise TypeError(
                 f"inspect must be a bool, got {type(inspect).__name__}.\n\n"
@@ -852,6 +857,11 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
+        # Runner-level processors are carried-before-call-site, and only the
+        # user-initiated outer call merges them: nested and mapped child runs
+        # are handed the merged list already.
+        if _parent_span_id is None and _parent_run_id is None:
+            event_processors = [*getattr(self, "_event_processors", ()), *(event_processors or [])]
         if not isinstance(inspect, bool):
             raise TypeError(
                 f"inspect must be a bool, got {type(inspect).__name__}.\n\n"

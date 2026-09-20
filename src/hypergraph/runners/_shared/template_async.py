@@ -296,12 +296,15 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
-        # sync:skip-start: runner-level max_concurrency / event_processors defaults are an AsyncRunner constructor feature
+        # sync:skip-start: a sync engine has no concurrency budget, so there is no runner-level default to apply
         if max_concurrency is None:
             max_concurrency = getattr(self, "_max_concurrency", None)
+        # sync:skip-end
+        # Runner-level processors are carried-before-call-site, and only the
+        # user-initiated outer call merges them: nested and mapped child runs
+        # are handed the merged list already.
         if _parent_span_id is None and _parent_run_id is None:
             event_processors = [*getattr(self, "_event_processors", ()), *(event_processors or [])]
-        # sync:skip-end
         if not isinstance(inspect, bool):
             raise TypeError(
                 f"inspect must be a bool, got {type(inspect).__name__}.\n\n"
@@ -928,12 +931,15 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
-        # sync:skip-start: runner-level max_concurrency / event_processors defaults are an AsyncRunner constructor feature
+        # sync:skip-start: a sync engine has no concurrency budget, so there is no runner-level default to apply
         if max_concurrency is None:
             max_concurrency = getattr(self, "_max_concurrency", None)
+        # sync:skip-end
+        # Runner-level processors are carried-before-call-site, and only the
+        # user-initiated outer call merges them: nested and mapped child runs
+        # are handed the merged list already.
         if _parent_span_id is None and _parent_run_id is None:
             event_processors = [*getattr(self, "_event_processors", ()), *(event_processors or [])]
-        # sync:skip-end
         if not isinstance(inspect, bool):
             raise TypeError(
                 f"inspect must be a bool, got {type(inspect).__name__}.\n\n"

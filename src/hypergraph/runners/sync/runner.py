@@ -81,6 +81,7 @@ class SyncRunner(SyncRunnerTemplate):
         cache: CacheBackend | None = None,
         checkpointer: Checkpointer | None = None,
         show_progress: bool = False,
+        event_processors: list[EventProcessor] | None = None,
     ):
         """Initialize SyncRunner with its node executors.
 
@@ -94,10 +95,13 @@ class SyncRunner(SyncRunnerTemplate):
                 to every run() and map() call — unless one is already carried
                 by the graph or passed via event_processors. Can be
                 overridden per-call.
+            event_processors: Processors added to every run and map call.
+                Per-call processors are appended to these defaults.
         """
         self._cache = cache
         self._checkpointer_instance = checkpointer
         self._show_progress = show_progress
+        self._event_processors = list(event_processors or [])
         self._active_workflows = _ActiveWorkflows()
         self._executors = self._build_executors()
 
