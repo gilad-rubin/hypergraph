@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any
 from hypergraph.runners.context import NodeContext as NodeContext
 
 if TYPE_CHECKING:
+    from asyncio import AbstractEventLoop
+
     from hypergraph.checkpointers.base import Checkpointer
 
 
@@ -31,7 +33,7 @@ def build_node_context(
     item_index: int | None = None,
     parent_span_id: str | None = None,
     checkpointer: Checkpointer | None = None,
-    records_on_loop: bool = False,
+    record_loop: AbstractEventLoop | None = None,
 ) -> NodeContext:
     """Build a NodeContext for executor injection.
 
@@ -43,8 +45,10 @@ def build_node_context(
     ``checkpointer`` is ``ExecutionContext.checkpointer`` — the active
     persistence for THIS run, already ``None`` unless a checkpointer and a
     workflow_id are both present — and is what ``record`` writes through.
-    ``records_on_loop`` is the async executor's promise to call
-    ``flush_node_records`` on this context; only it may defer a write.
+    ``record_loop`` is the executor's OWN event loop — the async executor
+    hands over the loop it is running on, and it is the one that settles the
+    tasks planted there. ``record`` defers a write to that loop and to no
+    other; a body anywhere else writes straight through on its own thread.
     """
     from hypergraph.runners._shared.stop import StopSignal, get_stop_signal
 
@@ -59,23 +63,18 @@ def build_node_context(
         item_index=item_index,
         parent_span_id=parent_span_id,
         checkpointer=checkpointer,
-        records_on_loop=records_on_loop,
+        record_loop=record_loop,
     )
 
 
-async def flush_node_records(context: Any, *, node_failed: bool) -> None:
-    """Await every fact a coroutine node recorded. No-op for anything else.
+async def settle_node_records(context: Any, *, node_failed: bool) -> None:
+    """Await every fact recorded ON THIS LOOP, then apply the policy.
 
     Called by the async executor after the node body settles and BEFORE the
     step record is written, so a fact is durable by the time the step that
-    produced it is, and the log reads ``fact… step`` the way the sync family
-    writes it.
-
-    A failed append is the NODE's failure when the node itself succeeded: a
-    node that believes its fact is durable must not report success over a
-    write that never landed. When the node is already failing, its own
-    exception is the one worth seeing, so the append error is logged instead
-    of replacing it.
+    produced it is, and the log reads ``fact… step`` the way the thread path
+    writes it. A body this executor dispatched to a thread plants no tasks,
+    so for it this is the captured failure and nothing else.
     """
     tasks = getattr(context, "_record_tasks", None)
     if tasks is None:
@@ -90,16 +89,46 @@ async def flush_node_records(context: Any, *, node_failed: bool) -> None:
     tasks.clear()
     results = await asyncio.gather(*pending, return_exceptions=True) if pending else []
     failure = context._record_failure or next((outcome for outcome in results if isinstance(outcome, BaseException)), None)
+    _resolve_record_failure(context, failure, node_failed=node_failed)
+
+
+def settle_node_records_sync(context: Any, *, node_failed: bool) -> None:
+    """Sync mirror of :func:`settle_node_records`.
+
+    This family plants no tasks (``record_loop`` is ``None``, so every write
+    went straight through on this thread), leaving nothing to await — only
+    the captured failure to answer for.
+    """
+    if getattr(context, "_record_tasks", None) is None:
+        return
+    _resolve_record_failure(context, context._record_failure, node_failed=node_failed)
+
+
+def _resolve_record_failure(context: Any, failure: BaseException | None, *, node_failed: bool) -> None:
+    """What a lost fact costs — the ONE policy, reached by both mirrors.
+
+    A failed append is the NODE's failure when the node itself succeeded: a
+    node that believes its fact is durable must not report success over a
+    write that never landed. A ``try/except`` in the body therefore changes
+    the body's own control flow and never the node's outcome. When the node
+    is already failing, its own exception is the one worth seeing, so the
+    append error is logged instead of replacing it — unless the body was
+    handed that very exception at the ``record`` call, which is the whole
+    reason a thread-path body stopped, and does not need saying twice.
+    """
     context._record_failure = None
+    told_at_the_call = context._record_failure_raised
+    context._record_failure_raised = False
     if failure is None:
         return
-    if node_failed:
-        import logging
-
-        logging.getLogger("hypergraph.runners").warning(
-            "node %r failed and at least one of its recorded facts could not be written: %r",
-            getattr(context, "_node_name", "?"),
-            failure,
-        )
+    if not node_failed:
+        raise failure
+    if told_at_the_call:
         return
-    raise failure
+    import logging
+
+    logging.getLogger("hypergraph.runners").warning(
+        "node %r failed and at least one of its recorded facts could not be written: %r",
+        getattr(context, "_node_name", "?"),
+        failure,
+    )

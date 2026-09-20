@@ -6,6 +6,7 @@ from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.cache_observer import node_cache_observer
+from hypergraph.runners._shared.node_context import settle_node_records_sync
 from hypergraph.runners._shared.outputs import wrap_outputs
 from hypergraph.runners._shared.provider_limits import provider_permits
 
@@ -69,17 +70,17 @@ class SyncFunctionNodeExecutor:
 
         # Inject NodeContext if the node declares one.
         #
-        # No `records_on_loop` here, and no record flush below — deliberately,
-        # not an oversight for a parity sweep to "fix". This node body runs on
-        # a thread, so `ctx.record` writes straight through and the fact is
-        # durable when the call returns; deferring would need an awaiter this
-        # family does not have. The async executor defers precisely because
-        # its body runs ON the loop, where a blocking write would stall the
-        # store it is writing to.
+        # No `record_loop` here: this family has no executor loop, so
+        # `ctx.record` always writes straight through and the fact is durable
+        # when the call returns. The async executor defers precisely because
+        # its body runs ON its loop, where a blocking write would stall the
+        # store it is writing to. What a LOST write costs is not a family
+        # difference — the settle below is the same policy seam both call.
+        node_context = None
         if getattr(node, "_context_param", None) is not None:
             from hypergraph.runners._shared.node_context import build_node_context
 
-            func_inputs[node._context_param] = build_node_context(  # type: ignore[index]
+            node_context = build_node_context(
                 node.name,
                 ctx.emit_fn,
                 run_id=ctx.run_id,
@@ -89,6 +90,7 @@ class SyncFunctionNodeExecutor:
                 parent_span_id=ctx.parent_span_id,
                 checkpointer=ctx.checkpointer,
             )
+            func_inputs[node._context_param] = node_context  # type: ignore[index]
 
         # Call the function (with cache observer installed for hypercache telemetry)
         emit_fn = ctx.emit_fn if ctx.emit_fn is not None else lambda _: None
@@ -110,34 +112,41 @@ class SyncFunctionNodeExecutor:
                     return list(result)
                 return result
 
-            if node.retry is None:
-                result = invoke()
-            else:
-                # The attempt coordinator sits here: below the superstep's
-                # cache lookup, above state application. The ledger keys off
-                # the workflow_id (StepRecords use it as run_id).
-                from hypergraph.runners._shared.attempts import AttemptEventSink, run_attempts_sync
+            try:
+                if node.retry is None:
+                    result = invoke()
+                else:
+                    # The attempt coordinator sits here: below the superstep's
+                    # cache lookup, above state application. The ledger keys off
+                    # the workflow_id (StepRecords use it as run_id).
+                    from hypergraph.runners._shared.attempts import AttemptEventSink, run_attempts_sync
 
-                events = None
-                if ctx.emit_fn is not None:
-                    events = AttemptEventSink(
-                        emit=ctx.emit_fn,
-                        run_id=ctx.run_id,
-                        node_span_id=ctx.parent_span_id,
-                        workflow_id=ctx.workflow_id,
-                        item_index=ctx.item_index,
+                    events = None
+                    if ctx.emit_fn is not None:
+                        events = AttemptEventSink(
+                            emit=ctx.emit_fn,
+                            run_id=ctx.run_id,
+                            node_span_id=ctx.parent_span_id,
+                            workflow_id=ctx.workflow_id,
+                            item_index=ctx.item_index,
+                            node_name=node.name,
+                            graph_name=ctx.graph_name,
+                            superstep=ctx.superstep,
+                        )
+                    result = run_attempts_sync(
+                        invoke,
                         node_name=node.name,
-                        graph_name=ctx.graph_name,
-                        superstep=ctx.superstep,
+                        policy=node.retry,
+                        checkpointer=ctx.checkpointer,
+                        run_id=ctx.workflow_id,
+                        scheduled_superstep=ctx.superstep_offset + ctx.superstep,
+                        events=events,
                     )
-                result = run_attempts_sync(
-                    invoke,
-                    node_name=node.name,
-                    policy=node.retry,
-                    checkpointer=ctx.checkpointer,
-                    run_id=ctx.workflow_id,
-                    scheduled_superstep=ctx.superstep_offset + ctx.superstep,
-                    events=events,
-                )
+            except BaseException:
+                # A fact this node lost still costs it, but never let that
+                # replace the node's own exception.
+                settle_node_records_sync(node_context, node_failed=True)
+                raise
+            settle_node_records_sync(node_context, node_failed=False)
 
         return wrap_outputs(node, result)

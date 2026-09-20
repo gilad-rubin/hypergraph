@@ -1511,11 +1511,25 @@ async for update in client.watch(run_ref):
   is that a crash which loses facts loses that node's step with them, so the node
   re-executes on resume and records again. You never get a step claiming work
   whose facts were dropped.
-- The call never blocks the event loop, and it never waits on the write. An
+- On the executor's own loop the call never blocks and never waits on the write;
+  on a thread path (a sync runner, or a `def` body the async runner dispatched)
+  the call writes through and returns only when the store has taken the fact. An
   `async def` body's fact is written by a task on the loop and settled by the
   framework before that node's step record — so a fact is durable by the time the
   step that produced it is, and the log reads `fact… step`. A `def` body (which
-  runs on a thread) writes straight through. If the write fails, the node fails.
+  runs on a thread) writes straight through. The deferral belongs to the
+  executor's own loop and to no other: a `def` body that drives an `asyncio.run`
+  of its own still writes straight through, because that loop is one the
+  framework would never await.
+- **A fact that could not be written fails the node.** Where the write happened
+  at the call — any body not on the executor's loop — `record()` raises the
+  store's own error there, so the body stops before whatever came next. Where the
+  write was deferred to the executor's loop (an `async def` body), the body is
+  told when the node settles, because at the call there is nothing yet to tell.
+  Catching the error inside the body changes the body's own control flow; it
+  never changes the node's outcome. When the node is failing for its own reason,
+  that exception wins; the lost fact is logged when the body never saw the record
+  error (loop path), and not again when it already had it at the call.
 - Does nothing when the run has no durable log — a run with no checkpointer, or
   any store that is not a [Run Home](host.md). That is a no-op, not a raise: a node
   must run the same in-process as it does under a host.

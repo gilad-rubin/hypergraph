@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import pathlib
+from collections import Counter
 from contextlib import aclosing
 
 import pytest
@@ -85,8 +87,15 @@ def _run_update_kinds_written_in_source() -> set[str]:
     return kinds
 
 
-def _recording_graph(name: str, *, runner, kind: str = "tool_call", payload=None, then_raise: bool = False) -> Graph:
-    """One node that records two facts, optionally dying afterwards."""
+def _recording_graph(name: str, *, runner, kind: str = "tool_call", payload=None, then_raise: bool = False, body_kind: str | None = None) -> Graph:
+    """One node that records two facts, optionally dying afterwards.
+
+    ``body_kind`` picks the body independently of the runner, so the matrix
+    that matters — runner family x body kind — can actually be built. It
+    defaults to the pairing whose write path is the family's own: an
+    ``async def`` under ``AsyncRunner`` (a loop task), a plain ``def`` under
+    ``SyncRunner`` (straight through).
+    """
     fact = {"name": "search"} if payload is None else payload
 
     @node(output_name="answer")
@@ -105,7 +114,9 @@ def _recording_graph(name: str, *, runner, kind: str = "tool_call", payload=None
             raise RuntimeError("node died after recording")
         return prompt.upper()
 
-    body = agent_turn_async if isinstance(runner, AsyncRunner) else agent_turn
+    if body_kind is None:
+        body_kind = "async def" if isinstance(runner, AsyncRunner) else "def"
+    body = agent_turn_async if body_kind == "async def" else agent_turn
     return Graph([body], name=name).with_runner(runner)
 
 
@@ -160,13 +171,20 @@ class TestNodeFactsInTheRunLog:
         # One gap-free sequence shared with the host's own facts.
         assert [_seq(u) for u in updates if u.durable] == [1, 2, 3, 4, 5, 6]
 
-    async def test_both_runner_families_produce_the_same_stream(self, tmp_path):
-        """Sync and async executors behave identically — same kinds, same order."""
+    async def test_every_supported_family_and_body_kind_produces_the_same_stream(self, tmp_path):
+        """The real matrix: runner family x body kind, not one cell per family.
+
+        ``record`` has two write paths, and the body kind — not the family —
+        picks between them: only a body on the executor's OWN loop defers. So
+        ``AsyncRunner`` + a plain ``def`` (dispatched to a thread) is a third
+        cell, and it is the one a family-shaped test never builds.
+        """
+        cells = [("sync", SyncRunner, "def"), ("async", AsyncRunner, "async def"), ("async-def-body", AsyncRunner, "def")]
         streams = {}
-        for label, runner in (("sync", SyncRunner()), ("async", AsyncRunner())):
+        for label, runner_factory, body_kind in cells:
             home = RunHome.open(_home_uri(tmp_path, f"{label}.db"))
             try:
-                graph = _recording_graph(f"agent-{label}", runner=runner)
+                graph = _recording_graph(f"agent-{label}", runner=runner_factory(), body_kind=body_kind)
                 host = serve(graph, home=home)
                 receipt = await host.submit(graph, {"prompt": "hi"})
                 view = await _run_to_arrival(host, receipt)
@@ -176,8 +194,70 @@ class TestNodeFactsInTheRunLog:
             finally:
                 await home.close()
 
-        assert streams["sync"] == streams["async"]
+        assert len({repr(stream) for stream in streams.values()}) == 1, streams
         assert streams["sync"] == [("tool_call", {"name": "search"}), ("progress", {"pct": 100})]
+
+    def test_the_fourth_cell_is_refused_before_any_node_runs(self):
+        """``SyncRunner`` + ``async def`` is not a gap in the matrix above.
+
+        It is the one pairing the framework declines outright, so the matrix
+        is three cells by construction rather than three by omission.
+        """
+        from hypergraph.exceptions import IncompatibleRunnerError
+
+        graph = _recording_graph("mismatched", runner=SyncRunner(), body_kind="async def")
+        with pytest.raises(IncompatibleRunnerError, match="doesn't support async"):
+            SyncRunner().run(graph, prompt="hi")
+
+    async def test_a_def_body_that_drives_its_own_loop_writes_through_the_thread_path(self, home):
+        """A sync body wrapping an async client is not "on the loop".
+
+        ``AsyncRunner`` dispatches a ``def`` body to a worker thread; that
+        body is free to drive an ``asyncio.run`` of its own (an async SDK
+        behind a sync wrapper). The loop it starts there is one the executor
+        will never await, so the write must go straight through on the thread
+        rather than being planted on a stranger.
+        """
+        planted: list[int] = []
+
+        @node(output_name="answer")
+        def agent_turn(prompt: str, ctx: NodeContext) -> str:
+            async def inner() -> str:
+                ctx.record("tool_call", {"name": "search"})
+                planted.append(len(ctx._record_tasks))
+                return prompt.upper()
+
+            return asyncio.run(inner())
+
+        graph = Graph([agent_turn], name="own-loop").with_runner(AsyncRunner())
+        host = serve(graph, home=home)
+        receipt = await host.submit(graph, {"prompt": "hi"})
+
+        view = await _run_to_arrival(host, receipt)
+        assert view.status is WorkflowStatus.COMPLETED
+        assert "tool_call" in _kinds(await _facts(host.client, receipt.run_ref))
+        # The mechanism, not just the outcome: nothing was planted on the
+        # body's own loop.
+        assert planted == [0]
+
+    async def test_every_planted_write_belongs_to_the_executors_loop(self, home):
+        """The invariant that makes the settle's ``gather`` sound."""
+        loops: list[bool] = []
+
+        @node(output_name="answer")
+        async def agent_turn(prompt: str, ctx: NodeContext) -> str:
+            ctx.record("tool_call", {"name": "search"})
+            ctx.record("progress", {"pct": 100})
+            loops.append(all(task.get_loop() is asyncio.get_running_loop() for task in ctx._record_tasks))
+            assert len(ctx._record_tasks) == 2
+            return prompt.upper()
+
+        graph = Graph([agent_turn], name="one-loop").with_runner(AsyncRunner())
+        host = serve(graph, home=home)
+        receipt = await host.submit(graph, {"prompt": "hi"})
+
+        assert (await _run_to_arrival(host, receipt)).status is WorkflowStatus.COMPLETED
+        assert loops == [True]
 
     async def test_watch_after_a_cursor_resumes_without_repeating_node_facts(self, home):
         """``after=`` is the same cursor contract for node facts as for host facts."""
@@ -456,6 +536,241 @@ class TestUnderContention:
 
         assert view.status is WorkflowStatus.COMPLETED
         assert "tool_call" in _kinds(await _facts(host.client, receipt.run_ref))
+
+
+# === What a LOST fact costs ===
+
+
+class BrokenFactHome(RunHome):
+    """A Run Home whose node-fact seam is down; everything else works.
+
+    ``Checkpointer`` documents both mirrors as seams a store implements, so
+    a third-party store raising here is an ordinary deployment fact — and the
+    same failure a real Run Home produces when a sibling process holds the
+    write lock past ``busy_timeout``.
+    """
+
+    def append_run_fact_sync(self, run_id: str, kind: str, payload: dict) -> None:
+        raise RuntimeError("store down")
+
+    async def append_run_fact(self, run_id: str, kind: str, payload: dict) -> None:
+        raise RuntimeError("store down")
+
+
+def _record_then_continue(*, body_kind: str, guard: bool, trace: list[str], side_effects: list[str]):
+    """One node that records, then does the rest of its work."""
+
+    def work(text: str, ctx: NodeContext) -> str:
+        trace.append("entered")
+        if guard:
+            try:
+                ctx.record("tool_call", {"n": 1})
+                trace.append("record-returned")
+            except Exception as exc:  # noqa: BLE001
+                trace.append(f"record-raised-IN-BODY:{type(exc).__name__}")
+        else:
+            ctx.record("tool_call", {"n": 1})
+            trace.append("record-returned")
+        side_effects.append("charged the customer")
+        trace.append("body-continued")
+        return text.upper()
+
+    if body_kind == "async def":
+
+        @node(output_name="out")
+        async def leaf(text: str, ctx: NodeContext) -> str:
+            return work(text, ctx)
+    else:
+
+        @node(output_name="out")
+        def leaf(text: str, ctx: NodeContext) -> str:
+            return work(text, ctx)
+
+    return leaf
+
+
+def _shaped(leaf, shape: str):
+    """The same leaf, flat / inside ``as_node()`` / mapped over two items."""
+    inner = Graph([leaf], name="inner")
+    if shape == "flat":
+        return inner, {"text": "hi"}
+    if shape == "nested":
+        return Graph([inner.as_node(name="inner")], name="outer"), {"text": "hi"}
+    if shape == "mapped":
+        return Graph([inner.as_node(name="inner").map_over("text")], name="outer"), {"text": ["hi", "yo"]}
+    raise AssertionError(shape)
+
+
+async def _run_with_broken_seam(tmp_path, *, runner_factory, body_kind, guard, shape, name="runs.db"):
+    """Run the shaped graph against a down fact seam; report what happened."""
+    trace: list[str] = []
+    side_effects: list[str] = []
+    home = BrokenFactHome.open(_home_uri(tmp_path, name))
+    graph, inputs = _shaped(_record_then_continue(body_kind=body_kind, guard=guard, trace=trace, side_effects=side_effects), shape)
+    runner = runner_factory().with_checkpointer(home)
+    error: BaseException | None = None
+    try:
+        if isinstance(runner, SyncRunner):
+            await asyncio.to_thread(lambda: runner.run(graph, workflow_id="wf-1", **inputs))
+        else:
+            await runner.run(graph, workflow_id="wf-1", **inputs)
+    except BaseException as exc:  # noqa: BLE001
+        error = exc
+    runs = {run.id: run.status for run in home.runs(limit=None)}
+    logged = [] if home.get_run("wf-1") is None else [kind for _seq, kind, _payload, _at in await home._read_run_updates("wf-1")]
+    await home.close()
+    return trace, side_effects, error, runs, logged
+
+
+def _expected_trace(*, runner_factory, body_kind: str, guard: bool) -> list[str]:
+    """Where the body learns, per pairing — the difference D2 keeps."""
+    if runner_factory is AsyncRunner and body_kind == "async def":
+        # Deferred to the executor's loop: nothing to tell at the call.
+        return ["entered", "record-returned", "body-continued"]
+    if guard:
+        return ["entered", "record-raised-IN-BODY:RuntimeError", "body-continued"]
+    return ["entered"]
+
+
+_FAILURE_ROWS = [
+    ("A-sync-def-unguarded-flat", SyncRunner, "def", False, "flat"),
+    ("B-async-coro-unguarded-flat", AsyncRunner, "async def", False, "flat"),
+    ("C-async-def-unguarded-flat", AsyncRunner, "def", False, "flat"),
+    ("D-sync-def-guarded-flat", SyncRunner, "def", True, "flat"),
+    ("E-async-coro-guarded-flat", AsyncRunner, "async def", True, "flat"),
+    ("F-async-def-guarded-flat", AsyncRunner, "def", True, "flat"),
+    ("G-async-coro-guarded-nested", AsyncRunner, "async def", True, "nested"),
+    ("H-async-def-guarded-mapped", AsyncRunner, "def", True, "mapped"),
+    ("I-sync-def-guarded-nested", SyncRunner, "def", True, "nested"),
+]
+
+_EXPECTED_RUNS = {
+    "flat": {"wf-1"},
+    "nested": {"wf-1", "wf-1/inner"},
+    "mapped": {"wf-1", "wf-1/inner", "wf-1/inner/0", "wf-1/inner/1"},
+}
+
+
+class TestWhenTheWriteFails:
+    """ONE failure semantics: a fact that could not be written fails the node.
+
+    The nine pairings a node author can actually reach — runner family x body
+    kind x guarded x flat/nested/mapped. Four of them used to report
+    COMPLETED over a fact that never landed, because a ``try/except`` in the
+    body was load-bearing on the thread paths and dead code on the loop path.
+    """
+
+    @pytest.mark.parametrize(("label", "runner_factory", "body_kind", "guard", "shape"), _FAILURE_ROWS, ids=[row[0] for row in _FAILURE_ROWS])
+    async def test_a_lost_fact_fails_the_run(self, tmp_path, label, runner_factory, body_kind, guard, shape):
+        trace, side_effects, error, runs, logged = await _run_with_broken_seam(
+            tmp_path, runner_factory=runner_factory, body_kind=body_kind, guard=guard, shape=shape, name=f"{label}.db"
+        )
+
+        # The store's OWN exception reaches the caller — no framework wrapper.
+        assert isinstance(error, RuntimeError), error
+        assert "store down" in str(error)
+        # Every run the shape produced is failed, parent and children alike.
+        assert set(runs) == _EXPECTED_RUNS[shape], runs
+        assert set(runs.values()) == {WorkflowStatus.FAILED}, runs
+        # And the fact the node asked to commit is not in the log.
+        assert "tool_call" not in logged, logged
+
+        expected = _expected_trace(runner_factory=runner_factory, body_kind=body_kind, guard=guard)
+        if shape == "mapped":
+            # Two items on two threads: the shape is per item, the order is not.
+            assert Counter(trace) == Counter(expected * 2), trace
+        else:
+            assert trace == expected, trace
+        # The rest of the body ran exactly where the body was allowed to continue.
+        assert bool(side_effects) is (trace.count("body-continued") > 0)
+
+    @pytest.mark.parametrize(
+        ("label", "runner_factory", "body_kind"),
+        [("D", SyncRunner, "def"), ("F", AsyncRunner, "def")],
+        ids=["sync-runner", "async-runner-def-body"],
+    )
+    async def test_the_guard_does_not_buy_a_completed_run(self, tmp_path, label, runner_factory, body_kind):
+        """The behaviour change, called out by name.
+
+        On the thread paths a ``try/except`` around ``ctx.record`` used to
+        turn a lost fact into ``status=completed``. It still changes the
+        BODY's control flow — the body keeps going and its side effect
+        happens — but it no longer changes the node's outcome.
+        """
+        trace, side_effects, error, runs, _logged = await _run_with_broken_seam(
+            tmp_path, runner_factory=runner_factory, body_kind=body_kind, guard=True, shape="flat", name=f"guard-{label}.db"
+        )
+
+        assert trace == ["entered", "record-raised-IN-BODY:RuntimeError", "body-continued"]
+        assert side_effects == ["charged the customer"]
+        assert isinstance(error, RuntimeError) and "store down" in str(error)
+        assert runs == {"wf-1": WorkflowStatus.FAILED}
+
+    @pytest.mark.parametrize(
+        ("runner_factory", "body_kind"),
+        [(SyncRunner, "def"), (AsyncRunner, "async def")],
+        ids=["sync", "async"],
+    )
+    async def test_a_node_failing_for_its_own_reason_keeps_its_own_exception(self, tmp_path, caplog, runner_factory, body_kind):
+        """The node's own error wins; the lost fact never replaces it.
+
+        Whether the framework also LOGS the lost fact depends on whether the
+        body was already handed it: on the loop path ``record`` returned
+        cleanly, so the warning is the only place it surfaces; on the thread
+        path the body caught the store's own exception at the call and does
+        not need telling twice.
+        """
+        home = BrokenFactHome.open(_home_uri(tmp_path, "own-reason.db"))
+
+        def work(text: str, ctx: NodeContext) -> str:
+            with contextlib.suppress(Exception):
+                ctx.record("tool_call", {"n": 1})
+            raise RuntimeError("node died")
+
+        if body_kind == "async def":
+
+            @node(output_name="out")
+            async def leaf(text: str, ctx: NodeContext) -> str:
+                return work(text, ctx)
+        else:
+
+            @node(output_name="out")
+            def leaf(text: str, ctx: NodeContext) -> str:
+                return work(text, ctx)
+
+        runner = runner_factory().with_checkpointer(home)
+        graph = Graph([leaf], name="dies")
+        with caplog.at_level("WARNING", logger="hypergraph.runners"), pytest.raises(RuntimeError, match="node died"):
+            if isinstance(runner, SyncRunner):
+                await asyncio.to_thread(lambda: runner.run(graph, text="hi", workflow_id="wf-1"))
+            else:
+                await runner.run(graph, text="hi", workflow_id="wf-1")
+        await home.close()
+
+        warned = [record for record in caplog.records if "recorded facts could not be written" in record.getMessage()]
+        assert bool(warned) is (body_kind == "async def"), [record.getMessage() for record in caplog.records]
+
+    async def test_the_failure_surfaces_at_the_record_call_on_a_thread_path(self, tmp_path):
+        """The traceback's last user frame is the ``ctx.record(...)`` line."""
+        home = BrokenFactHome.open(_home_uri(tmp_path, "frame.db"))
+
+        @node(output_name="out")
+        def leaf(text: str, ctx: NodeContext) -> str:
+            ctx.record("tool_call", {"n": 1})
+            return text.upper()
+
+        runner = SyncRunner().with_checkpointer(home)
+        graph = Graph([leaf], name="unguarded")
+        with pytest.raises(RuntimeError, match="store down") as caught:
+            await asyncio.to_thread(lambda: runner.run(graph, text="hi", workflow_id="wf-1"))
+        await home.close()
+
+        in_the_node = [frame for frame in caught.traceback if frame.name == "leaf"]
+        assert "ctx.record" in str(in_the_node[-1].statement), in_the_node[-1].statement
+        # Through ``record``, not through the settle: the body stopped AT the
+        # call rather than being told after it had finished.
+        names = [frame.name for frame in caught.traceback]
+        assert "record" in names and "_resolve_record_failure" not in names, names
 
 
 # === The closed framework vocabulary ===
