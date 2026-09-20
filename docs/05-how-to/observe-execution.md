@@ -502,10 +502,9 @@ label = f"item {event.item_index}" if event.item_index is not None else "run"
 you already correlate with spans, but the route above does not need it.
 
 **When there is no `workflow_id`.** `workflow_id` is whatever the caller passed
-to `run()` or `map()`; it is `None` when the caller passed nothing, and
-`map_iter()` has no `workflow_id` parameter at all. Route those runs by
-`run_id`, which is always set and is distinct per run — including one run per
-nested child graph and one per mapped item:
+to `run()`, `map()` or `map_iter()`; it is `None` only when the caller passed
+nothing. Route those runs by `run_id`, which is always set and is distinct per
+run — including one run per nested child graph and one per mapped item:
 
 ```python
 route = (event.workflow_id or event.run_id, event.node_name)

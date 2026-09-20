@@ -29,7 +29,6 @@ from hypergraph import (
     END,
     AsyncRunner,
     Graph,
-    GraphNode,
     RunStatus,
     StopRequestedEvent,
     StreamingChunkEvent,
@@ -41,6 +40,7 @@ from hypergraph import (
     route,
 )
 from hypergraph.runners._shared.node_context import NodeContext
+from tests._streaming_graphs import nested_streaming_graph
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1298,44 +1298,6 @@ class TestStreamingChunkCorrelation:
 # ---------------------------------------------------------------------------
 
 
-def _drafting_graph() -> Graph:
-    """Child graph that streams from two different nodes."""
-
-    @node(output_name="draft")
-    def streamer(topic: str, ctx: NodeContext) -> str:
-        ctx.stream(f"drafting:streamer:{topic}")
-        return topic
-
-    @node(output_name="drafted")
-    def polisher(draft: str, ctx: NodeContext) -> str:
-        ctx.stream(f"drafting:polisher:{draft}")
-        return draft
-
-    return Graph([streamer, polisher], name="drafting")
-
-
-def _summary_graph() -> Graph:
-    """Sibling child graph whose streaming node shares the local name 'streamer'."""
-
-    @node(output_name="summarized")
-    def streamer(topic: str, ctx: NodeContext) -> str:
-        ctx.stream(f"summary:streamer:{topic}")
-        return topic
-
-    return Graph([streamer], name="summary")
-
-
-def _nested_streaming_graph() -> Graph:
-    """Parent graph with two nested GraphNodes, both streaming."""
-    return Graph(
-        [
-            GraphNode(_drafting_graph(), name="left"),
-            GraphNode(_summary_graph(), name="right"),
-        ],
-        name="outer",
-    )
-
-
 def _identity(event: StreamingChunkEvent) -> tuple[str, str, str, int | None]:
     return (event.workflow_id, event.node_name, event.graph_name, event.item_index)
 
@@ -1373,7 +1335,7 @@ class TestNestedStreamingChunkRouting:
     def test_sync_nested_run_carries_qualified_identity(self):
         collector = CorrelationCollector()
         SyncRunner().run(
-            _nested_streaming_graph(),
+            nested_streaming_graph(),
             workflow_id="wf-nested-sync",
             topic="t",
             event_processors=[collector],
@@ -1383,7 +1345,7 @@ class TestNestedStreamingChunkRouting:
     async def test_async_nested_run_carries_qualified_identity(self):
         collector = CorrelationCollector()
         await AsyncRunner().run(
-            _nested_streaming_graph(),
+            nested_streaming_graph(),
             workflow_id="wf-nested-async",
             topic="t",
             event_processors=[collector],
@@ -1393,7 +1355,7 @@ class TestNestedStreamingChunkRouting:
     def test_sync_nested_map_carries_qualified_identity(self):
         collector = CorrelationCollector()
         SyncRunner().map(
-            _nested_streaming_graph(),
+            nested_streaming_graph(),
             {"topic": ["a", "b"]},
             map_over="topic",
             workflow_id="wf-nested-map-sync",
@@ -1404,7 +1366,7 @@ class TestNestedStreamingChunkRouting:
     async def test_async_nested_map_carries_qualified_identity(self):
         collector = CorrelationCollector()
         await AsyncRunner().map(
-            _nested_streaming_graph(),
+            nested_streaming_graph(),
             {"topic": ["a", "b"]},
             map_over="topic",
             workflow_id="wf-nested-map-async",
@@ -1416,7 +1378,7 @@ class TestNestedStreamingChunkRouting:
         """The recipe's key is a tuple because neither half is a key alone."""
         collector = CorrelationCollector()
         await AsyncRunner().map(
-            _nested_streaming_graph(),
+            nested_streaming_graph(),
             {"topic": ["a", "b"]},
             map_over="topic",
             workflow_id="wf-keys",
@@ -1440,7 +1402,7 @@ class TestNestedStreamingChunkRouting:
         """A consumer keyed on node_name alone drops chunks onto the wrong sink."""
         collector = CorrelationCollector()
         await AsyncRunner().map(
-            _nested_streaming_graph(),
+            nested_streaming_graph(),
             {"topic": ["a", "b"]},
             map_over="topic",
             workflow_id="wf-misroute",
@@ -1496,7 +1458,7 @@ class TestChunkRouterRecipe:
     def test_sync_recipe_routes_nested_map_chunks(self):
         router = ChunkRouter()
         SyncRunner().map(
-            _nested_streaming_graph(),
+            nested_streaming_graph(),
             {"topic": ["a", "b"]},
             map_over="topic",
             workflow_id="wf-recipe-sync",
@@ -1514,7 +1476,7 @@ class TestChunkRouterRecipe:
     async def test_async_recipe_routes_plain_nested_run_chunks(self):
         router = ChunkRouter()
         await AsyncRunner().run(
-            _nested_streaming_graph(),
+            nested_streaming_graph(),
             workflow_id="wf-recipe-async",
             topic="t",
             event_processors=[router],
@@ -1527,14 +1489,35 @@ class TestChunkRouterRecipe:
             ("wf-recipe-async/right", "streamer"): ["summary:streamer:t"],
         }
 
+    async def test_recipe_routes_map_iter_chunks_when_the_caller_names_the_stream(self):
+        """`map_iter(workflow_id=...)` reaches the same six sinks `map()` does."""
+        router = ChunkRouter()
+        graph = nested_streaming_graph().with_processors(router)
+        async for _index, _result in AsyncRunner().map_iter(
+            graph,
+            {"topic": ["a", "b"]},
+            map_over="topic",
+            workflow_id="wf-recipe-iter",
+        ):
+            pass
+
+        assert dict(router.sinks) == {
+            ("wf-recipe-iter/0/left", "streamer"): ["drafting:streamer:a"],
+            ("wf-recipe-iter/0/left", "polisher"): ["drafting:polisher:a"],
+            ("wf-recipe-iter/0/right", "streamer"): ["summary:streamer:a"],
+            ("wf-recipe-iter/1/left", "streamer"): ["drafting:streamer:b"],
+            ("wf-recipe-iter/1/left", "polisher"): ["drafting:polisher:b"],
+            ("wf-recipe-iter/1/right", "streamer"): ["summary:streamer:b"],
+        }
+
     async def test_recipe_falls_back_to_run_id_when_no_workflow_id(self):
-        """`workflow_id` is caller-supplied; `map_iter()` never has one.
+        """`workflow_id` is caller-supplied; it is `None` when the caller passes none.
 
         Without the documented ``or event.run_id`` fallback the whole batch
         collapses onto two routes, merging unrelated child graphs and items.
         """
         collector = _ChunkEventCollector()
-        graph = _nested_streaming_graph().with_processors(collector)
+        graph = nested_streaming_graph().with_processors(collector)
         async for _index, _result in AsyncRunner().map_iter(
             graph,
             {"topic": ["a", "b"]},

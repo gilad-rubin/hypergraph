@@ -1296,6 +1296,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         error_handling: ErrorHandling = "raise",
+        workflow_id: str | None = None,
         **input_values: Any,
     ) -> Iterator[tuple[int, RunResult]]:
         """Stream ``(index, RunResult)`` pairs as each mapped item completes.
@@ -1306,10 +1307,32 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         source item regardless of arrival order. ``error_handling="raise"``
         re-raises when a failed item is reached; ``"continue"`` yields the failed
         ``RunResult`` and keeps going.
+
+        ``workflow_id`` names the stream: item *i* runs as ``<workflow_id>/<i>``
+        and its nested children as ``<workflow_id>/<i>/<node>``, so every event
+        carries a caller-stable ``(workflow_id, node_name)`` route. It names, it
+        does not persist: ``map_iter`` is still not a batch — no parent batch
+        row, no resume, no identity gate — so a runner that has a checkpointer
+        attached rejects it and points at :meth:`map`.
         """
         run_option_names = runner_option_names(self.run)
         map_option_names = runner_option_names(self.map)
         validate_error_handling(error_handling)
+        # The child ids built below legitimately contain '/', but they reach run()
+        # under _validation_ctx, which skips the re-check. Only the caller's own
+        # id is screened, exactly as map() screens its own.
+        validate_workflow_id(workflow_id, None)
+        # Truthiness, not `is not None`: the child ids below are built the same
+        # way, so an empty id names nothing and behaves exactly like None.
+        if workflow_id and self._checkpointer is not None:
+            raise ValueError(
+                f"runner.map_iter() cannot take workflow_id={workflow_id!r} while a checkpointer is attached.\n\n"
+                "map_iter() names a stream for routing only: it writes no parent batch row, does not "
+                "resume completed items, and does not gate batch identity. Persisting per-item rows "
+                "under a name with no batch would look like a batch that lost its parent.\n\n"
+                "How to fix: use runner.map(..., workflow_id=...) for durable batch identity, or drop "
+                "workflow_id= and route chunks by (event.workflow_id or event.run_id, event.node_name)."
+            )
         validate_on_missing(on_missing)
         effective_selected = resolve_runtime_selected(select, graph)
         ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=effective_selected)
@@ -1333,6 +1356,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         # Lazy: pull one input variation at a time so peak memory stays bounded
         # by a single item, not the whole batch.
         for idx, variation_inputs in enumerate(generate_map_inputs(normalized_values, map_over_list, map_mode, clone)):
+            child_workflow_id = f"{workflow_id}/{idx}" if workflow_id else None
             try:
                 result = self.run(
                     graph,
@@ -1342,6 +1366,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     entrypoint=entrypoint,
                     error_handling="continue",
                     show_progress=False,
+                    workflow_id=child_workflow_id,
                     _validation_ctx=ctx,
                     _item_index=idx,
                 )
