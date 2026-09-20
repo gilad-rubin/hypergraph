@@ -182,6 +182,7 @@ async for index, result in runner.map_iter(
 - **Bounded memory** — nothing accumulates: the sync form pulls one input item at a time through a lazy generator; the async form buffers completed results in a bounded queue, so a slow consumer pauses production (backpressure).
 - **Concurrent (async)** — `AsyncRunner.map_iter()` runs items concurrently and yields in completion order; pass `max_concurrency=` to cap the parallelism. `SyncRunner.map_iter()` runs items one at a time and yields in input order.
 - **Error handling** — the default `error_handling="raise"` re-raises when a failed item is reached; `error_handling="continue"` yields the failed `RunResult` and keeps going.
+- **Routable** — `workflow_id=` names the stream: item *i* runs as `<workflow_id>/<index>` and its nested children as `<workflow_id>/<index>/<node>`, so chunks route by the documented `(event.workflow_id, event.node_name)` key instead of needing the `or event.run_id` fallback. It names only: `map_iter()` writes no parent batch row, does not resume completed items, and is still not a stop-capable handle. Because that name promises nothing durable, a runner with a checkpointer attached rejects `map_iter(workflow_id=...)` and points at `map()`, which owns durable batch identity.
 
 The sync form is a plain generator:
 

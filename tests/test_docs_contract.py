@@ -483,7 +483,8 @@ def test_streaming_chunk_routing_recipe_documents_the_public_key() -> None:
 
     # workflow_id is caller-supplied, so the recipe names the always-set fallback.
     assert "(event.workflow_id or event.run_id, event.node_name)" in recipe
-    assert "`map_iter()` has no `workflow_id` parameter at all" in flat
+    assert "`run()`, `map()` or `map_iter()`" in flat
+    assert "it is `None` only when the caller passed nothing" in flat
 
     # The inherited drop policy (ADR 0002) is stated, not implied.
     assert "the oldest queued `StreamingChunkEvent` is discarded first" in flat

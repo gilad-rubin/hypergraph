@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 
 import pytest
 
-from hypergraph import Graph, RunResult, RunStatus, node
+from hypergraph import (
+    Graph,
+    GraphNode,
+    NodeContext,
+    RunResult,
+    RunStatus,
+    StreamingChunkEvent,
+    TypedEventProcessor,
+    node,
+)
+from hypergraph.checkpointers import MemoryCheckpointer
 from hypergraph.runners import AsyncRunner, SyncRunner
 
 
@@ -274,3 +285,242 @@ async def test_async_propagates_node_base_exception():
     with pytest.raises(Boom):
         async for _ in runner.map_iter(graph, {"x": [1]}, map_over="x", max_concurrency=1):
             pass
+
+
+# ---------------------------------------------------------------------------
+# workflow_id= names the stream so chunks route by (workflow_id, node_name) (#451)
+# ---------------------------------------------------------------------------
+
+
+def _drafting_graph() -> Graph:
+    """Child graph that streams from two different nodes."""
+
+    @node(output_name="draft")
+    def streamer(topic: str, ctx: NodeContext) -> str:
+        ctx.stream(f"drafting:streamer:{topic}")
+        return topic
+
+    @node(output_name="drafted")
+    def polisher(draft: str, ctx: NodeContext) -> str:
+        ctx.stream(f"drafting:polisher:{draft}")
+        return draft
+
+    return Graph([streamer, polisher], name="drafting")
+
+
+def _summary_graph() -> Graph:
+    """Sibling child graph whose streaming node shares the local name 'streamer'."""
+
+    @node(output_name="summarized")
+    def streamer(topic: str, ctx: NodeContext) -> str:
+        ctx.stream(f"summary:streamer:{topic}")
+        return topic
+
+    return Graph([streamer], name="summary")
+
+
+def _nested_streaming_graph() -> Graph:
+    """Parent graph with two nested GraphNodes, both streaming."""
+    return Graph(
+        [GraphNode(_drafting_graph(), name="left"), GraphNode(_summary_graph(), name="right")],
+        name="outer",
+    )
+
+
+class _ChunkCollector(TypedEventProcessor):
+    """Real EventProcessor subclass, so `graph.with_processors()` accepts it."""
+
+    def __init__(self) -> None:
+        self.events: list[StreamingChunkEvent] = []
+
+    def on_streaming_chunk(self, event: StreamingChunkEvent) -> None:
+        self.events.append(event)
+
+
+def _routes(collector: _ChunkCollector) -> set[tuple[str | None, str]]:
+    """The documented routing key from docs/05-how-to/observe-execution.md."""
+    return {(event.workflow_id, event.node_name) for event in collector.events}
+
+
+def _expected_routes(prefix: str) -> set[tuple[str, str]]:
+    return {
+        (f"{prefix}/0/left", "streamer"),
+        (f"{prefix}/0/left", "polisher"),
+        (f"{prefix}/0/right", "streamer"),
+        (f"{prefix}/1/left", "streamer"),
+        (f"{prefix}/1/left", "polisher"),
+        (f"{prefix}/1/right", "streamer"),
+    }
+
+
+@pytest.mark.parametrize("workflow_id", ["wf", "other"])
+def test_sync_map_iter_workflow_id_qualifies_every_chunk_source(workflow_id):
+    """Each item runs as <workflow_id>/<i>, so six chunk sources get six routes."""
+    collector = _ChunkCollector()
+    graph = _nested_streaming_graph().with_processors(collector)
+
+    list(SyncRunner().map_iter(graph, {"topic": ["a", "b"]}, map_over="topic", workflow_id=workflow_id))
+
+    assert len(collector.events) == 6
+    assert _routes(collector) == _expected_routes(workflow_id)
+
+
+@pytest.mark.parametrize("workflow_id", ["wf", "other"])
+async def test_async_map_iter_workflow_id_qualifies_every_chunk_source(workflow_id):
+    """The async runner produces the identical route set."""
+    collector = _ChunkCollector()
+    graph = _nested_streaming_graph().with_processors(collector)
+
+    async for _index, _result in AsyncRunner().map_iter(graph, {"topic": ["a", "b"]}, map_over="topic", workflow_id=workflow_id):
+        pass
+
+    assert len(collector.events) == 6
+    assert _routes(collector) == _expected_routes(workflow_id)
+
+
+def test_sync_map_iter_matches_map_route_set():
+    """map_iter(workflow_id=...) routes byte-identically to map(workflow_id=...)."""
+    from_map = _ChunkCollector()
+    SyncRunner().map(
+        _nested_streaming_graph(),
+        {"topic": ["a", "b"]},
+        map_over="topic",
+        workflow_id="wf",
+        event_processors=[from_map],
+    )
+
+    from_iter = _ChunkCollector()
+    list(
+        SyncRunner().map_iter(
+            _nested_streaming_graph().with_processors(from_iter),
+            {"topic": ["a", "b"]},
+            map_over="topic",
+            workflow_id="wf",
+        )
+    )
+
+    assert _routes(from_iter) == _routes(from_map)
+
+
+def test_sync_map_iter_without_workflow_id_is_unchanged():
+    """Omitting workflow_id keeps master's behavior: None everywhere, run_id fallback needed."""
+    collector = _ChunkCollector()
+    graph = _nested_streaming_graph().with_processors(collector)
+
+    list(SyncRunner().map_iter(graph, {"topic": ["a", "b"]}, map_over="topic"))
+
+    assert len(collector.events) == 6
+    assert {event.workflow_id for event in collector.events} == {None}
+    assert len(_routes(collector)) == 2
+    assert len({(e.workflow_id or e.run_id, e.node_name) for e in collector.events}) == 6
+
+
+async def test_async_map_iter_without_workflow_id_is_unchanged():
+    """Same for the async runner."""
+    collector = _ChunkCollector()
+    graph = _nested_streaming_graph().with_processors(collector)
+
+    async for _index, _result in AsyncRunner().map_iter(graph, {"topic": ["a", "b"]}, map_over="topic"):
+        pass
+
+    assert len(collector.events) == 6
+    assert {event.workflow_id for event in collector.events} == {None}
+    assert len(_routes(collector)) == 2
+    assert len({(e.workflow_id or e.run_id, e.node_name) for e in collector.events}) == 6
+
+
+def test_sync_map_iter_rejects_slash_in_workflow_id():
+    """A caller-supplied '/' is rejected by the same check map() and run() use."""
+    executed: list[int] = []
+
+    @node(output_name="out")
+    def track(x: int) -> int:
+        executed.append(x)
+        return x
+
+    runner = SyncRunner()
+    graph = Graph([track])
+
+    with pytest.raises(ValueError, match=r"workflow_id cannot contain '/': 'a/b'\."):
+        list(runner.map_iter(graph, {"x": [1, 2]}, map_over="x", workflow_id="a/b"))
+    assert executed == []
+
+
+async def test_async_map_iter_rejects_slash_in_workflow_id():
+    """Same rejection on the async runner, before any item runs."""
+    executed: list[int] = []
+
+    @node(output_name="out")
+    async def track(x: int) -> int:
+        executed.append(x)
+        return x
+
+    runner = AsyncRunner()
+    graph = Graph([track])
+
+    with pytest.raises(ValueError, match=r"workflow_id cannot contain '/': 'a/b'\."):
+        async for _ in runner.map_iter(graph, {"x": [1, 2]}, map_over="x", workflow_id="a/b"):
+            pass
+    assert executed == []
+
+
+def test_sync_map_iter_refuses_workflow_id_when_a_checkpointer_is_attached():
+    """map_iter names a stream, not a durable batch: with a checkpointer it refuses."""
+    executed: list[int] = []
+
+    @node(output_name="out")
+    def track(x: int) -> int:
+        executed.append(x)
+        return x
+
+    checkpointer = MemoryCheckpointer()
+    runner = SyncRunner(checkpointer=checkpointer)
+    graph = Graph([track])
+
+    with pytest.raises(ValueError, match="durable batch identity") as excinfo:
+        list(runner.map_iter(graph, {"x": [1, 2]}, map_over="x", workflow_id="wf"))
+
+    assert "runner.map(..., workflow_id=...)" in str(excinfo.value)
+    assert executed == []
+
+
+async def test_async_map_iter_refuses_workflow_id_when_a_checkpointer_is_attached():
+    """Same refusal on the async runner, before any item runs."""
+    executed: list[int] = []
+
+    @node(output_name="out")
+    async def track(x: int) -> int:
+        executed.append(x)
+        return x
+
+    checkpointer = MemoryCheckpointer()
+    runner = AsyncRunner(checkpointer=checkpointer)
+    graph = Graph([track])
+
+    with pytest.raises(ValueError, match="durable batch identity") as excinfo:
+        async for _ in runner.map_iter(graph, {"x": [1, 2]}, map_over="x", workflow_id="wf"):
+            pass
+
+    assert "runner.map(..., workflow_id=...)" in str(excinfo.value)
+    assert executed == []
+    assert await checkpointer.list_runs() == []
+
+
+async def test_map_iter_without_workflow_id_still_runs_with_a_checkpointer():
+    """The refusal is scoped to workflow_id=; the default path is unchanged."""
+    checkpointer = MemoryCheckpointer()
+    runner = AsyncRunner(checkpointer=checkpointer)
+    graph = Graph([double])
+
+    pairs = [pair async for pair in runner.map_iter(graph, {"x": [1, 2]}, map_over="x")]
+
+    assert [r["doubled"] for _, r in pairs] == [2, 4]
+    assert await checkpointer.list_runs() == []
+
+
+def test_sync_map_iter_signature_gained_workflow_id_but_not_max_concurrency():
+    """The generated sync half tracks the async source without inheriting async-only options."""
+    params = tuple(inspect.signature(SyncRunner.map_iter).parameters)
+    assert "workflow_id" in params
+    assert "max_concurrency" not in params
+    assert "workflow_id" in tuple(inspect.signature(AsyncRunner.map_iter).parameters)

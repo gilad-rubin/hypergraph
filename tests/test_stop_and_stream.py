@@ -1527,8 +1527,29 @@ class TestChunkRouterRecipe:
             ("wf-recipe-async/right", "streamer"): ["summary:streamer:t"],
         }
 
+    async def test_recipe_routes_map_iter_chunks_when_the_caller_names_the_stream(self):
+        """`map_iter(workflow_id=...)` reaches the same six sinks `map()` does."""
+        router = ChunkRouter()
+        graph = _nested_streaming_graph().with_processors(router)
+        async for _index, _result in AsyncRunner().map_iter(
+            graph,
+            {"topic": ["a", "b"]},
+            map_over="topic",
+            workflow_id="wf-recipe-iter",
+        ):
+            pass
+
+        assert dict(router.sinks) == {
+            ("wf-recipe-iter/0/left", "streamer"): ["drafting:streamer:a"],
+            ("wf-recipe-iter/0/left", "polisher"): ["drafting:polisher:a"],
+            ("wf-recipe-iter/0/right", "streamer"): ["summary:streamer:a"],
+            ("wf-recipe-iter/1/left", "streamer"): ["drafting:streamer:b"],
+            ("wf-recipe-iter/1/left", "polisher"): ["drafting:polisher:b"],
+            ("wf-recipe-iter/1/right", "streamer"): ["summary:streamer:b"],
+        }
+
     async def test_recipe_falls_back_to_run_id_when_no_workflow_id(self):
-        """`workflow_id` is caller-supplied; `map_iter()` never has one.
+        """`workflow_id` is caller-supplied; it is `None` when the caller passes none.
 
         Without the documented ``or event.run_id`` fallback the whole batch
         collapses onto two routes, merging unrelated child graphs and items.
