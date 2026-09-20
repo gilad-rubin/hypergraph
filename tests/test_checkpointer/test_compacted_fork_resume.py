@@ -23,6 +23,8 @@ Assertion map (ticket acceptance items):
     nested GraphNode lineage                TestNestedCompactedLineage
     composes with the in-run nested guard   TestNestedCompactedLineage
     compacted loop value reaches consumer   TestCompactedLoopValueSurvives
+    same when the producer never reads it   TestCompactedLoopValueSurvives
+    'latest' answers what 'full' answers    TestCompactedLoopValueSurvives
 
 #277 extends the same witness: the carrier now records WHICH nodes it folded,
 so the refusal is per-producer instead of per-value-name, and the in-run guard
@@ -192,6 +194,57 @@ def build_loop_crash_graph(fail_first: list[bool], *, limit: int = 3, default: i
         nodes=[accumulate, decide, crash, report],
         edges=[(accumulate, decide), (decide, crash), (crash, report), (accumulate, report)],
         name="loopvalue",
+        entrypoint="accumulate",
+    )
+    return graph, calls
+
+
+def build_loop_derived_graph(fail_first: list[bool]):
+    """The same loop, but the consumed value is DERIVED, not the loop counter.
+
+    ``accumulate`` re-reads ``total`` every turn; ``transform`` does not read
+    ``doubled``, it only emits it. That is the harder replay shape: nothing
+    before ``transform``'s own row raises the counter for ``doubled``, so the
+    number it is owed only becomes known when ``decide``'s surviving row —
+    which comes AFTER it — is replayed.
+    """
+    calls = {"accumulate": 0, "transform": 0, "report": 0}
+
+    @node(output_name="total")
+    def accumulate(total: int = 0) -> int:
+        calls["accumulate"] += 1
+        return total + 1
+
+    @node(output_name="doubled")
+    def transform(total: int = 0) -> int:
+        calls["transform"] += 1
+        return total * 2
+
+    @route(targets=["accumulate", "crash"])
+    def decide(total: int = 0, doubled: int = 0) -> str:
+        return "crash" if total >= 3 else "accumulate"
+
+    @node(output_name="checkpointed")
+    def crash(total: int = 0) -> str:
+        if fail_first[0]:
+            raise RuntimeError("boom")
+        return "ok"
+
+    @node(output_name="report")
+    def report(doubled: int = 0, checkpointed: str = "") -> str:
+        calls["report"] += 1
+        return f"doubled={doubled}"
+
+    graph = Graph(
+        nodes=[accumulate, transform, decide, crash, report],
+        edges=[
+            (accumulate, transform),
+            (transform, decide),
+            (decide, crash),
+            (crash, report),
+            (transform, report),
+        ],
+        name="loopderived",
         entrypoint="accumulate",
     )
     return graph, calls
@@ -647,6 +700,13 @@ class TestCompactedLoopValueSurvives:
     them. The explicit-edge producer check then rejects the restored value and
     the consumer runs on its signature default, silently, in a run that reports
     COMPLETED with the right value sitting in ``result.values``.
+
+    Both replay shapes are pinned, because they need different reasoning:
+
+    - the producer RE-READS what it emits (``total``): its own surviving row
+      carries the original version, so the number is known when it replays;
+    - the producer never reads what it emits (``doubled``): only a consumer row
+      replayed AFTER it carries the number, so it is known only at the end.
     """
 
     @pytest.fixture(params=["async-sqlite", "async-memory"])
@@ -705,6 +765,50 @@ class TestCompactedLoopValueSurvives:
             assert calls == {"accumulate": 3, "report": 1}
         finally:
             await backend.close()
+
+    async def test_crash_resume_with_a_derived_value_reaches_its_consumer(self, tmp_path, backend_kind):
+        """The producer emits a name it never reads — nothing raises it early.
+
+        ``accumulate`` re-reads ``total``, so its own row already carries the
+        original absolute version. ``transform`` does not read ``doubled``:
+        the only row that knows what version ``doubled`` is at is ``decide``,
+        which replays AFTER it. A per-step number cannot close this shape; the
+        last producer of a name only learns its version once the whole history
+        has been walked.
+        """
+        outcomes = {}
+        for retention in ("full", "latest"):
+            (tmp_path / retention).mkdir(exist_ok=True)
+            backend = Backend(backend_kind, tmp_path / retention, retention_policy(retention))
+            fail_first = [True]
+            try:
+                graph, calls = build_loop_derived_graph(fail_first)
+                with pytest.raises(RuntimeError, match="boom"):
+                    await backend.run(graph, {}, workflow_id="wf")
+                transform_calls = calls["transform"]
+
+                fail_first[0] = False
+                resumed = await backend.run(graph, {}, workflow_id="wf")
+
+                assert resumed.status is RunStatus.COMPLETED
+                restored = resumed.values["doubled"]
+                # The loop really produced something other than the default.
+                assert restored != 0
+                # ...and the consumer read THAT, not its signature default.
+                assert resumed.values["report"] == f"doubled={restored}"
+                # The resume restored state; it did not re-derive the value.
+                assert calls["transform"] == transform_calls
+                outcomes[retention] = dict(calls)
+            finally:
+                await backend.close()
+
+        # Compaction re-executed nothing. It should also restore the same VALUE
+        # and does on both SQLite backends, but MemoryCheckpointer folds a
+        # STALE baseline for a looping graph (reproducible on this leaf's base
+        # commit, independent of version replay), so the value is pinned per
+        # retention above instead of across them. The exact-value parity across
+        # all three backends is pinned by test_latest_agrees_with_a_full_history.
+        assert outcomes["latest"] == outcomes["full"]
 
     async def test_latest_agrees_with_a_full_history(self, tmp_path, backend_kind):
         """Parity: compaction is a storage decision, not a semantic one.
