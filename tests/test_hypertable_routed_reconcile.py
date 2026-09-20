@@ -364,3 +364,68 @@ def test_rederive_on_a_routed_union_column_runs_the_gate_and_skips_when_present(
     assert _latest(store, table.table_name)["label"] == "negative:7"
     assert calls == {"choose": 2, "positive": 0, "negative": 2}
     assert table.status().is_fresh
+
+
+def test_the_planner_settles_a_whole_routed_scope_with_no_store_and_no_runner() -> None:
+    """The routed case is now a step kind, so it can be driven as pure state.
+
+    One ``RunRoutedGraph`` settles every node the gate decides: the second
+    producer of the union column is advanced from the same run, with no second
+    request for the runner.
+    """
+    from hypergraph.materialization._provenance import (
+        Provenance,
+        ReconcileComplete,
+        RunRoutedGraph,
+    )
+    from hypergraph.materialization._schema import analyze_table
+
+    @ifelse(when_true="positive", when_false="negative")
+    def choose(positive_number: bool) -> bool:
+        return positive_number
+
+    @node(output_name="label")
+    def positive(value: int) -> str:
+        return f"positive:{value}"
+
+    @node(output_name="label")
+    def negative(value: int) -> str:
+        return f"negative:{value}"
+
+    graph = Graph([choose, positive, negative])
+    spec = analyze_table(graph, "item_id", {}, [])
+    policy = Provenance(graph, spec, {}, {})
+    gate_column = policy.node_columns(choose)[0].name
+
+    values = {"item_id": "i1", "positive_number": True, "value": 3, "label": "positive:3"}
+    stored = {
+        **values,
+        gate_column: True,
+        f"_provenance_{gate_column}": policy.node_provenance(choose, values),
+        "_provenance_label": None,  # exactly what rederive("label") nulls
+    }
+
+    state = policy.start_reconcile(spec, stored, {}, graph=graph)
+    state, step = policy.next_reconcile_step(state)
+
+    assert isinstance(step, RunRoutedGraph)
+    assert step.node is positive
+    assert step.scope == {"positive", "negative"}
+    assert step.input_values() == {"positive_number": True, "value": 3}
+    # The node the gate was reached FOR keeps its own provenance for the settle.
+    assert step.provenance == policy.node_provenance(positive, values)
+
+    state = policy.apply_routed_result(
+        state,
+        step,
+        {gate_column: True, "label": "positive:3"},
+        frozenset({"choose", "positive"}),
+    )
+    state, done = policy.next_reconcile_step(state)
+
+    assert isinstance(done, ReconcileComplete)
+    assert done.result.output_values() == {gate_column: True, "label": "positive:3"}
+    assert done.result.provenance_values() == {
+        gate_column: policy.node_provenance(choose, values),
+        "label": policy.node_provenance(positive, values),
+    }

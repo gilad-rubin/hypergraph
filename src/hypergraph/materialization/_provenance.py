@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from hypergraph import Graph
@@ -33,7 +33,7 @@ from hypergraph.materialization._recipe_journal import (
     KIND_COMPONENT_CONFIG,
     KIND_NODE_SOURCE,
 )
-from hypergraph.materialization._schema import TableSpec, is_internal_column, node_func
+from hypergraph.materialization._schema import TableSpec, input_names, is_internal_column, node_func
 
 _Items = tuple[tuple[str, Any], ...]
 
@@ -143,7 +143,17 @@ class ReconcileResult:
 
 @dataclass(frozen=True, slots=True)
 class ReconcileState:
-    """Immutable progress through derived nodes and child boundaries."""
+    """Immutable progress through derived nodes and child boundaries.
+
+    ``graph`` is the graph the nodes are cut from — the root graph, or a
+    child's ``child_graph`` when a child row is being reconciled. It is
+    supplied by the caller rather than read off ``self`` because a routed
+    slice of a child row must be cut from the child's graph.
+
+    The three ``routed_*`` fields carry one routed run forward: after the
+    gate's slice has run, every node it settled is named in ``routed_scope``
+    and is settled from ``routed_outputs`` without asking the runner again.
+    """
 
     spec: TableSpec
     existing: _Items
@@ -156,6 +166,10 @@ class ReconcileState:
     boundary_counts: tuple[tuple[str, int], ...]
     boundary_index: int
     children: tuple[ChildSelection, ...]
+    graph: Any
+    routed_scope: frozenset[str] = frozenset()
+    routed_outputs: _Items = ()
+    routed_executed: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +187,34 @@ class RunNode:
 
 
 @dataclass(frozen=True, slots=True)
+class RunRoutedGraph:
+    """A gate, not a node, decides the next columns: run the gate's slice.
+
+    ``request`` is the node step this run stands in for — the node is routed,
+    so it cannot be run alone, but the settle that follows it is exactly the
+    settle that node would have had. ``scope`` names every node this single
+    run settles, so the planner can advance the rest of them without asking
+    the runner again.
+    """
+
+    request: RunNode
+    graph: Any
+    inputs: _Items
+    scope: frozenset[str]
+
+    @property
+    def node(self) -> Any:
+        return self.request.node
+
+    @property
+    def provenance(self) -> str:
+        return self.request.provenance
+
+    def input_values(self) -> dict[str, Any]:
+        return _thaw(self.inputs)
+
+
+@dataclass(frozen=True, slots=True)
 class ReconcileUnavailable:
     """Stored values cannot support column-scoped reconciliation."""
 
@@ -184,7 +226,7 @@ class ReconcileComplete:
     result: ReconcileResult
 
 
-ReconcileStep = RunNode | ReconcileUnavailable | ReconcileComplete
+ReconcileStep = RunNode | RunRoutedGraph | ReconcileUnavailable | ReconcileComplete
 
 
 class Provenance:
@@ -599,6 +641,8 @@ class Provenance:
         existing: Mapping[str, Any],
         incoming_values: Mapping[str, Any],
         boundary_counts: Mapping[str, int] | None = None,
+        *,
+        graph: Any,
     ) -> ReconcileState:
         values = self.stored_values(existing)
         values.update(incoming_values)
@@ -614,6 +658,7 @@ class Provenance:
             boundary_counts=tuple((boundary_counts or {}).items()),
             boundary_index=0,
             children=(),
+            graph=graph,
         )
 
     def next_reconcile_step(self, state: ReconcileState) -> tuple[ReconcileState, ReconcileStep]:
@@ -635,12 +680,23 @@ class Provenance:
                         {column.name: values[column.name] for column in answer_columns},
                     )
                     continue
+            # Before freshness, not after: a node the last routed run already
+            # settled must never be asked whether its STORED stamp is fresh —
+            # the value it now carries was produced moments ago and has not
+            # been stored yet.
+            if node.name in current.routed_scope:
+                current = self._settle_routed(current, node, provenance)
+                continue
             if not self.node_is_fresh(node, provenance, existing, current.spec):
-                return current, RunNode(
-                    node=node,
-                    inputs=_freeze(self.node_inputs(node, values)),
-                    provenance=provenance,
-                    kind="column",
+                return self._run_or_route(
+                    current,
+                    RunNode(
+                        node=node,
+                        inputs=_freeze(self.node_inputs(node, values)),
+                        provenance=provenance,
+                        kind="column",
+                    ),
+                    values,
                 )
             node_outputs = {column.name: normalize_value(existing[column.name]) for column in self.node_columns(node, current.spec)}
             current = self._advance_column(current, node, provenance, node_outputs)
@@ -659,26 +715,23 @@ class Provenance:
             stored_provenance, stored_count = split_boundary_provenance(stored)
             counts = dict(current.boundary_counts)
             if stored_provenance == provenance and stored_count == counts.get(child_spec.name, 0):
-                current = ReconcileState(
-                    spec=current.spec,
-                    existing=current.existing,
-                    values=current.values,
-                    incoming_names=current.incoming_names,
-                    outputs=current.outputs,
+                current = replace(
+                    current,
                     provenances=(*current.provenances, (child_spec.map_input, stored)),
-                    nodes=current.nodes,
-                    node_index=current.node_index,
-                    boundary_counts=current.boundary_counts,
                     boundary_index=current.boundary_index + 1,
                     children=(*current.children, RebuildChildren(child_spec)),
                 )
                 continue
-            return current, RunNode(
-                node=boundary,
-                inputs=_freeze(self.node_inputs(boundary, values)),
-                provenance=provenance,
-                kind="boundary",
-                child_spec=child_spec,
+            return self._run_or_route(
+                current,
+                RunNode(
+                    node=boundary,
+                    inputs=_freeze(self.node_inputs(boundary, values)),
+                    provenance=provenance,
+                    kind="boundary",
+                    child_spec=child_spec,
+                ),
+                values,
             )
 
         return current, ReconcileComplete(
@@ -688,6 +741,71 @@ class Provenance:
                 children=current.children,
             )
         )
+
+    def _run_or_route(
+        self,
+        state: ReconcileState,
+        request: RunNode,
+        values: Mapping[str, Any],
+    ) -> tuple[ReconcileState, ReconcileStep]:
+        """Ask for one node, or — when a gate decides it — for the gate's slice."""
+        gate = self.routing_gate(request.node, state.graph)
+        if gate is None:
+            return state, request
+        graph = self.routed_graph(gate, state.graph, state.spec.name)
+        remaining = {node.name for node in state.nodes[state.node_index :]}
+        return state, RunRoutedGraph(
+            request=request,
+            graph=graph,
+            inputs=_freeze({name: values[name] for name in input_names(graph.inputs.required) if name in values}),
+            scope=frozenset(self.node_names_downstream({gate.name}, state.graph) & remaining),
+        )
+
+    def apply_routed_result(
+        self,
+        state: ReconcileState,
+        request: RunRoutedGraph,
+        run_outputs: Mapping[str, Any],
+        executed: frozenset[str] | set[str],
+    ) -> ReconcileState:
+        """Settle the node the routed run was reached for, and arm the rest.
+
+        The node that triggered the gate is settled with its OWN provenance,
+        unlike every other node in the scope (see ``_settle_routed``). That
+        asymmetry is today's stored behaviour and is preserved deliberately.
+        """
+        settled = self.apply_reconcile_result(
+            state,
+            request.request,
+            run_outputs if request.node.name in executed else {},
+        )
+        return replace(
+            settled,
+            routed_scope=request.scope - {request.node.name},
+            routed_outputs=_freeze(run_outputs),
+            routed_executed=frozenset(executed),
+        )
+
+    def _settle_routed(self, state: ReconcileState, node: Any, provenance: str) -> ReconcileState:
+        """Settle one node the last routed run already covered.
+
+        A node the gate routed AWAY from did not run, so it keeps whatever the
+        stored row had; where its column has several producers, the stamp
+        already recorded for that column wins, so a union column is not
+        restamped with the provenance of a branch that produced nothing.
+        """
+        executed = node.name in state.routed_executed
+        if not executed:
+            provenances = dict(state.provenances)
+            shared = [
+                provenances[column.name]
+                for column in self.node_columns(node, state.spec)
+                if len(self.column_producers(column)) > 1 and column.name in provenances
+            ]
+            if shared:
+                provenance = shared[0]
+        current = replace(state, routed_scope=state.routed_scope - {node.name})
+        return self._advance_column(current, node, provenance, _thaw(current.routed_outputs) if executed else {})
 
     def apply_reconcile_result(
         self,
@@ -702,19 +820,12 @@ class Provenance:
             raise RuntimeError("boundary reconcile request is missing its child table spec")
         raw_items = node_outputs.get(child_spec.map_input)
         items = raw_items if isinstance(raw_items, list) else []
-        return ReconcileState(
-            spec=state.spec,
-            existing=state.existing,
-            values=state.values,
-            incoming_names=state.incoming_names,
-            outputs=state.outputs,
+        return replace(
+            state,
             provenances=(
                 *state.provenances,
                 (child_spec.map_input, self.boundary_provenance_value(request.provenance, items)),
             ),
-            nodes=state.nodes,
-            node_index=state.node_index,
-            boundary_counts=state.boundary_counts,
             boundary_index=state.boundary_index + 1,
             children=(*state.children, DerivedChildren(child_spec, tuple(items))),
         )
@@ -734,16 +845,10 @@ class Provenance:
                 outputs[column.name] = node_outputs[column.name]
                 values[column.name] = node_outputs[column.name]
             provenances[column.name] = provenance
-        return ReconcileState(
-            spec=state.spec,
-            existing=state.existing,
+        return replace(
+            state,
             values=_freeze(values),
-            incoming_names=state.incoming_names,
             outputs=_freeze(outputs),
             provenances=tuple(provenances.items()),
-            nodes=state.nodes,
             node_index=state.node_index + 1,
-            boundary_counts=state.boundary_counts,
-            boundary_index=state.boundary_index,
-            children=state.children,
         )
