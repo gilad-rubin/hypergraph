@@ -483,6 +483,11 @@ class _PlannedBatchRerun:
         fingerprint: Batch fingerprint of the new manifest.
         batch_retry_of: Source ``batch_id`` recorded as Batch lineage.
         child_retry_of: Item key → source child workflow id.
+        builder_key: The source's constructor address, read from its
+            CHILDREN because ``host_batches`` does not store one — a Batch
+            pins exactly one Definition, so one address covers the whole
+            manifest and every child row already carries it.
+        builder_args_json: The arguments half of that address, verbatim.
     """
 
     batch_id: str
@@ -494,6 +499,8 @@ class _PlannedBatchRerun:
     batch_retry_of: str
     child_retry_of: dict[str, str]
     child_admission_costs: dict[str, int]
+    builder_key: str | None
+    builder_args_json: str | None
 
 
 @dataclass(frozen=True)
@@ -752,6 +759,11 @@ def _plan_batch_rerun(
         # workflow id — lineage names the run it repeats, not the item key.
         child_retry_of={key: str(child_rows[key][0]["workflow_id"]) for key in selected},
         child_admission_costs={key: int(child_rows[key][0]["admission_cost"]) for key in selected},
+        # One Batch pins one Definition, so submit_batch wrote ONE address
+        # onto every child: any selected child is authoritative, and
+        # `selected` is non-empty by the time this runs.
+        builder_key=child_rows[selected[0]][0]["builder_key"],
+        builder_args_json=child_rows[selected[0]][0]["builder_args_json"],
     )
 
 
@@ -1636,8 +1648,9 @@ class RunHomeClient:
         each child records ``retry_of`` against its source child. The
         source Batch is never mutated — it stays settled and queryable
         forever. Its children reuse their source children's completed
-        steps exactly as a Run rerun does, and ``fresh=True`` applies to
-        them the same way.
+        steps exactly as a Run rerun does, ``fresh=True`` applies to them
+        the same way, and each new child carries the source's builder
+        address just as a Run repeat does.
 
         Raises ``RerunError`` when the source is unknown or not terminal
         (rerun repeats settled work only) — unless the source submission
@@ -1655,7 +1668,11 @@ class RunHomeClient:
         key, so the ordinary rerun is simply accepted; if something else has
         taken the key since, the repeat collides at acceptance exactly like
         any other submission — adopting the live holder, or raising
-        ``WorkflowIdConflictError`` when the values differ.
+        ``WorkflowIdConflictError`` when the values differ. A repeat also
+        carries the source's builder address, so a process holding only
+        constructors can claim it, and a repeat whose builder truly is gone
+        dead-letters as ``builder_missing`` rather than
+        ``unserved_identity``.
 
         ``source_ref`` is opaque caller provenance recorded on the NEW
         submission (the new Batch manifest for a ``BatchRef``), exactly as
@@ -1688,6 +1705,12 @@ class RunHomeClient:
                 batch_retry_of=plan.batch_retry_of,
                 child_retry_of=plan.child_retry_of,
                 child_admission_costs=plan.child_admission_costs,
+                # A repeat is the SAME work, so its children carry the
+                # source's constructor address too — without it a repeat
+                # manifest is unclaimable by the builder-only fleet that
+                # ran the source.
+                builder_key=plan.builder_key,
+                builder_args_json=plan.builder_args_json,
                 fresh=fresh,
             )
             created, row = await self._home._submit_batch(request)
@@ -1722,6 +1745,12 @@ class RunHomeClient:
             # collides at acceptance like any other submission: it adopts the
             # live holder, or refuses if the values differ.
             exclusive_key=submission["exclusive_key"],
+            # And a repeat is the SAME work, so it carries the address that
+            # says how to REBUILD it. Dropping it strands the repeat in a
+            # fleet that holds only builders, and mislabels the dead letter
+            # `unserved_identity` when the truth is `builder_missing`.
+            builder_key=submission["builder_key"],
+            builder_args_json=submission["builder_args_json"],
             fresh=fresh,
         )
         workflow_id = row["workflow_id"]
@@ -1763,6 +1792,12 @@ class RunHomeClient:
                 batch_retry_of=plan.batch_retry_of,
                 child_retry_of=plan.child_retry_of,
                 child_admission_costs=plan.child_admission_costs,
+                # A repeat is the SAME work, so its children carry the
+                # source's constructor address too — without it a repeat
+                # manifest is unclaimable by the builder-only fleet that
+                # ran the source.
+                builder_key=plan.builder_key,
+                builder_args_json=plan.builder_args_json,
                 fresh=fresh,
             )
             created, row = self._home._submit_batch_sync(request)
@@ -1805,6 +1840,12 @@ class RunHomeClient:
             # collides at acceptance like any other submission: it adopts the
             # live holder, or refuses if the values differ.
             exclusive_key=submission["exclusive_key"],
+            # And a repeat is the SAME work, so it carries the address that
+            # says how to REBUILD it. Dropping it strands the repeat in a
+            # fleet that holds only builders, and mislabels the dead letter
+            # `unserved_identity` when the truth is `builder_missing`.
+            builder_key=submission["builder_key"],
+            builder_args_json=submission["builder_args_json"],
             fresh=fresh,
         )
         workflow_id = row["workflow_id"]

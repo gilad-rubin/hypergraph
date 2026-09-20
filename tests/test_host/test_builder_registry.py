@@ -403,6 +403,104 @@ class TestDeadLetterVisibility:
             outcome = await _wait_for(lambda: _completed(revived.client, repeat.run_ref))
         assert outcome.outputs == {"out": 66}
 
+    async def test_a_rerun_carries_the_sources_builder_address(self, home):
+        """A repeat is the same work, so it says how to rebuild it too."""
+        graph = scaling_graph({"factor": 7})
+        host = serve(graph, home=home, deployment_version="v1", builders={BUILDER_KEY: scaling_graph})
+        receipt = await host.submit(graph, {"x": 6}, workflow_id="wf-src", builder=(BUILDER_KEY, {"factor": 7}))
+        async with _worker(host, "w-src"):
+            await _wait_for(lambda: _completed(host.client, receipt.run_ref))
+        source = await home._get_submission("wf-src")
+
+        repeat = await host.client.rerun(receipt.run_ref)
+        row = await home._get_submission(repeat.workflow_id)
+        assert (row["builder_key"], row["builder_args_json"]) == (BUILDER_KEY, '{"factor":7}')
+        assert (row["builder_key"], row["builder_args_json"]) == (source["builder_key"], source["builder_args_json"]), (
+            "the stored address is copied verbatim, never re-derived from the pinned name"
+        )
+
+        # The address is deliberately outside the start fingerprint, so
+        # carrying it moves neither the retry ordinal nor dedup.
+        assert repeat.workflow_id == "wf-src-retry-1"
+        assert row["fingerprint"] == source["fingerprint"]
+        adopted = await host.submit(graph, {"x": 6}, workflow_id=repeat.workflow_id, builder=(BUILDER_KEY, {"factor": 7}))
+        assert (adopted.duplicate, adopted.workflow_id) == (True, "wf-src-retry-1")
+
+    @pytest.mark.parametrize(("factor", "expected"), [(11, 66), (3, 18)])
+    async def test_a_builder_only_fleet_can_revive_a_builder_missing_dead_letter(self, home, factor, expected):
+        """The revival path this page promises, for a fleet that holds no graph."""
+        graph = scaling_graph({"factor": factor})
+        submitter = serve(graph, home=home, deployment_version="v1", builders={BUILDER_KEY: scaling_graph})
+        receipt = await submitter.submit(graph, {"x": 6}, workflow_id="wf-key", builder=(BUILDER_KEY, {"factor": factor}))
+
+        # The deployment that drains it forgot the builder AND the graph.
+        forgot = serve(scaling_graph({"factor": 99}), home=home, deployment_version="v1")
+        async with _worker(forgot, "w-forgot"):
+            await _wait_for(lambda: _dead_letter(home, "wf-key"))
+        assert _reason(home, "wf-key") == DEAD_LETTER_BUILDER_MISSING
+
+        # "Deploy something that can run it, then rerun" — and the something
+        # here holds ONLY the constructor, which is what serve_builder is for.
+        fleet = serve(home=home, deployment_version="v1", builders={BUILDER_KEY: scaling_graph})
+        repeat = await fleet.client.rerun(receipt.run_ref)
+        repeat_ref = RunRef(home=home.uri, run_id=repeat.workflow_id)
+        async with _worker(fleet, "w-fleet"):
+            outcome = await _wait_for(lambda: _completed(fleet.client, repeat_ref))
+        assert outcome.outputs == {"out": expected}
+
+    async def test_a_repeat_whose_builder_is_really_gone_says_builder_missing(self, home):
+        """The reason sends the operator to serve_builder(), not to serve()."""
+        graph = scaling_graph({"factor": 11})
+        host = serve(graph, home=home, deployment_version="v1", builders={BUILDER_KEY: scaling_graph})
+        receipt = await host.submit(graph, {"x": 6}, workflow_id="wf-gone", builder=(BUILDER_KEY, {"factor": 11}))
+
+        successor = serve(scaling_graph({"factor": 2}), home=home, deployment_version="v1")
+        async with _worker(successor, "w-successor"):
+            await _wait_for(lambda: _dead_letter(home, "wf-gone"))
+            repeat = await successor.client.rerun(receipt.run_ref)
+            await _wait_for(lambda: _dead_letter(home, repeat.workflow_id))
+        assert _reason(home, repeat.workflow_id) == DEAD_LETTER_BUILDER_MISSING, (
+            "an address-less repeat would claim nothing serves the name, which is false"
+        )
+
+    async def test_the_sync_mirror_carries_the_builder_address_too(self, home):
+        graph = scaling_graph({"factor": 7})
+        host = serve(graph, home=home, deployment_version="v1", builders={BUILDER_KEY: scaling_graph})
+        receipt = await host.submit(graph, {"x": 6}, workflow_id="wf-sync", builder=(BUILDER_KEY, {"factor": 7}))
+
+        # A recovery-exhausted source is the rerun case that needs no runs row.
+        home._sync_db().execute("UPDATE host_submissions SET state = 'exhausted' WHERE workflow_id = 'wf-sync'")
+        home._sync_db().commit()
+
+        repeat = host.client.rerun_sync(receipt.run_ref)
+        assert repeat.workflow_id == "wf-sync-retry-1"
+        row = await home._get_submission(repeat.workflow_id)
+        assert (row["builder_key"], row["builder_args_json"]) == (BUILDER_KEY, '{"factor":7}')
+
+    async def test_a_batch_repeats_children_carry_the_builder_address(self, home):
+        graph = scaling_graph({"factor": 5})
+        host = serve(graph, home=home, deployment_version="v1", builders={BUILDER_KEY: scaling_graph})
+        receipt = await host.submit_batch(
+            graph,
+            {"x": [1, 2]},
+            map_over="x",
+            identity="x",
+            workflow_id="drop-1",
+            builder=(BUILDER_KEY, {"factor": 5}),
+        )
+        async with _worker(host, "w-batch"):
+            await _wait_for(lambda: _settled_batch(host.client, receipt.batch_ref))
+
+        async def _addresses(batch_workflow_id: str) -> list[tuple[str | None, str | None]]:
+            rows = [await home._get_submission(f"{batch_workflow_id}:{key}") for key in ("1", "2")]
+            return [(row["builder_key"], row["builder_args_json"]) for row in rows]
+
+        repeat = await host.client.rerun(receipt.batch_ref)
+        assert await _addresses(repeat.workflow_id) == [(BUILDER_KEY, '{"factor":5}')] * 2
+        # The sync mirror repeats the same settled source the same way.
+        sync_repeat = host.client.rerun_sync(receipt.batch_ref)
+        assert await _addresses(sync_repeat.workflow_id) == [(BUILDER_KEY, '{"factor":5}')] * 2
+
     async def test_a_builder_address_nobody_registers_names_its_own_reason(self, home):
         """Distinguishable from an unserved identity, because the fix differs."""
         graph = scaling_graph({"factor": 2})

@@ -349,7 +349,10 @@ Three properties are worth stating plainly:
   `(key, arguments)`, so a 500-item Batch builds its Definition once.
 - **`builder=` is not part of the dedup fingerprint.** A duplicate
   resubmission returns the stored receipt and never rewrites the address the
-  row was accepted with.
+  row was accepted with — and for the same reason, a
+  [`rerun()`](#rerun-repeat-settled-work) copies it onto the repeat: the
+  address is part of what the submission asserts, not a detail of the call
+  that made it.
 
 Submitting a builder address nothing can resolve raises
 `NoServingWorkerError` at the call site. "Nothing" means neither this
@@ -1683,6 +1686,12 @@ key, so the ordinary rerun is accepted; if something else has taken the key
 since, the repeat collides at acceptance like any other submission —
 adopting the live holder (`duplicate=True`), or raising
 `WorkflowIdConflictError` when the values differ.
+
+A repeat also carries the source's [**builder address**](#serving-builders-work-that-travels-as-data),
+so work submitted as data stays claimable by a process that holds only
+constructors — and a repeat whose builder really is gone dead-letters as
+`builder_missing` rather than `unserved_identity`. A Batch repeat's children
+carry it too, read from the source children the repeat is derived from.
 
 ### `fresh=True`: repeat the work, not just the lineage
 
