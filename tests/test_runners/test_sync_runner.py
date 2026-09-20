@@ -1,8 +1,12 @@
 """Tests for SyncRunner."""
 
+import inspect as inspect_module
+
 import pytest
 
 from hypergraph import Graph, node
+from hypergraph.events.processor import EventProcessor
+from hypergraph.events.types import Event, RunStartEvent
 from hypergraph.exceptions import (
     IncompatibleRunnerError,
     InfiniteLoopError,
@@ -17,6 +21,11 @@ from hypergraph.runners import MapResult, RunResult, RunStatus, SyncRunner
 @node(output_name="doubled")
 def double(x: int) -> int:
     return x * 2
+
+
+@node(output_name="quadrupled")
+def quadruple(doubled: int) -> int:
+    return doubled * 2
 
 
 @node(output_name="incremented")
@@ -64,6 +73,20 @@ async def async_double(x: int) -> int:
 @node
 def side_effect(x: int) -> None:
     pass
+
+
+class Recorder(EventProcessor):
+    """Records every event it is handed, tagging a shared log when given one."""
+
+    def __init__(self, name: str = "rec", log: list[str] | None = None) -> None:
+        self.name = name
+        self.events: list[Event] = []
+        self.log = log
+
+    def on_event(self, event: Event) -> None:
+        self.events.append(event)
+        if self.log is not None:
+            self.log.append(self.name)
 
 
 # === Tests ===
@@ -569,6 +592,89 @@ class TestSyncRunnerRun:
         with pytest.raises(RuntimeError, match="test"):
             runner.run(graph, {"x": 5})
 
+    # Runner-level event processors
+
+    def test_constructor_event_processors_reach_run(self):
+        """Constructor processors observe a run with no per-call processors."""
+        carried = Recorder()
+
+        SyncRunner(event_processors=[carried]).run(Graph([double]), {"x": 2})
+
+        assert [type(event).__name__ for event in carried.events] == [
+            "RunStartEvent",
+            "SuperstepStartEvent",
+            "NodeStartEvent",
+            "NodeEndEvent",
+            "RunEndEvent",
+        ]
+
+    def test_constructor_event_processors_merge_with_call_processors(self):
+        """Per-call processors append to the constructor defaults, carried first."""
+        order: list[str] = []
+        carried = Recorder("carried", order)
+        call_site = Recorder("call_site", order)
+        runner = SyncRunner(event_processors=[carried])
+
+        runner.run(Graph([double]), {"x": 2}, event_processors=[call_site])
+
+        assert carried.events
+        assert call_site.events
+        assert [type(event) for event in carried.events] == [type(event) for event in call_site.events]
+        # The dispatcher walks processors in order: carried before call-site, per event.
+        assert order == ["carried", "call_site"] * len(carried.events)
+
+    def test_without_constructor_event_processors_only_call_site_sees_events(self):
+        """Falsifier: an empty constructor list leaves the carried recorder untouched."""
+        carried = Recorder()
+        call_site = Recorder()
+
+        SyncRunner().run(Graph([double]), {"x": 2}, event_processors=[call_site])
+
+        assert carried.events == []
+        assert len(call_site.events) == 5
+
+    def test_constructor_event_processors_see_nested_graph_events_once(self):
+        """A nested sub-run is handed the already-merged list, so nothing duplicates."""
+        inner = Graph([double], name="inner")
+        outer = Graph([inner.as_node(), quadruple], name="outer")
+        carried = Recorder()
+
+        SyncRunner(event_processors=[carried]).run(outer, {"x": 2})
+
+        # 2 runs (outer + inner) x RunStart/RunEnd, 3 nodes x SuperstepStart/NodeStart/NodeEnd.
+        assert len(carried.events) == 13
+        assert sum(isinstance(event, RunStartEvent) for event in carried.events) == 2
+
+    def test_constructor_rejects_max_concurrency(self):
+        """A sync engine has no concurrency budget, so the knob does not exist."""
+        with pytest.raises(TypeError, match="unexpected keyword argument 'max_concurrency'"):
+            SyncRunner(max_concurrency=2)
+
+        assert tuple(inspect_module.signature(SyncRunner.__init__).parameters) == (
+            "self",
+            "cache",
+            "checkpointer",
+            "show_progress",
+            "event_processors",
+        )
+
+    def test_constructor_event_processors_must_be_iterable(self):
+        """Normalization mirrors AsyncRunner: list() raises on a non-iterable."""
+        with pytest.raises(TypeError, match="'int' object is not iterable"):
+            SyncRunner(event_processors=123)
+
+    def test_raising_constructor_event_processor_does_not_fail_the_run(self):
+        """Processor failures stay isolated, as for the per-call tier."""
+
+        class Boom(EventProcessor):
+            def on_event(self, event: Event) -> None:
+                raise RuntimeError("processor exploded")
+
+        result = SyncRunner(event_processors=[Boom()]).run(Graph([double]), {"x": 3})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["doubled"] == 6
+
 
 class TestSyncRunnerRunGenerators:
     """Tests for generator node handling."""
@@ -874,3 +980,25 @@ class TestSyncRunnerMap:
         for r in results:
             assert "sum" in r
             assert "doubled" not in r
+
+    # Runner-level event processors
+
+    def test_constructor_event_processors_see_every_mapped_item_once(self):
+        """map() merges once and hands each item the merged list — no per-item duplication."""
+        carried = Recorder()
+
+        SyncRunner(event_processors=[carried]).map(Graph([double]), {"x": [1, 2]}, map_over="x")
+
+        # 1 map-level run + 2 item runs x RunStart/RunEnd, 2 items x Superstep/NodeStart/NodeEnd.
+        assert len(carried.events) == 12
+        assert sum(isinstance(event, RunStartEvent) for event in carried.events) == 3
+
+    def test_constructor_event_processors_reach_map_iter(self):
+        """map_iter() has no per-call processor tier, so the runner tier is the only seam."""
+        carried = Recorder()
+
+        for _ in SyncRunner(event_processors=[carried]).map_iter(Graph([double]), {"x": [1, 2]}, map_over="x"):
+            pass
+
+        assert len(carried.events) == 10
+        assert sum(isinstance(event, RunStartEvent) for event in carried.events) == 2
