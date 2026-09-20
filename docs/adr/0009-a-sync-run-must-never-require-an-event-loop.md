@@ -87,10 +87,14 @@ loop running, and with a loop already running that it does not own.
   and fail with the offending hunk. This replaces the manual `diff` in
   `dev/REVIEW-CHECKLIST.md`.
 - **The generator never writes a file it cannot vouch for.** It proves ruff is
-  present before it starts, refuses an output that does not parse or is no
+  present before it starts, refuses an output that does not **compile** (not
+  merely parse: an `await` left in a plain `def` parses) or is no
   longer than its own header, refuses a marker found inside a string literal,
-  and refuses a rename-table name used as a keyword argument (it rewrites names,
-  not the signatures they bind to; pass such an argument positionally)
+  refuses a rename-table name used as a keyword argument (it rewrites names,
+  not the signatures they bind to; pass such an argument positionally), and
+  refuses an f-string whose replacement fields hold anything the transform would
+  touch (what a token *is* inside an f-string changed in 3.12, so resolving one
+  would make the output a function of the interpreter that ran the generator)
   — a generated file's failure mode must be a loud exit, never a shorter file.
 - **Scope is the template only.** `runners/sync/runner.py`,
   `sync/superstep.py`, and `sync/executors/*` stay hand-written for now and are

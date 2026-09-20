@@ -123,14 +123,28 @@ places where the two halves are not the same code at all:
 Every marker must carry a reason; the generator refuses one that does not. It
 also refuses a marker that appears inside a string literal (where it is prose,
 not an instruction), a region marker trailing code, and any transform whose
-result fails to parse — which is what catches a `# sync:skip:` suffix left on a
+result fails to compile — which is what catches a `# sync:skip:` suffix left on a
 statement `ruff format` has wrapped across several lines, *when* dropping that
-one line leaves unbalanced Python. A drop that happens to leave valid but
-different code is not caught, so prefer a region whenever the statement spans
-more than one line. It also refuses a rename-table name written as a keyword
+one line leaves unbalanced Python, and what catches an `await` the rewriter left
+in a plain `def` (that one *parses*; only compiling it says `'await' outside
+async function`). A drop that happens to leave valid but different code is not
+caught, so prefer a region whenever the statement spans more than one line. It
+also refuses a rename-table name written as a keyword
 argument (`f(checkpointer=x)`), because it rewrites names and not the signatures
 they bind to — pass such an argument positionally. The refusal fires even inside a
 `sync:skip` region, since names are rewritten before markers are applied.
+
+Finally, it refuses an f-string whose replacement fields hold anything the
+transform would act on — a rename-table name, an `await`, a renamed literal, or a
+marker (`f"cp={checkpointer!r}"`). The transform reads tokens, and what a token
+*is* inside an f-string changed in 3.12 (PEP 701: before, the whole f-string is
+one opaque token; after, its interior is tokenized), so the same template would
+generate different sync files on different interpreters. Rather than resolve that
+one way or the other, it is refused on all of them: assign the value to a local
+first, or, for prose, use a plain string. An f-string's *literal* part is never
+rewritten, so `f"an async run awaits {x}"` is fine. Like the keyword-argument
+refusal, this one also fires inside a `sync:skip` region (the transform runs
+before markers are applied), so an async-only line gets the same treatment.
 
 **The constraint the whole design rests on: a sync run must never require an
 event loop.** See
