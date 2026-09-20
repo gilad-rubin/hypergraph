@@ -437,6 +437,15 @@ a bare string raises `TypeError`. The same rule covers `submit_batch()` and
 `with_entrypoint()` is a Definition of its own — see [Definition Identity and
 `accepts=`](#definition-identity-and-accepts).
 
+`values` are checked against that Definition's **boundary inputs** at accept
+time, the same check `submit_batch()` applies per item: a key the served
+graph does not take (a mid-graph parameter, a typo) or a missing required
+input raises `ValueError` naming the expected fields, and nothing is
+accepted. Stored values are immutable, so a refusal the Definition would
+raise at execution time is a [`start_refused` dead letter](#dead-letters-work-that-will-never-start)
+with nobody left to correct it. `fork()`, `client.rerun()` and the recovery
+paths do not re-check: they replay values a door already accepted.
+
 The submission commits to the Run Home **before** any execution: process
 loss after `submit()` returns cannot erase durable intent. Each submission
 also records a **start fingerprint** over the pinned `DefinitionId`, the

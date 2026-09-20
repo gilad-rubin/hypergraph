@@ -24,6 +24,9 @@ What this file falsifies:
 8. (#452) The other end of that backlog: a stored submission the served
    Definition REFUSES to start is retired as a `start_refused` dead letter
    instead of sitting claimed forever with no runs row.
+9. (#452) And the door that let it in: `submit()` now compares `values` to
+   the served Definition's boundary inputs, the check `submit_batch()` has
+   always applied per item.
 """
 
 from __future__ import annotations
@@ -538,3 +541,77 @@ class TestADefinitionThatRefusesToStartIsADeadLetter:
         async with worker(healthy, "w-readopt"):
             view = await healthy.client.follow(receipt.run_ref, deadline=30)
         assert view.status is WorkflowStatus.COMPLETED
+
+
+class TestSubmitChecksBoundaryInputsAtAcceptTime:
+    """#452 part 1: the asymmetry that let the bad submission in.
+
+    `submit_batch()` has always compared each item to `graph.inputs`;
+    `submit()` compared nothing. Once accepted, stored values are immutable
+    — so the same shape `submit_batch()` refuses at the call site became a
+    `start_refused` dead letter with nobody left to correct it. Both doors
+    now apply the one check.
+    """
+
+    async def test_a_mid_graph_value_is_refused_and_nothing_is_accepted(self, home):
+        """Probe A, at the door it should never have passed."""
+        ledger: list[str] = []
+        graph = pipeline(ledger)
+        host = serve(graph, home=home, deployment_version="v1")
+
+        with pytest.raises(ValueError) as excinfo:
+            await host.submit(graph, {"x": 1, "cheap": 99}, workflow_id="wf-bad")
+
+        message = str(excinfo.value)
+        assert "submit() has unknown graph input field(s): ['cheap']" in message, message
+        assert "Expected fields: ['x']" in message, message
+        assert "How to fix:" in message
+        assert await home._get_submission("wf-bad") is None, "the refusal wrote nothing"
+        assert await host.client.list(RunQuery()) == []
+
+    def test_the_sync_mirror_refuses_the_same_values(self, home):
+        ledger: list[str] = []
+        graph = pipeline(ledger, runner=SyncRunner())
+        host = serve(graph, home=home, deployment_version="v1")
+
+        with pytest.raises(ValueError, match=r"unknown graph input field\(s\): \['cheap'\]"):
+            host.submit_sync(graph, {"x": 1, "cheap": 99}, workflow_id="wf-bad")
+        assert home._get_submission_sync("wf-bad") is None
+
+    async def test_a_missing_required_input_is_refused_too(self, home):
+        """Probe B's shape: the narrowed Definition's boundary moved."""
+        ledger: list[str] = []
+        narrowed = pipeline(ledger, "narrow").with_entrypoint("costly")
+        host = serve(narrowed, home=home, deployment_version="v1")
+
+        with pytest.raises(ValueError) as excinfo:
+            await host.submit(narrowed, {}, workflow_id="wf-entry")
+
+        assert "missing required graph input field(s): ['cheap']" in str(excinfo.value)
+        assert await home._get_submission("wf-entry") is None
+
+    async def test_the_right_boundary_inputs_are_still_accepted(self, home):
+        """The falsifier: the check refuses shapes, not submissions."""
+        ledger: list[str] = []
+        graph = pipeline(ledger)
+        host = serve(graph, home=home, deployment_version="v1")
+
+        receipt = await host.submit(graph, {"x": 1}, workflow_id="wf-good")
+        async with worker(host, "w-good"):
+            view = await host.client.follow(receipt.run_ref, deadline=30)
+        assert view.status is WorkflowStatus.COMPLETED
+
+    async def test_submit_batch_still_names_the_offending_item(self, home):
+        """The shared check keeps each caller's own subject in the message."""
+        ledger: list[str] = []
+        graph = pipeline(ledger)
+        host = serve(graph, home=home, deployment_version="v1")
+
+        with pytest.raises(ValueError) as excinfo:
+            await host.submit_batch(
+                graph,
+                [{"x": 1}, {"x": 2, "cheap": 99}],
+                identity="x",
+                workflow_id="wf-batch",
+            )
+        assert "submit_batch() item 1 has unknown graph input field(s): ['cheap']" in str(excinfo.value)

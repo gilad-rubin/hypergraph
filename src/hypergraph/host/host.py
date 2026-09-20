@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any
 
 from hypergraph.host._batch_store import BatchAcceptance, DefinitionPin
 from hypergraph.host._bus import _BusEventProcessor, _PreviewBus, _register_bus
-from hypergraph.host.batch import BatchTolerance, MapMode, expand_batch_items, freeze_batch_items
+from hypergraph.host.batch import BatchTolerance, MapMode, _validate_item_fields, expand_batch_items, freeze_batch_items
 from hypergraph.host.client import RunHomeClient
 from hypergraph.host.definition import DefinitionId, definition_struct_hash, narrowing_description
 from hypergraph.host.errors import (
@@ -410,7 +410,12 @@ class Host:
                 name. An unserved Graph raises ``UnservedGraphError``
                 immediately: a submission must never name code no worker can
                 execute.
-            values: JSON-serializable graph inputs.
+            values: JSON-serializable graph inputs. Checked against the
+                resolved Definition's boundary inputs here, the same check
+                ``submit_batch()`` applies per item: an unknown key or a
+                missing required one raises ``ValueError`` and accepts
+                nothing, because a stored value the served graph refuses
+                can only become a ``start_refused`` dead letter later.
             workflow_id: Optional explicit id; one is generated when
                 omitted. It may not contain ``"/"`` — that character is
                 reserved for hierarchical run ids, so no runner would
@@ -523,6 +528,12 @@ class Host:
             _validate_workflow_id_char(workflow_id, verb="submit")
         definition = self._require_definition(graph, builder)
         inputs_json = self._serialize_inputs(values)
+        # The boundary check ``submit_batch`` has always applied, at this
+        # door too (#452). Against the SERVED graph, because that is the
+        # object a worker will hand these values to — and once accepted
+        # they are immutable, so a refusal it would raise there is a
+        # ``start_refused`` dead letter with nobody left to correct it.
+        _validate_item_fields(definition.graph, values, subject="submit()")
         start_at_iso = _normalize_start_at(start_at)
         return definition, inputs_json, start_at_iso, workflow_id or f"{definition.name}-{uuid.uuid4().hex[:12]}"
 
