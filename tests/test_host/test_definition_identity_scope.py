@@ -21,9 +21,15 @@ What this file falsifies:
 7. The documented upgrade path for a host that serves a narrowed graph:
    already-stored work parks as VERSION_INCOMPATIBLE and drains under the
    unnarrowed Definition, whose identity never moved.
+8. (#452) The other end of that backlog: a stored submission the served
+   Definition REFUSES to start is retired as a `start_refused` dead letter
+   instead of sitting claimed forever with no runs row.
 """
 
 from __future__ import annotations
+
+import json
+from typing import Any
 
 import pytest
 
@@ -31,19 +37,24 @@ from hypergraph import (
     AsyncRunner,
     DefinitionId,
     Graph,
+    RunHomeReadModel,
     RunQuery,
+    RunRef,
+    SyncRunner,
     UnservedGraphError,
     node,
     serve,
 )
 from hypergraph.checkpointers.types import WorkflowStatus
+from hypergraph.exceptions import GraphChangedError
 from hypergraph.host import WaitingCondition, definition_struct_hash
+from hypergraph.host.views import DEAD_LETTER_START_REFUSED
 from tests.test_host._batch_interrupt import until, worker
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
 
-def pipeline(ledger: list[str], name: str = "pipeline") -> Graph:
+def pipeline(ledger: list[str], name: str = "pipeline", *, runner: Any = None) -> Graph:
     """`cheap` -> `costly`: the issue's two-node probe graph."""
 
     @node(output_name="cheap")
@@ -56,7 +67,7 @@ def pipeline(ledger: list[str], name: str = "pipeline") -> Graph:
         ledger.append("costly")
         return cheap * 10
 
-    return Graph([cheap, costly], name=name).with_runner(AsyncRunner())
+    return Graph([cheap, costly], name=name).with_runner(runner or AsyncRunner())
 
 
 class TestSelectionIsDefinitionIdentity:
@@ -310,3 +321,220 @@ class TestUpgradingAHostThatServesANarrowedGraph:
         # The same stored inputs, handed to the unnarrowed Definition:
         with pytest.raises(ValueError, match=r"internal parameters: \['cheap'\]"):
             await AsyncRunner().run(pipeline(ledger), {"cheap": 2})
+
+
+# === 8. #452: a Definition that refuses to start retires its submission ===
+
+
+async def _plant(home, graph: Graph, workflow_id: str, values: dict[str, Any], *, deployment_version: str = "v1") -> RunRef:
+    """Accept a submission through the Home's own door, inputs unchecked.
+
+    `submit()` refuses these inputs at the call site, so a row shaped like
+    this is one the store ALREADY holds: accepted before that check
+    existed, or pinned against a Definition a worker rebuilds from a
+    builder address. Either way the worker has to settle it.
+    """
+    created, _row = await home._submit(
+        workflow_id,
+        graph.name,
+        deployment_version,
+        definition_struct_hash(graph),
+        json.dumps(values),
+        None,
+        None,
+        fingerprint=f"fp-{workflow_id}",
+    )
+    assert created is True, "the plant must be the row under test, not a dedup hit"
+    return RunRef(home=home.uri, run_id=workflow_id)
+
+
+def _updates(home, workflow_id: str) -> list[tuple[str, dict[str, Any]]]:
+    """Every durable run update for one submission, in order."""
+    rows = home._sync_db().execute("SELECT kind, payload FROM run_updates WHERE run_id = ? ORDER BY seq", (workflow_id,)).fetchall()
+    return [(kind, json.loads(payload)) for kind, payload in rows]
+
+
+async def _settled(home, workflow_id: str):
+    """The submission once it reached `dead_letter`, else None."""
+    submission = await home._get_submission(workflow_id)
+    return submission if submission is not None and submission["state"] == "dead_letter" else None
+
+
+class _RefusesOnRestore(AsyncRunner):
+    """A served Definition whose restore rejects the run before it starts.
+
+    Not every pre-start refusal is about input names — `#452`'s handler is
+    keyed on "the attempt left no runs row", so a restore-time refusal
+    (`GraphChangedError`, `CompactedRetentionError`, `CheckpointCoercionError`)
+    must land on the same reason.
+    """
+
+    async def run(self, graph, inputs=None, **kwargs):  # type: ignore[override]
+        raise GraphChangedError(kwargs.get("workflow_id", "?"))
+
+
+class _CrashesAfterTheRun(AsyncRunner):
+    """A runner that commits real work and THEN dies: the recovery case."""
+
+    async def run(self, graph, inputs=None, **kwargs):  # type: ignore[override]
+        await super().run(graph, inputs, **kwargs)
+        raise RuntimeError("the worker died after the run committed")
+
+
+class TestADefinitionThatRefusesToStartIsADeadLetter:
+    """#452: the executor is present, and it refuses THIS submission.
+
+    Every other dead-letter reason says "nothing alive can run this". These
+    rows were claimed by the Definition that owns them and never started —
+    the stored inputs are not its boundary inputs, or a restore-time check
+    rejected them. The stored inputs and the pinned identity are immutable,
+    so a retry is provably identical: the worker retires the submission
+    instead of renewing its lease over nothing.
+    """
+
+    @pytest.mark.parametrize("runner", [AsyncRunner, SyncRunner], ids=["async", "sync"])
+    async def test_stored_inputs_the_definition_refuses_settle_as_start_refused(self, home, runner):
+        """Probe A, both runner families: mid-graph values, no runs row."""
+        ledger: list[str] = []
+        graph = pipeline(ledger, runner=runner())
+        host = serve(graph, home=home, deployment_version="v1")
+        ref = await _plant(home, graph, "wf-bad", {"x": 1, "cheap": 99})
+
+        async with worker(host, "w-drain"):
+            submission = await until(lambda: _settled(home, "wf-bad"))
+
+        assert submission["finished_at"] is not None, "settled, not merely flagged"
+        assert await home.get_run_async("wf-bad") is None, "it never started: no runs row to recover from"
+        assert ledger == [], "and no node ran"
+
+        kinds = [kind for kind, _payload in _updates(home, "wf-bad")]
+        assert kinds == ["submitted", "dead_lettered"]
+        payload = _updates(home, "wf-bad")[-1][1]
+        assert payload["reason"] == DEAD_LETTER_START_REFUSED
+        assert payload["definition_id"] == DefinitionId("pipeline", "v1", definition_struct_hash(graph)).to_dict()
+        assert payload["error"] == "ValueError", "the exception type is on the durable fact"
+
+        view = await host.client.get(ref)
+        assert (view.waiting, view.status) == (WaitingCondition.DEAD_LETTER, None)
+        read = await RunHomeReadModel(host.client).get_run(ref)
+        assert (read.status, read.condition, read.dead_letter_reason) == ("failed", "dead_letter", DEAD_LETTER_START_REFUSED)
+
+        # Handled, not crashed: the worker reports no error of its own.
+        assert host.worker_errors == []
+
+        # Revivable exactly like a builder_failed dead letter.
+        repeat = await host.client.rerun(ref)
+        assert repeat.workflow_id == "wf-bad-retry-1"
+
+    async def test_a_batch_child_refused_this_way_settles_its_parent(self, home):
+        """Blast radius F: `claimed` is in no settled set, so a watch hung.
+
+        `submit_batch` refuses bad item fields at its own door, so a Batch
+        reaches a start refusal only through a cause that door cannot
+        foresee — here a restore-time one.
+        """
+        ledger: list[str] = []
+        graph = pipeline(ledger, "batched", runner=_RefusesOnRestore())
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await host.submit_batch(graph, {"x": [1, 2]}, map_over="x", identity="x", workflow_id="drop-refused")
+
+        async def settled_batch():
+            view = await host.client.get(receipt.batch_ref)
+            return view if view.settled else None
+
+        async with worker(host, "w-batch"):
+            view = await until(settled_batch)
+
+        assert view.counts["dead_letter"] == 2
+        assert sum(view.counts.values()) == 2, "every manifest item accounted exactly once"
+        assert view.outcomes == {"1": "dead_letter", "2": "dead_letter"}
+        assert view.tolerance_tripped is False, "dead letters of every reason stay out of a trip, deliberately"
+        assert host.worker_errors == []
+
+    # The runner warns about the unknown key before it raises for the
+    # missing one. Under CI's `-W error` that warning would BE the refusal,
+    # and this test is about which reason the refusal settles on, not about
+    # which of the two arrives first.
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    async def test_an_entrypoint_backlog_that_cannot_drain_is_retired_not_stalled(self, home):
+        """Probe B: the narrowed host's own backlog, submitted pre-narrowing.
+
+        `test_an_entrypoint_hosts_backlog_has_no_unnarrowed_drain` says stop
+        and resubmit is the migration. This is what the rows do meanwhile.
+        """
+        ledger: list[str] = []
+        narrowed = pipeline(ledger, "narrow").with_entrypoint("costly")
+        host = serve(narrowed, home=home, deployment_version="v1")
+        # `x` was the boundary input before the narrowing; now `cheap` is.
+        await _plant(home, narrowed, "wf-entry", {"x": 1})
+
+        async with worker(host, "w-narrow"):
+            await until(lambda: _settled(home, "wf-entry"))
+
+        payload = _updates(home, "wf-entry")[-1][1]
+        assert (payload["reason"], payload["error"]) == (DEAD_LETTER_START_REFUSED, "MissingInputError")
+        assert await home.get_run_async("wf-entry") is None
+        assert host.worker_errors == []
+
+    async def test_a_restore_time_refusal_lands_on_the_same_reason(self, home):
+        """The reason is keyed on "no runs row", not on an input allowlist."""
+        ledger: list[str] = []
+        graph = pipeline(ledger, "restores", runner=_RefusesOnRestore())
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await host.submit(graph, {"x": 1}, workflow_id="wf-restore")
+
+        async with worker(host, "w-restore"):
+            await until(lambda: _settled(home, "wf-restore"))
+
+        payload = _updates(home, "wf-restore")[-1][1]
+        assert (payload["reason"], payload["error"]) == (DEAD_LETTER_START_REFUSED, "GraphChangedError")
+        assert (await host.client.get(receipt.run_ref)).waiting is WaitingCondition.DEAD_LETTER
+        assert host.worker_errors == []
+
+    async def test_the_same_submission_with_the_right_inputs_just_runs(self, home):
+        """Falsifier (probe C): the handler retires refusals, not work."""
+        ledger: list[str] = []
+        graph = pipeline(ledger)
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await host.submit(graph, {"x": 1}, workflow_id="wf-good")
+
+        async with worker(host, "w-good"):
+            view = await host.client.follow(receipt.run_ref, deadline=30)
+
+        assert view.status is WorkflowStatus.COMPLETED
+        assert ledger == ["cheap", "costly"]
+        assert (await home._get_submission("wf-good"))["state"] == "finished"
+        assert [kind for kind, _payload in _updates(home, "wf-good")].count("dead_lettered") == 0
+        assert host.worker_errors == []
+
+    async def test_a_crash_after_the_run_committed_is_recovered_not_retired(self, home):
+        """The at-least-once contract the new handler must not eat.
+
+        A runs row means the attempt changed something, so the submission
+        stays claimed for the reclaim scan — the lease, not a dead letter,
+        is what settles it.
+        """
+        ledger: list[str] = []
+        graph = pipeline(ledger, "crashes", runner=_CrashesAfterTheRun())
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await host.submit(graph, {"x": 1}, workflow_id="wf-crash")
+
+        async def crashed():
+            return host.worker_errors or None
+
+        async with worker(host, "w-crash"):
+            await until(crashed)
+            row = await home._get_submission("wf-crash")
+            assert row["state"] == "claimed", "left for the reclaim scan, exactly as before"
+            assert await home.get_run_async("wf-crash") is not None
+            assert [kind for kind, _payload in _updates(home, "wf-crash")].count("dead_lettered") == 0
+            # The dead-letter door is fenced on the claim either way: a
+            # stale claimant cannot retire the claim a newer one holds.
+            assert await home._dead_letter("wf-crash", DEAD_LETTER_START_REFUSED, claim_seq=row["claim_seq"] - 1) is False
+            assert (await home._get_submission("wf-crash"))["state"] == "claimed"
+
+        # Re-adoption still settles it: the recovery path is untouched.
+        healthy = serve(pipeline(ledger, "crashes"), home=home, deployment_version="v1")
+        async with worker(healthy, "w-readopt"):
+            view = await healthy.client.follow(receipt.run_ref, deadline=30)
+        assert view.status is WorkflowStatus.COMPLETED

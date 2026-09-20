@@ -362,7 +362,12 @@ runs, and withdraws on a clean exit. Recording a builder address means *some
 process will rebuild this*, so an address nobody answers to is caught before
 400 rows exist rather than found hours later as a queue with no executor.
 
-## Dead Letters: work nothing alive can execute
+## Dead Letters: work that will never start
+
+A submission is dead-lettered when nothing would change by trying again —
+either nothing alive can execute it, or the Definition that owns it was
+handed the work and refused to start it. Both used to be silent stalls; a
+dead letter is the settled, named exit for them.
 
 An unclaimable submission has two very different futures, and the Run Home
 distinguishes them instead of parking both in silence.
@@ -394,10 +399,23 @@ key, the submission is retired as a **dead letter**:
 | `builder_missing` | The row names a builder key nothing registered. Register it on the worker. |
 | `builder_identity_mismatch` | A registered builder produced a different Definition than the pinned one. Reconcile the builder, or `fork` deliberately. |
 | `builder_failed` | The builder raised. Fix the constructor; the exception type is on the durable fact. |
+| `start_refused` | The Definition was here and refused to start this submission — the stored inputs are not its boundary inputs, or a restore-time check rejected them. Resubmit with corrected values. |
 
-A tolerance trip deliberately does **not** count dead letters as failures: a
-missing deployment is not the Batch's work failing, and tripping would
-relabel the remaining items "unstarted" and bury the reason they really have.
+`start_refused` is the one reason that is not about deployment. The worker
+claimed the submission, called the Definition's runner, and the call raised
+before any `runs` row existed: nothing executed, nothing was recorded, and
+the stored inputs and pinned identity are immutable, so every re-adoption
+would reproduce the same refusal while holding an admission slot. The
+exception type is on the durable fact (`error`) and the full traceback is in
+a worker `WARNING`. A raise *after* a `runs` row exists is the opposite case
+and is untouched: the run committed something, so the submission stays
+claimed and the lease and reclaim scan recover it.
+
+A tolerance trip deliberately does **not** count dead letters as failures —
+including `start_refused`, where the work arguably did fail. One rule for the
+whole dead-letter class is the deliberate choice: the child settles either
+way, which is what a Batch waiting on it needs, and tripping would relabel
+the remaining items "unstarted" and bury the reason they really have.
 
 ## Submitting a Run
 

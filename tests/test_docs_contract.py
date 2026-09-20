@@ -1083,7 +1083,7 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert "NoServingWorkerError" in host_api
     assert "BuilderIdentityError" in host_api
     assert "dead_letter" in host_api
-    for reason in ("unserved_identity", "builder_missing", "builder_identity_mismatch", "builder_failed"):
+    for reason in ("unserved_identity", "builder_missing", "builder_identity_mismatch", "builder_failed", "start_refused"):
         assert reason in host_api, reason
     assert tuple(inspect.signature(Host.serve_builder).parameters) == ("self", "key", "builder")
 

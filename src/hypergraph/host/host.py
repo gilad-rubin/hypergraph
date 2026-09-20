@@ -61,6 +61,7 @@ from hypergraph.host.refs import BatchRef, BatchSubmitReceipt, RunRef, SubmitRec
 from hypergraph.host.views import (
     DEAD_LETTER_BUILDER_FAILED,
     DEAD_LETTER_BUILDER_IDENTITY_MISMATCH,
+    DEAD_LETTER_START_REFUSED,
     SUBMISSION_STATE_PAUSED,
     TERMINAL_WORKFLOW_STATUSES,
     is_child_settled,
@@ -1393,22 +1394,52 @@ class Host:
         # else the worker does.
         recorder_token = push_host_recorder(self._home)
         try:
-            if asyncio.iscoroutinefunction(run_fn):
-                await run_fn(definition.graph, inputs, **run_kwargs)
-            else:
-                cancellation, cancellation_token = self._home._register_sync_wait_cancellation()
-                try:
-                    await asyncio.to_thread(run_fn, definition.graph, inputs, **run_kwargs)
-                except asyncio.CancelledError:
-                    # ``to_thread`` cancellation cannot kill the worker thread.
-                    # Fence only an exclusion waiter; ordinary sync-node crash
-                    # semantics remain at-least-once and are re-adopted.
-                    cancellation.set()
-                    raise
-                finally:
-                    self._home._clear_sync_wait_cancellation(cancellation_token)
-        finally:
-            pop_host_recorder(recorder_token)
+            try:
+                if asyncio.iscoroutinefunction(run_fn):
+                    await run_fn(definition.graph, inputs, **run_kwargs)
+                else:
+                    cancellation, cancellation_token = self._home._register_sync_wait_cancellation()
+                    try:
+                        await asyncio.to_thread(run_fn, definition.graph, inputs, **run_kwargs)
+                    except asyncio.CancelledError:
+                        # ``to_thread`` cancellation cannot kill the worker thread.
+                        # Fence only an exclusion waiter; ordinary sync-node crash
+                        # semantics remain at-least-once and are re-adopted.
+                        cancellation.set()
+                        raise
+                    finally:
+                        self._home._clear_sync_wait_cancellation(cancellation_token)
+            finally:
+                pop_host_recorder(recorder_token)
+        # ``asyncio.CancelledError`` is a BaseException, so shutdown drain and
+        # ``stop()`` cancellation pass through here untouched — they are the
+        # at-least-once path, not a refusal.
+        except Exception as error:
+            if await self._home.get_run_async(workflow_id) is not None:
+                # The attempt committed something. That is the crash the
+                # lease and ``_reclaim_expired`` exist for: leave the
+                # submission claimed, let ``_record_task_exception`` record
+                # it, and let a re-adoption resume from the recorded history.
+                raise
+            # Nothing started. The stored inputs, the pinned identity and the
+            # recorded builder address are all immutable, so every re-adoption
+            # would reproduce this exact refusal while holding an admission
+            # slot and a renewed lease — the #452 zombie claim. Retire it with
+            # the reason instead; the submission is settled, so ``watch()``
+            # ends, a Batch parent settles, and ``client.rerun()`` revives it.
+            logger.warning(
+                "Definition %r refused to start submission %s; dead-lettering it.",
+                definition.name,
+                workflow_id,
+                exc_info=True,
+            )
+            await self._home._dead_letter(
+                workflow_id,
+                DEAD_LETTER_START_REFUSED,
+                claim_seq=row["claim_seq"],
+                detail={"error": type(error).__name__},
+            )
+            return
         # Release the claim only after the run came back: a cancelled or
         # crashed execution leaves the submission claimed for the restart
         # scan. The release settles THIS claim (`row["claim_seq"]`) or

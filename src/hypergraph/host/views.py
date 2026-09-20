@@ -63,12 +63,21 @@ DEAD_LETTER_BUILDER_IDENTITY_MISMATCH = "builder_identity_mismatch"
 # its submission claimed forever, holding an admission slot with nothing
 # executing — so it is retired here, with the exception type recorded.
 DEAD_LETTER_BUILDER_FAILED = "builder_failed"
+# The fifth reason is the only one that is not about deployment: the
+# Definition IS here, it was handed this submission, and it refused to
+# start it — the pinned inputs are not its boundary inputs, or a
+# restore-time check rejected them. The attempt left no ``runs`` row, and
+# every stored field a retry would replay (inputs, pinned identity) is
+# immutable, so re-adopting it could only repeat the refusal forever while
+# holding an admission slot. Retiring it names the cause instead.
+DEAD_LETTER_START_REFUSED = "start_refused"
 DEAD_LETTER_REASONS: frozenset[str] = frozenset(
     {
         DEAD_LETTER_UNSERVED_IDENTITY,
         DEAD_LETTER_BUILDER_MISSING,
         DEAD_LETTER_BUILDER_IDENTITY_MISMATCH,
         DEAD_LETTER_BUILDER_FAILED,
+        DEAD_LETTER_START_REFUSED,
     }
 )
 #: The durable run-update kind carrying that reason, so a detached ``watch``
