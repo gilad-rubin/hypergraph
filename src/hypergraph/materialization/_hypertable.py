@@ -31,6 +31,7 @@ from hypergraph.materialization._schema import (
     STATUS_COLUMNS,
     TableSpec,
     analyze_table,
+    dead_bound_names,
     is_internal_column,
     python_type_to_arrow,
 )
@@ -87,7 +88,7 @@ def pop_host_recorder(token: Token[Checkpointer | None]) -> None:
     _HOST_RECORDER.reset(token)
 
 
-def _public_row(row: dict[str, Any], spec: TableSpec | None = None) -> dict[str, Any]:
+def _public_row(row: dict[str, Any], spec: TableSpec | None = None, dead_bound: frozenset[str] | None = None) -> dict[str, Any]:
     gate_outputs = {
         column.name
         for column in (spec.columns if spec is not None else ())
@@ -96,10 +97,21 @@ def _public_row(row: dict[str, Any], spec: TableSpec | None = None) -> dict[str,
             for producer in (column.produced_by if isinstance(column.produced_by, tuple) else (column.produced_by,))
         )
     }
+    # A name the child graph binds is recipe, not data. Fresh stores no longer
+    # build a column for it; a store written before that fix still holds the
+    # dead column, so hide it here rather than migrate it off disk. Only the
+    # residue hides: a declared column is not in ``dead_bound`` at all, and a
+    # user annotation that survived the graph growing the binding holds a
+    # value, while a dead column is NULL by construction. Root specs carry
+    # ``child_graph=None``, so root reads are untouched either way.
+    dead = dead_bound if dead_bound is not None else (dead_bound_names(spec) if spec is not None else frozenset())
     result = {}
     for k, v in row.items():
-        if not is_internal_column(k) and k not in gate_outputs:
-            result[k] = _normalize_value(v)
+        if is_internal_column(k) or k in gate_outputs:
+            continue
+        if k in dead and v is None:
+            continue
+        result[k] = _normalize_value(v)
     return result
 
 
@@ -129,9 +141,11 @@ class ChildTable:
     def __init__(self, parent: HyperTable, spec: TableSpec) -> None:
         self._parent = parent
         self._spec = spec
+        # Constant for the spec; a read loops ``_public_row`` over every row.
+        self._dead_bound = dead_bound_names(spec)
 
     def _public_row(self, row: dict[str, Any]) -> dict[str, Any]:
-        public = _public_row(row, self._spec)
+        public = _public_row(row, self._spec, self._dead_bound)
         public[self._parent._identity] = _normalize_value(row[PARENT_LINK_COLUMN])
         return public
 
@@ -200,6 +214,18 @@ class ChildTable:
         )
 
     def set(self, where: Any, **fields: Any) -> int:
+        # A bound name the spec declares no column for would otherwise evolve a
+        # brand-new physical column nothing can read back as data. A name the
+        # spec DOES declare keeps its ordinary behavior (the content-key refusal
+        # below, or a plain derived-column overwrite).
+        bound = sorted(self._dead_bound & set(fields))
+        if bound:
+            raise ValueError(
+                "ChildTable.set() cannot set a value that is bound on the child graph.\n\n"
+                f"Fields: {', '.join(bound)}\n\n"
+                "How to fix: a bound name is recipe, not data — it is not a stored column. "
+                "Change it with bind() on the child graph and re-derive."
+            )
         blocked = sorted(column.name for column in self._spec.columns if column.content_key and column.name in fields)
         if blocked:
             raise ValueError(
