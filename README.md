@@ -327,7 +327,7 @@ graph = Graph(nodes=[...], strict_types=True)
 Typos, missing connections, dead ends — caught when you build the graph, not at runtime.
 
 ```python
-@route(targets=["step_c", END])  # Typo: the node is called 'step_b'
+@route(targets=["step_a", "step_c"])  # Typo: the node is called 'step_b'
 def decide(x: int) -> str:
     return "step_c"
 

@@ -124,7 +124,7 @@ def test_embed():
 Catch errors when you build the graph, not at 2am in production:
 
 ```python
-@route(targets=["step_c", END])  # Typo: the node is called 'step_b'
+@route(targets=["step_a", "step_c"])  # Typo: the node is called 'step_b'
 def decide(x: int) -> str:
     return "step_c"
 

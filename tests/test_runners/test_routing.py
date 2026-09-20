@@ -11,7 +11,7 @@ Tests cover:
 
 import pytest
 
-from hypergraph import END, AsyncRunner, Graph, RunStatus, SyncRunner, node, route
+from hypergraph import END, AsyncRunner, Graph, RunStatus, SyncRunner, ifelse, node, route
 from hypergraph.graph import GraphConfigError
 
 # =============================================================================
@@ -287,6 +287,99 @@ class TestGateGraphValidation:
 
         with pytest.raises(GraphConfigError, match="unknown node"):
             Graph([decide, some_node])
+
+    def test_invalid_ifelse_branch_raises(self):
+        """An @ifelse branch naming a missing node raises the same friendly error.
+
+        IfElseNode is the other gate shape whose targets the mutex expansion in
+        ``_build_graph`` walks, so before #450 this crashed with a raw
+        ``networkx.exception.NetworkXError``.
+        """
+
+        @node(output_name="a")
+        def step_a(x):
+            return x + 1
+
+        @node(output_name="b")
+        def step_b(x):
+            return x + 2
+
+        @ifelse(when_true="step_a", when_false="step_c")
+        def decide(x):
+            return x > 0
+
+        with pytest.raises(GraphConfigError) as exc:
+            Graph([decide, step_a, step_b])
+        message = str(exc.value)
+        assert "Gate 'decide' targets unknown node 'step_c'" in message
+        assert "  -> Available nodes: ['decide', 'step_a', 'step_b']" in message
+        assert "Did you mean 'step_a' or 'step_b'?" in message
+
+    def test_missing_target_is_reported_before_an_output_conflict(self):
+        """A graph that is both gate-broken and output-conflicted names the typo.
+
+        Gate targets are validated before the graph is built, so the user hears
+        about the target they misspelled rather than about a duplicate output
+        that the (unbuildable) gate branches might have excused.
+        """
+
+        @node(output_name="a")
+        def step_a(x):
+            return x + 1
+
+        @node(output_name="a")
+        def dup_a(x):
+            return x
+
+        @node(output_name="b")
+        def step_b(x):
+            return x + 2
+
+        @route(targets=["step_a", "step_c", END])
+        def decide(x):
+            return "step_a"
+
+        with pytest.raises(GraphConfigError) as exc:
+            Graph([decide, step_a, dup_a, step_b])
+        message = str(exc.value)
+        assert "Gate 'decide' targets unknown node 'step_c'" in message
+        assert "Multiple nodes produce" not in message
+
+    def test_all_targets_missing_names_the_first_without_a_suggestion(self):
+        """A complete miss is still reported, with no invented suggestion."""
+
+        @node(output_name="a")
+        def step_a(x):
+            return x + 1
+
+        @route(targets=["missing_one", "missing_two", END])
+        def decide(x):
+            return END
+
+        with pytest.raises(GraphConfigError) as exc:
+            Graph([decide, step_a])
+        message = str(exc.value)
+        assert "Gate 'decide' targets unknown node 'missing_one'" in message
+        assert "  -> Available nodes: ['decide', 'step_a']" in message
+        assert "Did you mean" not in message
+
+    def test_two_real_targets_build_without_error(self):
+        """Falsifier: the missing name is what raises, not the target count."""
+
+        @node(output_name="a")
+        def step_a(x):
+            return x + 1
+
+        @node(output_name="b")
+        def step_b(x):
+            return x + 2
+
+        @route(targets=["step_a", "step_b", END])
+        def decide(x):
+            return "step_a"
+
+        graph = Graph([decide, step_a, step_b])
+        assert set(graph.nodes) == {"decide", "step_a", "step_b"}
 
     def test_end_target_always_valid(self):
         """END is always a valid target."""

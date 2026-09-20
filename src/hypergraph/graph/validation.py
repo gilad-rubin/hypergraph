@@ -43,7 +43,10 @@ def validate_graph(
     _validate_valid_identifiers(nodes)
     _validate_no_duplicate_node_outputs(nodes)
     _validate_consistent_defaults(nodes)
-    _validate_gate_targets(nodes)
+    # Cheap and idempotent: Graph.__init__ already ran this before building the
+    # nx graph, but the exported validate_graph stays a complete build-time
+    # validation for callers who invoke it directly.
+    validate_gate_targets(nodes)
     _validate_no_gate_self_loop(nodes)
     _validate_multi_target_output_conflicts(nodes)
     _validate_interrupt_return_annotations(nodes)
@@ -371,7 +374,7 @@ def _validate_reserved_names(nodes: dict[str, HyperNode]) -> None:
             )
 
 
-def _validate_gate_targets(nodes: dict[str, HyperNode]) -> None:
+def validate_gate_targets(nodes: dict[str, HyperNode]) -> None:
     """Validate that all gate targets exist in the graph (or are END)."""
     from hypergraph.nodes.gate import END, GateNode
 

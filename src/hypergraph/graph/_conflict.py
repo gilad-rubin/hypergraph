@@ -236,6 +236,11 @@ def _expand_mutex_groups(G: nx.DiGraph, nodes: list[HyperNode]) -> list[list[set
     or IfElseNode), expands the mutex relationship to include all nodes
     that are exclusively reachable through each target.
 
+    Precondition: every gate target names a node of ``G``. ``Graph.__init__``
+    calls ``validate_gate_targets`` before ``_build_graph``, so no ``t in G``
+    filter is needed here (and adding one would hide the typo behind whatever
+    conflict the unbuildable branches failed to excuse).
+
     Returns:
         List of mutex group sets, where each element is a list of branch sets.
         Nodes are mutex only if they're in DIFFERENT branch sets of the same gate.
