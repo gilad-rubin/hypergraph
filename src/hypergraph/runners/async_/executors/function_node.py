@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, nullcontext
 from typing import TYPE_CHECKING, Any
 
 from hypergraph._thread_settle import to_thread_settled
 from hypergraph.runners._shared.cache_observer import node_cache_observer
-from hypergraph.runners._shared.node_context import flush_node_records
+from hypergraph.runners._shared.node_context import settle_node_records
 from hypergraph.runners._shared.outputs import wrap_outputs
 from hypergraph.runners._shared.provider_limits import provider_permits
 from hypergraph.runners.async_.superstep import get_concurrency_limiter
@@ -127,11 +128,13 @@ class AsyncFunctionNodeExecutor:
         if getattr(node, "_context_param", None) is not None:
             from hypergraph.runners._shared.node_context import build_node_context
 
-            # records_on_loop: a coroutine body here runs ON this loop, and
-            # this executor flushes what it records below — so `ctx.record`
-            # may hand the write to a loop task instead of blocking the loop
-            # inside SQLite (a sync body dispatched to a thread still writes
-            # straight through; `record` checks where it actually runs).
+            # record_loop: THIS loop, the one this executor is running on
+            # and settles below — so a coroutine body's `ctx.record` may hand
+            # the write to a loop task instead of blocking the loop inside
+            # SQLite. `record` compares identity, so a body anywhere else
+            # writes straight through: a sync body on a worker thread, and
+            # also one driving an `asyncio.run` of its own, whose loop
+            # nothing here would ever await.
             node_context = build_node_context(
                 node.name,
                 ctx.emit_fn,
@@ -141,7 +144,7 @@ class AsyncFunctionNodeExecutor:
                 item_index=ctx.item_index,
                 parent_span_id=ctx.parent_span_id,
                 checkpointer=ctx.checkpointer,
-                records_on_loop=True,
+                record_loop=asyncio.get_running_loop(),
             )
             func_inputs[node._context_param] = node_context  # type: ignore[index]
 
@@ -245,10 +248,10 @@ class AsyncFunctionNodeExecutor:
                 # Facts the node already recorded still belong to the run —
                 # settle them before its failure propagates, but never let a
                 # write error replace the node's own exception.
-                await flush_node_records(node_context, node_failed=True)
+                await settle_node_records(node_context, node_failed=True)
                 raise
             # Before the step record: a fact is durable by the time the step
             # that produced it is, and the log reads `fact… step`.
-            await flush_node_records(node_context, node_failed=False)
+            await settle_node_records(node_context, node_failed=False)
 
         return wrap_outputs(node, result)

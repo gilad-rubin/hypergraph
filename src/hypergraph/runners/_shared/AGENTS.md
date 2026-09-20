@@ -125,6 +125,14 @@ Put boundary logic in `pending_boundaries.py` and call it from both
 runners. A boundary is intent, never execution truth — a settlement mark says
 the node completed and never what it produced.
 
+## Node-Recorded Facts (`node_context.py`)
+
+`ctx.record` defers a write only to the loop an executor handed over as
+`record_loop`, and what a LOST fact costs is decided in
+`_resolve_record_failure` alone — both families reach it through
+`settle_node_records` / `settle_node_records_sync`, so never re-decide that
+policy at an executor.
+
 ## Staleness (`_is_stale`)
 
 A previously-executed node is stale if any input version changed since last execution.

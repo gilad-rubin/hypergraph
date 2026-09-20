@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any
 from hypergraph.nodes._input_extraction import register_injectable
 
 if TYPE_CHECKING:
+    from asyncio import AbstractEventLoop
+
     from hypergraph.checkpointers.base import Checkpointer
     from hypergraph.runners._shared.stop import StopSignal
 
@@ -64,9 +66,10 @@ class NodeContext:
         "_item_index",
         "_parent_span_id",
         "_checkpointer",
-        "_records_on_loop",
+        "_record_loop",
         "_record_tasks",
         "_record_failure",
+        "_record_failure_raised",
     )
 
     def __init__(
@@ -81,7 +84,7 @@ class NodeContext:
         item_index: int | None = None,
         parent_span_id: str | None = None,
         checkpointer: Checkpointer | None = None,
-        records_on_loop: bool = False,
+        record_loop: AbstractEventLoop | None = None,
     ) -> None:
         self._stop_signal = stop_signal
         self._emit_fn = emit_fn
@@ -92,12 +95,15 @@ class NodeContext:
         self._item_index = item_index
         self._parent_span_id = parent_span_id
         self._checkpointer = checkpointer
-        self._records_on_loop = records_on_loop
+        self._record_loop = record_loop
         # IN-FLIGHT writes only: a finished task drops out of the set as soon
         # as it completes, so a node that records ten thousand facts holds
         # handles to the ones still going, not to all ten thousand.
         self._record_tasks: set[Any] = set()
         self._record_failure: BaseException | None = None
+        # True once a failed write has been handed to the body at the call
+        # site, so the settle knows the node's code already has it.
+        self._record_failure_raised = False
 
     @property
     def stop_requested(self) -> bool:
@@ -145,11 +151,25 @@ class NodeContext:
         "nobody is keeping a log" is a deployment fact, not a bug in the
         node.
 
-        The call itself never blocks the event loop. A coroutine node's
-        fact is written by a task on the loop and awaited by the executor
-        before the node's step record is written — so the fact is durable
-        by the time the step that produced it is — while a node body on a
-        thread writes straight through.
+        The call itself never blocks the event loop. WHICH loop decides
+        the write path: a body running on the executor's OWN loop gets a
+        loop task the executor awaits before the node's step record is
+        written — so the fact is durable by the time the step that produced
+        it is. Every other body writes straight through on its own thread,
+        including a plain ``def`` body that drives an ``asyncio.run`` of
+        its own: that loop is one the executor will never await, so
+        deferring there would hand the write to nobody.
+
+        **A fact that could not be written fails the node.** Where the
+        write already happened at the call (a body not on the executor's
+        loop) the body is told at the call, so it stops before whatever
+        came next. Where the write was deferred to the executor's loop (an
+        ``async def`` body) the body is told when the node settles, because
+        at the call there is nothing yet to tell. Catching the error inside
+        the body changes the body's own control flow; it never changes the
+        node's outcome. When the node is failing for its own reason, that
+        exception wins; the lost fact is logged when the body was never
+        handed the record error (loop path), not again when it already was.
 
         ::
 
@@ -178,9 +198,18 @@ class NodeContext:
             ) from exc
         if self._checkpointer is None or self._workflow_id is None:
             return
-        loop = self._running_loop()
+        loop = self._executor_loop()
         if loop is None:
-            self._checkpointer.append_run_fact_sync(self._workflow_id, kind, payload)
+            # Capture BEFORE re-raising: the node fails on a lost fact
+            # whether or not the body catches this, and the settle reads
+            # the capture back.
+            try:
+                self._checkpointer.append_run_fact_sync(self._workflow_id, kind, payload)
+            except BaseException as exc:
+                if self._record_failure is None:
+                    self._record_failure = exc
+                self._record_failure_raised = True
+                raise
             return
         # Created in call order, and each append takes the store's write lock
         # in the order it reaches it, so the facts commit in the order the
@@ -194,8 +223,8 @@ class NodeContext:
 
         Retrieving the exception here also means a write that failed while
         the node was still running never surfaces as an unretrieved-task
-        complaint at garbage-collection time; ``flush_node_records`` reads it
-        back from here.
+        complaint at garbage-collection time; ``settle_node_records`` reads
+        it back from here.
         """
         self._record_tasks.discard(task)
         if task.cancelled():
@@ -204,20 +233,26 @@ class NodeContext:
         if failure is not None and self._record_failure is None:
             self._record_failure = failure
 
-    def _running_loop(self) -> Any:
-        """The loop this node body runs ON, or None when it runs on a thread.
+    def _executor_loop(self) -> AbstractEventLoop | None:
+        """The executor's OWN loop when this body is running on it, else None.
 
-        Only the async executor sets ``records_on_loop``: it is the one that
-        awaits the resulting tasks. A sync runner's node has no such flush,
-        so it writes through even if some caller happens to have a loop
-        running on this thread.
+        The async executor captures its loop when it builds this context and
+        is the one that settles the tasks planted on it. A body on any OTHER
+        loop — a ``def`` body that drives its own ``asyncio.run`` on the
+        worker thread — is a loop nobody here will ever await, so its fact
+        writes straight through on that thread instead. A sync runner's node
+        never has an executor loop at all.
+
+        Identity, not "is a loop running", also makes the settle's
+        ``gather`` sound: every task it awaits came from the one loop.
         """
-        if not self._records_on_loop:
+        owner = self._record_loop
+        if owner is None:
             return None
         import asyncio
 
         try:
-            return asyncio.get_running_loop()
+            return owner if asyncio.get_running_loop() is owner else None
         except RuntimeError:
             return None
 
