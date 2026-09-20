@@ -102,6 +102,25 @@ def graph_bound_names(graph: Any) -> frozenset[str]:
         return frozenset()
 
 
+def dead_bound_names(spec: TableSpec) -> frozenset[str]:
+    """Names a store written before #447 may still hold a dead child column for.
+
+    A name the child graph binds is recipe, so ``_analyze_map_over`` builds no
+    column for it and nothing can write a value into one. Two same-named things
+    are NOT that residue and must keep working:
+
+    * a column the spec itself declares (a child node whose ``output_name``
+      happens to match a name bound deeper down) — it holds a derived value;
+    * a user annotation column ``ChildTable.set()`` evolved before the graph
+      grew the binding — it holds whatever the user put there.
+
+    Subtracting the declared columns separates the first. The second is
+    indistinguishable by name, so callers additionally require the stored value
+    to be NULL: a dead column is always NULL, a real annotation is not.
+    """
+    return graph_bound_names(spec.child_graph) - {column.name for column in spec.columns}
+
+
 def return_type(node: Any) -> Any:
     func = node_func(node)
     if func is None:

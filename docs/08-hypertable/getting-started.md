@@ -235,9 +235,14 @@ Each public child row exposes the parent's named identity column. Predicates
 may reference either child columns or parent columns.
 
 A value the child graph `bind()`s is recipe, not data, so it is not a child
-column: it never appears in `rows()` and `set()` refuses it. Change it with
-`bind()` and re-derive. A child input with a plain default is different — it is
-fed from the mapped item, so it stays a normal source column.
+column: it never appears in `rows()`, a mapped-item field of that name is
+dropped rather than stored, and it cannot be used as an annotation column —
+`set()` refuses it. Change it with `bind()` and re-derive. A value already
+stored under that name before the graph grew the binding — an annotation, or a
+column a child node declares — is real data: it keeps reading back in `rows()`,
+it just cannot be edited under that name any more. A child input with a plain
+default is different — it is fed from the mapped item, so it stays a normal
+source column.
 
 ## Re-derive one column
 
