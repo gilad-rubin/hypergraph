@@ -247,6 +247,40 @@ class TestEveryNameTakingSurfaceUsesTheEngine:
             Graph([decide, retry])
         assert "Did you mean 'retry'?" in str(exc.value)
 
+    def test_gate_target_typo_suggests_the_node_with_two_declared_targets(self):
+        """The twin of the test above, in the shape users actually write.
+
+        A single declared target plus ``END`` used to be the only shape that
+        reached this message: with two or more non-END targets the mutex
+        expansion inside ``_build_graph`` walked the missing name first and
+        raised a raw ``networkx.exception.NetworkXError`` (issue #450). Both
+        the with-END and the no-END spellings are pinned here.
+        """
+
+        @node(output_name="a")
+        def step_a(x: int) -> int:
+            return x + 1
+
+        @node(output_name="b")
+        def step_b(x: int) -> int:
+            return x + 2
+
+        @route(targets=["step_a", "step_c", END])
+        def decide(x: int) -> str:
+            return "step_a"
+
+        @route(targets=["step_a", "step_c"])
+        def decide_no_end(x: int) -> str:
+            return "step_a"
+
+        for gate, gate_name in ((decide, "decide"), (decide_no_end, "decide_no_end")):
+            with pytest.raises(GraphConfigError) as exc:
+                Graph([gate, step_a, step_b])
+            message = str(exc.value)
+            assert f"Gate '{gate_name}' targets unknown node 'step_c'" in message
+            assert f"  -> Available nodes: ['{gate_name}', 'step_a', 'step_b']" in message
+            assert "Did you mean 'step_a' or 'step_b'?" in message
+
     def test_returned_target_typo_suggests_a_declared_target_at_runtime(self):
         """What a routing function *returns* is only checkable when it runs.
         README, docs/01-introduction/what-is-hypergraph.md,

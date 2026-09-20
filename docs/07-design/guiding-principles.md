@@ -120,12 +120,15 @@ Structural errors should fail when building the graph, not while a long run is i
 ### Concrete break example
 
 ```python
-@route(targets=["step_a", "step_b", END])
+@route(targets=["step_a", "step_c", END])  # typo: the node is called 'step_b'
 def decide(x: int) -> str:
-    return "step_c"  # invalid target
+    return "step_a"
 
-Graph([decide, step_a, step_b])  # GraphConfigError
+Graph([decide, step_a, step_b])  # GraphConfigError: Gate 'decide' targets unknown node 'step_c'
 ```
+
+A gate's *declared* targets are checked here, at build time. What the routing
+function *returns* can only be checked when it runs.
 
 ---
 

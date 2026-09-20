@@ -14,7 +14,7 @@ from hypergraph.graph._conflict import validate_output_conflicts
 from hypergraph.graph._helpers import sources_of
 from hypergraph.graph.addressing import get_edge_produced_values
 from hypergraph.graph.input_spec import InputSpec, _compute_active_scope, _data_only_subgraph, compute_input_spec
-from hypergraph.graph.validation import GraphConfigError, validate_graph
+from hypergraph.graph.validation import GraphConfigError, validate_gate_targets, validate_graph
 from hypergraph.limits import ProcessLocalLimiter
 from hypergraph.nodes.base import HyperNode
 
@@ -293,6 +293,10 @@ class Graph:
         self._validate_shared_params()
         self._entrypoints = self._normalize_constructor_entrypoints(entrypoint)
         self._explicit_edges = self._normalize_edges(edges) if edges is not None else None
+        # Precondition for _build_graph: its mutex expansion walks nx.descendants()
+        # from every gate target, so each target must name a real node first --
+        # otherwise a typo surfaces as a raw NetworkXError instead of this error.
+        validate_gate_targets(self._nodes)
         self._nx_graph = self._build_graph(nodes)
         self._cached_hash: str | None = None
         self._cached_structural_hash: str | None = None
