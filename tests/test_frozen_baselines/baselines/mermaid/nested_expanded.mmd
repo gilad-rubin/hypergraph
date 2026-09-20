@@ -11,7 +11,7 @@ flowchart TD
     %% Edges
     input_query --> generate_from_documents
     input_text --> retrieval__embed
-    retrieval --> generate_from_documents
+    retrieval__retrieve --> generate_from_documents
     retrieval__embed --> retrieval__retrieve
 
     %% Styling

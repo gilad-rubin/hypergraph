@@ -1,14 +1,38 @@
 """Tests for the Mermaid flowchart exporter."""
 
+import re
+
 import pytest
 
 from hypergraph import END, Graph, ifelse, node, route
-from hypergraph.viz.mermaid import to_mermaid
+from hypergraph.viz._common import build_expansion_state, build_output_to_producer_map
+from hypergraph.viz.mermaid import _resolve_data_source, to_mermaid
+from hypergraph.viz.renderer.ir_builder import deepest_internal_producers
+from tests.test_frozen_baselines.graph_cases import (
+    build_exposed_ports,
+    build_mapped,
+    build_nested,
+)
 from tests.viz.conftest import (
     make_hidden_sibling_dependency_graph,
     make_hidden_source_data_dependency_graph,
     make_hidden_source_only_dependency_graph,
     make_nested_container_entrypoint_graph,
+)
+from tests.viz.test_mapped_graphnode_expansion import (
+    check as mapped_check,
+)
+from tests.viz.test_mapped_graphnode_expansion import (
+    gate as mapped_gate,
+)
+from tests.viz.test_mapped_graphnode_expansion import (
+    load_items as mapped_load_items,
+)
+from tests.viz.test_mapped_graphnode_expansion import (
+    make_mapped_gate_graph,
+)
+from tests.viz.test_mapped_graphnode_expansion import (
+    process as mapped_process,
 )
 
 # =============================================================================
@@ -582,6 +606,282 @@ class TestSeparateOutputs:
         assert '[/"_gate_decision' not in mermaid
         assert "data_gate_decision_decision_made" in mermaid
         assert "data_source_value" in mermaid
+
+
+# =============================================================================
+# Expanded Boundary Renames
+# =============================================================================
+
+
+_DECLARATION_RE = re.compile(r"^ {4,}([A-Za-z0-9_]+)(?:\[\[|\{\{|\(\[|\[/|\(\(|\[|\()")
+_SUBGRAPH_RE = re.compile(r"^\s*subgraph\s+([A-Za-z0-9_]+)")
+_EDGE_RE = re.compile(r"^\s*([A-Za-z0-9_]+)\s+(?:-->|-\.->)(?:\|[^|]*\|)?\s+([A-Za-z0-9_]+)\s*$")
+
+
+def assert_every_endpoint_declared(source: str) -> None:
+    """Every edge endpoint must be a node the diagram actually declares.
+
+    Mermaid silently invents an unstyled box for an id that only ever appears
+    in an edge, so a wrongly composed id (``data_<container>_<outer name>``)
+    renders as a plausible-looking phantom instead of failing. This is the
+    mechanical detector for that class of bug.
+    """
+    head, marker, rest = source.partition("    %% Edges")
+    assert marker, "no %% Edges section"
+    edges_block = rest.partition("    %% Styling")[0]
+
+    declared: set[str] = set()
+    for line in head.splitlines():
+        for pattern in (_DECLARATION_RE, _SUBGRAPH_RE):
+            match = pattern.match(line)
+            if match:
+                declared.add(match.group(1))
+
+    used: set[str] = set()
+    for line in edges_block.splitlines():
+        if not line.strip() or line.strip().startswith("%%"):
+            continue
+        match = _EDGE_RE.match(line)
+        assert match, f"unparsed edge line {line!r} — the detector would miss a phantom here"
+        used |= {match.group(1), match.group(2)}
+
+    assert used - declared == set(), f"undeclared edge endpoints: {sorted(used - declared)}\n{source}"
+
+
+@node(output_name="leaf_out")
+def leaf(seed: int) -> int:
+    return seed
+
+
+@node(output_name="sink_out")
+def sink(outer_name: int) -> int:
+    return outer_name
+
+
+def make_chained_rename_graph() -> Graph:
+    """A rename chained across two container boundaries.
+
+    ``leaf_out`` → ``mid_out`` → ``outer_name``: at depth=1 the answer is the
+    inner container under ITS name, at depth=2 the leaf under its own.
+    """
+    inner = Graph([leaf], name="inner").as_node(name="mid").rename_outputs(leaf_out="mid_out")
+    middle = Graph([inner], name="middle").as_node(name="outer").rename_outputs(mid_out="outer_name")
+    return Graph([middle, sink], name="top")
+
+
+@node(output_name="flag")
+def arm_decide(x: int) -> bool:
+    return x > 0
+
+
+@ifelse(when_true="arm_hi", when_false="arm_lo")
+def arm_gate(flag: bool) -> bool:
+    return flag
+
+
+@node(output_name="val")
+def arm_hi(x: int) -> int:
+    return x
+
+
+@node(output_name="val")
+def arm_lo(x: int) -> int:
+    return -x
+
+
+@node(output_name="done")
+def arm_consume(renamed: int) -> int:
+    return renamed
+
+
+def make_mutex_boundary_graph() -> Graph:
+    """Two mutex arms both produce the value the boundary renames."""
+    inner = Graph([arm_decide, arm_gate, arm_hi, arm_lo], name="arms").as_node(name="branchy").rename_outputs(val="renamed")
+    return Graph([inner, arm_consume], name="mutex_top")
+
+
+@node(output_name="w_out")
+def hidden_worker(seed: int) -> int:
+    return seed
+
+
+@node(output_name="taken")
+def hidden_taker(box_out: int) -> int:
+    return box_out
+
+
+def make_hidden_producer_graph() -> Graph:
+    """The renamed output's real producer sits inside a nested container."""
+    sub = Graph([hidden_worker], name="subg").as_node(name="sub")
+    box = Graph([sub], name="boxg").as_node(name="box").rename_outputs(w_out="box_out")
+    return Graph([box, hidden_taker], name="hidden_top")
+
+
+def make_unrenamed_mapped_gate_graph() -> Graph:
+    """``make_mapped_gate_graph`` without the boundary rename."""
+
+    @node(output_name="items")
+    def save_item_out(store, item_out: list) -> list:
+        return item_out
+
+    create = Graph(nodes=[mapped_process], name="process").as_node(name="create_items").with_inputs(page="pages").map_over("pages")
+    return Graph(
+        nodes=[mapped_check, mapped_gate, mapped_load_items, create, save_item_out],
+        name="ensure_items",
+    ).bind(store=object(), worker=object())
+
+
+_RENAME_FIXTURES = {
+    "mapped_gate": make_mapped_gate_graph,
+    "nested": build_nested,
+    "exposed_ports": build_exposed_ports,
+    "mapped": build_mapped,
+    "chained_rename": make_chained_rename_graph,
+}
+
+
+def _resolve_args(graph: Graph, depth: int) -> tuple:
+    """The exact arguments ``mermaid.py`` hands its source resolver."""
+    flat_graph = graph.to_flat_graph()
+    expansion_state = build_expansion_state(flat_graph, depth)
+    output_to_producer = build_output_to_producer_map(flat_graph, expansion_state, use_deepest=True)
+    return flat_graph, expansion_state, output_to_producer
+
+
+class TestExpandedBoundaryRename:
+    """An expanded container that renames an output at its boundary.
+
+    The container-level name (``generated``) is not what the inner producer
+    emits (``item_out``), so an edge drawn from the resolved inner node must
+    also be re-labelled and re-keyed, or it names a DATA pill nothing declares.
+    ``ir_builder.deepest_internal_producers`` owns that translation; Mermaid
+    asks it rather than matching names a second time.
+    """
+
+    @pytest.mark.parametrize("fixture", sorted(_RENAME_FIXTURES))
+    @pytest.mark.parametrize("depth", [0, 1, 2])
+    @pytest.mark.parametrize("separate_outputs", [False, True])
+    def test_every_edge_endpoint_is_declared(self, fixture: str, depth: int, separate_outputs: bool):
+        """No fixture at any depth in either mode may emit a phantom node."""
+        source = str(_RENAME_FIXTURES[fixture]().to_mermaid(depth=depth, separate_outputs=separate_outputs))
+
+        assert_every_endpoint_declared(source)
+
+    def test_separate_outputs_edge_leaves_the_inner_producer_pill(self):
+        """The #213 fixture: the pill and the label both use the inner name."""
+        source = str(make_mapped_gate_graph().to_mermaid(depth=1, separate_outputs=True))
+
+        assert "data_create_items__process_item_out -->|item_out| save" in source
+        assert "data_create_items_generated" not in source
+
+    def test_merged_edge_leaves_the_inner_producer(self):
+        """Merged mode: the arrow starts at the node, not the subgraph hull."""
+        source = str(make_mapped_gate_graph().to_mermaid(depth=1))
+
+        assert "create_items__process --> save" in source
+        assert "    create_items --> save" not in source
+
+    def test_collapsed_container_keeps_its_own_pill(self):
+        """depth=0 is untouched: the container still owns the renamed pill."""
+        source = str(make_mapped_gate_graph().to_mermaid(depth=0, separate_outputs=True))
+
+        assert "create_items --> data_create_items_generated" in source
+        assert "data_create_items_generated -->|generated| save" in source
+
+    @pytest.mark.parametrize(
+        ("depth", "expected"),
+        [
+            (1, "data_outer__mid_mid_out -->|mid_out| sink"),
+            (2, "data_outer__mid__leaf_leaf_out -->|leaf_out| sink"),
+        ],
+    )
+    def test_chained_rename_resolves_one_level_per_expanded_container(self, depth: int, expected: str):
+        """Two chained renames: each expanded level translates its own name."""
+        source = str(make_chained_rename_graph().to_mermaid(depth=depth, separate_outputs=True))
+
+        assert expected in source
+        assert_every_endpoint_declared(source)
+
+    def test_unrenamed_boundary_already_resolves_without_the_new_branch(self):
+        """Falsifier: the new loop is load-bearing ONLY for renames.
+
+        With no rename the untouched fallback already finds the inner
+        producer; with one it returns the container itself, which is what
+        composed the phantom id.
+        """
+        flat_graph, expansion_state, output_to_producer = _resolve_args(make_unrenamed_mapped_gate_graph(), 1)
+        assert _resolve_data_source("create_items", "item_out", flat_graph, expansion_state, output_to_producer) == "create_items/process"
+
+        flat_graph, expansion_state, output_to_producer = _resolve_args(make_mapped_gate_graph(), 1)
+        assert _resolve_data_source("create_items", "generated", flat_graph, expansion_state, output_to_producer) == "create_items"
+
+    def test_rename_target_moves_only_the_collapsed_id(self):
+        """Falsifier: the outer name keys the collapsed pill and nothing else."""
+        create = (
+            Graph(nodes=[mapped_process], name="process")
+            .as_node(name="create_items")
+            .with_inputs(page="pages")
+            .with_outputs(item_out="surplus")
+            .map_over("pages")
+        )
+
+        @node(output_name="items")
+        def save_surplus(store, surplus: list) -> list:
+            return surplus
+
+        graph = Graph(
+            nodes=[mapped_check, mapped_gate, mapped_load_items, create, save_surplus],
+            name="ensure_items",
+        ).bind(store=object(), worker=object())
+
+        collapsed = str(graph.to_mermaid(depth=0, separate_outputs=True))
+        expanded = str(graph.to_mermaid(depth=1, separate_outputs=True))
+
+        assert "data_create_items_surplus -->|surplus| save_surplus" in collapsed
+        assert "data_create_items__process_item_out -->|item_out| save_surplus" in expanded
+        assert "data_create_items_surplus" not in expanded
+
+    @pytest.mark.parametrize("depth", [0, 1, 2])
+    def test_two_mutex_arms_leave_resolution_to_the_fallback(self, depth: int):
+        """Failure path: ambiguous producers must not assert one arm.
+
+        Both ``@ifelse`` arms produce ``val``, so no single child definitely
+        emits the boundary value — the same rule ``resolve_boundary_ports``
+        applies. The rendering is exactly what it was before the fix at every
+        depth: the edge still leaves the container.
+
+        Deliberately does NOT call ``assert_every_endpoint_declared``: in
+        ``separate_outputs`` mode the fallback still composes an undeclared
+        ``data_<container>_<outer name>`` id (pre-existing; tracked as a
+        follow-up). This test pins byte-identity with master, not phantom-freedom.
+        """
+        graph = make_mutex_boundary_graph()
+        flat_graph = graph.to_flat_graph()
+        assert len(deepest_internal_producers("branchy", "renamed", flat_graph)[0]) == 2
+
+        source = str(graph.to_mermaid(depth=depth, separate_outputs=True))
+        assert "data_branchy_renamed -->|renamed| arm_consume" in source
+        assert "branchy --> arm_consume" in str(graph.to_mermaid(depth=depth))
+
+    def test_producer_inside_a_collapsed_container_leaves_resolution_to_the_fallback(self):
+        """Failure path: an invisible producer stops the walk.
+
+        At depth=1 the real producer sits inside a still-collapsed ``sub``, so
+        the edge keeps the container source it had before the fix; at depth=2
+        the producer becomes visible and the walk completes.
+
+        ``assert_every_endpoint_declared`` is checked at depth=2 only: at
+        depth=1 the fallback composes an undeclared id for the still-hidden
+        producer (pre-existing; tracked as a follow-up).
+        """
+        graph = make_hidden_producer_graph()
+
+        at_one = str(graph.to_mermaid(depth=1, separate_outputs=True))
+        assert "data_box_box_out -->|box_out| hidden_taker" in at_one
+
+        at_two = str(graph.to_mermaid(depth=2, separate_outputs=True))
+        assert "data_box__sub__hidden_worker_w_out -->|w_out| hidden_taker" in at_two
+        assert_every_endpoint_declared(at_two)
 
 
 # =============================================================================

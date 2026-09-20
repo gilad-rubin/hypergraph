@@ -13,6 +13,16 @@ freezes the canonical self-EXCLUSIVE container-entrypoint derivation
 the visible evidence of that unification; any NEW drift in this fixture is a
 regression against the canonical derivation.
 
+DELIBERATE CHANGE LANDED (#449): ``nested_expanded.mmd`` and
+``exposed_ports_expanded.mmd`` each moved by one line
+(``retrieval --> generate_from_documents`` → ``retrieval__retrieve --> ...``,
+``prep --> publish`` → ``prep__normalize --> ...``). Both containers rename an
+output at their boundary (``rename_outputs(docs="documents")``,
+``expose(normalized="final_text")``); expanded, the edge now leaves the inner
+producer instead of the subgraph hull, which is what the interactive widget and
+``ir_builder.resolve_boundary_ports`` already drew. ``depth=0`` output is
+unchanged. Any NEW drift here is a regression.
+
 To regenerate after an INTENTIONAL change:
 
     HYPERGRAPH_UPDATE_BASELINES=1 uv run pytest tests/test_frozen_baselines
