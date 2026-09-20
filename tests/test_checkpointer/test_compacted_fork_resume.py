@@ -22,6 +22,9 @@ Assertion map (ticket acceptance items):
     paused resume refused / admitted        TestWindowedInterruptResume
     nested GraphNode lineage                TestNestedCompactedLineage
     composes with the in-run nested guard   TestNestedCompactedLineage
+    compacted loop value reaches consumer   TestCompactedLoopValueSurvives
+    same when the producer never reads it   TestCompactedLoopValueSurvives
+    'latest' answers what 'full' answers    TestCompactedLoopValueSurvives
 
 #277 extends the same witness: the carrier now records WHICH nodes it folded,
 so the refusal is per-producer instead of per-value-name, and the in-run guard
@@ -153,6 +156,133 @@ def build_accumulator_graph(fail_first: list[bool]):
         return f"total={snapshot}"
 
     graph = Graph(nodes=[accumulate, gate, finish], name="loop", entrypoint="accumulate")
+    return graph, calls
+
+
+def build_loop_crash_graph(fail_first: list[bool], *, limit: int = 3, default: int = 0):
+    """Loop to ``total == limit``, crash once, then report ``total``.
+
+    ``report`` reads ``total`` over an explicit ``accumulate -> report`` edge,
+    so restoring it goes through the explicit-edge producer version check.
+    ``_validate_consistent_defaults`` forces every consumer of ``total`` to
+    share one signature default, which is exactly the value a rejected restore
+    silently falls back to — so ``default`` is what a wrong answer looks like.
+    """
+    calls = {"accumulate": 0, "report": 0}
+
+    @node(output_name="total")
+    def accumulate(total: int = default) -> int:
+        calls["accumulate"] += 1
+        return total + 1
+
+    @route(targets=["accumulate", "crash"])
+    def decide(total: int = default) -> str:
+        return "crash" if total >= limit else "accumulate"
+
+    @node(output_name="checkpointed")
+    def crash(total: int = default) -> str:
+        if fail_first[0]:
+            raise RuntimeError("boom")
+        return "ok"
+
+    @node(output_name="report")
+    def report(total: int = default, checkpointed: str = "") -> str:
+        calls["report"] += 1
+        return f"total={total}"
+
+    graph = Graph(
+        nodes=[accumulate, decide, crash, report],
+        edges=[(accumulate, decide), (decide, crash), (crash, report), (accumulate, report)],
+        name="loopvalue",
+        entrypoint="accumulate",
+    )
+    return graph, calls
+
+
+def build_loop_derived_graph(fail_first: list[bool]):
+    """The same loop, but the consumed value is DERIVED, not the loop counter.
+
+    ``accumulate`` re-reads ``total`` every turn; ``transform`` does not read
+    ``doubled``, it only emits it. That is the harder replay shape: nothing
+    before ``transform``'s own row raises the counter for ``doubled``, so the
+    number it is owed only becomes known when ``decide``'s surviving row —
+    which comes AFTER it — is replayed.
+    """
+    calls = {"accumulate": 0, "transform": 0, "report": 0}
+
+    @node(output_name="total")
+    def accumulate(total: int = 0) -> int:
+        calls["accumulate"] += 1
+        return total + 1
+
+    @node(output_name="doubled")
+    def transform(total: int = 0) -> int:
+        calls["transform"] += 1
+        return total * 2
+
+    @route(targets=["accumulate", "crash"])
+    def decide(total: int = 0, doubled: int = 0) -> str:
+        return "crash" if total >= 3 else "accumulate"
+
+    @node(output_name="checkpointed")
+    def crash(total: int = 0) -> str:
+        if fail_first[0]:
+            raise RuntimeError("boom")
+        return "ok"
+
+    @node(output_name="report")
+    def report(doubled: int = 0, checkpointed: str = "") -> str:
+        calls["report"] += 1
+        return f"doubled={doubled}"
+
+    graph = Graph(
+        nodes=[accumulate, transform, decide, crash, report],
+        edges=[
+            (accumulate, transform),
+            (transform, decide),
+            (decide, crash),
+            (crash, report),
+            (transform, report),
+        ],
+        name="loopderived",
+        entrypoint="accumulate",
+    )
+    return graph, calls
+
+
+def build_loop_interrupt_graph():
+    """The same loop, paused on an interrupt instead of crashed.
+
+    ``report`` still reads ``total`` over an explicit ``accumulate -> report``
+    edge; the pause is just a run that stopped, so the resume restores the same
+    compacted history.
+    """
+    calls = {"accumulate": 0, "report": 0}
+
+    @node(output_name="total")
+    def accumulate(total: int = 0) -> int:
+        calls["accumulate"] += 1
+        return total + 1
+
+    @route(targets=["accumulate", "ask"])
+    def decide(total: int = 0) -> str:
+        return "ask" if total >= 3 else "accumulate"
+
+    @interrupt(answer_name="answer")
+    def ask(total: int = 0) -> StringQuestion:
+        return StringQuestion(prompt=f"total is {total}, ok?")
+
+    @node(output_name="report")
+    def report(total: int = 0, answer: str = "") -> str:
+        calls["report"] += 1
+        return f"total={total}"
+
+    graph = Graph(
+        nodes=[accumulate, decide, ask, report],
+        edges=[(accumulate, decide), (ask, report), (accumulate, report)],
+        name="loopturn",
+        entrypoint="accumulate",
+    )
     return graph, calls
 
 
@@ -557,6 +687,156 @@ class TestFoldedProducerProvenance:
             assert calls == {"accumulate": 3, "finish": 2}
         finally:
             await backend.close()
+
+
+class TestCompactedLoopValueSurvives:
+    """A compacted loop's restored value reaches its consumer (#448).
+
+    The gate above refuses when EXECUTION identity is gone. The premise under
+    that refusal is that STATE is reconstructible — and for a value a loop
+    produced more than once it was not. Compaction folds the loop's earlier
+    rows away; the rows that survive still carry the ORIGINAL run's absolute
+    versions, so a per-restore recount of the surviving producers lands below
+    them. The explicit-edge producer check then rejects the restored value and
+    the consumer runs on its signature default, silently, in a run that reports
+    COMPLETED with the right value sitting in ``result.values``.
+
+    Both replay shapes are pinned, because they need different reasoning:
+
+    - the producer RE-READS what it emits (``total``): its own surviving row
+      carries the original version, so the number is known when it replays;
+    - the producer never reads what it emits (``doubled``): only a consumer row
+      replayed AFTER it carries the number, so it is known only at the end.
+    """
+
+    @pytest.fixture(params=["async-sqlite", "async-memory"])
+    def async_backend_kind(self, request) -> str:
+        """Interrupts need the async family; SyncRunner refuses them outright."""
+        return request.param
+
+    @pytest.mark.parametrize(("limit", "default"), [(3, 0), (5, 0), (3, -1)])
+    async def test_sync_crash_resume_under_latest_reports_the_restored_value(self, tmp_path, limit, default):
+        """retention='latest' — the policy the docs recommend for pausing work.
+
+        No interrupt and no gate involvement: the resume is admitted, and
+        before #448 it answered ``total=<default>`` while ``result.values``
+        held the real total in the same object.
+        """
+        backend = Backend("sync-sqlite", tmp_path, retention_policy("latest"))
+        fail_first = [True]
+        try:
+            graph, calls = build_loop_crash_graph(fail_first, limit=limit, default=default)
+            with pytest.raises(RuntimeError, match="boom"):
+                await backend.run(graph, {}, workflow_id="wf")
+            accumulate_calls = calls["accumulate"]
+
+            fail_first[0] = False
+            resumed = await backend.run(graph, {}, workflow_id="wf")
+
+            assert resumed.status is RunStatus.COMPLETED
+            assert resumed.values["total"] == limit
+            assert resumed.values["report"] == f"total={limit}"
+            # The consumer read the restored value, not its default.
+            assert resumed.values["report"] != f"total={default}"
+            # The resume restored state; it did not re-run the loop.
+            assert calls["accumulate"] == accumulate_calls
+            assert calls["report"] == 1
+        finally:
+            await backend.close()
+
+    async def test_interrupt_resume_under_windowed_reports_the_restored_value(self, tmp_path, async_backend_kind):
+        """window=3 keeps the last ``accumulate`` row, so the gate stays silent.
+
+        Narrower windows lose every ``accumulate`` row and are refused by the
+        boundary (``TestWindowedInterruptResume``). This is the admitted case,
+        where a wrong version is the only thing that can go wrong.
+        """
+        backend = Backend(async_backend_kind, tmp_path, retention_policy("windowed", window=3))
+        try:
+            graph, calls = build_loop_interrupt_graph()
+            paused = await backend.run(graph, {}, workflow_id="wf")
+            assert paused.status is RunStatus.PAUSED
+            assert calls == {"accumulate": 3, "report": 0}
+
+            resumed = await backend.run(graph, {"answer": "yes"}, workflow_id="wf")
+
+            assert resumed.status is RunStatus.COMPLETED
+            assert resumed.values["report"] == "total=3"
+            assert calls == {"accumulate": 3, "report": 1}
+        finally:
+            await backend.close()
+
+    async def test_crash_resume_with_a_derived_value_reaches_its_consumer(self, tmp_path, backend_kind):
+        """The producer emits a name it never reads — nothing raises it early.
+
+        ``accumulate`` re-reads ``total``, so its own row already carries the
+        original absolute version. ``transform`` does not read ``doubled``:
+        the only row that knows what version ``doubled`` is at is ``decide``,
+        which replays AFTER it. A per-step number cannot close this shape; the
+        last producer of a name only learns its version once the whole history
+        has been walked.
+        """
+        outcomes = {}
+        for retention in ("full", "latest"):
+            (tmp_path / retention).mkdir(exist_ok=True)
+            backend = Backend(backend_kind, tmp_path / retention, retention_policy(retention))
+            fail_first = [True]
+            try:
+                graph, calls = build_loop_derived_graph(fail_first)
+                with pytest.raises(RuntimeError, match="boom"):
+                    await backend.run(graph, {}, workflow_id="wf")
+                transform_calls = calls["transform"]
+
+                fail_first[0] = False
+                resumed = await backend.run(graph, {}, workflow_id="wf")
+
+                assert resumed.status is RunStatus.COMPLETED
+                restored = resumed.values["doubled"]
+                # The loop really produced something other than the default.
+                assert restored != 0
+                # ...and the consumer read THAT, not its signature default.
+                assert resumed.values["report"] == f"doubled={restored}"
+                # The resume restored state; it did not re-derive the value.
+                assert calls["transform"] == transform_calls
+                outcomes[retention] = dict(calls)
+            finally:
+                await backend.close()
+
+        # Compaction re-executed nothing. It should also restore the same VALUE
+        # and does on both SQLite backends, but MemoryCheckpointer folds a
+        # STALE baseline for a looping graph (reproducible on this leaf's base
+        # commit, independent of version replay), so the value is pinned per
+        # retention above instead of across them. The exact-value parity across
+        # all three backends is pinned by test_latest_agrees_with_a_full_history.
+        assert outcomes["latest"] == outcomes["full"]
+
+    async def test_latest_agrees_with_a_full_history(self, tmp_path, backend_kind):
+        """Parity: compaction is a storage decision, not a semantic one.
+
+        'full' and 'latest' must answer the same thing on every backend and
+        both runner families, with the same call counts — a value restored by
+        re-running the loop would be right for the wrong reason.
+        """
+        reports = {}
+        counts = {}
+        for retention in ("full", "latest"):
+            (tmp_path / retention).mkdir(exist_ok=True)
+            backend = Backend(backend_kind, tmp_path / retention, retention_policy(retention))
+            fail_first = [True]
+            try:
+                graph, calls = build_loop_crash_graph(fail_first)
+                with pytest.raises(RuntimeError, match="boom"):
+                    await backend.run(graph, {}, workflow_id="wf")
+                fail_first[0] = False
+                resumed = await backend.run(graph, {}, workflow_id="wf")
+                assert resumed.status is RunStatus.COMPLETED
+                reports[retention] = resumed.values["report"]
+                counts[retention] = dict(calls)
+            finally:
+                await backend.close()
+
+        assert reports == {"full": "total=3", "latest": "total=3"}
+        assert counts["latest"] == counts["full"]
 
 
 def _carrier(*, values: dict, folded_producers: tuple[str, ...] | None):

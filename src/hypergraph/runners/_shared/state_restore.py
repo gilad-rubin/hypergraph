@@ -256,7 +256,24 @@ def initialize_state_with_checkpoint(
     runtime_values: dict[str, Any],
     steps: list[StepRecord],
 ) -> GraphState:
-    """Restore GraphState from checkpoint state with one ordered step replay."""
+    """Restore GraphState from checkpoint state with one ordered step replay.
+
+    Note:
+        Invariant: for every name, the LAST completed step that produced it
+        records ``output_versions[name] == state.versions[name]``. Both numbers
+        come from one absolute counter, never from a recount of the producer
+        rows this restore happens to see — after compaction the surviving
+        consumer rows still carry the ORIGINAL run's version numbers, which a
+        recount cannot reach, and the explicit-edge producer check would then
+        reject a correctly restored value and hand the consumer its default.
+
+        The counter is only final once the whole history has been walked, so
+        the last producers are versioned in a post-pass: the row that raises a
+        name's version may come either before its producer (a loop node that
+        re-reads what it emits) or after it (a node that emits a name it never
+        reads). The retention carrier is excluded — it is a fold marker, not an
+        execution, and nothing may start attributing folded values to it.
+    """
     from hypergraph.nodes.gate import END as _END
     from hypergraph.nodes.gate import IfElseNode, RouteNode
 
@@ -267,7 +284,7 @@ def initialize_state_with_checkpoint(
     bound_names = set(graph.inputs.bound)
     seeded_inputs = {name for name in checkpoint_values if name in graph_input_names and name not in bound_names}
     versions = {name: 1 for name in seeded_inputs}
-    replay_versions = {name: 1 for name in seeded_inputs}
+    last_producers: dict[str, str] = {}
 
     completed_steps = sorted(
         (step for step in steps if step.status == StepStatus.COMPLETED),
@@ -276,14 +293,16 @@ def initialize_state_with_checkpoint(
     for step in completed_steps:
         input_versions = dict(step.input_versions or {})
         step_values = dict(step.values or {})
+        from_carrier = is_retention_baseline(step)
         for input_name, consumed_version in input_versions.items():
             versions[input_name] = max(versions.get(input_name, 0), int(consumed_version))
 
         output_versions: dict[str, int] = {}
         for output_name in step_values:
             versions[output_name] = versions.get(output_name, 0) + 1
-            replay_versions[output_name] = replay_versions.get(output_name, 0) + 1
-            output_versions[output_name] = replay_versions[output_name]
+            output_versions[output_name] = versions[output_name]
+            if not from_carrier:
+                last_producers[output_name] = step.node_name
 
         state.node_executions[step.node_name] = NodeExecution(
             node_name=step.node_name,
@@ -303,6 +322,14 @@ def initialize_state_with_checkpoint(
             state.routing_decisions[step.node_name] = decision
 
     state.versions = versions
+
+    # A name's last producer owns the version the replay ended up holding: a
+    # surviving consumer row can raise that counter after its producer's row
+    # replayed, and only the finished walk knows the final number.
+    for output_name, producer_name in last_producers.items():
+        execution = state.node_executions.get(producer_name)
+        if execution is not None and output_name in execution.output_versions:
+            execution.output_versions[output_name] = versions[output_name]
 
     # Gate routing is derivable from internal gate output values.
     for node in graph._nodes.values():
