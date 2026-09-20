@@ -22,7 +22,7 @@ Two rules hold everywhere below:
 from __future__ import annotations
 
 from collections.abc import Generator, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 from hypergraph import Graph
@@ -40,6 +40,7 @@ from hypergraph.materialization._provenance import (
     ReconcileComplete,
     ReconcileResult,
     ReconcileUnavailable,
+    RunRoutedGraph,
     normalize_value,
     split_boundary_provenance,
 )
@@ -354,10 +355,7 @@ class WritePlanner:
             boundary_counts[child_spec.name] = len(dedup_child_rows(rows, child_spec.identity))
         provided_names = provided if provided is not None else set(item) - {target.identity}
         incoming = {key: value for key, value in item.items() if key in provided_names and key != target.identity}
-        state = self._provenance.start_reconcile(target, existing, incoming, boundary_counts)
-        routed_scope: set[str] = set()
-        routed_outputs: dict[str, Any] = {}
-        routed_executed: set[str] = set()
+        state = self._provenance.start_reconcile(target, existing, incoming, boundary_counts, graph=target_graph)
         while True:
             state, step = self._provenance.next_reconcile_step(state)
             if isinstance(step, ReconcileUnavailable):
@@ -365,62 +363,21 @@ class WritePlanner:
             if isinstance(step, ReconcileComplete):
                 return step.result
 
-            if step.node.name in routed_scope:
-                routed_scope.remove(step.node.name)
-                routed_step = step
-                if step.node.name not in routed_executed:
-                    current_provenances = dict(state.provenances)
-                    shared = [
-                        current_provenances[column.name]
-                        for column in self._provenance.node_columns(step.node, target)
-                        if len(self._provenance.column_producers(column)) > 1 and column.name in current_provenances
-                    ]
-                    if shared:
-                        routed_step = replace(step, provenance=shared[0])
-                state = self._provenance.apply_reconcile_result(
-                    state,
-                    routed_step,
-                    routed_outputs if step.node.name in routed_executed else {},
-                )
-                continue
-
-            gate = self._provenance.routing_gate(step.node, target_graph)
-            if gate is not None:
-                graph = self._provenance.routed_graph(gate, target_graph, target.name)
-                values = dict(state.values)
-                result = yield RunGraph(
-                    graph,
-                    {name: values[name] for name in input_names(graph.inputs.required) if name in values},
-                )
-                routed_outputs = _run_values(result)
-                routed_executed = self._executed_nodes(result)
-                remaining = {node.name for node in state.nodes[state.node_index :]}
-                routed_scope = self._provenance.node_names_downstream({gate.name}, target_graph) & remaining
-                stale_existing = dict(state.existing)
-                for routed_name in routed_scope:
-                    routed_node = target_graph.nodes[routed_name]
-                    for column in self._provenance.node_columns(routed_node, target):
-                        stale_existing[f"_provenance_{column.name}"] = None
-                state = replace(state, existing=tuple(stale_existing.items()))
+            if isinstance(step, RunRoutedGraph):
+                result = yield RunGraph(step.graph, step.input_values())
+                run_outputs = _run_values(result)
+                executed = self._executed_nodes(result)
                 pause = _run_pause(result)
                 if pause is not None:
-                    outputs = dict(state.outputs)
-                    outputs.update(routed_outputs)
-                    values.update(routed_outputs)
                     provenances = dict(state.provenances)
-                    provenances.update(self._rows.provenances_for_values(values, pause, routed_executed, target))
+                    provenances.update(self._rows.provenances_for_values({**dict(state.values), **run_outputs}, pause, executed, target))
                     return _PausedConvergence(
                         pause=pause,
-                        outputs=outputs,
+                        outputs={**dict(state.outputs), **run_outputs},
                         provenances=provenances,
                         provenance=_pause_provenance(provenances, pause, routed=True),
                     )
-                routed_scope.discard(step.node.name)
-                state = self._provenance.apply_reconcile_result(
-                    state,
-                    step,
-                    routed_outputs if step.node.name in routed_executed else {},
-                )
+                state = self._provenance.apply_routed_result(state, step, run_outputs, executed)
                 continue
 
             result = yield RunGraph(
