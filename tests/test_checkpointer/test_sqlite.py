@@ -936,6 +936,61 @@ class TestSearch:
         assert [r.superstep for r in async_results][:2] == [1, 0]
 
 
+# What each schema version ADDED, newest first. `_rewind_to` undoes every
+# version above its target, which is the only way to build a database that is
+# genuinely at version N: dropping just one version's additions leaves every
+# later version's columns in place, and the migration legs that would have
+# added them then no-op (they are all guarded ALTERs).
+_UNDO_VERSION: dict[int, tuple[str, ...]] = {
+    10: (
+        # The two indexes span the column, so they go first or SQLite
+        # refuses the DROP COLUMN.
+        "DROP INDEX IF EXISTS idx_host_submissions_exclusive",
+        "DROP INDEX IF EXISTS idx_host_submissions_key",
+        "ALTER TABLE host_submissions DROP COLUMN exclusive_key",
+    ),
+    9: ("ALTER TABLE pending_nodes DROP COLUMN settled_at",),
+    8: ("ALTER TABLE steps DROP COLUMN folded_producers",),
+    7: (
+        "DROP TABLE IF EXISTS host_workers",
+        "ALTER TABLE host_submissions DROP COLUMN builder_key",
+        "ALTER TABLE host_submissions DROP COLUMN builder_args_json",
+        "ALTER TABLE host_submissions DROP COLUMN claimed_by",
+        "ALTER TABLE host_submissions DROP COLUMN lease_until",
+    ),
+}
+
+
+def _rewind_to(conn: Any, target: int) -> None:
+    """Turn a freshly created current-schema database into a genuine vN one.
+
+    Args:
+        conn: A connection to a database `ensure_schema` just brought to
+            `SCHEMA_VERSION`.
+        target: The version to rewind to, between 6 and `SCHEMA_VERSION`.
+            v5 and below are deliberately unsupported: the v6 delta is whole
+            tables, and the v3 and v4 rungs already have frozen-DDL fixtures
+            in `test_attempt_ledger_sqlite.py` and `test_fk_enforcement.py`.
+
+    Raises:
+        ValueError: `target` is outside the range this helper can build.
+    """
+    from hypergraph.checkpointers._migrate import SCHEMA_VERSION
+
+    if not 6 <= target <= SCHEMA_VERSION:
+        raise ValueError(
+            f"_rewind_to builds databases at versions 6..{SCHEMA_VERSION}, not {target}. "
+            "How to fix: pick a target in that range; v3 and v4 have frozen-DDL fixtures "
+            "of their own in test_attempt_ledger_sqlite.py and test_fk_enforcement.py."
+        )
+    for version in sorted(_UNDO_VERSION, reverse=True):
+        if version > target:
+            for statement in _UNDO_VERSION[version]:
+                conn.execute(statement)
+    conn.execute("UPDATE _schema_version SET version = ?", (target,))
+    conn.commit()
+
+
 class TestMigration:
     def test_fresh_db_gets_v10_schema(self, tmp_path):
         """A new database gets v10 schema automatically."""
@@ -1110,11 +1165,8 @@ class TestMigration:
         db_path = str(tmp_path / "in-flight-v6.db")
         conn = sqlite3.connect(db_path)
         ensure_schema(conn)
-        # Rewind to a genuine v6 database: drop what v7 added, and say so.
-        conn.execute("DROP TABLE host_workers")
-        for column in ("builder_key", "builder_args_json", "claimed_by", "lease_until"):
-            conn.execute(f"ALTER TABLE host_submissions DROP COLUMN {column}")
-        conn.execute("UPDATE _schema_version SET version = 6")
+        # Rewind to a genuine v6 database: undo v7 and everything above it.
+        _rewind_to(conn, 6)
         conn.execute(
             "INSERT INTO host_submissions (workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
             "state, recovery_attempts, claim_seq, batch_id, item_key, created_at, claimed_at) "
@@ -1170,9 +1222,8 @@ class TestMigration:
         db_path = str(tmp_path / "compacted-v7.db")
         conn = sqlite3.connect(db_path)
         ensure_schema(conn)
-        # Rewind to a genuine v7 database: drop what v8 added, and say so.
-        conn.execute("ALTER TABLE steps DROP COLUMN folded_producers")
-        conn.execute("UPDATE _schema_version SET version = 7")
+        # Rewind to a genuine v7 database: undo v8 and everything above it.
+        _rewind_to(conn, 7)
         conn.execute("INSERT INTO runs (id, graph_name, status, created_at) VALUES ('wf-old', 'chain', 'failed', '2026-08-01T00:00:00Z')")
         conn.execute(
             "INSERT INTO steps (run_id, step_index, superstep, node_name, node_type, status, input_versions, created_at, completed_at) "
@@ -1216,9 +1267,8 @@ class TestMigration:
         db_path = str(tmp_path / "boundaries-v8.db")
         conn = sqlite3.connect(db_path)
         ensure_schema(conn)
-        # Rewind to a genuine v8 database: drop what v9 added, and say so.
-        conn.execute("ALTER TABLE pending_nodes DROP COLUMN settled_at")
-        conn.execute("UPDATE _schema_version SET version = 8")
+        # Rewind to a genuine v8 database: undo v9 and everything above it.
+        _rewind_to(conn, 8)
         conn.execute(
             "INSERT INTO pending_nodes (run_id, superstep, node_name, node_type, created_at) "
             "VALUES ('wf-old', 1, 'alpha', 'FunctionNode', '2026-08-01T00:00:00Z')"
@@ -1260,7 +1310,7 @@ class TestMigration:
         ensure_schema(conn)  # real v6 schema
         # Simulate a v6 database created before the ticket-14 columns existed
         # (and therefore before the due-row index that spans them).
-        conn.execute("DROP INDEX idx_host_commands_due")
+        conn.execute("DROP INDEX IF EXISTS idx_host_commands_due")
         for column in ("pause_id", "due_at", "outcome"):
             conn.execute(f"ALTER TABLE host_commands DROP COLUMN {column}")
         conn.execute(
@@ -1294,11 +1344,8 @@ class TestMigration:
         db_path = str(tmp_path / "live-v7.db")
         conn = sqlite3.connect(db_path)
         ensure_schema(conn)
-        # Rewind to a genuine v7 database: drop what v10 added, and say so.
-        conn.execute("DROP INDEX idx_host_submissions_exclusive")
-        conn.execute("DROP INDEX idx_host_submissions_key")
-        conn.execute("ALTER TABLE host_submissions DROP COLUMN exclusive_key")
-        conn.execute("UPDATE _schema_version SET version = 7")
+        # Rewind to a genuine v7 database: undo v8, v9 and v10.
+        _rewind_to(conn, 7)
         conn.execute(
             "INSERT INTO host_submissions (workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
             "state, recovery_attempts, claim_seq, created_at, claimed_at, claimed_by, lease_until) "
@@ -1345,6 +1392,124 @@ class TestMigration:
 
         ensure_schema(conn)  # idempotent on the migrated database
         assert conn.execute("SELECT COUNT(*) FROM host_submissions").fetchone()[0] == 2
+        conn.close()
+
+    def test_a_genuinely_v6_database_climbs_the_whole_ladder(self, tmp_path):
+        """A real v6 install reopens on v10 in one call with its rows intact.
+
+        Every other migration test rewinds exactly one version, so the legs
+        in between find their columns already there and no-op. This is the
+        only test that climbs v6 -> v7 -> v8 -> v9 -> v10 for real, which is
+        the upgrade path a user on an older install actually takes.
+        """
+        import sqlite3
+
+        from hypergraph.checkpointers._migrate import ensure_schema
+
+        db_path = str(tmp_path / "genuine-v6.db")
+        conn = sqlite3.connect(db_path)
+        ensure_schema(conn)
+        _rewind_to(conn, 6)
+
+        # Nothing any later version added survives the rewind.
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 6
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
+        assert "host_workers" not in tables
+        assert "folded_producers" not in {row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()}
+        assert "settled_at" not in {row[1] for row in conn.execute("PRAGMA table_info(pending_nodes)").fetchall()}
+        assert "exclusive_key" not in {row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()}
+        assert {"idx_host_submissions_exclusive", "idx_host_submissions_key"}.isdisjoint(indexes)
+
+        # A v6 install's unfinished work: a claimed submission, a failed run,
+        # its one step, and a boundary nothing ever settled.
+        conn.execute(
+            "INSERT INTO host_submissions (workflow_id, definition_name, def_version, def_struct_hash, inputs_json, "
+            "state, recovery_attempts, claim_seq, batch_id, item_key, created_at, claimed_at) "
+            "VALUES ('wf-v6', 'ingest', 'v1', 'h1', '{\"x\": 1}', 'claimed', 2, 5, 'b-1', 'a', "
+            "'2026-08-01T00:00:00+00:00', '2026-08-01T00:01:00+00:00')"
+        )
+        conn.execute("INSERT INTO runs (id, graph_name, status, created_at) VALUES ('r-v6', 'chain', 'failed', '2026-08-01T00:00:00Z')")
+        conn.execute(
+            "INSERT INTO steps (run_id, step_index, superstep, node_name, node_type, status, input_versions, created_at, completed_at) "
+            "VALUES ('r-v6', 0, 0, 'a', 'FunctionNode', 'completed', '{}', '2026-08-01T00:00:01Z', '2026-08-01T00:00:01Z')"
+        )
+        conn.execute(
+            "INSERT INTO pending_nodes (run_id, superstep, node_name, node_type, created_at) "
+            "VALUES ('r-v6', 1, 'alpha', 'FunctionNode', '2026-08-01T00:00:02Z')"
+        )
+        conn.commit()
+        steps_before = conn.execute("SELECT * FROM steps ORDER BY step_index").fetchall()
+        boundaries_before = conn.execute("SELECT * FROM pending_nodes ORDER BY node_name").fetchall()
+        submissions_before = conn.execute("SELECT * FROM host_submissions ORDER BY workflow_id").fetchall()
+
+        ensure_schema(conn)
+
+        # One call climbs every rung.
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 10
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
+        assert "host_workers" in tables
+        assert conn.execute("SELECT COUNT(*) FROM host_workers").fetchone()[0] == 0
+        assert {"idx_host_submissions_exclusive", "idx_host_submissions_key"} <= indexes
+
+        # Every pre-existing value is identical; the only change is one
+        # appended NULL per column the rewind had removed.
+        steps_after = conn.execute("SELECT * FROM steps ORDER BY step_index").fetchall()
+        assert [row[:-1] for row in steps_after] == steps_before
+        assert [row[-1] for row in steps_after] == [None]
+        assert [row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()][-1] == "folded_producers"
+
+        boundaries_after = conn.execute("SELECT * FROM pending_nodes ORDER BY node_name").fetchall()
+        assert [row[:-1] for row in boundaries_after] == boundaries_before
+        assert [row[-1] for row in boundaries_after] == [None]
+        assert [row[1] for row in conn.execute("PRAGMA table_info(pending_nodes)").fetchall()][-1] == "settled_at"
+
+        width = len(submissions_before[0])
+        submissions_after = conn.execute("SELECT * FROM host_submissions ORDER BY workflow_id").fetchall()
+        assert [row[:width] for row in submissions_after] == submissions_before
+        assert [row[width:] for row in submissions_after] == [(None, None, None, None, None)]
+        submission_cols = [row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()]
+        assert submission_cols[width:] == ["builder_key", "builder_args_json", "claimed_by", "lease_until", "exclusive_key"]
+
+        # And the second open changes nothing at all.
+        schema_after = conn.execute("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").fetchall()
+        ensure_schema(conn)
+        assert conn.execute("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").fetchall() == schema_after
+        assert conn.execute("SELECT * FROM host_submissions ORDER BY workflow_id").fetchall() == submissions_after
+        assert conn.execute("SELECT * FROM steps ORDER BY step_index").fetchall() == steps_after
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 10
+        conn.close()
+
+    def test_every_schema_version_can_be_rewound_to(self):
+        """`_UNDO_VERSION` has to learn what each new schema version added.
+
+        Bumping SCHEMA_VERSION without teaching the rewind the new version's
+        additions would quietly produce a "v6" database still carrying them,
+        every ladder test would keep passing, and the ladder would again be
+        proving nothing. That is the exact trap this helper exists to close.
+        """
+        from hypergraph.checkpointers._migrate import SCHEMA_VERSION
+
+        assert set(_UNDO_VERSION) == set(range(7, SCHEMA_VERSION + 1))
+
+    def test_rewinding_outside_the_supported_range_raises(self, tmp_path):
+        """The helper refuses a version it cannot actually build.
+
+        v5 and below need whole tables rebuilt, and a version above the
+        current schema does not exist here — either one would otherwise
+        stamp a number the database does not match.
+        """
+        import sqlite3
+
+        from hypergraph.checkpointers._migrate import SCHEMA_VERSION, ensure_schema
+
+        conn = sqlite3.connect(str(tmp_path / "out-of-range.db"))
+        ensure_schema(conn)
+        for target in (5, SCHEMA_VERSION + 1):
+            with pytest.raises(ValueError, match=rf"versions 6\.\.{SCHEMA_VERSION}, not {target}"):
+                _rewind_to(conn, target)
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == SCHEMA_VERSION
         conn.close()
 
     def test_unknown_schema_version_raises(self, tmp_path):
