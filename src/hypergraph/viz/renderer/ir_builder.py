@@ -437,7 +437,7 @@ def _build_ir_edge(
         # name its DATA pill is keyed by.
         local_names: list[str] = []
         for value_name in value_names:
-            internal, local_name = _deepest_internal_producers(src, value_name, flat_graph)
+            internal, local_name = deepest_internal_producers(src, value_name, flat_graph)
             local_names.append(local_name)
             if internal and source_when_expanded is None:
                 source_when_expanded = internal[0] if len(internal) == 1 else internal
@@ -583,7 +583,7 @@ def _find_deepest_internal_producer(container_id: str, value_name: str, flat_gra
     return None
 
 
-def _deepest_internal_producers(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> tuple[tuple[str, ...], str]:
+def deepest_internal_producers(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> tuple[tuple[str, ...], str]:
     """All deepest internal producers of a container output, AND the local
     output name they emit it under.
 
@@ -611,7 +611,7 @@ def _deepest_internal_producers(container_id: str, value_name: str, flat_graph: 
 
 def _find_deepest_internal_producers(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> tuple[str, ...]:
     """Return all deepest internal producers for a container output."""
-    return _deepest_internal_producers(container_id, value_name, flat_graph)[0]
+    return deepest_internal_producers(container_id, value_name, flat_graph)[0]
 
 
 def find_internal_consumers(container_id: str, value_name: str, flat_graph: nx.DiGraph, *, include_fuzzy: bool = True) -> tuple[str, ...]:

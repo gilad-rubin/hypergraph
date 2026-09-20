@@ -34,6 +34,7 @@ from hypergraph.viz.renderer._format import format_type
 from hypergraph.viz.renderer.ir_builder import (
     compute_container_transits,
     container_output_anchors,
+    deepest_internal_producers,
     find_internal_consumers,
     resolve_boundary_ports,
     shared_answer_label,
@@ -439,7 +440,7 @@ def _render_merged_edges(
         values = value_names if value_names else [""]
         pair_exclusive = any((source, target, value_name) in exclusive_data_edges for value_name in values)
         for value_name in values:
-            actual_source = _resolve_data_source(
+            actual_source, _ = _resolve_data_source_and_name(
                 source,
                 value_name,
                 flat_graph,
@@ -534,7 +535,7 @@ def _render_separate_edges(
                 if not value_name:
                     continue
                 # Resolve source to internal producer for expanded graphs
-                actual_source = _resolve_data_source(
+                actual_source, emit_name = _resolve_data_source_and_name(
                     source,
                     value_name,
                     flat_graph,
@@ -557,7 +558,10 @@ def _render_separate_edges(
                 # A synthesized OUTPUT anchor IS the value pill — no DATA
                 # node interposed.
                 is_anchor_source = actual_source == anchors_for_source.get(value_name)
-                data_id = actual_source if is_anchor_source else f"data_{actual_source}_{value_name}"
+                # The pill belongs to the node the resolution landed on and is
+                # keyed by THAT node's own output name, so a renamed boundary
+                # cannot compose an id nothing emits.
+                data_id = actual_source if is_anchor_source else f"data_{actual_source}_{emit_name}"
                 for resolved_target in actual_targets:
                     edge_key = (id_allocator.get(data_id), id_allocator.get(resolved_target))
                     if edge_key not in seen_edges:
@@ -565,7 +569,7 @@ def _render_separate_edges(
                         is_exclusive = (source, target, value_name) in exclusive_data_edges
                         out.append(
                             _RenderedEdge(
-                                _format_edge(data_id, resolved_target, value_name, exclusive=is_exclusive, id_allocator=id_allocator),
+                                _format_edge(data_id, resolved_target, emit_name, exclusive=is_exclusive, id_allocator=id_allocator),
                                 "data",
                                 data_id,
                                 resolved_target,
@@ -689,6 +693,60 @@ def _resolve_control_target(
     if not is_node_visible(actual_target, flat_graph, expansion_state):
         return None
     return actual_target
+
+
+def _resolve_data_source_and_name(
+    source: str,
+    value_name: str,
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+    output_to_producer: dict[str, str],
+    output_anchors: dict[str, dict[str, str]] | None = None,
+) -> tuple[str | None, str]:
+    """The node a data edge really leaves from, AND the name that node emits
+    the value under.
+
+    A container may rename an output at its boundary
+    (``with_outputs(item_out="generated")``, ``rename_outputs``, ``expose``).
+    Once it is expanded the edge leaves the inner producer, whose own DATA pill
+    is keyed by the INNER name — composing ``data_<inner producer>_<outer name>``
+    would name a node nothing ever declares. ``ir_builder`` already owns that
+    translation for the IR (``deepest_internal_producers`` applies the GRAPH
+    node's ``output_name_map``), so Mermaid asks the same authority instead of
+    matching names a second time.
+
+    The walk repeats while the answer is itself an expanded container, because
+    a rename chained across two boundaries hands back another container whose
+    pill is equally undeclared. Two stop rules, both meaning "unverified, so do
+    not assert a route" — the same rule ``resolve_boundary_ports`` applies:
+    several deepest producers (a fan-out or mutex arms) or a producer hidden
+    inside a still-collapsed inner container falls back to the untouched
+    resolution below.
+    """
+    node_id, emit = source, value_name
+    seen: set[str] = set()
+    while (
+        flat_graph.nodes.get(node_id, {}).get("node_type") == "GRAPH"
+        and expansion_state.get(node_id, False)
+        and emit
+        and node_id not in seen  # a self-parented cycle must not spin
+    ):
+        seen.add(node_id)
+        producers, local = deepest_internal_producers(node_id, emit, flat_graph)
+        if len(producers) != 1 or not is_node_visible(producers[0], flat_graph, expansion_state):
+            break
+        node_id, emit = producers[0], local
+    if node_id != source:
+        return node_id, emit
+    resolved = _resolve_data_source(
+        source,
+        value_name,
+        flat_graph,
+        expansion_state,
+        output_to_producer,
+        output_anchors,
+    )
+    return resolved, value_name
 
 
 def _resolve_data_source(

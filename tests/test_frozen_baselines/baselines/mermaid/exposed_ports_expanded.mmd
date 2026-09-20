@@ -9,7 +9,7 @@ flowchart TD
     publish["publish<br/>--------------<br/>published: str"]
     %% Edges
     input_raw_text --> prep
-    prep --> publish
+    prep__normalize --> publish
     prep__clean_text --> prep__normalize
 
     %% Styling

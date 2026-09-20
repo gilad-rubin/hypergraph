@@ -35,7 +35,11 @@ scene client-side without a kernel round-trip.
 **Mermaid**: `mermaid.py` still consumes `renderer/nodes.py` +
 `renderer/scope.py` helpers rather than the compact IR path. Keep Mermaid and
 interactive viz aligned on resolved port addresses even though the rendering
-pipelines differ.
+pipelines differ. Boundary-OUTPUT resolution is the exception that already
+went to `ir_builder`: `_resolve_data_source_and_name` asks
+`ir_builder.deepest_internal_producers` for both the inner producer and the
+name it emits, so the rename translation has ONE authority. Never add a second
+name matcher here.
 
 ## Cross-Language Invariants
 
@@ -306,6 +310,7 @@ Generates a scrollable gallery of all notebook visualizations with DialKit contr
 | Edge points to container when expanded | `target_when_expanded` not populated in IR | `renderer/ir_builder.py` |
 | Dagre "setting 'rank'" crash, blank canvas | edge incident to an *expanded* container (dagre compound parent) — usually a renamed boundary param (`map_over`/`rename_inputs`/`rename_outputs`) not translated via the GRAPH node's `input_name_map`/`output_name_map` | `renderer/ir_builder.py` + `renderer/scope.py:get_deepest_consumers` |
 | Consumer loses its incoming edge when a container expands in separate-outputs mode | renamed boundary OUTPUT: the DATA id was composed from the container-level name instead of `IREdge.value_names_when_expanded` | `renderer/ir_builder.py` + both `scene_builder` twins |
+| Mermaid draws an undeclared `data_<container>_<outer name>` box, or an arrow out of an expanded `subgraph` hull | boundary output rename not translated; `mermaid.py` resolved the source without asking `ir_builder.deepest_internal_producers` | `mermaid.py:_resolve_data_source_and_name` |
 | Input appears outside expanded container | `ownerContainer` not derived from `deepest_owner` | `scene_builder.py` (Python + JS) |
 | Edge starts/ends with visible gap | wrong node-type offset | `assets/viz_runtime.js` (`NODE_TYPE_OFFSETS`) |
 | Incoming edges overlap unexpectedly | dagre route or endpoint padding needs inspection | `assets/viz_layout.js` |
