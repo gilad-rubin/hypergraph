@@ -86,6 +86,22 @@ def input_names(value: Any) -> set[str]:
     return set(value) if isinstance(value, tuple) else set(value.keys())
 
 
+def graph_bound_names(graph: Any) -> frozenset[str]:
+    """Every name bound anywhere inside a graph, by its parent-facing address.
+
+    ``InputSpec`` already surfaces a nested graph's bindings under the boundary
+    address the enclosing graph addresses them by, so this is one read, not a
+    second reachability walk.
+
+    A bound name is recipe, never data: it is why such a name is neither a
+    child source column nor a value a node may be handed at run time.
+    """
+    try:
+        return frozenset(graph.inputs.bound)
+    except (AttributeError, TypeError):  # pragma: no cover - non-Graph stand-ins in unit tests
+        return frozenset()
+
+
 def return_type(node: Any) -> Any:
     func = node_func(node)
     if func is None:
@@ -273,8 +289,13 @@ def _analyze_map_over(map_node: Any, components: dict[str, Any]) -> TableSpec | 
         input_types = _input_types(inner_graph)
         component_names = set(components.keys())
         inner_all = input_names(inner_graph.inputs.required) | input_names(inner_graph.inputs.optional)
+        # A name the child graph binds (at any depth) is recipe, so nothing can
+        # ever write a value into a column for it. ``optional`` stays in the set:
+        # a child input with a DEFAULT is fed from the item dict and is a real
+        # column. Only the bound names drop out.
+        bound = graph_bound_names(inner_graph)
         for inp_name in sorted(inner_all):
-            if inp_name != identity and inp_name not in component_names:
+            if inp_name != identity and inp_name not in component_names and inp_name not in bound:
                 child_columns.append(_column(inp_name, role="source", content_key=True, python_type=input_types.get(inp_name, str)))
         nodes_dict = inner_graph.nodes if isinstance(inner_graph.nodes, dict) else {}
         for _name, n in nodes_dict.items():

@@ -31,6 +31,7 @@ from hypergraph.materialization._schema import (
     STATUS_COLUMNS,
     TableSpec,
     analyze_table,
+    graph_bound_names,
     is_internal_column,
     python_type_to_arrow,
 )
@@ -96,9 +97,14 @@ def _public_row(row: dict[str, Any], spec: TableSpec | None = None) -> dict[str,
             for producer in (column.produced_by if isinstance(column.produced_by, tuple) else (column.produced_by,))
         )
     }
+    # A name the child graph binds is recipe, not data. Fresh stores no longer
+    # build a column for it; a store written before that fix still holds the
+    # dead column, so hide it here rather than migrate it off disk. Root specs
+    # carry ``child_graph=None``, so root reads are untouched by construction.
+    child_bound = graph_bound_names(spec.child_graph) if spec is not None and spec.child_graph is not None else frozenset()
     result = {}
     for k, v in row.items():
-        if not is_internal_column(k) and k not in gate_outputs:
+        if not is_internal_column(k) and k not in gate_outputs and k not in child_bound:
             result[k] = _normalize_value(v)
     return result
 
@@ -200,6 +206,16 @@ class ChildTable:
         )
 
     def set(self, where: Any, **fields: Any) -> int:
+        # A bound name has no column to be a content key of, so it would
+        # otherwise evolve a brand-new physical column the read path then hides.
+        bound = sorted(graph_bound_names(self._spec.child_graph) & set(fields))
+        if bound:
+            raise ValueError(
+                "ChildTable.set() cannot set a value that is bound on the child graph.\n\n"
+                f"Fields: {', '.join(bound)}\n\n"
+                "How to fix: a bound name is recipe, not data — it is not a stored column. "
+                "Change it with bind() on the child graph and re-derive."
+            )
         blocked = sorted(column.name for column in self._spec.columns if column.content_key and column.name in fields)
         if blocked:
             raise ValueError(

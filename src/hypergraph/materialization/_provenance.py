@@ -33,7 +33,7 @@ from hypergraph.materialization._recipe_journal import (
     KIND_COMPONENT_CONFIG,
     KIND_NODE_SOURCE,
 )
-from hypergraph.materialization._schema import TableSpec, input_names, is_internal_column, node_func
+from hypergraph.materialization._schema import TableSpec, graph_bound_names, input_names, is_internal_column, node_func
 
 _Items = tuple[tuple[str, Any], ...]
 
@@ -73,19 +73,6 @@ def iter_child_specs(spec: TableSpec) -> Iterator[TableSpec]:
     for child in spec.children:
         yield child
         yield from iter_child_specs(child)
-
-
-def _graph_bound_names(graph: Any) -> frozenset[str]:
-    """Every name bound anywhere inside a graph, by its parent-facing address.
-
-    ``InputSpec`` already surfaces a nested graph's bindings under the boundary
-    address the enclosing graph addresses them by, so this is one read, not a
-    second reachability walk.
-    """
-    try:
-        return frozenset(graph.inputs.bound)
-    except (AttributeError, TypeError):  # pragma: no cover - non-Graph stand-ins in unit tests
-        return frozenset()
 
 
 def find_boundary_node(graph: Any, child_spec: TableSpec) -> Any:
@@ -321,11 +308,13 @@ class Provenance:
         ``Provenance.bind_child_components``). NAMES are what the node must
         never receive as a run value, and that set is strictly larger: a
         ``GraphNode`` still advertises in ``inputs`` a name its own subgraph
-        binds, and the child-table schema turns such a name into a
-        permanently-NULL column. Feeding that NULL back would override the real
-        binding at run time and derive the row from ``None``. Each graph's
-        ``inputs.bound`` already reports every name bound anywhere beneath it,
-        under the parent-facing address the node and the column both use.
+        binds. The child-table schema no longer builds a column for such a name
+        (``graph_bound_names`` gates it out in ``_analyze_map_over``), but a
+        store written before that fix still holds the dead column full of
+        NULLs, and feeding one back would override the real binding at run time
+        and derive the row from ``None``. Each graph's ``inputs.bound`` already
+        reports every name bound anywhere beneath it, under the parent-facing
+        address the node and the column both use.
         """
         if self._bound_by_node is None:
             by_node: dict[int, tuple[Mapping[str, Any], frozenset[str]]] = {}
@@ -334,7 +323,7 @@ class Provenance:
                 if graph is None or not hasattr(graph, "iter_nodes"):
                     return
                 visible = {**dict(getattr(graph, "_bound", None) or {}), **inherited}
-                names = inherited_names | frozenset(visible) | frozenset(_graph_bound_names(graph))
+                names = inherited_names | frozenset(visible) | graph_bound_names(graph)
                 for inner in graph.iter_nodes():
                     by_node[id(inner)] = (visible, names)
                     walk(getattr(inner, "graph", None), visible, names)

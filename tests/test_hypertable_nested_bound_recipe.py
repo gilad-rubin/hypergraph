@@ -135,13 +135,13 @@ def test_two_levels_of_nesting_inside_a_mounted_child_rederive_to_the_new_value(
     """The hard two-level shape: the bind sits a level BELOW the graph a
     ``map_over`` mounts as a child table.
 
-    The child table's schema builds a source column from the child graph's
-    ``inputs``, which still advertise a name the graph BELOW it binds — so that
-    column exists and is permanently NULL. Feeding it back as a run value on a
-    selective re-derive overrides the real binding and derives the row from
-    ``None``: identity moves correctly while the data silently corrupts, which
-    is strictly worse than the staleness this ticket set out to fix. A name
-    bound anywhere in a node's subgraph is therefore never an input for it.
+    The child graph's ``inputs`` still advertise a name the graph BELOW it
+    binds. A store written before #447 therefore holds a dead column for it;
+    feeding that column back as a run value on a selective re-derive overrides
+    the real binding and derives the row from ``None``: identity moves correctly
+    while the data silently corrupts, which is strictly worse than the staleness
+    this ticket set out to fix. A name bound anywhere in a node's subgraph is
+    therefore never an input for it.
     """
 
     def build(tag_value: str) -> HyperTable:
@@ -311,3 +311,157 @@ def test_a_recipe_with_no_nested_binding_keeps_the_identity_it_already_had():
 
     bound = Graph([tag], name="per_page").bind(tag_value="v1").as_node(name="pages")
     assert compute_node_recipe_hash(bound) != compute_node_definition_hash(bound)
+
+
+# --- #447: a child-bound name is recipe, so it is never a child column ---------
+
+
+def _child_column_names(table: HyperTable) -> list[str]:
+    table._ensure_analyzed()
+    return [column.name for column in table._spec.children[0].columns]
+
+
+def test_a_child_bound_name_never_becomes_a_child_source_column(tmp_path):
+    """The column-side mirror of the run-side fix above.
+
+    A name the child graph binds is recipe. It can never be provided at insert
+    time and nothing ever writes a value into it, so a ``role="source"`` column
+    for it is a lie: the row reports ``tag_value=None`` while ``tagged`` proves
+    ``v1`` ran.
+    """
+    table = _mapped_table(tmp_path / "bound", "v1")
+    assert "tag_value" not in _child_column_names(table)
+
+    table.insert(doc_id="d1", text="alpha beta")
+    rows = sorted(table.child("page").rows(), key=lambda row: row["page_id"])
+    assert [set(row) for row in rows] == [{"page_id", "page_text", "tagged", "doc_id"}] * 2
+    assert [row["tagged"] for row in rows] == ["v1:alpha", "v1:beta"]
+    assert set(table.child("page").get("d1", "p1")) == {"page_id", "page_text", "tagged", "doc_id"}
+
+    # Falsifier: drop the bind and tag_value is a genuine required input again,
+    # so the source column must come back.
+    unbound = Graph([tag], name="per_page").as_node(name="pages").map_over("pages", identity="page_id")
+    plain = Graph([split, unbound]).as_table(identity="doc_id", store=LanceDBStore(str(tmp_path / "unbound")), runner=SyncRunner())
+    assert "tag_value" in _child_column_names(plain)
+
+
+def test_a_bind_two_levels_below_the_mapped_child_is_not_a_column_either(tmp_path):
+    """``inputs.bound`` reports every depth, so one rule covers them all."""
+
+    deepest = Graph([tag], name="tagger").bind(tag_value="d2v")
+    mid = Graph([deepest.as_node(name="inner")], name="per_page")
+    per_page = mid.as_node(name="pages").map_over("pages", identity="page_id")
+    table = Graph([split, per_page]).as_table(identity="doc_id", store=LanceDBStore(str(tmp_path)), runner=SyncRunner())
+
+    assert "tag_value" not in _child_column_names(table)
+    table.insert(doc_id="d1", text="alpha beta")
+    assert {row["tagged"] for row in table.child("page").rows()} == {"d2v:alpha", "d2v:beta"}
+
+
+def test_a_child_input_with_a_default_and_no_bind_keeps_its_column(tmp_path):
+    """The guard against over-fixing: a defaulted input is ``optional`` too, but
+    it is fed from the item dict, so it is a real column with a real value."""
+
+    @node(output_name="pages")
+    def split_with_prefix(text: str) -> list[dict]:
+        return [{"page_id": f"p{i}", "page_text": part, "prefix": part[0].upper()} for i, part in enumerate(text.split(), start=1)]
+
+    @node(output_name="labeled")
+    def label(page_text: str, prefix: str = "p") -> str:
+        return f"{prefix}/{page_text}"
+
+    inner = Graph([label], name="per_page_c")
+    assert "prefix" in inner.inputs.optional and inner.inputs.bound == {}
+
+    per_page = inner.as_node(name="pages").map_over("pages", identity="page_id")
+    table = Graph([split_with_prefix, per_page]).as_table(identity="doc_id", store=LanceDBStore(str(tmp_path)), runner=SyncRunner())
+    assert "prefix" in _child_column_names(table)
+
+    table.insert(doc_id="d1", text="alpha beta")
+    assert {(row["prefix"], row["labeled"]) for row in table.child("page").rows()} == {("A", "A/alpha"), ("B", "B/beta")}
+
+
+def test_a_legacy_dead_column_is_hidden_on_read_and_left_alone_on_disk(tmp_path):
+    """No migration: a store built before the fix keeps its physical column and
+    its NULLs; the read path simply stops surfacing them."""
+    import pyarrow as pa
+
+    table = _mapped_table(tmp_path, "v1")
+    table.insert(doc_id="d1", text="alpha beta")
+
+    store = LanceDBStore(str(tmp_path))
+    store.evolve_schema("page", {"tag_value": pa.utf8()})
+    write_gen = store.max_write_gen("page") + 1
+    for row in store.read_rows("page"):
+        store.write_rows("page", [{**row, "tag_value": "LEGACY", "_write_gen": write_gen}])
+
+    assert "tag_value" in store.column_names("page")
+    assert "LEGACY" in {row.get("tag_value") for row in store.read_rows("page")}
+
+    rows = _mapped_table(tmp_path, "v1").child("page").rows()
+    assert all("tag_value" not in row for row in rows)
+    assert {row["tagged"] for row in rows} == {"v1:alpha", "v1:beta"}
+    # Still on disk, untouched: ignore-on-read, not drop-on-write.
+    assert "tag_value" in LanceDBStore(str(tmp_path)).column_names("page")
+
+
+def test_a_rebuild_pass_leaves_the_child_row_fingerprints_unchanged(tmp_path):
+    """The dead column was not only cosmetic: ``rebuild_child_items`` recovered
+    its NULL from the stored row, ``_insert_child_item`` folded it into the
+    child inputs, and the same logical child row hashed differently depending on
+    whether it came from a fresh fan-out or a RebuildChildren pass."""
+    from hypergraph.materialization._commit import dedup_child_rows
+
+    calls: list[str] = []
+
+    @node(output_name="tagged")
+    def counted_tag(page_text: str, tag_value: str) -> str:
+        calls.append(page_text)
+        return f"{tag_value}:{page_text}"
+
+    @node(output_name="summary")
+    def summarize(text: str, tone: str) -> str:
+        return f"{tone}:{text}"
+
+    def build(tone: str) -> HyperTable:
+        inner = Graph([counted_tag], name="per_page").bind(tag_value="v1")
+        per_page = inner.as_node(name="pages").map_over("pages", identity="page_id")
+        return Graph([split, per_page, summarize]).bind(tone=tone).as_table(identity="doc_id", store=LanceDBStore(str(tmp_path)), runner=SyncRunner())
+
+    def fingerprints() -> list[str]:
+        rows = dedup_child_rows(LanceDBStore(str(tmp_path)).read_rows("page"), "page_id")
+        return sorted(row["_row_fingerprint"] for row in rows)
+
+    build("formal").insert(doc_id="d1", text="alpha beta")
+    assert sorted(calls) == ["alpha", "beta"]
+    fresh_fanout = fingerprints()
+
+    calls.clear()
+    # Only the ROOT bind moved; the child recipe and the child inputs are identical.
+    build("casual").sync([{"doc_id": "d1", "text": "alpha beta"}])
+    assert fingerprints() == fresh_fanout, "a RebuildChildren pass must not move the child fingerprint"
+
+
+def test_setting_a_child_bound_name_is_refused_before_any_write(tmp_path):
+    """Once the column leaves the spec it is no longer a content key, so without
+    this refusal ``set()`` would quietly evolve a new physical column that the
+    read filter then hides."""
+    table = _mapped_table(tmp_path, "v1")
+    table.insert(doc_id="d1", text="alpha beta")
+
+    with pytest.raises(ValueError, match=r"(?s)bound on the child graph.*Fields: tag_value.*How to fix:.*bind\(\)"):
+        table.child("page").set({"page_id": "p1"}, tag_value="x")
+
+    assert "tag_value" not in LanceDBStore(str(tmp_path)).column_names("page")
+
+
+@pytest.mark.asyncio
+async def test_a_child_bound_name_is_not_a_column_on_the_async_runner(tmp_path):
+    """Sync/async parity for the column-side fix."""
+    table = _mapped_table(tmp_path, "v1", runner=AsyncRunner())
+    await table.insert(doc_id="d1", text="alpha beta")
+
+    assert "tag_value" not in _child_column_names(table)
+    rows = sorted(table.child("page").rows(), key=lambda row: row["page_id"])
+    assert [set(row) for row in rows] == [{"page_id", "page_text", "tagged", "doc_id"}] * 2
+    assert [row["tagged"] for row in rows] == ["v1:alpha", "v1:beta"]

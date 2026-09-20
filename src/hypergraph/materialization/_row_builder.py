@@ -22,6 +22,7 @@ from hypergraph.materialization._schema import (
     QUESTION_COLUMN,
     RECIPE_COLUMN,
     TableSpec,
+    graph_bound_names,
     is_internal_column,
     python_type_to_arrow,
     return_type,
@@ -260,10 +261,21 @@ class RowBuilder:
 
     @staticmethod
     def rebuild_child_items(rows: list[dict[str, Any]], child_spec: TableSpec) -> list[dict[str, Any]]:
-        """Recover the source items of stored child rows, dropping derived columns."""
+        """Recover the source items of stored child rows, dropping derived columns.
+
+        A name the child graph binds is recipe, so a legacy store's dead column
+        for it must never re-enter the item: it would reach ``child_inputs`` and
+        move the child fingerprint, making the same logical row hash differently
+        depending on whether it came from a fresh fan-out or a rebuild.
+        """
         derived = {column.name for column in child_spec.columns if column.role == "derived"}
+        bound = graph_bound_names(child_spec.child_graph)
         return [
-            {key: normalize_value(value) for key, value in row.items() if key not in derived and key != "_parent_id" and not is_internal_column(key)}
+            {
+                key: normalize_value(value)
+                for key, value in row.items()
+                if key not in derived and key not in bound and key != "_parent_id" and not is_internal_column(key)
+            }
             for row in dedup_child_rows(rows, child_spec.identity)
         ]
 

@@ -234,6 +234,11 @@ pages.count()
 Each public child row exposes the parent's named identity column. Predicates
 may reference either child columns or parent columns.
 
+A value the child graph `bind()`s is recipe, not data, so it is not a child
+column: it never appears in `rows()` and `set()` refuses it. Change it with
+`bind()` and re-derive. A child input with a plain default is different — it is
+fed from the mapped item, so it stays a normal source column.
+
 ## Re-derive one column
 
 ```python
