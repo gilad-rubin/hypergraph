@@ -362,7 +362,12 @@ runs, and withdraws on a clean exit. Recording a builder address means *some
 process will rebuild this*, so an address nobody answers to is caught before
 400 rows exist rather than found hours later as a queue with no executor.
 
-## Dead Letters: work nothing alive can execute
+## Dead Letters: work that will never start
+
+A submission is dead-lettered when nothing would change by trying again —
+either nothing alive can execute it, or the Definition that owns it was
+handed the work and refused to start it. Both used to be silent stalls; a
+dead letter is the settled, named exit for them.
 
 An unclaimable submission has two very different futures, and the Run Home
 distinguishes them instead of parking both in silence.
@@ -394,10 +399,40 @@ key, the submission is retired as a **dead letter**:
 | `builder_missing` | The row names a builder key nothing registered. Register it on the worker. |
 | `builder_identity_mismatch` | A registered builder produced a different Definition than the pinned one. Reconcile the builder, or `fork` deliberately. |
 | `builder_failed` | The builder raised. Fix the constructor; the exception type is on the durable fact. |
+| `start_refused` | The Definition was here and refused to start this submission — the stored inputs are not its boundary inputs, or a restore-time check rejected them. Correct the cause, then `client.rerun()`. |
 
-A tolerance trip deliberately does **not** count dead letters as failures: a
-missing deployment is not the Batch's work failing, and tripping would
-relabel the remaining items "unstarted" and bury the reason they really have.
+`start_refused` is the one reason that is not about deployment. The worker
+claimed the submission, called the Definition's runner, and the call raised
+before any `runs` row existed: nothing executed and nothing was recorded.
+
+It is reserved for refusals a retry is **guaranteed** to reproduce —
+boundary-input validation (`ValueError`, `MissingInputError`),
+`IncompatibleRunnerError`, and the restore guards (`GraphChangedError`,
+`CompactedRetentionError`, `CheckpointCoercionError`,
+`InputOverrideRequiresForkError`). Each is a pure function of what the
+submission pinned — its stored inputs, its Definition's graph, that graph's
+bound runner — and a re-adoption can change none of them, so it could only
+repeat the refusal while holding an admission slot. The exception type is on
+the durable fact (`error`) and the full traceback is in a worker `WARNING`.
+
+Two neighbouring cases are deliberately **not** dead letters:
+
+- a raise before the first `runs` row that is anything else — a locked
+  store, a dropped connection — says nothing about the work, so it keeps
+  exactly the path it had before: the row stays `claimed` by the worker
+  that took it, which goes on renewing its lease, and it is re-adopted only
+  once that worker stops renewing (it exits, or it loses the lease), under
+  the pinned `recovery_cap` brake's budget. A live worker does not release
+  a claim it failed to start — unchanged here, and tracked separately;
+- a raise *after* a `runs` row exists, for the same reason one step later:
+  the run committed something, so the submission stays claimed and is
+  recovered the same way.
+
+A tolerance trip deliberately does **not** count dead letters as failures —
+including `start_refused`, where the work arguably did fail. One rule for the
+whole dead-letter class is the deliberate choice: the child settles either
+way, which is what a Batch waiting on it needs, and tripping would relabel
+the remaining items "unstarted" and bury the reason they really have.
 
 ## Submitting a Run
 
@@ -418,6 +453,15 @@ a bare string raises `TypeError`. The same rule covers `submit_batch()` and
 `fork(..., into=graph)`. A graph narrowed by `select()` or
 `with_entrypoint()` is a Definition of its own — see [Definition Identity and
 `accepts=`](#definition-identity-and-accepts).
+
+`values` are checked against that Definition's **boundary inputs** at accept
+time, the same check `submit_batch()` applies per item: a key the served
+graph does not take (a mid-graph parameter, a typo) or a missing required
+input raises `ValueError` naming the expected fields, and nothing is
+accepted. Stored values are immutable, so a refusal the Definition would
+raise at execution time is a [`start_refused` dead letter](#dead-letters-work-that-will-never-start)
+with nobody left to correct it. `fork()`, `client.rerun()` and the recovery
+paths do not re-check: they replay values a door already accepted.
 
 The submission commits to the Run Home **before** any execution: process
 loss after `submit()` returns cannot erase durable intent. Each submission

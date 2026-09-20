@@ -342,21 +342,33 @@ def _is_json_safe(value: Any) -> bool:
     return True
 
 
-def _validate_item_fields(graph: Graph, item: dict[str, Any], *, index: int, identity: str | None = None) -> None:
+def _validate_item_fields(graph: Graph, item: dict[str, Any], *, subject: str, identity: str | None = None) -> None:
+    """Refuse values this graph could never start with, at accept time.
+
+    THE boundary check, shared by every door that pins values to a
+    Definition: ``submit_batch()`` per item and ``submit()`` for the whole
+    submission (#452). A submission the served graph refuses cannot be
+    fixed by retrying it — the stored values are immutable — so it is
+    refused where the caller can still change them, not settled as a
+    ``start_refused`` dead letter hours later.
+
+    ``subject`` names the offending thing the way its own caller does
+    ("submit_batch() item 3", "submit()"), so one message serves both.
+    """
     expected = set(graph.inputs.all)
     allowed = expected | ({identity} if identity is not None else set())
     unknown = sorted(set(item) - allowed)
     if unknown:
+        not_inputs = "neither graph boundary inputs nor the identity field" if identity is not None else "not graph boundary inputs"
         raise ValueError(
-            f"submit_batch() item {index} has unknown graph input field(s): {unknown}. Expected fields: {sorted(expected)}.\n\n"
-            "How to fix:\n  Remove fields that are neither graph boundary inputs nor the identity field, "
-            "or add the intended input to the graph."
+            f"{subject} has unknown graph input field(s): {unknown}. Expected fields: {sorted(expected)}.\n\n"
+            f"How to fix:\n  Remove fields that are {not_inputs}, or add the intended input to the graph."
         )
     missing = sorted(set(graph.inputs.required) - set(item))
     if missing:
         raise ValueError(
-            f"submit_batch() item {index} is missing required graph input field(s): {missing}. Provided fields: {sorted(item)}.\n\n"
-            "How to fix:\n  Supply every required graph boundary input in this item."
+            f"{subject} is missing required graph input field(s): {missing}. Provided fields: {sorted(item)}.\n\n"
+            "How to fix:\n  Supply every required graph boundary input."
         )
 
 
@@ -374,11 +386,11 @@ def _validate_and_freeze_manifest(
     validated: list[dict[str, Any]] = []
     manifest_only_identity = identity not in graph.inputs.all
     for index, item in enumerate(expanded):
-        _validate_item_fields(graph, item, index=index, identity=identity)
+        _validate_item_fields(graph, item, subject=f"submit_batch() item {index}", identity=identity)
         value = item if schema is None else schema.model_validate(item).model_dump(mode="json")
         if manifest_only_identity and identity not in value:
             value[identity] = item.get(identity)
-        _validate_item_fields(graph, value, index=index, identity=identity)
+        _validate_item_fields(graph, value, subject=f"submit_batch() item {index}", identity=identity)
         validated.append(value)
     return _freeze_manifest(validated, identity=identity, strip_identity=manifest_only_identity)
 

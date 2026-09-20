@@ -46,7 +46,7 @@ from hypergraph import (
 from hypergraph.checkpointers.types import WorkflowStatus
 from hypergraph.events.processor import EventProcessor
 from hypergraph.events.types import NodeAttemptEndEvent, NodeErrorEvent, RunEndEvent
-from hypergraph.host.views import DEAD_LETTER_UNSERVED_IDENTITY
+from hypergraph.host.views import DEAD_LETTER_START_REFUSED, DEAD_LETTER_UNSERVED_IDENTITY
 from hypergraph.host.views import WaitingCondition as _WaitingCondition
 from hypergraph.runners._shared.provider_limits import (
     compose_graph_limits,
@@ -94,6 +94,25 @@ def _sync_graph(name: str, calls: dict | None = None) -> Graph:
         return x + 1
 
     return Graph([compute], name=name).with_runner(SyncRunner())
+
+
+class _RefusesToStart(SyncRunner):
+    """A served Definition that is present and refuses this submission (#452).
+
+    Stands for every pre-runs-row refusal — mid-graph inputs, a restore-time
+    check — because admission only cares that the claim never started.
+    """
+
+    def run(self, graph, inputs=None, **kwargs):
+        raise ValueError("this Definition cannot start with these inputs")
+
+
+def _refusing_graph(name: str) -> Graph:
+    @node(output_name="out")
+    def compute(x: int) -> int:
+        return x + 1
+
+    return Graph([compute], name=name).with_runner(_RefusesToStart())
 
 
 def _gated_async_graph(name: str, started: dict, gate: asyncio.Event) -> Graph:
@@ -289,6 +308,30 @@ class TestActiveRunCap:
         assert waiting["wf-orphan"] is WaitingCondition.DEAD_LETTER
         assert waiting["wf-b"] is WaitingCondition.ADMISSION_LIMITED
         assert home._dead_letter_reasons_sync(["wf-orphan"]) == {"wf-orphan": DEAD_LETTER_UNSERVED_IDENTITY}
+
+    async def test_a_claim_that_cannot_start_never_starves_the_next_run(self, home):
+        """#452: a slot is held by work that is RUNNING, not by work that died.
+
+        A claimed submission whose Definition refuses to start it used to
+        hold its slot for the life of the worker — renewed forever, never
+        reclaimed — so at cap=1 one bad row wedged the whole Home.
+        """
+        host, served = serve_graphs(_sync_graph("dbl"), _refusing_graph("refuses"), home=home, deployment_version="v1")
+        home.max_active_runs = 1
+        await host.submit(served["refuses"], {"x": 1}, workflow_id="wf-bad")
+        await host.submit(served["dbl"], {"x": 1}, workflow_id="wf-good")
+
+        async def both_settled():
+            states = _states(home)
+            return states if states.get("wf-good") == "finished" else None
+
+        async with _worker(host):
+            states = await _wait_for(both_settled)
+
+        assert states == {"wf-bad": "dead_letter", "wf-good": "finished"}
+        assert home._dead_letter_reasons_sync(["wf-bad"]) == {"wf-bad": DEAD_LETTER_START_REFUSED}
+        assert home.get_run("wf-bad") is None, "it never started, so there is nothing to recover"
+        assert host.worker_errors == [], "a settled, reported outcome is not a worker error"
 
     async def test_raising_the_cap_while_work_is_queued_admits_in_claim_order(self, home):
         """PRD 0017: change the cap while work is queued; order is preserved."""

@@ -36,9 +36,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from hypergraph.exceptions import (
+    CheckpointCoercionError,
+    CompactedRetentionError,
+    GraphChangedError,
+    IncompatibleRunnerError,
+    InputOverrideRequiresForkError,
+    MissingInputError,
+)
 from hypergraph.host._batch_store import BatchAcceptance, DefinitionPin
 from hypergraph.host._bus import _BusEventProcessor, _PreviewBus, _register_bus
-from hypergraph.host.batch import BatchTolerance, MapMode, expand_batch_items, freeze_batch_items
+from hypergraph.host.batch import BatchTolerance, MapMode, _validate_item_fields, expand_batch_items, freeze_batch_items
 from hypergraph.host.client import RunHomeClient
 from hypergraph.host.definition import DefinitionId, definition_struct_hash, narrowing_description
 from hypergraph.host.errors import (
@@ -61,6 +69,7 @@ from hypergraph.host.refs import BatchRef, BatchSubmitReceipt, RunRef, SubmitRec
 from hypergraph.host.views import (
     DEAD_LETTER_BUILDER_FAILED,
     DEAD_LETTER_BUILDER_IDENTITY_MISMATCH,
+    DEAD_LETTER_START_REFUSED,
     SUBMISSION_STATE_PAUSED,
     TERMINAL_WORKFLOW_STATUSES,
     is_child_settled,
@@ -79,6 +88,35 @@ logger = logging.getLogger("hypergraph.host")
 #: arguments arrive on the submission row as JSON, so they must be
 #: JSON-serializable — that is what makes the work data rather than a closure.
 GraphBuilder = Callable[[Mapping[str, Any]], "Graph"]
+
+#: Pre-run failures a retry is GUARANTEED to reproduce, and the only ones
+#: that retire a submission on the spot (#452). Each is a pure function of
+#: things the submission pinned and cannot change — its stored inputs, its
+#: Definition's graph, that graph's bound runner — so re-adopting one could
+#: only repeat the refusal while holding an admission slot and a renewed
+#: lease. Boundary-input validation raises ``ValueError`` (and
+#: ``MissingInputError``, which is not one of its subclasses);
+#: ``IncompatibleRunnerError`` is the pinned graph and runner disagreeing;
+#: the rest are the restore guards, which refuse rather than replay
+#: ambiguous history.
+#:
+#: Every OTHER pre-run failure — a locked store, a dropped connection, an
+#: exhausted file handle — says nothing about the work, so it keeps exactly
+#: the path it had before #452: the row stays ``claimed`` by THIS worker,
+#: which goes on renewing its lease, and is re-adopted only once this worker
+#: stops renewing (it exits, or it loses the lease). That a live worker does
+#: not release a claim it failed to start is unchanged here and tracked
+#: separately; retiring the row instead would be worse, because the failure
+#: may well be transient.
+_DETERMINISTIC_START_REFUSALS: tuple[type[BaseException], ...] = (
+    ValueError,
+    MissingInputError,
+    IncompatibleRunnerError,
+    GraphChangedError,
+    CompactedRetentionError,
+    CheckpointCoercionError,
+    InputOverrideRequiresForkError,
+)
 
 
 @dataclass(frozen=True)
@@ -409,7 +447,12 @@ class Host:
                 name. An unserved Graph raises ``UnservedGraphError``
                 immediately: a submission must never name code no worker can
                 execute.
-            values: JSON-serializable graph inputs.
+            values: JSON-serializable graph inputs. Checked against the
+                resolved Definition's boundary inputs here, the same check
+                ``submit_batch()`` applies per item: an unknown key or a
+                missing required one raises ``ValueError`` and accepts
+                nothing, because a stored value the served graph refuses
+                can only become a ``start_refused`` dead letter later.
             workflow_id: Optional explicit id; one is generated when
                 omitted. It may not contain ``"/"`` — that character is
                 reserved for hierarchical run ids, so no runner would
@@ -522,6 +565,12 @@ class Host:
             _validate_workflow_id_char(workflow_id, verb="submit")
         definition = self._require_definition(graph, builder)
         inputs_json = self._serialize_inputs(values)
+        # The boundary check ``submit_batch`` has always applied, at this
+        # door too (#452). Against the SERVED graph, because that is the
+        # object a worker will hand these values to — and once accepted
+        # they are immutable, so a refusal it would raise there is a
+        # ``start_refused`` dead letter with nobody left to correct it.
+        _validate_item_fields(definition.graph, values, subject="submit()")
         start_at_iso = _normalize_start_at(start_at)
         return definition, inputs_json, start_at_iso, workflow_id or f"{definition.name}-{uuid.uuid4().hex[:12]}"
 
@@ -1393,22 +1442,63 @@ class Host:
         # else the worker does.
         recorder_token = push_host_recorder(self._home)
         try:
-            if asyncio.iscoroutinefunction(run_fn):
-                await run_fn(definition.graph, inputs, **run_kwargs)
-            else:
-                cancellation, cancellation_token = self._home._register_sync_wait_cancellation()
-                try:
-                    await asyncio.to_thread(run_fn, definition.graph, inputs, **run_kwargs)
-                except asyncio.CancelledError:
-                    # ``to_thread`` cancellation cannot kill the worker thread.
-                    # Fence only an exclusion waiter; ordinary sync-node crash
-                    # semantics remain at-least-once and are re-adopted.
-                    cancellation.set()
-                    raise
-                finally:
-                    self._home._clear_sync_wait_cancellation(cancellation_token)
-        finally:
-            pop_host_recorder(recorder_token)
+            try:
+                if asyncio.iscoroutinefunction(run_fn):
+                    await run_fn(definition.graph, inputs, **run_kwargs)
+                else:
+                    cancellation, cancellation_token = self._home._register_sync_wait_cancellation()
+                    try:
+                        await asyncio.to_thread(run_fn, definition.graph, inputs, **run_kwargs)
+                    except asyncio.CancelledError:
+                        # ``to_thread`` cancellation cannot kill the worker thread.
+                        # Fence only an exclusion waiter; ordinary sync-node crash
+                        # semantics remain at-least-once and are re-adopted.
+                        cancellation.set()
+                        raise
+                    finally:
+                        self._home._clear_sync_wait_cancellation(cancellation_token)
+            finally:
+                pop_host_recorder(recorder_token)
+        # ``asyncio.CancelledError`` is a BaseException, so shutdown drain and
+        # ``stop()`` cancellation pass through here untouched — they are the
+        # at-least-once path, not a refusal.
+        except Exception as error:
+            if await self._home.get_run_async(workflow_id) is not None:
+                # The attempt committed something. That is the crash the
+                # lease and ``_reclaim_expired`` exist for: leave the
+                # submission claimed, let ``_record_task_exception`` record
+                # it, and let a re-adoption resume from the recorded history.
+                raise
+            if not isinstance(error, _DETERMINISTIC_START_REFUSALS):
+                # Nothing started, but nothing proves a retry would fail the
+                # same way — a busy store, a dropped connection. Retiring it
+                # here would spend durable work on a blip. Re-raise, which
+                # leaves this class exactly where #452 found it: the row
+                # stays claimed by THIS worker, whose lease renewal covers
+                # it until the worker stops, and the next startup scan
+                # re-adopts it under the recovery brake's budget.
+                raise
+            # Nothing started, and it never will: this refusal is a property
+            # of what the submission pinned — its inputs, its Definition's
+            # graph and runner — none of which a re-adoption can change, so
+            # every attempt would reproduce it while holding an admission
+            # slot and a renewed lease. That is the #452 zombie claim.
+            # Retire it with the reason instead; the submission is settled,
+            # so ``watch()`` ends, a Batch parent settles, and
+            # ``client.rerun()`` revives it once the cause is corrected.
+            logger.warning(
+                "Definition %r refused to start submission %s; dead-lettering it.",
+                definition.name,
+                workflow_id,
+                exc_info=True,
+            )
+            await self._home._dead_letter(
+                workflow_id,
+                DEAD_LETTER_START_REFUSED,
+                claim_seq=row["claim_seq"],
+                detail={"error": type(error).__name__},
+            )
+            return
         # Release the claim only after the run came back: a cancelled or
         # crashed execution leaves the submission claimed for the restart
         # scan. The release settles THIS claim (`row["claim_seq"]`) or

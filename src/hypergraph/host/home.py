@@ -112,6 +112,7 @@ from hypergraph.host.views import (
     BATCH_OUTCOME_DEAD_LETTER,
     BATCH_OUTCOME_RECOVERY_EXHAUSTED,
     DEAD_LETTER_BUILDER_MISSING,
+    DEAD_LETTER_START_REFUSED,
     DEAD_LETTER_UNSERVED_IDENTITY,
     DEAD_LETTERED_UPDATE_KIND,
     SETTLED_SUBMISSION_STATES,
@@ -125,6 +126,20 @@ if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Checkpoint, PauseSlot, Run
 
 logger = logging.getLogger("hypergraph.host")
+
+# What an operator should DO about a dead letter, per reason. Four of the
+# five say "nothing alive can execute this", so they share one sentence;
+# ``start_refused`` is the one where the executor was present and refused,
+# and pointing that operator at a deployment would send them looking in the
+# wrong place.
+_DEPLOY_SOMETHING_REMEDY = "Serve the Definition (or register the builder) where the work should run, then client.rerun() to revive it."
+_DEAD_LETTER_REMEDIES: dict[str, str] = {
+    DEAD_LETTER_START_REFUSED: (
+        "The Definition was here and refused it: its pinned inputs, or a restore-time check, are the reason. "
+        "The exception type is on the durable fact and the traceback is above: correct the cause (resubmit with "
+        "different values, or fix what the restore refused), then client.rerun() to revive it."
+    )
+}
 
 _sync_wait_cancellation: ContextVar[threading.Event | None] = ContextVar("host_sync_wait_cancellation", default=None)
 
@@ -2980,12 +2995,12 @@ class RunHome(SqliteCheckpointer):
         if result.rowcount != 1:
             return False
         logger.warning(
-            "Dead-lettering submission %s (%s): pinned identity %s, builder %r. "
-            "Serve the Definition (or register the builder) where the work should run, then client.rerun() to revive it.",
+            "Dead-lettering submission %s (%s): pinned identity %s, builder %r. %s",
             workflow_id,
             reason,
             identity.to_dict(),
             submission["builder_key"],
+            _DEAD_LETTER_REMEDIES.get(reason, _DEPLOY_SOMETHING_REMEDY),
         )
         await self._append_run_update(
             workflow_id,

@@ -267,8 +267,11 @@ class TestFingerprintDedup:
 class TestFingerprintNormalization:
     async def test_dict_key_order_dedupes_identically(self, home):
         host, served = serve_graphs(_sync_graph("dbl"), home=home)
-        first = await host.submit(served["dbl"], {"a": 1, "b": {"c": 2, "d": 3}}, workflow_id="wf-norm")
-        second = await host.submit(served["dbl"], {"b": {"d": 3, "c": 2}, "a": 1}, workflow_id="wf-norm")
+        # Both boundary inputs of the served graph, spelled in two orders —
+        # `submit()` refuses stray keys at accept time (#452), so the
+        # fingerprint's normalization is proven on values it would accept.
+        first = await host.submit(served["dbl"], {"x": 1, "item": {"c": 2, "d": 3}}, workflow_id="wf-norm")
+        second = await host.submit(served["dbl"], {"item": {"d": 3, "c": 2}, "x": 1}, workflow_id="wf-norm")
         assert second.duplicate is True
         assert second.run_ref == first.run_ref
         assert len(home._read_run_updates_sync("wf-norm")) == 1
