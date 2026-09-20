@@ -256,7 +256,16 @@ def initialize_state_with_checkpoint(
     runtime_values: dict[str, Any],
     steps: list[StepRecord],
 ) -> GraphState:
-    """Restore GraphState from checkpoint state with one ordered step replay."""
+    """Restore GraphState from checkpoint state with one ordered step replay.
+
+    Note:
+        An execution's ``output_versions`` must come from the same absolute
+        counter ``state.versions`` is built from. Consumer rows that survive
+        compaction still carry the ORIGINAL run's version numbers, so a
+        recount of only the producer rows this restore happens to see cannot
+        reach them — and the explicit-edge producer check would then reject a
+        correctly restored value and hand the consumer its default instead.
+    """
     from hypergraph.nodes.gate import END as _END
     from hypergraph.nodes.gate import IfElseNode, RouteNode
 
@@ -267,7 +276,6 @@ def initialize_state_with_checkpoint(
     bound_names = set(graph.inputs.bound)
     seeded_inputs = {name for name in checkpoint_values if name in graph_input_names and name not in bound_names}
     versions = {name: 1 for name in seeded_inputs}
-    replay_versions = {name: 1 for name in seeded_inputs}
 
     completed_steps = sorted(
         (step for step in steps if step.status == StepStatus.COMPLETED),
@@ -282,8 +290,7 @@ def initialize_state_with_checkpoint(
         output_versions: dict[str, int] = {}
         for output_name in step_values:
             versions[output_name] = versions.get(output_name, 0) + 1
-            replay_versions[output_name] = replay_versions.get(output_name, 0) + 1
-            output_versions[output_name] = replay_versions[output_name]
+            output_versions[output_name] = versions[output_name]
 
         state.node_executions[step.node_name] = NodeExecution(
             node_name=step.node_name,
