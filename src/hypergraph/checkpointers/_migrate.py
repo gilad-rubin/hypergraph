@@ -50,14 +50,6 @@ def create_v10_schema(conn: Any) -> None:
     conn.commit()
 
 
-# Backward-compatible aliases: the fresh-create entry points used before v10.
-create_v9_schema = create_v10_schema
-create_v8_schema = create_v10_schema
-create_v7_schema = create_v10_schema
-create_v6_schema = create_v10_schema
-create_v5_schema = create_v10_schema
-
-
 def ensure_schema(conn: Any) -> None:
     """Detect schema version and create/migrate schema as needed."""
     version = detect_schema_version(conn)
