@@ -366,10 +366,11 @@ async def _settled(home, workflow_id: str):
 class _RefusesOnRestore(AsyncRunner):
     """A served Definition whose restore rejects the run before it starts.
 
-    Not every pre-start refusal is about input names — `#452`'s handler is
-    keyed on "the attempt left no runs row", so a restore-time refusal
-    (`GraphChangedError`, `CompactedRetentionError`, `CheckpointCoercionError`)
-    must land on the same reason.
+    Not every deterministic pre-start refusal is about input names: the
+    restore guards (`GraphChangedError`, `CompactedRetentionError`,
+    `CheckpointCoercionError`, `InputOverrideRequiresForkError`) refuse
+    rather than replay ambiguous history, and refuse identically every
+    time — so they land on the same reason.
     """
 
     async def run(self, graph, inputs=None, **kwargs):  # type: ignore[override]
@@ -384,6 +385,24 @@ class _CrashesAfterTheRun(AsyncRunner):
         raise RuntimeError("the worker died after the run committed")
 
 
+def _transient_runner(calls: list[str]) -> AsyncRunner:
+    """A runner whose FIRST call dies the way a busy store does.
+
+    Fails before any runs row, exactly like a refusal — and unlike a
+    refusal, succeeds on the next attempt. `calls` is a closure, so it
+    survives the `copy.copy` every `serve()` makes.
+    """
+
+    class _TransientlyUnavailable(AsyncRunner):
+        async def run(self, graph, inputs=None, **kwargs):  # type: ignore[override]
+            calls.append(kwargs.get("workflow_id", "?"))
+            if len(calls) == 1:
+                raise OSError("database is locked")
+            return await super().run(graph, inputs, **kwargs)
+
+    return _TransientlyUnavailable()
+
+
 class TestADefinitionThatRefusesToStartIsADeadLetter:
     """#452: the executor is present, and it refuses THIS submission.
 
@@ -393,6 +412,10 @@ class TestADefinitionThatRefusesToStartIsADeadLetter:
     rejected them. The stored inputs and the pinned identity are immutable,
     so a retry is provably identical: the worker retires the submission
     instead of renewing its lease over nothing.
+
+    "Provably" is the whole rule. A pre-run failure that a retry might
+    survive keeps the recovery path it has always had — the last test in
+    this class is the one that holds the line.
     """
 
     @pytest.mark.parametrize("runner", [AsyncRunner, SyncRunner], ids=["async", "sync"])
@@ -480,7 +503,7 @@ class TestADefinitionThatRefusesToStartIsADeadLetter:
         assert host.worker_errors == []
 
     async def test_a_restore_time_refusal_lands_on_the_same_reason(self, home):
-        """The reason is keyed on "no runs row", not on an input allowlist."""
+        """The reason is not an input-error reason: it is a repeatable one."""
         ledger: list[str] = []
         graph = pipeline(ledger, "restores", runner=_RefusesOnRestore())
         host = serve(graph, home=home, deployment_version="v1")
@@ -491,6 +514,33 @@ class TestADefinitionThatRefusesToStartIsADeadLetter:
 
         payload = _updates(home, "wf-restore")[-1][1]
         assert (payload["reason"], payload["error"]) == (DEAD_LETTER_START_REFUSED, "GraphChangedError")
+        assert (await host.client.get(receipt.run_ref)).waiting is WaitingCondition.DEAD_LETTER
+        assert host.worker_errors == []
+
+    async def test_a_graph_its_bound_runner_cannot_execute_is_refused_the_same_way(self, home):
+        """A pinned PAIRING can be the refusal, not only a pinned value.
+
+        `serve()` accepts an async node under a `SyncRunner`; the check that
+        refuses it lives in the runner, one call later and before any runs
+        row. Graph and runner are both pinned by the Definition, so the
+        refusal is as immutable as a bad input — and without this the
+        submission is the original #452 zombie.
+        """
+
+        @node(output_name="out")
+        async def only_async(x: int) -> int:
+            return x + 1
+
+        graph = Graph([only_async], name="mismatch").with_runner(SyncRunner())
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await host.submit(graph, {"x": 1}, workflow_id="wf-mismatch")
+
+        async with worker(host, "w-mismatch"):
+            await until(lambda: _settled(home, "wf-mismatch"))
+
+        payload = _updates(home, "wf-mismatch")[-1][1]
+        assert (payload["reason"], payload["error"]) == (DEAD_LETTER_START_REFUSED, "IncompatibleRunnerError")
+        assert await home.get_run_async("wf-mismatch") is None
         assert (await host.client.get(receipt.run_ref)).waiting is WaitingCondition.DEAD_LETTER
         assert host.worker_errors == []
 
@@ -541,6 +591,43 @@ class TestADefinitionThatRefusesToStartIsADeadLetter:
         async with worker(healthy, "w-readopt"):
             view = await healthy.client.follow(receipt.run_ref, deadline=30)
         assert view.status is WorkflowStatus.COMPLETED
+
+    async def test_a_transient_failure_before_the_first_run_row_is_retried(self, home):
+        """ "No runs row" is not the whole test: the refusal must be PROVEN.
+
+        A locked store fails in exactly the shape a refusal does — before
+        anything is recorded — and says nothing about the stored inputs.
+        Retiring it after one call would spend durable work on a blip and
+        spend none of the recovery budget that exists for it. Only the
+        deterministic class is retired; this keeps the at-least-once path.
+        """
+        ledger: list[str] = []
+        calls: list[str] = []
+        graph = pipeline(ledger, "flaky", runner=_transient_runner(calls))
+        host = serve(graph, home=home, deployment_version="v1")
+        receipt = await host.submit(graph, {"x": 1}, workflow_id="wf-transient")
+
+        async def raised():
+            return host.worker_errors or None
+
+        async with worker(host, "w-first"):
+            await until(raised)
+            assert (await home._get_submission("wf-transient"))["state"] == "claimed"
+
+        assert isinstance(host.worker_errors[0], OSError), "recorded as a worker error, not swallowed"
+        assert await home.get_run_async("wf-transient") is None, "it really did fail before the first runs row"
+        assert [kind for kind, _payload in _updates(home, "wf-transient")] == ["submitted"], "nothing was retired"
+        assert home._dead_letter_reasons_sync(["wf-transient"]) == {}
+
+        # The lease was surrendered on shutdown, so the next worker re-adopts
+        # it — and the second attempt works, which a dead letter would have
+        # made unreachable without a human rerun.
+        retry = serve(graph, home=home, deployment_version="v1")
+        async with worker(retry, "w-second"):
+            view = await retry.client.follow(receipt.run_ref, deadline=30)
+        assert view.status is WorkflowStatus.COMPLETED
+        assert calls == ["wf-transient", "wf-transient"], "one attempt lost, the submission kept"
+        assert ledger == ["cheap", "costly"]
 
 
 class TestSubmitChecksBoundaryInputsAtAcceptTime:

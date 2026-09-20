@@ -31,7 +31,8 @@ TERMINAL_STATUS_VALUES: frozenset[str] = frozenset(status.value for status in TE
 # Submission states in which the host will never touch a submission again:
 # 'finished' (terminal run, stop-before-start, or a tolerance trip that
 # closed admission), 'exhausted' (parked by the recovery brake), and
-# 'dead_letter' (retired because nothing alive can execute it).
+# 'dead_letter' (retired because nothing alive can execute it, or because
+# the Definition that owns it refused to start it).
 SUBMISSION_STATE_FINISHED = "finished"
 SUBMISSION_STATE_EXHAUSTED = "exhausted"
 # A run the worker released because it PAUSED on a durable interrupt. The
@@ -66,10 +67,13 @@ DEAD_LETTER_BUILDER_FAILED = "builder_failed"
 # The fifth reason is the only one that is not about deployment: the
 # Definition IS here, it was handed this submission, and it refused to
 # start it — the pinned inputs are not its boundary inputs, or a
-# restore-time check rejected them. The attempt left no ``runs`` row, and
-# every stored field a retry would replay (inputs, pinned identity) is
-# immutable, so re-adopting it could only repeat the refusal forever while
-# holding an admission slot. Retiring it names the cause instead.
+# restore-time check rejected them. It is reserved for refusals a retry is
+# GUARANTEED to reproduce: the attempt left no ``runs`` row and every
+# stored field it would replay (inputs, pinned identity) is immutable, so
+# re-adopting it could only repeat the refusal forever while holding an
+# admission slot. Retiring it names the cause instead. A pre-run failure
+# that is merely POSSIBLY transient is never this — it keeps the lease,
+# reclaim and recovery-brake path (see ``host._DETERMINISTIC_START_REFUSALS``).
 DEAD_LETTER_START_REFUSED = "start_refused"
 DEAD_LETTER_REASONS: frozenset[str] = frozenset(
     {
@@ -146,7 +150,7 @@ class WaitingCondition(Enum):
     VERSION_INCOMPATIBLE = "version_incompatible"  # another worker serves it
     ADMISSION_LIMITED = "admission_limited"  # over the active-Run cap
     RECOVERY_EXHAUSTED = "recovery_exhausted"  # pinned recovery cap hit
-    DEAD_LETTER = "dead_letter"  # nothing alive can execute it
+    DEAD_LETTER = "dead_letter"  # nothing can execute it, or it was refused a start
 
 
 @dataclass(frozen=True)
@@ -207,7 +211,8 @@ class RunView:
             ``ADMISSION_LIMITED`` (due and claimable, but the Home's
             stored ``max_active_runs`` has no free slot),
             ``RECOVERY_EXHAUSTED`` (the pinned recovery cap tripped), and
-            ``DEAD_LETTER`` (nothing alive can execute it — see
+            ``DEAD_LETTER`` (nothing alive can execute it, or its Definition
+            refused to start it — see
             ``RunHomeClient.dead_letter_reason``). Never a WorkflowStatus.
         definition_id: The pinned Definition identity from the submission,
             or reconstructed from the runs row for host-less (Tier 0) runs.

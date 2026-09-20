@@ -135,8 +135,9 @@ logger = logging.getLogger("hypergraph.host")
 _DEPLOY_SOMETHING_REMEDY = "Serve the Definition (or register the builder) where the work should run, then client.rerun() to revive it."
 _DEAD_LETTER_REMEDIES: dict[str, str] = {
     DEAD_LETTER_START_REFUSED: (
-        "The Definition refused to start this submission — the pinned inputs are not its boundary inputs. "
-        "Resubmit with corrected values; the exception type is on the durable fact and the traceback is above."
+        "The Definition was here and refused it: its pinned inputs, or a restore-time check, are the reason. "
+        "The exception type is on the durable fact and the traceback is above: correct the cause (resubmit with "
+        "different values, or fix what the restore refused), then client.rerun() to revive it."
     )
 }
 

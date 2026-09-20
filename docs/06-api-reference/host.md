@@ -399,17 +399,34 @@ key, the submission is retired as a **dead letter**:
 | `builder_missing` | The row names a builder key nothing registered. Register it on the worker. |
 | `builder_identity_mismatch` | A registered builder produced a different Definition than the pinned one. Reconcile the builder, or `fork` deliberately. |
 | `builder_failed` | The builder raised. Fix the constructor; the exception type is on the durable fact. |
-| `start_refused` | The Definition was here and refused to start this submission — the stored inputs are not its boundary inputs, or a restore-time check rejected them. Resubmit with corrected values. |
+| `start_refused` | The Definition was here and refused to start this submission — the stored inputs are not its boundary inputs, or a restore-time check rejected them. Correct the cause, then `client.rerun()`. |
 
 `start_refused` is the one reason that is not about deployment. The worker
 claimed the submission, called the Definition's runner, and the call raised
-before any `runs` row existed: nothing executed, nothing was recorded, and
-the stored inputs and pinned identity are immutable, so every re-adoption
-would reproduce the same refusal while holding an admission slot. The
-exception type is on the durable fact (`error`) and the full traceback is in
-a worker `WARNING`. A raise *after* a `runs` row exists is the opposite case
-and is untouched: the run committed something, so the submission stays
-claimed and the lease and reclaim scan recover it.
+before any `runs` row existed: nothing executed and nothing was recorded.
+
+It is reserved for refusals a retry is **guaranteed** to reproduce —
+boundary-input validation (`ValueError`, `MissingInputError`),
+`IncompatibleRunnerError`, and the restore guards (`GraphChangedError`,
+`CompactedRetentionError`, `CheckpointCoercionError`,
+`InputOverrideRequiresForkError`). Each is a pure function of what the
+submission pinned — its stored inputs, its Definition's graph, that graph's
+bound runner — and a re-adoption can change none of them, so it could only
+repeat the refusal while holding an admission slot. The exception type is on
+the durable fact (`error`) and the full traceback is in a worker `WARNING`.
+
+Two neighbouring cases are deliberately **not** dead letters:
+
+- a raise before the first `runs` row that is anything else — a locked
+  store, a dropped connection — says nothing about the work, so it keeps
+  exactly the path it had before: the row stays `claimed` by the worker
+  that took it, which goes on renewing its lease, and it is re-adopted only
+  once that worker stops renewing (it exits, or it loses the lease), under
+  the pinned `recovery_cap` brake's budget. A live worker does not release
+  a claim it failed to start — unchanged here, and tracked separately;
+- a raise *after* a `runs` row exists, for the same reason one step later:
+  the run committed something, so the submission stays claimed and is
+  recovered the same way.
 
 A tolerance trip deliberately does **not** count dead letters as failures —
 including `start_refused`, where the work arguably did fail. One rule for the
