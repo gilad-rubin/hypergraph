@@ -94,6 +94,36 @@
   switch to the exact local objects or the new typed
   `FailureEvidence.diagnostic`.
 
+- **`gen_sync` refuses a rename-table name used as a keyword argument** — the sync-template
+  generator rewrites names, not the signatures they bind to, so `f(checkpointer=x)` now
+  exits with a `GenerationError` naming the line instead of silently generating
+  `f(sync_cp=x)` and a confusing `TypeError` at run time. Dev tooling only; no shipped
+  file changed. (#461)
+
+- **`gen_sync` compiles what it writes** — both generator gates now `compile()` the
+  generated template instead of only parsing it, so an `await` left in a plain `def` is
+  caught before the file is written, and the generator refuses f-string replacement fields
+  it cannot read the same way on every supported interpreter. Literal parts of f-strings
+  and the documented `# sync:skip` escape hatch are untouched. Dev tooling only. (#491)
+
+- **The `create_v5_schema` … `create_v9_schema` aliases are gone** — all five were aliases
+  of `create_v10_schema` in the private `hypergraph.checkpointers._migrate`, each naming a
+  schema it did not create. They had no callers; use `create_v10_schema`. (#486)
+
+- **The routed reconcile is a first-class step kind** — HyperTable's write planner drives a
+  gate-routed slice as explicit state instead of three mutable sets and a forged provenance
+  stamp. Nothing user-visible changed. (#489)
+
+- **A SQLite write path opens a transaction instead of writing one** — the checkpointer's
+  write methods share one transaction context manager per family (sync and async) rather
+  than hand-writing the begin/commit/rollback scaffold fifteen times. Nothing user-visible
+  changed. (#483)
+
+- **`submit()` and `submit_sync()` refuse unknown input fields** — a submission naming a
+  graph input the served graph does not have now raises `ValueError` at accept time, naming
+  the unknown fields and the expected ones, instead of being stored and refused later by
+  the worker. `submit_batch()` items are checked the same way. (#496)
+
 ### Added
 
 - **Three read verbs a product had been writing for itself (issue #392):
@@ -378,6 +408,18 @@
 
 - **Reserved column name validation** — identity and source columns named `_status`, `_error`, `_row_fingerprint`, `_write_gen`, `_parent_id`, or `_provenance_*` are rejected at graph analysis time with a clear error message.
 
+- **`SyncRunner` takes runner-level `event_processors`** — `SyncRunner(event_processors=[...])`
+  now mirrors `AsyncRunner`: processors given to the constructor are dispatched on every
+  `run()` and `map()` call, ahead of any passed at the call site. `max_concurrency` was
+  deliberately not added — a sync engine has no concurrency budget, so there is no
+  runner-level default to apply. (#476)
+
+- **`map_iter(workflow_id=...)`** — `map_iter()` accepts `workflow_id=`, and item *i* runs
+  as `<workflow_id>/<i>`, so streamed chunks from nested and mapped graphs route by the
+  documented `(workflow_id, node_name)` key instead of collapsing onto a single `None`.
+  It is identity only; passing it while a checkpointer is attached raises `ValueError`
+  pointing at `runner.map(..., workflow_id=...)`. (#484)
+
 ### Fixed
 
 - **A durable Run could fail with "database is locked" without executing a
@@ -612,6 +654,54 @@
 - **Source-derived fork IDs** — before, `runner.run(..., fork_from="job-1")` generated an unrelated `run-...` ID; now it yields `job-1-fork-<hex>`. Explicit targets remain exact, retries keep generic runner IDs, and missing/nested implicit sources fail without creating a run.
 
 - **`set_children` parent scoping** — the cleanup predicate in `set_children` now includes `_parent_id`, preventing accidental deletion of another parent's children when child identity values overlap.
+
+- **A gate target naming a missing node raises `GraphConfigError` for every gate shape** —
+  a typo in `@route(targets=[...])` or `@ifelse(when_true=..., when_false=...)` escaped as
+  a raw `networkx.exception.NetworkXError` whenever the gate declared two or more non-`END`
+  targets, because the graph was built before gate targets were validated. Gate targets are
+  now validated first, so every shape gets the named error with the available nodes and a
+  "did you mean" suggestion. (#477)
+
+- **A rerun carries the source's builder address** — `client.rerun()` rebuilt a submission
+  field by field and copied everything except `builder_key` / `builder_args_json`, so the
+  repeat landed with a NULL address and parked as `builder_missing` on a builder-only
+  fleet. Both columns are now carried, for single runs and for Batch children. (#478)
+
+- **Mermaid draws a renamed boundary output from its inner producer** — with the container
+  expanded, an edge out of a renamed boundary output pointed at an id that was never
+  declared, so Mermaid rendered a phantom unstyled box while the real port pill had no
+  consumer. The edge now starts at the deepest visible producer, through any number of
+  expanded levels. Two frozen baselines changed by one line each. (#479)
+
+- **A name bound inside a child graph is recipe, not a child column** — a value the child
+  graph `bind()`s got a content-key source column on the child table that nothing could
+  ever write, so it stayed NULL forever. No column is built for such a name now, a NULL
+  column an older store already holds is ignored on read and on rebuild, and
+  `ChildTable.set()` refuses a child-bound name. Dropping that dead value from rebuilt
+  items moves the child fingerprint, so an existing store re-derives the child rows it
+  flips once, then settles. (#487)
+
+- **`ctx.record()` chooses its write path by loop identity** — a plain `def` node body that
+  drove its own asyncio loop (wrapping an async client, say) failed the whole run with
+  `WrongEventLoopError` under `AsyncRunner`, because the path was chosen by "is any loop
+  running" rather than by which loop the executor owns; the identical body under
+  `SyncRunner` completed. A lost fact now fails the node on every runner and body pairing,
+  and a `try`/`except` around `ctx.record()` still changes the body's control flow but no
+  longer turns a dropped fact into a completed run. The `NodeContext` constructor keyword
+  `records_on_loop` is now `record_loop` and takes that loop instead of a boolean. (#493)
+
+- **A compacted resume hands a loop's restored value to its consumer** — under
+  `retention="latest"` or `retention="windowed"`, a resumed run whose looping node had its
+  earlier step row compacted away passed the consumer its *default* instead of the restored
+  value, with no error and the right value sitting in `result.values` of the same result
+  object. Compacted resumes now match `retention="full"` on both runner families and every
+  checkpointer backend. (#494)
+
+- **A submission its Definition refuses to start settles as a dead letter** — a claimed
+  submission whose execution raised before any run row existed sat `claimed` past its
+  lease forever, renewing the lease and holding an admission slot while nothing ran. It is
+  now settled as a dead letter with reason `start_refused`, the worker logs the traceback,
+  and `client.rerun()` accepts it. (#496)
 
 ### Changed
 
