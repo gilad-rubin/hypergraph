@@ -44,13 +44,20 @@ How the transform works
    - the string table in ``STRING_RENAMES`` — the few literals that name the
      family, matched whole so prose is never rewritten
 
+   The transform never reaches inside an f-string's replacement fields. What a
+   token *is* in there changed in 3.12 (PEP 701: the interior is tokenized, so
+   replacement fields become real ``NAME`` tokens and literal parts become
+   ``FSTRING_MIDDLE`` rather than one opaque ``STRING``), so a rename-table
+   name, an ``await``, a renamed literal, or a marker written inside one is
+   *refused* on every interpreter rather than resolved differently on each.
+
 3. **``ruff``** on the result — ``check --fix-only --select I,F401`` then
    ``format`` — so the generated file is byte-stable under the repo's own lint
    job and ``ruff format --check .`` cannot disagree with ``--check`` here. ruff
    is proved present before step 1 runs: a generated file's failure mode must be
    a loud exit, never a shorter file.
 
-Nothing reaches disk that does not parse or that is no longer than the header.
+Nothing reaches disk that does not compile or that is no longer than the header.
 """
 
 from __future__ import annotations
@@ -160,6 +167,22 @@ def _reason_of(line: str, marker: str) -> str:
 ALL_MARKERS = (SKIP_START, SKIP_END, ONLY_START, ONLY_END, SKIP_LINE)
 
 
+def _marker_inside_a_string(lineno: int, marker: str) -> GenerationError:
+    """The one refusal for a marker that is text rather than a comment.
+
+    Two detectors raise it and one wording is maintained: the ``STRING`` token
+    branch, which sees every plain literal, and the ``ast.JoinedStr`` one, which
+    sees an f-string's literal parts — those stopped being ``STRING`` tokens in
+    3.12.
+    """
+    return GenerationError(
+        f"line {lineno}: `{marker}` appears inside a string literal, "
+        f"where it is text and not a marker. The generator refuses it rather "
+        f"than silently honouring or silently ignoring it; if the prose has to "
+        f"name the marker, break the literal (e.g. '# sync' ':skip:')."
+    )
+
+
 def find_markers(source: str) -> dict[int, str]:
     """Map line number -> the marker comment on it, tokenizing to find them.
 
@@ -169,11 +192,19 @@ def find_markers(source: str) -> dict[int, str]:
     mentions a marker is a matter of time. So detection reads COMMENT tokens,
     and a marker found inside a STRING token is a loud error rather than a
     silently dropped line.
+
+    The STRING token branch stops seeing f-strings in 3.12, where their literal
+    parts become ``FSTRING_MIDDLE`` (PEP 701), so a second pass reads the same
+    literal parts off the AST. Both passes are needed and neither replaces the
+    other: implicit concatenation — the escape hatch the refusal itself
+    advertises, ``'# sync' ':skip:'`` — is two STRING tokens holding no whole
+    marker between them, but one ``ast.Constant`` that holds one.
     """
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+        tree = ast.parse(source)
     except (SyntaxError, tokenize.TokenError) as error:
-        raise GenerationError(f"the async template does not tokenize: {error}") from error
+        raise GenerationError(f"the async template does not tokenize or parse: {error}") from error
 
     markers: dict[int, str] = {}
     for token in tokens:
@@ -186,12 +217,19 @@ def find_markers(source: str) -> dict[int, str]:
         elif token.type == tokenize.STRING:
             for marker in ALL_MARKERS:
                 if marker in token.string:
-                    raise GenerationError(
-                        f"line {token.start[0]}: `{marker}` appears inside a string literal, "
-                        f"where it is text and not a marker. The generator refuses it rather "
-                        f"than silently honouring or silently ignoring it; if the prose has to "
-                        f"name the marker, break the literal (e.g. '# sync' ':skip:')."
-                    )
+                    raise _marker_inside_a_string(token.start[0], marker)
+
+    for joined in ast.walk(tree):
+        if not isinstance(joined, ast.JoinedStr):
+            continue
+        # Only the literal parts. A string written *inside* a replacement field
+        # is a STRING token in its own right on every interpreter, so the loop
+        # above already sees the markers it holds.
+        for part in joined.values:
+            if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                for marker in ALL_MARKERS:
+                    if marker in part.value:
+                        raise _marker_inside_a_string(joined.lineno, marker)
     return markers
 
 
@@ -246,7 +284,7 @@ def apply_markers(source: str) -> str:
 
     result = "".join(out)
     try:
-        ast.parse(result)
+        compile(result, "template_sync.py", "exec")
     except SyntaxError as error:
         offending = (error.text or "").rstrip()
         raise GenerationError(
@@ -296,8 +334,67 @@ def _keyword_argument_targets(source: str) -> dict[tuple[int, int], str]:
     return targets
 
 
+def _f_string_hazards(source: str) -> list[str]:
+    """Name everything inside an f-string replacement field this transform touches.
+
+    Before Python 3.12 an f-string is one opaque ``tokenize.STRING``; from 3.12
+    (PEP 701) its interior is tokenized, so a replacement field holds real
+    ``NAME`` tokens and the literal parts hold ``FSTRING_MIDDLE``. Every pass in
+    this file keys on exactly those token types, so a construct the transform
+    acts on written inside a replacement field would make the generated file a
+    function of the interpreter that ran the generator. Rather than pick one
+    interpreter's semantics and emulate it on the other — for a construct the
+    template does not use — it is refused on all of them.
+
+    Only the replacement fields are hazards. An f-string's *literal* part is
+    never rewritten on either interpreter, so including it would be a false
+    refusal: ``f"async"`` is not ``"async"``.
+
+    Reports every hazard in source order; the caller names the first. Line
+    numbers are the f-string's own, which every interpreter agrees on.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as error:
+        raise GenerationError(f"the async template does not parse: {error}") from error
+
+    renamed_literals = {ast.literal_eval(literal) for literal in STRING_RENAMES}
+    hazards: list[str] = []
+    for joined in ast.walk(tree):
+        if not isinstance(joined, ast.JoinedStr):
+            continue
+        for field in joined.values:
+            if not isinstance(field, ast.FormattedValue):
+                continue
+            for node in ast.walk(field):
+                what: str | None = None
+                if isinstance(node, ast.Await):
+                    what = "await"
+                elif isinstance(node, ast.Name) and node.id in TOKEN_RENAMES:
+                    what = f"name {node.id}"
+                elif isinstance(node, ast.Attribute) and node.attr in TOKEN_RENAMES:
+                    what = f"attribute .{node.attr}"
+                elif isinstance(node, ast.keyword) and node.arg in TOKEN_RENAMES:
+                    what = f"keyword {node.arg}="
+                elif isinstance(node, ast.arg) and node.arg in TOKEN_RENAMES:
+                    what = f"parameter {node.arg}"
+                elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in renamed_literals:
+                    what = f"literal {node.value!r}"
+                if what is not None:
+                    hazards.append(f"line {joined.lineno}: `{what}`")
+    return hazards
+
+
 def rewrite_tokens(source: str) -> str:
     """Apply the async->sync token transform, leaving strings and layout alone."""
+    hazards = _f_string_hazards(source)
+    if hazards:
+        raise GenerationError(
+            f"{hazards[0]} sits inside an f-string. Before Python 3.12 an f-string is one "
+            f"opaque token and after it is not (PEP 701), so the transform's result would "
+            f"depend on the interpreter that ran it. Move it out of the f-string — assign it "
+            f"to a local first — or, for prose, use a plain string."
+        )
     lines = source.splitlines(keepends=True)
     kwarg_targets = _keyword_argument_targets(source)
     replacements: list[_Replacement] = []
@@ -407,15 +504,22 @@ def _checked(generated: str) -> str:
 
     Everything upstream of here can be wrong in a way that produces *less* text
     rather than an exception — a ruff that is not there, a transform that ate the
-    file. A generated template that does not parse, or that is barely longer than
-    its own header, is never what the author meant, so it never reaches disk.
+    file. A generated template that is not valid Python, or that is barely longer
+    than its own header, is never what the author meant, so it never reaches disk.
+
+    The gate is ``compile``, not ``ast.parse``, because this transform's
+    characteristic failure is a rewrite miss that leaves ``await`` in a plain
+    ``def`` — and ``ast.parse`` accepts that, as it accepts ``async for`` /
+    ``async with`` in a plain ``def`` and ``yield from`` in an ``async def``.
+    Only the symbol-table pass ``compile`` runs rejects them, so with
+    ``ast.parse`` the broken template reached disk and failed at import instead.
     """
     if len(generated) <= len(HEADER) + 1:
         raise GenerationError(f"the transform produced {len(generated)} bytes, which is no more than the header; refusing to write it")
     try:
-        ast.parse(generated)
+        compile(generated, "template_sync.py", "exec")
     except SyntaxError as error:
-        raise GenerationError(f"the generated template does not parse at line {error.lineno}: {error.msg}") from error
+        raise GenerationError(f"the generated template is not valid Python at line {error.lineno}: {error.msg}") from error
     return generated
 
 

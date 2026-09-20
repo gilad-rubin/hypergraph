@@ -44,6 +44,19 @@ def _generate(source: str, tmp_path: Path) -> str:
     return gen_sync.generate(stand_in, SYNC_TEMPLATE)
 
 
+# A live statement inside a real method body, so a line added after it is code
+# the transform actually walks rather than something at module scope.
+_ANCHOR = "        max_iter = max_iterations or self.default_max_iterations\n"
+_ANCHOR_LINE = ASYNC_TEMPLATE.read_text().splitlines(keepends=True).index(_ANCHOR) + 1
+
+
+def _with_extra_line(extra: str) -> str:
+    """The committed async template with ``extra`` inserted at ``_ANCHOR_LINE + 1``."""
+    source = ASYNC_TEMPLATE.read_text()
+    assert source.count(_ANCHOR) == 1, "the anchor line moved; pick another one-line anchor"
+    return source.replace(_ANCHOR, _ANCHOR + extra, 1)
+
+
 class TestCommittedFileIsGenerated:
     def test_the_committed_sync_template_is_what_the_generator_produces(self) -> None:
         assert gen_sync.generate() == SYNC_TEMPLATE.read_text()
@@ -172,6 +185,81 @@ class TestTransformRules:
         assert target.read_text() == SYNC_TEMPLATE.read_text()
 
 
+class TestFStringsAreRefusedNotResolvedTwoWays:
+    """An f-string's interior is one opaque token before 3.12 and tokenized after.
+
+    Every one of these cases has a different outcome on 3.10/3.11 than on
+    3.12/3.13 if the transform is allowed to run over it, so the transform
+    refuses instead. Each test must therefore pass on *every* interpreter in the
+    CI matrix — one that passes on the floor and fails on the ceiling means the
+    refusal is still version-dependent.
+    """
+
+    @pytest.mark.parametrize(
+        ("async_source", "named"),
+        [
+            ('msg = f"using {checkpointer!r}"\n', "name checkpointer"),
+            ('async def f():\n    return f"{await g()}"\n', "await"),
+            ('msg = f"{cp.get_state(w)}"\n', "attribute .get_state"),
+            ('msg = f"{h(checkpointer=x)}"\n', "keyword checkpointer="),
+            ("msg = f'{d[\"async\"]}'\n", "literal 'async'"),
+        ],
+    )
+    def test_a_construct_the_transform_touches_inside_an_f_string_is_refused(self, async_source: str, named: str) -> None:
+        with pytest.raises(gen_sync.GenerationError, match="f-string") as caught:
+            gen_sync.rewrite_tokens(async_source)
+        assert named in str(caught.value)
+
+    @pytest.mark.parametrize(
+        "async_source",
+        [
+            'msg = f"n={len(items)}"\n',
+            'msg = f"an async run awaits {x}"\n',
+            'msg = f"async"\n',
+        ],
+    )
+    def test_an_f_string_the_transform_would_not_touch_is_returned_unchanged(self, async_source: str) -> None:
+        """The false-refusal guard: a literal part is never rewritten, so it is never a hazard."""
+        assert gen_sync.rewrite_tokens(async_source) == async_source
+
+    def test_the_refusal_names_the_line_and_says_what_to_do(self) -> None:
+        with pytest.raises(gen_sync.GenerationError) as caught:
+            gen_sync.rewrite_tokens('x = 1\nmsg = f"{checkpointer}"\n')
+        message = str(caught.value)
+        assert "line 2" in message
+        assert "f-string" in message
+        assert "PEP 701" in message
+        assert "assign it to a local" in message
+
+    def test_an_await_in_an_f_string_added_to_the_async_template_is_refused(self, tmp_path: Path) -> None:
+        """Case A end to end: on 3.10/3.11 the `await` survives into the sync file."""
+        with pytest.raises(gen_sync.GenerationError, match="f-string"):
+            _generate(_with_extra_line('        _log = f"iterations={await self._peek()}"\n'), tmp_path)
+
+    def test_an_f_string_trap_added_to_the_async_template_exits_two_without_writing(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The failure path an author meets: exit 2, the line named, nothing written."""
+        stand_in = tmp_path / "template_async.py"
+        stand_in.write_text(_with_extra_line('        _log = f"cp={checkpointer!r}"\n'))
+        target = tmp_path / "template_sync.py"
+        target.write_text(SYNC_TEMPLATE.read_text())
+        generate = gen_sync.generate
+        monkeypatch.setattr(gen_sync, "TARGET", target)
+        monkeypatch.setattr(gen_sync, "generate", lambda *_args, **_kwargs: generate(stand_in, target))
+
+        assert gen_sync.main([]) == 2
+
+        reported = capsys.readouterr().err
+        assert "f-string" in reported
+        assert "checkpointer" in reported
+        assert f"line {_ANCHOR_LINE + 1}" in reported
+        assert target.read_text() == SYNC_TEMPLATE.read_text()
+
+
 class TestMarkersMustExplainThemselves:
     def test_every_marker_in_the_async_template_carries_a_reason(self) -> None:
         unexplained = [
@@ -204,6 +292,19 @@ class TestMarkersMustExplainThemselves:
         source = 'def run() -> None:\n    """Pass `# sync:skip: reason` to drop a line."""\n    return None\n'
         with pytest.raises(gen_sync.GenerationError, match="inside a string literal"):
             gen_sync.apply_markers(source)
+
+    def test_a_marker_inside_an_f_string_literal_is_refused_too(self) -> None:
+        """The same property, for the literal part that stopped being a STRING token in 3.12."""
+        with pytest.raises(gen_sync.GenerationError, match="inside a string literal"):
+            gen_sync.find_markers('x = f"pass {name} # sync:skip: reason"\n')
+
+    def test_the_escape_hatch_the_refusal_advertises_still_works(self) -> None:
+        """`'# sync' ':skip:'` is two STRING tokens but ONE ast.Constant.
+
+        So the marker guard cannot become a single AST walk: that would refuse
+        the very hatch its own error message tells an author to use.
+        """
+        assert gen_sync.find_markers('x = "# sync" ":skip: r"\n') == {}
 
     def test_a_region_marker_trailing_code_is_refused(self) -> None:
         source = "x = 1  # sync:skip-start: this would take the assignment with it\ny = 2\n# sync:skip-end\n"
@@ -250,8 +351,31 @@ class TestNothingEmptyEverReachesDisk:
 
     def test_a_result_that_does_not_parse_never_reaches_disk(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(gen_sync, "_tidy", lambda _source, _filename: gen_sync.HEADER + "def (:\n    pass\n")
-        with pytest.raises(gen_sync.GenerationError, match="does not parse"):
+        with pytest.raises(gen_sync.GenerationError, match="not valid Python"):
             gen_sync.generate()
+
+    def test_an_await_left_in_a_plain_def_never_reaches_disk(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The transform's characteristic miss. `ast.parse` accepts it; only `compile` refuses it."""
+        missed = gen_sync.HEADER + "def run():\n    return await g()\n"
+        monkeypatch.setattr(gen_sync, "_tidy", lambda _source, _filename: missed)
+        with pytest.raises(gen_sync.GenerationError, match="not valid Python") as caught:
+            gen_sync.generate()
+        assert "await" in str(caught.value)
+
+    def test_a_sync_only_block_that_awaits_is_refused_by_the_post_marker_gate(self) -> None:
+        """The post-marker gate compiles too, so a hand-written sync body cannot await."""
+        source = (
+            "async def run():\n"
+            "    return 1\n"
+            "\n"
+            "\n"
+            "# sync:only-start: the hand-written sync body\n"
+            "# def peek():\n"
+            "#     return await g()\n"
+            "# sync:only-end\n"
+        )
+        with pytest.raises(gen_sync.GenerationError, match="invalid Python"):
+            gen_sync.apply_markers(source)
 
     def test_the_generated_file_is_never_truncated_by_a_failed_generate(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """`main` reports and exits 2; it does not write a half-made file."""
