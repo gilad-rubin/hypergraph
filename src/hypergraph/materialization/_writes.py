@@ -731,9 +731,11 @@ class WritePlanner:
         entries, so a failure no entry names would never be retried. It falls
         back to the total-loss error row whenever that claim cannot hold: a
         failure the runner could not attribute to a node, one that left no
-        derived column standing, or a failed node that owns no stored column
-        and is not a fan-out boundary — no entry can name it, and a
-        column-scoped heal would never run it again. A failed fan-out boundary
+        derived column standing, or a failed top-level node of this graph that
+        owns no stored column and is not a fan-out boundary — no entry can name
+        it, and a column-scoped heal would never run it again. (A failure inside
+        a mounted graph is covered by that graph's own entries: the heal re-runs
+        it whole.) A failed fan-out boundary
         is named by its ``map_over`` input, so it stays PARTIAL."""
         kept_values = self._provenance.stored_values(kept) if kept is not None else {}
         outputs, changes = self._partial_columns(

@@ -156,9 +156,11 @@ under `SKIPPED` above.
 Three failures stay `ERROR`, so a row never claims column granularity the run
 cannot support: one the runner cannot blame on a node (a missing input, a
 plan-level error), one that leaves no derived column standing, and one on a
-node that owns no stored column and is not a fan-out boundary (a node with no
-output), which no change entry could name and no column-scoped heal would run
-again.
+top-level node of this table's graph that owns no stored column and is not a
+fan-out boundary (a node with no output), which no change entry could name and
+no column-scoped heal would run again. A node with no output that fails inside
+a mounted graph leaves a partial row, because the heal re-runs that mounted
+graph whole.
 
 ### `RowReceipt`
 
