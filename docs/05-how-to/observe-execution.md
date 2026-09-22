@@ -80,6 +80,41 @@ processor = RichProgressProcessor(force_mode="non-tty")
 processor = RichProgressProcessor(force_mode="tty")
 ```
 
+## Log Node Failures
+
+Durable records store only the safe projection of a failure — the exception
+type, never its message — so a failed run with no collector attached leaves
+no clue about *why* it failed. Install `FailureLogProcessor` to send each
+failed node's real message and traceback to the standard `logging` logger
+`"hypergraph.failures"`:
+
+```python
+import logging
+
+from hypergraph import FailureLogProcessor, SyncRunner
+
+logging.basicConfig(format="%(levelname)s %(name)s: %(message)s")
+
+runner = SyncRunner(event_processors=[FailureLogProcessor()])
+result = runner.run(graph, {"path": "a.pdf"}, error_handling="continue")
+```
+
+Output:
+
+```text
+ERROR hypergraph.failures: node 'parse' in graph 'ingest' failed (run_id=run-96d287c7cec5): ModuleNotFoundError: No module named 'pdfminer_missing'
+Traceback (most recent call last):
+  ...
+ModuleNotFoundError: No module named 'pdfminer_missing'
+```
+
+Pass `FailureLogProcessor("app.failures", level=logging.WARNING)` to route
+records to your own logger, and `HostRuntime(..., event_processors=[FailureLogProcessor()])`
+to cover durable runs. It is opt-in because exception text can carry
+sensitive data; Hypergraph persists none of it, but your log handlers may.
+See [FailureLogProcessor](../06-api-reference/events.md#failurelogprocessor)
+for the record format, nesting and retry behavior, and threading.
+
 ## OpenTelemetry Export
 
 Use OpenTelemetry when you want Hypergraph runs to show up in external
