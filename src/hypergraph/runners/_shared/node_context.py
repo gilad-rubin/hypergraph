@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from asyncio import AbstractEventLoop
 
     from hypergraph.checkpointers.base import Checkpointer
+    from hypergraph.runners._shared.state import ExecutionContext
 
 
 def _noop_emit(event: Any) -> None:
@@ -63,6 +64,41 @@ def build_node_context(
         item_index=item_index,
         parent_span_id=parent_span_id,
         checkpointer=checkpointer,
+        record_loop=record_loop,
+    )
+
+
+def node_context_for(
+    node: Any,
+    ctx: ExecutionContext,
+    *,
+    record_loop: AbstractEventLoop | None = None,
+) -> NodeContext | None:
+    """The context a node declares, or ``None`` when it declares none.
+
+    One reader of ``_context_param`` for every executor that injects, so a
+    new node kind cannot strip ``ctx`` at build time and forget to hand it
+    back at run time. Every id comes from ``ctx``, the node's OWN
+    per-node ``ExecutionContext`` (its span, its graph, its run), so a gate,
+    a handler and a function node inside one run stamp the same identity.
+
+    ``record_loop`` is the executor's own loop when the body may run ON it:
+    the async executors pass ``asyncio.get_running_loop()`` so a body there
+    defers its ``ctx.record`` to a loop task instead of blocking the loop
+    inside a store write. The sync executors pass nothing — that family has
+    no executor loop, so every write goes straight through.
+    """
+    if getattr(node, "_context_param", None) is None:
+        return None
+    return build_node_context(
+        node.name,
+        ctx.emit_fn,
+        run_id=ctx.run_id,
+        graph_name=ctx.graph_name,
+        workflow_id=ctx.workflow_id,
+        item_index=ctx.item_index,
+        parent_span_id=ctx.parent_span_id,
+        checkpointer=ctx.checkpointer,
         record_loop=record_loop,
     )
 

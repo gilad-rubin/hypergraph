@@ -1,7 +1,9 @@
 """Shared gate execution logic for sync and async runners.
 
 Gate routing functions are always synchronous (validated at decoration time),
-so the core logic is identical between sync and async executors.
+so the core logic is identical between sync and async executors. Building and
+settling a gate's ``NodeContext`` is the executor's job (it owns the family's
+loop); this module only hands the built context to the routing function.
 """
 
 from __future__ import annotations
@@ -14,12 +16,14 @@ from hypergraph.runners._shared.routing_validation import validate_routing_decis
 if TYPE_CHECKING:
     from hypergraph.nodes.gate import IfElseNode, RouteNode
     from hypergraph.runners._shared.state import GraphState
+    from hypergraph.runners.context import NodeContext
 
 
 def execute_ifelse(
     node: IfElseNode,
     state: GraphState,
     inputs: dict[str, Any],
+    context: NodeContext | None = None,
 ) -> dict[str, Any]:
     """Execute an IfElseNode's routing logic.
 
@@ -30,6 +34,8 @@ def execute_ifelse(
         Empty dict (gates produce no data outputs).
     """
     func_inputs = node.map_inputs_to_params(inputs)
+    if context is not None:
+        func_inputs[node._context_param] = context  # type: ignore[index]
     result = node.func(**func_inputs)
 
     if not isinstance(result, bool):
@@ -48,6 +54,7 @@ def execute_route(
     node: RouteNode,
     state: GraphState,
     inputs: dict[str, Any],
+    context: NodeContext | None = None,
 ) -> dict[str, Any]:
     """Execute a RouteNode's routing logic.
 
@@ -58,6 +65,8 @@ def execute_route(
         Empty dict (gates produce no data outputs).
     """
     func_inputs = node.map_inputs_to_params(inputs)
+    if context is not None:
+        func_inputs[node._context_param] = context  # type: ignore[index]
     decision = node.func(**func_inputs)
 
     if decision is None and node.fallback is not None:
