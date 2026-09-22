@@ -895,8 +895,10 @@ class HyperTable:
 
         Written only under ``on_error="store"``. Each row carries one
         ``ColumnChange`` per nulled column naming the column, the node, and
-        why it holds no value. ``status()`` counts these rows as needing heal
-        and the next ``sync()`` re-derives exactly the nulled columns.
+        why it holds no value — plus one per fan-out whose boundary raised,
+        naming its ``map_over`` input, which is not a key of ``row``.
+        ``status()`` counts these rows as needing heal and the next ``sync()``
+        re-derives exactly the nulled columns and re-runs any failed boundary.
         """
         self._ensure_analyzed()
         rows = _dedup_rows(
