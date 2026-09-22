@@ -658,6 +658,7 @@ class MaterializationBranch:
                     changes[f"{PROVENANCE_PREFIX}{plan.boundary_physical}"] = self._layout.provenance.boundary_provenance_value(
                         provenance,
                         items,
+                        grain.spec.identity,
                     )
                     self._record_recipe(grain.boundary_node)
                     wrote = True

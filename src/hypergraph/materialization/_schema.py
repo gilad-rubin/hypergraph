@@ -274,7 +274,7 @@ def analyze_table(
 
     derived_cols = [c for c in root_columns if c.role in ("derived", "answer")]
     prov_cols = [_column(f"{PROVENANCE_PREFIX}{c.name}", role="internal") for c in derived_cols]
-    # One boundary provenance column per child spec: the recipe hash (+ item count)
+    # One boundary provenance column per child spec: the recipe hash (+ distinct child-identity count)
     # of the node producing the mapped items. The items list itself is never stored.
     boundary_prov_cols = [_column(f"{PROVENANCE_PREFIX}{cs.map_input}", role="internal") for cs in child_specs if cs.map_input]
     # The recipe stamp exists only where a recipe exists: a plain table (no

@@ -202,6 +202,7 @@ class RowBuilder:
                         computed[child_spec.map_input] = self._provenance.boundary_provenance_value(
                             provenance,
                             outputs.get(child_spec.map_input),
+                            child_spec.identity,
                         )
                 stamps = computed
             else:

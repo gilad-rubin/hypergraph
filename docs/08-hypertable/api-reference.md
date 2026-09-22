@@ -144,6 +144,9 @@ retires the rows they replace; that is bookkeeping, and such a pass reports
 `SKIPPED`. Nor does it mean nothing executed: when the fan-out boundary also
 produces a stored parent column, the pass runs the graph to establish that the
 stored row still stands, derives no new row from it, and reports `SKIPPED`.
+Mapped items that share a child identity are not damage either: they occupy
+one child row (see [Child tables](#child-tables)), so an untouched parent over
+them reports `SKIPPED`.
 
 `PARTIAL` is reported under `on_error="store"` when one node failed and the
 other derived columns were produced anyway: those columns are stored, the
@@ -302,22 +305,25 @@ Unchanged parents are also self-repairing: a successful parent must not make
 child damage permanent, so `sync()` rebuilds child rows that are physically
 missing or stored as an error row (`on_error="store"`) and reports the row as
 `HEALED`. To detect damage, `sync()` inspects each child table once per
-unchanged parent row — it compares the fan-out count recorded on the parent
-row against the deduplicated child rows physically present, and reads their
-`_status` so a stored failure never counts as a healthy child (one child-table
-read per parent; no writes). When the recorded count matches the child rows
-present and every one is complete, the row is a zero-execution, zero-write
-`SKIPPED`; when a child is damaged, only that child runs the child graph —
-present children and parent derived columns are not re-derived, though present
-child rows are rewritten at the repair's generation. A physically missing row
-leaves nothing to rebuild the item list from, so the fan-out boundary re-runs
-once to regenerate it; a stored error row still carries its own item, so the
-stored list is reused and the boundary does not re-run. A stale recorded
-count, or a boundary whose item list changed length, leaves a count that
-disagrees with the healthy children present; that is damage too. The boundary
-re-runs, the parent records the count it produced, and the repair reports
-`HEALED` because the item list was rebuilt. Once the recorded count matches
-the child rows written, the next `sync()` is a zero-execution skip again.
+unchanged parent row — it compares the number of distinct child identities
+the fan-out produced, recorded on the parent row, against the deduplicated
+child rows physically present, and reads their `_status` so a stored failure
+never counts as a healthy child (one child-table read per parent; no writes).
+When the recorded count matches the child rows present and every one is
+complete, the row is a zero-execution, zero-write `SKIPPED`; when a child is
+damaged, only that child runs the child graph — present children and parent
+derived columns are not re-derived, though present child rows are rewritten at
+the repair's generation. A physically missing row leaves nothing to rebuild the
+item list from, so the fan-out boundary re-runs once to regenerate it; a stored
+error row still carries its own item, so the stored list is reused and the
+boundary does not re-run. A stale recorded count (such as the raw item count
+earlier versions recorded over repeated child identities), or a boundary that
+now produces a different number of distinct child identities, leaves a count
+that disagrees with the healthy children present; that is damage too. The
+boundary re-runs, the parent records the count it produced, and the repair
+reports `HEALED` because the item list was rebuilt. Once the recorded count
+matches the child rows written, the next `sync()` is a zero-execution skip
+again.
 When the fan-out boundary also produces a stored parent column, every repair
 runs the parent's nodes once to regenerate the item list, while the child graph
 still runs only for the damaged child. The parent row is rewritten only when
@@ -471,6 +477,14 @@ child.count()
 Child rows expose the parent's public identity name rather than the physical
 link column. A `where` predicate may reference parent columns; the handle
 joins matching parent identities before reading child rows.
+
+A child identity must be unique within one parent row. The logical child key
+is `(parent identity, child identity)`, so two mapped items that produce the
+same identity under the same parent occupy one child row: `rows()`, `get()`
+and `count()` return only one of them, and the child graph may run for each.
+An item without the identity field counts as the empty identity. Derive the
+identity from something unique per item — the loop index, a primary key — not
+from content that can repeat.
 
 ## Diagnostics and retrieval
 
