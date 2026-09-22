@@ -583,6 +583,63 @@ def test_a_store_written_before_changes_existed_takes_a_partial_row(tmp_path) ->
     assert partial.changes[0].column == "embedding"
 
 
+class KeyedWord(TypedDict):
+    word_id: str
+    length_id: str
+    text: str
+
+
+@node(output_name="words")
+def split_keyed(extracted: str) -> list[KeyedWord]:
+    _record("split")
+    return [KeyedWord(word_id=f"w{i}", length_id=f"l{i}", text=word) for i, word in enumerate(extracted.split())]
+
+
+def _real_store(kind: str, tmp_path):
+    from hypergraph.materialization import LanceDBStore, SqliteTableStore
+
+    return LanceDBStore(str(tmp_path / "lance")) if kind == "lance" else SqliteTableStore(str(tmp_path / "table.db"))
+
+
+@pytest.mark.parametrize("arm", ARMS)
+@pytest.mark.parametrize("kind", ["lance", "sqlite"])
+def test_two_child_tables_over_one_fan_out_open_fail_and_heal_on_a_real_store(kind: str, arm: str, tmp_path) -> None:
+    """Both child tables share one boundary stamp column, so the parent table opens on a real store."""
+    lengths = Graph([count_letters], name="word_length").as_node().map_over("words", identity="length_id")
+    table = Graph([extract, summarize, split_keyed, _word_node(), lengths], name="doc").as_table(
+        identity="doc_id",
+        store=_real_store(kind, tmp_path),
+        on_error="store",
+        runner=SyncRunner(),
+    )
+
+    receipt = _fail_the_boundary(table, arm)
+
+    assert receipt.receipts[0].status is RowStatus.PARTIAL
+    (partial,) = table.partial()
+    assert [(change.column, change.reason, change.node) for change in partial.changes] == [
+        ("words", ChangeReason.NODE_ERROR, "split_keyed"),
+    ]
+
+    failing.clear()
+    calls.clear()
+    healed = table.sync(GAMMA)
+
+    assert calls.pop("split") >= 1
+    assert calls == {"tag": 2, "count_letters": 2}, "extract and summarize must not be paid twice"
+    assert healed.completed
+    assert _words(table) == [("w0", "tag:GAMMA"), ("w1", "tag:DELTA")]
+    assert sorted((row["length_id"], row["letters"]) for row in table.child("length").rows(parent="d1")) == [("l0", 5), ("l1", 5)]
+    assert table.partial() == ()
+    assert table.status().is_fresh
+
+    calls.clear()
+    again = table.sync(GAMMA)
+
+    assert calls == {}, "a healed row converges"
+    assert again.receipts[0].outcome is WriteOutcome.SKIPPED
+
+
 # ---------------------------------------------------------------------------
 # Receipts, nested graphs, async parity
 # ---------------------------------------------------------------------------
