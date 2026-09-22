@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import threading
@@ -13,9 +12,8 @@ import lancedb
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from hypergraph.materialization._provenance import normalize_value
-from hypergraph.materialization._schema import TableSpec, is_internal_column
-from hypergraph.materialization._table_store import RowPredicate, TableStore
+from hypergraph.materialization._schema import TableSpec
+from hypergraph.materialization._table_store import RowPredicate, TableStore, _cas_next_row, _physical_columns
 
 try:
     import fcntl
@@ -279,19 +277,12 @@ class LanceDBStore(TableStore):
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX)
                 existing = self.read_one(table_name, identity_column, identity_value)
-                if existing is None or any(
-                    name not in existing or normalize_value(existing[name]) != normalize_value(value) for name, value in expected.items()
-                ):
+                write_gen = self.max_write_gen(table_name) + 1
+                row = _cas_next_row(existing, expected, changes, write_gen)
+                if row is None:
                     return False
                 if new_columns:
                     self.evolve_schema(table_name, new_columns)
-                write_gen = self.max_write_gen(table_name) + 1
-                row = {name: normalize_value(value) for name, value in existing.items()}
-                row.update({name: normalize_value(value) for name, value in changes.items()})
-                public_row = {name: value for name, value in row.items() if not is_internal_column(name)}
-                payload = json.dumps(public_row, sort_keys=True, default=repr).encode()
-                row["_row_fingerprint"] = hashlib.sha256(payload).hexdigest()
-                row["_write_gen"] = write_gen
                 self.write_rows(table_name, [row])
                 self.delete_rows(table_name, [(identity_column, "eq", identity_value), ("_write_gen", "lt", write_gen)])
                 return True
@@ -401,16 +392,7 @@ class LanceDBStore(TableStore):
         self._tables[spec.name] = tbl
 
     def _build_schema(self, spec: TableSpec) -> pa.Schema:
-        fields = []
-        for col in spec.columns:
-            if col.role == "internal":
-                if col.name == "_write_gen":
-                    fields.append(pa.field(col.name, col.arrow_type or pa.int64()))
-                else:
-                    fields.append(pa.field(col.name, col.arrow_type or pa.utf8()))
-            elif col.role in ("identity", "parent_link", "source") or col.role == "derived":
-                fields.append(pa.field(col.name, col.arrow_type or pa.utf8()))
-        return pa.schema(fields)
+        return pa.schema([pa.field(name, arrow_type) for name, arrow_type in _physical_columns(spec)])
 
     def _detect_and_fix_vectors(self, table_name: str, row: dict[str, Any]) -> None:
         tbl = self._tables[table_name]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -11,6 +13,52 @@ if TYPE_CHECKING:
 
 RowOperator = Literal["eq", "ne", "lt", "lte", "gt", "gte", "in"]
 RowPredicate = Sequence[tuple[str, RowOperator, Any]]
+
+_PHYSICAL_ROLES = ("identity", "parent_link", "source", "derived", "internal")
+
+
+def _physical_columns(spec: Any) -> list[tuple[str, pa.DataType]]:
+    """The columns ``open()`` creates for a new table, with their Arrow types.
+
+    Every shipped store builds a new table from this one list, so no two stores
+    disagree about which columns exist before the first write. ``answer``
+    columns are left out: schema evolution adds them when the first answer
+    arrives. A column with no declared type is ``int64`` for ``_write_gen`` and
+    ``utf8`` otherwise.
+    """
+    import pyarrow as pa
+
+    columns: list[tuple[str, pa.DataType]] = []
+    for col in spec.columns:
+        if col.role not in _PHYSICAL_ROLES:
+            continue
+        default = pa.int64() if col.role == "internal" and col.name == "_write_gen" else pa.utf8()
+        columns.append((col.name, col.arrow_type or default))
+    return columns
+
+
+def _cas_next_row(existing: dict[str, Any] | None, expected: dict[str, Any], changes: dict[str, Any], write_gen: int) -> dict[str, Any] | None:
+    """The row a compare-and-set writes, or ``None`` when the comparison fails.
+
+    ``existing`` is the newest stored row for the identity. Every ``expected``
+    name must be a column of it holding an equal normalized value. The new row
+    is the existing row with ``changes`` applied, every value normalized, a
+    fresh ``_row_fingerprint`` over the public columns, and ``write_gen`` as its
+    generation. A store calls this inside its own serialized section, so the
+    comparison and the write stay one operation.
+    """
+    from hypergraph.materialization._provenance import normalize_value
+    from hypergraph.materialization._schema import is_internal_column
+
+    if existing is None or any(name not in existing or normalize_value(existing[name]) != normalize_value(value) for name, value in expected.items()):
+        return None
+    row = {name: normalize_value(value) for name, value in existing.items()}
+    row.update({name: normalize_value(value) for name, value in changes.items()})
+    public_row = {name: value for name, value in row.items() if not is_internal_column(name)}
+    payload = json.dumps(public_row, sort_keys=True, default=repr).encode()
+    row["_row_fingerprint"] = hashlib.sha256(payload).hexdigest()
+    row["_write_gen"] = write_gen
+    return row
 
 
 class TableStore(ABC):
