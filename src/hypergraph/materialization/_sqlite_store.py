@@ -43,6 +43,9 @@ _ACCEPTS: dict[str, Callable[[Any], bool]] = {
 }
 _COMPARISONS = {"eq": "=", "ne": "!=", "lt": "<", "lte": "<=", "gt": ">", "gte": ">="}
 _OPERATORS = (*_COMPARISONS, "in")
+# SQLite reaches a row's insertion order through any of these names, unless a
+# user column of that name (in any letter case) hides it.
+_ROWID_ALIASES = ("rowid", "_rowid_", "oid")
 
 
 def _q(identifier: str) -> str:
@@ -107,12 +110,23 @@ def _cell(table: str, column: str, kind: str, value: Any) -> Any:
     return value
 
 
-def _operand(kind: str, value: Any) -> Any:
+def _unfilterable(table: str, column: str, op: str, value: Any, why: str) -> TypeError:
+    return TypeError(
+        f"SqliteTableStore cannot filter column {column!r} of table {table!r} with {op!r} on {type(value).__name__} {_short(value)}.\n\n"
+        f"{why}\n\n"
+        f"How to fix: filter with a value of the column's type."
+    )
+
+
+def _operand(table: str, column: str, op: str, kind: str, value: Any) -> Any:
     """A predicate value as SQLite compares it to a stored cell."""
     value = _plain(value)
-    if value is not None and kind == "json":
+    if value is None or kind != "json":
+        return value
+    try:
         return json.dumps(value)
-    return value
+    except (TypeError, ValueError):
+        raise _unfilterable(table, column, op, value, "The column holds JSON, and this value is not JSON-serializable.") from None
 
 
 def _decode(kind: str, value: Any) -> Any:
@@ -135,7 +149,7 @@ def _check_operators(where: RowPredicate | None) -> None:
             )
 
 
-def _where(kinds: dict[str, str], where: RowPredicate | None) -> tuple[str, list[Any]] | None:
+def _where(table: str, kinds: dict[str, str], where: RowPredicate | None) -> tuple[str, list[Any]] | None:
     """The WHERE clause and its parameters, or None when no row can match.
 
     A predicate on a column the table does not have matches nothing, as on
@@ -150,30 +164,52 @@ def _where(kinds: dict[str, str], where: RowPredicate | None) -> tuple[str, list
         kind = kinds[column]
         if op != "in":
             clauses.append(f"{_q(column)} {_COMPARISONS[op]} ?")
-            params.append(_operand(kind, value))
+            params.append(_operand(table, column, op, kind, value))
             continue
-        values = [_operand(kind, item) for item in value]
+        values = [_operand(table, column, op, kind, item) for item in value]
         if not values:
             return None
         if kind == "blob":  # JSON cannot carry bytes
             clauses.append(f"{_q(column)} IN ({', '.join(['?'] * len(values))})")
             params.extend(values)
-        else:  # one parameter however long the list, never SQLite's variable limit
-            clauses.append(f"{_q(column)} IN (SELECT value FROM json_each(?))")
-            params.append(json.dumps(values))
+            continue
+        # One parameter however long the list, never SQLite's variable limit.
+        for item in values:
+            if item is not None and not isinstance(item, (str, int, float)):
+                why = "An 'in' list on this column is sent to SQLite as JSON, which carries only str, int, float, bool and None."
+                raise _unfilterable(table, column, op, item, why)
+        # json_each values carry no text affinity, so a text column gets them as
+        # text explicitly: ("txt", "in", [123]) then matches like ("txt", "eq", 123).
+        member = "CAST(value AS TEXT)" if kind in ("text", "json") else "value"
+        clauses.append(f"{_q(column)} IN (SELECT {member} FROM json_each(?))")
+        params.append(json.dumps(values))
     return (" WHERE " + " AND ".join(clauses) if clauses else ""), params
 
 
-def _case_clash(name: str, existing: Any, what: str, table: str | None = None) -> ValueError | None:
-    """A refusal when ``existing`` holds a name equal to ``name`` apart from letter case."""
+def _refuse_case_clash(name: str, existing: Any, what: str, table: str | None = None) -> None:
+    """Refuse ``name`` when ``existing`` holds a name equal to it apart from letter case."""
     clash = next((other for other in existing if other.lower() == name.lower()), None)
     if clash is None:
-        return None
+        return
     place = f" in table {table!r}" if table is not None else ""
-    return ValueError(
+    raise ValueError(
         f"SqliteTableStore cannot create {what} {name!r}{place}: {clash!r} already exists.\n\n"
         f"SQLite table and column names ignore letter case, so the two would be one {what}.\n\n"
         f"How to fix: rename one of them so the names differ by more than letter case."
+    )
+
+
+def _rowid_alias(table: str, columns: Any) -> str:
+    """The name that reaches this table's insertion order: a rowid alias no user column hides."""
+    taken = {name.lower() for name in columns}
+    for alias in _ROWID_ALIASES:
+        if alias not in taken:
+            return alias
+    raise ValueError(
+        f"SqliteTableStore cannot keep table {table!r}: it has columns named rowid, _rowid_ and oid.\n\n"
+        "SQLite reaches a row's insertion order through one of those names, and a column of the same name hides it, "
+        "so with all three taken the store cannot return rows in the order they were written.\n\n"
+        "How to fix: rename one of the three columns."
     )
 
 
@@ -187,8 +223,8 @@ class SqliteTableStore(TableStore):
     is not a column is ignored, as on ``LanceDBStore``. A NaN float reads back as
     ``None``, because SQLite stores NaN as NULL.
 
-    Every method is one transaction, and ``compare_and_set`` is atomic across
-    threads and processes. ``Table.append`` is still a read followed by a write
+    Every write method is one transaction, and ``compare_and_set`` is atomic
+    across threads and processes. ``Table.append`` is still a read followed by a write
     inside ``Table``, so it is not atomic here either. Threads share one
     connection behind a lock, so a read waits while this store is writing; a file
     store in WAL mode waits up to 30 s for another process's write.
@@ -287,16 +323,20 @@ class SqliteTableStore(TableStore):
         return opened
 
     def _create(self, db: sqlite3.Connection, spec: Any) -> dict[str, str]:
+        if spec.name.lower().startswith("sqlite_"):
+            raise ValueError(
+                f"SqliteTableStore cannot create table {spec.name!r}.\n\n"
+                "SQLite reserves every table name that starts with 'sqlite_' for itself.\n\n"
+                "How to fix: give the table a name that does not start with 'sqlite_' "
+                "(a Table is named after its identity column without '_id')."
+            )
         tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
-        clash = _case_clash(spec.name, tables, "table")
-        if clash is not None:
-            raise clash
+        _refuse_case_clash(spec.name, tables, "table")
         kinds: dict[str, str] = {}
         for name, arrow_type in _physical_columns(spec):
-            clash = _case_clash(name, kinds, "column", spec.name)
-            if clash is not None:
-                raise clash
+            _refuse_case_clash(name, kinds, "column", spec.name)
             kinds[name] = _kind(arrow_type)
+        _rowid_alias(spec.name, kinds)
         declared = ", ".join(f"{_q(name)} {_DECLARED[kind]}" for name, kind in kinds.items())
         db.execute(f"CREATE TABLE {_q(spec.name)} ({declared})")
         return kinds
@@ -318,9 +358,8 @@ class SqliteTableStore(TableStore):
         for name, arrow_type in new_columns.items():
             if name in kinds:
                 continue
-            clash = _case_clash(name, kinds, "column", table)
-            if clash is not None:
-                raise clash
+            _refuse_case_clash(name, kinds, "column", table)
+            _rowid_alias(table, [*kinds, name])
             kinds[name] = _kind(arrow_type)
             db.execute(f"ALTER TABLE {_q(table)} ADD COLUMN {_q(name)} {_DECLARED[kinds[name]]}")
         return kinds
@@ -342,11 +381,11 @@ class SqliteTableStore(TableStore):
             if db is None or kinds is None:
                 return []
             fetch = self._projection(table_name, kinds, columns)
-            clause = _where(kinds, where)
+            clause = _where(table_name, kinds, where)
             if clause is None:
                 return []
             sql_where, params = clause
-            sql = f"SELECT {self._select_list(fetch)} FROM {_q(table_name)}{sql_where} ORDER BY rowid"
+            sql = f"SELECT {self._select_list(fetch)} FROM {_q(table_name)}{sql_where} ORDER BY {_rowid_alias(table_name, kinds)}"
             if limit is not None:
                 sql += " LIMIT ?"
                 params.append(limit)
@@ -364,11 +403,12 @@ class SqliteTableStore(TableStore):
     ) -> dict[str, Any] | None:
         """The highest-generation row for an identity; a tie goes to the first written, as on LanceDBStore."""
         fetch = self._projection(table, kinds, columns)
-        clause = _where(kinds, [(identity_column, "eq", identity_value)])
+        clause = _where(table, kinds, [(identity_column, "eq", identity_value)])
         if clause is None:
             return None
         sql_where, params = clause
-        order = ' ORDER BY "_write_gen" DESC, rowid' if "_write_gen" in kinds else " ORDER BY rowid"
+        rowid = _rowid_alias(table, kinds)
+        order = f' ORDER BY "_write_gen" DESC, {rowid}' if "_write_gen" in kinds else f" ORDER BY {rowid}"
         found = db.execute(f"SELECT {self._select_list(fetch)} FROM {_q(table)}{sql_where}{order} LIMIT 1", params).fetchone()
         return None if found is None else self._row(fetch, kinds, found)
 
@@ -431,7 +471,7 @@ class SqliteTableStore(TableStore):
             kinds = self._columns(db, table_name)
             if db is None or kinds is None:
                 return 0
-            clause = _where(kinds, where)
+            clause = _where(table_name, kinds, where)
             if clause is None:
                 return 0
             sql_where, params = clause
@@ -459,7 +499,7 @@ class SqliteTableStore(TableStore):
             if new_columns:
                 kinds = self._add_columns(db, table_name, kinds, new_columns)
             self._insert(db, table_name, kinds, [row])
-            clause = _where(kinds, [(identity_column, "eq", identity_value), ("_write_gen", "lt", write_gen)])
+            clause = _where(table_name, kinds, [(identity_column, "eq", identity_value), ("_write_gen", "lt", write_gen)])
             if clause is not None:
                 db.execute(f"DELETE FROM {_q(table_name)}{clause[0]}", clause[1])
             return True

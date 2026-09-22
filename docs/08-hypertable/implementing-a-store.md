@@ -22,7 +22,7 @@ store = SqliteTableStore("./data/app.db")  # stdlib sqlite3; ":memory:" by defau
 | Manifests (named indexes, `HyperTable.attach`) | yes | no; using them fails loudly, naming the store |
 | `compare_and_set` | atomic across threads and processes (`flock`) | atomic across threads and processes (one transaction) |
 | List, struct and other non-scalar cells | native Arrow columns | JSON text, decoded on read |
-| A value of the wrong type for its column | Arrow error | `TypeError`; nothing from the call is written |
+| A value that does not match its column's type | converts some (2.5 → 2 in int64, str → bytes in large_binary, True → 1.0 in float64); raises an Arrow error on others, such as int into utf8, int into bool, bool into int64 | `TypeError` for each of those six, and nothing from the call is written; an int is stored in a float64 column as a float, and a JSON column takes any JSON-serializable value |
 | NaN in a float column | reads back NaN | reads back `None` (SQLite stores NaN as NULL) |
 
 Both need pyarrow, which `Table` and `HyperTable` already import.

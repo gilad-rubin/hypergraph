@@ -247,6 +247,22 @@ def test_in_on_a_bytes_column(store):
     assert [row["cid"] for row in store.read_rows("t", [("blob", "in", [b"\xff"])])] == ["b"]
 
 
+def test_in_on_a_text_column_matches_like_eq(store):
+    """SQLite gives a text column's comparison text affinity; an ``in`` list gets the same coercion."""
+    store.open(_spec("t", ColumnSpec("txt", role="source", arrow_type=pa.utf8())), [])
+    store.write_rows("t", [{"cid": "a", "txt": "123", "_write_gen": 1}, {"cid": "b", "txt": "1.5", "_write_gen": 1}])
+    for value, want in ((123, ["a"]), (1.5, ["b"]), ("123", ["a"])):
+        assert [row["cid"] for row in store.read_rows("t", [("txt", "eq", value)])] == want
+        assert [row["cid"] for row in store.read_rows("t", [("txt", "in", [value])])] == want
+
+
+def test_bytes_in_an_in_list_on_a_text_column_is_refused_naming_the_column(numbers):
+    with pytest.raises(TypeError, match="'cid'") as caught:
+        numbers.read_rows("t", [("cid", "in", ["a", b"b"])])
+    assert "How to fix:" in str(caught.value)
+    assert "JSON serializable" not in str(caught.value)
+
+
 def test_read_rows_returns_rows_in_insertion_order(numbers):
     numbers.delete_rows("t", [("cid", "eq", "b")])
     numbers.write_rows("t", [{"cid": "b", "n": 2, "_write_gen": 2}])
@@ -259,6 +275,39 @@ def test_read_one_breaks_a_generation_tie_toward_the_first_written_row(store):
     store.write_rows("t", [{"cid": "a", "v": "first", "_write_gen": 3}])
     store.write_rows("t", [{"cid": "a", "v": "second", "_write_gen": 3}])
     assert store.read_one("t", "cid", "a")["v"] == "first"
+
+
+@pytest.mark.parametrize("name", ["rowid", "ROWID", "_rowid_", "oid"])
+def test_a_column_named_like_a_rowid_alias_changes_neither_row_order_nor_the_tie_break(store, name):
+    """A user column called rowid hides SQLite's own rowid; the store orders by an alias it does not hide."""
+    store.open(_spec("t", ColumnSpec(name, role="source", arrow_type=pa.utf8())), [])
+    store.write_rows("t", [{"cid": cid, name: value, "_write_gen": 1} for cid, value in (("z", "3"), ("a", "1"), ("m", "2"))])
+    assert [row["cid"] for row in store.read_rows("t")] == ["z", "a", "m"]
+
+    store.write_rows("t", [{"cid": "tie", name: "9", "_write_gen": 5}])
+    store.write_rows("t", [{"cid": "tie", name: "0", "_write_gen": 5}])
+    assert store.read_one("t", "cid", "tie")[name] == "9", "a generation tie goes to the first-written row"
+    assert store.compare_and_set("t", "cid", "tie", {name: "9"}, {name: "claimed"}, {}) is True
+    assert store.read_one("t", "cid", "tie")[name] == "claimed"
+
+
+def test_a_table_holding_all_three_rowid_aliases_is_refused(store):
+    three = [ColumnSpec(name, role="source", arrow_type=pa.utf8()) for name in ("rowid", "_rowid_", "OID")]
+    with pytest.raises(ValueError, match="How to fix:") as caught:
+        store.open(_spec("t", *three), [])
+    assert "rowid, _rowid_ and oid" in str(caught.value)
+    assert store.column_names("t") == []
+
+    store.open(_spec("u", *three[:2]), [])
+    with pytest.raises(ValueError, match="rowid, _rowid_ and oid"):
+        store.evolve_schema("u", {"oid": pa.utf8()})
+    assert "oid" not in store.column_names("u")
+
+
+def test_a_table_name_starting_with_sqlite_is_refused(store):
+    with pytest.raises(ValueError, match="sqlite_") as caught:
+        Table(identity="sqlite_job_id", store=store)
+    assert "How to fix:" in str(caught.value)
 
 
 def test_a_projection_naming_an_unknown_column_fails_loudly(numbers):
@@ -375,33 +424,37 @@ def _run_processes(context, target, argument_sets, timeout=120):
 def test_eight_processes_contend_and_exactly_one_compare_and_set_wins(tmp_path):
     path = tmp_path / "cas.db"
     seed = SqliteTableStore(path)
-    Table(identity="upload_id", store=seed).append(upload_id="u1", state="pending")
-    context = multiprocessing.get_context("spawn")
-    barrier, queue = context.Barrier(8), context.Queue()
+    try:
+        Table(identity="upload_id", store=seed).append(upload_id="u1", state="pending")
+        context = multiprocessing.get_context("spawn")
+        barrier, queue = context.Barrier(8), context.Queue()
 
-    _run_processes(context, _claim, [(path, barrier, index, queue) for index in range(8)])
-    results = [queue.get(timeout=5) for _ in range(8)]
-    queue.close()
-    queue.join_thread()
+        _run_processes(context, _claim, [(path, barrier, index, queue) for index in range(8)])
+        results = [queue.get(timeout=5) for _ in range(8)]
+        queue.close()
+        queue.join_thread()
 
-    winners = [owner for owner, won in results if won]
-    assert len(winners) == 1
-    assert Table(identity="upload_id", store=seed).get("u1") == {"upload_id": "u1", "state": "claimed", "owner": winners[0]}
-    assert len(seed.read_rows("upload")) == 1
-    seed.close()
+        winners = [owner for owner, won in results if won]
+        assert len(winners) == 1
+        assert Table(identity="upload_id", store=seed).get("u1") == {"upload_id": "u1", "state": "claimed", "owner": winners[0]}
+        assert len(seed.read_rows("upload")) == 1
+    finally:
+        seed.close()
 
 
 def test_read_then_compare_and_set_increments_lose_no_update_across_processes(tmp_path):
     path = tmp_path / "counter.db"
     seed = SqliteTableStore(path)
-    Table(identity="k", store=seed).append(k="c", v=0)
-    context = multiprocessing.get_context("spawn")
-    barrier = context.Barrier(4)
+    try:
+        Table(identity="k", store=seed).append(k="c", v=0)
+        context = multiprocessing.get_context("spawn")
+        barrier = context.Barrier(4)
 
-    _run_processes(context, _increment, [(path, 50, barrier)] * 4)
+        _run_processes(context, _increment, [(path, 50, barrier)] * 4)
 
-    assert Table(identity="k", store=seed).get("c")["v"] == 200
-    seed.close()
+        assert Table(identity="k", store=seed).get("c")["v"] == 200
+    finally:
+        seed.close()
 
 
 def test_threads_sharing_one_memory_store_lose_no_update(store):
