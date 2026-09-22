@@ -546,7 +546,7 @@ class TestRecoveryBrake:
         assert home._get_submission_sync("wf-cap")["recovery_cap"] == 2
 
 
-# === 3b. A tree a dead worker abandoned settles with its submission (#465) ===
+# === 3b. A tree no worker holds settles with its submission (#465) ===
 
 _ABANDONED = {"status": "stopped", "reason": "abandoned_incarnation"}
 _CLAIM = 4
@@ -620,7 +620,7 @@ class TestAbandonedDescendantsSettleWithTheirSubmission:
 
     A table page recipe mints a fresh run id per attempt, so the run a killed
     worker left ``active`` is never re-addressed by the resume. The settle
-    runs in the one transaction that proves nothing will resume the tree
+    runs in the one transaction that proves the Host will not resume the tree
     under these ids again: the one that moves the submission out of
     'claimed' into a settled state — never at re-adoption, which resumes it.
     """
@@ -646,7 +646,7 @@ class TestAbandonedDescendantsSettleWithTheirSubmission:
         assert (submission["state"], submission["recovery_attempts"]) == ("finished", 1)
 
     async def test_release_settles_every_depth_below_the_root(self, home):
-        """A recipe under a nested graph is abandoned the same way: the walk
+        """A recipe under a nested graph is orphaned the same way: the walk
         is ``runs.parent_run_id``, so depth is not special."""
         await _stage_abandoned_tree(home, child_id="wf/inner")
         home.create_run_sync("run-recipe", graph_name="page_recipe", parent_run_id="wf/inner")

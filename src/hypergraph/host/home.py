@@ -690,7 +690,7 @@ def _descendant_runs_query(root_ids: Sequence[str]) -> tuple[str, list[Any]]:
     )
 
 
-#: What a nested run a dead worker abandoned becomes, and why. ``STOPPED``
+#: What a nested run no worker holds becomes, and why. ``STOPPED``
 #: already means "ended without completing and not by failing"; the reason
 #: on its run update is what tells it apart from an operator's stop.
 _ABANDONED_RUN_STATUS = WorkflowStatus.STOPPED
@@ -3088,13 +3088,15 @@ class RunHome(SqliteCheckpointer):
         """Settle every descendant of these roots that still claims to be executing.
 
         Caller owns the transaction, and the roots' submissions are leaving
-        'claimed' for a settled state in that same transaction: nothing will
-        ever resume this tree under these ids again, so an ``active`` row
-        beneath it is an incarnation nobody holds — a table page recipe, say,
-        which mints a fresh run id per attempt and so is never re-addressed
-        by the resume that finished its parent. Each one becomes
+        'claimed' for a settled state in that same transaction: the Host will
+        never resume this tree under these ids again, so an ``active`` row
+        beneath it is an incarnation no worker holds — a table page recipe,
+        say, which mints a fresh run id per attempt and so is never
+        re-addressed by the resume that finished its parent. Each one becomes
         ``_ABANDONED_RUN_STATUS`` with one ``status`` run update carrying
         ``_ABANDONED_REASON``, and its never-started boundaries are dropped.
+        A worker whose lease lapsed may still finish such a run and write
+        over the settle; that is a benign correction.
 
         Three deliberate non-uses:
 
@@ -3190,8 +3192,8 @@ class RunHome(SqliteCheckpointer):
         The release that settles the submission also settles any nested run
         still ``active`` beneath it (``_settle_abandoned_descendants_in_txn``),
         in the same transaction: a worker killed mid-run leaves one behind
-        that the resume never re-addressed, and once this commits nothing
-        will. A stale release settles nothing.
+        that the resume never re-addressed, and once this commits the Host
+        will not re-address it either. A stale release settles nothing.
 
         Returns True when this claim was the one settled.
         """
@@ -3366,7 +3368,7 @@ class RunHome(SqliteCheckpointer):
                         (attempts, workflow_id),
                     )
                 # Finished and parked submissions are settled for good in this
-                # transaction, so nothing will resume their trees again.
+                # transaction, so the Host will not resume their trees again.
                 await self._settle_abandoned_descendants_in_txn(settled_roots)
                 await self._db.commit()
             except BaseException:
