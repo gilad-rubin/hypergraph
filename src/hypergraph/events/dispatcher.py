@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sys
 from typing import TYPE_CHECKING
@@ -43,12 +44,16 @@ class EventDispatcher:
             except Exception:
                 if self._strict:
                     raise
-                logger.warning(
-                    "EventProcessor %s failed on %s",
-                    processor,
-                    type(event).__name__,
-                    exc_info=True,
-                )
+                # The warning goes through the same logging handlers that may
+                # have just failed the processor; if one raises again, that
+                # must not escape isolation and replace the run's own error.
+                with contextlib.suppress(Exception):
+                    logger.warning(
+                        "EventProcessor %s failed on %s",
+                        processor,
+                        type(event).__name__,
+                        exc_info=True,
+                    )
 
     async def emit_async(self, event: Event) -> None:
         """Send *event* to every processor, using async when available."""
@@ -61,12 +66,16 @@ class EventDispatcher:
             except Exception:
                 if self._strict:
                     raise
-                logger.warning(
-                    "EventProcessor %s failed on %s",
-                    processor,
-                    type(event).__name__,
-                    exc_info=True,
-                )
+                # The warning goes through the same logging handlers that may
+                # have just failed the processor; if one raises again, that
+                # must not escape isolation and replace the run's own error.
+                with contextlib.suppress(Exception):
+                    logger.warning(
+                        "EventProcessor %s failed on %s",
+                        processor,
+                        type(event).__name__,
+                        exc_info=True,
+                    )
 
     def shutdown(self) -> None:
         """Shut down all processors. Best-effort unless strict."""

@@ -21,7 +21,9 @@ from hypergraph import (
     Graph,
     HostRuntime,
     RetryPolicy,
+    RunStatus,
     SyncRunner,
+    get_failure_evidence,
     node,
 )
 from hypergraph.checkpointers import SqliteCheckpointer
@@ -402,6 +404,49 @@ def test_a_wrong_argument_is_refused_at_construction(kwargs, parameter):
     text = str(excinfo.value)
     assert text.startswith(f"FailureLogProcessor {parameter} ")
     assert "How to fix:" in text
+
+
+# ---------------------------------------------------------------------------
+# isolation: a broken log handler cannot rewrite the node's failure
+# ---------------------------------------------------------------------------
+
+
+class _RaisingHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        raise RuntimeError("log handler exploded")
+
+
+async def test_a_raising_root_handler_cannot_replace_the_node_error(family):
+    """The processor's log call raises, and so does the dispatcher's warning
+    about it; neither may escape the dispatcher and stand in for the node's
+    own failure."""
+    from hypergraph import FailureLogProcessor
+
+    @node(output_name="y")
+    def reject(x: int) -> int:
+        raise ValueError("node failure text")
+
+    root = logging.getLogger()
+    handler = _RaisingHandler()
+    root.addHandler(handler)
+    try:
+        result = await _settle(
+            _runner(family).run(Graph([reject], name="g"), {"x": 1}, error_handling="continue", event_processors=[FailureLogProcessor()])
+        )
+        with pytest.raises(ValueError, match="node failure text") as excinfo:
+            await _settle(_runner(family).run(Graph([reject], name="g"), {"x": 1}, event_processors=[FailureLogProcessor()]))
+    finally:
+        root.removeHandler(handler)
+
+    assert result.status is RunStatus.FAILED
+    assert isinstance(result.error, ValueError)
+    assert str(result.error) == "node failure text"
+    assert result.failure is not None
+    assert result.failure.node_name == "reject"
+    assert result.failure.error is result.error
+    [evidence] = get_failure_evidence(excinfo.value)
+    assert evidence.node_name == "reject"
+    assert evidence.error is excinfo.value
 
 
 # ---------------------------------------------------------------------------
