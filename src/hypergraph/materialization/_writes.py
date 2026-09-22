@@ -188,6 +188,25 @@ def _run_pause(result: Any) -> PauseInfo | None:
     return None
 
 
+def _as_stored(value: Any, arrow_type: Any) -> Any:
+    """``value`` as a typed store reads it back, so a round trip is not a change.
+
+    A typed store writes through the column's arrow type (``list[float]`` is
+    float32), so a stored vector reads back rounded. Casting both sides the
+    same way compares what a reader sees; a value the declared type cannot
+    hold is compared as it is.
+    """
+    import pyarrow as pa
+
+    value = normalize_value(value)
+    if value is None or arrow_type is None:
+        return value
+    try:
+        return pa.array([value], type=arrow_type).to_pylist()[0]
+    except (pa.ArrowException, TypeError, ValueError):
+        return value
+
+
 def _pause_provenance(provenances: Mapping[str, str], pause: PauseInfo, *, routed: bool = False) -> str:
     """The provenance stamp an interrupt answer will be stored under.
 
@@ -556,6 +575,26 @@ class WritePlanner:
         """
         provenance_changed = any(existing.get(f"{PROVENANCE_PREFIX}{name}") != provenance for name, provenance in provenances.items())
         return provenance_changed or self._provenance.row_missing_stamp(existing, RECIPE_COLUMN)
+
+    def _parent_rewrite_derives(self, existing: Mapping[str, Any], row: Mapping[str, Any]) -> bool:
+        """Whether rewriting an unchanged parent as ``row`` changes what a reader sees (R13).
+
+        It does when a fan-out boundary's stamp moved — the run derived a
+        different item list than the one recorded — or when a derived column's
+        value differs from the stored one, as a node whose output varies
+        between runs can make it. Either is a rebuild, reported the way the
+        plain shape reports one. A rewrite that only moves recipe or column
+        stamps over identical values is bookkeeping and keeps the skip.
+        """
+        boundary_moved = any(
+            existing.get(f"{PROVENANCE_PREFIX}{spec.map_input}") != row.get(f"{PROVENANCE_PREFIX}{spec.map_input}")
+            for spec in self._spec.children
+            if spec.map_input
+        )
+        return boundary_moved or any(
+            _as_stored(existing.get(column.name), column.arrow_type) != _as_stored(row.get(column.name), column.arrow_type)
+            for column in self._provenance.derived_columns()
+        )
 
     def _apply_reconciled(
         self,
@@ -1059,15 +1098,7 @@ class WritePlanner:
                 self._rows.evolve_for_metadata(item)
                 self._commit.write_rows(self._spec.name, [row])
                 self._commit.cleanup_parent(identity_value, write_gen)
-                # A moved boundary stamp means this run derived a different
-                # item list than the one recorded: a rebuild, as the plain
-                # shape reports it (R13). A recipe- or column-only restamp is
-                # bookkeeping and keeps the skip.
-                rebuilt = any(
-                    existing.get(f"{PROVENANCE_PREFIX}{spec.map_input}") != stamps.get(spec.map_input)
-                    for spec in self._spec.children
-                    if spec.map_input
-                )
+                rebuilt = self._parent_rewrite_derives(existing, row)
             self._commit.cleanup_children(identity_value, child_gens)
             return self._unchanged_parent_receipt(identity_value, before, rebuilt=rebuilt)
 

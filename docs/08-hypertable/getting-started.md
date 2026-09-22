@@ -216,12 +216,11 @@ for failed in documents.errors():
 
 A stored error is a retry, not a verdict. Once the cause is fixed, the next
 `insert()` of the same item re-runs exactly the failed row — root rows and
-child rows alike — and no child that already succeeded is re-derived. The
-parent keeps its stored values unless the item list its fan-out boundary
-produces has changed, in which case the parent is re-derived from the new
-list; a boundary that also produces a stored parent column runs the parent's
-nodes once either way, as described above. `sync()` retries a failed child
-too.
+child rows alike — and no child that already succeeded is re-derived. When
+the fan-out boundary also produces a stored parent column, the repair
+re-derives the parent row too, as described above: a node whose output varies
+between runs can store a different value, and the receipt then reports the
+repair rather than a skip. `sync()` retries a failed child too.
 
 ## Child grains
 

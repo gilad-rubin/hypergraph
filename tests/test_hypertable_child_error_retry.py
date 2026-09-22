@@ -19,9 +19,10 @@ Under ``on_error="raise"`` nothing is stored, so there is nothing to retry.
 When the fan-out boundary also produces a stored parent column (#468), the
 repair cannot be column-scoped: sync() takes the same whole-graph repair
 insert() takes, with the same receipt and the same execution counts. The
-parent row is rewritten only when a recorded stamp moved or is missing; a moved
-boundary stamp means the item list was rebuilt, so that pass reports HEALED,
-and the next sync() settles. Healthy children keep the zero-write skip.
+parent row is rewritten only when a recorded stamp moved or is missing; when
+that rewrite moves the boundary stamp or changes a stored value, the pass
+derived something and reports HEALED, and the next sync() settles. Healthy
+children keep the zero-write skip.
 """
 
 from __future__ import annotations
@@ -691,3 +692,128 @@ async def test_async_counting_boundary_recipe_only_restamp_stays_skipped():
 
     assert _outcomes(receipt) == [("skipped", "complete")]
     assert _parent(store)["_recipe_fingerprint"]
+
+
+# ---------------------------------------------------------------------------
+# 9. A repair that re-derived a different parent value reports the repair (D38)
+# ---------------------------------------------------------------------------
+#
+# Under a counting boundary the repair runs the parent's nodes. A node whose
+# output varies between runs (an LLM call, say) can then answer differently;
+# when the rewritten parent row carries that new value, the pass derived
+# something a reader sees, so it is not a skip.
+
+label_runs: list[int] = []
+
+
+@node(output_name="clean_text")
+def label_varying(text: str) -> str:
+    """A parent node whose output differs on every run."""
+    executions["clean"] += 1
+    label_runs.append(len(label_runs) + 1)
+    return f"{text.upper()}#{len(label_runs)}"
+
+
+@node(output_name="summary")
+def summarize(clean_text: str) -> str:
+    return clean_text[:8]
+
+
+def _varying_counting_table(store, *, runner=None):
+    return Graph(
+        [label_varying, summarize, split_words_counting, process_word.as_node().map_over("utterances", identity="utterance_id")],
+        name="doc",
+    ).as_table(identity="doc_id", store=store, on_error="store", runner=runner or SyncRunner())
+
+
+def _varying_damaged_store(trigger: str) -> MemoryStore:
+    store = MemoryStore()
+    if trigger == "child_error":
+        fail_on_word.add("beta")
+    _varying_counting_table(store).insert(doc_id="d1", text="alpha beta")
+    fail_on_word.clear()
+    if trigger == "extra_row":
+        orphan = dict(store.rows["utterance"][0])
+        orphan["utterance_id"] = "u9"
+        store.rows["utterance"].append(orphan)
+    _reset_counters()
+    return store
+
+
+@pytest.mark.parametrize("trigger", ["extra_row", "child_error"])
+def test_counting_boundary_repair_that_changed_a_parent_value_is_a_heal(trigger):
+    store = _varying_damaged_store(trigger)
+    stored = _parent(store)["clean_text"]
+
+    receipt = _varying_counting_table(MemoryStore(store.rows)).sync([DOC])
+
+    assert _parent(store)["clean_text"] != stored, "the repair re-derived the parent and stored the new answer"
+    assert _outcomes(receipt) == [("healed", "complete")], "a stored value changed: not a skip"
+    assert _child_state(store) == {"u0": ("complete", "t:alpha"), "u1": ("complete", "t:beta")}
+    snapshot = _snapshot(store)
+    _reset_counters()
+
+    receipt = _varying_counting_table(MemoryStore(store.rows)).sync([DOC])
+
+    assert _outcomes(receipt) == [("skipped", "complete")]
+    assert executions == {"clean": 0, "split": 0, "child": 0}
+    assert store.rows == snapshot
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trigger", ["extra_row", "child_error"])
+async def test_async_counting_boundary_repair_that_changed_a_parent_value_is_a_heal(trigger):
+    store = _varying_damaged_store(trigger)
+    stored = _parent(store)["clean_text"]
+
+    receipt = await _varying_counting_table(MemoryStore(store.rows), runner=AsyncRunner()).sync([DOC])
+
+    assert _parent(store)["clean_text"] != stored
+    assert _outcomes(receipt) == [("healed", "complete")]
+    snapshot = _snapshot(store)
+    _reset_counters()
+
+    receipt = await _varying_counting_table(MemoryStore(store.rows), runner=AsyncRunner()).sync([DOC])
+
+    assert _outcomes(receipt) == [("skipped", "complete")]
+    assert executions == {"clean": 0, "split": 0, "child": 0}
+    assert store.rows == snapshot
+
+
+@node(output_name=("utterances", "title"))
+def split_words_titled(text: str) -> tuple[list[Utterance], str]:
+    """A counting boundary whose parent column LanceDB can store (``str``)."""
+    executions["split"] += 1
+    words = text.split()
+    return [Utterance(utterance_id=f"u{i}", text=word) for i, word in enumerate(words)], words[0]
+
+
+@node(output_name="embedding")
+def embed(text: str) -> list[float]:
+    return [0.1, 0.2, 1 / 3]  # list[float] is stored as float32
+
+
+def test_counting_boundary_restamp_over_values_read_back_from_lancedb_stays_skipped(tmp_path):
+    """The value comparison uses the store's round trip: a float32 vector read
+    back from LanceDB is the value the node produced, not a changed one."""
+    from hypergraph.materialization import LanceDBStore
+
+    path = str(tmp_path / "vectors")
+
+    def table():
+        return Graph(
+            [embed, split_words_titled, process_word.as_node().map_over("utterances", identity="utterance_id")],
+            name="doc",
+        ).as_table(identity="doc_id", store=LanceDBStore(path), on_error="store", runner=SyncRunner())
+
+    table().sync([DOC])
+    store = LanceDBStore(path)
+    stored = store.read_one("doc", "doc_id", "d1")
+    assert stored["embedding"] != [0.1, 0.2, 1 / 3], "LanceDB keeps list[float] as float32"
+    store.delete_rows("doc", [("doc_id", "eq", "d1")])
+    store.write_rows("doc", [{**stored, "_recipe_fingerprint": None}])
+
+    receipt = table().insert([DOC])
+
+    assert _outcomes(receipt) == [("skipped", "complete")], "a recipe-only restamp over round-tripped values derives nothing"
+    assert LanceDBStore(path).read_one("doc", "doc_id", "d1")["_recipe_fingerprint"]

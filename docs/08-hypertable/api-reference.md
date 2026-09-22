@@ -134,7 +134,8 @@ and everything the repair derived landed healthy. A repair whose retry failed
 again healed nothing, so it reports `UPDATED` and the child stays in error for
 the next attempt to find. One exception: when the fan-out boundary also
 produces a stored parent column, retiring an extra row derives no new row, so
-that pass reports `SKIPPED`, as described next.
+that pass reports `SKIPPED`, as described next, unless re-running the
+parent's nodes stored a different value.
 
 `SKIPPED` is a claim about derivation, not about bytes: it means no row was
 derived and no fan-out boundary was re-run to repair one. A pass over an
@@ -322,9 +323,13 @@ runs the parent's nodes once to regenerate the item list, while the child graph
 still runs only for the damaged child. The parent row is rewritten only when
 one of its recorded stamps moved or is missing — the boundary's recorded count,
 a derived column's provenance, or the recipe stamp — and this is the same cost
-`insert()` pays to repair that shape. A retry that fails again leaves the child
-in error and reports `UPDATED` rather than `HEALED`, and the next `sync()`
-tries it again.
+`insert()` pays to repair that shape. A rewrite that changes the recorded count
+or a stored value (a node whose output varies between runs can answer
+differently) is a rebuild and reports the repair; one that only moves stamps
+over identical values is bookkeeping and reports `SKIPPED`. Values are compared
+as the store reads them back, so a `list[float]` kept as float32 is not a
+change. A retry that fails again leaves the child in error and reports
+`UPDATED` rather than `HEALED`, and the next `sync()` tries it again.
 
 ### `delete(id) -> None`
 
