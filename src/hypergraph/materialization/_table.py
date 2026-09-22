@@ -28,7 +28,7 @@ class Table:
             raise TypeError(
                 "Table store must implement TableStore.\n\n"
                 f"Received: {type(store).__name__}\n\n"
-                "How to fix: pass LanceDBStore(...) or a validated TableStore subclass."
+                "How to fix: pass LanceDBStore(...), SqliteTableStore(...), or a validated TableStore subclass."
             )
         self._identity = identity
         self._store = store

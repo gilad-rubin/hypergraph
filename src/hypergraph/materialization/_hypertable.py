@@ -403,7 +403,7 @@ class HyperTable:
             raise TypeError(
                 "HyperTable store must implement TableStore.\n\n"
                 f"Received: {type(self._store).__name__}\n\n"
-                "How to fix: pass LanceDBStore(...) or a validated TableStore subclass."
+                "How to fix: pass LanceDBStore(...), SqliteTableStore(...), or a validated TableStore subclass."
             )
 
         self._store.open(self._spec, self._spec.children)
