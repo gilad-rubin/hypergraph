@@ -311,16 +311,20 @@ present children and parent derived columns are not re-derived, though present
 child rows are rewritten at the repair's generation. A physically missing row
 leaves nothing to rebuild the item list from, so the fan-out boundary re-runs
 once to regenerate it; a stored error row still carries its own item, so the
-stored list is reused and the boundary does not re-run. A recorded count that
-disagrees with healthy children — a stale stamp, or a boundary whose item list
-changed length — is damage too: the boundary re-runs once and the count it
-produced is recorded, so the next `sync()` is a zero-execution skip again.
+stored list is reused and the boundary does not re-run. A stale recorded
+count, or a boundary whose item list changed length, leaves a count that
+disagrees with the healthy children present; that is damage too. The boundary
+re-runs, the parent records the count it produced, and the repair reports
+`HEALED` because the item list was rebuilt. Once the recorded count matches
+the child rows written, the next `sync()` is a zero-execution skip again.
 When the fan-out boundary also produces a stored parent column, every repair
 runs the parent's nodes once to regenerate the item list, while the child graph
 still runs only for the damaged child. The parent row is rewritten only when
-its recorded boundary stamp changed, and this is the same cost `insert()` pays
-to repair that shape. A retry that fails again leaves the child in error and
-reports `UPDATED` rather than `HEALED`, and the next `sync()` tries it again.
+one of its recorded stamps moved or is missing — the boundary's recorded count,
+a derived column's provenance, or the recipe stamp — and this is the same cost
+`insert()` pays to repair that shape. A retry that fails again leaves the child
+in error and reports `UPDATED` rather than `HEALED`, and the next `sync()`
+tries it again.
 
 ### `delete(id) -> None`
 

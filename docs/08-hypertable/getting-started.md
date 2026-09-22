@@ -216,9 +216,12 @@ for failed in documents.errors():
 
 A stored error is a retry, not a verdict. Once the cause is fixed, the next
 `insert()` of the same item re-runs exactly the failed row — root rows and
-child rows alike — and no row that already succeeded is re-derived; the one
-extra cost is the parent-node run described above, for a boundary that also
-produces a stored parent column. `sync()` retries a failed child too.
+child rows alike — and no child that already succeeded is re-derived. The
+parent keeps its stored values unless the item list its fan-out boundary
+produces has changed, in which case the parent is re-derived from the new
+list; a boundary that also produces a stored parent column runs the parent's
+nodes once either way, as described above. `sync()` retries a failed child
+too.
 
 ## Child grains
 

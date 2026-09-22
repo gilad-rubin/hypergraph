@@ -1079,11 +1079,11 @@ class HyperTable:
         (``on_error="store"``). When the fan-out boundary also produces a
         stored parent column, the repair runs the parent's nodes once as well
         (the child graph stays scoped), and the parent row is rewritten only
-        when its recorded boundary stamp changed (#468). The repair reports
-        ``HEALED`` when everything it derived landed healthy, and ``UPDATED``
-        when a retry failed again and left the child in error. When the
-        recorded count matches the child rows present and every one is
-        complete, the row is a zero-execution ``SKIPPED``: the probe itself
+        when one of its recorded stamps moved or is missing (#468). The
+        repair reports ``HEALED`` when everything it derived landed healthy,
+        and ``UPDATED`` when a retry failed again and left the child in error.
+        When the recorded count matches the child rows present and every one
+        is complete, the row is a zero-execution ``SKIPPED``: the probe itself
         never writes, and a repair pass that only re-stamps unchanged rows
         derives nothing and stays ``SKIPPED`` too.
         """

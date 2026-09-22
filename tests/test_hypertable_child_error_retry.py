@@ -19,9 +19,9 @@ Under ``on_error="raise"`` nothing is stored, so there is nothing to retry.
 When the fan-out boundary also produces a stored parent column (#468), the
 repair cannot be column-scoped: sync() takes the same whole-graph repair
 insert() takes, with the same receipt and the same execution counts. The
-parent row is rewritten only when its recorded boundary stamp changed, so a
-stale count is corrected once and the next sync() settles. Healthy children
-keep the zero-write skip.
+parent row is rewritten only when a recorded stamp moved or is missing; a moved
+boundary stamp means the item list was rebuilt, so that pass reports HEALED,
+and the next sync() settles. Healthy children keep the zero-write skip.
 """
 
 from __future__ import annotations
@@ -504,8 +504,11 @@ def test_counting_boundary_stale_stamp_is_corrected_once_then_skips(verb):
     store = _stale_counting_store()
     assert _stamp_count(store) == 3
 
-    getattr(_counting_table(MemoryStore(store.rows)), verb)([DOC])
+    receipt = getattr(_counting_table(MemoryStore(store.rows)), verb)([DOC])
 
+    # The boundary re-ran and recorded a different item list, so the pass
+    # derived something: HEALED, as the plain shape reports it (R13, D36).
+    assert _outcomes(receipt) == [("healed", "complete")]
     assert executions == {"clean": 0, "split": 1, "child": 0}, "the boundary re-runs once; no child re-derives"
     assert _stamp_count(store) == 2, "the parent's recorded count now matches the children present"
     assert _child_state(store) == {"u0": ("complete", "t:alpha"), "u1": ("complete", "t:beta")}
@@ -546,8 +549,9 @@ def test_counting_boundary_whose_item_count_changed_is_restamped_by_the_heal():
 async def test_async_counting_boundary_stale_stamp_is_corrected_once_then_skips():
     store = _stale_counting_store()
 
-    await _counting_table(MemoryStore(store.rows), runner=AsyncRunner()).sync([DOC])
+    receipt = await _counting_table(MemoryStore(store.rows), runner=AsyncRunner()).sync([DOC])
 
+    assert _outcomes(receipt) == [("healed", "complete")]
     assert executions == {"clean": 0, "split": 1, "child": 0}
     assert _stamp_count(store) == 2
     snapshot = _snapshot(store)
@@ -591,3 +595,99 @@ async def test_async_counting_boundary_healthy_children_stay_a_zero_write_skip()
     assert _outcomes(receipt) == [("skipped", "complete")]
     assert executions == {"clean": 0, "split": 0, "child": 0}
     assert store.rows == snapshot, "the fast path must stay zero-write"
+
+
+# ---------------------------------------------------------------------------
+# 8. A restamp that changed the item list is a rebuild; one that did not is bookkeeping
+# ---------------------------------------------------------------------------
+#
+# R13: SKIPPED means no derived row was written. When the whole-graph repair
+# records a different boundary stamp, the item list changed — ``word_count``
+# is rewritten and a child is retired — so the receipt is HEALED, exactly as
+# the plain shape reports it (D36). A restamp that only adds the missing
+# recipe stamp derives nothing and stays SKIPPED.
+
+
+def _shrunk_counting_store(damage: str) -> MemoryStore:
+    """Three items recorded (u2 = "gamma"); the boundary now yields two, and u2 is damaged."""
+    store = MemoryStore()
+    appended_words.append("gamma")
+    if damage == "error_on_dropped":
+        fail_on_word.add("gamma")
+    _counting_table(store).insert(doc_id="d1", text="alpha beta")
+    if damage == "dropped_row_missing":
+        store.rows["utterance"] = [row for row in store.rows["utterance"] if row["utterance_id"] != "u2"]
+    assert (_stamp_count(store), _parent(store)["word_count"]) == (3, 3)
+    appended_words.clear()
+    fail_on_word.clear()
+    _reset_counters()
+    return store
+
+
+@pytest.mark.parametrize("damage", ["error_on_dropped", "dropped_row_missing"])
+def test_counting_boundary_shrunk_item_list_is_a_heal_then_skips(damage):
+    store = _shrunk_counting_store(damage)
+
+    receipt = _counting_table(MemoryStore(store.rows)).sync([DOC])
+
+    assert _outcomes(receipt) == [("healed", "complete")], "word_count was rewritten and u2 retired: not a skip"
+    assert _child_state(store) == {"u0": ("complete", "t:alpha"), "u1": ("complete", "t:beta")}
+    assert (_stamp_count(store), _parent(store)["word_count"]) == (2, 2)
+    snapshot = _snapshot(store)
+    _reset_counters()
+
+    receipt = _counting_table(MemoryStore(store.rows)).sync([DOC])
+
+    assert _outcomes(receipt) == [("skipped", "complete")]
+    assert executions == {"clean": 0, "split": 0, "child": 0}
+    assert store.rows == snapshot
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", ["error_on_dropped", "dropped_row_missing"])
+async def test_async_counting_boundary_shrunk_item_list_is_a_heal_then_skips(damage):
+    store = _shrunk_counting_store(damage)
+
+    receipt = await _counting_table(MemoryStore(store.rows), runner=AsyncRunner()).sync([DOC])
+
+    assert _outcomes(receipt) == [("healed", "complete")]
+    assert _child_state(store) == {"u0": ("complete", "t:alpha"), "u1": ("complete", "t:beta")}
+    assert (_stamp_count(store), _parent(store)["word_count"]) == (2, 2)
+    snapshot = _snapshot(store)
+    _reset_counters()
+
+    receipt = await _counting_table(MemoryStore(store.rows), runner=AsyncRunner()).sync([DOC])
+
+    assert _outcomes(receipt) == [("skipped", "complete")]
+    assert executions == {"clean": 0, "split": 0, "child": 0}
+    assert store.rows == snapshot
+
+
+def test_counting_boundary_recipe_only_restamp_stays_skipped():
+    """The falsifier for the heal above: a parent missing only its recipe stamp
+    is rewritten to carry it, but its item list is unchanged, so nothing was
+    derived and insert() still reports SKIPPED."""
+
+    store = MemoryStore()
+    _counting_table(store).sync([DOC])
+    _parent(store)["_recipe_fingerprint"] = None
+    _reset_counters()
+
+    receipt = _counting_table(MemoryStore(store.rows)).insert([DOC])
+
+    assert _outcomes(receipt) == [("skipped", "complete")]
+    assert _parent(store)["_recipe_fingerprint"], "the parent now carries its recipe stamp"
+    assert _stamp_count(store) == 2
+
+
+@pytest.mark.asyncio
+async def test_async_counting_boundary_recipe_only_restamp_stays_skipped():
+    store = MemoryStore()
+    await _counting_table(store, runner=AsyncRunner()).sync([DOC])
+    _parent(store)["_recipe_fingerprint"] = None
+    _reset_counters()
+
+    receipt = await _counting_table(MemoryStore(store.rows), runner=AsyncRunner()).insert([DOC])
+
+    assert _outcomes(receipt) == [("skipped", "complete")]
+    assert _parent(store)["_recipe_fingerprint"]

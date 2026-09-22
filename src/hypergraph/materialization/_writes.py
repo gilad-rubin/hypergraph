@@ -1054,12 +1054,22 @@ class WritePlanner:
             # Leaving it would send every later sync() back through the graph.
             row = self._rows.parent_row(item, source_inputs, outputs, write_gen, RowStatus.COMPLETE)
             stamps = {key.removeprefix(PROVENANCE_PREFIX): value for key, value in row.items() if key.startswith(PROVENANCE_PREFIX)}
+            rebuilt = False
             if existing is not None and self._parent_stamps_stale(existing, stamps):
                 self._rows.evolve_for_metadata(item)
                 self._commit.write_rows(self._spec.name, [row])
                 self._commit.cleanup_parent(identity_value, write_gen)
+                # A moved boundary stamp means this run derived a different
+                # item list than the one recorded: a rebuild, as the plain
+                # shape reports it (R13). A recipe- or column-only restamp is
+                # bookkeeping and keeps the skip.
+                rebuilt = any(
+                    existing.get(f"{PROVENANCE_PREFIX}{spec.map_input}") != stamps.get(spec.map_input)
+                    for spec in self._spec.children
+                    if spec.map_input
+                )
             self._commit.cleanup_children(identity_value, child_gens)
-            return self._unchanged_parent_receipt(identity_value, before)
+            return self._unchanged_parent_receipt(identity_value, before, rebuilt=rebuilt)
 
         self._rows.evolve_for_metadata(item)
         row = self._rows.parent_row(item, source_inputs, outputs, write_gen, RowStatus.COMPLETE)
