@@ -562,3 +562,20 @@ async def answer(upload_id: str, answer_key: str, value: str):
 `Table(identity=..., store=...)` is the non-deriving companion.
 Use `append()` to store rows, plus `update()`, `delete()`, `get()`, `rows()`,
 and `count()`. It returns the same receipt vocabulary but never runs a graph.
+
+```python
+from hypergraph.materialization import SqliteTableStore, Table
+
+store = SqliteTableStore("./data/host.db")  # stdlib sqlite3, no lancedb
+quota = Table(identity="user_id", store=store)
+quota.append(user_id="u1", used=0)
+
+row = quota.get("u1")
+won = quota.compare_and_set("u1", expected={"used": row["used"]}, used=row["used"] + 1)
+store.close()
+```
+
+`compare_and_set(id, expected=..., **changes)` applies `changes` only when the
+stored row still holds every `expected` value, and returns whether it did. The
+store makes the comparison and the write one step, across threads and
+processes.

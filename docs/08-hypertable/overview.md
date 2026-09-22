@@ -82,9 +82,11 @@ HyperTable stores source columns, derived columns, answer columns, metadata,
 and internal provenance. Internal generations, recipe stamps, status, and the
 question envelope never appear as stringly fields in `get()` or `rows()`.
 
-The shipped `LanceDBStore` is available from
-`hypergraph.materialization`. Custom stores implement `TableStore` and can be
-checked with `check_store_conformance`.
+Two stores ship in `hypergraph.materialization`: `LanceDBStore` (vector
+search and named indexes, from the `[materialization]` extra) and
+`SqliteTableStore` (stdlib `sqlite3`, one file or `":memory:"`, no search).
+Custom stores implement `TableStore` and can be checked with
+`check_store_conformance`.
 
 ## Next
 

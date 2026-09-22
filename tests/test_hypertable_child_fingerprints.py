@@ -2,66 +2,24 @@
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import TypedDict
 
 import pytest
 
 from hypergraph import Graph, node
-from hypergraph.materialization import HyperTable, TableStore
+from hypergraph.materialization import HyperTable, SqliteTableStore
 from hypergraph.runners import SyncRunner
 
 # ---------------------------------------------------------------------------
-# MemoryStore — minimal in-memory store for isolated tests
+# Store
 # ---------------------------------------------------------------------------
 
 
-class MemoryStore(TableStore):
-    def __init__(self) -> None:
-        self.rows: dict[str, list[dict[str, Any]]] = {}
-
-    def open(self, spec, children):
-        self.rows.setdefault(spec.name, [])
-        for child in children:
-            self.rows.setdefault(child.name, [])
-        return {name: list(rows[0].keys()) if rows else [] for name, rows in self.rows.items()}
-
-    def count(self, table_name):
-        return len(self.rows.get(table_name, []))
-
-    def read_rows(self, table_name, where=None, *, limit=None):
-        rows = [row.copy() for row in self.rows.get(table_name, []) if _matches(row, where or [])]
-        return rows[:limit] if limit is not None else rows
-
-    def read_one(self, table_name, identity_column, identity_value):
-        rows = self.read_rows(table_name, [(identity_column, "eq", identity_value)])
-        if not rows:
-            return None
-        return max(rows, key=lambda row: row.get("_write_gen", 0))
-
-    def write_rows(self, table_name, rows):
-        self.rows.setdefault(table_name, []).extend(row.copy() for row in rows)
-
-    def delete_rows(self, table_name, where):
-        existing = self.rows.get(table_name, [])
-        keep = [row for row in existing if not _matches(row, where)]
-        self.rows[table_name] = keep
-        return len(existing) - len(keep)
-
-    def max_write_gen(self, table_name):
-        return max((row.get("_write_gen", 0) for row in self.rows.get(table_name, [])), default=0)
-
-    def evolve_schema(self, table_name, new_columns):
-        return []
-
-
-def _matches(row: dict[str, Any], where) -> bool:
-    for col, op, value in where:
-        current = row.get(col)
-        if op == "eq" and current != value:
-            return False
-        if op == "lt" and not (current is not None and current < value):
-            return False
-    return True
+@pytest.fixture
+def store():
+    s = SqliteTableStore()
+    yield s
+    s.close()
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +54,7 @@ def _reset_call_count():
     call_count.clear()
 
 
-def _make_table(store: MemoryStore) -> HyperTable:
+def _make_table(store: SqliteTableStore) -> HyperTable:
     return Graph([split_words, process_utterance.as_node().map_over("utterances", identity="utterance_id")]).as_table(
         identity="doc_id", store=store, runner=SyncRunner()
     )
@@ -107,9 +65,8 @@ def _make_table(store: MemoryStore) -> HyperTable:
 # ---------------------------------------------------------------------------
 
 
-def test_reinsert_skips_unchanged_children():
+def test_reinsert_skips_unchanged_children(store):
     """Re-inserting the same parent skips children whose fingerprints match."""
-    store = MemoryStore()
     table = _make_table(store)
 
     table.insert(doc_id="d1", text="hello world")
@@ -127,9 +84,8 @@ def test_reinsert_skips_unchanged_children():
     assert len(children) == 2
 
 
-def test_changed_child_source_re_derives_only_that_child():
+def test_changed_child_source_re_derives_only_that_child(store):
     """When one child's source changes, only that child re-derives."""
-    store = MemoryStore()
     table = _make_table(store)
 
     table.insert(doc_id="d1", text="hello world")
@@ -148,9 +104,8 @@ def test_changed_child_source_re_derives_only_that_child():
     assert texts["u1"] == "EARTH"
 
 
-def test_skipped_children_survive_write_gen_cleanup():
+def test_skipped_children_survive_write_gen_cleanup(store):
     """Children skipped by fingerprint must not be deleted by _write_gen cleanup."""
-    store = MemoryStore()
     table = _make_table(store)
 
     table.insert(doc_id="d1", text="hello world")
@@ -163,9 +118,8 @@ def test_skipped_children_survive_write_gen_cleanup():
     assert {c["utterance_id"] for c in children} == {"u0", "u1"}
 
 
-def test_parent_skip_still_reconciles_children():
+def test_parent_skip_still_reconciles_children(store):
     """When parent fingerprint matches, children are still checked and reconciled."""
-    store = MemoryStore()
     table = _make_table(store)
 
     table.insert(doc_id="d1", text="hello world")

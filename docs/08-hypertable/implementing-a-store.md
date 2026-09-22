@@ -4,13 +4,33 @@
 plain `Table`. The graph runner may be synchronous or asynchronous; the store
 contract remains synchronous.
 
-Use the shipped implementation unless you are adapting another database:
+Use a shipped store unless you are adapting another database:
 
 ```python
-from hypergraph.materialization import LanceDBStore
+from hypergraph.materialization import LanceDBStore, SqliteTableStore
 
-store = LanceDBStore("./data")
+store = LanceDBStore("./data")             # needs the [materialization] extra
+store = SqliteTableStore("./data/app.db")  # stdlib sqlite3; ":memory:" by default
 ```
+
+## Shipped stores
+
+| | `LanceDBStore(path)` | `SqliteTableStore(path=":memory:")` |
+|---|---|---|
+| Backend | LanceDB folder (`[materialization]` extra) | one SQLite file, or one in-memory database per instance |
+| Vector `search()` | yes | no |
+| Manifests (named indexes, `HyperTable.attach`) | yes | no; using them fails loudly, naming the store |
+| `compare_and_set` | atomic across threads and processes (`flock`) | atomic across threads and processes (one transaction) |
+| List, struct and other non-scalar cells | native Arrow columns | JSON text, decoded on read |
+| A value of the wrong type for its column | Arrow error | `TypeError`; nothing from the call is written |
+| NaN in a float column | reads back NaN | reads back `None` (SQLite stores NaN as NULL) |
+
+Both need pyarrow, which `Table` and `HyperTable` already import.
+`SqliteTableStore` never imports lancedb. Its threads share one connection,
+so a read waits while that store is writing; a file store runs in WAL mode and
+waits up to 30 seconds for another process's write. Call `close()` when you are
+done with it. `Table.append()` checks for the identity and then writes, so it
+is not atomic on either store; use `compare_and_set` when two writers can race.
 
 ## Required methods
 
@@ -44,6 +64,9 @@ class TableStore(ABC):
 
 `open()` receives analyzed root and child table specifications. It ensures the
 physical tables exist and returns their column names.
+
+`write_rows` may receive keys that are not physical columns (a mapped item's
+field that no child node consumes, for example); a schema'd store ignores them.
 
 ## Predicates
 
@@ -104,9 +127,11 @@ method is missing, index creation fails loudly at use time.
 from hypergraph.materialization import check_store_conformance, validate_store
 
 validate_store(MyStore(...))
-check_store_conformance(lambda path: MyStore(path))
+check_store_conformance(MyStore(...))  # a fresh, empty store instance
 ```
 
-The same conformance suite is run against `LanceDBStore` and an in-memory dict
-store. It covers schema opening and evolution, predicates, projections,
-generations, manifests, identity, and child-table behavior.
+The same conformance suite is run against `LanceDBStore`, `SqliteTableStore`
+and an in-memory dict store. It covers schema opening and evolution,
+predicates, projections, generations, binary columns, and child-table
+filtering. It does not exercise `compare_and_set`, concurrent writers,
+`search()`, or manifests; test those in your own suite.

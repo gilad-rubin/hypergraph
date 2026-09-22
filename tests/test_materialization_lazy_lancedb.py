@@ -78,3 +78,53 @@ def test_lancedb_store_in_module_all() -> None:
     import hypergraph.materialization as materialization
 
     assert "LanceDBStore" in materialization.__all__
+
+
+def test_materialization_import_loads_no_pyarrow() -> None:
+    """A fresh interpreter: importing the package (SqliteTableStore included) pulls in no pyarrow."""
+    code = "import sys, hypergraph.materialization; assert 'pyarrow' not in sys.modules, 'pyarrow was imported'; print('PROBE-OK')"
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, f"probe failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    assert "PROBE-OK" in result.stdout
+
+
+def test_sqlite_table_store_runs_a_table_without_lancedb_or_aiosqlite(tmp_path: Path) -> None:
+    """With lancedb and aiosqlite both blocked, a Table on SqliteTableStore appends,
+    reads and compare-and-sets. Blocking aiosqlite proves the store's import of the
+    checkpointer's SQLite helpers does not load the async driver."""
+    script = tmp_path / "sqlite_store_no_lancedb_probe.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import importlib.abc
+            import sys
+
+            BLOCKED = ("lancedb", "aiosqlite")
+
+            class Block(importlib.abc.MetaPathFinder):
+                def find_spec(self, name, path=None, target=None):
+                    if name.split(".")[0] in BLOCKED:
+                        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+                    return None
+
+            sys.meta_path.insert(0, Block())
+
+            from hypergraph.materialization import SqliteTableStore, Table
+
+            store = SqliteTableStore()
+            table = Table(identity="k", store=store)
+            table.append(k="a", v=1)
+            assert table.get("a") == {"k": "a", "v": 1}
+            assert table.compare_and_set("a", expected={"v": 1}, v=2) is True
+            assert table.get("a") == {"k": "a", "v": 2}
+            store.close()
+
+            assert not {"lancedb", "aiosqlite"} & set(sys.modules), sorted({"lancedb", "aiosqlite"} & set(sys.modules))
+            print("PROBE-OK")
+            """
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, f"probe failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    assert "PROBE-OK" in result.stdout

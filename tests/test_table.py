@@ -15,6 +15,9 @@ on disk — same physical columns, same write semantics):
 - bytes round-trip untouched; rows survive a fresh handle over the same
   store path; delete removes by identity.
 - no runner ceremony: a Table needs no ``with_runner`` — it derives nothing.
+
+The store-independent pins run against both shipped stores, ``LanceDBStore``
+and ``SqliteTableStore``.
 """
 
 import hashlib
@@ -25,11 +28,16 @@ import numpy as np
 import pytest
 
 from hypergraph import Graph, GraphConfigError
-from hypergraph.materialization import LanceDBStore, Table
+from hypergraph.materialization import LanceDBStore, SqliteTableStore, Table
 
 
-def _contend_cas_in_process(store_path, barrier, index, queue):
-    table = Table(identity="upload_id", store=LanceDBStore(store_path))
+def _store_at(kind, location):
+    """The store ``kind`` names, at ``location`` (a folder for LanceDB, a file for SQLite)."""
+    return SqliteTableStore(f"{location}.db") if kind == "sqlite" else LanceDBStore(location)
+
+
+def _contend_cas_in_process(kind, store_path, barrier, index, queue):
+    table = Table(identity="upload_id", store=_store_at(kind, store_path))
     barrier.wait()
     owner = f"worker-{index}"
     queue.put(
@@ -45,9 +53,30 @@ def _contend_cas_in_process(store_path, barrier, index, queue):
     )
 
 
+@pytest.fixture(params=["lancedb", "sqlite"])
+def store_kind(request):
+    return request.param
+
+
 @pytest.fixture()
-def table(tmp_path):
-    return Table(identity="upload_id", store=LanceDBStore(str(tmp_path)))
+def make_store(store_kind, tmp_path):
+    """Open a ``store_kind`` store at a named location under ``tmp_path``; SQLite stores close at teardown."""
+    opened = []
+
+    def make(name="store"):
+        store = _store_at(store_kind, str(tmp_path / name))
+        opened.append(store)
+        return store
+
+    yield make
+    for store in opened:
+        if isinstance(store, SqliteTableStore):
+            store.close()
+
+
+@pytest.fixture()
+def table(make_store):
+    return Table(identity="upload_id", store=make_store())
 
 
 def test_empty_graph_as_table_raises_naming_table(tmp_path):
@@ -78,9 +107,9 @@ def test_update_is_the_explicit_change_verb(table):
     assert table.count() == 1
 
 
-def test_compare_and_set_has_one_cross_instance_winner(tmp_path):
+def test_compare_and_set_has_one_cross_instance_winner(store_kind, make_store, tmp_path):
     store_path = str(tmp_path / "cas")
-    seed = Table(identity="upload_id", store=LanceDBStore(store_path))
+    seed = Table(identity="upload_id", store=make_store("cas"))
     seed.append(upload_id="u1", state="pending")
     context = multiprocessing.get_context("spawn")
     barrier = context.Barrier(2)
@@ -88,7 +117,7 @@ def test_compare_and_set_has_one_cross_instance_winner(tmp_path):
     processes = [
         context.Process(
             target=_contend_cas_in_process,
-            args=(store_path, barrier, index, queue),
+            args=(store_kind, store_path, barrier, index, queue),
         )
         for index in range(2)
     ]
@@ -104,9 +133,9 @@ def test_compare_and_set_has_one_cross_instance_winner(tmp_path):
 
     winners = [owner for owner, won in results if won]
     assert len(winners) == 1
-    authoritative = Table(identity="upload_id", store=LanceDBStore(store_path))
+    authoritative = Table(identity="upload_id", store=make_store("cas"))
     assert authoritative.get("u1") == {"upload_id": "u1", "state": "claimed", "owner": winners[0]}
-    physical = LanceDBStore(store_path).read_rows("upload")
+    physical = make_store("cas").read_rows("upload")
     assert len(physical) == 1
     assert len({row["_write_gen"] for row in physical}) == len(physical)
 
@@ -119,8 +148,8 @@ def test_compare_and_set_false_on_missing_or_mismatched_row(table):
     assert table.get("u1")["state"] == "pending"
 
 
-def test_compare_and_set_fingerprint_matches_normalized_persisted_values(tmp_path):
-    store = LanceDBStore(str(tmp_path))
+def test_compare_and_set_fingerprint_matches_normalized_persisted_values(make_store):
+    store = make_store()
     table = Table(identity="upload_id", store=store)
     table.append(upload_id="u1", state="pending")
     assert table.compare_and_set("u1", expected={"state": "pending"}, count=np.int64(2))
@@ -140,11 +169,10 @@ def test_multiple_identities_filter_and_delete(table):
     assert table.get("u1") is None
 
 
-def test_rows_survive_a_fresh_handle_over_the_same_store(tmp_path):
-    store_path = str(tmp_path)
-    first = Table(identity="upload_id", store=LanceDBStore(store_path))
+def test_rows_survive_a_fresh_handle_over_the_same_store(make_store):
+    first = Table(identity="upload_id", store=make_store("shared"))
     first.append(upload_id="u2", name="b.pdf", content=b"bytes-2", sha256="bbb")
-    fresh = Table(identity="upload_id", store=LanceDBStore(store_path))
+    fresh = Table(identity="upload_id", store=make_store("shared"))
     assert fresh.count() == 1
     assert fresh.get("u2")["content"] == b"bytes-2"
 
