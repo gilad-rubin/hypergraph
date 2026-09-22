@@ -1434,8 +1434,10 @@ llm_reply.outputs  # ("response",)
 
 #### Gates and interrupt handlers
 
-Every node kind that accepts `ctx` receives it: `@node`, `@route`, `@ifelse`,
-and `@interrupt`. A gate's or handler's context carries that node's own ids
+Under `SyncRunner` and `AsyncRunner`, every node kind that accepts `ctx`
+receives it: `@node`, `@route`, `@ifelse`, and `@interrupt` (interrupts run
+under `AsyncRunner` only). `DaftRunner` does not inject `NodeContext`, and it
+runs no gates or interrupts. A gate's or handler's context carries that node's own ids
 (its name, its graph, its span), so a routing decision can read the live stop
 signal and a gate's `ctx.stream()` chunk names the gate:
 
