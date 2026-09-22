@@ -8,9 +8,10 @@ Two admission controls that this file never lets blur together:
   paused, version-incompatible, and recovery-exhausted Runs hold no slot,
   while a claimed Run parked on a provider permit does.
 * **Provider-resource admission** — injected ``ProcessLocalLimiter`` budgets
-  at graph, node, and component scope. A permit wait is neither a failure
-  nor a retry attempt, and a component that owns a provider quota acquires
-  it at the exact scarce call.
+  for a scarce process-local resource, at graph, node, and component scope.
+  A graph- or node-scope permit is held for the whole node execution, a
+  component that owns the resource acquires it at the exact scarce use, and
+  a permit wait is neither a failure nor a retry attempt.
 
 Plus delayed start: a future ``start_at`` persists and fingerprints at
 submission, a past one is immediately eligible, stopping before due
@@ -916,7 +917,7 @@ class TestProviderLimiterScopes:
         assert quota.in_flight == 0
 
     async def test_component_scope_holds_the_permit_only_at_the_scarce_call(self):
-        """The preferred owner of a provider quota: the shared component."""
+        """The shared component that owns a scarce process-local resource holds the permit only at the exact scarce use."""
         client = _ProviderClient(max_in_flight=1)
         inside_together = _PeakTracker()
 
@@ -1079,7 +1080,7 @@ class _PeakTracker:
 
 
 class _ProviderClient:
-    """A shared component that owns its provider quota (canon's preferred owner)."""
+    """A shared component that owns a scarce process-local resource and acquires its budget at the exact scarce use."""
 
     def __init__(self, max_in_flight: int) -> None:
         self._quota = ProcessLocalLimiter(max_in_flight=max_in_flight)
