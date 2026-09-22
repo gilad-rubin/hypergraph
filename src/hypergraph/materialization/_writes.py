@@ -21,6 +21,7 @@ Two rules hold everywhere below:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -205,6 +206,17 @@ def _as_stored(value: Any, arrow_type: Any) -> Any:
         return pa.array([value], type=arrow_type).to_pylist()[0]
     except (pa.ArrowException, TypeError, ValueError):
         return value
+
+
+def _same_value(left: Any, right: Any) -> bool:
+    """Value equality as a reader sees it: NaN is the same value as NaN, element-wise through lists and dicts."""
+    if isinstance(left, float) and isinstance(right, float) and math.isnan(left) and math.isnan(right):
+        return True
+    if isinstance(left, (list, tuple)) and type(left) is type(right):
+        return len(left) == len(right) and all(_same_value(a, b) for a, b in zip(left, right, strict=True))
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(_same_value(left[key], right[key]) for key in left)
+    return bool(left == right)
 
 
 def _pause_provenance(provenances: Mapping[str, str], pause: PauseInfo, *, routed: bool = False) -> str:
@@ -592,7 +604,7 @@ class WritePlanner:
             if spec.map_input
         )
         return boundary_moved or any(
-            _as_stored(existing.get(column.name), column.arrow_type) != _as_stored(row.get(column.name), column.arrow_type)
+            not _same_value(_as_stored(existing.get(column.name), column.arrow_type), _as_stored(row.get(column.name), column.arrow_type))
             for column in self._provenance.derived_columns()
         )
 

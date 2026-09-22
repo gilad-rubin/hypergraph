@@ -327,9 +327,11 @@ a derived column's provenance, or the recipe stamp — and this is the same cost
 or a stored value (a node whose output varies between runs can answer
 differently) is a rebuild and reports the repair; one that only moves stamps
 over identical values is bookkeeping and reports `SKIPPED`. Values are compared
-as the store reads them back, so a `list[float]` kept as float32 is not a
-change. A retry that fails again leaves the child in error and reports
-`UPDATED` rather than `HEALED`, and the next `sync()` tries it again.
+at the column's declared type — a `list[float]` column is float32 — so a vector
+read back as float32 is not a change and a difference below that precision is
+not reported; NaN counts as the same value as NaN. A retry that fails again
+leaves the child in error and reports `UPDATED` rather than `HEALED`, and the
+next `sync()` tries it again.
 
 ### `delete(id) -> None`
 

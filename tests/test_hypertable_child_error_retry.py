@@ -817,3 +817,41 @@ def test_counting_boundary_restamp_over_values_read_back_from_lancedb_stays_skip
 
     assert _outcomes(receipt) == [("skipped", "complete")], "a recipe-only restamp over round-tripped values derives nothing"
     assert LanceDBStore(path).read_one("doc", "doc_id", "d1")["_recipe_fingerprint"]
+
+
+@node(output_name="score")
+def score_missing(text: str) -> float:
+    return float("nan")  # a missing metric, stored as NaN
+
+
+def _drop_parent_recipe_stamp(store) -> None:
+    """Make the stored parent a legacy row: same values and stamps, no recipe stamp."""
+    stored = store.read_one("doc", "doc_id", "d1")
+    store.delete_rows("doc", [("doc_id", "eq", "d1")])
+    store.write_rows("doc", [{**stored, "_recipe_fingerprint": None}])
+
+
+@pytest.mark.parametrize("backend", ["memory", "lancedb"])
+def test_counting_boundary_recipe_only_restamp_over_nan_stays_skipped(backend, tmp_path):
+    """NaN is the same stored value as NaN: a restamp over it derives nothing."""
+    from hypergraph.materialization import LanceDBStore
+
+    rows: dict[str, list[dict[str, Any]]] = {}
+    path = str(tmp_path / "scores")
+
+    def store():
+        return MemoryStore(rows) if backend == "memory" else LanceDBStore(path)
+
+    def table():
+        return Graph(
+            [score_missing, split_words_titled, process_word.as_node().map_over("utterances", identity="utterance_id")],
+            name="doc",
+        ).as_table(identity="doc_id", store=store(), on_error="store", runner=SyncRunner())
+
+    table().sync([DOC])
+    _drop_parent_recipe_stamp(store())
+
+    receipt = table().insert([DOC])
+
+    assert _outcomes(receipt) == [("skipped", "complete")], "every stored value is identical, NaN included"
+    assert store().read_one("doc", "doc_id", "d1")["_recipe_fingerprint"]
