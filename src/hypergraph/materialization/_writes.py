@@ -679,7 +679,11 @@ class WritePlanner:
         returned ``None`` returned a value, not a failure, so it gets no entry.
         A column the run never reached — its node comes after the failure and is
         not the one that failed — keeps whatever ``kept`` already stored for it,
-        so a second failure never costs a column the first one saved."""
+        so a second failure never costs a column the first one saved.
+
+        A failed fan-out boundary has no stored parent column to null — the
+        parent keeps only its stamp — so it gets one ``NODE_ERROR`` entry naming
+        the ``map_over`` input its child table could not be rebuilt from."""
         outputs: dict[str, Any] = {}
         changes: list[ColumnChange] = []
         for column in self._provenance.derived_columns():
@@ -699,6 +703,10 @@ class WritePlanner:
                     else ChangeReason.NOT_RUN
                 )
                 changes.append(ColumnChange(column.name, reason, node))
+        for child_spec in self._spec.children:
+            blamed = self._blamed(self._provenance.boundary_node(child_spec), failures)
+            if blamed is not None and child_spec.map_input:
+                changes.append(ColumnChange(child_spec.map_input, ChangeReason.NODE_ERROR, blamed, failures[blamed]))
         return outputs, tuple(changes)
 
     def _degraded_parent(
@@ -717,7 +725,10 @@ class WritePlanner:
 
         Falls back to the total-loss error row whenever column granularity
         would be a claim this run cannot support: a failure the runner could
-        not attribute to a node, or one that left no derived column standing."""
+        not attribute to a node, one that left no derived column standing, or
+        one no change entry can name — a failed node with no output, which a
+        partial row's column-scoped heal would never run again. A failed
+        fan-out boundary is named by its ``map_over`` input, so it stays PARTIAL."""
         kept_values = self._provenance.stored_values(kept) if kept is not None else {}
         outputs, changes = self._partial_columns(
             degradation.values,
