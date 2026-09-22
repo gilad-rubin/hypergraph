@@ -1113,18 +1113,22 @@ class WritePlanner:
         ``<provenance>#<count>`` value stamped on the parent row) against the
         physically present deduplicated child rows, and reads their ``_status``
         so a stored failure is not counted as a healthy child (#314). One
-        ``read_rows`` per child table per parent row; never writes. Child specs
-        whose boundary cannot be reconciled column-scoped (no boundary node, or
-        the boundary also produces a stored parent column) are skipped — for
-        them a repair could not honor the "present children and parent are not
-        re-derived" contract, so the fast path is preserved unchanged.
+        ``read_rows`` per child table per parent row; never writes.
+
+        A child spec whose boundary also produces a stored parent column is
+        probed like any other — the probe is read-only either way. When it
+        finds damage, the ordinary write plan reaches the same
+        ``ReconcileUnavailable`` -> ``_derived_parent`` repair ``insert()``
+        already takes for that shape (``Provenance.next_reconcile_step``), so
+        both verbs give one damage one answer (#468). A child spec with no
+        boundary node is skipped: no ``<provenance>#<count>`` stamp is written
+        for it, so there is no recorded count to compare against.
         """
         identity_value = existing[self._identity]
         for child_spec in self._spec.children:
             if child_spec.child_graph is None or not child_spec.map_input:
                 continue
-            boundary = self._provenance.boundary_node(child_spec)
-            if boundary is None or any(boundary in self._provenance.column_producers(column) for column in self._provenance.derived_columns()):
+            if self._provenance.boundary_node(child_spec) is None:
                 continue
             _, expected = split_boundary_provenance(existing.get(f"_provenance_{child_spec.map_input}"))
             if expected is None:

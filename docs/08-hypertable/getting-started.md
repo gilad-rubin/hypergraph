@@ -214,9 +214,7 @@ for failed in documents.errors():
 A stored error is a retry, not a verdict. Once the cause is fixed, the next
 `insert()` of the same item re-runs exactly the failed row — root rows and
 child rows alike — and nothing that already succeeded is re-derived. `sync()`
-retries a failed child too, except where the fan-out boundary also feeds a
-stored parent column; there the row stays `skipped` and `insert()` is the
-repair path.
+retries a failed child too.
 
 ## Child grains
 

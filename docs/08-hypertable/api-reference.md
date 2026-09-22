@@ -309,8 +309,12 @@ are not re-derived, though present child rows are rewritten at the repair's
 generation. A physically missing row leaves nothing to rebuild the item list
 from, so the fan-out boundary re-runs once to regenerate it; a stored error
 row still carries its own item, so the stored list is reused and the boundary
-does not re-run. A retry that fails again leaves the child in error and
-reports `UPDATED` rather than `HEALED`, and the next `sync()` tries it again.
+does not re-run. When the fan-out boundary also produces a stored parent
+column, the repair cannot be scoped to the damaged child, so the graph runs
+once for the row; the parent row is still not rewritten, and this is the same
+cost `insert()` pays to repair that shape. A retry that fails again leaves the
+child in error and reports `UPDATED` rather than `HEALED`, and the next
+`sync()` tries it again.
 
 ### `delete(id) -> None`
 

@@ -15,6 +15,11 @@ retry contract in #205; this is the same contract one level down:
   still there to retry next time.
 
 Under ``on_error="raise"`` nothing is stored, so there is nothing to retry.
+
+When the fan-out boundary also produces a stored parent column (#468), the
+repair cannot be column-scoped: sync() takes the same whole-graph repair
+insert() takes, with the same receipt and the same execution counts, and the
+parent row is still not rewritten. Healthy children keep the zero-write skip.
 """
 
 from __future__ import annotations
@@ -321,3 +326,133 @@ async def test_async_all_children_complete_stays_a_zero_write_skip():
     assert [(row.outcome.value, row.status.value) for row in receipt.receipts] == [("skipped", "complete")]
     assert (executions["clean"], executions["split"], executions["child"]) == (0, 0, 0)
     assert store.rows == snapshot
+
+
+# ---------------------------------------------------------------------------
+# 6. A fan-out boundary that also produces a stored parent column (#468)
+# ---------------------------------------------------------------------------
+
+
+@node(output_name=("utterances", "word_count"))
+def split_words_counting(text: str) -> tuple[list[Utterance], int]:
+    """The fan-out boundary ALSO produces the stored parent column ``word_count``."""
+    executions["split"] += 1
+    words = text.split()
+    return [Utterance(utterance_id=f"u{i}", text=word) for i, word in enumerate(words)], len(words)
+
+
+def _counting_table(store, *, runner=None, on_error="store"):
+    return Graph(
+        [split_words_counting, process_word.as_node().map_over("utterances", identity="utterance_id")],
+        name="doc",
+    ).as_table(identity="doc_id", store=store, on_error=on_error, runner=runner or SyncRunner())
+
+
+def _damaged_counting_store() -> MemoryStore:
+    store = MemoryStore()
+    fail_on_word.add("beta")
+    _counting_table(store).insert(doc_id="d1", text="alpha beta")
+    assert _child_state(store) == {"u0": ("complete", "t:alpha"), "u1": ("error", None)}
+    fail_on_word.discard("beta")
+    _reset_counters()
+    return store
+
+
+def _outcomes(receipt) -> list[tuple[str, str]]:
+    return [(row.outcome.value, row.status.value) for row in receipt.receipts]
+
+
+def test_sync_heals_a_child_error_under_a_counting_boundary():
+    """On master the unchanged-parent probe skipped this child spec outright, so
+    sync() reported SKIPPED forever and status() never became fresh. The same
+    damage is now repaired the way insert() repairs it: the graph runs once for
+    the row, the failed child is rebuilt, the parent row is not rewritten."""
+
+    store = _damaged_counting_store()
+    parent_rows = [row.copy() for row in store.rows["doc"]]
+    fresh = _counting_table(MemoryStore(store.rows))
+    assert fresh.status().is_fresh is False
+
+    receipt = fresh.sync([{"doc_id": "d1", "text": "alpha beta"}])
+
+    assert _outcomes(receipt) == [("healed", "complete")]
+    assert (receipt.healed, receipt.skipped) == (1, 0)
+    assert _child_state(store) == {"u0": ("complete", "t:alpha"), "u1": ("complete", "t:beta")}
+    assert fresh.child("utterance").errors() == ()
+    assert executions == {"clean": 0, "split": 1, "child": 1}
+    assert store.rows["doc"] == parent_rows, "the parent row must not be rewritten"
+    assert fresh.status().is_fresh is True
+
+
+def test_sync_and_insert_agree_under_a_counting_boundary():
+    """One damage, one answer: insert() and sync() over the identical store
+    produce the same receipt, child state, stored errors and execution counts."""
+
+    observed = {}
+    for verb in ("insert", "sync"):
+        store = _damaged_counting_store()
+        table = _counting_table(MemoryStore(store.rows))
+        receipt = getattr(table, verb)([{"doc_id": "d1", "text": "alpha beta"}])
+        observed[verb] = (
+            _outcomes(receipt),
+            _child_state(store),
+            [row.id for row in table.child("utterance").errors()],
+            dict(executions),
+        )
+
+    assert observed["sync"] == observed["insert"]
+    assert observed["insert"][0] == [("healed", "complete")], "the shared answer is a heal"
+
+
+def test_counting_boundary_healthy_children_stay_a_zero_write_skip():
+    """The falsifier: with every child complete the probe finds no damage, so
+    the boundary never runs and nothing is written."""
+
+    store = MemoryStore()
+    _counting_table(store).sync([{"doc_id": "d1", "text": "alpha beta"}])
+    snapshot = {name: [row.copy() for row in rows] for name, rows in store.rows.items()}
+    _reset_counters()
+
+    receipt = _counting_table(MemoryStore(store.rows)).sync([{"doc_id": "d1", "text": "alpha beta"}])
+
+    assert _outcomes(receipt) == [("skipped", "complete")]
+    assert executions == {"clean": 0, "split": 0, "child": 0}
+    assert store.rows == snapshot, "the fast path must stay zero-write"
+
+
+def test_counting_boundary_retry_that_fails_again_reports_updated():
+    """R13: a repair whose retry fails again healed nothing, so it reports
+    UPDATED, the child stays in error, and the next sync() after the fix heals."""
+
+    store = MemoryStore()
+    fail_on_word.add("beta")
+    _counting_table(store).insert(doc_id="d1", text="alpha beta")
+
+    second = _counting_table(MemoryStore(store.rows))
+    receipt = second.sync([{"doc_id": "d1", "text": "alpha beta"}])
+
+    assert _outcomes(receipt) == [("updated", "complete")]
+    assert (receipt.healed, receipt.skipped) == (0, 0)
+    assert _child_state(store) == {"u0": ("complete", "t:alpha"), "u1": ("error", None)}
+    assert [row.id for row in second.child("utterance").errors()] == ["u1"]
+
+    fail_on_word.discard("beta")
+    assert _counting_table(MemoryStore(store.rows)).sync([{"doc_id": "d1", "text": "alpha beta"}]).healed == 1
+
+
+@pytest.mark.asyncio
+async def test_async_sync_heals_a_child_error_under_a_counting_boundary():
+    store = MemoryStore()
+    fail_on_word.add("beta")
+    await _counting_table(store, runner=AsyncRunner()).insert(doc_id="d1", text="alpha beta")
+    assert _child_state(store) == {"u0": ("complete", "t:alpha"), "u1": ("error", None)}
+
+    fail_on_word.discard("beta")
+    _reset_counters()
+
+    fresh = _counting_table(MemoryStore(store.rows), runner=AsyncRunner())
+    receipt = await fresh.sync([{"doc_id": "d1", "text": "alpha beta"}])
+
+    assert _outcomes(receipt) == [("healed", "complete")]
+    assert _child_state(store) == {"u0": ("complete", "t:alpha"), "u1": ("complete", "t:beta")}
+    assert executions == {"clean": 0, "split": 1, "child": 1}
