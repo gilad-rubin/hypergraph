@@ -1964,44 +1964,52 @@ expression-language admission key. Overload delays work; it never drops it.
 
 ## Provider-Resource Admission
 
-Host work admission is not the same control as an external provider's
-concurrency limit, and Hypergraph keeps them apart. A `ProcessLocalLimiter`
-is an injected budget over **external capacity** — the name states its
-scope: it coordinates only this process, and this tier ships no distributed
-limiter.
+Host work admission is not the same control as a limit on an external
+resource, and Hypergraph keeps them apart. Which tool owns that limit
+depends on what is scarce:
+
+- **An HTTP provider's API quota** is spent per HTTP attempt, so it belongs
+  at the client's transport, which admits each attempt on its own — for
+  example hyperlimit's `LimitedTransport` on an `httpx.AsyncClient` (see
+  [Not for HTTP provider quotas](nodes.md#not-for-http-provider-quotas)).
+- **A scarce process-local resource** — a GPU, a local model, a subprocess
+  pool, database connections — is what a `ProcessLocalLimiter` budgets. The
+  name states its scope: it coordinates only this process, and this tier
+  ships no distributed limiter.
 
 ```python
 from hypergraph import ProcessLocalLimiter
 
-quota = ProcessLocalLimiter(max_in_flight=4)
-quota.max_in_flight    # 4
-quota.in_flight        # permits held right now
+budget = ProcessLocalLimiter(max_in_flight=4)
+budget.max_in_flight    # 4
+budget.in_flight        # permits held right now
 ```
 
 Three injection scopes, narrowest budget last:
 
 ```python
-class SummaryClient:                      # component scope — usually the right
-    def __init__(self) -> None:           # owner of a provider quota
-        self._quota = ProcessLocalLimiter(max_in_flight=4)
+class LocalEmbedder:                      # component scope — the object
+    def __init__(self) -> None:           # that owns the resource
+        self._gpu = ProcessLocalLimiter(max_in_flight=2)
 
-    async def summarize(self, text: str) -> str:
-        async with self._quota:           # acquired at the exact scarce call
-            return await self._http.post(...)
+    def embed(self, text: str) -> list[float]:
+        with self._gpu:                   # acquired at the exact scarce use
+            return self._model.encode(text)
 
-@node(output_name="summary", provider_limit=ProcessLocalLimiter(max_in_flight=2))
-async def summarize(doc: str) -> str: ... # node scope
+@node(output_name="embedding", provider_limit=ProcessLocalLimiter(max_in_flight=2))
+def embed(text: str) -> list[float]: ...  # node scope
 
 graph = graph.with_provider_limit(ProcessLocalLimiter(max_in_flight=8))
 #                                         graph scope (immutable, metadata only)
 ```
 
 Several graphs and nodes reuse one shared component, so letting the
-component own the quota keeps the permit held for the provider call and
+component own the budget keeps the permit held for the scarce use and
 nothing else. Graph- and node-scope limits are **work budgets**: the permit
-covers the whole node execution, retry backoff included. They compose as
-narrower limits around a component quota; they never replace it. Give each
-scope its own limiter instance — the pools are not reentrant.
+covers the whole node execution — retries, backoff, and cache hits inside
+the body included — which is why they suit a local resource and not a
+provider quota. Give each scope its own limiter instance — the pools are
+not reentrant.
 
 A graph budget is a shared object, so two concurrent Runs of the same graph
 draw on the same permits — what a per-call runner budget cannot express.

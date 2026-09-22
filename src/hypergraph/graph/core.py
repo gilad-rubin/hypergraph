@@ -1442,9 +1442,11 @@ class Graph:
     def with_provider_limit(self, provider_limit: ProcessLocalLimiter) -> Graph:
         """Cap how many of this graph's function nodes run at once. Returns new Graph (immutable).
 
-        This is **provider-resource admission** — a work budget over external
-        capacity — and never the durable host's active-Run cap
-        (``RunHome.max_active_runs``), which counts Runs a worker executes.
+        This is a work budget over a scarce process-local resource (GPU,
+        local model, subprocess pool, DB connections) — never the durable
+        host's active-Run cap (``RunHome.max_active_runs``), which counts
+        Runs a worker executes, and not an HTTP provider's API quota, which
+        belongs at the client's transport where each attempt is admitted.
         The limiter is a shared object: two concurrent Runs of this graph
         draw on the same permits, which is what a per-call runner budget
         cannot express.
@@ -1474,8 +1476,8 @@ class Graph:
             raise TypeError(
                 f"with_provider_limit() expects a ProcessLocalLimiter, got {type(provider_limit).__name__}.\n\n"
                 "How to fix:\n"
-                "  Share one limiter across the work that draws on the same external\n"
-                "  capacity: graph.with_provider_limit(ProcessLocalLimiter(max_in_flight=4))"
+                "  Share one limiter across the work that holds the same scarce\n"
+                "  process-local resource: graph.with_provider_limit(ProcessLocalLimiter(max_in_flight=4))"
             )
         new_graph = self._shallow_copy()
         new_graph._provider_limit = provider_limit

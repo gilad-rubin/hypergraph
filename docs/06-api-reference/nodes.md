@@ -183,7 +183,7 @@ def __init__(
 - `wait_for`: Ordering-only graph-scope output/emit address(es). Node waits until these values exist and are fresh
 - `retry`: Optional [RetryPolicy](#retrypolicy). Node-owned only — there is no runner, graph, or per-call retry default, and no `retry=True` shorthand. Direct calls stay raw single-shot invocations
 - `timeout`: Optional positive, finite seconds for cooperative cancellation of async functions/generators under `AsyncRunner`. Unsupported runner/callable combinations are rejected before execution. Direct calls stay raw
-- `provider_limit`: Optional [ProcessLocalLimiter](#processlocallimiter) capping how many executions of this node run at once in this process. Direct calls stay raw and take no permit
+- `provider_limit`: Optional [ProcessLocalLimiter](#processlocallimiter) capping how many executions of this node run at once in this process — a budget for a process-local resource, not an HTTP provider's API quota. Direct calls stay raw and take no permit
 - `trace_io`: Attach this node's inputs and output to its observability span. Tri-state: `None` (default) defers to the graph's `trace_io`, `True`/`False` decide for this node. Spans only — durable records are unaffected. See [Observe execution](../05-how-to/observe-execution.md#node-inputs-and-outputs-on-spans)
 
 **Returns:** FunctionNode instance
@@ -524,7 +524,7 @@ def node(
 - `wait_for`: Ordering-only graph-scope output/emit address(es). Node won't run until these values exist and are fresh. Must reference an `emit` or `output_name` of another node at the current graph scope
 - `retry`: Optional [RetryPolicy](#retrypolicy) declaring which failures are safe to repeat and with what budget/backoff. See [How to Retry Transient Failures](../05-how-to/retry-transient-failures.md)
 - `timeout`: Optional positive, finite seconds for cooperative per-attempt cancellation of async functions/generators under `AsyncRunner`. See [Bound one async attempt with timeout](../05-how-to/retry-transient-failures.md#bound-one-async-attempt-with-timeout)
-- `provider_limit`: Optional [ProcessLocalLimiter](#processlocallimiter) capping how many executions of this node run at once in this process. Not the durable host's active-Run cap — see [ProcessLocalLimiter](#processlocallimiter)
+- `provider_limit`: Optional [ProcessLocalLimiter](#processlocallimiter) capping how many executions of this node run at once in this process — a budget for a process-local resource, not an HTTP provider's API quota. Not the durable host's active-Run cap — see [ProcessLocalLimiter](#processlocallimiter)
 - `trace_io`: Attach this node's inputs and output to its observability span so a trace backend can render them. `None` (default) defers to the graph's `trace_io` default; `True`/`False` decide for this node. Payloads ride spans only — no durable record changes. See [Observe execution](../05-how-to/observe-execution.md#node-inputs-and-outputs-on-spans)
 
 **Returns:**
@@ -693,21 +693,23 @@ class RetryAfterError(Exception):
 
 ## ProcessLocalLimiter
 
-An injected budget over **external capacity** — how many concurrent calls a
-provider tolerates. The name states its coordination scope: it covers only
+An injected budget over a **scarce, process-local resource** — a GPU, a
+local model, a subprocess pool, database connections — held for a whole
+node execution. The name states its coordination scope: it covers only
 the process that constructed it, and there is no distributed variant in this
 release. It is not the durable host's active-Run cap
 ([`RunHome.max_active_runs`](host.md#host-work-admission)), which counts
-Runs a worker executes.
+Runs a worker executes, and it is not an HTTP provider's API quota (see
+[Not for HTTP provider quotas](#not-for-http-provider-quotas)).
 
 ```python
 from hypergraph import ProcessLocalLimiter, node
 
-quota = ProcessLocalLimiter(max_in_flight=2)
+gpu = ProcessLocalLimiter(max_in_flight=2)   # two model copies fit on the GPU
 
-@node(output_name="summary", provider_limit=quota)
-async def summarize(doc: str) -> str:
-    return await client.generate(doc)
+@node(output_name="embedding", provider_limit=gpu)
+def embed(text: str) -> list[float]:
+    return local_model.encode(text)
 ```
 
 ### Signature
@@ -729,20 +731,19 @@ class ProcessLocalLimiter:
 
 ### Semantics
 
-- **Three scopes, one object.** Acquire it inside a shared **component** at
-  the exact scarce call (usually the right owner of a provider quota); pass
-  it as `@node(provider_limit=...)` for **node** scope; or bind it with
+- **Three scopes, one object.** Acquire it inside the shared **component**
+  that owns the resource, at the exact scarce use; pass it as
+  `@node(provider_limit=...)` for **node** scope; or bind it with
   `graph.with_provider_limit(...)` for **graph** scope. A graph budget
   covers nested graphs too, so a node stays covered when it moves inside
   `as_node()`.
 - **Shared across runs.** A limiter is a long-lived object, so two
   concurrent Runs of the same graph draw on the same permits.
-- **Work budget vs quota.** Node and graph scope hold the permit for the
-  whole node execution, retry backoff included. They compose as narrower
-  limits around a component quota; they never replace it. The pools are not
-  reentrant, so acquiring the same one twice on a path deadlocks —
-  Hypergraph collapses a graph and node budget that are literally the same
-  object to one permit.
+- **Whole-execution budget.** Node and graph scope hold the permit for the
+  whole node execution — every retry attempt, the backoff between them,
+  and any cache hit the body serves. The pools are not reentrant, so
+  acquiring the same one twice on a path deadlocks — Hypergraph collapses
+  a graph and node budget that are literally the same object to one permit.
 - **Composition is deadlock-free.** When a node needs several *different*
   limiters, the runner takes them in one process-wide order (the order the
   limiters were constructed in), not in scope order. That is what lets two
@@ -764,11 +765,11 @@ class ProcessLocalLimiter:
 > thread also stops the tasks holding the permits from releasing them, so the
 > wait could never end. `ProcessLocalLimiter` raises a `RuntimeError` naming
 > the fix instead of hanging. A **sync** node function that does
-> `with self._quota:` is *not* that case: under `AsyncRunner` a sync body
+> `with self._gpu:` is *not* that case: under `AsyncRunner` a sync body
 > runs on a worker thread (see [AsyncRunner](runners.md#asyncrunner)), so
 > the wait legitimately blocks that worker while the loop keeps releasing
 > permits. The guard bites code that really is on a loop thread — `async`
-> code taking the sync form — where the fix is `async with self._quota:`,
+> code taking the sync form — where the fix is `async with self._gpu:`,
 > or declare the budget as `@node(provider_limit=...)` /
 > `graph.with_provider_limit(...)` and let the runner take the permit for
 > you (it always takes it correctly for the runner in use).
@@ -780,8 +781,36 @@ class ProcessLocalLimiter:
 > combination raises `IncompatibleRunnerError` at the boundary — before the
 > nested run starts, and whether or not the permit happens to be free — so
 > it cannot pass in development and hang under load. Drop the `runner=`
-> override, drop the budget from that branch, or own the quota in the
-> component.
+> override, or drop the budget from that branch.
+
+### Not for HTTP provider quotas
+
+An HTTP provider's API quota is spent per HTTP attempt. A node- or
+graph-scope permit is held for the whole node execution: through retries,
+the backoff sleeps between them, and cache hits the body serves without
+reaching the provider. Used as an API quota, it throttles work the provider
+never sees. Admit each HTTP attempt at the client's transport instead — for
+example hyperlimit's `LimitedTransport` on an `httpx.AsyncClient` — and give
+the node no `provider_limit`:
+
+```python
+import httpx
+from hyperlimit import AdaptiveLimiter
+from hyperlimit.httpx import LimitedTransport
+
+from hypergraph import Graph, node
+
+http = httpx.AsyncClient(
+    transport=LimitedTransport(limiter=AdaptiveLimiter(initial=3, floor=1, cap=12))
+)
+
+@node(output_name="summary")                 # no provider_limit
+async def summarize(doc: str, http: httpx.AsyncClient) -> str:
+    response = await http.post("https://api.example.com/v1/summarize", json={"doc": doc})
+    return response.json()["summary"]
+
+graph = Graph([summarize]).bind(http=http)   # or an SDK client built on `http`
+```
 
 ### Related concurrency controls
 
@@ -789,9 +818,12 @@ Three different budgets, three different owners — pick by what is scarce:
 
 | Control | Scope | Owns |
 |---|---|---|
-| `ProcessLocalLimiter` | process-wide, shared across runs | an external provider's concurrency |
+| `ProcessLocalLimiter` | process-wide, shared across runs | a scarce process-local resource (GPU, local model, subprocess pool, DB connections) |
 | [`AsyncRunner(max_concurrency=...)`](runners.md#concurrency-control) | one `run()`/`map()` call | how much of *this* call runs at once |
 | [`@stateful(max_concurrency=...)`](runners.md#stateful) | one Daft worker replica | how many rows a `@daft.cls` instance handles at once |
+
+An HTTP provider's API quota is not a `ProcessLocalLimiter` budget; see
+[Not for HTTP provider quotas](#not-for-http-provider-quotas).
 
 `ProcessLocalLimiter` and `@stateful(max_concurrency=...)` express the same
 idea — a component-scoped budget around a shared resource — at two layers:

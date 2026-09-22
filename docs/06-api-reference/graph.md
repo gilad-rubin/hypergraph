@@ -712,11 +712,13 @@ SyncRunner().run(instrumented, {"x": 1})  # spans exported, no call-site wiring
 Cap how many of this graph's function nodes execute at once, process-wide.
 Returns a new Graph (immutable pattern).
 
-This is **provider-resource admission** — a work budget over external
-capacity — never the durable host's active-Run cap
-([`RunHome.max_active_runs`](host.md#host-work-admission)). The limiter is a
-shared object, so two concurrent Runs of this graph draw on the same
-permits; that is what a per-call runner budget cannot express.
+This is a **work budget** over a scarce, process-local resource (a GPU, a
+local model, a subprocess pool, database connections) — never the durable
+host's active-Run cap ([`RunHome.max_active_runs`](host.md#host-work-admission)),
+and not an HTTP provider's API quota
+([Not for HTTP provider quotas](nodes.md#not-for-http-provider-quotas)). The
+limiter is a shared object, so two concurrent Runs of this graph draw on the
+same permits; that is what a per-call runner budget cannot express.
 
 ```python
 from hypergraph import ProcessLocalLimiter

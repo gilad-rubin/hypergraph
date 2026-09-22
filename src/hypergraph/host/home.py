@@ -1007,8 +1007,9 @@ class RunHome(SqliteCheckpointer):
 
         This counts *Runs a worker executes*, so it is not the same control
         as a ``ProcessLocalLimiter`` (``provider_limit``), which counts
-        concurrent calls to an external provider. A claimed Run parked on a
-        provider permit is still executing and still holds its slot here.
+        executions holding a scarce process-local resource. A claimed Run
+        parked on a provider permit is still executing and still holds its
+        slot here.
         None means unlimited (no Run ever reports ADMISSION_LIMITED).
         """
         with self._sync_lock:

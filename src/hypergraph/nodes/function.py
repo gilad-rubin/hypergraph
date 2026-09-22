@@ -146,11 +146,13 @@ class FunctionNode(CallableMixin, HyperNode):
                      cancellation of an async callable under AsyncRunner.
             provider_limit: Optional :class:`~hypergraph.limits.ProcessLocalLimiter`
                      gating how many executions of THIS node run at once in
-                     this process (a provider-resource work budget, never
-                     the host's active-Run cap). The permit covers the whole
-                     node execution, retry backoff included; a component
-                     that owns a provider quota should acquire its own
-                     limiter at the exact scarce call instead. Waiting for a
+                     this process — a budget for a scarce process-local
+                     resource (GPU, local model, subprocess pool, DB
+                     connections), never the host's active-Run cap. The
+                     permit covers the whole node execution, retries,
+                     backoff and in-body cache hits included, so it is not
+                     an HTTP provider's API quota: admit each HTTP attempt
+                     at the client's transport for that. Waiting for a
                      permit is not a failure and spends no retry attempt.
                      Direct calls stay raw and do not acquire it.
             trace_io: Attach this node's input kwargs and output values to its
@@ -197,8 +199,8 @@ class FunctionNode(CallableMixin, HyperNode):
             raise TypeError(
                 f"provider_limit must be a ProcessLocalLimiter (or None), got {provider_limit!r}.\n\n"
                 "How to fix:\n"
-                "  Share one limiter across the work that draws on the same external\n"
-                "  capacity: provider_limit=ProcessLocalLimiter(max_in_flight=4)."
+                "  Share one limiter across the work that holds the same scarce\n"
+                "  process-local resource: provider_limit=ProcessLocalLimiter(max_in_flight=4)."
             )
 
         if trace_io is not None and not isinstance(trace_io, bool):
@@ -418,9 +420,11 @@ def node(
                  calls stay raw and do not apply the timeout.
         provider_limit: Optional ProcessLocalLimiter capping how many
                  executions of this node run at once in this process — a
-                 provider-resource work budget, never the host's active-Run
-                 cap. Waiting for a permit is not a failure and spends no
-                 retry attempt. Direct calls stay raw and do not acquire it.
+                 budget for a scarce process-local resource, never the
+                 host's active-Run cap and not an HTTP provider's API quota
+                 (the permit is held across retries and backoff). Waiting
+                 for a permit is not a failure and spends no retry attempt.
+                 Direct calls stay raw and do not acquire it.
         trace_io: Attach this node's inputs and output to its observability
                  span so a trace backend can render them. ``None`` (default)
                  defers to the graph's ``trace_io``; ``True``/``False`` decide

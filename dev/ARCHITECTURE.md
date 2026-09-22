@@ -18,7 +18,7 @@ One-way: downstream modules import upstream, never the reverse. `nodes` knows no
 
 ### limits.py
 
-Injected provider-resource budgets — permit pools over external capacity.
+Injected provider-resource budgets — permit pools over a scarce process-local resource (never an HTTP provider's API quota, which belongs at the client's transport).
 
 | File | Purpose |
 |------|---------|
