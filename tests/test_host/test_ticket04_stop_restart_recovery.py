@@ -5,17 +5,19 @@ after-terminal and unknown-run errors, first-stop-wins dedup, stop before
 first execution (never executes, no runs row invented), a real SIGKILL
 subprocess restart that resumes without re-executing committed steps, the
 recovery brake (progressless crash loops park as recovery-exhausted;
-progress resets the budget; rerun revives), and client.list filtering over
-the extended waiting vocabulary.
+progress resets the budget; rerun revives), nested runs a dead worker left
+``active`` settling with their submission (#465), and client.list filtering
+over the extended waiting vocabulary.
 """
 
 import asyncio
 import contextlib
 import json
+import sqlite3
 import subprocess
 import sys
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -34,7 +36,7 @@ from hypergraph import (
     node,
     serve,
 )
-from hypergraph.checkpointers.types import StepRecord, StepStatus, WorkflowStatus
+from hypergraph.checkpointers.types import BoundaryState, PendingNode, StepRecord, StepStatus, WorkflowStatus
 from tests.test_host._batch_api import serve_graphs
 
 aiosqlite = pytest.importorskip("aiosqlite")
@@ -542,6 +544,241 @@ class TestRecoveryBrake:
         assert first.duplicate is False
         assert dup.duplicate is True
         assert home._get_submission_sync("wf-cap")["recovery_cap"] == 2
+
+
+# === 3b. A tree a dead worker abandoned settles with its submission (#465) ===
+
+_ABANDONED = {"status": "stopped", "reason": "abandoned_incarnation"}
+_CLAIM = 4
+
+
+async def _stage_abandoned_tree(
+    home,
+    *,
+    root_status: WorkflowStatus = WorkflowStatus.COMPLETED,
+    child_id: str = "wf/x",
+    child_status: WorkflowStatus = WorkflowStatus.ACTIVE,
+    child_parent: str = "wf",
+    child_is_submission: bool = False,
+    recovery_cap: int = 3,
+    recovery_attempts: int = 0,
+) -> None:
+    """What a SIGKILL leaves behind, staged: submission ``wf`` claimed at
+    ``_CLAIM``, its run row, and one ``active`` nested run the dead
+    incarnation committed together with a boundary that never started. The
+    root carries a never-started boundary of its own, which nothing may drop.
+    """
+    host, served = serve_graphs(_sync_graph("rootdef"), home=home, deployment_version="v1")
+    await host.submit(served["rootdef"], {"x": 1}, workflow_id="wf", recovery_cap=recovery_cap)
+    if child_is_submission:
+        await host.submit(served["rootdef"], {"x": 2}, workflow_id=child_id)
+    if child_parent != "wf":
+        home.create_run_sync(child_parent, graph_name="elsewhere")
+    home.create_run_sync("wf", graph_name="rootdef")
+    if root_status is not WorkflowStatus.ACTIVE:
+        home.update_run_status_sync("wf", root_status)
+    home.create_run_sync(child_id, graph_name="page_recipe", parent_run_id=child_parent)
+    if child_status is not WorkflowStatus.ACTIVE:
+        home.update_run_status_sync(child_id, child_status)
+    home.record_pending_nodes_sync(
+        [
+            PendingNode(run_id="wf", superstep=1, node_name="publish"),
+            PendingNode(run_id=child_id, superstep=0, node_name="render"),
+        ]
+    )
+    db = home._sync_db()
+    db.execute(
+        "UPDATE host_submissions SET state = 'claimed', claim_seq = ?, recovery_attempts = ? WHERE workflow_id = 'wf'",
+        (_CLAIM, recovery_attempts),
+    )
+    db.commit()
+
+
+def _journal(home) -> dict[str, list]:
+    """Every row a settle could touch, so a test can diff exactly what moved."""
+    db = home._sync_db()
+    return {
+        "runs": db.execute("SELECT id, status, completed_at FROM runs ORDER BY id").fetchall(),
+        "run_updates": db.execute("SELECT run_id, seq, kind, payload FROM run_updates ORDER BY run_id, seq").fetchall(),
+        "batch_updates": db.execute("SELECT batch_id, bseq, kind, payload FROM batch_updates ORDER BY batch_id, bseq").fetchall(),
+        "pending_nodes": db.execute("SELECT run_id, superstep, node_name FROM pending_nodes ORDER BY run_id, superstep, node_name").fetchall(),
+    }
+
+
+def _run_row(journal, run_id):
+    return next(row for row in journal["runs"] if row[0] == run_id)
+
+
+def _new_updates(before, after):
+    """The run updates ``after`` has that ``before`` did not, payloads decoded."""
+    seen = set(before["run_updates"])
+    return [(row[0], row[2], json.loads(row[3])) for row in after["run_updates"] if row not in seen]
+
+
+class TestAbandonedDescendantsSettleWithTheirSubmission:
+    """A nested run may claim ``active`` only while its submission is unsettled.
+
+    A table page recipe mints a fresh run id per attempt, so the run a killed
+    worker left ``active`` is never re-addressed by the resume. The settle
+    runs in the one transaction that proves nothing will resume the tree
+    under these ids again: the one that moves the submission out of
+    'claimed' into a settled state — never at re-adoption, which resumes it.
+    """
+
+    async def test_release_settles_a_descendant_no_process_holds(self, home):
+        await _stage_abandoned_tree(home, recovery_attempts=1)
+        before = _journal(home)
+
+        assert await home._release_submission("wf", _CLAIM) is True
+
+        after = _journal(home)
+        status, completed_at = _run_row(after, "wf/x")[1:]
+        assert (status, completed_at is not None) == ("stopped", True)
+        # One status update on the orphan, with the reason, and nothing else
+        # new anywhere: no child_settled fact, no update on the submission.
+        assert _new_updates(before, after) == [("wf/x", "status", _ABANDONED)]
+        assert after["batch_updates"] == before["batch_updates"]
+        # Its never-started boundary is dropped; the root's is not.
+        assert after["pending_nodes"] == [("wf", 1, "publish")]
+        # The Run's own row is untouched.
+        assert _run_row(after, "wf") == _run_row(before, "wf")
+        submission = home._get_submission_sync("wf")
+        assert (submission["state"], submission["recovery_attempts"]) == ("finished", 1)
+
+    async def test_release_settles_every_depth_below_the_root(self, home):
+        """A recipe under a nested graph is abandoned the same way: the walk
+        is ``runs.parent_run_id``, so depth is not special."""
+        await _stage_abandoned_tree(home, child_id="wf/inner")
+        home.create_run_sync("run-recipe", graph_name="page_recipe", parent_run_id="wf/inner")
+        before = _journal(home)
+
+        assert await home._release_submission("wf", _CLAIM) is True
+
+        after = _journal(home)
+        assert {run_id: status for run_id, status, _ in after["runs"]} == {"wf": "completed", "wf/inner": "stopped", "run-recipe": "stopped"}
+        assert sorted(_new_updates(before, after)) == [("run-recipe", "status", _ABANDONED), ("wf/inner", "status", _ABANDONED)]
+
+    async def test_a_stale_release_settles_nothing(self, home):
+        await _stage_abandoned_tree(home)
+        before = _journal(home)
+
+        assert await home._release_submission("wf", _CLAIM - 1) is False
+
+        assert _journal(home) == before
+        assert home._get_submission_sync("wf")["state"] == "claimed"
+
+    @pytest.mark.parametrize(
+        "shape",
+        [
+            pytest.param({"child_status": WorkflowStatus.PAUSED}, id="paused-descendant"),
+            pytest.param({"child_parent": "elsewhere"}, id="another-roots-run"),
+            pytest.param({"child_id": "wf-sub", "child_is_submission": True}, id="a-submissions-own-run"),
+        ],
+    )
+    async def test_release_leaves_alone_what_the_claim_does_not_own(self, home, shape):
+        """A paused nested run is waiting on an answer that resumes it under
+        its own id; another root's run is not this claim's; a row that is a
+        submission's own run is only ever settled by that submission."""
+        await _stage_abandoned_tree(home, **shape)
+        before = _journal(home)
+
+        assert await home._release_submission("wf", _CLAIM) is True
+
+        assert _journal(home) == before
+        assert home._get_submission_sync("wf")["state"] == "finished"
+
+    async def test_re_adoption_that_returns_to_pending_leaves_the_tree_alone(self, home):
+        """The tree is about to be resumed under the same ids. A ``stopped``
+        GraphNode child would refuse that resume (``WorkflowStoppedError``
+        from ``lineage.resolve_existing_run``), so nothing below it moves."""
+        await _stage_abandoned_tree(home, root_status=WorkflowStatus.ACTIVE, child_id="wf/inner")
+        before = _journal(home)
+
+        await home._reclaim_expired()
+
+        submission = home._get_submission_sync("wf")
+        assert (submission["state"], submission["recovery_attempts"]) == ("pending", 1)
+        assert _journal(home) == before
+
+    async def test_a_recovery_exhausted_park_settles_the_tree_below_the_root(self, home):
+        await _stage_abandoned_tree(home, root_status=WorkflowStatus.ACTIVE, recovery_cap=1)
+        before = _journal(home)
+
+        await home._reclaim_expired()
+
+        assert home._get_submission_sync("wf")["state"] == "exhausted"
+        after = _journal(home)
+        assert _run_row(after, "wf/x")[1] == "stopped"
+        # The Run's own row stays as it was: parking brakes it, it does not end it.
+        assert _run_row(after, "wf") == _run_row(before, "wf") == ("wf", "active", None)
+        assert _new_updates(before, after) == [
+            ("wf", "recovery_exhausted", {"recovery_attempts": 1, "recovery_cap": 1}),
+            ("wf/x", "status", _ABANDONED),
+        ]
+        assert after["pending_nodes"] == [("wf", 1, "publish")]
+
+    async def test_re_adoption_of_a_terminal_root_settles_its_tree(self, home):
+        """The worker died after its Run committed a terminal status but
+        before it released the claim: the scan finishes the submission, and
+        the tree below it settles in that same transaction."""
+        await _stage_abandoned_tree(home, root_status=WorkflowStatus.COMPLETED)
+        before = _journal(home)
+
+        await home._reclaim_expired()
+
+        assert home._get_submission_sync("wf")["state"] == "finished"
+        after = _journal(home)
+        assert _run_row(after, "wf") == _run_row(before, "wf")
+        assert _new_updates(before, after) == [("wf/x", "status", _ABANDONED)]
+        assert after["pending_nodes"] == [("wf", 1, "publish")]
+
+    async def test_the_settle_keeps_dispatched_and_settled_boundaries(self, home):
+        """Only a boundary that carries no information (``PENDING``) goes. A
+        dispatched effect, a settled node, and a committed step are evidence."""
+        await _stage_abandoned_tree(home)
+        now = datetime.now(timezone.utc)
+        home.save_step_sync(
+            StepRecord(run_id="wf/x", superstep=0, node_name="render", index=0, status=StepStatus.COMPLETED, input_versions={}),
+        )
+        home.record_pending_nodes_sync(
+            [
+                PendingNode(run_id="wf/x", superstep=1, node_name="fetch", dispatched_at=now),
+                PendingNode(run_id="wf/x", superstep=1, node_name="measure", settled_at=now),
+                PendingNode(run_id="wf/x", superstep=1, node_name="publish"),
+            ]
+        )
+        states = {b.node_name: b.state for b in home.get_node_boundaries_sync("wf/x")}
+        assert states == {
+            "render": BoundaryState.COMMITTED,
+            "fetch": BoundaryState.UNKNOWN_EFFECT,
+            "measure": BoundaryState.SETTLED_UNRECORDED,
+            "publish": BoundaryState.PENDING,
+        }
+
+        assert await home._release_submission("wf", _CLAIM) is True
+
+        kept = {b.node_name: b.state for b in home.get_node_boundaries_sync("wf/x")}
+        assert kept == {"render": BoundaryState.COMMITTED, "fetch": BoundaryState.UNKNOWN_EFFECT, "measure": BoundaryState.SETTLED_UNRECORDED}
+
+    async def test_a_settle_failure_rolls_back_the_release(self, home, monkeypatch):
+        """The settle commits with the release or not at all: the claim stays
+        held at the same ``claim_seq``, exactly as any failed release leaves it."""
+        await _stage_abandoned_tree(home)
+        before = _journal(home)
+        settle = RunHome._settle_abandoned_descendants_in_txn
+
+        async def settle_then_fail(self, root_ids):
+            await settle(self, root_ids)
+            raise sqlite3.OperationalError("disk I/O error")
+
+        monkeypatch.setattr(RunHome, "_settle_abandoned_descendants_in_txn", settle_then_fail)
+
+        with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+            await home._release_submission("wf", _CLAIM)
+
+        submission = home._get_submission_sync("wf")
+        assert (submission["state"], submission["claim_seq"]) == ("claimed", _CLAIM)
+        assert _journal(home) == before
 
 
 # === 4. client.list over the extended waiting vocabulary ===
