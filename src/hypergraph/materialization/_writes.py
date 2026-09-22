@@ -47,6 +47,7 @@ from hypergraph.materialization._provenance import (
 from hypergraph.materialization._recipe_journal import RecipeJournal
 from hypergraph.materialization._row_builder import RowBuilder
 from hypergraph.materialization._schema import (
+    PROVENANCE_PREFIX,
     RECIPE_COLUMN,
     TableSpec,
     input_names,
@@ -544,6 +545,18 @@ class WritePlanner:
         if child_items is not None:
             yield from self._insert_children_items(parent_id, child_items, child_spec, child_gens)
 
+    def _parent_stamps_stale(self, existing: Mapping[str, Any], provenances: Mapping[str, str | None]) -> bool:
+        """Whether an unchanged parent must be rewritten to carry this pass's stamps.
+
+        True when a provenance stamp moved — a column's, or a fan-out
+        boundary's ``<provenance>#<count>`` — or when the stored row predates
+        the recipe stamp. Both repair paths for an unchanged parent (the
+        column-scoped reconcile and the whole-graph derive) ask this one
+        question, so a stale recorded count is corrected by whichever runs.
+        """
+        provenance_changed = any(existing.get(f"{PROVENANCE_PREFIX}{name}") != provenance for name, provenance in provenances.items())
+        return provenance_changed or self._provenance.row_missing_stamp(existing, RECIPE_COLUMN)
+
     def _apply_reconciled(
         self,
         item: dict[str, Any],
@@ -571,9 +584,7 @@ class WritePlanner:
                 selection.spec,
                 child_gens,
             )
-        provenance_changed = any(existing.get(f"_provenance_{name}") != provenance for name, provenance in provenances.items())
-        rewrite_parent = not parent_skipped or provenance_changed or self._provenance.row_missing_stamp(existing, RECIPE_COLUMN)
-        if rewrite_parent:
+        if not parent_skipped or self._parent_stamps_stale(existing, provenances):
             self._rows.evolve_for_metadata(item)
             row = self._rows.parent_row(
                 item,
@@ -1038,6 +1049,15 @@ class WritePlanner:
         for child_spec in self._spec.children:
             yield from self._insert_children(identity_value, outputs, child_spec, child_gens)
         if parent_skipped:
+            # The boundary re-ran, so its recorded count may have moved (a
+            # stale or legacy stamp, or an item list that changed length).
+            # Leaving it would send every later sync() back through the graph.
+            row = self._rows.parent_row(item, source_inputs, outputs, write_gen, RowStatus.COMPLETE)
+            stamps = {key.removeprefix(PROVENANCE_PREFIX): value for key, value in row.items() if key.startswith(PROVENANCE_PREFIX)}
+            if existing is not None and self._parent_stamps_stale(existing, stamps):
+                self._rows.evolve_for_metadata(item)
+                self._commit.write_rows(self._spec.name, [row])
+                self._commit.cleanup_parent(identity_value, write_gen)
             self._commit.cleanup_children(identity_value, child_gens)
             return self._unchanged_parent_receipt(identity_value, before)
 

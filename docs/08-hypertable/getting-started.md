@@ -186,10 +186,13 @@ for row_receipt in receipt.errors:
 and deletes identities absent from the incoming collection. An unchanged
 parent whose child rows were damaged is self-repairing: `sync()` compares each
 child table's recorded fan-out count against the child rows physically present
-and reads their status, then re-runs only the children that are missing or
-stored as an error row, reporting the row as `healed` instead of `skipped`
-(or as `updated`, when the retry failed again and healed nothing). `insert()`
-repairs and reports the same way.
+and reads their status, then runs the child graph only for the children that
+are missing or stored as an error row, reporting the row as `healed` instead
+of `skipped` (or as `updated`, when the retry failed again and healed
+nothing). `insert()` repairs and reports the same way. When the fan-out
+boundary also produces a stored parent column (it returns the item list and,
+say, a `word_count`), the repair runs the parent's nodes once as well, because
+that is the only way to regenerate the item list.
 
 ## Stored errors
 
@@ -213,8 +216,9 @@ for failed in documents.errors():
 
 A stored error is a retry, not a verdict. Once the cause is fixed, the next
 `insert()` of the same item re-runs exactly the failed row — root rows and
-child rows alike — and nothing that already succeeded is re-derived. `sync()`
-retries a failed child too.
+child rows alike — and no row that already succeeded is re-derived; the one
+extra cost is the parent-node run described above, for a boundary that also
+produces a stored parent column. `sync()` retries a failed child too.
 
 ## Child grains
 

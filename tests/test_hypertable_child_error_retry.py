@@ -18,8 +18,10 @@ Under ``on_error="raise"`` nothing is stored, so there is nothing to retry.
 
 When the fan-out boundary also produces a stored parent column (#468), the
 repair cannot be column-scoped: sync() takes the same whole-graph repair
-insert() takes, with the same receipt and the same execution counts, and the
-parent row is still not rewritten. Healthy children keep the zero-write skip.
+insert() takes, with the same receipt and the same execution counts. The
+parent row is rewritten only when its recorded boundary stamp changed, so a
+stale count is corrected once and the next sync() settles. Healthy children
+keep the zero-write skip.
 """
 
 from __future__ import annotations
@@ -119,6 +121,7 @@ process_word = Graph([clean_word], name="process_word")
 @pytest.fixture(autouse=True)
 def _reset():
     fail_on_word.clear()
+    appended_words.clear()
     executions["clean"] = executions["split"] = executions["child"] = 0
 
 
@@ -333,11 +336,14 @@ async def test_async_all_children_complete_stays_a_zero_write_skip():
 # ---------------------------------------------------------------------------
 
 
+appended_words: list[str] = []  # lets one input split differently between runs (an LLM splitter, say)
+
+
 @node(output_name=("utterances", "word_count"))
 def split_words_counting(text: str) -> tuple[list[Utterance], int]:
     """The fan-out boundary ALSO produces the stored parent column ``word_count``."""
     executions["split"] += 1
-    words = text.split()
+    words = text.split() + appended_words
     return [Utterance(utterance_id=f"u{i}", text=word) for i, word in enumerate(words)], len(words)
 
 
@@ -456,3 +462,132 @@ async def test_async_sync_heals_a_child_error_under_a_counting_boundary():
     assert _outcomes(receipt) == [("healed", "complete")]
     assert _child_state(store) == {"u0": ("complete", "t:alpha"), "u1": ("complete", "t:beta")}
     assert executions == {"clean": 0, "split": 1, "child": 1}
+
+
+# ---------------------------------------------------------------------------
+# 7. The repair corrects the parent's recorded fan-out count, so it settles
+# ---------------------------------------------------------------------------
+#
+# The probe compares the parent's ``<provenance>#<count>`` stamp against the
+# child rows present. Under a counting boundary the repair runs the graph; if
+# it did not restamp the parent, a stamp that disagrees with healthy children
+# would send every later sync() back through the graph (review of #468, D27).
+
+DOC = {"doc_id": "d1", "text": "alpha beta"}
+
+
+def _parent(store) -> dict[str, Any]:
+    assert len(store.rows["doc"]) == 1, "a restamped parent row retires the one it replaces"
+    return store.rows["doc"][0]
+
+
+def _stamp_count(store) -> int:
+    return int(_parent(store)["_provenance_utterances"].rpartition("#")[2])
+
+
+def _snapshot(store) -> dict[str, list[dict[str, Any]]]:
+    return {name: [row.copy() for row in rows] for name, rows in store.rows.items()}
+
+
+def _stale_counting_store() -> MemoryStore:
+    """Healthy children, but the parent records one item more than exists (a stale or legacy stamp)."""
+    store = MemoryStore()
+    _counting_table(store).sync([DOC])
+    provenance, _, count = _parent(store)["_provenance_utterances"].rpartition("#")
+    _parent(store)["_provenance_utterances"] = f"{provenance}#{int(count) + 1}"
+    _reset_counters()
+    return store
+
+
+@pytest.mark.parametrize("verb", ["sync", "insert"])
+def test_counting_boundary_stale_stamp_is_corrected_once_then_skips(verb):
+    store = _stale_counting_store()
+    assert _stamp_count(store) == 3
+
+    getattr(_counting_table(MemoryStore(store.rows)), verb)([DOC])
+
+    assert executions == {"clean": 0, "split": 1, "child": 0}, "the boundary re-runs once; no child re-derives"
+    assert _stamp_count(store) == 2, "the parent's recorded count now matches the children present"
+    assert _child_state(store) == {"u0": ("complete", "t:alpha"), "u1": ("complete", "t:beta")}
+    snapshot = _snapshot(store)
+    _reset_counters()
+
+    receipt = _counting_table(MemoryStore(store.rows)).sync([DOC])
+
+    assert _outcomes(receipt) == [("skipped", "complete")]
+    assert executions == {"clean": 0, "split": 0, "child": 0}
+    assert store.rows == snapshot, "settled: the next sync() writes nothing"
+
+
+def test_counting_boundary_whose_item_count_changed_is_restamped_by_the_heal():
+    """The boundary now yields three items for the same input. The heal writes
+    the new child and rewrites the parent from this run's outputs, so the
+    recorded count and ``word_count`` agree with the three children present."""
+
+    store = _damaged_counting_store()
+    appended_words.append("gamma")
+
+    receipt = _counting_table(MemoryStore(store.rows)).sync([DOC])
+
+    assert _outcomes(receipt) == [("healed", "complete")]
+    assert _child_state(store) == {"u0": ("complete", "t:alpha"), "u1": ("complete", "t:beta"), "u2": ("complete", "t:gamma")}
+    assert (_stamp_count(store), _parent(store)["word_count"]) == (3, 3)
+    snapshot = _snapshot(store)
+    _reset_counters()
+
+    receipt = _counting_table(MemoryStore(store.rows)).sync([DOC])
+
+    assert _outcomes(receipt) == [("skipped", "complete")]
+    assert executions == {"clean": 0, "split": 0, "child": 0}
+    assert store.rows == snapshot
+
+
+@pytest.mark.asyncio
+async def test_async_counting_boundary_stale_stamp_is_corrected_once_then_skips():
+    store = _stale_counting_store()
+
+    await _counting_table(MemoryStore(store.rows), runner=AsyncRunner()).sync([DOC])
+
+    assert executions == {"clean": 0, "split": 1, "child": 0}
+    assert _stamp_count(store) == 2
+    snapshot = _snapshot(store)
+    _reset_counters()
+
+    receipt = await _counting_table(MemoryStore(store.rows), runner=AsyncRunner()).sync([DOC])
+
+    assert _outcomes(receipt) == [("skipped", "complete")]
+    assert executions == {"clean": 0, "split": 0, "child": 0}
+    assert store.rows == snapshot
+
+
+@pytest.mark.asyncio
+async def test_async_counting_boundary_whose_item_count_changed_is_restamped_by_the_heal():
+    store = _damaged_counting_store()
+    appended_words.append("gamma")
+
+    receipt = await _counting_table(MemoryStore(store.rows), runner=AsyncRunner()).sync([DOC])
+
+    assert _outcomes(receipt) == [("healed", "complete")]
+    assert (_stamp_count(store), _parent(store)["word_count"]) == (3, 3)
+    snapshot = _snapshot(store)
+    _reset_counters()
+
+    receipt = await _counting_table(MemoryStore(store.rows), runner=AsyncRunner()).sync([DOC])
+
+    assert _outcomes(receipt) == [("skipped", "complete")]
+    assert executions == {"clean": 0, "split": 0, "child": 0}
+    assert store.rows == snapshot
+
+
+@pytest.mark.asyncio
+async def test_async_counting_boundary_healthy_children_stay_a_zero_write_skip():
+    store = MemoryStore()
+    await _counting_table(store, runner=AsyncRunner()).sync([DOC])
+    snapshot = _snapshot(store)
+    _reset_counters()
+
+    receipt = await _counting_table(MemoryStore(store.rows), runner=AsyncRunner()).sync([DOC])
+
+    assert _outcomes(receipt) == [("skipped", "complete")]
+    assert executions == {"clean": 0, "split": 0, "child": 0}
+    assert store.rows == snapshot, "the fast path must stay zero-write"

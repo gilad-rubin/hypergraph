@@ -132,7 +132,9 @@ had damaged child rows rebuilt — rows physically missing, stored in error
 under `on_error="store"`, or extra rows left behind by an interrupted write —
 and everything the repair derived landed healthy. A repair whose retry failed
 again healed nothing, so it reports `UPDATED` and the child stays in error for
-the next attempt to find.
+the next attempt to find. One exception: when the fan-out boundary also
+produces a stored parent column, retiring an extra row derives no new row, so
+that pass reports `SKIPPED`, as described next.
 
 `SKIPPED` is a claim about derivation, not about bytes: it means no row was
 derived and no fan-out boundary was re-run to repair one. A pass over an
@@ -302,19 +304,23 @@ missing or stored as an error row (`on_error="store"`) and reports the row as
 unchanged parent row — it compares the fan-out count recorded on the parent
 row against the deduplicated child rows physically present, and reads their
 `_status` so a stored failure never counts as a healthy child (one child-table
-read per parent; no writes). When every child row is present and complete, the
-row is a zero-execution, zero-write `SKIPPED`; when a child is damaged, only
-that child runs the child graph — present children and parent derived columns
-are not re-derived, though present child rows are rewritten at the repair's
-generation. A physically missing row leaves nothing to rebuild the item list
-from, so the fan-out boundary re-runs once to regenerate it; a stored error
-row still carries its own item, so the stored list is reused and the boundary
-does not re-run. When the fan-out boundary also produces a stored parent
-column, the repair cannot be scoped to the damaged child, so the graph runs
-once for the row; the parent row is still not rewritten, and this is the same
-cost `insert()` pays to repair that shape. A retry that fails again leaves the
-child in error and reports `UPDATED` rather than `HEALED`, and the next
-`sync()` tries it again.
+read per parent; no writes). When the recorded count matches the child rows
+present and every one is complete, the row is a zero-execution, zero-write
+`SKIPPED`; when a child is damaged, only that child runs the child graph —
+present children and parent derived columns are not re-derived, though present
+child rows are rewritten at the repair's generation. A physically missing row
+leaves nothing to rebuild the item list from, so the fan-out boundary re-runs
+once to regenerate it; a stored error row still carries its own item, so the
+stored list is reused and the boundary does not re-run. A recorded count that
+disagrees with healthy children — a stale stamp, or a boundary whose item list
+changed length — is damage too: the boundary re-runs once and the count it
+produced is recorded, so the next `sync()` is a zero-execution skip again.
+When the fan-out boundary also produces a stored parent column, every repair
+runs the parent's nodes once to regenerate the item list, while the child graph
+still runs only for the damaged child. The parent row is rewritten only when
+its recorded boundary stamp changed, and this is the same cost `insert()` pays
+to repair that shape. A retry that fails again leaves the child in error and
+reports `UPDATED` rather than `HEALED`, and the next `sync()` tries it again.
 
 ### `delete(id) -> None`
 
