@@ -9,6 +9,7 @@ itself runs in ``test_store_conformance.py``.
 
 from __future__ import annotations
 
+import json
 import math
 import multiprocessing
 import sqlite3
@@ -22,6 +23,7 @@ import pytest
 from hypergraph import Graph, node
 from hypergraph.materialization import SqliteTableStore, Table
 from hypergraph.materialization._schema import ColumnSpec, TableSpec
+from hypergraph.materialization._sqlite_store import _where
 from hypergraph.runners import AsyncRunner, SyncRunner
 
 _INTERNAL = [
@@ -295,12 +297,14 @@ def test_a_table_holding_all_three_rowid_aliases_is_refused(store):
     three = [ColumnSpec(name, role="source", arrow_type=pa.utf8()) for name in ("rowid", "_rowid_", "OID")]
     with pytest.raises(ValueError, match="How to fix:") as caught:
         store.open(_spec("t", *three), [])
+    assert "cannot create table 't'" in str(caught.value)
     assert "rowid, _rowid_ and oid" in str(caught.value)
     assert store.column_names("t") == []
 
     store.open(_spec("u", *three[:2]), [])
-    with pytest.raises(ValueError, match="rowid, _rowid_ and oid"):
+    with pytest.raises(ValueError, match="rowid, _rowid_ and oid") as caught:
         store.evolve_schema("u", {"oid": pa.utf8()})
+    assert "cannot add column 'oid' to table 'u'" in str(caught.value)
     assert "oid" not in store.column_names("u")
 
 
@@ -308,6 +312,49 @@ def test_a_table_name_starting_with_sqlite_is_refused(store):
     with pytest.raises(ValueError, match="sqlite_") as caught:
         Table(identity="sqlite_job_id", store=store)
     assert "How to fix:" in str(caught.value)
+
+
+@pytest.mark.parametrize("value", [2**63, -(2**63) - 1, 2**70])
+def test_an_int_outside_64_bits_is_refused_on_write_and_in_filters(numbers, value):
+    with pytest.raises(TypeError, match="'n'") as caught:
+        numbers.write_rows("t", [{"cid": "big", "n": value, "_write_gen": 1}])
+    assert "'t'" in str(caught.value) and "How to fix:" in str(caught.value)
+    for where in ([("n", "eq", value)], [("n", "in", [1, value])]):
+        with pytest.raises(TypeError, match="'n'"):
+            numbers.read_rows("t", where)
+    assert numbers.count("t") == 5
+
+
+def test_the_64_bit_int_bounds_round_trip(numbers):
+    numbers.write_rows("t", [{"cid": "max", "n": 2**63 - 1, "_write_gen": 1}, {"cid": "min", "n": -(2**63), "_write_gen": 1}])
+    assert numbers.read_one("t", "cid", "max")["n"] == 2**63 - 1
+    assert [row["cid"] for row in numbers.read_rows("t", [("n", "in", [-(2**63)])])] == ["min"]
+
+
+def _reject_json5(token: str) -> None:
+    raise AssertionError(f"the in-list JSON carries {token}, which only a JSON5-capable SQLite parses")
+
+
+def test_non_finite_floats_in_an_in_list_match_like_eq_without_json5(store):
+    store.open(_spec("t", ColumnSpec("f", role="source", arrow_type=pa.float64()), ColumnSpec("txt", role="source", arrow_type=pa.utf8())), [])
+    store.write_rows(
+        "t",
+        [
+            {"cid": "pos", "f": math.inf, "txt": "Inf", "_write_gen": 1},
+            {"cid": "neg", "f": -math.inf, "txt": "-Inf", "_write_gen": 1},
+            {"cid": "one", "f": 1.0, "txt": "1.0", "_write_gen": 1},
+            {"cid": "nan", "f": math.nan, "_write_gen": 1},
+        ],
+    )
+    expected = {math.inf: ["pos"], -math.inf: ["neg"], 1.0: ["one"]}
+    for column in ("f", "txt"):
+        for value in (math.inf, -math.inf, math.nan, 1.0):
+            eq = [row["cid"] for row in store.read_rows("t", [(column, "eq", value)])]
+            assert eq == expected.get(value, []), (column, value)
+            assert [row["cid"] for row in store.read_rows("t", [(column, "in", [value])])] == eq, (column, value)
+
+    _sql, params = _where("t", {"f": "real"}, [("f", "in", [math.inf, -math.inf, math.nan, 1.0])])
+    json.loads(params[0], parse_constant=_reject_json5)
 
 
 def test_a_projection_naming_an_unknown_column_fails_loudly(numbers):

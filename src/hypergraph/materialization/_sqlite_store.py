@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -46,6 +47,8 @@ _OPERATORS = (*_COMPARISONS, "in")
 # SQLite reaches a row's insertion order through any of these names, unless a
 # user column of that name (in any letter case) hides it.
 _ROWID_ALIASES = ("rowid", "_rowid_", "oid")
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
+_INT64_WHY = "SQLite integers are 64 bits wide, from -2**63 to 2**63 - 1."
 
 
 def _q(identifier: str) -> str:
@@ -82,6 +85,11 @@ def _plain(value: Any) -> Any:
     return value
 
 
+def _wide_int(value: Any) -> bool:
+    """An int SQLite cannot bind: outside the signed 64-bit range."""
+    return isinstance(value, int) and not isinstance(value, bool) and not _INT64_MIN <= value <= _INT64_MAX
+
+
 def _short(value: Any) -> str:
     text = repr(value)
     return text if len(text) <= 60 else text[:57] + "..."
@@ -107,20 +115,28 @@ def _cell(table: str, column: str, kind: str, value: Any) -> Any:
             f"The column is declared {_KIND_LABEL[kind]}; nothing from this call was written.\n\n"
             f"How to fix: write a {_KIND_LABEL[kind]} value to {column!r}, or put this value under a new column name."
         )
+    if _wide_int(value):
+        raise TypeError(
+            f"SqliteTableStore cannot store int {_short(value)} in column {column!r} of table {table!r}.\n\n"
+            f"{_INT64_WHY} Nothing from this call was written.\n\n"
+            "How to fix: keep the number within the 64-bit range, or store it as a str."
+        )
     return value
 
 
-def _unfilterable(table: str, column: str, op: str, value: Any, why: str) -> TypeError:
+def _unfilterable(table: str, column: str, op: str, value: Any, why: str, fix: str = "filter with a value of the column's type.") -> TypeError:
     return TypeError(
         f"SqliteTableStore cannot filter column {column!r} of table {table!r} with {op!r} on {type(value).__name__} {_short(value)}.\n\n"
         f"{why}\n\n"
-        f"How to fix: filter with a value of the column's type."
+        f"How to fix: {fix}"
     )
 
 
 def _operand(table: str, column: str, op: str, kind: str, value: Any) -> Any:
     """A predicate value as SQLite compares it to a stored cell."""
     value = _plain(value)
+    if kind != "json" and _wide_int(value):
+        raise _unfilterable(table, column, op, value, _INT64_WHY, "keep the value within the 64-bit range, or store and filter the number as a str.")
     if value is None or kind != "json":
         return value
     try:
@@ -147,6 +163,19 @@ def _check_operators(where: RowPredicate | None) -> None:
                 f"A row predicate uses one of: {', '.join(_OPERATORS)}.\n\n"
                 f"How to fix: express the filter with one of those operators."
             )
+
+
+def _json_member(value: Any) -> str:
+    """One ``in`` list member as strict JSON, so no SQLite build needs JSON5 to read it.
+
+    A NaN is null (a bound NaN is NULL too, so both match nothing), and an
+    infinity is 9e999, which SQLite's JSON reader turns back into infinity.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        if math.isnan(value):
+            return "null"
+        return "9e999" if value > 0 else "-9e999"
+    return json.dumps(value)
 
 
 def _where(table: str, kinds: dict[str, str], where: RowPredicate | None) -> tuple[str, list[Any]] | None:
@@ -182,7 +211,7 @@ def _where(table: str, kinds: dict[str, str], where: RowPredicate | None) -> tup
         # text explicitly: ("txt", "in", [123]) then matches like ("txt", "eq", 123).
         member = "CAST(value AS TEXT)" if kind in ("text", "json") else "value"
         clauses.append(f"{_q(column)} IN (SELECT {member} FROM json_each(?))")
-        params.append(json.dumps(values))
+        params.append("[" + ",".join(_json_member(item) for item in values) + "]")
     return (" WHERE " + " AND ".join(clauses) if clauses else ""), params
 
 
@@ -199,14 +228,19 @@ def _refuse_case_clash(name: str, existing: Any, what: str, table: str | None = 
     )
 
 
-def _rowid_alias(table: str, columns: Any) -> str:
-    """The name that reaches this table's insertion order: a rowid alias no user column hides."""
+def _rowid_alias(table: str, columns: Any, change: str | None = None) -> str:
+    """The name that reaches this table's insertion order: a rowid alias no user column hides.
+
+    ``change`` names the schema change being refused (creating the table, adding
+    a column); without it the table already holds all three names.
+    """
     taken = {name.lower() for name in columns}
     for alias in _ROWID_ALIASES:
         if alias not in taken:
             return alias
+    problem = f"cannot {change}: its columns would include" if change else f"cannot read table {table!r}: its columns include"
     raise ValueError(
-        f"SqliteTableStore cannot keep table {table!r}: it has columns named rowid, _rowid_ and oid.\n\n"
+        f"SqliteTableStore {problem} rowid, _rowid_ and oid.\n\n"
         "SQLite reaches a row's insertion order through one of those names, and a column of the same name hides it, "
         "so with all three taken the store cannot return rows in the order they were written.\n\n"
         "How to fix: rename one of the three columns."
@@ -336,7 +370,7 @@ class SqliteTableStore(TableStore):
         for name, arrow_type in _physical_columns(spec):
             _refuse_case_clash(name, kinds, "column", spec.name)
             kinds[name] = _kind(arrow_type)
-        _rowid_alias(spec.name, kinds)
+        _rowid_alias(spec.name, kinds, f"create table {spec.name!r}")
         declared = ", ".join(f"{_q(name)} {_DECLARED[kind]}" for name, kind in kinds.items())
         db.execute(f"CREATE TABLE {_q(spec.name)} ({declared})")
         return kinds
@@ -359,7 +393,7 @@ class SqliteTableStore(TableStore):
             if name in kinds:
                 continue
             _refuse_case_clash(name, kinds, "column", table)
-            _rowid_alias(table, [*kinds, name])
+            _rowid_alias(table, [*kinds, name], f"add column {name!r} to table {table!r}")
             kinds[name] = _kind(arrow_type)
             db.execute(f"ALTER TABLE {_q(table)} ADD COLUMN {_q(name)} {_DECLARED[kinds[name]]}")
         return kinds
