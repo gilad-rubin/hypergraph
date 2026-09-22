@@ -85,9 +85,10 @@ class ColumnChange:
     reasons where this producer never ran.
 
     One entry may instead name a ``map_over`` input: its fan-out boundary
-    raised, so the child table could not be rebuilt. That name is not a key of
-    the parent row — its "value" is the child table's rows — and ``node`` names
-    the boundary. It is always ``NODE_ERROR``.
+    raised, so the child tables mapping over it could not be rebuilt. That name
+    is not a key of the parent row — its "value" is the child tables' rows —
+    ``node`` names the boundary, and the reason is always ``NODE_ERROR``. There
+    is one such entry per input, however many child tables map over it.
     """
 
     column: str
