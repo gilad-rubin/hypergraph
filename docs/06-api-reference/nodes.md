@@ -694,10 +694,10 @@ class RetryAfterError(Exception):
 ## ProcessLocalLimiter
 
 An injected budget over a **scarce, process-local resource** — a GPU, a
-local model, a subprocess pool, database connections — held for a whole
-node execution. The name states its coordination scope: it covers only
-the process that constructed it, and there is no distributed variant in this
-release. It is not the durable host's active-Run cap
+local model, a subprocess pool, database connections — held, at node or
+graph scope, for a whole node execution. The name states its coordination
+scope: it covers only the process that constructed it, and there is no
+distributed variant in this release. It is not the durable host's active-Run cap
 ([`RunHome.max_active_runs`](host.md#host-work-admission)), which counts
 Runs a worker executes, and it is not an HTTP provider's API quota (see
 [Not for HTTP provider quotas](#not-for-http-provider-quotas)).

@@ -1176,10 +1176,11 @@ class Graph:
         Also narrows execution to the nodes needed for the selected outputs:
         a node that feeds none of them does not run, even when all of its
         inputs are provided, and ``graph.inputs`` lists only the parameters
-        of the nodes that do. A needed gate keeps all of its targets (and
-        their downstream nodes) in scope, since the route is chosen at run
-        time. To also skip upstream producers and supply their values
-        directly, use ``with_entrypoint()``.
+        of the nodes left in scope. The one widening: a needed gate keeps all
+        of its targets, everything downstream of them, and whatever those
+        nodes need, in scope, since the route is chosen at run time. To also
+        skip upstream producers and supply their values directly, use
+        ``with_entrypoint()``.
 
         Args:
             *names: Output names to include. Must be valid graph outputs.

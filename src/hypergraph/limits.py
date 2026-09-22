@@ -112,9 +112,10 @@ class ProcessLocalLimiter:
     threads and event loops of the process that constructed it — two
     workers on two machines each get a full budget of their own. It is not
     a distributed limiter and must never be described as one. Hypergraph
-    ships no distributed limiter in this tier; if you need fleet-wide
-    coordination, own it in the shared component that talks to the
-    provider.
+    ships no distributed limiter in this tier. A shared component that owns
+    a scarce process-local resource can hold the limiter itself (component
+    scope, below); an HTTP provider's API quota belongs at the client's
+    transport instead.
 
     A ``ProcessLocalLimiter`` is an object you construct once and
     **share**: two concurrent Runs of the same graph draw on the same

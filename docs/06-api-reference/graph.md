@@ -520,7 +520,7 @@ Set a default output selection. Returns a new Graph (immutable pattern).
 
 This controls which outputs are returned by `runner.run()` and which outputs are visible when the graph is used as a nested node via `as_node()`.
 
-`select` also narrows `graph.inputs` to only the parameters needed to produce the selected outputs. Nodes that don't contribute to those outputs do not run and are excluded from input computation (a needed gate keeps all of its targets in scope, since the route is chosen at run time).
+`select` also narrows `graph.inputs` to only the parameters needed to produce the selected outputs. Nodes that don't contribute to those outputs do not run and are excluded from input computation. The one widening: a needed gate keeps all of its targets, everything downstream of them, and whatever those nodes need, in scope, since the route is chosen at run time.
 
 ```python
 from hypergraph import node, Graph
