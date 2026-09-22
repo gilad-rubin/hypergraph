@@ -1173,10 +1173,13 @@ class Graph:
         Controls which outputs are returned by runner.run() and which outputs
         are visible when this graph is used as a nested node via as_node().
 
-        Also narrows ``graph.inputs`` to only parameters needed to produce
-        the selected outputs. Nodes that don't contribute are excluded from
-        InputSpec computation. However, at execution time all reachable nodes
-        still run — use ``with_entrypoint()`` to skip upstream execution.
+        Also narrows execution to the nodes needed for the selected outputs:
+        a node that feeds none of them does not run, even when all of its
+        inputs are provided, and ``graph.inputs`` lists only the parameters
+        of the nodes that do. A needed gate keeps all of its targets (and
+        their downstream nodes) in scope, since the route is chosen at run
+        time. To also skip upstream producers and supply their values
+        directly, use ``with_entrypoint()``.
 
         Args:
             *names: Output names to include. Must be valid graph outputs.
