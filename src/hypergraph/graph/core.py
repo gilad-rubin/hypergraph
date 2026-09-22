@@ -1178,8 +1178,10 @@ class Graph:
         inputs are provided, and ``graph.inputs`` lists only the parameters
         of the nodes left in scope. The one widening: a needed gate keeps all
         of its targets, everything downstream of them, and whatever those
-        nodes need, in scope, since the route is chosen at run time. To also
-        skip upstream producers and supply their values directly, use
+        nodes need, in scope, since the route is chosen at run time. Pruning
+        is at this graph's node level: a needed nested graph runs its inner
+        graph in full unless that graph has its own ``select``. To also skip
+        upstream producers and supply their values directly, use
         ``with_entrypoint()``.
 
         Args:
