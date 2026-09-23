@@ -216,11 +216,17 @@ def _where(table: str, kinds: dict[str, str], where: RowPredicate | None) -> tup
 
 
 def _refuse_case_clash(name: str, existing: Any, what: str, table: str | None = None) -> None:
-    """Refuse ``name`` when ``existing`` holds a name equal to it apart from letter case."""
+    """Refuse ``name`` when ``existing`` already holds it, exactly or apart from letter case."""
     clash = next((other for other in existing if other.lower() == name.lower()), None)
     if clash is None:
         return
     place = f" in table {table!r}" if table is not None else ""
+    if clash == name:
+        raise ValueError(
+            f"SqliteTableStore cannot create {what} {name!r}{place}: the spec names {what} {name!r} twice.\n\n"
+            f"Each {what} needs its own name.\n\n"
+            f"How to fix: remove the duplicate {what}, or rename one of them."
+        )
     raise ValueError(
         f"SqliteTableStore cannot create {what} {name!r}{place}: {clash!r} already exists.\n\n"
         f"SQLite table and column names ignore letter case, so the two would be one {what}.\n\n"
