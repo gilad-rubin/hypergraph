@@ -99,6 +99,8 @@ side-effect in the order defined by `FIRST_PARTY_ASSET_NAMES`
 - Do not add Hypergraph-side merge stems or synthetic routed paths; dagre owns edge routing.
 - Every edge path must end with a segment that has its own end direction (`curveBasis` ends with `L`, as D3's does). WebKit orients the arrowhead marker from the final segment alone, so a degenerate final cubic draws every head at 0°, beside its line; `tests/viz/test_edge_arrowheads.py` pins it. The browser suite runs Chromium only, which hides WebKit-only rendering bugs.
 
+- Sibling exits: dagre ties the first bends of edges leaving one node and can swap them, so edges cross just under their source. `untangleSiblingExits` (`viz_layout.js`, both the flat and the compound layout) re-deals those bends and exits in the order of each edge's next point; dagre's reserved positions do not move. `tests/viz/test_edge_exit_order.py` pins it.
+
 **BRANCH/END exception**: Always use center-x regardless of mode (diamond has single exit point at bottom vertex).
 
 ## Node Types and Mapping

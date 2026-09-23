@@ -127,6 +127,7 @@
         throw new Error('Dagre did not return routing points for edge ' + (e.id || (e.source + ' -> ' + e.target)));
       }
     });
+    untangleSiblingExits(edges);
 
     var size = computeBounds(nodes, LAYOUT_PADDING);
     offsetAll(nodes, edges, size.min);
@@ -197,6 +198,45 @@
       y: tgtTop,
     };
     return points;
+  }
+
+  /**
+   * Edges leaving one node must leave in the order they go next, or they swap
+   * sides just under it. Dagre orders each edge's first bend by the node above
+   * it: siblings share that node, so they tie, and the tie-break can leave
+   * them in the opposite order to their next bends — a gate's True edge heading
+   * left before curving right past its False edge. Hand the siblings' first
+   * bends (and the exits dagre derived from them) back out in the order of each
+   * edge's next point. The positions dagre reserved stay the same; only which
+   * sibling takes which changes, so nothing else moves.
+   */
+  function untangleSiblingExits(edges) {
+    var bySource = new Map();
+    edges.forEach(function(e) {
+      if (!e.points || e.points.length < 3) return;
+      var group = bySource.get(e.source);
+      if (!group) { group = []; bySource.set(e.source, group); }
+      group.push(e);
+    });
+    var laterPointsX = function(a, b) {
+      var pa = a.points, pb = b.points, n = Math.min(pa.length, pb.length);
+      for (var i = 2; i < n; i++) {
+        if (Math.abs(pa[i].x - pb[i].x) > 0.5) return pa[i].x - pb[i].x;
+      }
+      return pa[pa.length - 1].x - pb[pb.length - 1].x;
+    };
+    bySource.forEach(function(group) {
+      if (group.length < 2) return;
+      var bendY = group[0].points[1].y;
+      if (group.some(function(e) { return Math.abs(e.points[1].y - bendY) > 0.5; })) return;
+      // Dagre's own left-to-right order first, so ties keep it.
+      group.sort(function(a, b) { return a.points[1].x - b.points[1].x; });
+      var slots = group.map(function(e) { return { exitX: e.points[0].x, bendX: e.points[1].x }; });
+      group.slice().sort(laterPointsX).forEach(function(e, i) {
+        e.points[0] = { x: slots[i].exitX, y: e.points[0].y };
+        e.points[1] = { x: slots[i].bendX, y: e.points[1].y };
+      });
+    });
   }
 
   // ── Compound dagre layout for visible nested graphs ──
@@ -389,6 +429,7 @@
         endpointPadding
       );
     });
+    untangleSiblingExits(layoutEdges);
 
     var size = computeBounds(layoutNodes, LAYOUT_PADDING);
     offsetAll(layoutNodes, layoutEdges, size.min);
@@ -530,6 +571,7 @@
     computeFeedbackEdgeKeys: computeFeedbackEdgeKeys,
     buildFeedbackEdgePoints: buildFeedbackEdgePoints,
     adjustEdgeEndpoints: adjustEdgeEndpoints,
+    untangleSiblingExits: untangleSiblingExits,
     performCompoundLayout: performCompoundLayout,
     useLayout: useLayout,
   };

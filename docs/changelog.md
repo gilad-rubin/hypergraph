@@ -557,6 +557,16 @@
   affected every edge kind. The path now ends with a straight segment, as D3's
   `curveBasis` does, and the drawn line is unchanged. (#587)
 
+- **`visualize()` edges leaving one node no longer cross just under it.** Dagre orders
+  each edge's first bend by the node above it. Edges leaving the same node therefore
+  tie, and the tie-break could put them in the opposite order to where they go next.
+  A gate's True edge headed left and then curved right across its False edge, and a
+  function node's consumers tangled the same way. The layout now hands those first
+  bends back out in the order of each edge's next point, so edges leave a node in the
+  left-to-right order of their targets. The fix covers flat graphs and expanded
+  containers. Dagre's positions are kept, and a gate still exits from its bottom
+  vertex. (#590)
+
 - **A durable Run could fail with "database is locked" without executing a
   single node.** The SQLite store shared ONE synchronous connection across
   threads, which closed a three-party cycle: the event loop held a
