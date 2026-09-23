@@ -109,7 +109,7 @@ class TestEdgeRoutingToInternalNodes:
         The edge from input_text should visually end at clean_text's position.
         """
         workflow = make_workflow()
-        render_to_page(page, workflow, depth=1, temp_path=temp_html_file)
+        render_to_page(page, workflow, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         # Extract the SVG path of the edge and node positions
         result = page.evaluate("""() => {
@@ -316,7 +316,7 @@ class TestOutputEdgeRouting:
         visually start from the actual producing node's output, not container boundary.
         """
         workflow = make_workflow()
-        render_to_page(page, workflow, depth=1, temp_path=temp_html_file)
+        render_to_page(page, workflow, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -387,7 +387,7 @@ class TestDoubleNestedEdgeRouting:
     def test_outer_depth1_input_routes_to_inner(self, page, temp_html_file):
         """Test outer at depth=1: the pill's edge lands on the collapsed inner hull."""
         outer = make_outer()
-        render_to_page(page, outer, depth=1, temp_path=temp_html_file)
+        render_to_page(page, outer, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -424,7 +424,7 @@ class TestEdgeVisualGaps:
         should start from normalize_text's bottom without a visible gap.
         """
         workflow = make_workflow()
-        render_to_page(page, workflow, depth=1, temp_path=temp_html_file)
+        render_to_page(page, workflow, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -492,7 +492,7 @@ class TestEdgeVisualGaps:
         to log_result should start from middle's bottom without a gap.
         """
         outer = make_outer()
-        render_to_page(page, outer, depth=0, temp_path=temp_html_file)
+        render_to_page(page, outer, depth=0, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -561,7 +561,7 @@ class TestCollapsedGraphEdges:
         """
         outer = make_outer()
 
-        render_to_page(page, outer, depth=0, temp_path=temp_html_file)
+        render_to_page(page, outer, depth=0, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -622,7 +622,7 @@ class TestCollapsedGraphEdges:
         """Test that workflow with collapsed preprocess has no visual gap."""
         workflow = make_workflow()
 
-        render_to_page(page, workflow, depth=0, temp_path=temp_html_file)
+        render_to_page(page, workflow, depth=0, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -782,7 +782,7 @@ class TestNodeToParentDebugAPI:
         are collapsed - it allows JavaScript to find visible ancestors.
         """
         workflow = make_workflow()
-        render_to_page(page, workflow, depth=1, temp_path=temp_html_file)
+        render_to_page(page, workflow, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -823,7 +823,7 @@ class TestNodeToParentDebugAPI:
         - middle, log_result should have no parent
         """
         outer = make_outer()
-        render_to_page(page, outer, depth=2, temp_path=temp_html_file)
+        render_to_page(page, outer, depth=2, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         node_to_parent = page.evaluate("window.__hypergraphVizDebug.routingData.node_to_parent")
 

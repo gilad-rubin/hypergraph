@@ -168,7 +168,7 @@ def rendered_edges(_browser):
     out = {}
     try:
         for name, (make, depth, _) in GRAPHS.items():
-            page.goto(f"file://{_cached_html_path(make(), depth=depth)}")
+            page.goto(f"file://{_cached_html_path(make(), depth=depth, show_inputs=True, show_bounded_inputs=False)}")
             wait_for_debug_ready(page)
             out[name] = page.evaluate(_PROBE_JS)
     finally:

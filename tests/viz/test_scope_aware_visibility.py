@@ -87,7 +87,7 @@ class TestEdgeRoutingToInternalNodes:
         """
         graph = make_generation_graph()
         # Get pre-computed edges for expanded state
-        scene = scene_for_state(graph, expansion_state={"prompt_building": True})
+        scene = scene_for_state(graph, expansion_state={"prompt_building": True}, show_inputs=True, show_bounded_inputs=False)
         edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         # Find the edge from filter_document_pages
@@ -113,7 +113,7 @@ class TestEdgeRoutingToInternalNodes:
         """
         graph = make_generation_graph()
         # Get pre-computed edges for collapsed state
-        scene = scene_for_state(graph, expansion_state={})
+        scene = scene_for_state(graph, expansion_state={}, show_inputs=True, show_bounded_inputs=False)
         edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         # Find the edge from filter_document_pages
@@ -139,7 +139,7 @@ class TestInputNodePositioning:
     def test_internal_only_input_has_owner_container(self):
         """system_instructions should have ownerContainer=prompt_building when expanded."""
         graph = make_generation_graph()
-        scene = scene_for_state(graph, expansion_state={"prompt_building": True})
+        scene = scene_for_state(graph, expansion_state={"prompt_building": True}, show_inputs=True, show_bounded_inputs=False)
 
         input_node = next(
             (n for n in scene["nodes"] if n["id"] == "input_system_instructions"),
@@ -151,7 +151,7 @@ class TestInputNodePositioning:
     def test_external_input_has_no_owner(self):
         """query has consumers at multiple levels — its ownerContainer is None at root."""
         graph = make_generation_graph()
-        scene = scene_for_state(graph, expansion_state={"prompt_building": True})
+        scene = scene_for_state(graph, expansion_state={"prompt_building": True}, show_inputs=True, show_bounded_inputs=False)
 
         input_node = next(
             (n for n in scene["nodes"] if n["id"] == "input_query"),
@@ -347,7 +347,7 @@ class TestInternalOnlyDataNodes:
         prompt_building, so its DATA node is internal-only.
         """
         graph = make_generation_graph()
-        scene = scene_for_state(graph, expansion_state={"prompt_building": True}, separate_outputs=True)
+        scene = scene_for_state(graph, expansion_state={"prompt_building": True}, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
         data_node = next(
             (n for n in scene["nodes"] if n["id"] == "data_prompt_building/build_context_context_text"),
@@ -360,7 +360,7 @@ class TestInternalOnlyDataNodes:
         """chat_messages DATA node should carry ``internalOnly=False`` —
         it has an external consumer (``generate_answer``)."""
         graph = make_generation_graph()
-        scene = scene_for_state(graph, expansion_state={"prompt_building": True}, separate_outputs=True)
+        scene = scene_for_state(graph, expansion_state={"prompt_building": True}, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
         data_node = next(
             (n for n in scene["nodes"] if n["id"] == "data_prompt_building/build_prompt_chat_messages"),
@@ -397,7 +397,7 @@ class TestControlEdgeRouting:
         inner = Graph(nodes=[inner_step], name="inner_graph")
         outer = Graph(nodes=[decide, inner.as_node()], name="outer")
 
-        scene = scene_for_state(outer, expansion_state={})
+        scene = scene_for_state(outer, expansion_state={}, show_inputs=True, show_bounded_inputs=False)
         edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         # Find control edges from decide (excluding END edges)
@@ -427,7 +427,7 @@ class TestControlEdgeRouting:
         inner = Graph(nodes=[inner_step], name="inner_graph")
         outer = Graph(nodes=[decide, inner.as_node()], name="outer")
 
-        scene = scene_for_state(outer, expansion_state={"inner_graph": True})
+        scene = scene_for_state(outer, expansion_state={"inner_graph": True}, show_inputs=True, show_bounded_inputs=False)
         edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         # Find control edges from decide (excluding END edges)
@@ -510,7 +510,7 @@ class TestEdgeRoutingIntoExpandedContainer:
         """
         graph = make_batch_eval_graph()
         # Get pre-computed edges for expanded state
-        scene = scene_for_state(graph, expansion_state={"batch_eval": True})
+        scene = scene_for_state(graph, expansion_state={"batch_eval": True}, show_inputs=True, show_bounded_inputs=False)
         edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         # Find the edge from build_pairs
@@ -532,7 +532,7 @@ class TestEdgeRoutingIntoExpandedContainer:
         """Edge from build_pairs should go to batch_eval when collapsed."""
         graph = make_batch_eval_graph()
         # Get pre-computed edges for collapsed state
-        scene = scene_for_state(graph, expansion_state={})
+        scene = scene_for_state(graph, expansion_state={}, show_inputs=True, show_bounded_inputs=False)
         edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         # Find the edge from build_pairs
@@ -565,7 +565,7 @@ class TestEdgeRoutingFromExpandedContainer:
         """
         graph = make_batch_eval_graph()
         # Get pre-computed edges for expanded state
-        scene = scene_for_state(graph, expansion_state={"batch_eval": True})
+        scene = scene_for_state(graph, expansion_state={"batch_eval": True}, show_inputs=True, show_bounded_inputs=False)
         edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         # Find the edge to compute_metrics
@@ -591,7 +591,7 @@ class TestEdgeRoutingFromExpandedContainer:
         """Edge to compute_metrics should come from batch_eval when collapsed."""
         graph = make_batch_eval_graph()
         # Get pre-computed edges for collapsed state
-        scene = scene_for_state(graph, expansion_state={})
+        scene = scene_for_state(graph, expansion_state={}, show_inputs=True, show_bounded_inputs=False)
         edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         # Find the edge to compute_metrics
@@ -688,7 +688,7 @@ class TestInputGroupEdgesAcrossExpansion:
         collapsed visual requires it.
         """
         graph = make_input_group_container_graph()
-        scene = scene_for_state(graph, expand_all=True)
+        scene = scene_for_state(graph, expand_all=True, show_inputs=True, show_bounded_inputs=False)
         edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         alpha_targets = {e["target"] for e in edges if e["source"] == "input_alpha"}
@@ -735,7 +735,7 @@ class TestContainerOutputVisibility:
     def test_internal_container_output_hidden_in_merged_mode(self):
         """Merged outputs should omit internal-only container outputs."""
         graph = make_container_output_graph()
-        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=False)
+        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=False, show_inputs=True, show_bounded_inputs=False)
 
         container_node = next(n for n in result["nodes"] if n["id"] == "inner")
         output_names = {o["name"] for o in container_node["data"].get("outputs", [])}
@@ -746,7 +746,7 @@ class TestContainerOutputVisibility:
     def test_internal_container_output_hidden_in_separate_mode(self):
         """Separate outputs should omit DATA nodes for internal-only container outputs."""
         graph = make_container_output_graph()
-        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True)
+        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
         data_node_ids = {n["id"] for n in result["nodes"] if n["data"]["nodeType"] == "DATA"}
 

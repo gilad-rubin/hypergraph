@@ -56,7 +56,7 @@ def _read_render_count(page) -> int:
 def test_expand_click_does_not_trigger_render_storm(page, temp_html_file):
     """Expanding a collapsed container must not cause >100 App renders."""
     graph = _make_nested_graph()
-    render_to_page(page, graph, depth=0, temp_path=temp_html_file)
+    render_to_page(page, graph, depth=0, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
     wait_for_debug_ready(page)
 
     before = _read_render_count(page)
@@ -74,7 +74,7 @@ def test_expand_click_does_not_trigger_render_storm(page, temp_html_file):
 def test_collapse_click_does_not_trigger_render_storm(page, temp_html_file):
     """Collapsing an expanded container must not cause >100 App renders."""
     graph = _make_nested_graph()
-    render_to_page(page, graph, depth=1, temp_path=temp_html_file)
+    render_to_page(page, graph, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
     wait_for_debug_ready(page)
 
     before = _read_render_count(page)
@@ -95,7 +95,7 @@ def test_initial_render_count_is_bounded(page, temp_html_file):
     Steady-state happens once the layout commits + the viewport fits;
     `wait_for_debug_ready` blocks until both are done."""
     graph = _make_nested_graph()
-    render_to_page(page, graph, depth=0, temp_path=temp_html_file)
+    render_to_page(page, graph, depth=0, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
     wait_for_debug_ready(page)
 
     initial = _read_render_count(page)

@@ -100,7 +100,7 @@ class TestHideVisualization:
 
         g = Graph([step1, hidden_step, step3])
         flat = g.to_flat_graph()
-        result = render_graph(flat, depth=0)
+        result = render_graph(flat, depth=0, show_inputs=True, show_bounded_inputs=False)
 
         # Get node IDs from the rendered nodes
         node_ids = [n["id"] for n in result["nodes"]]
@@ -118,7 +118,7 @@ class TestHideVisualization:
 
         g = Graph([step1, hidden_step, step3])
         flat = g.to_flat_graph()
-        result = render_graph(flat, depth=0)
+        result = render_graph(flat, depth=0, show_inputs=True, show_bounded_inputs=False)
 
         # Get all edges
         edges = result["edges"]

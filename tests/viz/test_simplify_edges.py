@@ -51,32 +51,36 @@ def visible_pairs(scene: dict, edge_type: str | None = "data") -> set[tuple[str,
 
 class TestShortcutRemoval:
     def test_direct_edge_dropped_when_chain_implies_it(self) -> None:
-        scene = scene_for_state(make_shortcut_graph(), simplify=True)
+        scene = scene_for_state(make_shortcut_graph(), simplify=True, show_inputs=True, show_bounded_inputs=False)
         assert visible_pairs(scene) == {("fetch", "parse"), ("parse", "render")}
 
     def test_direct_edge_kept_when_simplify_off(self) -> None:
-        scene = scene_for_state(make_shortcut_graph(), simplify=False)
+        scene = scene_for_state(make_shortcut_graph(), simplify=False, show_inputs=True, show_bounded_inputs=False)
         assert visible_pairs(scene) == {("fetch", "parse"), ("fetch", "render"), ("parse", "render")}
 
     def test_simplify_defaults_to_on(self) -> None:
         ir = build_graph_ir(make_shortcut_graph().to_flat_graph())
-        assert visible_pairs(build_initial_scene(ir)) == visible_pairs(build_initial_scene(ir, simplify=True))
+        assert visible_pairs(build_initial_scene(ir, show_inputs=True, show_bounded_inputs=False)) == visible_pairs(
+            build_initial_scene(ir, simplify=True, show_inputs=True, show_bounded_inputs=False)
+        )
 
     def test_chain_without_shortcut_is_untouched(self) -> None:
         """A pure chain has no shortcuts — simplify must be a no-op."""
         graph = make_chain_graph()
-        assert visible_pairs(scene_for_state(graph, simplify=True)) == visible_pairs(scene_for_state(graph, simplify=False))
+        assert visible_pairs(scene_for_state(graph, simplify=True, show_inputs=True, show_bounded_inputs=False)) == visible_pairs(
+            scene_for_state(graph, simplify=False, show_inputs=True, show_bounded_inputs=False)
+        )
 
     def test_separate_outputs_reduces_from_the_data_node(self) -> None:
         """In separate-outputs mode the shortcut starts at the DATA pill, so
         the reduction drops ``data_fetch_raw → render``, not ``fetch → render``."""
-        scene = scene_for_state(make_shortcut_graph(), simplify=True, separate_outputs=True)
+        scene = scene_for_state(make_shortcut_graph(), simplify=True, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
         assert visible_pairs(scene) == {("data_fetch_raw", "parse"), ("data_parse_parsed", "render")}
 
     def test_producer_to_data_edges_survive(self) -> None:
         """``output`` edges are structural, never candidates for removal, so no
         DATA pill is left dangling."""
-        scene = scene_for_state(make_shortcut_graph(), simplify=True, separate_outputs=True)
+        scene = scene_for_state(make_shortcut_graph(), simplify=True, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
         assert ("fetch", "data_fetch_raw") in visible_pairs(scene, edge_type="output")
 
     def test_two_hop_shortcut_is_dropped(self) -> None:
@@ -98,7 +102,7 @@ class TestShortcutRemoval:
         def d(c_out: int, a_out: int) -> int:
             return c_out + a_out
 
-        scene = scene_for_state(Graph(nodes=[a, b, c, d], name="long"), simplify=True)
+        scene = scene_for_state(Graph(nodes=[a, b, c, d], name="long"), simplify=True, show_inputs=True, show_bounded_inputs=False)
         assert visible_pairs(scene) == {("a", "b"), ("b", "c"), ("c", "d")}
 
 
@@ -120,7 +124,11 @@ class TestSafetyInvariants:
             return y
 
         graph = Graph(nodes=[a, b, c], name="cyc", entrypoint="a")
-        assert visible_pairs(scene_for_state(graph, simplify=True)) == {("a", "b"), ("b", "c"), ("c", "a")}
+        assert visible_pairs(scene_for_state(graph, simplify=True, show_inputs=True, show_bounded_inputs=False)) == {
+            ("a", "b"),
+            ("b", "c"),
+            ("c", "a"),
+        }
 
     def test_gated_data_edges_survive_a_control_detour(self) -> None:
         """``intake → verify`` must survive: the only other route to ``verify``
@@ -139,7 +147,7 @@ class TestSafetyInvariants:
             return "verify"
 
         graph = Graph(nodes=[intake, dispatch, verify], name="gated", entrypoint="intake")
-        scene = scene_for_state(graph, simplify=True)
+        scene = scene_for_state(graph, simplify=True, show_inputs=True, show_bounded_inputs=False)
         assert ("dispatch", "verify") in visible_pairs(scene, edge_type="control")
         assert ("intake", "verify") in visible_pairs(scene, edge_type="data")
 
@@ -147,8 +155,8 @@ class TestSafetyInvariants:
         """The reduction preserves reachability, so no visible node that had
         an edge ends up isolated."""
         graph = make_shortcut_graph()
-        full = scene_for_state(graph, simplify=False)
-        reduced = scene_for_state(graph, simplify=True)
+        full = scene_for_state(graph, simplify=False, show_inputs=True, show_bounded_inputs=False)
+        reduced = scene_for_state(graph, simplify=True, show_inputs=True, show_bounded_inputs=False)
 
         def touched(scene: dict) -> set[str]:
             pairs = visible_pairs(scene, edge_type=None)
@@ -160,8 +168,8 @@ class TestSafetyInvariants:
         """Hidden edges belong to collapsed scopes and are neither path
         segments nor removal candidates — expansion must find them intact."""
         graph = make_workflow()
-        full = scene_for_state(graph, simplify=False)
-        reduced = scene_for_state(graph, simplify=True)
+        full = scene_for_state(graph, simplify=False, show_inputs=True, show_bounded_inputs=False)
+        reduced = scene_for_state(graph, simplify=True, show_inputs=True, show_bounded_inputs=False)
         hidden_ids = {e["id"] for e in full["edges"] if e["hidden"]}
         assert hidden_ids <= {e["id"] for e in reduced["edges"]}
 
@@ -223,22 +231,22 @@ class TestCollapsedContainersAreNotAssumedTransparent:
 
     def test_disconnected_container_does_not_hide_the_only_route(self) -> None:
         graph = _disconnected_container_graph()
-        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"side": False}, simplify=True))
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"side": False}, simplify=True, show_inputs=True, show_bounded_inputs=False))
         assert ("load", "render") in collapsed
 
     def test_answer_does_not_change_when_the_box_opens(self) -> None:
         """The edge must not blink in and out as the container is toggled —
         that flicker was the user-visible symptom."""
         graph = _disconnected_container_graph()
-        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"side": False}, simplify=True))
-        expanded = visible_pairs(scene_for_state(graph, expansion_state={"side": True}, simplify=True))
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"side": False}, simplify=True, show_inputs=True, show_bounded_inputs=False))
+        expanded = visible_pairs(scene_for_state(graph, expansion_state={"side": True}, simplify=True, show_inputs=True, show_bounded_inputs=False))
         assert ("load", "render") in collapsed and ("load", "render") in expanded
 
     def test_real_passthrough_still_simplifies_when_collapsed(self) -> None:
         """The precision cuts both ways: a container that DOES carry the value
         must still justify dropping the shortcut, or simplify stops working."""
         graph = _passthrough_container_graph()
-        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"prep": False}, simplify=True))
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"prep": False}, simplify=True, show_inputs=True, show_bounded_inputs=False))
         assert ("fetch", "summarize") not in collapsed
         assert collapsed == {("fetch", "prep"), ("prep", "summarize")}
 
@@ -270,7 +278,7 @@ class TestCollapsedContainersAreNotAssumedTransparent:
         deep = Graph([inner_a, inner_b], name="deep")
         mid = Graph([deep.as_node(), mid_tail], name="mid")
         graph = Graph([seed_fn, mid.as_node(), sink], name="outer")
-        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"mid": False}, simplify=True))
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"mid": False}, simplify=True, show_inputs=True, show_bounded_inputs=False))
         assert ("seed_fn", "sink") not in collapsed
 
     def test_single_child_container_still_counts_as_a_pass_through(self) -> None:
@@ -292,7 +300,7 @@ class TestCollapsedContainersAreNotAssumedTransparent:
             return ""
 
         graph = Graph([fetch, Graph([scrub], name="one").as_node(), finish], name="reflexive")
-        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"one": False}, simplify=True))
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"one": False}, simplify=True, show_inputs=True, show_bounded_inputs=False))
         assert collapsed == {("fetch", "one"), ("one", "finish")}
 
     def test_conditional_internal_route_is_not_a_pass_through(self) -> None:
@@ -331,7 +339,7 @@ class TestCollapsedContainersAreNotAssumedTransparent:
         box = Graph([head, pick, left, right], name="box", entrypoint="head")
         graph = Graph([load, box.as_node(), render], name="conditional")
         assert compute_container_transits(graph.to_flat_graph()).get("box") is None
-        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"box": False}, simplify=True))
+        collapsed = visible_pairs(scene_for_state(graph, expansion_state={"box": False}, simplify=True, show_inputs=True, show_bounded_inputs=False))
         assert ("load", "render") in collapsed
 
     def test_ambiguous_exit_is_unresolved_not_the_first_producer(self) -> None:
@@ -378,7 +386,7 @@ class TestCollapsedContainersAreNotAssumedTransparent:
             for line in str(graph.to_mermaid(depth=0, show_types=False)).splitlines()
             if "-->" in line and "input_" not in line
         }
-        scene = visible_pairs(scene_for_state(graph, expansion_state={"side": False}, simplify=True))
+        scene = visible_pairs(scene_for_state(graph, expansion_state={"side": False}, simplify=True, show_inputs=True, show_bounded_inputs=False))
         assert arrows == scene
 
 
@@ -417,11 +425,11 @@ class TestInputEdgesSimplify:
     keep their edge when every later consumer is reachable downstream."""
 
     def test_input_fanout_keeps_only_the_earliest_consumer(self) -> None:
-        scene = scene_for_state(make_input_fanout_graph(), simplify=True)
+        scene = scene_for_state(make_input_fanout_graph(), simplify=True, show_inputs=True, show_bounded_inputs=False)
         assert visible_pairs(scene, edge_type="input") == {("input_query", "select_pages")}
 
     def test_input_fanout_survives_with_simplify_off(self) -> None:
-        scene = scene_for_state(make_input_fanout_graph(), simplify=False)
+        scene = scene_for_state(make_input_fanout_graph(), simplify=False, show_inputs=True, show_bounded_inputs=False)
         assert visible_pairs(scene, edge_type="input") == {
             ("input_query", "select_pages"),
             ("input_query", "generate"),
@@ -436,8 +444,8 @@ class TestInputEdgesSimplify:
         whether the value reaches the box, not which inner node it enters."""
         outer = make_input_fanout_into_box_graph()
 
-        on = scene_for_state(outer, expansion_state={}, simplify=True)
-        off = scene_for_state(outer, expansion_state={}, simplify=False)
+        on = scene_for_state(outer, expansion_state={}, simplify=True, show_inputs=True, show_bounded_inputs=False)
+        off = scene_for_state(outer, expansion_state={}, simplify=False, show_inputs=True, show_bounded_inputs=False)
         assert visible_pairs(off, edge_type="input") == {("input_query", "select_pages"), ("input_query", "inner")}
         assert visible_pairs(on, edge_type="input") == {("input_query", "select_pages")}
 
@@ -456,7 +464,7 @@ class TestInputEdgesSimplify:
         inner = Graph([format_ctx, assemble], name="inner")
         outer = Graph([select_pages, inner.as_node(name="inner")], name="outer")
 
-        scene = scene_for_state(outer, expansion_state={}, simplify=True)
+        scene = scene_for_state(outer, expansion_state={}, simplify=True, show_inputs=True, show_bounded_inputs=False)
         assert ("input_secret", "inner") in visible_pairs(scene, edge_type="input")
 
     def test_control_delivery_does_not_imply_an_input_edge(self) -> None:
@@ -476,7 +484,7 @@ class TestInputEdgesSimplify:
             return query
 
         graph = Graph([check, deliver, archive], name="gated")
-        scene = scene_for_state(graph, simplify=True)
+        scene = scene_for_state(graph, simplify=True, show_inputs=True, show_bounded_inputs=False)
         pairs = visible_pairs(scene, edge_type="input")
         assert ("input_query", "deliver") in pairs
         assert ("input_query", "archive") in pairs
@@ -498,7 +506,7 @@ class TestInputEdgesSimplify:
         inner = Graph([format_ctx, assemble], name="inner")
         outer = Graph([select_pages, inner.as_node(name="inner")], name="outer")
 
-        scene = scene_for_state(outer, expansion_state={"inner": True}, simplify=True)
+        scene = scene_for_state(outer, expansion_state={"inner": True}, simplify=True, show_inputs=True, show_bounded_inputs=False)
         assert visible_pairs(scene, edge_type="input") == {("input_query", "select_pages")}
 
     def test_expanded_earliest_inner_consumer_keeps_its_edge(self) -> None:
@@ -516,7 +524,7 @@ class TestInputEdgesSimplify:
         inner = Graph([prepare, assemble], name="inner")
         outer = Graph([inner.as_node(name="inner")], name="outer")
 
-        scene = scene_for_state(outer, expansion_state={"inner": True}, simplify=True)
+        scene = scene_for_state(outer, expansion_state={"inner": True}, simplify=True, show_inputs=True, show_bounded_inputs=False)
         assert visible_pairs(scene, edge_type="input") == {("input_query", "inner/prepare")}
 
 
@@ -600,7 +608,7 @@ class TestMermaidAlignment:
 
     def test_matches_the_interactive_scene(self) -> None:
         graph = make_shortcut_graph()
-        scene = visible_pairs(scene_for_state(graph, simplify=True), edge_type=None)
+        scene = visible_pairs(scene_for_state(graph, simplify=True, show_inputs=True, show_bounded_inputs=False), edge_type=None)
         assert self._arrows(graph) == scene
 
     def test_producer_to_data_edges_survive(self) -> None:
@@ -613,7 +621,9 @@ class TestMermaidAlignment:
         arrows = self._arrows(graph)
         input_arrows = {pair for pair in arrows if pair[0].startswith("input_")}
         assert input_arrows == {("input_query", "select_pages")}
-        assert self._arrows(graph) == visible_pairs(scene_for_state(graph, simplify=True), edge_type=None)
+        assert self._arrows(graph) == visible_pairs(
+            scene_for_state(graph, simplify=True, show_inputs=True, show_bounded_inputs=False), edge_type=None
+        )
 
     def test_input_edge_into_a_collapsed_box_reduces_like_the_scene(self) -> None:
         graph = make_input_fanout_into_box_graph()
@@ -777,7 +787,13 @@ def test_python_js_simplify_parity(simplify: bool, separate_outputs: bool, make_
     payload = json.dumps(
         {
             "ir": asdict(ir),
-            "opts": {"expansionState": {}, "separateOutputs": separate_outputs, "simplify": simplify},
+            "opts": {
+                "expansionState": {},
+                "separateOutputs": separate_outputs,
+                "showInputs": True,
+                "showBoundedInputs": False,
+                "simplify": simplify,
+            },
         }
     )
     proc = subprocess.run(
@@ -789,7 +805,7 @@ def test_python_js_simplify_parity(simplify: bool, separate_outputs: bool, make_
     )
     assert proc.returncode == 0, proc.stderr
 
-    py_scene = build_initial_scene(ir, separate_outputs=separate_outputs, simplify=simplify)
+    py_scene = build_initial_scene(ir, separate_outputs=separate_outputs, simplify=simplify, show_inputs=True, show_bounded_inputs=False)
     js_scene = json.loads(proc.stdout)
     assert visible_pairs(js_scene, edge_type=None) == visible_pairs(py_scene, edge_type=None)
     if simplify and make_graph is make_input_fanout_graph:

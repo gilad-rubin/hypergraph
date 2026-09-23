@@ -31,14 +31,16 @@ def scene_for_state(
     expansion_state: dict[str, bool] | None = None,
     expand_all: bool = False,
     separate_outputs: bool = False,
-    show_inputs: bool = True,
+    show_inputs: bool,
+    show_bounded_inputs: bool,
     simplify: bool = True,
 ) -> dict:
     """Build a single-state ``{"nodes", "edges"}`` scene via the IR + scene_builder.
 
     This is the Python twin of ``assets/scene_builder.js``. Tests assert
     against this shape; the JS port must produce semantically equivalent
-    output for the same IR.
+    output for the same IR. Like ``build_initial_scene``, it takes both input
+    flags with no default: each test says which inputs it draws.
     """
     flat = graph_or_flat.to_flat_graph() if hasattr(graph_or_flat, "to_flat_graph") else graph_or_flat
     if expansion_state is None:
@@ -49,6 +51,7 @@ def scene_for_state(
         expansion_state=expansion_state,
         separate_outputs=separate_outputs,
         show_inputs=show_inputs,
+        show_bounded_inputs=show_bounded_inputs,
         simplify=simplify,
     )
 
@@ -420,8 +423,8 @@ def _cached_html_path(
     theme: str = "auto",
     show_types: bool = False,
     separate_outputs: bool = False,
-    show_inputs: bool = True,
-    show_bounded_inputs: bool = False,
+    show_inputs: bool,
+    show_bounded_inputs: bool,
     debug_overlays: bool = False,
 ) -> str:
     """Render HTML once per cache key and return the cached file path."""
@@ -826,8 +829,8 @@ def render_and_extract(
     depth: int,
     temp_path: str,
     *,
-    show_inputs: bool = True,
-    show_bounded_inputs: bool = False,
+    show_inputs: bool,
+    show_bounded_inputs: bool,
 ) -> dict:
     """Render graph at given depth and extract edge routing."""
     cache_path = _cached_html_path(graph, depth=depth, show_inputs=show_inputs, show_bounded_inputs=show_bounded_inputs)
@@ -842,8 +845,8 @@ def render_to_page(
     depth: int,
     temp_path: str,
     *,
-    show_inputs: bool = True,
-    show_bounded_inputs: bool = False,
+    show_inputs: bool,
+    show_bounded_inputs: bool,
 ) -> None:
     """Render graph to a temp HTML file and navigate the page to it."""
     cache_path = _cached_html_path(graph, depth=depth, show_inputs=show_inputs, show_bounded_inputs=show_bounded_inputs)

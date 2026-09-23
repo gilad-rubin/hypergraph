@@ -104,7 +104,7 @@ def test_function_node_signatures_match_render_graph_wrapper():
     flat_graph = make_simple_graph().to_flat_graph()
 
     ir = build_graph_ir(flat_graph)
-    oracle = render_graph(flat_graph)
+    oracle = render_graph(flat_graph, show_inputs=True, show_bounded_inputs=False)
 
     ir_sigs = {(n.id, n.node_type, n.parent) for n in ir.nodes if n.node_type == "FUNCTION"}
     oracle_sigs = {(n["id"], n["data"]["nodeType"], n.get("parentId")) for n in oracle["nodes"] if n.get("data", {}).get("nodeType") == "FUNCTION"}

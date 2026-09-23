@@ -111,11 +111,11 @@ class TestInteractiveExpandEdgeRouting:
         workflow = make_workflow()
 
         # === STATIC DEPTH=1: The expected/correct behavior ===
-        static_data = render_and_extract(page, workflow, depth=1, temp_path=temp_html_file)
+        static_data = render_and_extract(page, workflow, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
         static_targets = {eid: info["target"] for eid, info in static_data["edges"].items()}
 
         # === INTERACTIVE EXPAND: Render at depth=0, click to expand ===
-        render_and_extract(page, workflow, depth=0, temp_path=temp_html_file)
+        render_and_extract(page, workflow, depth=0, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
         click_to_expand_container(page, "preprocess")
         interactive_data = extract_edge_routing(page)
         interactive_targets = {eid: info["target"] for eid, info in interactive_data["edges"].items()}
@@ -152,11 +152,11 @@ class TestInteractiveExpandEdgeRouting:
         """
         workflow = make_workflow()
         # === STATIC DEPTH=1: The expected/correct behavior ===
-        static_data = render_and_extract(page, workflow, depth=1, temp_path=temp_html_file)
+        static_data = render_and_extract(page, workflow, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
         static_sources = {eid: info["source"] for eid, info in static_data["edges"].items()}
 
         # === INTERACTIVE EXPAND: Render at depth=0, click to expand ===
-        render_and_extract(page, workflow, depth=0, temp_path=temp_html_file)
+        render_and_extract(page, workflow, depth=0, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
         click_to_expand_container(page, "preprocess")
         interactive_data = extract_edge_routing(page)
         interactive_sources = {eid: info["source"] for eid, info in interactive_data["edges"].items()}
@@ -200,7 +200,7 @@ class TestInteractiveExpandEdgeRouting:
         """
         workflow = make_workflow()
         # Render at depth=0, click to expand
-        render_and_extract(page, workflow, depth=0, temp_path=temp_html_file)
+        render_and_extract(page, workflow, depth=0, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
         click_to_expand_container(page, "preprocess")
         data = extract_edge_routing(page)
 
@@ -234,7 +234,7 @@ class TestInteractiveExpandEdgeRouting:
         """
         workflow = make_workflow()
         # Render at depth=0, click to expand
-        render_and_extract(page, workflow, depth=0, temp_path=temp_html_file)
+        render_and_extract(page, workflow, depth=0, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
         click_to_expand_container(page, "preprocess")
         data = extract_edge_routing(page)
 
@@ -265,7 +265,7 @@ class TestInteractiveExpandEdgeRouting:
         """Regression: expanding llm must keep should_continue -> ask_user* as feedback edge."""
         graph = make_interrupt_cycle_graph()
 
-        render_and_extract(page, graph, depth=0, temp_path=temp_html_file, show_inputs=False)
+        render_and_extract(page, graph, depth=0, temp_path=temp_html_file, show_inputs=False, show_bounded_inputs=False)
         click_to_expand_container(page, "llm")
 
         edge = page.evaluate("""() => {
@@ -292,7 +292,7 @@ class TestInteractiveExpandEdgeRouting:
     def test_interrupt_cycle_depth2_keeps_llm_messages_edge_to_ask_user_entry(self, page, temp_html_file):
         """Depth=2 should render the Python edge llm/add_assistant_message -> ask_user/ask_slack."""
         graph = make_interrupt_cycle_graph()
-        data = render_and_extract(page, graph, depth=2, temp_path=temp_html_file, show_inputs=False)
+        data = render_and_extract(page, graph, depth=2, temp_path=temp_html_file, show_inputs=False, show_bounded_inputs=False)
 
         matches = [
             edge for edge in data["edges"].values() if edge["source"] == "llm/add_assistant_message" and edge["target"] == "ask_user/ask_slack"
@@ -302,7 +302,7 @@ class TestInteractiveExpandEdgeRouting:
     def test_interrupt_cycle_after_collapsing_llm_keeps_edge_and_vertical_order(self, page, temp_html_file):
         """Interactive state: collapse llm after depth=2 keeps edge + should_continue below llm."""
         graph = make_interrupt_cycle_graph()
-        render_to_page(page, graph, depth=2, temp_path=temp_html_file, show_inputs=False)
+        render_to_page(page, graph, depth=2, temp_path=temp_html_file, show_inputs=False, show_bounded_inputs=False)
         click_to_collapse_container(page, "llm")
 
         data = extract_edge_routing(page)
@@ -353,11 +353,11 @@ class TestInteractiveCollapseEdgeRouting:
         """
         workflow = make_workflow()
         # === STATIC DEPTH=0: The expected/correct behavior (collapsed) ===
-        static_data = render_and_extract(page, workflow, depth=0, temp_path=temp_html_file)
+        static_data = render_and_extract(page, workflow, depth=0, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
         static_targets = {eid: info["target"] for eid, info in static_data["edges"].items()}
 
         # === INTERACTIVE COLLAPSE: Render at depth=1 (expanded), click to collapse ===
-        render_and_extract(page, workflow, depth=1, temp_path=temp_html_file)
+        render_and_extract(page, workflow, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
         click_to_collapse_container(page, "preprocess")
         interactive_data = extract_edge_routing(page)
         interactive_targets = {eid: info["target"] for eid, info in interactive_data["edges"].items()}
@@ -388,7 +388,7 @@ class TestInteractiveCollapseEdgeRouting:
         """
         workflow = make_workflow()
         # Render at depth=1 (expanded), click to collapse
-        render_and_extract(page, workflow, depth=1, temp_path=temp_html_file)
+        render_and_extract(page, workflow, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
         click_to_collapse_container(page, "preprocess")
         data = extract_edge_routing(page)
 
@@ -408,7 +408,7 @@ class TestInteractiveCollapseEdgeRouting:
         """
         workflow = make_workflow()
         # Render at depth=1 (expanded), click to collapse
-        render_and_extract(page, workflow, depth=1, temp_path=temp_html_file)
+        render_and_extract(page, workflow, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
         click_to_collapse_container(page, "preprocess")
         data = extract_edge_routing(page)
 

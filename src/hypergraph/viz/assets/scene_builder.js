@@ -140,8 +140,21 @@
     return merged;
   }
 
+  // Twin of the Python keyword-only flags with no default: the caller passes
+  // both input flags already resolved (ruling D59). viz.js resolves a
+  // payload that lacks them; nothing here decides a default.
+  function requireFlag(opts, name) {
+    var value = opts[name];
+    if (typeof value !== 'boolean') {
+      throw new Error('buildInitialScene: opts.' + name + ' is required (true or false); got ' + String(value));
+    }
+    return value;
+  }
+
   function buildInitialScene(ir, opts) {
     opts = opts || {};
+    var showInputs = requireFlag(opts, 'showInputs');
+    var showBoundedInputs = requireFlag(opts, 'showBoundedInputs');
     if (!isSchemaSupported(ir)) {
       return {
         nodes: [],
@@ -159,8 +172,6 @@
     var sceneNodes = [];
 
     var separateOutputs = !!opts.separateOutputs;
-    var showInputs = opts.showInputs !== false;
-    var showBoundedInputs = !!opts.showBoundedInputs;
     var outputVisibility = ir.graph_output_visibility || {};
 
     for (var j = 0; j < ir.nodes.length; j++) {

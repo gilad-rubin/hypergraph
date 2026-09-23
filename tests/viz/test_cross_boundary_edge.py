@@ -90,7 +90,7 @@ class TestCrossBoundaryEdge:
         """Edge to compute_retrieval_metrics should come from compute_recall (internal)."""
         bound_graph = build_triple_nested_graph()
         flat_graph = bound_graph.to_flat_graph()
-        result = render_graph(flat_graph, depth=1)
+        result = render_graph(flat_graph, depth=1, show_inputs=True, show_bounded_inputs=False)
 
         # Find the edge to compute_retrieval_metrics
         edge_to_metrics = None
@@ -111,7 +111,7 @@ class TestCrossBoundaryEdge:
         """The edge source node must exist in the rendered nodes."""
         bound_graph = build_triple_nested_graph()
         flat_graph = bound_graph.to_flat_graph()
-        result = render_graph(flat_graph, depth=1)
+        result = render_graph(flat_graph, depth=1, show_inputs=True, show_bounded_inputs=False)
 
         node_ids = {n["id"] for n in result["nodes"]}
 
@@ -128,7 +128,7 @@ class TestCrossBoundaryEdge:
         from tests.viz.conftest import scene_for_state
 
         graph = build_triple_nested_graph()
-        scene = scene_for_state(graph, expansion_state={"batch_recall": True})
+        scene = scene_for_state(graph, expansion_state={"batch_recall": True}, show_inputs=True, show_bounded_inputs=False)
 
         edge_to_metrics = next(
             (e for e in scene["edges"] if e["target"] == "compute_retrieval_metrics" and not e.get("hidden")),

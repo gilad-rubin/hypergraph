@@ -91,6 +91,7 @@ def test_mapped_graphnode_scenes_are_layoutable(expanded, show_inputs, separate_
         expansion_state={"create_items": True} if expanded else {},
         show_inputs=show_inputs,
         separate_outputs=separate_outputs,
+        show_bounded_inputs=False,
     )
     assert_scene_layoutable(scene)
 
@@ -103,6 +104,7 @@ def test_mapped_graphnode_merged_edges_have_existing_endpoints(show_inputs):
         make_mapped_gate_graph(),
         expansion_state={"create_items": True},
         show_inputs=show_inputs,
+        show_bounded_inputs=False,
     )
     node_ids = {n["id"] for n in scene["nodes"]}
     for edge in scene["edges"]:
@@ -112,7 +114,7 @@ def test_mapped_graphnode_merged_edges_have_existing_endpoints(show_inputs):
 
 def test_mapped_input_edge_routes_to_inner_consumer_when_expanded():
     """The renamed map_over input (pages -> page) must reach the inner node."""
-    scene = scene_for_state(make_mapped_gate_graph(), expansion_state={"create_items": True})
+    scene = scene_for_state(make_mapped_gate_graph(), expansion_state={"create_items": True}, show_inputs=True, show_bounded_inputs=False)
     edges_by_id = {e["id"]: e for e in scene["edges"]}
     assert "input_pages__create_items/process" in edges_by_id
     assert not edges_by_id["input_pages__create_items/process"]["hidden"]
@@ -120,7 +122,7 @@ def test_mapped_input_edge_routes_to_inner_consumer_when_expanded():
 
 def test_mapped_output_edge_routes_from_inner_producer_when_expanded():
     """The renamed output (item_out -> generated) must leave from the inner node."""
-    scene = scene_for_state(make_mapped_gate_graph(), expansion_state={"create_items": True})
+    scene = scene_for_state(make_mapped_gate_graph(), expansion_state={"create_items": True}, show_inputs=True, show_bounded_inputs=False)
     edges_by_id = {e["id"]: e for e in scene["edges"]}
     assert "create_items/process__save" in edges_by_id
     assert not edges_by_id["create_items/process__save"]["hidden"]
@@ -128,7 +130,7 @@ def test_mapped_output_edge_routes_from_inner_producer_when_expanded():
 
 def test_mapped_output_edge_attaches_to_collapsed_container():
     """Collapsed view keeps the output boundary edge on the container hull."""
-    scene = scene_for_state(make_mapped_gate_graph(), expansion_state={})
+    scene = scene_for_state(make_mapped_gate_graph(), expansion_state={}, show_inputs=True, show_bounded_inputs=False)
     edge_pairs = {(e["source"], e["target"]) for e in scene["edges"]}
     assert ("create_items", "save") in edge_pairs
 
@@ -156,7 +158,7 @@ def test_swapped_input_renames_route_to_correct_inner_consumers():
     name_map = graph.to_flat_graph().nodes["inner"]["input_name_map"]
     assert name_map == {"x": ("y",), "y": ("x",)}
 
-    scene = scene_for_state(graph, expansion_state={"inner": True})
+    scene = scene_for_state(graph, expansion_state={"inner": True}, show_inputs=True, show_bounded_inputs=False)
     visible_edges = {(e["source"], e["target"]) for e in scene["edges"] if not e["hidden"]}
     assert ("input_x", "inner/consume_y") in visible_edges
     assert ("input_y", "inner/consume_x") in visible_edges
@@ -179,6 +181,8 @@ def test_separate_outputs_renamed_boundary_reaches_its_consumer_when_expanded():
         make_mapped_gate_graph(),
         expansion_state={"create_items": True},
         separate_outputs=True,
+        show_inputs=True,
+        show_bounded_inputs=False,
     )
     node_ids = {n["id"] for n in scene["nodes"]}
     for edge in scene["edges"]:
@@ -196,7 +200,7 @@ def test_separate_outputs_renamed_boundary_reaches_its_consumer_when_expanded():
 def test_separate_outputs_collapsed_boundary_keeps_the_container_pill():
     """Collapsed, the value pill belongs to the container and keeps its
     container-level name — the expanded-state translation must not leak here."""
-    scene = scene_for_state(make_mapped_gate_graph(), expansion_state={}, separate_outputs=True)
+    scene = scene_for_state(make_mapped_gate_graph(), expansion_state={}, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
     node_ids = {n["id"] for n in scene["nodes"]}
     visible_pairs = {(e["source"], e["target"]) for e in scene["edges"] if not e["hidden"]}
     assert ("create_items", "data_create_items_generated") in visible_pairs

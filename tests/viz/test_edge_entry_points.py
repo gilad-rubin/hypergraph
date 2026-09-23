@@ -272,7 +272,7 @@ _PIXELS_JS = r"""async ({ png, x0, y0, scale }) => {
 def _render(browser, make, show_inputs: bool, depth: int) -> list[dict]:
     page = browser.new_page(viewport={"width": 1200, "height": 1400}, device_scale_factor=2)
     try:
-        page.goto(f"file://{_cached_html_path(make(), depth=depth, show_inputs=show_inputs)}")
+        page.goto(f"file://{_cached_html_path(make(), depth=depth, show_inputs=show_inputs, show_bounded_inputs=False)}")
         wait_for_debug_ready(page)
         edges = [e for e in page.evaluate(_PROBE_JS) if not e["feedback"]]
         zoom = page.evaluate(

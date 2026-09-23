@@ -115,12 +115,13 @@ side-effect in the order defined by `FIRST_PARTY_ASSET_NAMES`
   deprecated `show_external_inputs` alias. Every public entry point
   (`Graph.visualize`, `viz.visualize`, `HyperTable.visualize`,
   `extract_debug_data`) and `render_flat_graph` pass their raw `None`-default
-  arguments through it, and never carry an alias block of their own. The
-  internal helpers (`renderer.render_graph`, `scene_builder.build_initial_scene`,
-  `html.estimate_layout`, `scene_builder.js`) still carry defaults of their own
-  and are being converted to take the resolved booleans (ruling D59). Do not
-  add a new default elsewhere. The JS fallback for a payload missing the flags
-  mirrors the resolver.
+  arguments through it, and never carry an alias block of their own. Internal
+  helpers take the resolved booleans and carry no default (ruling D59):
+  `renderer.render_graph`, `scene_builder.build_initial_scene` and
+  `html.estimate_layout` / `LayoutEstimator` take them keyword-only, and
+  `scene_builder.js` throws on a missing flag. Never add a default anywhere
+  else; the one JS mirror of the resolver is `viz.js`'s fallback for a
+  payload missing the flags.
 - With inputs hidden, `viz_ghosts.js` shows a hovered or tapped step's inputs
   as ghost pills (tapping a collapsed container opens it instead, as before): external inputs, bound tools (faded, dashed) and values whose
   data edge `simplify` dropped (`raw ← fetch`). The dropped edges are the diff

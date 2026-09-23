@@ -45,7 +45,7 @@ def test_scene_materializes_input_node_for_external_param():
     flat_graph = make_simple_graph().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
-    scene = build_initial_scene(ir)
+    scene = build_initial_scene(ir, show_inputs=True, show_bounded_inputs=False)
 
     input_ids = {n["id"] for n in scene["nodes"] if n["data"]["nodeType"] == "INPUT"}
     assert "input_x" in input_ids
@@ -61,8 +61,8 @@ def test_simple_graph_scene_node_signatures_match_render_graph_wrapper():
     flat_graph = make_simple_graph().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
-    scene = build_initial_scene(ir)
-    oracle = render_graph(flat_graph)
+    scene = build_initial_scene(ir, show_inputs=True, show_bounded_inputs=False)
+    oracle = render_graph(flat_graph, show_inputs=True, show_bounded_inputs=False)
 
     assert _visible_node_sigs(scene["nodes"]) == _visible_node_sigs(oracle["nodes"])
 
@@ -72,8 +72,8 @@ def test_workflow_scene_node_signatures_match_render_graph_wrapper():
     flat_graph = make_workflow().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
-    scene = build_initial_scene(ir)
-    oracle = render_graph(flat_graph)
+    scene = build_initial_scene(ir, show_inputs=True, show_bounded_inputs=False)
+    oracle = render_graph(flat_graph, show_inputs=True, show_bounded_inputs=False)
 
     assert _visible_node_sigs(scene["nodes"]) == _visible_node_sigs(oracle["nodes"])
 
@@ -83,8 +83,8 @@ def test_outer_scene_node_signatures_match_render_graph_wrapper():
     flat_graph = make_outer().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
-    scene = build_initial_scene(ir)
-    oracle = render_graph(flat_graph)
+    scene = build_initial_scene(ir, show_inputs=True, show_bounded_inputs=False)
+    oracle = render_graph(flat_graph, show_inputs=True, show_bounded_inputs=False)
 
     assert _visible_node_sigs(scene["nodes"]) == _visible_node_sigs(oracle["nodes"])
 
@@ -96,8 +96,8 @@ def test_simple_graph_scene_edges_match_render_graph_wrapper():
     flat_graph = make_simple_graph().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
-    scene = build_initial_scene(ir)
-    oracle = render_graph(flat_graph)
+    scene = build_initial_scene(ir, show_inputs=True, show_bounded_inputs=False)
+    oracle = render_graph(flat_graph, show_inputs=True, show_bounded_inputs=False)
 
     assert _visible_edge_sigs(scene) == _visible_edge_sigs(oracle)
 
@@ -105,16 +105,16 @@ def test_simple_graph_scene_edges_match_render_graph_wrapper():
 def test_workflow_scene_edges_match_render_graph_wrapper():
     flat_graph = make_workflow().to_flat_graph()
     ir = build_graph_ir(flat_graph)
-    scene = build_initial_scene(ir)
-    oracle = render_graph(flat_graph)
+    scene = build_initial_scene(ir, show_inputs=True, show_bounded_inputs=False)
+    oracle = render_graph(flat_graph, show_inputs=True, show_bounded_inputs=False)
     assert _visible_edge_sigs(scene) == _visible_edge_sigs(oracle)
 
 
 def test_outer_scene_edges_match_render_graph_wrapper():
     flat_graph = make_outer().to_flat_graph()
     ir = build_graph_ir(flat_graph)
-    scene = build_initial_scene(ir)
-    oracle = render_graph(flat_graph)
+    scene = build_initial_scene(ir, show_inputs=True, show_bounded_inputs=False)
+    oracle = render_graph(flat_graph, show_inputs=True, show_bounded_inputs=False)
     assert _visible_edge_sigs(scene) == _visible_edge_sigs(oracle)
 
 
@@ -124,7 +124,7 @@ def test_show_inputs_false_hides_all_input_nodes():
     flat_graph = make_simple_graph().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
-    scene = build_initial_scene(ir, show_inputs=False)
+    scene = build_initial_scene(ir, show_inputs=False, show_bounded_inputs=False)
 
     visible_inputs = [n for n in scene["nodes"] if n["data"]["nodeType"] in ("INPUT", "INPUT_GROUP") and not n.get("hidden")]
     assert visible_inputs == []
@@ -137,8 +137,8 @@ def test_separate_outputs_true_materializes_data_nodes():
     flat_graph = make_simple_graph().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
-    scene = build_initial_scene(ir, separate_outputs=True)
-    oracle = render_graph(flat_graph, separate_outputs=True)
+    scene = build_initial_scene(ir, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
+    oracle = render_graph(flat_graph, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
     visible_scene_data = {n["id"] for n in scene["nodes"] if n["data"]["nodeType"] == "DATA" and not n.get("hidden")}
     visible_oracle_data = {n["id"] for n in oracle["nodes"] if n["data"].get("nodeType") == "DATA" and not n.get("hidden")}
@@ -159,8 +159,8 @@ def test_multi_param_consumer_yields_single_input_group():
     flat_graph = Graph([two_param]).to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
-    scene = build_initial_scene(ir)
-    oracle = render_graph(flat_graph)
+    scene = build_initial_scene(ir, show_inputs=True, show_bounded_inputs=False)
+    oracle = render_graph(flat_graph, show_inputs=True, show_bounded_inputs=False)
 
     scene_inputs = {
         (n["id"], n["data"]["nodeType"]) for n in scene["nodes"] if n["data"]["nodeType"] in ("INPUT", "INPUT_GROUP") and not n.get("hidden")
@@ -179,8 +179,8 @@ def test_separate_outputs_true_edges_match_render_graph_wrapper():
     flat_graph = make_simple_graph().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
-    scene = build_initial_scene(ir, separate_outputs=True)
-    oracle = render_graph(flat_graph, separate_outputs=True)
+    scene = build_initial_scene(ir, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
+    oracle = render_graph(flat_graph, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
     assert _visible_edge_sigs(scene) == _visible_edge_sigs(oracle)
 
@@ -206,7 +206,7 @@ def test_multi_value_edge_emits_single_scene_edge_in_merged_mode():
     flat_graph = _make_multi_value_graph().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
-    scene = build_initial_scene(ir, separate_outputs=False)
+    scene = build_initial_scene(ir, separate_outputs=False, show_inputs=True, show_bounded_inputs=False)
 
     split_to_merge = [e for e in scene["edges"] if e["source"] == "split" and e["target"] == "merge"]
     assert len(split_to_merge) == 1
@@ -234,7 +234,7 @@ def test_branch_to_end_edge_carries_label_for_when_false():
 
     flat_graph = Graph(nodes=[src, gate, accept]).to_flat_graph()
     ir = build_graph_ir(flat_graph)
-    scene = build_initial_scene(ir)
+    scene = build_initial_scene(ir, show_inputs=True, show_bounded_inputs=False)
 
     end_edges = [e for e in scene["edges"] if e["target"] == "__end__"]
     assert end_edges, "branch→__end__ edge missing from scene"
@@ -256,7 +256,7 @@ def test_start_edge_to_expanded_container_targets_real_entrypoint():
     outer = Graph(nodes=[inner.as_node()], entrypoint="inner")
 
     ir = build_graph_ir(outer.to_flat_graph())
-    scene = build_initial_scene(ir, expansion_state={"inner": True})
+    scene = build_initial_scene(ir, expansion_state={"inner": True}, show_inputs=True, show_bounded_inputs=False)
 
     start_edges = [e for e in scene["edges"] if e["source"] == "__start__"]
     assert [(e["source"], e["target"]) for e in start_edges] == [("__start__", "inner/upstream")]
@@ -292,7 +292,7 @@ def test_expanded_container_entrypoints_ignore_self_outputs_and_keep_multiple_en
     ir = build_graph_ir(outer.to_flat_graph())
     assert ir.container_entrypoints == {"outer": ("outer/selfish", "outer/independent")}
 
-    scene = build_initial_scene(ir, expansion_state={"outer": True})
+    scene = build_initial_scene(ir, expansion_state={"outer": True}, show_inputs=True, show_bounded_inputs=False)
 
     start_targets = {edge["target"] for edge in scene["edges"] if edge["source"] == "__start__"}
     assert start_targets == {"outer/selfish", "outer/independent"}
@@ -326,7 +326,7 @@ def test_scene_builder_consumes_container_entrypoints_field_verbatim():
         container_entrypoints={"outer": ("outer/downstream",)},
     )
 
-    scene = build_initial_scene(ir, expansion_state={"outer": True})
+    scene = build_initial_scene(ir, expansion_state={"outer": True}, show_inputs=True, show_bounded_inputs=False)
 
     start_targets = {edge["target"] for edge in scene["edges"] if edge["source"] == "__start__"}
     assert start_targets == {"outer/downstream"}
@@ -340,6 +340,8 @@ def test_edge_into_nested_expanded_container_targets_visible_leaf():
     scene = build_initial_scene(
         ir,
         expansion_state={"mid": True, "mid/accum": True},
+        show_inputs=True,
+        show_bounded_inputs=False,
     )
 
     dispatch_edges = [edge for edge in scene["edges"] if edge["source"] == "dispatch" and edge["target"] != "__end__"]
@@ -354,6 +356,8 @@ def test_nested_expansion_preserves_every_start_entrypoint():
     scene = build_initial_scene(
         ir,
         expansion_state={"mid": True, "mid/accum": True},
+        show_inputs=True,
+        show_bounded_inputs=False,
     )
 
     start_targets = {edge["target"] for edge in scene["edges"] if edge["source"] == "__start__" and edge["target"].startswith("mid/")}
@@ -365,7 +369,7 @@ def test_edge_into_all_hidden_container_is_not_attached_to_expanded_hull():
     graph = make_hidden_only_container_graph()
     ir = build_graph_ir(graph.to_flat_graph())
 
-    scene = build_initial_scene(ir, expansion_state={"box": True})
+    scene = build_initial_scene(ir, expansion_state={"box": True}, show_inputs=True, show_bounded_inputs=False)
 
     visible_box_edges = [edge for edge in scene["edges"] if not edge["hidden"] and edge["target"] == "box"]
     assert visible_box_edges == []
@@ -376,7 +380,7 @@ def test_hidden_source_does_not_promote_visible_dependent_to_entrypoint():
     graph = make_hidden_source_only_dependency_graph()
     ir = build_graph_ir(graph.to_flat_graph())
 
-    scene = build_initial_scene(ir, expansion_state={"box": True})
+    scene = build_initial_scene(ir, expansion_state={"box": True}, show_inputs=True, show_bounded_inputs=False)
 
     visible_dispatch_targets = {
         edge["target"] for edge in scene["edges"] if edge["source"] == "dispatch" and edge["target"] != "__end__" and not edge["hidden"]
@@ -396,6 +400,8 @@ def test_expanded_graph_container_data_nodes_are_hidden_in_separate_mode():
         ir,
         expansion_state={"preprocess": True},
         separate_outputs=True,
+        show_inputs=True,
+        show_bounded_inputs=False,
     )
 
     container_data = [n for n in scene["nodes"] if n["id"].startswith("data_preprocess_") and n["data"]["nodeType"] == "DATA"]
@@ -429,7 +435,7 @@ def test_branch_emit_output_connects_to_its_data_node_in_separate_mode():
 
     flat_graph = Graph(nodes=[src, gate, accept, reject]).to_flat_graph()
     ir = build_graph_ir(flat_graph)
-    scene = build_initial_scene(ir, separate_outputs=True)
+    scene = build_initial_scene(ir, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
     output_edges_from_gate = [e for e in scene["edges"] if e["source"] == "gate" and e["data"].get("edgeType") == "output"]
     targets = {e["target"] for e in output_edges_from_gate}
@@ -443,7 +449,7 @@ def test_multi_value_edge_routes_through_per_value_data_nodes_in_separate_mode()
     flat_graph = _make_multi_value_graph().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
-    scene = build_initial_scene(ir, separate_outputs=True)
+    scene = build_initial_scene(ir, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
     edges_to_merge = [e for e in scene["edges"] if e["target"] == "merge"]
     sources_to_merge = {e["source"] for e in edges_to_merge}

@@ -129,7 +129,7 @@ class TestRecipeIsVisible:
     def test_container_renders_as_an_expandable_pipeline(self):
         from hypergraph.viz.renderer import render_graph
 
-        result = render_graph(_mounted().to_flat_graph(), depth=2, separate_outputs=False)
+        result = render_graph(_mounted().to_flat_graph(), depth=2, separate_outputs=False, show_inputs=True, show_bounded_inputs=False)
         by_id = {n["id"]: n for n in result["nodes"]}
 
         assert by_id["materialize_docs"]["data"]["nodeType"] == "PIPELINE"
@@ -140,7 +140,7 @@ class TestRecipeIsVisible:
         """Expandable is not the same as always expanded."""
         from hypergraph.viz.renderer import render_graph
 
-        result = render_graph(_mounted().to_flat_graph(), depth=0, separate_outputs=False)
+        result = render_graph(_mounted().to_flat_graph(), depth=0, separate_outputs=False, show_inputs=True, show_bounded_inputs=False)
         visible = [n["id"] for n in result["nodes"] if not n.get("hidden")]
         assert "materialize_docs" in visible
         assert not [n for n in visible if n.startswith("materialize_docs/")]

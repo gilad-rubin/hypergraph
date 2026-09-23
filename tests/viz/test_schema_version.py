@@ -63,7 +63,7 @@ def test_python_scene_builder_rejects_unsupported_version() -> None:
     ir = build_graph_ir(flat)
     future_ir = replace(ir, schema_version="999")
     with pytest.raises(IRSchemaError, match="schema_version"):
-        build_initial_scene(future_ir)
+        build_initial_scene(future_ir, show_inputs=True, show_bounded_inputs=False)
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js not installed")
@@ -72,7 +72,7 @@ def test_js_scene_builder_returns_mismatch_sentinel_for_future_version() -> None
     ir = build_graph_ir(flat)
     ir_dict = asdict(ir)
     ir_dict["schema_version"] = "999"
-    payload = json.dumps({"ir": ir_dict, "opts": {}})
+    payload = json.dumps({"ir": ir_dict, "opts": {"showInputs": True, "showBoundedInputs": False}})
     proc = subprocess.run(
         [NODE, str(RUNNER), str(REPO_ROOT)],
         input=payload,
@@ -99,7 +99,7 @@ def test_python_scene_builder_degrades_loudly_on_v3_payload_without_container_en
     ir = build_graph_ir(flat)
     v3_ir = replace(ir, schema_version="3", container_entrypoints={})
     with pytest.raises(IRSchemaError, match="schema_version"):
-        build_initial_scene(v3_ir)
+        build_initial_scene(v3_ir, show_inputs=True, show_bounded_inputs=False)
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js not installed")
@@ -112,7 +112,7 @@ def test_js_scene_builder_degrades_loudly_on_v3_payload_without_container_entryp
     ir_dict = asdict(ir)
     del ir_dict["container_entrypoints"]
     ir_dict["schema_version"] = "3"
-    payload = json.dumps({"ir": ir_dict, "opts": {}})
+    payload = json.dumps({"ir": ir_dict, "opts": {"showInputs": True, "showBoundedInputs": False}})
     proc = subprocess.run(
         [NODE, str(RUNNER), str(REPO_ROOT)],
         input=payload,
@@ -134,7 +134,7 @@ def test_js_scene_builder_degrades_loudly_when_schema_version_is_missing() -> No
     ir_dict = asdict(build_graph_ir(flat))
     del ir_dict["schema_version"]
     del ir_dict["container_entrypoints"]
-    payload = json.dumps({"ir": ir_dict, "opts": {}})
+    payload = json.dumps({"ir": ir_dict, "opts": {"showInputs": True, "showBoundedInputs": False}})
 
     proc = subprocess.run(
         [NODE, str(RUNNER), str(REPO_ROOT)],
@@ -161,7 +161,7 @@ def test_python_scene_builder_degrades_loudly_on_v4_payload_without_container_tr
     ir = build_graph_ir(make_simple_graph().to_flat_graph())
     v4_ir = replace(ir, schema_version="4", container_transits={})
     with pytest.raises(IRSchemaError, match="schema_version"):
-        build_initial_scene(v4_ir)
+        build_initial_scene(v4_ir, show_inputs=True, show_bounded_inputs=False)
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js not installed")
@@ -173,7 +173,7 @@ def test_js_scene_builder_degrades_loudly_on_v4_payload_without_container_transi
     ir_dict["schema_version"] = "4"
     proc = subprocess.run(
         [NODE, str(RUNNER), str(REPO_ROOT)],
-        input=json.dumps({"ir": ir_dict, "opts": {}}),
+        input=json.dumps({"ir": ir_dict, "opts": {"showInputs": True, "showBoundedInputs": False}}),
         capture_output=True,
         text=True,
         timeout=15,
@@ -190,7 +190,7 @@ def test_js_scene_builder_accepts_current_version() -> None:
     flat = make_simple_graph().to_flat_graph()
     ir = build_graph_ir(flat)
     ir_dict = asdict(ir)
-    payload = json.dumps({"ir": ir_dict, "opts": {}})
+    payload = json.dumps({"ir": ir_dict, "opts": {"showInputs": True, "showBoundedInputs": False}})
     proc = subprocess.run(
         [NODE, str(RUNNER), str(REPO_ROOT)],
         input=payload,

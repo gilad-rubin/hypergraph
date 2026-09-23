@@ -30,7 +30,7 @@ class TestSeparateOutputsEdges:
         preprocess = Graph(nodes=[clean_text, normalize], name="preprocess")
         workflow = Graph(nodes=[preprocess.as_node(), analyze])
 
-        result = render_graph(workflow.to_flat_graph(), depth=0, separate_outputs=True)
+        result = render_graph(workflow.to_flat_graph(), depth=0, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
         edges = result["edges"]
 
         # Find DATA nodes
@@ -48,7 +48,7 @@ class TestSeparateOutputsEdges:
         preprocess = Graph(nodes=[clean_text, normalize], name="preprocess")
         workflow = Graph(nodes=[preprocess.as_node(), analyze])
 
-        result = render_graph(workflow.to_flat_graph(), depth=1, separate_outputs=True)
+        result = render_graph(workflow.to_flat_graph(), depth=1, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
         edges = result["edges"]
 
         # Find DATA nodes
@@ -67,7 +67,7 @@ class TestSeparateOutputsEdges:
         workflow = Graph(nodes=[preprocess.as_node(), analyze])
 
         for expand_all in (False, True):
-            scene = scene_for_state(workflow, expand_all=expand_all, separate_outputs=True)
+            scene = scene_for_state(workflow, expand_all=expand_all, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
             data_node_ids = {n["id"] for n in scene["nodes"] if n["data"]["nodeType"] == "DATA"}
             edges_to_data = [e for e in scene["edges"] if e["target"] in data_node_ids]
             assert edges_to_data, (
@@ -84,7 +84,7 @@ class TestSeparateOutputsNodeVisibility:
         preprocess = Graph(nodes=[clean_text, normalize], name="preprocess")
         workflow = Graph(nodes=[preprocess.as_node(), analyze])
 
-        result = render_graph(workflow.to_flat_graph(), depth=0, separate_outputs=True)
+        result = render_graph(workflow.to_flat_graph(), depth=0, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
         data_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "DATA"]
         data_labels = {n["data"]["label"] for n in data_nodes}
@@ -114,7 +114,7 @@ class TestSeparateOutputsNodeVisibility:
             return value
 
         graph = Graph(nodes=[source, gate_decision, accept, reject])
-        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True)
+        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
         data_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "DATA"]
         data_labels = {n["data"]["label"] for n in data_nodes}
@@ -144,7 +144,7 @@ class TestSeparateOutputsNodeVisibility:
             return value
 
         graph = Graph(nodes=[source, gate_decision, accept, reject])
-        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True)
+        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
         data_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "DATA"]
         data_labels = {n["data"]["label"] for n in data_nodes}
@@ -168,7 +168,7 @@ class TestSeparateOutputsNodeVisibility:
             return value
 
         graph = Graph(nodes=[source, choose, accept])
-        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True)
+        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
         data_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "DATA"]
         data_labels = {n["data"]["label"] for n in data_nodes}
@@ -194,7 +194,7 @@ class TestSeparateOutputsNodeVisibility:
         inner = Graph(nodes=[source, choose, accept], name="inner")
         outer = Graph(nodes=[inner.as_node(name="inner_node")])
 
-        result = render_graph(outer.to_flat_graph(), depth=2, separate_outputs=True)
+        result = render_graph(outer.to_flat_graph(), depth=2, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
         data_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "DATA"]
         data_labels = {n["data"]["label"] for n in data_nodes}
 
@@ -230,7 +230,7 @@ class TestDeeplyNestedSeparateOutputs:
 
         outer = Graph(nodes=[middle.as_node(), log_result])
 
-        scene = scene_for_state(outer, expand_all=True, separate_outputs=True)
+        scene = scene_for_state(outer, expand_all=True, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
         edges_to_validate = [e for e in scene["edges"] if e["target"] == "middle/validate" and not e.get("hidden")]
 
         assert edges_to_validate, f"No edges to 'middle/validate' found!\nAll edges: {[(e['source'], e['target']) for e in scene['edges']]}"
@@ -269,6 +269,8 @@ class TestDeeplyNestedSeparateOutputs:
             outer,
             expansion_state={"middle": True, "middle/inner": True},
             separate_outputs=True,
+            show_inputs=True,
+            show_bounded_inputs=False,
         )
         edges_to_validate = [e for e in scene["edges"] if e["target"] == "middle/validate" and not e.get("hidden")]
         assert edges_to_validate
@@ -312,7 +314,7 @@ class TestDeeplyNestedSeparateOutputs:
         expandables = ["middle", "middle/inner"]
         for bits in product([False, True], repeat=len(expandables)):
             state = dict(zip(expandables, bits, strict=True))
-            scene = scene_for_state(outer, expansion_state=state, separate_outputs=True)
+            scene = scene_for_state(outer, expansion_state=state, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
             function_ids = {n["id"] for n in scene["nodes"] if n["data"].get("nodeType") in ("FUNCTION", "PIPELINE")}
             for edge in scene["edges"]:
                 if edge.get("hidden"):

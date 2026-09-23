@@ -118,7 +118,7 @@ def test_python_js_external_input_owner_container_matches() -> None:
     ir = build_graph_ir(graph.to_flat_graph())
     expansion_state = {"preprocess": True}
 
-    py_scene = build_initial_scene(ir, expansion_state=expansion_state)
+    py_scene = build_initial_scene(ir, expansion_state=expansion_state, show_inputs=True, show_bounded_inputs=False)
     js_scene = _node_scene(
         asdict(ir),
         {
@@ -133,6 +133,16 @@ def test_python_js_external_input_owner_container_matches() -> None:
     js_input = next(n for n in js_scene["nodes"] if n["id"] == "input_text")
 
     assert js_input["data"].get("ownerContainer") == py_input["data"]["ownerContainer"] == "preprocess"
+
+
+@pytest.mark.parametrize("missing", ["showInputs", "showBoundedInputs"])
+def test_js_scene_builder_refuses_a_missing_input_flag(missing) -> None:
+    """The JS twin decides no input default either (D59); viz.js resolves the payload's flags."""
+    ir = asdict(build_graph_ir(make_workflow().to_flat_graph()))
+    opts = {"expansionState": {}, "separateOutputs": False, "showInputs": True, "showBoundedInputs": False}
+    del opts[missing]
+    with pytest.raises(RuntimeError, match=f"opts.{missing} is required"):
+        _node_scene(ir, opts)
 
 
 def _all_expansion_states(ir_dict: dict) -> list[dict]:
@@ -346,7 +356,7 @@ def test_mismatched_value_names_when_expanded_degrades_the_same_in_both_twins() 
     )
 
     expansion_state = {"create_items": True}
-    py_scene = build_initial_scene(mismatched, expansion_state=expansion_state, separate_outputs=True)
+    py_scene = build_initial_scene(mismatched, expansion_state=expansion_state, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
     js_scene = _node_scene(
         asdict(mismatched),
         {
@@ -458,8 +468,8 @@ def test_python_js_mounted_table_scenes_match(show_inputs: bool) -> None:
     ir_dict: dict[str, Any] = asdict(ir)
 
     for expansion_state in _all_expansion_states(ir_dict):
-        py_scene = build_initial_scene(ir, expansion_state=expansion_state, show_inputs=show_inputs)
-        js_scene = _node_scene(ir_dict, {"expansionState": expansion_state, "showInputs": show_inputs})
+        py_scene = build_initial_scene(ir, expansion_state=expansion_state, show_inputs=show_inputs, show_bounded_inputs=False)
+        js_scene = _node_scene(ir_dict, {"expansionState": expansion_state, "showInputs": show_inputs, "showBoundedInputs": False})
         py_nodes, py_edges = _project(py_scene)
         js_nodes, js_edges = _project(js_scene)
         ctx = f"mounted state={expansion_state} inputs={show_inputs}"
@@ -479,8 +489,8 @@ def test_python_js_fanout_scenes_match(inner_inputs: tuple[str, ...], show_input
     ir_dict: dict[str, Any] = asdict(ir)
 
     for expansion_state in _all_expansion_states(ir_dict):
-        py_scene = build_initial_scene(ir, expansion_state=expansion_state, show_inputs=show_inputs)
-        js_scene = _node_scene(ir_dict, {"expansionState": expansion_state, "showInputs": show_inputs})
+        py_scene = build_initial_scene(ir, expansion_state=expansion_state, show_inputs=show_inputs, show_bounded_inputs=False)
+        js_scene = _node_scene(ir_dict, {"expansionState": expansion_state, "showInputs": show_inputs, "showBoundedInputs": False})
         py_nodes, py_edges = _project(py_scene)
         js_nodes, js_edges = _project(js_scene)
         ctx = f"fanout inner={inner_inputs} state={expansion_state} inputs={show_inputs}"

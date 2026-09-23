@@ -473,7 +473,7 @@ class TestVizOrderingEdges:
             return x * 2
 
         graph = Graph(nodes=[step_a, step_b])
-        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=False)
+        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=False, show_inputs=True, show_bounded_inputs=False)
 
         ordering_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "ordering"]
         assert len(ordering_edges) >= 1
@@ -494,7 +494,7 @@ class TestVizOrderingEdges:
             return x * 2
 
         graph = Graph(nodes=[step_a, step_b])
-        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True)
+        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
         ordering_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "ordering"]
         assert len(ordering_edges) >= 1

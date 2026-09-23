@@ -221,7 +221,7 @@ class TestInputNodePosition:
         The edge from input_x to step1 should flow DOWNWARD.
         """
         outer = make_outer()
-        render_to_page(page, outer, depth=2, temp_path=temp_html_file)
+        render_to_page(page, outer, depth=2, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -271,7 +271,7 @@ class TestInputNodePosition:
     def test_workflow_depth1_input_above_clean_text(self, page, temp_html_file):
         """Input text should be positioned ABOVE clean_text."""
         workflow = make_workflow()
-        render_to_page(page, workflow, depth=1, temp_path=temp_html_file)
+        render_to_page(page, workflow, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -313,7 +313,7 @@ class TestInputNodePosition:
     def test_superposition_rag_question_stays_close_to_expanded_retrieval(self, page, temp_html_file):
         """Root shared input should not be separated from an expanded subgraph by multiple ranks."""
         graph = make_superposition_rag_graph()
-        render_to_page(page, graph, depth=0, temp_path=temp_html_file, show_inputs=True)
+        render_to_page(page, graph, depth=0, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         click_to_expand_container(page, "retrieval")
 
@@ -353,7 +353,7 @@ class TestInputNodePosition:
     def test_superposition_rag_question_stays_close_to_expanded_generation(self, page, temp_html_file):
         """The shared question input should stay close when only generation is expanded."""
         graph = make_superposition_rag_graph()
-        render_to_page(page, graph, depth=0, temp_path=temp_html_file, show_inputs=True)
+        render_to_page(page, graph, depth=0, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         click_to_expand_container(page, "generation")
 
@@ -401,7 +401,7 @@ class TestInputNodePosition:
     def test_shared_question_subgraph_variants_stay_connected_across_depths(self, page, temp_html_file, graph_factory, depth):
         """RAG-shaped nested graphs should keep the shared question input visibly connected."""
         graph = graph_factory()
-        render_to_page(page, graph, depth=depth, temp_path=temp_html_file, show_inputs=True)
+        render_to_page(page, graph, depth=depth, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -576,7 +576,7 @@ class TestEdgeGaps:
     def test_branch_incoming_edge_touches_diamond_top(self, page, temp_html_file):
         """Incoming edge should terminate on the BRANCH diamond top boundary."""
         graph = make_branch_anchor_graph()
-        render_to_page(page, graph, depth=0, temp_path=temp_html_file)
+        render_to_page(page, graph, depth=0, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -632,7 +632,7 @@ class TestEdgeGaps:
     def test_outer_depth2_input_edge_no_gap(self, page, temp_html_file):
         """Edge from input to step1 should have no gap at start or end."""
         outer = make_outer()
-        render_to_page(page, outer, depth=2, temp_path=temp_html_file)
+        render_to_page(page, outer, depth=2, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -724,7 +724,7 @@ class TestEdgeGaps:
     def test_cross_boundary_edges_do_not_cross_visible_nodes(self, page, temp_html_file):
         """Cross-boundary rerouted edges must avoid crossing unrelated visible nodes."""
         graph = build_triple_nested_graph()
-        render_to_page(page, graph, depth=1, temp_path=temp_html_file, show_inputs=True)
+        render_to_page(page, graph, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -810,7 +810,7 @@ class TestEdgeGaps:
     def test_branch_labels_center_on_edge_midpoint(self, page, temp_html_file):
         """True/False labels should be centered on the full branch edge."""
         graph = make_branch_anchor_graph()
-        render_to_page(page, graph, depth=0, temp_path=temp_html_file)
+        render_to_page(page, graph, depth=0, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
         self._assert_branch_labels_centered(
             self._branch_label_reports(page),
             stage="baseline",
@@ -819,7 +819,7 @@ class TestEdgeGaps:
     def test_branch_labels_recalculate_after_expand_and_mode_changes(self, page, temp_html_file):
         """True/False label centering should update after expand/collapse and mode toggles."""
         graph = make_rag_style_graph()
-        render_to_page(page, graph, depth=0, temp_path=temp_html_file)
+        render_to_page(page, graph, depth=0, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         self._assert_branch_labels_centered(
             self._branch_label_reports(page),
@@ -862,7 +862,7 @@ class TestEdgeGaps:
         - 19px gap above 'analyze' node
         """
         workflow = make_workflow()
-        render_to_page(page, workflow, depth=1, temp_path=temp_html_file)
+        render_to_page(page, workflow, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -976,7 +976,7 @@ class TestEdgeConnectsToActualNode:
     def test_outer_depth2_edge_to_step1_not_inner(self, page, temp_html_file):
         """Edge should connect to step1's position, not inner container's boundary."""
         outer = make_outer()
-        render_to_page(page, outer, depth=2, temp_path=temp_html_file)
+        render_to_page(page, outer, depth=2, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -1138,7 +1138,7 @@ class TestInputNodeHorizontalSpread:
             return f"{system_prompt} {max_tokens}"
 
         graph = Graph(nodes=[generate])
-        render_to_page(page, graph, depth=1, temp_path=temp_html_file, show_inputs=True)
+        render_to_page(page, graph, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -1190,7 +1190,7 @@ class TestInputNodeHorizontalSpread:
             return f"{input_b} {step1_out}"
 
         graph = Graph(nodes=[step1, step2])
-        render_to_page(page, graph, depth=1, temp_path=temp_html_file, show_inputs=True)
+        render_to_page(page, graph, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=False)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;

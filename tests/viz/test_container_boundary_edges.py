@@ -80,26 +80,28 @@ def _pill_for(scene: dict, param: str) -> str | None:
 class TestEdgeIntoExpandedContainerReachesEveryConsumer:
     def test_gate_receives_the_boundary_value_when_expanded(self):
         """The E.2 shape: the @ifelse guard consumed ``document`` and drew nothing."""
-        scene = scene_for_state(_generation(), expansion_state={"gen": True}, simplify=False)
+        scene = scene_for_state(_generation(), expansion_state={"gen": True}, simplify=False, show_inputs=True, show_bounded_inputs=False)
 
         assert ("pick", "gen/gate") in _visible(scene), f"the guard consumes 'document'; visible: {sorted(_visible(scene))}"
 
     def test_rewritten_edge_resolves_to_the_collapsed_inner_container(self):
         """The deepest consumer sits inside collapsed ``build_messages``; the
         edge must aggregate to that boundary, not vanish with it."""
-        scene = scene_for_state(_generation(), expansion_state={"gen": True}, simplify=False)
+        scene = scene_for_state(_generation(), expansion_state={"gen": True}, simplify=False, show_inputs=True, show_bounded_inputs=False)
 
         assert ("pick", "gen/build_messages") in _visible(scene), f"'document' also feeds the messages graph; visible: {sorted(_visible(scene))}"
 
     def test_fully_expanded_reaches_the_deepest_consumer(self):
-        scene = scene_for_state(_generation(), expansion_state={"gen": True, "gen/build_messages": True}, simplify=False)
+        scene = scene_for_state(
+            _generation(), expansion_state={"gen": True, "gen/build_messages": True}, simplify=False, show_inputs=True, show_bounded_inputs=False
+        )
 
         visible = _visible(scene)
         assert ("pick", "gen/gate") in visible
         assert ("pick", "gen/build_messages/format_ctx") in visible
 
     def test_collapsed_view_is_unchanged(self):
-        scene = scene_for_state(_generation(), expansion_state={}, simplify=False)
+        scene = scene_for_state(_generation(), expansion_state={}, simplify=False, show_inputs=True, show_bounded_inputs=False)
 
         assert ("pick", "gen") in _visible(scene)
 
@@ -114,7 +116,7 @@ class TestEdgeIntoExpandedContainerReachesEveryConsumer:
         gen = Graph([gate, canned, msgs.as_node(name="build_messages"), respond], name="gen").select("answer")
         outer = Graph([pick, gen.as_node(name="gen")], name="outer")
 
-        scene = scene_for_state(outer, expansion_state={"gen": True}, simplify=False)
+        scene = scene_for_state(outer, expansion_state={"gen": True}, simplify=False, show_inputs=True, show_bounded_inputs=False)
         ids = [e["id"] for e in scene["edges"] if not e["hidden"]]
         assert len(ids) == len(set(ids)), f"duplicate edge ids: {sorted(ids)}"
         hits = [pair for pair in _visible(scene) if pair == ("pick", "gen/build_messages")]
@@ -184,7 +186,9 @@ class TestHiddenNodesDoNotAggregate:
     def test_edge_to_a_hidden_consumer_stays_hidden_when_expanded(self):
         from tests.viz.conftest import make_hidden_source_data_dependency_graph
 
-        scene = scene_for_state(make_hidden_source_data_dependency_graph(), expansion_state={"box": True}, simplify=False)
+        scene = scene_for_state(
+            make_hidden_source_data_dependency_graph(), expansion_state={"box": True}, simplify=False, show_inputs=True, show_bounded_inputs=False
+        )
 
         offenders = [pair for pair in _visible(scene) if pair[1] == "box"]
         assert not offenders, f"no edge may target the expanded 'box' hull: {offenders}"
@@ -194,7 +198,7 @@ class TestOuterInputAggregatesToTheCollapsedBoundary:
     def test_pill_and_edge_survive_the_collapse(self):
         """The E.1 shape: an unbound outer input consumed only inside a
         collapsed container lost both its pill and its edge."""
-        scene = scene_for_state(_generation(), expansion_state={})
+        scene = scene_for_state(_generation(), expansion_state={}, show_inputs=True, show_bounded_inputs=False)
 
         pill = _pill_for(scene, "query")
         assert pill is not None, "'query' is required by the outer graph; its pill must survive the collapse"
@@ -202,14 +206,14 @@ class TestOuterInputAggregatesToTheCollapsedBoundary:
 
     def test_pill_follows_the_deepest_visible_ancestor(self):
         """One level open: the pill's edge lands on the still-collapsed inner box."""
-        scene = scene_for_state(_generation(), expansion_state={"gen": True})
+        scene = scene_for_state(_generation(), expansion_state={"gen": True}, show_inputs=True, show_bounded_inputs=False)
 
         pill = _pill_for(scene, "query")
         assert pill is not None
         assert (pill, "gen/build_messages") in _visible(scene)
 
     def test_fully_expanded_reaches_the_real_consumer(self):
-        scene = scene_for_state(_generation(), expansion_state={"gen": True, "gen/build_messages": True})
+        scene = scene_for_state(_generation(), expansion_state={"gen": True, "gen/build_messages": True}, show_inputs=True, show_bounded_inputs=False)
 
         pill = _pill_for(scene, "query")
         assert pill is not None

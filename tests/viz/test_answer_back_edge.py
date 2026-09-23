@@ -61,7 +61,7 @@ def test_answer_back_edge_is_labeled_in_the_ir() -> None:
 
 
 def test_answer_label_reaches_the_scene_edge() -> None:
-    scene = scene_for_state(make_cycle_graph())
+    scene = scene_for_state(make_cycle_graph(), show_inputs=True, show_bounded_inputs=False)
 
     (back,) = [e for e in scene["edges"] if e["source"] == "review" and e["target"] == "gate"]
     assert back["data"]["label"] == "decision"
