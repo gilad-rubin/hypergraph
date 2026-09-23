@@ -578,13 +578,12 @@ def _frontier(boundaries: Sequence[NodeBoundary]) -> tuple[str, ...]:
     return tuple(boundary.node_name for boundary in boundaries if boundary.state is BoundaryState.PENDING)
 
 
-def _waits_in_line(rows: Sequence[tuple[dict[str, Any] | None, Run | None]]) -> bool:
-    """Whether any row could stand in the claim line, so the line is worth reading.
+def _pending_submission_ids(rows: Sequence[tuple[dict[str, Any] | None, Run | None]]) -> list[str]:
+    """Runs that could stand in the claim line: only a ``pending`` submission can.
 
-    Only a ``pending`` submission can; a page of settled or executing Runs
-    skips the read entirely.
+    A page of settled or executing Runs names none, and skips the read.
     """
-    return any(submission is not None and submission["state"] == "pending" for submission, _ in rows)
+    return [submission["workflow_id"] for submission, _ in rows if submission is not None and submission["state"] == "pending"]
 
 
 def _settled_started_ids(rows: Sequence[tuple[dict[str, Any] | None, Run | None]]) -> list[str]:
@@ -602,12 +601,12 @@ def _settled_started_ids(rows: Sequence[tuple[dict[str, Any] | None, Run | None]
 
 def _assemble_row_facts(
     boundaries: Mapping[str, Sequence[NodeBoundary]],
-    claim_line: Sequence[str],
+    claim_places: Mapping[str, int],
     failures: Mapping[str, StepFailure],
 ) -> _RowFacts:
     return _RowFacts(
         pending_nodes={run_id: _frontier(found) for run_id, found in boundaries.items()},
-        runs_ahead={workflow_id: ahead for ahead, workflow_id in enumerate(claim_line)},
+        runs_ahead=dict(claim_places),
         failures={run_id: _run_failure(failure) for run_id, failure in failures.items()},
     )
 
@@ -1683,16 +1682,16 @@ class RunHomeClient:
     async def _row_facts(self, rows: Sequence[tuple[dict[str, Any] | None, Run | None]]) -> _RowFacts:
         """The page's bulk facts beyond its joined rows: one read per kind of fact."""
         boundaries = await self._home._node_boundaries_of(_executing_ids(rows))
-        claim_line = await self._home._claim_line() if _waits_in_line(rows) else []
+        claim_places = await self._home._claim_places(_pending_submission_ids(rows))
         failures = await self._home.get_step_failures(_settled_started_ids(rows))
-        return _assemble_row_facts(boundaries, claim_line, failures)
+        return _assemble_row_facts(boundaries, claim_places, failures)
 
     def _row_facts_sync(self, rows: Sequence[tuple[dict[str, Any] | None, Run | None]]) -> _RowFacts:
         """Sync mirror of ``_row_facts``."""
         boundaries = self._home._node_boundaries_of_sync(_executing_ids(rows))
-        claim_line = self._home._claim_line_sync() if _waits_in_line(rows) else []
+        claim_places = self._home._claim_places_sync(_pending_submission_ids(rows))
         failures = self._home.get_step_failures_sync(_settled_started_ids(rows))
-        return _assemble_row_facts(boundaries, claim_line, failures)
+        return _assemble_row_facts(boundaries, claim_places, failures)
 
     async def _snapshot(
         self,

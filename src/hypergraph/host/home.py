@@ -530,21 +530,36 @@ def _due_clause(column: str, *, null_is_due: bool) -> str:
     return f"({column} <= ?)"
 
 
-# THE line of work waiting to be claimed, in claim order: the submissions a
-# claim scan would take next, oldest ``created_at`` first with ``rowid``
-# breaking ties — the order ``_claim_eligible`` scans. Pending, compatible and
-# due, and never a child of a tripped Batch (the scan closes those out rather
-# than claiming them). The admission probe reads its head and
-# ``RunReadModel.runs_ahead`` reads its order, so "who is next" has one
-# spelling. Binds one ``now`` for the due clause.
-_CLAIM_LINE_SQL = (
-    "SELECT s.workflow_id, s.admission_cost FROM host_submissions s "
+# THE line of work waiting to be claimed: the submissions a claim scan would
+# take next — pending, compatible and due, and never a child of a tripped
+# Batch (the scan closes those out rather than claiming them) — in claim
+# order, oldest ``created_at`` first with ``rowid`` breaking ties, the order
+# ``_claim_eligible`` scans. The admission probe reads the line's head and
+# ``RunReadModel.runs_ahead`` reads places in it, so "who is next" has one
+# spelling. Both bind one ``now`` for the due clause.
+_CLAIM_LINE_FROM = (
+    "FROM host_submissions s "
     f"WHERE s.state = 'pending' AND s.compat_state = 'compatible' AND {_due_clause('s.start_at', null_is_due=True)} "
     "AND (s.batch_id IS NULL OR NOT EXISTS ("
     f"SELECT 1 FROM batch_updates bu WHERE bu.batch_id = s.batch_id AND bu.kind = '{TRIP_UPDATE_KIND}'"
-    ")) ORDER BY s.created_at, s.rowid"
+    "))"
 )
-_CLAIM_LINE_HEAD_SQL = f"{_CLAIM_LINE_SQL} LIMIT 1"
+_CLAIM_ORDER = "s.created_at, s.rowid"
+_CLAIM_LINE_HEAD_SQL = f"SELECT s.workflow_id, s.admission_cost {_CLAIM_LINE_FROM} ORDER BY {_CLAIM_ORDER} LIMIT 1"
+
+
+def _claim_places_query(now_iso: str, workflow_ids: Sequence[str]) -> tuple[str, list[Any]]:
+    """Each named submission's 0-based place in the claim line, if it stands in it.
+
+    The line is ranked inside SQLite, so only the named rows cross into
+    Python — a poll of one Run never materializes the whole backlog.
+    """
+    placeholders = ", ".join("?" for _ in workflow_ids)
+    return (
+        f"SELECT workflow_id, place FROM (SELECT s.workflow_id, ROW_NUMBER() OVER (ORDER BY {_CLAIM_ORDER}) - 1 AS place "
+        f"{_CLAIM_LINE_FROM}) WHERE workflow_id IN ({placeholders})",
+        [now_iso, *workflow_ids],
+    )
 
 
 # The closed host_commands verb vocabulary (ADR 0008 / PRD 0017). Two verbs,
@@ -2833,7 +2848,7 @@ class RunHome(SqliteCheckpointer):
                     # two submissions accepted inside the same microsecond
                     # would otherwise be ordered arbitrarily, and "over-limit
                     # work waits in claim order" would be undefined for them.
-                    # ``_CLAIM_LINE_SQL`` reports this same order to readers.
+                    # ``_CLAIM_ORDER`` reports this same order to readers.
                     "ORDER BY created_at, rowid",
                     (now_iso,),
                 )
@@ -3939,27 +3954,36 @@ class RunHome(SqliteCheckpointer):
             owners.update({str(run_id): str(root_id) for run_id, root_id in rows})
         return owners
 
-    def _claim_line_sync(self) -> list[str]:
-        """Workflow ids waiting to be claimed, in claim order, in one read.
+    def _claim_places_sync(self, workflow_ids: Sequence[str]) -> dict[str, int]:
+        """Where each of these submissions stands in the claim line, in one read per chunk.
 
-        The same line the claim scan walks (``_CLAIM_LINE_SQL``), judged
-        against the store's clock so a scheduled submission joins the line
-        exactly when a worker would see it due.
+        Judged against the store's clock, so a scheduled submission joins the
+        line exactly when a worker would see it due. Ids outside the line are
+        absent.
         """
+        places: dict[str, int] = {}
+        if not workflow_ids:
+            return places
         with self._sync_lock:
             db = self._sync_db()
             now_iso = str(db.execute(_STORE_NOW_SQL).fetchone()[0])
-            rows = db.execute(_CLAIM_LINE_SQL, (now_iso,)).fetchall()
-        return [str(row[0]) for row in rows]
+            for chunk in self._chunk_run_ids(workflow_ids):
+                places.update({str(workflow_id): int(place) for workflow_id, place in db.execute(*_claim_places_query(now_iso, chunk))})
+        return places
 
-    async def _claim_line(self) -> list[str]:
-        """Async mirror of ``_claim_line_sync``."""
+    async def _claim_places(self, workflow_ids: Sequence[str]) -> dict[str, int]:
+        """Async mirror of ``_claim_places_sync``."""
+        places: dict[str, int] = {}
+        if not workflow_ids:
+            return places
         now_iso = await self._store_now()
         await self._ensure_db()
-        async with self._txn_lock():
-            cursor = await self._db.execute(_CLAIM_LINE_SQL, (now_iso,))
-            rows = await cursor.fetchall()
-        return [str(row[0]) for row in rows]
+        for chunk in self._chunk_run_ids(workflow_ids):
+            async with self._txn_lock():
+                cursor = await self._db.execute(*_claim_places_query(now_iso, chunk))
+                rows = await cursor.fetchall()
+            places.update({str(workflow_id): int(place) for workflow_id, place in rows})
+        return places
 
     def _ever_paused_ids_sync(self, run_ids: Sequence[str]) -> set[str]:
         """Which of these Runs a person was EVER asked about, in one read.

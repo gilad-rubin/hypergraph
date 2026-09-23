@@ -1226,9 +1226,10 @@ for row in rows:
   Definition. `0` is next. `None` unless the Run waits in that line —
   executing, paused on a person, scheduled for later, parked and settled
   Runs have no place in it. An answered pause re-enters at its original
-  acceptance time. Claim order is the order work is *offered*: under a
-  `max_admission_units` budget a lighter Run behind a heavy one can still
-  start first.
+  acceptance time. Claim order is first come, first served, even under a
+  `max_admission_units` budget, where a head that does not fit holds
+  everything behind it. Only workers serving different Definitions can take
+  work out of this order, because a worker skips rows it cannot run.
 - `failure` — the same `RunFailure` [`client.result()`](#reading-results)
   reads, once the Run settled with an errored step. `failure.error` stays
   the type-only projection; `failure.public_reason` is the wording a person

@@ -271,7 +271,7 @@ The node boundaries a Run recorded as runnable before dispatching them and that 
 _Avoid_: Current node, running step (both claim execution the journal never witnessed)
 
 **Claim order**:
-The order the Host offers waiting work to workers: pending, compatible, due submissions, oldest acceptance first with `rowid` breaking ties, never a child of a tripped Batch. `RunReadModel.runs_ahead` is a Run's 0-based place in it. It is the order work is offered, not a start guarantee: a cost budget can admit a lighter Run behind a heavy one first.
+The order the Host offers waiting work to workers: pending, compatible, due submissions, oldest acceptance first with `rowid` breaking ties, never a child of a tripped Batch. `RunReadModel.runs_ahead` is a Run's 0-based place in it. It is first come, first served, cost budget included (a head that does not fit holds the rest); only workers serving different Definitions take work out of it, because a worker skips rows it cannot run.
 _Avoid_: Queue position, priority
 
 **Repeated run**:

@@ -288,6 +288,9 @@ class TestRunsAhead:
 
         before = await read.list_runs(RunQuery(definition="ingest"))
         assert [_row(before, workflow_id).runs_ahead for workflow_id in ids] == [0, 1, 2]
+        # The line is ranked in the store: a read names its rows and gets only theirs back.
+        assert await capped_home._claim_places(["paper-3", "not-a-run"]) == {"paper-3": 2}
+        assert capped_home._claim_places_sync(["paper-2"]) == {"paper-2": 1}
 
         async with _worker(host):
             await asyncio.wait_for(gates.at("0.pdf:read")[0].wait(), 15)
