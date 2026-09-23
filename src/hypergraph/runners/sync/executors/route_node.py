@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.gate_execution import execute_route
+from hypergraph.runners._shared.node_context import node_context_for, settle_node_records_sync
 
 if TYPE_CHECKING:
     from hypergraph.nodes.gate import RouteNode
@@ -12,7 +13,12 @@ if TYPE_CHECKING:
 
 
 class SyncRouteNodeExecutor:
-    """Executes RouteNode synchronously."""
+    """Executes RouteNode synchronously.
+
+    No ``record_loop``: this family has no executor loop, so a ``ctx.record``
+    in the routing function writes straight through and the settle below
+    only answers for a write that failed.
+    """
 
     def __call__(
         self,
@@ -21,4 +27,11 @@ class SyncRouteNodeExecutor:
         inputs: dict[str, Any],
         ctx: ExecutionContext,
     ) -> dict[str, Any]:
-        return execute_route(node, state, inputs)
+        node_context = node_context_for(node, ctx)
+        try:
+            outputs = execute_route(node, state, inputs, node_context)
+        except BaseException:
+            settle_node_records_sync(node_context, node_failed=True)
+            raise
+        settle_node_records_sync(node_context, node_failed=False)
+        return outputs

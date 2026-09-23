@@ -18,6 +18,7 @@ Covers all user-facing scenarios from the design doc:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import threading
 from collections import defaultdict
 from typing import Any
@@ -36,10 +37,13 @@ from hypergraph import (
     TypedEventProcessor,
     WorkflowAlreadyRunningError,
     WorkflowStoppedError,
+    ifelse,
+    interrupt,
     node,
     route,
 )
 from hypergraph.runners._shared.node_context import NodeContext
+from tests._interrupt_questions import StringQuestion
 from tests._streaming_graphs import nested_streaming_graph
 
 # ---------------------------------------------------------------------------
@@ -130,6 +134,102 @@ class TestNodeContextSignature:
 # ---------------------------------------------------------------------------
 
 
+def _note_context(ctx: NodeContext, received: list[dict[str, Any]]) -> None:
+    """What a body can see of its ctx, recorded for the test to assert on."""
+    received.append(
+        {
+            "stop_requested": ctx.stop_requested,
+            "stream": callable(ctx.stream),
+            "record": callable(ctx.record),
+            # No checkpointer in these runs: the documented Tier-0 no-op.
+            "recorded": ctx.record("seen", {"ok": True}),
+        }
+    )
+
+
+@node(output_name="draft")
+def write_draft() -> str:
+    return "d1"
+
+
+@node(output_name="published")
+def publish(draft: str) -> str:
+    return draft.upper()
+
+
+def _node_case(received: list[dict[str, Any]]):
+    @node(output_name="checked")
+    def probe(draft: str, ctx: NodeContext) -> str:
+        _note_context(ctx, received)
+        return draft
+
+    return probe
+
+
+def _route_case(received: list[dict[str, Any]]):
+    @route(targets=["publish", END])
+    def probe(draft: str, ctx: NodeContext) -> str:
+        _note_context(ctx, received)
+        return "publish"
+
+    return probe
+
+
+def _ifelse_case(received: list[dict[str, Any]]):
+    @ifelse(when_true="publish", when_false=END)
+    def probe(draft: str, ctx: NodeContext) -> bool:
+        _note_context(ctx, received)
+        return True
+
+    return probe
+
+
+def _interrupt_case(received: list[dict[str, Any]]):
+    @interrupt(answer_name="approval")
+    def probe(draft: str, ctx: NodeContext) -> StringQuestion:
+        _note_context(ctx, received)
+        return StringQuestion(prompt=f"publish {draft}?")
+
+    return probe
+
+
+# One case per decorator that accepts ``ctx``. The guard below derives the
+# kinds that NEED a case from the runners and the node classes, not from
+# this table, so the table cannot quietly fall behind.
+_CONTEXT_CASES = {"node": _node_case, "route": _route_case, "ifelse": _ifelse_case, "interrupt": _interrupt_case}
+
+
+def _graph_around(probe, shape: str) -> Graph:
+    """The probe between a producer and a gate target, flat or nested."""
+    inner = Graph([write_draft, probe, publish], name="inner")
+    if shape == "flat":
+        return inner
+    return Graph([inner.as_node()], name="outer")
+
+
+def _context_cells() -> list[Any]:
+    """Every (kind, family, shape) a shipped runner can actually execute."""
+    cells = []
+    for kind, build in _CONTEXT_CASES.items():
+        kind_type = type(build([]))
+        for family, runner_factory in (("sync", SyncRunner), ("async", AsyncRunner)):
+            if kind_type not in runner_factory().supported_node_types:
+                continue  # SyncRunner refuses InterruptNode by design
+            cells.extend(pytest.param(kind, runner_factory, shape, id=f"{kind}-{family}-{shape}") for shape in ("flat", "nested"))
+    return cells
+
+
+def _strips_context_at_build(kind: type) -> bool:
+    """True when constructing ``kind`` sets ``_context_param``.
+
+    That assignment is the build boundary taking ``ctx`` out of the node's
+    inputs; whichever class in the MRO does it, the executor for ``kind``
+    owes the context back at run time.
+    """
+    constructors = (vars(klass).get("__init__") for klass in kind.__mro__)
+    return any("self._context_param" in inspect.getsource(init) for init in constructors if inspect.isfunction(init))
+
+
 class TestNodeContextInjection:
     @pytest.mark.asyncio
     async def test_async_node_receives_context(self):
@@ -159,6 +259,49 @@ class TestNodeContextInjection:
         result = runner.run(Graph([my_node]), x=5)
         assert result["result"] == 10
         assert received["stop_requested"] is False
+
+    @pytest.mark.parametrize(("kind", "runner_factory", "shape"), _context_cells())
+    async def test_every_kind_that_declares_ctx_receives_it(self, kind, runner_factory, shape):
+        """#469: a gate or an interrupt handler gets the ctx it declares.
+
+        The build boundary strips ``ctx`` out of every kind below; the run
+        boundary must hand it back, flat or inside ``as_node()``, under every
+        runner family that executes that kind.
+        """
+        received: list[dict[str, Any]] = []
+        graph = _graph_around(_CONTEXT_CASES[kind](received), shape)
+        runner = runner_factory()
+
+        result = runner.run(graph) if isinstance(runner, SyncRunner) else await runner.run(graph)
+
+        assert received == [{"stop_requested": False, "stream": True, "record": True, "recorded": None}]
+        if kind == "interrupt":
+            assert result.paused
+        else:
+            assert result.status is RunStatus.COMPLETED
+            assert result["published"] == "D1"
+
+    def test_every_kind_that_strips_ctx_at_build_time_is_covered(self):
+        """The boundary-discipline guard.
+
+        Every node kind a shipped runner executes whose construction sets
+        ``_context_param`` must have a case in ``_CONTEXT_CASES``, and the
+        injection test above runs each case under every family that supports
+        its kind. A new kind that strips ``ctx`` without a case fails HERE,
+        not as a user's ``TypeError`` naming their own parameter.
+        """
+        runnable = SyncRunner().supported_node_types | AsyncRunner().supported_node_types
+        stripping = {kind for kind in runnable if _strips_context_at_build(kind)}
+        covered = {type(build([])) for build in _CONTEXT_CASES.values()}
+
+        # A sanity floor, so a scan that matched nothing cannot pass by
+        # comparing two empty sets.
+        assert len(stripping) >= 4, stripping
+        assert stripping == covered
+        for build in _CONTEXT_CASES.values():
+            probe = build([])
+            assert probe._context_param == "ctx"
+            assert "ctx" not in probe.inputs
 
 
 # ---------------------------------------------------------------------------
@@ -1198,6 +1341,76 @@ class TestRouteWithContext:
         # Route node should work without NodeContext issues
         assert "x" in decide.inputs
         assert "ctx" not in decide.inputs
+
+    @pytest.mark.parametrize("runner_factory", [SyncRunner, AsyncRunner], ids=["sync", "async"])
+    async def test_a_gate_routes_on_the_live_stop_signal(self, runner_factory):
+        """The same graph, two runs: only whether stop was requested differs.
+
+        The upstream node requests the stop in its own body, so the signal is
+        set before the gate fires — no sleep, no race. ``complete_on_stop``
+        keeps the child running long enough for the gate to decide; a stub or
+        run-level ctx would read ``False`` both times and take one branch.
+        """
+        runner = runner_factory()
+        workflow_id = f"wf-route-on-stop-{runner_factory.__name__}"
+
+        @node(output_name="draft")
+        def write(halt: bool) -> str:
+            if halt:
+                runner.stop(workflow_id, info={"kind": "user_stop"})
+            return "d1"
+
+        @route(targets=["publish", END])
+        def decide(draft: str, ctx: NodeContext) -> str:
+            return END if ctx.stop_requested else "publish"
+
+        graph = Graph([Graph([write, decide, publish], name="review").as_node(complete_on_stop=True)], name="outer")
+
+        async def run(halt: bool):
+            if isinstance(runner, SyncRunner):
+                return runner.run(graph, workflow_id=workflow_id, halt=halt)
+            return await runner.run(graph, workflow_id=workflow_id, halt=halt)
+
+        plain = await run(False)
+        assert plain.status is RunStatus.COMPLETED
+        assert plain["published"] == "D1"
+
+        stopped = await run(True)
+        assert stopped.stopped is True
+        assert stopped["draft"] == "d1"  # the child did finish its work...
+        assert "published" not in stopped  # ...and the gate chose END
+
+    @pytest.mark.parametrize("runner_factory", [SyncRunner, AsyncRunner], ids=["sync", "async"])
+    async def test_a_gate_streams_under_its_own_ids(self, runner_factory):
+        """A chunk from a nested gate carries the gate's per-node identity.
+
+        ``graph_name`` is the CHILD graph and ``parent_span_id`` the gate's
+        own node span — the ids of the per-node ExecutionContext, not a
+        run-level fallback.
+        """
+
+        @route(targets=["publish", END])
+        def decide(draft: str, ctx: NodeContext) -> str:
+            ctx.stream(f"routing {draft}")
+            return "publish"
+
+        graph = Graph([Graph([write_draft, decide, publish], name="review").as_node()], name="outer")
+        collector = CorrelationCollector()
+        runner = runner_factory()
+        workflow_id = f"wf-gate-stream-{runner_factory.__name__}"
+
+        if isinstance(runner, SyncRunner):
+            result = runner.run(graph, workflow_id=workflow_id, event_processors=[collector])
+        else:
+            result = await runner.run(graph, workflow_id=workflow_id, event_processors=[collector])
+
+        assert result["published"] == "D1"
+        [event] = collector.chunk_events
+        assert event.chunk == "routing d1"
+        assert event.node_name == "decide"
+        assert event.graph_name == "review"
+        assert event.workflow_id == f"{workflow_id}/review"
+        assert event.parent_span_id == collector.node_spans["decide"]
 
 
 # ---------------------------------------------------------------------------

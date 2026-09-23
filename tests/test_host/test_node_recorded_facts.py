@@ -28,6 +28,7 @@ import pytest_asyncio
 import hypergraph.checkpointers.sqlite
 import hypergraph.host.home
 from hypergraph import (
+    END,
     AsyncRunner,
     Graph,
     NodeContext,
@@ -35,11 +36,14 @@ from hypergraph import (
     RunRef,
     SqliteCheckpointer,
     SyncRunner,
+    interrupt,
     node,
+    route,
     serve,
 )
 from hypergraph.checkpointers.types import RESERVED_FACT_KINDS, ReservedFactKindError, WorkflowStatus
 from hypergraph.host import ReservedFactKindError as HostReservedFactKindError
+from tests._interrupt_questions import StringQuestion
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -771,6 +775,131 @@ class TestWhenTheWriteFails:
         # call rather than being told after it had finished.
         names = [frame.name for frame in caught.traceback]
         assert "record" in names and "_resolve_record_failure" not in names, names
+
+
+# === Gates and interrupt handlers record like any node (#469) ===
+
+
+def _triage_graph(name: str, *, runner) -> Graph:
+    """A routing gate that records why it routed, then routes."""
+
+    @route(targets=["finish", END])
+    def triage(prompt: str, ctx: NodeContext) -> str:
+        ctx.record("routed", {"to": "finish"})
+        return "finish"
+
+    @node(output_name="answer")
+    def finish(prompt: str) -> str:
+        return prompt.upper()
+
+    return Graph([triage, finish], name=name).with_runner(runner)
+
+
+def _asking_graph(body_kind: str) -> Graph:
+    """An interrupt whose handler records the ask before returning it."""
+
+    @interrupt(answer_name="approval")
+    def ask(prompt: str, ctx: NodeContext) -> StringQuestion:
+        ctx.record("asked", {"prompt": prompt})
+        return StringQuestion(prompt=f"approve {prompt}?")
+
+    @interrupt(answer_name="approval")
+    async def ask_async(prompt: str, ctx: NodeContext) -> StringQuestion:
+        ctx.record("asked", {"prompt": prompt})
+        return StringQuestion(prompt=f"approve {prompt}?")
+
+    @node(output_name="answer")
+    def finish(prompt: str, approval: str) -> str:
+        return f"{prompt}:{approval}"
+
+    handler = ask_async if body_kind == "async def" else ask
+    return Graph([handler, finish], name="asking").with_runner(AsyncRunner())
+
+
+class TestGatesAndHandlersRecord:
+    """A gate or an interrupt handler that declares ``ctx`` gets a live one.
+
+    Same ids, same settle, same lost-fact policy as a function node: the
+    fact lands before the node's own step, a nested gate writes to the child
+    run's log, and a fact the store refuses fails the node.
+    """
+
+    @pytest.mark.parametrize("runner_factory", [SyncRunner, AsyncRunner], ids=["sync", "async"])
+    async def test_a_nested_gate_records_to_its_own_run_log(self, home, runner_factory):
+        inner = _triage_graph("inner", runner=runner_factory())
+        outer = Graph([inner.as_node(name="inner")], name="outer").with_runner(runner_factory())
+        host = serve(outer, home=home)
+        receipt = await host.submit(outer, {"prompt": "hi"})
+
+        view = await _run_to_arrival(host, receipt)
+        assert view.status is WorkflowStatus.COMPLETED
+
+        child_ref = RunRef(home=receipt.run_ref.home, run_id=f"{receipt.run_ref.run_id}/inner")
+        child = await _facts(host.client, child_ref)
+        # The gate's fact precedes the gate's OWN step: fact before step.
+        assert _kinds(child) == ["run_started", "routed", "step", "step", "status"]
+        assert [u.payload["node_name"] for u in child if u.kind == "step"] == ["triage", "finish"]
+        # The parent's log carries none of it — the address a nested step uses.
+        assert "routed" not in _kinds(await _facts(host.client, receipt.run_ref))
+
+    @pytest.mark.parametrize("body_kind", ["def", "async def"])
+    async def test_an_interrupt_handler_records_once_per_ask(self, home, body_kind):
+        """The fact is durable before the pause, and a resume does not repeat it.
+
+        A resume delivers the answer without calling the handler, so the
+        handler's ``ctx`` exists only on the question path.
+        """
+        graph = _asking_graph(body_kind)
+        host = serve(graph, home=home)
+        receipt = await host.submit(graph, {"prompt": "hi"})
+        task = await _worker(host)
+        try:
+            parked = await host.client.follow(receipt.run_ref, until="resting", deadline=30)
+            assert parked.status is WorkflowStatus.PAUSED
+            at_pause = await _facts(host.client, receipt.run_ref, until="resting")
+
+            slot = await host.client.get_run_slot(receipt.run_ref)
+            await host.client.answer(receipt.run_ref, pause_id=slot.pause_id, value="yes")
+            view = await host.client.follow(receipt.run_ref, deadline=30)
+        finally:
+            host.shutdown()
+            await asyncio.wait_for(task, timeout=20)
+
+        # Asked BEFORE the paused step and the PAUSED status were committed.
+        assert _kinds(at_pause) == ["submitted", "run_started", "asked", "step", "status"]
+        assert next(u.payload for u in at_pause if u.kind == "asked") == {"prompt": "hi"}
+        assert next(u.payload for u in at_pause if u.kind == "status")["status"] == "paused"
+
+        assert view.status is WorkflowStatus.COMPLETED
+        assert _kinds(await _facts(host.client, receipt.run_ref)).count("asked") == 1
+
+    @pytest.mark.parametrize(
+        ("kind", "runner_factory"),
+        [("route", SyncRunner), ("route", AsyncRunner), ("interrupt", AsyncRunner)],
+        ids=["route-sync", "route-async", "interrupt-async"],
+    )
+    async def test_a_lost_fact_fails_a_gate_or_handler_like_any_node(self, tmp_path, kind, runner_factory):
+        """The one lost-fact policy, reached from a gate and from a handler.
+
+        For the interrupt this is the one place the fix can turn a pause into
+        a failure: a handler that believes its fact is durable must not park
+        the run over a write that never landed.
+        """
+        home = BrokenFactHome.open(_home_uri(tmp_path, f"{kind}.db"))
+        graph = _triage_graph("triage", runner=runner_factory()) if kind == "route" else _asking_graph("def")
+        runner = runner_factory().with_checkpointer(home)
+        try:
+            with pytest.raises(RuntimeError, match="store down"):
+                if isinstance(runner, SyncRunner):
+                    await asyncio.to_thread(lambda: runner.run(graph, prompt="hi", workflow_id="wf-1"))
+                else:
+                    await runner.run(graph, prompt="hi", workflow_id="wf-1")
+            run = home.get_run("wf-1")
+        finally:
+            await home.close()
+
+        assert run is not None and run.status is WorkflowStatus.FAILED
+        assert run.pause_slot is None
 
 
 # === The closed framework vocabulary ===

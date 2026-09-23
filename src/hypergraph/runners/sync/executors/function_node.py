@@ -6,7 +6,7 @@ from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.cache_observer import node_cache_observer
-from hypergraph.runners._shared.node_context import settle_node_records_sync
+from hypergraph.runners._shared.node_context import node_context_for, settle_node_records_sync
 from hypergraph.runners._shared.outputs import wrap_outputs
 from hypergraph.runners._shared.provider_limits import provider_permits
 
@@ -76,20 +76,8 @@ class SyncFunctionNodeExecutor:
         # its body runs ON its loop, where a blocking write would stall the
         # store it is writing to. What a LOST write costs is not a family
         # difference — the settle below is the same policy seam both call.
-        node_context = None
-        if getattr(node, "_context_param", None) is not None:
-            from hypergraph.runners._shared.node_context import build_node_context
-
-            node_context = build_node_context(
-                node.name,
-                ctx.emit_fn,
-                run_id=ctx.run_id,
-                graph_name=ctx.graph_name,
-                workflow_id=ctx.workflow_id,
-                item_index=ctx.item_index,
-                parent_span_id=ctx.parent_span_id,
-                checkpointer=ctx.checkpointer,
-            )
+        node_context = node_context_for(node, ctx)
+        if node_context is not None:
             func_inputs[node._context_param] = node_context  # type: ignore[index]
 
         # Call the function (with cache observer installed for hypercache telemetry)

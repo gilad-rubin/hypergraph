@@ -131,7 +131,9 @@ the node completed and never what it produced.
 `record_loop`, and what a LOST fact costs is decided in
 `_resolve_record_failure` alone — both families reach it through
 `settle_node_records` / `settle_node_records_sync`, so never re-decide that
-policy at an executor.
+policy at an executor. Every executor that injects reaches the context
+through `node_context_for`, so a node kind that strips `ctx` at build time
+cannot forget to hand it back.
 
 ## Staleness (`_is_stale`)
 

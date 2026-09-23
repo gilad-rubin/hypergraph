@@ -1432,6 +1432,36 @@ llm_reply.inputs   # ("messages",) — ctx is not a graph input
 llm_reply.outputs  # ("response",)
 ```
 
+#### Gates and interrupt handlers
+
+Under `SyncRunner` and `AsyncRunner`, every node kind that accepts `ctx`
+receives it: `@node`, `@route`, `@ifelse`, and `@interrupt` (interrupts run
+under `AsyncRunner` only). `DaftRunner` does not inject `NodeContext`, and it
+runs no gates or interrupts. A gate's or handler's context carries that node's own ids
+(its name, its graph, its span), so a routing decision can read the live stop
+signal and a gate's `ctx.stream()` chunk names the gate:
+
+```python
+from hypergraph import END, NodeContext, interrupt, route
+
+@route(targets=["publish", END])
+def decide(draft: str, ctx: NodeContext) -> str:
+    return END if ctx.stop_requested else "publish"
+
+@interrupt(answer_name="decision")
+def approval(draft: str, ctx: NodeContext) -> Confirm:  # Confirm: see InterruptNode below
+    ctx.record("asked", {"chars": len(draft)})
+    return Confirm(prompt="Publish this draft?", evidence=(draft,))
+```
+
+- A gate's `ctx.record()` follows the same "fact before step" order as any
+  node's: the fact is durable before the gate's step record.
+- An interrupt handler's `ctx` exists only on the **question** path. A resume
+  delivers the answer without calling the handler, so the handler's
+  `ctx.record()` fires once per ask, never again on resume. Its facts are
+  durable before the pause is committed; a fact the store refuses fails the
+  run instead of pausing it, the same rule as any node (see `record()` below).
+
 ### Properties
 
 #### `stop_requested: bool`

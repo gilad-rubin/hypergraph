@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.nodes.base import _EMIT_SENTINEL
+from hypergraph.runners._shared.node_context import node_context_for, settle_node_records
 from hypergraph.runners._shared.results import PauseInfo
 from hypergraph.runners._shared.state import PauseExecution
 
@@ -50,21 +52,39 @@ class AsyncInterruptNodeExecutor:
                 )
             input_values[name] = inputs[name]
 
-        # Handler path: invoke the function
+        # Handler path: invoke the function. Its ctx exists only on this path:
+        # the answer-supplied return above never calls the handler, so a
+        # resume builds no context and a handler records once per ask. The
+        # handler runs on THIS loop, so its ctx.record defers to a loop task
+        # that every exit below settles.
+        node_context = node_context_for(node, ctx, record_loop=asyncio.get_running_loop())
         try:
             params = node.map_inputs_to_params(input_values)
+            if node_context is not None:
+                params[node._context_param] = node_context  # type: ignore[index]
             response = node.func(**params)
             if isawaitable(response):
                 response = await response
-        except Exception as e:
+        except BaseException as e:
+            await settle_node_records(node_context, node_failed=True)
+            if not isinstance(e, Exception):
+                raise
             raise RuntimeError(f"Handler for InterruptNode '{node.name}' failed: {type(e).__name__}: {e}") from e
 
-        if response is None:
-            raise RuntimeError(
-                f"InterruptNode '{node.name}' returned None, but an interrupt handler must return the question payload\n\n"
-                f"How to fix: Return an ask-like object with prompt, options, and evidence fields."
-            )
-        _validate_ask_payload(node, response)
+        try:
+            if response is None:
+                raise RuntimeError(
+                    f"InterruptNode '{node.name}' returned None, but an interrupt handler must return the question payload\n\n"
+                    f"How to fix: Return an ask-like object with prompt, options, and evidence fields."
+                )
+            _validate_ask_payload(node, response)
+        except BaseException:
+            await settle_node_records(node_context, node_failed=True)
+            raise
+        # A pause is not a failure: the handler succeeded at asking. So a fact
+        # it could not write fails the run instead of parking it, and a fact
+        # it did write is durable before the paused step and its slot are.
+        await settle_node_records(node_context, node_failed=False)
         raise PauseExecution(
             PauseInfo(
                 node_name=node.name,
