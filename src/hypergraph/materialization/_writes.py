@@ -679,7 +679,12 @@ class WritePlanner:
         returned ``None`` returned a value, not a failure, so it gets no entry.
         A column the run never reached — its node comes after the failure and is
         not the one that failed — keeps whatever ``kept`` already stored for it,
-        so a second failure never costs a column the first one saved."""
+        so a second failure never costs a column the first one saved.
+
+        A failed fan-out boundary has no stored parent column to null — the
+        parent keeps only its stamp — so it gets one ``NODE_ERROR`` entry naming
+        the ``map_over`` input its child table could not be rebuilt from, however
+        many child tables map over that input."""
         outputs: dict[str, Any] = {}
         changes: list[ColumnChange] = []
         for column in self._provenance.derived_columns():
@@ -699,6 +704,12 @@ class WritePlanner:
                     else ChangeReason.NOT_RUN
                 )
                 changes.append(ColumnChange(column.name, reason, node))
+        named_fan_outs: set[str] = set()
+        for child_spec in self._spec.children:
+            blamed = self._blamed(self._provenance.boundary_node(child_spec), failures)
+            if blamed is not None and child_spec.map_input and child_spec.map_input not in named_fan_outs:
+                named_fan_outs.add(child_spec.map_input)
+                changes.append(ColumnChange(child_spec.map_input, ChangeReason.NODE_ERROR, blamed, failures[blamed]))
         return outputs, tuple(changes)
 
     def _degraded_parent(
@@ -715,9 +726,17 @@ class WritePlanner:
     ) -> RowReceipt:
         """Store what a failed run still derived, as one PARTIAL row.
 
-        Falls back to the total-loss error row whenever column granularity
-        would be a claim this run cannot support: a failure the runner could
-        not attribute to a node, or one that left no derived column standing."""
+        A partial row names every node of this graph that failed with a
+        ``NODE_ERROR`` entry: its column-scoped heal re-runs the nodes behind its
+        entries, so a failure no entry names would never be retried. It falls
+        back to the total-loss error row whenever that claim cannot hold: a
+        failure the runner could not attribute to a node, one that left no
+        derived column standing, or a failed top-level node of this graph that
+        owns no stored column and is not a fan-out boundary — no entry can name
+        it, and a column-scoped heal would never run it again. (A failure inside
+        a mounted graph is covered by that graph's own entries: the heal re-runs
+        it whole.) A failed fan-out boundary
+        is named by its ``map_over`` input, so it stays PARTIAL."""
         kept_values = self._provenance.stored_values(kept) if kept is not None else {}
         outputs, changes = self._partial_columns(
             degradation.values,
@@ -726,7 +745,12 @@ class WritePlanner:
             self._downstream_of(degradation.failures),
         )
         error = next(iter(degradation.failures.values()), None) or f"{type(degradation.error).__name__}: {degradation.error}"
-        if not degradation.failures or not changes or not outputs:
+        # Compared by the node that owns each failure in this graph: a mounted
+        # graph whose inner nodes both raised is named once (``stage/a``) and
+        # re-runs whole, so ``stage/b`` is covered too.
+        failed = {name.split("/", 1)[0] for name in degradation.failures}
+        named = {change.node.split("/", 1)[0] for change in changes if change.reason is ChangeReason.NODE_ERROR}
+        if not outputs or not failed or not failed <= named:
             failure = degradation.error if degradation.error is not None else RuntimeError(error)
             self._error_parent(item, source_inputs, write_gen, failure, existing)
             return RowReceipt(str(item[self._identity]), outcome, RowStatus.ERROR, error=error)

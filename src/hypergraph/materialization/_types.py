@@ -67,7 +67,8 @@ class ChangeReason(Enum):
     """
 
     NODE_ERROR = "node_error"
-    """The node that produces this column raised."""
+    """The node that produces this column raised — or, for an entry naming a
+    ``map_over`` input, the fan-out boundary that produces the child items did."""
     UPSTREAM_ERROR = "upstream_error"
     """A failed node reaches this column's producer, so its inputs never arrived."""
     NOT_RUN = "not_run"
@@ -82,6 +83,12 @@ class ColumnChange:
     ``node`` always names the column's own producer. ``error`` carries the
     raised exception's text for ``NODE_ERROR`` and is ``None`` for the two
     reasons where this producer never ran.
+
+    One entry may instead name a ``map_over`` input: its fan-out boundary
+    raised, so the child tables mapping over it could not be rebuilt. That name
+    is not a key of the parent row — its "value" is the child tables' rows —
+    ``node`` names the boundary, and the reason is always ``NODE_ERROR``. There
+    is one such entry per input, however many child tables map over it.
     """
 
     column: str

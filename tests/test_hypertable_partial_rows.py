@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 import pytest
 
 from hypergraph import Graph, node
-from hypergraph.materialization import ChangeReason, RowStatus
+from hypergraph.materialization import ChangeReason, RowStatus, WriteOutcome
 from hypergraph.runners import AsyncRunner, SyncRunner
 from tests.test_hypertable_on_error import MemoryStore
 
@@ -267,6 +269,54 @@ def test_an_unattributable_failure_is_still_a_total_loss_error_row() -> None:
     assert table.errors()[0].id == "d1"
 
 
+@node
+def notify(extracted: str) -> None:
+    _record("notify")
+
+
+def _notify_table(nodes, runner=None):
+    return Graph(nodes).as_table(identity="doc_id", store=MemoryStore(), on_error="store", runner=runner or SyncRunner())
+
+
+def test_a_failing_node_with_no_output_is_still_a_total_loss_error_row() -> None:
+    """`notify` owns no stored column: no change entry can name it, and a partial
+    row's column-scoped heal would never run it again — so the row stays ERROR
+    and the retry re-runs it."""
+    table = _notify_table([extract, summarize, notify])
+    failing.add("notify")
+
+    receipt = table.insert(doc_id="d1", text="hello world")
+
+    assert receipt.status is RowStatus.ERROR
+    assert table.partial() == ()
+
+    failing.clear()
+    table.sync([{"doc_id": "d1", "text": "hello world"}])
+
+    assert calls["notify"] == 2, "the failed node must run again"
+    assert table.status().is_fresh
+
+
+def test_a_failed_no_output_node_beside_a_nulled_column_is_an_error_row_retried_in_full() -> None:
+    """`notify` raised before `summarize` was scheduled. The nulled columns would
+    make a partial row, but none of its entries would name `notify`."""
+    table = _notify_table([extract, notify, summarize, embed])
+    failing.add("notify")
+
+    receipt = table.insert(doc_id="d1", text="hello world")
+
+    assert calls.get("summarize") is None, "the run ended before summarize was scheduled"
+    assert receipt.status is RowStatus.ERROR
+    assert table.partial() == ()
+
+    failing.clear()
+    calls.clear()
+    table.sync([{"doc_id": "d1", "text": "hello world"}])
+
+    assert calls == {"extract": 1, "notify": 1, "summarize": 1, "embed": 1}
+    assert table.status().is_fresh
+
+
 def test_on_error_raise_still_raises_and_stores_nothing() -> None:
     store = MemoryStore()
     table = Graph([extract, summarize, embed]).as_table(identity="doc_id", store=store, runner=SyncRunner())
@@ -276,6 +326,202 @@ def test_on_error_raise_still_raises_and_stores_nothing() -> None:
         table.insert(doc_id="d1", text="hello world")
 
     assert store.rows.get("doc", []) == []
+
+
+# ---------------------------------------------------------------------------
+# A failing fan-out boundary (#464)
+#
+# `split` produces the items a child table maps over. The parent stores no
+# column for them, so a failure there has no stored column of its own to null.
+# ---------------------------------------------------------------------------
+
+
+class Word(TypedDict):
+    word_id: str
+    text: str
+
+
+@node(output_name="words")
+def split(extracted: str) -> list[Word]:
+    _record("split")
+    return [Word(word_id=f"w{i}", text=word) for i, word in enumerate(extracted.split())]
+
+
+@node(output_name="tagged")
+def tag(text: str) -> str:
+    _record("tag")
+    return f"tag:{text}"
+
+
+def _word_node():
+    return Graph([tag], name="word").as_node().map_over("words", identity="word_id")
+
+
+def _fanout_table(store: MemoryStore, runner=None, *, on_error="store"):
+    return Graph([extract, summarize, split, _word_node()], name="doc").as_table(
+        identity="doc_id",
+        store=store,
+        on_error=on_error,
+        runner=runner or SyncRunner(),
+    )
+
+
+def _words(table) -> list[tuple[str, str]]:
+    return sorted((row["word_id"], row["tagged"]) for row in table.child("word").rows(parent="d1"))
+
+
+ARMS = ("a fresh insert", "a re-sync on new text")
+GAMMA = [{"doc_id": "d1", "text": "gamma delta"}]
+
+
+def _fail_the_boundary(table, arm: str):
+    """Write d1 on "gamma delta" while the boundary is down — as a new row (the
+    full-derive arm) or over a healthy row on older text (the reconcile arm)."""
+    if arm == "a re-sync on new text":
+        table.sync([{"doc_id": "d1", "text": "alpha beta"}])
+    failing.add("split")
+    calls.clear()
+    return table.sync(GAMMA)
+
+
+def test_a_failing_fanout_boundary_keeps_the_columns_that_succeeded() -> None:
+    table = _fanout_table(MemoryStore())
+
+    receipt = _fail_the_boundary(table, "a re-sync on new text")
+
+    (row_receipt,) = receipt.receipts
+    assert row_receipt.status is RowStatus.PARTIAL
+    assert row_receipt.error == "RuntimeError: split service is down"
+    assert calls == {"extract": 1, "summarize": 1, "split": 1}
+    row = table.get("d1")
+    assert row["extracted"] == "GAMMA DELTA"
+    assert row["summary"] == "GAMMA"
+    assert table.errors() == ()
+    status = table.status()
+    assert (status.stale, status.errored) == (1, 0)
+    assert status.stale_columns == (), "the parent stores no column for the fan-out"
+    assert _words(table) == [("w0", "tag:ALPHA"), ("w1", "tag:BETA")], "the earlier child rows stay as they are"
+
+
+@pytest.mark.parametrize("arm", ARMS)
+def test_a_failing_fanout_boundary_names_the_fan_out_it_could_not_build(arm: str) -> None:
+    table = _fanout_table(MemoryStore())
+
+    _fail_the_boundary(table, arm)
+
+    (partial,) = table.partial()
+    (change,) = partial.changes
+    assert change.column == "words", "the map_over input, not a stored column"
+    assert change.reason is ChangeReason.NODE_ERROR
+    assert change.node == "split"
+    assert change.error == "RuntimeError: split service is down"
+    assert partial.row["summary"] == "GAMMA"
+
+
+@pytest.mark.parametrize("arm", ARMS)
+def test_healing_a_failed_fanout_re_runs_only_the_boundary(arm: str) -> None:
+    table = _fanout_table(MemoryStore())
+    _fail_the_boundary(table, arm)
+
+    failing.clear()
+    calls.clear()
+    receipt = table.sync(GAMMA)
+
+    assert calls == {"split": 1, "tag": 2}, "extract and summarize must not be paid twice"
+    assert _words(table) == [("w0", "tag:GAMMA"), ("w1", "tag:DELTA")]
+    assert receipt.completed
+    assert table.partial() == ()
+    assert table.status().is_fresh
+
+    calls.clear()
+    again = table.sync(GAMMA)
+
+    assert calls == {}, "a healed row converges"
+    assert again.receipts[0].outcome is WriteOutcome.SKIPPED
+
+
+@node(output_name="letters")
+def count_letters(text: str) -> int:
+    _record("count_letters")
+    return len(text)
+
+
+def test_two_child_tables_over_one_fan_out_get_one_entry() -> None:
+    lengths = Graph([count_letters], name="word_length").as_node().map_over("words", identity="word_id")
+    table = Graph([extract, summarize, split, _word_node(), lengths], name="doc").as_table(
+        identity="doc_id",
+        store=MemoryStore(),
+        on_error="store",
+        runner=SyncRunner(),
+    )
+
+    _fail_the_boundary(table, "a fresh insert")
+
+    (partial,) = table.partial()
+    assert [(change.column, change.reason, change.node) for change in partial.changes] == [
+        ("words", ChangeReason.NODE_ERROR, "split"),
+    ]
+
+
+def test_a_fanout_boundary_failure_with_nothing_else_derived_is_still_an_error_row() -> None:
+    """With `extracted` a source, the boundary is the only derived producer: nothing stood."""
+    table = Graph([split, _word_node()], name="doc").as_table(
+        identity="doc_id",
+        store=MemoryStore(),
+        on_error="store",
+        runner=SyncRunner(),
+    )
+    failing.add("split")
+
+    receipt = table.insert(doc_id="d1", extracted="gamma delta")
+
+    assert receipt.status is RowStatus.ERROR
+    assert table.partial() == ()
+    assert table.errors()[0].error == "RuntimeError: split service is down"
+
+
+def test_a_non_boundary_failure_in_a_fanout_graph_names_no_fan_out() -> None:
+    table = _fanout_table(MemoryStore())
+    table.sync([{"doc_id": "d1", "text": "alpha beta"}])
+    failing.add("summarize")
+
+    table.sync([{"doc_id": "d1", "text": "gamma delta"}])
+
+    (partial,) = table.partial()
+    columns = [change.column for change in partial.changes]
+    assert "summary" in columns
+    assert "words" not in columns
+
+
+def test_a_failing_fanout_boundary_inside_a_mounted_graph_is_blamed_by_its_path() -> None:
+    stage = Graph([split], name="split_stage").as_node(name="split_stage")
+    table = Graph([extract, summarize, stage, _word_node()], name="doc").as_table(
+        identity="doc_id",
+        store=MemoryStore(),
+        on_error="store",
+        runner=SyncRunner(),
+    )
+    failing.add("split")
+
+    receipt = table.insert(doc_id="d1", text="gamma delta")
+
+    assert receipt.status is RowStatus.PARTIAL
+    (partial,) = table.partial()
+    (change,) = partial.changes
+    assert (change.column, change.reason, change.node) == ("words", ChangeReason.NODE_ERROR, "split_stage/split")
+    assert partial.row["summary"] == "GAMMA"
+
+
+def test_on_error_raise_still_raises_on_a_failing_fanout_boundary_and_stores_nothing() -> None:
+    store = MemoryStore()
+    table = _fanout_table(store, on_error="raise")
+    failing.add("split")
+
+    with pytest.raises(RuntimeError, match="split service is down"):
+        table.insert(doc_id="d1", text="gamma delta")
+
+    assert store.rows.get("doc", []) == []
+    assert store.rows.get("word", []) == []
 
 
 # ---------------------------------------------------------------------------
@@ -393,3 +639,103 @@ async def test_async_keeps_the_same_partial_row_and_heals_it_the_same_way() -> N
     assert calls == {"extract": 1, "summarize": 1, "embed": 2}
     assert table.get("d1")["embedding"] == "vec(HELLO)"
     assert table.partial() == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arm", ARMS)
+async def test_async_keeps_the_same_fanout_partial_row_and_heals_it_the_same_way(arm: str) -> None:
+    table = _fanout_table(MemoryStore(), runner=AsyncRunner())
+    if arm == "a re-sync on new text":
+        await table.sync([{"doc_id": "d1", "text": "alpha beta"}])
+    failing.add("split")
+    calls.clear()
+
+    receipt = await table.sync(GAMMA)
+
+    assert receipt.receipts[0].status is RowStatus.PARTIAL
+    assert table.get("d1")["summary"] == "GAMMA"
+    (partial,) = table.partial()
+    (change,) = partial.changes
+    assert (change.column, change.reason, change.node, change.error) == (
+        "words",
+        ChangeReason.NODE_ERROR,
+        "split",
+        "RuntimeError: split service is down",
+    )
+
+    failing.clear()
+    calls.clear()
+    healed = await table.sync(GAMMA)
+
+    assert calls == {"split": 1, "tag": 2}
+    assert _words(table) == [("w0", "tag:GAMMA"), ("w1", "tag:DELTA")]
+    assert healed.completed
+    assert table.partial() == ()
+
+    calls.clear()
+    again = await table.sync(GAMMA)
+
+    assert calls == {}, "a healed row converges"
+    assert again.receipts[0].outcome is WriteOutcome.SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_async_a_failed_no_output_node_beside_a_failed_boundary_is_an_error_row_retried_in_full() -> None:
+    """`split` and `notify` raise in one superstep. The fan-out entry would name
+    `split` only, so a partial row would drop `notify`'s failure for good."""
+    table = _notify_table([extract, summarize, split, notify, _word_node()], runner=AsyncRunner())
+    failing.update({"split", "notify"})
+
+    receipt = await table.sync(GAMMA)
+
+    assert (calls["split"], calls["notify"]) == (1, 1), "both raised"
+    assert receipt.receipts[0].status is RowStatus.ERROR
+    assert table.partial() == ()
+
+    failing.clear()
+    calls.clear()
+    await table.sync(GAMMA)
+
+    assert calls == {"extract": 1, "summarize": 1, "split": 1, "notify": 1, "tag": 2}
+    assert table.status().is_fresh
+
+
+@pytest.mark.asyncio
+async def test_async_a_mounted_graph_whose_inner_nodes_both_raised_stays_partial() -> None:
+    """Both failures belong to `stage`, which the heal re-runs whole — so the
+    entries name `stage` once and still cover both."""
+    stage = Graph([summarize, aside], name="stage").as_node(name="stage")
+    table = _notify_table([extract, stage], runner=AsyncRunner())
+    failing.update({"summarize", "aside"})
+
+    receipt = await table.insert(doc_id="d1", text="hello world")
+
+    assert (calls["summarize"], calls["aside"]) == (1, 1), "both raised"
+    assert receipt.status is RowStatus.PARTIAL
+    (partial,) = table.partial()
+    assert {change.node.split("/", 1)[0] for change in partial.changes} == {"stage"}
+
+    failing.clear()
+    calls.clear()
+    await table.sync([{"doc_id": "d1", "text": "hello world"}])
+
+    assert calls == {"summarize": 1, "aside": 1}, "only the mounted graph re-runs"
+    assert table.status().is_fresh
+
+
+@pytest.mark.asyncio
+async def test_async_a_failed_no_output_node_beside_a_nulled_column_is_an_error_row_retried_in_full() -> None:
+    table = _notify_table([extract, notify, summarize, embed], runner=AsyncRunner())
+    failing.add("notify")
+
+    receipt = await table.insert(doc_id="d1", text="hello world")
+
+    assert receipt.status is RowStatus.ERROR
+    assert table.partial() == ()
+
+    failing.clear()
+    calls.clear()
+    await table.sync([{"doc_id": "d1", "text": "hello world"}])
+
+    assert calls == {"extract": 1, "notify": 1, "summarize": 1, "embed": 1}
+    assert table.status().is_fresh

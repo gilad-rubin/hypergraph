@@ -20,8 +20,9 @@ FINGERPRINT_COLUMNS = ("_row_fingerprint", "_write_gen")
 STATUS_COLUMNS = ("_status", "_error")
 QUESTION_COLUMN = "_question"
 # Per-column change entries for a PARTIAL row: which derived columns a
-# failure nulled and why. Additive — old stores gain the column via
-# idempotent schema evolution the first time a partial row is written.
+# failure nulled and why, plus one per failed fan-out boundary naming its
+# map_over input (not a derived column). Additive — old stores gain the
+# column via idempotent schema evolution the first time a partial row is written.
 CHANGES_COLUMN = "_changes"
 PARENT_LINK_COLUMN = "_parent_id"
 PROVENANCE_PREFIX = "_provenance_"

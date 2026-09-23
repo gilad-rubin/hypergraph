@@ -145,10 +145,22 @@ stored row still stands, derives no new row from it, and reports `SKIPPED`.
 `PARTIAL` is reported under `on_error="store"` when one node failed and the
 other derived columns were produced anyway: those columns are stored, the
 failed ones are null, and the row records why (see `partial()`, which also
-names the two derivation paths that still write the whole-row shape). A failure
-the runner cannot blame on a node — a missing input, a plan-level error — and a
-failure that leaves no derived column standing both stay `ERROR`, so a row
-never claims column granularity the run cannot support.
+names the two derivation paths that still write the whole-row shape). A partial
+row names every node of its graph that failed. When the failed node is a
+fan-out boundary, the row still keeps the columns that succeeded; its change
+entry names the `map_over` input rather than a stored column, the child rows
+derived earlier stay as they are, and the next `sync()` re-runs only the
+boundary — unless the boundary also produces a stored parent column, in which
+case the whole graph runs again for the row, as it does for such a boundary
+under `SKIPPED` above.
+Three failures stay `ERROR`, so a row never claims column granularity the run
+cannot support: one the runner cannot blame on a node (a missing input, a
+plan-level error), one that leaves no derived column standing, and one on a
+top-level node of this table's graph that owns no stored column and is not a
+fan-out boundary (a node with no output), which no change entry could name and
+no column-scoped heal would run again. A node with no output that fails inside
+a mounted graph leaves a partial row, because the heal re-runs that mounted
+graph whole.
 
 ### `RowReceipt`
 
@@ -380,7 +392,8 @@ class ChangeReason(Enum):
 ```
 
 Rows stored with `on_error="store"` that kept some derived columns and nulled
-the rest. One `ColumnChange` per nulled column, and the reason is the true one:
+the rest. One `ColumnChange` per nulled column, plus one per fan-out whose
+boundary raised, and the reason is the true one:
 
 - `NODE_ERROR` — this column's own producer raised; `error` carries its text.
 - `UPSTREAM_ERROR` — a failed node reaches this producer through the graph, so
@@ -390,6 +403,14 @@ the rest. One `ColumnChange` per nulled column, and the reason is the true one:
 
 A column whose producer ran and returned `None` gets no entry at all: that is a
 value, not a failure, and it is stored with its provenance like any other.
+
+A fan-out entry names the `map_over` input (`"words"` for
+`map_over("words", ...)`), not a stored column, so it is not a key of `row`.
+There is one per input, however many child tables map over it. Its reason is
+always `NODE_ERROR`, and `node` names the boundary that raised (`stage/split`
+when the boundary sits inside a mounted graph). The next `sync()` re-runs only
+that boundary and rebuilds the child rows from it; a boundary that also
+produces a stored parent column makes the whole graph run again for the row.
 
 A partial row stays queryable and counts as stale in `status()`, never fresh.
 The next `sync()` re-derives exactly the null columns: the surviving columns
