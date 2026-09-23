@@ -108,9 +108,11 @@
   row on the next write that re-runs its fan-out boundary, never `SKIPPED` or
   `HEALED`. Two fan-outs whose child tables resolve to one name (the name comes
   from the child identity) are now refused at table analysis with
-  `GraphConfigError` naming both, instead of writing into one table. Derive a
-  child identity from something unique per item, and give each fan-out its
-  own. (#499, #519)
+  `GraphConfigError` naming both, instead of writing into one table; so is a
+  fan-out whose child table resolves to the root table's own name, which used
+  to write its child rows among the root rows (a phantom row in `rows()`, a
+  `KeyError` from `child()`). Derive a child identity from something unique per
+  item, and give each fan-out its own. (#499, #519)
 
 - **`gen_sync` refuses a rename-table name used as a keyword argument** — the sync-template
   generator rewrites names, not the signatures they bind to, so `f(checkpointer=x)` now

@@ -326,7 +326,9 @@ def test_hypertable_docs_pin_the_child_identity_refusal() -> None:
         assert "DuplicateChildIdentityError" in page
         assert "return only one of them" not in page
     assert "### DuplicateChildIdentityError" in pages["errors"]
-    assert "GraphConfigError` naming both fan-outs" in " ".join(pages["api"].split())
+    api = " ".join(pages["api"].split())
+    assert "GraphConfigError` naming both fan-outs" in api
+    assert "a fan-out whose child table would take the root table's own name" in api
 
 
 def test_background_handle_docs_pin_public_contract() -> None:

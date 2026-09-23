@@ -524,8 +524,10 @@ or `HEALED` one.
 
 Each child table is named after its child identity (`word_id` → `word`), so two
 fan-outs whose identities resolve to one table name are refused when the table
-is first analyzed, with a `GraphConfigError` naming both fan-outs. Give each
-child graph its own identity.
+is first analyzed, with a `GraphConfigError` naming both fan-outs, and so is a
+fan-out whose child table would take the root table's own name (`doc_id` →
+`doc`, or the `name=` you passed) — its child rows would land among the root
+rows. Give each child graph its own identity.
 
 ## Diagnostics and retrieval
 

@@ -246,15 +246,25 @@ def analyze_table(
         _validate_column_name(inp_name, "source")
         root_columns.append(_column(inp_name, role="source", content_key=True, python_type=input_types.get(inp_name, str)))
 
+    table_name = name or identity.replace("_id", "")
     child_specs: list[TableSpec] = []
-    # A child table is named after its child identity, so two fan-outs that
-    # resolve to one name would write one physical table (#519).
+    # A child table is named after its child identity, so a fan-out that
+    # resolves to the root table's name (#499), or two that resolve to one name
+    # (#519), would write one physical table.
     fan_outs: dict[str, tuple[str, str]] = {}
     for map_node in map_over_nodes:
         spec = _analyze_map_over(map_node, components)
         if spec is None:
             continue
         fan_out = getattr(map_node, "name", None) or repr(map_node)
+        if spec.name == table_name:
+            raise GraphConfigError(
+                f"Fan-out {fan_out!r} would write its child rows into the root table {table_name!r}.\n\n"
+                f"Its child table is named after its child identity (identity {spec.identity!r}), and the root table "
+                f"is {table_name!r}, so child rows would land among the root rows.\n\n"
+                "How to fix: give the child graph a different identity, e.g. "
+                f'map_over(..., identity="{fan_out}_id").'
+            )
         if spec.name in fan_outs:
             first, first_identity = fan_outs[spec.name]
             raise GraphConfigError(
@@ -316,7 +326,7 @@ def analyze_table(
         _column(CHANGES_COLUMN, role="internal"),
     ]
 
-    return TableSpec(name=name or identity.replace("_id", ""), identity=identity, columns=final_columns, children=child_specs)
+    return TableSpec(name=table_name, identity=identity, columns=final_columns, children=child_specs)
 
 
 def _analyze_map_over(map_node: Any, components: dict[str, Any]) -> TableSpec | None:

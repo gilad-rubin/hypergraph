@@ -18,8 +18,9 @@ parent column, the resume of an answered interrupt, and ``rederive()``. The
 Materialization Branch path is pinned in ``test_materialization_branches.py``
 and the legacy-row path in ``test_hypertable_receipt_truth.py``.
 
-Two fan-outs whose child tables would share one name are refused at table
-analysis with ``GraphConfigError`` (#519).
+Two fan-outs whose child tables would share one name (#519), and a fan-out
+whose child table would take the root table's name, are refused at table
+analysis with ``GraphConfigError``.
 """
 
 from __future__ import annotations
@@ -482,3 +483,42 @@ def test_falsifier_distinct_identities_over_one_input_work_and_settle(store):
 
     assert [(row.outcome, row.status) for row in receipt.receipts] == [(WriteOutcome.SKIPPED, RowStatus.COMPLETE)]
     assert executions == {"split": 0, "shout": 0, "label": 0}
+
+
+# ---------------------------------------------------------------------------
+# #499: a child table named like the root table
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("table_name", "child_identity"),
+    [
+        pytest.param(None, "doc", id="derived-root-name"),
+        pytest.param("documents", "documents_id", id="explicit-root-name"),
+    ],
+)
+def test_a_child_table_named_like_the_root_table_is_refused_at_analysis(store, table_name, child_identity):
+    """The root table is ``doc`` (from ``doc_id``) or the ``name=`` passed; a
+    child identity that resolves to the same name used to write child rows
+    into the ROOT table: ``rows()`` showed a phantom root row and
+    ``child(...)`` raised ``KeyError: '_parent_id'``."""
+
+    @node(output_name="parts")
+    def split(text: str) -> list[dict[str, str]]:
+        executions["split"] += 1
+        return [{child_identity: f"p{index}", "text": word} for index, word in enumerate(text.split())]
+
+    table = Graph(
+        [split, shout_word.as_node(name="shout_parts").map_over("parts", identity=child_identity)],
+        name="doc",
+    ).as_table(identity="doc_id", store=store, runner=SyncRunner(), name=table_name)
+    root = table_name or "doc"
+
+    with pytest.raises(GraphConfigError) as caught:
+        table.insert(doc_id="d1", text="alpha beta")
+
+    message = str(caught.value)
+    assert message.startswith(f"Fan-out 'shout_parts' would write its child rows into the root table {root!r}.")
+    assert f"(identity {child_identity!r})" in message
+    assert "How to fix: give the child graph a different identity" in message
+    assert executions == {"split": 0, "shout": 0, "label": 0}, "refused at analysis, before anything ran"

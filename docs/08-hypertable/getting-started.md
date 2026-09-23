@@ -248,7 +248,9 @@ refused with `DuplicateChildIdentityError` before any child graph runs; under
 without a `page_id` counts as the empty identity, so two such items collide
 too. Derive the identity from something unique per item, such as the loop
 index, rather than from content that can repeat. Each child table is named
-after its identity (`page_id` → `page`), so two fan-outs need two identities.
+after its identity (`page_id` → `page`), so two fan-outs need two identities,
+and a child identity must not resolve to the root table's name
+(`document_id` → `document`).
 
 A value the child graph `bind()`s is recipe, not data, so it is not a child
 column: it never appears in `rows()`, a mapped-item field of that name is
