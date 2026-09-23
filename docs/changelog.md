@@ -111,8 +111,10 @@
   `GraphConfigError` naming both, instead of writing into one table; so is a
   fan-out whose child table resolves to the root table's own name, which used
   to write its child rows among the root rows (a phantom row in `rows()`, a
-  `KeyError` from `child()`). Derive a child identity from something unique per
-  item, and give each fan-out its own. (#499, #519)
+  `KeyError` from `child()`), and a root or child table that resolves to the
+  recipe journal's reserved name `recipe_journal`, which used to share the
+  journal's table. Derive a child identity from something unique per item, and
+  give each fan-out its own. (#499, #519)
 
 - **`gen_sync` refuses a rename-table name used as a keyword argument** — the sync-template
   generator rewrites names, not the signatures they bind to, so `f(checkpointer=x)` now

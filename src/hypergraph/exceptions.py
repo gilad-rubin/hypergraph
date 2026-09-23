@@ -616,7 +616,9 @@ class DuplicateChildIdentityError(ValueError):
     write is refused before any child graph runs and before any child row of
     that parent is written, restamped or retired — for every child table of
     the row, checked together. Under ``on_error="store"`` the parent is stored
-    as an ERROR row carrying this message instead.
+    as an ERROR row carrying this message instead. (A row that predates the
+    recipe stamp is the exception: ``sync()`` refreshes that stamp first, which
+    can restamp its stored child rows and retire a duplicate copy of one.)
 
     An item that lacks the identity field counts as the empty identity, so two
     such items collide on ``""``.

@@ -329,6 +329,11 @@ def test_hypertable_docs_pin_the_child_identity_refusal() -> None:
     api = " ".join(pages["api"].split())
     assert "GraphConfigError` naming both fan-outs" in api
     assert "a fan-out whose child table would take the root table's own name" in api
+    from hypergraph.materialization._recipe_journal import JOURNAL_TABLE
+
+    assert f"The name `{JOURNAL_TABLE}` is reserved" in api
+    assert "stays `SKIPPED` until something does" in api
+    assert "child rows are restamped and retired after all" in api
 
 
 def test_background_handle_docs_pin_public_contract() -> None:

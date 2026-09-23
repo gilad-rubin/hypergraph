@@ -37,6 +37,7 @@ import hypergraph.exceptions
 from hypergraph import AsyncRunner, DuplicateChildIdentityError, Graph, GraphConfigError, SyncRunner, interrupt, node
 from hypergraph.materialization import RowStatus, SqliteTableStore, WriteOutcome
 from hypergraph.materialization._provenance import split_boundary_provenance
+from hypergraph.materialization._recipe_journal import JOURNAL_TABLE
 
 RUNNERS = [pytest.param(SyncRunner, id="sync"), pytest.param(AsyncRunner, id="async")]
 
@@ -522,3 +523,89 @@ def test_a_child_table_named_like_the_root_table_is_refused_at_analysis(store, t
     assert f"(identity {child_identity!r})" in message
     assert "How to fix: give the child graph a different identity" in message
     assert executions == {"split": 0, "shout": 0, "label": 0}, "refused at analysis, before anything ran"
+
+
+# ---------------------------------------------------------------------------
+# The refusal keys an identity the way the child table stores it: str(value)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        pytest.param(None, "None", id="None-vs-str"),
+        pytest.param(1, "1", id="int-vs-str"),
+    ],
+)
+def test_identities_that_differ_only_in_type_collide_as_the_store_keys_them(store, first, second):
+    """A child row is keyed by ``str`` of its identity, so ``None`` and
+    ``"None"`` (or ``1`` and ``"1"``) name ONE child row. Keyed by the raw
+    value they would look distinct: ``None``/``"None"`` then folded into one
+    readable row, and ``1``/``"1"`` failed in the store instead of here."""
+
+    @node(output_name="words")
+    def split(text: str) -> list[dict[str, Any]]:
+        executions["split"] += 1
+        return [{"word_id": first, "text": "a"}, {"word_id": second, "text": "b"}]
+
+    table = Graph(
+        [split, shout_word.as_node(name="shout_words").map_over("words", identity="word_id")],
+        name="doc",
+    ).as_table(identity="doc_id", store=store, runner=SyncRunner())
+
+    with pytest.raises(DuplicateChildIdentityError) as caught:
+        table.insert(doc_id="d1", text="x")
+
+    assert (caught.value.identity, caught.value.value, caught.value.parent) == ("word_id", str(second), "d1")
+    assert executions["shout"] == 0
+    assert store.read_rows("word") == []
+
+
+# ---------------------------------------------------------------------------
+# #499: the recipe journal's table name is reserved
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("identity", "table_name"),
+    [
+        pytest.param(f"{JOURNAL_TABLE}_id", None, id="root-identity"),
+        pytest.param("doc_id", JOURNAL_TABLE, id="root-name"),
+    ],
+)
+def test_a_root_table_named_like_the_recipe_journal_is_refused_at_analysis(store, identity, table_name):
+    """The store keeps its recipe journal in a table of its own; a root table
+    resolving to that name used to read journal rows back as phantom rows."""
+    table = Graph([shout], name="doc").as_table(identity=identity, store=store, runner=SyncRunner(), name=table_name)
+
+    with pytest.raises(GraphConfigError) as caught:
+        table.insert(**{identity: "d1", "text": "alpha"})
+
+    message = str(caught.value)
+    assert message.startswith(f"HyperTable table name {JOURNAL_TABLE!r} is reserved.")
+    assert "How to fix: pass a different name= or identity" in message
+    assert executions["shout"] == 0
+
+
+def test_a_child_table_named_like_the_recipe_journal_is_refused_at_analysis(store):
+    """A child identity resolving to the journal's table name used to write
+    child rows into the journal: 3 rows for 2 items, one of them a journal row."""
+
+    @node(output_name="parts")
+    def split(text: str) -> list[dict[str, str]]:
+        executions["split"] += 1
+        return [{f"{JOURNAL_TABLE}_id": f"p{index}", "text": word} for index, word in enumerate(text.split())]
+
+    table = Graph(
+        [split, shout_word.as_node(name="shout_parts").map_over("parts", identity=f"{JOURNAL_TABLE}_id")],
+        name="doc",
+    ).as_table(identity="doc_id", store=store, runner=SyncRunner())
+
+    with pytest.raises(GraphConfigError) as caught:
+        table.insert(doc_id="d1", text="alpha beta")
+
+    message = str(caught.value)
+    assert message.startswith(f"Fan-out 'shout_parts' would write its child rows into the reserved table {JOURNAL_TABLE!r}.")
+    assert f"(identity '{JOURNAL_TABLE}_id')" in message
+    assert "How to fix: give the child graph a different identity" in message
+    assert executions == {"split": 0, "shout": 0, "label": 0}

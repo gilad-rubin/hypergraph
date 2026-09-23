@@ -147,7 +147,10 @@ stored row still stands, derives no new row from it, and reports `SKIPPED`.
 Mapped items that share a child identity never settle as `SKIPPED` or
 `HEALED`: the write is refused before any child row is written (see
 [Child tables](#child-tables)), and under `on_error="store"` the parent is
-stored as an `ERROR` row naming the collision.
+stored as an `ERROR` row naming the collision. The one exception is a row an
+earlier build already stored over colliding items with a recorded count that
+matches its present child rows: nothing re-runs its boundary, so it stays
+`SKIPPED` until something does.
 
 `PARTIAL` is reported under `on_error="store"` when one node failed and the
 other derived columns were produced anyway: those columns are stored, the
@@ -514,20 +517,30 @@ the other rows of the same call proceed. Every write that produces the item
 list refuses it — `insert()`, `update()`, `sync()`, `rederive()`, answering a
 waiting row, and a Materialization Branch's `sync()` (which raises). An item
 without the identity field counts as the empty identity, so two such items
-collide too. Derive the identity from something unique per item — the loop
-index, a primary key — not from content that can repeat.
+collide too. Identities are compared the way the child table keys them, as
+text, so `1` and `"1"`, or `None` and `"None"`, collide as well. Derive the
+identity from something unique per item — the loop index, a primary key — not
+from content that can repeat.
 
 A row stored by an earlier version over colliding items keeps its one child row
 until a write re-runs its fan-out boundary; that write meets the refusal, so
 under `on_error="store"` the row becomes an `ERROR` row rather than a `SKIPPED`
-or `HEALED` one.
+or `HEALED` one. Two exceptions apply to such a row. If its recorded count
+already matches its present child rows, nothing re-runs the boundary and it
+stays `SKIPPED`. If it also predates the recipe stamp, `sync()` refreshes that
+stamp before it probes the children, which re-stamps the stored child rows and
+retires an older duplicate copy of one; only then does the refusal store the
+`ERROR` row, so on that path child rows are restamped and retired after all.
 
 Each child table is named after its child identity (`word_id` → `word`), so two
 fan-outs whose identities resolve to one table name are refused when the table
 is first analyzed, with a `GraphConfigError` naming both fan-outs, and so is a
 fan-out whose child table would take the root table's own name (`doc_id` →
 `doc`, or the `name=` you passed) — its child rows would land among the root
-rows. Give each child graph its own identity.
+rows. The name `recipe_journal` is reserved for the store's recipe journal, so
+a root or child table that resolves to it (`recipe_journal_id`, or
+`name="recipe_journal"`) is refused the same way. Give each child graph its own
+identity.
 
 ## Diagnostics and retrieval
 
