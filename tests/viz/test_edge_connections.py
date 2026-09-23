@@ -64,7 +64,8 @@ def extract_geometries(page, graph, depth: int) -> tuple[dict[str, NodeGeometry]
     # Render to temp file
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
         temp_path = f.name
-    visualize(graph, depth=depth, filepath=temp_path)
+    # Inputs drawn: these tests check the input edges' geometry too.
+    visualize(graph, depth=depth, show_inputs=True, filepath=temp_path)
 
     try:
         page.goto(f"file://{temp_path}")

@@ -211,7 +211,7 @@ class TestEdgeRoutingToInternalNodes:
         from hypergraph.viz import extract_debug_data
 
         outer = make_outer()
-        data = extract_debug_data(outer, depth=2)
+        data = extract_debug_data(outer, depth=2, show_inputs=True)
 
         # Find the edge from input_x to step1 or middle
         # The visual target should be step1, not middle

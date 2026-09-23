@@ -33,8 +33,18 @@
     var hideOnEscape = function(event) {
       if (event.key === 'Escape') hide();
     };
+    // A tooltip answers a mouse hover or a keyboard focus. A tap focuses the
+    // button too, and a phone has no hover to take the tooltip away again,
+    // so a touch never shows it: pointer events carry the pointer type, and
+    // a tap's focus is not :focus-visible.
+    var showForMouse = function(event) { if (event.pointerType !== 'touch') show(); };
+    var showForKeyboard = function(event) {
+      var keyboard = true;
+      try { keyboard = event.target.matches(':focus-visible'); } catch (e) {}
+      if (keyboard) show();
+    };
     return html`
-      <div className="relative" onMouseEnter=${show} onMouseLeave=${hide} onFocus=${show} onBlur=${hide}>
+      <div className="relative" onPointerEnter=${showForMouse} onPointerLeave=${hide} onFocus=${showForKeyboard} onBlur=${hide}>
         <button className=${btn + ' ' + (props.isActive ? active : '')} aria-label=${props.ariaLabel || props.tooltip} aria-pressed=${props.isActive === undefined ? undefined : !!props.isActive} onClick=${props.onClick} onKeyDown=${hideOnEscape}>${props.children}</button>
         ${showTooltip[0] && html`<div role="tooltip" aria-hidden=${!showTooltip[0]} className=${'absolute right-full mr-2 top-1/2 -translate-y-1/2 px-2 py-1 text-xs font-medium rounded shadow-lg whitespace-nowrap pointer-events-none z-50 ' + tip}>
           ${props.tooltip}

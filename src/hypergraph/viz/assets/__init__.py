@@ -14,6 +14,7 @@ FIRST_PARTY_ASSET_NAMES = (
     "viz_nodes.js",
     "viz_controls.js",
     "viz_debug.js",
+    "viz_ghosts.js",
     "viz.js",
 )
 

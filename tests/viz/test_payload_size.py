@@ -35,10 +35,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from benchmark_deep_nested import make_parametric_graph
 
 # Vendor JS+CSS dominates per-cell payload (~720 KB on 2026-04-30).
-# Headroom is ~75 KB for IR + viz JS growth before this trips. Bumping
-# this means new vendor was added — review whether that vendor earns
-# its bytes before raising the ceiling.
-PER_CELL_HTML_CEILING_BYTES = 800 * 1024  # 800 KB
+# Headroom is for IR + first-party viz JS growth. Bumping this for new
+# vendor means reviewing whether that vendor earns its bytes first.
+# 2026-09-23 (#595): 800 -> 864 KB for viz_ghosts.js (~24 KB, first-party,
+# not vendor or precompute); k=10 went from 810,131 to 841,657 bytes.
+PER_CELL_HTML_CEILING_BYTES = 864 * 1024  # 864 KB
 
 # IR shape is small and stable. ~5 KB per expandable container is the
 # rough fixture profile today (see scripts/benchmark_deep_nested.py).

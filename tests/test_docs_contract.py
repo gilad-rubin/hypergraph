@@ -137,6 +137,19 @@ def test_public_docs_track_current_api_contracts() -> None:
     assert "simplify=True" in visualize
     assert "simplify" in _section(visualize, "## Mermaid Text Diagrams")
 
+    # Inputs are hidden by default and revealed on demand; bound inputs are
+    # included (#595, D56). The one resolver decides both `None` defaults.
+    from hypergraph.viz.widget import _resolve_input_visibility
+
+    assert inspect.signature(Graph.visualize).parameters["show_inputs"].default is None
+    assert inspect.signature(Graph.visualize).parameters["show_bounded_inputs"].default is None
+    assert _resolve_input_visibility(None, None, None) == (False, True)
+    assert "show_inputs=None, show_bounded_inputs=None" in graph_visualize
+    parameters = _scoped_section(visualize, "## Parameters").split("```")[1]
+    assert "show_inputs=False," in parameters
+    assert "show_bounded_inputs=True," in parameters
+    assert "raw ← fetch" in _scoped_section(visualize, "### Inputs on demand")
+
     assert tuple(inspect.signature(Graph.as_node).parameters) == (
         "self",
         "name",

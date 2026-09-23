@@ -11,8 +11,9 @@
   var Nodes = root.HypergraphVizNodes;
   var Controls = root.HypergraphVizControls;
   var VizDebug = root.HypergraphVizDebug;
+  var Ghosts = root.HypergraphVizGhosts;
 
-  if (!R || !Layout || !Edges || !Nodes || !Controls || !VizDebug) {
+  if (!R || !Layout || !Edges || !Nodes || !Controls || !VizDebug || !Ghosts) {
     console.error('HypergraphViz: Missing first-party visualization modules');
     return;
   }
@@ -204,18 +205,21 @@
     // Build the scene once per (state, options, ir) tuple; nodes/edges
     // are projected from the same memoized result so we don't double the
     // derivation work and so schemaVersionMismatch is observed exactly once.
-    var scene = useMemo(function() {
-      if (!ir || !root.HypergraphSceneBuilder) return null;
+    var sceneOpts = useMemo(function() {
       var stateObj = {};
       expansionState.forEach(function(v, k) { stateObj[k] = v; });
-      return root.HypergraphSceneBuilder.buildInitialScene(ir, {
+      return {
         expansionState: stateObj,
         separateOutputs: separateOutputs,
         showInputs: showInputs,
         showBoundedInputs: showBoundedInputs,
         simplify: simplify,
-      });
-    }, [expansionState, separateOutputs, showInputs, showBoundedInputs, simplify, ir]);
+      };
+    }, [expansionState, separateOutputs, showInputs, showBoundedInputs, simplify]);
+    var scene = useMemo(function() {
+      if (!ir || !root.HypergraphSceneBuilder) return null;
+      return root.HypergraphSceneBuilder.buildInitialScene(ir, sceneOpts);
+    }, [sceneOpts, ir]);
 
     var schemaMismatch = scene && scene.schemaVersionMismatch ? scene.schemaVersionMismatch : null;
 
@@ -234,6 +238,53 @@
         return { ...n, data: { ...n.data, onToggleExpand: (n.data && n.data.nodeType === 'PIPELINE') ? function() { onToggleExpand(n.id); } : n.data.onToggleExpand } };
       });
     }, [selectedNodes, onToggleExpand]);
+
+    // ── Ghost inputs + focus (#595) ──
+    // Only while inputs are hidden: hovering a step, or tapping it on a touch
+    // screen, draws its inputs as ghost pills and lights its path. A touch
+    // never goes through hover (iOS turns the first tap into a hover), so a
+    // tap pins directly. A click or tap pins; an empty-canvas click, Escape,
+    // any re-layout and the Show/Hide Inputs toggle clear.
+    var ghostsOn = !showInputs && !!scene && !scene.schemaVersionMismatch;
+    var ghostsOnRef = useRef(ghostsOn);
+    ghostsOnRef.current = ghostsOn;
+    var ghostSets = useMemo(function() {
+      return ghostsOn ? Ghosts.ghostSets(ir, scene, sceneOpts) : null;
+    }, [ghostsOn, ir, scene, sceneOpts]);
+    var ghostState = useState(null);  // { id, pinned }
+    var setGhostActive = ghostState[1];
+    var ghostActive = ghostsOn ? ghostState[0] : null;
+    var lastPointerRef = useRef('mouse');
+    useEffect(function() {
+      var onPointer = function(e) { if (e.pointerType) lastPointerRef.current = e.pointerType; };
+      var onKey = function(e) { if (e.key === 'Escape') setGhostActive(null); };
+      root.addEventListener('pointerdown', onPointer, true);
+      root.addEventListener('pointermove', onPointer, true);
+      root.addEventListener('keydown', onKey);
+      return function() {
+        root.removeEventListener('pointerdown', onPointer, true);
+        root.removeEventListener('pointermove', onPointer, true);
+        root.removeEventListener('keydown', onKey);
+      };
+    }, []);
+    useEffect(function() { setGhostActive(null); }, [showInputs]);
+    var onGhostEnter = useCallback(function(e, n) {
+      if (!ghostsOnRef.current || lastPointerRef.current === 'touch' || !Ghosts.isStep(n)) return;
+      setGhostActive(function(p) { return p && p.pinned ? p : { id: n.id, pinned: false }; });
+    }, []);
+    var onGhostLeave = useCallback(function(e, n) {
+      if (lastPointerRef.current === 'touch') return;
+      setGhostActive(function(p) { return p && !p.pinned && p.id === n.id ? null : p; });
+    }, []);
+    var onGhostClick = useCallback(function(n) {
+      if (!ghostsOnRef.current || !Ghosts.isStep(n)) return;
+      var touch = lastPointerRef.current === 'touch';
+      // A second mouse click on the pinned step unpins it (it stays lit while hovered).
+      setGhostActive(function(p) {
+        return (!touch && p && p.pinned && p.id === n.id) ? { id: n.id, pinned: false } : { id: n.id, pinned: true };
+      });
+    }, []);
+    var onPaneClick = useCallback(function() { setGhostActive(null); }, []);
 
     // Theme detection listener
     useEffect(function() {
@@ -414,6 +465,55 @@
       }
     }, [layoutedNodes, fitWithFixedPadding]);
 
+    // Any re-layout (expand/collapse, types, inputs, output mode) clears the
+    // ghosts: their placement was measured against the previous layout.
+    useEffect(function() { setGhostActive(null); }, [layoutVersion]);
+
+    var ghostNode = useMemo(function() {
+      if (!ghostActive) return null;
+      return layoutedNodes.find(function(n) { return n.id === ghostActive.id && !n.hidden; }) || null;
+    }, [ghostActive, layoutedNodes]);
+    var ghostFocus = useMemo(function() {
+      return ghostNode ? Ghosts.focusSets(ghostNode.id, layoutedEdges, layoutedNodes) : null;
+    }, [ghostNode, layoutedEdges, layoutedNodes]);
+    var displayNodes = useMemo(function() {
+      if (!ghostFocus) return layoutedNodes;
+      return layoutedNodes.map(function(n) {
+        var cls = n.id === ghostFocus.id ? 'hg-focus' : (ghostFocus.nodes[n.id] ? '' : 'hg-dim');
+        return cls ? { ...n, className: [n.className, cls].filter(Boolean).join(' ') } : n;
+      });
+    }, [layoutedNodes, ghostFocus]);
+
+    // Placement is measured once per focused step, after the dimming commit,
+    // from the rendered node and edge-label boxes (see viz_ghosts.js).
+    var planState = useState(null);
+    var ghostPlan = planState[0], setGhostPlan = planState[1];
+    var ghostNodeId = ghostNode ? ghostNode.id : null;
+    useEffect(function() {
+      if (!ghostNodeId || !ghostSets) { setGhostPlan(null); return; }
+      var parentOf = {};
+      layoutedNodes.forEach(function(n) { if (n.parentNode) parentOf[n.id] = n.parentNode; });
+      var ancestors = {};
+      for (var a = parentOf[ghostNodeId]; a; a = parentOf[a]) ancestors[a] = true;
+      var nodeType = ghostNode && ghostNode.data ? ghostNode.data.nodeType : null;
+      setGhostPlan(Ghosts.planGhosts({
+        stepId: ghostNodeId, nodeType: nodeType, ancestors: ancestors,
+        items: ghostSets[ghostNodeId] || EMPTY_ARR, showTypes: showTypes, transform: rf.getViewport(),
+      }));
+    }, [ghostNodeId, ghostSets, showTypes, layoutedNodes, rf]);
+    var activePlan = ghostPlan && ghostNodeId && ghostPlan.stepId === ghostNodeId ? ghostPlan : null;
+
+    // A pinned step pans (and zooms out if it must) so it and its ghosts are
+    // on screen. Never on plain hover: moving the view under the mouse flickers.
+    var ghostPinned = !!(ghostActive && ghostActive.pinned);
+    useEffect(function() {
+      if (!ghostPinned || !activePlan) return;
+      var pane = document.querySelector('.react-flow');
+      if (!pane) return;
+      var next = Ghosts.frameViewport(activePlan, rf.getViewport(), pane.getBoundingClientRect());
+      if (next) rf.setViewport(next, { duration: 200 });
+    }, [ghostPinned, activePlan, rf]);
+
     // Edge styling
     var edgeOpts = {
       type: 'custom', sourcePosition: Position.Bottom, targetPosition: Position.Top,
@@ -432,19 +532,21 @@
         if (isControl) st.strokeDasharray = '6 4';
         if (isOrdering) { st.stroke = '#8b5cf6'; st.strokeWidth = 1.5; st.strokeDasharray = '6 3'; }
         if (isExclusive && !isControl && !isOrdering) st.strokeDasharray = '4 4';
+        var data = ghostFocus ? { ...e.data, dimmed: !ghostFocus.edges[e.id] } : e.data;
         return { ...e, id: e.id + '_exp_' + (expansionKey ? expansionKey.replace(/,/g, '_') : 'none') + '_mode_' + renderModeKey,
-          ...edgeOpts, style: st, markerEnd: edgeOpts.markerEnd, data: e.data };
+          ...edgeOpts, style: st, markerEnd: edgeOpts.markerEnd, data: data };
       });
-    }, [layoutedEdges, theme, isLayouting, expansionKey, renderModeKey]);
+    }, [layoutedEdges, theme, isLayouting, expansionKey, renderModeKey, ghostFocus]);
 
     return html`
       <div className="w-full relative overflow-hidden transition-colors duration-300"
            style=${{ backgroundColor: activeBg, height: '100vh', width: '100vw' }}
            onClick=${function() { try { root.parent.postMessage({ type: 'hypergraph-viz-click' }, '*'); } catch(e) {} }}>
         <${ReactFlowComp}
-          nodes=${layoutedNodes} edges=${styledEdges} nodeTypes=${nodeTypes} edgeTypes=${edgeTypes}
+          nodes=${displayNodes} edges=${styledEdges} nodeTypes=${nodeTypes} edgeTypes=${edgeTypes}
           onNodesChange=${onNodesChange} onEdgesChange=${onEdgesChange}
-          onNodeClick=${function(e, n) { if (n.data && n.data.nodeType === 'PIPELINE' && !n.data.isExpanded && n.data.onToggleExpand) { e.stopPropagation(); n.data.onToggleExpand(); } }}
+          onNodeMouseEnter=${onGhostEnter} onNodeMouseLeave=${onGhostLeave} onPaneClick=${onPaneClick}
+          onNodeClick=${function(e, n) { if (n.data && n.data.nodeType === 'PIPELINE' && !n.data.isExpanded && n.data.onToggleExpand) { e.stopPropagation(); n.data.onToggleExpand(); return; } onGhostClick(n); }}
           minZoom=${0.1} maxZoom=${2} className="bg-transparent" panOnScroll=${panOnScroll}
           zoomOnScroll=${false} panOnDrag=${true} zoomOnPinch=${true} preventScrolling=${false}
           style=${{ width: '100%', height: '100%', backgroundColor: activeBg }}>
@@ -460,6 +562,8 @@
               onChangeRanksep=${function(v) { root.__hypergraphVizReady = false; setRanksep(v); }} />
           ` : null}
         <//>
+        <style>${Ghosts.GHOST_CSS}</style>
+        ${activePlan ? html`<${Ghosts.GhostLayer} plan=${activePlan} isLight=${theme === 'light'} />` : null}
         ${schemaMismatch ? html`
           <div data-testid="hypergraph-schema-banner"
                className="absolute top-2 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-md text-xs font-mono bg-slate-900/85 text-amber-200 border border-amber-500/40 shadow pointer-events-auto z-50">
@@ -490,9 +594,9 @@
           panOnScroll=${Boolean(initialData.meta && initialData.meta.pan_on_scroll)}
           initialSeparateOutputs=${Boolean(initialData.meta && initialData.meta.separate_outputs)}
           initialShowTypes=${Boolean((initialData.meta && initialData.meta.show_types) !== false)}
-          initialShowInputs=${Boolean((initialData.meta && initialData.meta.show_inputs) !== false)}
+          initialShowInputs=${Boolean(initialData.meta && initialData.meta.show_inputs)}
           initialSimplify=${Boolean((initialData.meta && initialData.meta.simplify) !== false)}
-          initialShowBoundedInputs=${Boolean(initialData.meta && initialData.meta.show_bounded_inputs)} />
+          initialShowBoundedInputs=${Boolean((initialData.meta && initialData.meta.show_bounded_inputs) !== false)} />
       <//>
     `);
     if (bootMessage) bootMessage.remove();

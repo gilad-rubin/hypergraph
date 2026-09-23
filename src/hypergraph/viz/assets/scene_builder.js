@@ -485,6 +485,9 @@
               data: {
                 edgeType: irEdge.edge_type,
                 valueName: valueName,
+                // Every value the edge carries, so the ghost layer can still
+                // name what an edge `simplify` hides. Twin of scene_builder.py.
+                valueNames: emitNames.slice(),
                 label: (irEdge.label === undefined ? null : irEdge.label),
                 exclusive: !!irEdge.exclusive,
                 forceFeedback: !!irEdge.is_back_edge,

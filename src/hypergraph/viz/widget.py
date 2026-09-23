@@ -9,11 +9,15 @@ should not change again at that point.
 from __future__ import annotations
 
 import html as html_module
+import os
+import sys
 import warnings
 from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from types import FrameType
+
     from hypergraph.graph.core import Graph
 
 from hypergraph.viz._common import build_expansion_state
@@ -55,6 +59,62 @@ class _VizCellOutput:
         )
 
 
+# The hypergraph package directory: frames under it are library frames.
+_PACKAGE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _resolve_input_visibility(
+    show_inputs: bool | None,
+    show_bounded_inputs: bool | None,
+    show_external_inputs: bool | None,
+) -> tuple[bool, bool]:
+    """Return ``(show_inputs, show_bounded_inputs)`` for a visualize call.
+
+    The ONE place the input-visibility defaults live (ruling D56); every
+    public entry point (``Graph.visualize``, ``hypergraph.viz.visualize``,
+    ``HyperTable.visualize``, ``extract_debug_data``) passes its raw arguments
+    here:
+
+    - ``show_inputs`` defaults to False: the graph shows steps only, and a
+      step's inputs appear as ghost pills when it is hovered or tapped;
+    - ``show_bounded_inputs`` defaults to True: bound tools appear, faded and
+      dashed, as input boxes or ghosts; False leaves them out of both;
+    - ``show_external_inputs`` is the deprecated alias for ``show_inputs``.
+      Its warning points at the first caller outside hypergraph.
+
+    Already-resolved booleans pass through unchanged, so an entry point that
+    hands its result to another one decides nothing twice.
+    """
+    if show_external_inputs is not None:
+        if show_inputs is not None and show_inputs != show_external_inputs:
+            raise TypeError("Pass either show_inputs or show_external_inputs, not both.")
+        warnings.warn(
+            "show_external_inputs is deprecated; use show_inputs instead.",
+            DeprecationWarning,
+            stacklevel=_caller_stacklevel(),
+        )
+        show_inputs = show_external_inputs
+    return (
+        False if show_inputs is None else bool(show_inputs),
+        True if show_bounded_inputs is None else bool(show_bounded_inputs),
+    )
+
+
+def _caller_stacklevel() -> int:
+    """``stacklevel`` for a warning raised here that names the user's line.
+
+    Counts the frames between ``warnings.warn`` in the resolver and the first
+    frame outside the hypergraph package, however many entry points the call
+    passed through (``HyperTable.visualize`` goes through two).
+    """
+    level = 2  # 1 is the resolver itself
+    frame: FrameType | None = sys._getframe(2)
+    while frame is not None and os.path.abspath(frame.f_code.co_filename).startswith(_PACKAGE_DIR + os.sep):
+        frame = frame.f_back
+        level += 1
+    return level
+
+
 def visualize(
     graph: Graph,
     *,
@@ -63,7 +123,7 @@ def visualize(
     show_types: bool = True,
     separate_outputs: bool = False,
     show_inputs: bool | None = None,
-    show_bounded_inputs: bool = False,
+    show_bounded_inputs: bool | None = None,
     simplify: bool = True,
     show_external_inputs: bool | None = None,
     filepath: str | None = None,
@@ -77,8 +137,12 @@ def visualize(
         theme: "dark", "light", or "auto".
         show_types: Whether to show type annotations.
         separate_outputs: Whether to render outputs as separate DATA nodes.
-        show_inputs: Whether to show INPUT/INPUT_GROUP nodes.
-        show_bounded_inputs: Whether to include bound INPUT/INPUT_GROUP nodes.
+        show_inputs: Whether to draw input boxes (default: False). Hidden
+            inputs appear on demand: hovering or tapping a step shows its
+            inputs as ghost pills. Toggleable in the widget toolbar.
+        show_bounded_inputs: Whether bound inputs (tools bound with
+            ``Graph.bind``) appear, faded and dashed, as input boxes and in
+            the ghosts (default: True).
         simplify: Hide data and input edges a longer path already implies —
             with ``A → B → C``, a direct ``A → C`` is dropped, and an input
             feeding the whole chain keeps only its earliest consumer
@@ -93,17 +157,7 @@ def visualize(
         A cell-output object when displaying in a notebook; ``None`` when
         ``filepath`` is given (the file is written to disk).
     """
-    if show_external_inputs is not None:
-        if show_inputs is not None and show_inputs != show_external_inputs:
-            raise TypeError("Pass either show_inputs or show_external_inputs, not both.")
-        warnings.warn(
-            "show_external_inputs is deprecated; use show_inputs instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        show_inputs = show_external_inputs
-    elif show_inputs is None:
-        show_inputs = True
+    show_inputs, show_bounded_inputs = _resolve_input_visibility(show_inputs, show_bounded_inputs, show_external_inputs)
 
     flat_graph = graph.to_flat_graph()
     return render_flat_graph(
@@ -129,8 +183,8 @@ def render_flat_graph(
     theme: str = "auto",
     show_types: bool = True,
     separate_outputs: bool = False,
-    show_inputs: bool = True,
-    show_bounded_inputs: bool = False,
+    show_inputs: bool | None = None,
+    show_bounded_inputs: bool | None = None,
     simplify: bool = True,
     filepath: str | None = None,
     _debug_overlays: bool = False,
@@ -142,6 +196,7 @@ def render_flat_graph(
     fan-out edge) reuse the exact same IR + HTML pipeline instead of
     special-casing the renderer. ``graph`` is still needed for layout estimation.
     """
+    show_inputs, show_bounded_inputs = _resolve_input_visibility(show_inputs, show_bounded_inputs, None)
     est_width, est_height = estimate_layout(
         graph,
         separate_outputs=separate_outputs,

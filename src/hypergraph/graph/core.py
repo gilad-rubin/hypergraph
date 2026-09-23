@@ -5,7 +5,6 @@ from __future__ import annotations
 import functools
 import hashlib
 import types
-import warnings
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Union, get_args, get_origin
 
 import networkx as nx
@@ -1883,7 +1882,7 @@ class Graph:
         show_types: bool = True,
         separate_outputs: bool = False,
         show_inputs: bool | None = None,
-        show_bounded_inputs: bool = False,
+        show_bounded_inputs: bool | None = None,
         simplify: bool = True,
         show_external_inputs: bool | None = None,
         filepath: str | None = None,
@@ -1898,9 +1897,11 @@ class Graph:
             theme: "dark", "light", or "auto" to detect from environment
             show_types: Whether to show type annotations on nodes
             separate_outputs: Whether to render outputs as separate DATA nodes
-            show_inputs: Whether to show INPUT/INPUT_GROUP nodes (default: True)
-            show_bounded_inputs: Whether to include bound INPUT/INPUT_GROUP nodes
-                when show_inputs=True
+            show_inputs: Whether to draw input boxes (default: False). Hidden
+                inputs appear on demand: hovering or tapping a step shows its
+                inputs as ghost pills. Toggleable from the widget toolbar.
+            show_bounded_inputs: Whether bound inputs appear, faded and dashed,
+                as input boxes and in the ghosts (default: True)
             simplify: Hide data and input edges that a longer path already
                 implies — given ``A → B → C``, a direct ``A → C`` is dropped,
                 and an input feeding the whole chain keeps only its earliest
@@ -1920,18 +1921,9 @@ class Graph:
             >>> graph.visualize(filepath="graph.html")  # Save to HTML file
         """
         from hypergraph.viz import visualize as viz_func
+        from hypergraph.viz.widget import _resolve_input_visibility
 
-        if show_external_inputs is not None:
-            if show_inputs is not None and show_inputs != show_external_inputs:
-                raise TypeError("Pass either show_inputs or show_external_inputs, not both.")
-            warnings.warn(
-                "show_external_inputs is deprecated; use show_inputs instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            show_inputs = show_external_inputs
-        elif show_inputs is None:
-            show_inputs = True
+        show_inputs, show_bounded_inputs = _resolve_input_visibility(show_inputs, show_bounded_inputs, show_external_inputs)
 
         return viz_func(
             self,
