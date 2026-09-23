@@ -52,6 +52,36 @@
   var nodeTypes = { custom: CustomNode, pipelineGroup: CustomNode };
   var edgeTypes = { custom: CustomEdge };
 
+  var PIN_PAN_MS = 200;
+
+  // The view as rendered: the transform React Flow wrote on its viewport element.
+  function renderedView() {
+    var el = document.querySelector('.react-flow__viewport');
+    if (!el) return null;
+    try {
+      var m = new DOMMatrixReadOnly(getComputedStyle(el).transform);
+      return { x: m.e, y: m.f, zoom: m.a };
+    } catch (e) { return null; }
+  }
+
+  // Calls done() one animation frame after the rendered view reaches
+  // `target`, while alive() holds. Returns a cancel function.
+  function whenViewAt(target, alive, done) {
+    var raf = 0;
+    var check = function() {
+      raf = 0;
+      if (!alive()) return;
+      var v = renderedView();
+      if (v && Math.abs(v.x - target.x) < 0.05 && Math.abs(v.y - target.y) < 0.05 && Math.abs(v.zoom - target.zoom) < 1e-4) {
+        raf = requestAnimationFrame(function() { raf = 0; if (alive()) done(); });
+        return;
+      }
+      raf = requestAnimationFrame(check);
+    };
+    raf = requestAnimationFrame(check);
+    return function() { if (raf) cancelAnimationFrame(raf); };
+  }
+
   var App = function(props) {
     var initialData = props.initialData;
     var themePreference = props.themePreference;
@@ -505,13 +535,24 @@
 
     // A pinned step pans (and zooms out if it must) so it and its ghosts are
     // on screen. Never on plain hover: moving the view under the mouse flickers.
+    // The pan glides, so its end is observable only on screen: once the
+    // rendered view reaches the target, window.__hypergraphVizPinFramed counts
+    // up. A tap's click can reach the page late, so a fixed wait after the tap
+    // may read the view mid-glide; tests wait on the count instead. A user
+    // gesture during the glide takes the view over, and the count stays put.
     var ghostPinned = !!(ghostActive && ghostActive.pinned);
+    var userGestureRef = useRef(0);
+    var onUserMoveStart = useCallback(function() { userGestureRef.current += 1; }, []);
     useEffect(function() {
       if (!ghostPinned || !activePlan) return;
       var pane = document.querySelector('.react-flow');
       if (!pane) return;
       var next = Ghosts.frameViewport(activePlan, rf.getViewport(), pane.getBoundingClientRect());
-      if (next) rf.setViewport(next, { duration: 200 });
+      if (next) rf.setViewport(next, { duration: PIN_PAN_MS });
+      var gesture = userGestureRef.current;
+      return whenViewAt(next || rf.getViewport(), function() { return userGestureRef.current === gesture; }, function() {
+        root.__hypergraphVizPinFramed = (root.__hypergraphVizPinFramed || 0) + 1;
+      });
     }, [ghostPinned, activePlan, rf]);
 
     // Edge styling
@@ -546,6 +587,7 @@
           nodes=${displayNodes} edges=${styledEdges} nodeTypes=${nodeTypes} edgeTypes=${edgeTypes}
           onNodesChange=${onNodesChange} onEdgesChange=${onEdgesChange}
           onNodeMouseEnter=${onGhostEnter} onNodeMouseLeave=${onGhostLeave} onPaneClick=${onPaneClick}
+          onMoveStart=${onUserMoveStart}
           onNodeClick=${function(e, n) { if (n.data && n.data.nodeType === 'PIPELINE' && !n.data.isExpanded && n.data.onToggleExpand) { e.stopPropagation(); n.data.onToggleExpand(); return; } onGhostClick(n); }}
           minZoom=${0.1} maxZoom=${2} className="bg-transparent" panOnScroll=${panOnScroll}
           zoomOnScroll=${false} panOnDrag=${true} zoomOnPinch=${true} preventScrolling=${false}

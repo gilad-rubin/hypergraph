@@ -24,7 +24,9 @@ DOM contract the page exposes for these tests:
   ``hg-dim`` (off the path);
 - edge: ``[data-hg-edge]`` (the edge's path group) and ``[data-hg-edge-label]``
   (its label), both with ``data-hg-source``, ``data-hg-target`` and
-  ``data-hg-dimmed``, set by the edge component itself.
+  ``data-hg-dimmed``, set by the edge component itself;
+- pin framed: ``window.__hypergraphVizPinFramed`` counts pins whose pan has
+  reached its target on screen (see ``_pin``).
 
 Every browser test renders once per engine in HYPERGRAPH_VIZ_ENGINES (the
 ``_browser`` fixture), so CI runs them in Chromium and in WebKit.
@@ -261,9 +263,24 @@ def _open(browser, path: str, *, touch: bool = False):
 
 
 def _settle(page) -> None:
-    """Let React commit, the pan animation finish and the .15s fades end."""
+    """Let React commit and the .15s fades end."""
     page.evaluate("() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
     page.wait_for_timeout(400)
+
+
+def _pin(page, step: str, *, tap: bool = False) -> None:
+    """Tap or click ``step`` to pin it, and wait until its pan has ended on screen.
+
+    A fixed wait is not enough: a slow engine can deliver the tap's click
+    after ``tap()`` returns, and the view is then read mid-glide.
+    """
+    framed = page.evaluate("window.__hypergraphVizPinFramed || 0")
+    if tap:
+        page.tap(f'[data-id="{step}"]', timeout=5000)
+    else:
+        page.click(f'[data-id="{step}"]')
+    page.wait_for_function(f"(window.__hypergraphVizPinFramed || 0) > {framed}", timeout=15000)
+    _settle(page)
 
 
 @pytest.fixture
@@ -459,8 +476,7 @@ def test_hover_inside_an_expanded_container(desktop, step):
 @pytest.mark.parametrize("step", ["fetch", "parse", "summarize"])
 def test_tap_shows_pins_and_frames_the_steps_ghosts(phone, step):
     page = phone("default")
-    page.tap(f'[data-id="{step}"]', timeout=5000)
-    _settle(page)
+    _pin(page, step, tap=True)
     state = _state(page)
     assert _ghost_set(state) == EXPECTED_GHOSTS[step], f"tap {step}"
     _assert_no_overlap(state, step, f"tap {step}")
@@ -482,8 +498,7 @@ def test_crowded_step_falls_back_above_or_below_with_types_kept(desktop, phone):
     _assert_no_overlap(state, "middle", "hover middle (crowded)")
 
     page = phone("crowded")
-    page.tap('[data-id="middle"]', timeout=5000)
-    _settle(page)
+    _pin(page, "middle", tap=True)
     state = _state(page)
     assert _ghost_set(state) == CROWDED_GHOSTS, "tap middle"
     _assert_no_overlap(state, "middle", "tap middle (crowded)")
@@ -500,8 +515,7 @@ def test_ghosts_never_cover_a_gates_true_false_labels(desktop, step):
     state = _state(page)
     assert _ghost_set(state) == GATE_LABEL_GHOSTS[step], f"hover {step}"
     _assert_no_overlap(state, step, f"hover {step} (gate labels)")
-    page.click(f'[data-id="{step}"]')
-    _settle(page)
+    _pin(page, step)
     state = _state(page)
     assert _ghost_set(state) == GATE_LABEL_GHOSTS[step], f"pinned {step}"
     _assert_no_overlap(state, step, f"pinned {step} (gate labels)")
@@ -566,7 +580,7 @@ def test_focus_lights_the_path_and_dims_the_rest_including_gate_labels(desktop, 
 
 def test_click_pins_and_empty_canvas_click_or_escape_clears(desktop):
     page = desktop("default")
-    page.click('[data-id="fetch"]')
+    _pin(page, "fetch")
     point = page.evaluate(_EMPTY_POINT_JS)
     page.mouse.move(point["x"], point["y"])
     _settle(page)
@@ -579,8 +593,7 @@ def test_click_pins_and_empty_canvas_click_or_escape_clears(desktop):
     _settle(page)
     _assert_clear(_state(page), "empty-canvas click")
 
-    page.click('[data-id="publish"]')
-    _settle(page)
+    _pin(page, "publish")
     assert _ghost_set(_state(page)) == EXPECTED_GHOSTS["publish"], "pinned publish"
     page.keyboard.press("Escape")
     _settle(page)
@@ -589,8 +602,7 @@ def test_click_pins_and_empty_canvas_click_or_escape_clears(desktop):
 
 def test_toggling_inputs_clears_every_ghost_and_dim_state(desktop):
     page = desktop("default")
-    page.click('[data-id="publish"]')
-    _settle(page)
+    _pin(page, "publish")
     assert _ghost_set(_state(page)) == EXPECTED_GHOSTS["publish"], "pinned publish"
 
     page.click('button[aria-label="Show Inputs"]')
