@@ -333,11 +333,15 @@ a derived column's provenance, or the recipe stamp — and this is the same cost
 or a stored value (a node whose output varies between runs can answer
 differently) is a rebuild and reports the repair; one that only moves stamps
 over identical values is bookkeeping and reports `SKIPPED`. Values are compared
-at the column's declared type — a `list[float]` column is float32 — so a vector
-read back as float32 is not a change and a difference below that precision is
-not reported; NaN counts as the same value as NaN. A retry that fails again
-leaves the child in error and reports `UPDATED` rather than `HEALED`, and the
-next `sync()` tries it again.
+at the column's declared type, and a `list[float]` column is declared float32,
+so on either store a difference below float32 precision is not reported. On
+`LanceDBStore`, which stores that column as float32, a vector read back rounded
+is not a change and NaN counts as the same value as NaN. `SqliteTableStore`
+keeps the float64 values and stores a NaN as NULL (see
+[Shipped stores](implementing-a-store.md#shipped-stores)), so there a rewrite
+over a stored NaN counts as a changed value and reports the repair. A retry
+that fails again leaves the child in error and reports `UPDATED` rather than
+`HEALED`, and the next `sync()` tries it again.
 
 ### `delete(id) -> None`
 
