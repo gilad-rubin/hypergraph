@@ -26,6 +26,7 @@ from hypergraph.events import (
     Event,
     EventDispatcher,
     EventProcessor,
+    FailureLogProcessor,
     InnerCacheEvent,
     InterruptEvent,
     NodeAttemptEndEvent,
@@ -254,6 +255,7 @@ __all__ = [
     "ConsoleProcessor",
     "LiveConsole",
     "render_console",
+    "FailureLogProcessor",
     # Context
     "NodeContext",
     # Observability

@@ -554,7 +554,8 @@ class RunFailure:
     wording. It is never raw exception message text: Hypergraph does not
     persist that (see the privacy boundary in
     ``docs/06-api-reference/errors.md``). The real message, type and
-    traceback are exported to the OpenTelemetry trace instead, so a failure
+    traceback are exported to the OpenTelemetry trace instead, or to a
+    ``logging`` logger by the opt-in ``FailureLogProcessor``, so a failure
     is debugged there and merely *identified* here.
 
     Attributes:

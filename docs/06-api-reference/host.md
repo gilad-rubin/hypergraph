@@ -1394,7 +1394,9 @@ raw exception message text, which Hypergraph does not persist (see
 [the privacy boundary](errors.md#the-privacy-boundary)). The real message,
 type, and traceback go to the
 [OpenTelemetry export](../05-how-to/observe-execution.md#exception-detail-and-redacting-it)
-instead, so a failure is debugged there and merely identified here.
+instead, or to a `logging` logger through the opt-in
+[`FailureLogProcessor`](events.md#failurelogprocessor), so a failure is
+debugged there and merely identified here.
 
 A `BatchRef` reads every child at once:
 

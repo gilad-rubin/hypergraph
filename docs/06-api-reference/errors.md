@@ -17,13 +17,16 @@ node identity, counts/timing, booleans, and static help. Raw inputs, response
 bodies, exception arguments, stack traces, and arbitrary `repr` never enter a
 durable record.
 
-Two surfaces sit deliberately outside that boundary, because a scrubbed
+A few surfaces sit deliberately outside that boundary, because a scrubbed
 failure cannot be debugged. In-memory events carry an `error_detail`
 companion (`ErrorDetail`: `message`, `type_name`, `traceback`) alongside the
-safe `error`, and the OpenTelemetry export uses it by default — matching
-standard `Span.record_exception`. Neither is ever persisted, and
-`OpenTelemetryProcessor(redact_errors=True)` puts the export back on the safe
-projection for regulated deployments. See
+safe `error`. The OpenTelemetry export uses it by default — matching
+standard `Span.record_exception` — and the opt-in
+[`FailureLogProcessor`](events.md#failurelogprocessor) writes it to a
+standard `logging` logger. Hypergraph persists none of it: spans go to your
+collector and log records go wherever your application's logging config
+sends them. `OpenTelemetryProcessor(redact_errors=True)` puts the export
+back on the safe projection for regulated deployments. See
 [Observe execution](../05-how-to/observe-execution.md#exception-detail-and-redacting-it).
 
 ```python

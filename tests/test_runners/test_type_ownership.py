@@ -95,6 +95,7 @@ ROOT_EXPORTS = (
     "ConsoleProcessor",
     "LiveConsole",
     "render_console",
+    "FailureLogProcessor",
     "NodeContext",
     "NodeSpanRef",
     "current_node_span",

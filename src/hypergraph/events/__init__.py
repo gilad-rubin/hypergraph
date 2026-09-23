@@ -2,6 +2,7 @@
 
 from hypergraph.events.console import ConsoleProcessor, LiveConsole, render_console
 from hypergraph.events.dispatcher import EventDispatcher
+from hypergraph.events.failure_log import FailureLogProcessor
 from hypergraph.events.processor import (
     AsyncEventProcessor,
     EventProcessor,
@@ -54,6 +55,8 @@ __all__ = [
     "ConsoleProcessor",
     "LiveConsole",
     "render_console",
+    # Failure logging
+    "FailureLogProcessor",
     # Dispatcher
     "EventDispatcher",
 ]

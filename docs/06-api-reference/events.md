@@ -8,6 +8,7 @@ The event system lets you observe graph execution without modifying your workflo
 - **TypedEventProcessor** - Auto-dispatches to typed handler methods
 - **RichProgressProcessor** - Hierarchical Rich progress bars out of the box
 - **ConsoleProcessor / LiveConsole** - The console: a live, bounded HTML view over one run or map (what `show_progress=True` renders in notebooks). Its durable twin over submitted work is [`hypergraph.host.watch`](host.md#watching-submissions-live-hypergraphhostwatch)
+- **FailureLogProcessor** - Opt-in: logs each failed node's real message and traceback to a standard `logging` logger. See [FailureLogProcessor](#failurelogprocessor)
 
 ## Overview
 
@@ -230,7 +231,9 @@ still stays on local surfaces (`RunResult.error`, `get_failure_evidence`).
 
 The OpenTelemetry export uses `error_detail` by default, following standard
 `record_exception`; `OpenTelemetryProcessor(redact_errors=True)` exports the
-safe projection instead. See
+safe projection instead. `FailureLogProcessor` writes the same detail to a
+standard `logging` logger when no collector is running; see
+[FailureLogProcessor](#failurelogprocessor). See
 [Errors — diagnostic code registry](errors.md#diagnostic-code-registry).
 
 ### RouteDecisionEvent
@@ -676,6 +679,104 @@ worker may be another process — so a console over durable submissions reads
 durable truth instead: `hypergraph.host.watch` (`watch_submissions`,
 `SubmissionWatcher`, `ConsolePanel`) folds the same design from Run Home read
 models, for both `submit` and `submit_batch`; see [host.md](host.md).
+
+---
+
+## FailureLogProcessor
+
+A failed durable run keeps only the privacy-safe projection of its failure —
+`ModuleNotFoundError [HG_NODE_FAILED]: Node 'parse' raised
+ModuleNotFoundError.` — so without a live consumer of `error_detail` nothing
+records *which* module was missing. `FailureLogProcessor` is that consumer
+for deployments without an OpenTelemetry collector: it writes every
+`NodeErrorEvent`'s real message and formatted traceback to a standard
+`logging` logger, `"hypergraph.failures"` by default, at `ERROR`.
+
+```python
+import logging
+
+from hypergraph import AsyncRunner, FailureLogProcessor, HostRuntime
+
+logging.basicConfig(format="%(levelname)s %(name)s: %(message)s")
+
+runner = AsyncRunner(event_processors=[FailureLogProcessor()])
+
+# Durable execution: every Run this runtime's worker executes.
+runtime = HostRuntime("runs.db", event_processors=[FailureLogProcessor()])
+```
+
+It goes wherever processors go: `SyncRunner(event_processors=...)`, a
+per-call `run(..., event_processors=[...])`, `graph.with_processors(...)`,
+and `serve(..., event_processors=[...])`.
+
+**Constructor:**
+
+```python
+class FailureLogProcessor(TypedEventProcessor):
+    def __init__(
+        self,
+        logger: logging.Logger | str = "hypergraph.failures",
+        *,
+        level: int = logging.ERROR,
+    ) -> None: ...
+```
+
+- `logger` — a `logging.Logger`, or a name resolved with `logging.getLogger`.
+  `"hypergraph.failures"` is a child of `"hypergraph"`, next to
+  `"hypergraph.host"` and `"hypergraph.checkpointers"`.
+- `level` — the `int` level of every record. A level name such as `"ERROR"`
+  or a `bool` raises `TypeError`.
+
+**One record per `NodeErrorEvent`:**
+
+```text
+ERROR hypergraph.failures: node 'parse' in graph 'ingest' failed (run_id=run-96d287c7cec5, workflow_id=doc-7): ModuleNotFoundError: No module named 'pdfminer_missing'
+Traceback (most recent call last):
+  ...
+  File "ingest.py", line 8, in parse
+    import pdfminer_missing
+ModuleNotFoundError: No module named 'pdfminer_missing'
+```
+
+The first line names the node, its graph (dropped for an unnamed graph), the
+`run_id`, and `workflow_id` / `item_index` when the event has them, then the
+exception type and message. The formatted traceback follows, truncated at
+16 KiB like `error_detail` itself. The record has no `exc_info` (the event
+carries formatted text, not an exception object) and no `extra` attributes.
+The message uses lazy `%`-args, and nothing is formatted when the logger
+would drop the record.
+
+The processor mirrors the event stream, so:
+
+- a retried node logs once, when its retries are exhausted; a retry that
+  recovers logs nothing;
+- each failed `map()` item logs its own record, with its `item_index`;
+- a nested failure logs once per nesting level, innermost first —
+  `node 'boom' in graph 'inner'`, then `node 'inner' in graph 'outer'` — with
+  the same headline;
+- it logs node failures only. A run-level failure that emits no
+  `NodeErrorEvent` (an `InfiniteLoopError`, for instance) is not logged by
+  this processor; `RunEndEvent.error_detail` carries it.
+
+**Where records go** is your logging config. With no logging configured at
+all, an `ERROR` record still reaches stderr through Python's
+`logging.lastResort`. A record is emitted on the thread that emitted the
+event — the caller's thread for `SyncRunner`, a background thread for
+`start_run()`, the event loop for `AsyncRunner` and a Host worker — and the
+handlers run inline. Stream and file handlers are fine; put a slow network
+handler behind `logging.handlers.QueueHandler`. The processor holds no
+per-run state, so one instance may be shared by concurrent runs.
+
+**Privacy.** The processor is **opt-in**: nothing is logged unless you
+install it. Exception messages and tracebacks can contain sensitive text —
+credentials, personal or clinical data — and it writes them verbatim.
+Hypergraph persists none of it: every durable record keeps the safe
+projection whatever this processor does (see
+[the privacy boundary](errors.md#the-privacy-boundary)). Your log handlers,
+though, may persist what they receive, so treat the logger's destination
+like any other place sensitive data can land. If you want only the safe
+projection in your logs, subclass `TypedEventProcessor` and log
+`event.error` instead.
 
 ---
 
