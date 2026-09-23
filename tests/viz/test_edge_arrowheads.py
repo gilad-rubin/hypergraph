@@ -8,9 +8,10 @@ the head correctly, but WebKit (Safari, iOS web views) orients such a marker
 at 0 degrees. Every head then points right, sits beside the line, and half of
 it hides under the target node.
 
-CI runs Chromium only, so the path-shape test below checks what every engine
-agrees on: the direction the final path command gives by itself. The pixel
-test measures the rendered head in the browser the suite runs.
+The path-shape test below checks what every engine agrees on: the direction
+the final path command gives by itself. The pixel test measures the rendered
+head in each engine the suite runs; only in WebKit (CI's viz-webkit job) does
+it catch the old path shape.
 """
 
 from __future__ import annotations
