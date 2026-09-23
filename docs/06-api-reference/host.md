@@ -2061,6 +2061,21 @@ steps are skipped from their checkpoints, only unfinished work re-executes.
 A run that settled before the crash — including `STOPPED` — is finished and
 never resumed.
 
+Nested runs are resumed under their own ids when the id is derived: a nested
+graph's `parent/node`, a map item's `parent/i`. A nested run that is never
+re-addressed — a table page recipe mints a fresh run id per attempt — is left
+`active` by the dead worker, and the resume runs a new one beside it. In the
+same transaction that settles the submission (finished, or parked
+recovery-exhausted), every nested run still `active` beneath it is settled
+`STOPPED`, with `reason: "abandoned_incarnation"` on its `status` run update,
+and its never-started node boundaries are dropped. On a finish that is the
+orphaned recipe run; on a recovery-exhausted park it is also any derived-id
+child the brake stopped resuming. The Host never resumes that tree under
+these ids again, but a worker whose lease lapsed may still finish a nested
+run and write over the settle, which is a benign correction. The Run's own
+row and `PAUSED` nested runs are never touched. Tier-0 runs (a runner with a
+checkpointer, no Host) have no recovery owner and are not swept.
+
 Unbounded resume would loop a poison run forever, so every submission
 carries a recovery brake (`recovery_cap` at submit time, default `3`). The
 brake counts **progressless re-adoptions**:

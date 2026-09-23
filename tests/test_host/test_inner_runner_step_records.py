@@ -24,15 +24,39 @@ wrong address is not a migration away, it is a re-ingest away.
 `test_an_inner_run_carries_no_address_today` is deliberately written so that
 landing that design BREAKS it — an inner run that gains a derived address
 should fail loudly, not pass quietly.
+
+**A crash strands the first incarnation.** For the same reason, a worker
+killed mid-page leaves its recipe run ``active`` and the resume mints a
+second one beside it. Nothing re-addresses the first, so the Run Home settles
+it ``STOPPED`` (reason ``abandoned_incarnation``) in the transaction that
+settles the submission.
 """
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+import time
 from typing import TypedDict
 
 import pytest
 
-from hypergraph import AsyncRunner, Graph, RunHome, RunHomeClient, RunHomeReadModel, SqliteCheckpointer, SyncRunner, node, serve
+from hypergraph import (
+    AsyncRunner,
+    Graph,
+    RunHome,
+    RunHomeClient,
+    RunHomeReadModel,
+    RunQuery,
+    RunRef,
+    SqliteCheckpointer,
+    SyncRunner,
+    node,
+    serve,
+)
+from hypergraph.checkpointers.types import WorkflowStatus
+from hypergraph.host.views import TERMINAL_WORKFLOW_STATUSES
 from hypergraph.materialization._lancedb_store import LanceDBStore
 from tests.test_host._batch_interrupt import submit_ids, worker
 
@@ -377,3 +401,104 @@ async def test_an_inner_run_carries_no_address_today(tmp_path, home, ledger):
     assert [run.graph_name for run in inner_runs] == ["page_recipe"]
     # A GraphNode child is `<parent>/<node>`; a recipe run is a generated id.
     assert not inner_runs[0].id.startswith("sweep:doc-1")
+
+
+# The same Definition as ``ingest_graph(tmp_path)``, in a process of its own,
+# whose page recipe announces itself and then hangs so it can be SIGKILLed
+# mid-page. Function source is not part of a Definition's structural hash, so
+# the in-process restart below serves the identical identity.
+_KILLED_MID_PAGE_SCRIPT = """
+import asyncio
+import time
+
+from hypergraph import AsyncRunner, Graph, RunHome, node, serve
+from hypergraph.materialization._lancedb_store import LanceDBStore
+
+
+@node(output_name="text")
+def render_page(page: str) -> str:
+    with open({marker!r}, "w") as f:
+        f.write("render_page")
+    time.sleep(30)
+    return "rendered-" + page
+
+
+@node(output_name="length")
+def measure(text: str) -> int:
+    return len(text)
+
+
+@node(output_name="page_id")
+def stage(work_item_id: str) -> str:
+    return work_item_id
+
+
+@node(output_name="page")
+def pick_page(work_item_id: str) -> str:
+    return work_item_id + "-p1"
+
+
+@node(output_name="published")
+def publish(materialization) -> str:
+    return "published:" + materialization.id
+
+
+table = Graph([render_page, measure], name="page_recipe").as_table(identity="page_id", store=LanceDBStore({table!r}))
+materialize = table.as_node(name="materialize_pages", output_name="materialization")
+graph = Graph([stage, pick_page, materialize, publish], name="ingest_document").with_runner(AsyncRunner())
+home = RunHome.open({uri!r})
+host = serve(graph, home=home, deployment_version="v1")
+host.submit_sync(graph, {{"work_item_id": "doc-1"}}, workflow_id="outer")
+# lease_ttl is short on purpose: this worker is about to be SIGKILLed, and
+# the successor may only adopt a claim whose lease has run out.
+asyncio.run(host.work_forever("w-child", poll_interval=0.02, lease_ttl=0.5))
+"""
+
+
+async def test_the_recipe_run_a_killed_worker_abandoned_settles_with_the_host_run(tmp_path, home):
+    """The #465 leak, end to end, across a real process boundary.
+
+    The worker is SIGKILLed inside the page recipe, so its recipe run is left
+    ``active`` with a never-started boundary. The restarted worker resumes
+    the Host Run, which mints a SECOND recipe run and completes. Nothing ever
+    re-addresses the first one — so when the submission settles, the Run
+    Home settles it too, instead of reporting it executing forever.
+    """
+    marker = tmp_path / "inside-recipe"
+    script = _KILLED_MID_PAGE_SCRIPT.format(marker=str(marker), table=str(tmp_path / "table"), uri=home.uri)
+    proc = subprocess.Popen([sys.executable, "-c", script])
+    try:
+        deadline = time.time() + 40
+        while not marker.exists():
+            if proc.poll() is not None:
+                raise AssertionError("child worker exited before the page recipe started")
+            if time.time() > deadline:
+                raise AssertionError("child never entered the page recipe")
+            time.sleep(0.02)
+        proc.kill()  # SIGKILL mid-page: a real crash, no cleanup
+        proc.wait(timeout=15)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+    (stranded,) = [run for run in home.runs(limit=None) if run.graph_name == "page_recipe"]
+    assert (stranded.status, stranded.parent_run_id) == (WorkflowStatus.ACTIVE, "outer")
+
+    host = serve(ingest_graph(tmp_path), home=home, deployment_version="v1")
+    async with worker(host, worker_id="w-restarted", poll_interval=0.02):
+        view = await host.client.follow(RunRef(home=home.uri, run_id="outer"), deadline=40)
+    assert view.status is WorkflowStatus.COMPLETED
+
+    runs = home.runs(limit=None)
+    assert [run for run in runs if run.parent_run_id and run.status not in TERMINAL_WORKFLOW_STATUSES] == []
+    recipe_runs = {run.id: run.status for run in runs if run.graph_name == "page_recipe"}
+    assert recipe_runs.pop(stranded.id) is WorkflowStatus.STOPPED
+    assert list(recipe_runs.values()) == [WorkflowStatus.COMPLETED]
+    # One status update, carrying the reason, is all the settle writes.
+    updates = home._read_run_updates_sync(stranded.id)
+    assert [kind for _, kind, _, _ in updates] == ["run_started", "status"]
+    assert json.loads(updates[-1][2]) == {"status": "stopped", "reason": "abandoned_incarnation"}
+    # Its never-started boundary is gone: every boundary left has its step.
+    db = home._sync_db()
+    assert db.execute("SELECT COUNT(*) FROM pending_nodes").fetchone() == db.execute("SELECT COUNT(*) FROM steps").fetchone()
+    assert await RunHomeClient(home).list(RunQuery(status=WorkflowStatus.ACTIVE)) == []

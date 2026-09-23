@@ -690,6 +690,49 @@ def _descendant_runs_query(root_ids: Sequence[str]) -> tuple[str, list[Any]]:
     )
 
 
+#: What a nested run no worker holds becomes, and why. ``STOPPED``
+#: already means "ended without completing and not by failing"; the reason
+#: on its run update is what tells it apart from an operator's stop.
+_ABANDONED_RUN_STATUS = WorkflowStatus.STOPPED
+_ABANDONED_REASON = "abandoned_incarnation"
+
+
+def _abandoned_descendants_query(root_ids: Sequence[str]) -> tuple[str, list[Any]]:
+    """Descendants of ``root_ids`` that still claim to be executing.
+
+    ``_descendant_runs_query`` unchanged, as a subquery, narrowed three ways:
+    never a root itself, only ``active`` rows (a ``paused`` nested run waits
+    on an answer that resumes it under its own id), and never a row that is
+    some submission's own run — that row is settled by its submission alone.
+    """
+    walk, params = _descendant_runs_query(root_ids)
+    return (
+        f"SELECT DISTINCT d.id FROM ({walk}) AS d JOIN runs r ON r.id = d.id "
+        f"WHERE d.id != d.root_id AND r.status = '{WorkflowStatus.ACTIVE.value}' "
+        "AND d.id NOT IN (SELECT workflow_id FROM host_submissions)",
+        params,
+    )
+
+
+def _drop_pending_boundaries_sql(run_ids: Sequence[str]) -> str:
+    """Delete the ``PENDING`` boundaries of ``run_ids``, and nothing else.
+
+    No step, no ``settled_at``, no ``dispatched_at`` is exactly what
+    ``derive_boundary_state`` calls ``PENDING``: a node that never started,
+    which carries no information. A dispatched effect or a settled node is
+    evidence and stays. Retention cannot reach these rows on its own — it
+    derives every boundary DELETE from the step rows it drops, and a
+    never-started boundary has none.
+    """
+    placeholders = ", ".join("?" for _ in run_ids)
+    return (
+        f"DELETE FROM pending_nodes WHERE run_id IN ({placeholders}) "
+        "AND settled_at IS NULL AND dispatched_at IS NULL "
+        "AND NOT EXISTS (SELECT 1 FROM steps s WHERE s.run_id = pending_nodes.run_id "
+        "AND s.superstep = pending_nodes.superstep AND s.node_name = pending_nodes.node_name)"
+    )
+
+
 def _step_timing_query(run_ids: Sequence[str]) -> tuple[str, Sequence[str]]:
     """Durable step facts for one chunk of run ids, in execution order."""
     placeholders = ", ".join("?" for _ in run_ids)
@@ -3041,6 +3084,61 @@ class RunHome(SqliteCheckpointer):
                 await self._rollback_async()
                 raise
 
+    async def _settle_abandoned_descendants_in_txn(self, root_ids: Sequence[str]) -> list[str]:
+        """Settle every descendant of these roots that still claims to be executing.
+
+        Caller owns the transaction, and the roots' submissions are leaving
+        'claimed' for a settled state in that same transaction: the Host will
+        never resume this tree under these ids again, so an ``active`` row
+        beneath it is an incarnation no worker holds — a table page recipe,
+        say, which mints a fresh run id per attempt and so is never
+        re-addressed by the resume that finished its parent. Each one becomes
+        ``_ABANDONED_RUN_STATUS`` with one ``status`` run update carrying
+        ``_ABANDONED_REASON``, and its never-started boundaries are dropped.
+        A worker whose lease lapsed may still finish such a run and write
+        over the settle; that is a benign correction.
+
+        Three deliberate non-uses:
+
+        - it does NOT go through ``_after_run_mutation``: the brake reset and
+          the ``child_settled`` Batch fact are keyed on a SUBMISSION's id, and
+          a nested run is not one;
+        - it does NOT touch any root, nor any row that is a submission's own
+          run — that row is settled by its own submission;
+        - it does NOT touch a ``paused`` descendant, which an answer resumes
+          under its own id.
+
+        Never call it where the tree is about to be resumed: a ``stopped``
+        nested graph child refuses that resume (``lineage.resolve_existing_run``).
+        The walk runs directly on ``self._db``, never through
+        ``_descendant_run_ids``, whose ``_txn_lock`` is already held here.
+
+        Returns the settled run ids.
+        """
+        found: list[str] = []
+        for chunk in self._chunk_run_ids(root_ids):
+            cursor = await self._db.execute(*_abandoned_descendants_query(chunk))
+            found.extend(str(row[0]) for row in await cursor.fetchall())
+        settled = list(dict.fromkeys(found))
+        if not settled:
+            return settled
+        logger.info(
+            "Settling %d nested run(s) a dead worker left active under %s as %s (reason %r): %s",
+            len(settled),
+            list(dict.fromkeys(root_ids)),
+            _ABANDONED_RUN_STATUS.value,
+            _ABANDONED_REASON,
+            settled,
+        )
+        sql, params = _run_status_update(_ABANDONED_RUN_STATUS, NO_RUN_TOTALS)
+        payload = {"status": _ABANDONED_RUN_STATUS.value, "reason": _ABANDONED_REASON}
+        for run_id in settled:
+            await self._db.execute(sql, [*params, run_id])
+            await self._append_run_update(run_id, "status", payload)
+        for chunk in self._chunk_run_ids(settled):
+            await self._db.execute(_drop_pending_boundaries_sql(chunk), chunk)
+        return settled
+
     async def _has_run_row(self, workflow_id: str) -> bool:
         """Whether this submission ever started executing; caller holds the txn."""
         cursor = await self._db.execute(_SELECT_RUN_EXISTS, (workflow_id,))
@@ -3091,6 +3189,12 @@ class RunHome(SqliteCheckpointer):
         it. Comparing ``claim_seq`` makes a stale release exactly what it
         should be — nothing.
 
+        The release that settles the submission also settles any nested run
+        still ``active`` beneath it (``_settle_abandoned_descendants_in_txn``),
+        in the same transaction: a worker killed mid-run leaves one behind
+        that the resume never re-addressed, and once this commits the Host
+        will not re-address it either. A stale release settles nothing.
+
         Returns True when this claim was the one settled.
         """
         await self._ensure_db()
@@ -3098,6 +3202,8 @@ class RunHome(SqliteCheckpointer):
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
                 result = await self._db.execute(RELEASE_SUBMISSION_SQL, (SUBMISSION_STATE_FINISHED, _now_iso(), workflow_id, claim_seq))
+                if result.rowcount == 1:
+                    await self._settle_abandoned_descendants_in_txn([workflow_id])
                 await self._db.commit()
                 return bool(result.rowcount == 1)
             except BaseException:
@@ -3181,6 +3287,11 @@ class RunHome(SqliteCheckpointer):
         shows the incremented attempt count after re-adoption (prototype
         Scenario 3).
 
+        A submission finished or parked here is settled for good, so any
+        nested run still ``active`` beneath it is settled in the same
+        transaction (``_settle_abandoned_descendants_in_txn``). One returned
+        to 'pending' is not: its tree is resumed next, under the same ids.
+
         Adoption is not a fence and does not pretend to be one. The old
         claimant may still be alive and may still finish; what it can no
         longer do is COMMIT, because the adopted row carries a new
@@ -3197,14 +3308,19 @@ class RunHome(SqliteCheckpointer):
         now_iso = await self._store_now() if now_iso is None else now_iso
         where, params = _reclaim_predicate(now_iso, worker_id, adopt_own)
         terminal_placeholders = ", ".join("?" for _ in _TERMINAL_STATUS_VALUES)
+        terminal_where = f"{where} AND workflow_id IN (SELECT id FROM runs WHERE status IN ({terminal_placeholders}))"
+        terminal_params = (*params, *_TERMINAL_STATUS_VALUES)
         async with self._txn_lock():
             try:
                 await self._db.execute("BEGIN IMMEDIATE")
+                # Read BEFORE the flip: once 'finished', ``where`` no longer
+                # matches them. A worker killed after its Run committed a
+                # terminal status but before its release lands here.
+                cursor = await self._db.execute(f"SELECT workflow_id FROM host_submissions WHERE {terminal_where}", terminal_params)
+                settled_roots = [str(row[0]) for row in await cursor.fetchall()]
                 await self._db.execute(
-                    f"UPDATE host_submissions SET state = 'finished', finished_at = ? "
-                    f"WHERE {where} AND workflow_id IN "
-                    f"(SELECT id FROM runs WHERE status IN ({terminal_placeholders}))",
-                    (now_iso, *params, *_TERMINAL_STATUS_VALUES),
+                    f"UPDATE host_submissions SET state = 'finished', finished_at = ? WHERE {terminal_where}",
+                    (now_iso, *terminal_params),
                 )
                 cursor = await self._db.execute(
                     f"SELECT {_SUBMISSION_COLS} FROM host_submissions WHERE {where}",
@@ -3239,12 +3355,21 @@ class RunHome(SqliteCheckpointer):
                         # stayed silent, so a detached watch() under-
                         # accounted the manifest (A9).
                         await self._append_child_settled(workflow_id, BATCH_OUTCOME_RECOVERY_EXHAUSTED)
+                        settled_roots.append(workflow_id)
                         continue
+                    # Back to 'pending' settles NOTHING below the root: the
+                    # next claim resumes this tree under the same ids, and a
+                    # nested graph child written STOPPED here would refuse
+                    # that resume with WorkflowStoppedError
+                    # (lineage.resolve_existing_run).
                     await self._db.execute(
                         "UPDATE host_submissions SET state = 'pending', claimed_at = NULL, claimed_by = NULL, lease_until = NULL, "
                         "recovery_attempts = ? WHERE workflow_id = ?",
                         (attempts, workflow_id),
                     )
+                # Finished and parked submissions are settled for good in this
+                # transaction, so the Host will not resume their trees again.
+                await self._settle_abandoned_descendants_in_txn(settled_roots)
                 await self._db.commit()
             except BaseException:
                 await self._rollback_async()
