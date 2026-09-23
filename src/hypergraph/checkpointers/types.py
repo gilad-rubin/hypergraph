@@ -179,6 +179,21 @@ class NodeBoundary:
 
 
 @dataclass(frozen=True)
+class StepFailure:
+    """A run's first errored step, as the journal recorded it.
+
+    ``error`` is the privacy-safe projection the step persisted (exception
+    type, stable ``HG_*`` code, static wording); ``public_reason`` is the
+    static wording the exception class declared for a person, or None.
+    """
+
+    error: str
+    node_name: str | None
+    superstep: int | None
+    public_reason: str | None = None
+
+
+@dataclass(frozen=True)
 class RunTotals:
     """The three run-level counters a status transition may carry.
 
@@ -588,6 +603,11 @@ class StepRecord:
     that node" apart from "some node produced a value of the same name".
     ``None`` on every ordinary step, and on a carrier written before the
     field existed — legacy provenance is absent, not empty.
+
+    ``public_reason`` is set only on a failed step whose exception class
+    declares one (``hypergraph.diagnostics.declared_public_reason``): static
+    wording a product may show a person, kept beside the type-only ``error``
+    rather than inside it. ``None`` everywhere else.
     """
 
     run_id: str
@@ -608,6 +628,7 @@ class StepRecord:
     partial: bool = False
     attempt_series_id: str | None = None
     folded_producers: tuple[str, ...] | None = None
+    public_reason: str | None = None
 
     def __repr__(self) -> str:
         status = "cached" if self.cached else self.status.value
@@ -648,6 +669,7 @@ class StepRecord:
             "partial": self.partial,
             "attempt_series_id": self.attempt_series_id,
             "folded_producers": None if self.folded_producers is None else list(self.folded_producers),
+            "public_reason": self.public_reason,
         }
 
 

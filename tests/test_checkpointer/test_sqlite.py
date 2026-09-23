@@ -942,6 +942,7 @@ class TestSearch:
 # later version's columns in place, and the migration legs that would have
 # added them then no-op (they are all guarded ALTERs).
 _UNDO_VERSION: dict[int, tuple[str, ...]] = {
+    11: ("ALTER TABLE steps DROP COLUMN public_reason",),
     10: (
         # The two indexes span the column, so they go first or SQLite
         # refuses the DROP COLUMN.
@@ -992,8 +993,8 @@ def _rewind_to(conn: Any, target: int) -> None:
 
 
 class TestMigration:
-    def test_fresh_db_gets_v10_schema(self, tmp_path):
-        """A new database gets v10 schema automatically."""
+    def test_fresh_db_gets_v11_schema(self, tmp_path):
+        """A new database gets v11 schema automatically."""
         cp = SqliteCheckpointer(str(tmp_path / "fresh.db"))
         # Trigger sync schema creation
         assert cp.runs() == []
@@ -1071,7 +1072,7 @@ class TestMigration:
         assert provenance_col[4] is None  # no default
 
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 10
+        assert version == 11
         conn.close()
 
     def test_migration_idempotent(self, tmp_path):
@@ -1085,7 +1086,7 @@ class TestMigration:
         ensure_schema(conn)
         ensure_schema(conn)  # Second time should be a no-op
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 10
+        assert version == 11
         conn.close()
 
     def test_v6_db_gains_pending_nodes_in_place(self, tmp_path):
@@ -1114,7 +1115,7 @@ class TestMigration:
             assert "pending_nodes" in tables
             assert conn.execute("SELECT COUNT(*) FROM pending_nodes").fetchone()[0] == 0
             assert [row[0] for row in conn.execute("SELECT id FROM runs").fetchall()] == ["r-1"]
-            assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 10
+            assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 11
         finally:
             conn.close()
 
@@ -1183,7 +1184,7 @@ class TestMigration:
 
         ensure_schema(conn)
 
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 10
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 11
         cols = {row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()}
         assert {"builder_key", "builder_args_json", "claimed_by", "lease_until"} <= cols
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
@@ -1240,14 +1241,14 @@ class TestMigration:
 
         ensure_schema(conn)
 
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 10
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 11
         step_cols = [row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()]
-        assert step_cols[-1] == "folded_producers"
+        assert step_cols[-2:] == ["folded_producers", "public_reason"]
         # Every pre-existing value is identical; the only change is one
-        # appended NULL per row.
+        # appended NULL per row for each column v8 and v11 added.
         after = conn.execute("SELECT * FROM steps ORDER BY step_index").fetchall()
-        assert [row[:-1] for row in after] == before
-        assert [row[-1] for row in after] == [None, None]
+        assert [row[:-2] for row in after] == before
+        assert [row[-2:] for row in after] == [(None, None), (None, None)]
 
         ensure_schema(conn)  # idempotent on the migrated database
         conn.close()
@@ -1279,7 +1280,7 @@ class TestMigration:
 
         ensure_schema(conn)
 
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 10
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 11
         boundary_cols = [row[1] for row in conn.execute("PRAGMA table_info(pending_nodes)").fetchall()]
         assert boundary_cols[-1] == "settled_at"
         after = conn.execute("SELECT * FROM pending_nodes ORDER BY node_name").fetchall()
@@ -1362,7 +1363,7 @@ class TestMigration:
 
         ensure_schema(conn)
 
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 10
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 11
         cols = {row[1] for row in conn.execute("PRAGMA table_info(host_submissions)").fetchall()}
         assert "exclusive_key" in cols
         indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='host_submissions'").fetchall()}
@@ -1394,12 +1395,52 @@ class TestMigration:
         assert conn.execute("SELECT COUNT(*) FROM host_submissions").fetchone()[0] == 2
         conn.close()
 
+    def test_v10_db_with_a_failed_step_gains_the_public_reason_column(self, tmp_path):
+        """A v10 database keeps every step and only gains `public_reason`.
+
+        The interesting row is a failure a v10 install recorded: it could
+        keep only the type-only projection. Migration must not invent a
+        reason for it — NULL is the honest answer, and it reads back as "the
+        exception declared nothing", which is all a v10 process could know.
+        """
+        import sqlite3
+
+        from hypergraph.checkpointers._migrate import ensure_schema
+
+        db_path = str(tmp_path / "failed-v10.db")
+        conn = sqlite3.connect(db_path)
+        ensure_schema(conn)
+        _rewind_to(conn, 10)
+        conn.execute("INSERT INTO runs (id, graph_name, status, created_at) VALUES ('wf-old', 'ingest', 'failed', '2026-09-01T00:00:00Z')")
+        conn.execute(
+            "INSERT INTO steps (run_id, step_index, superstep, node_name, node_type, status, error, input_versions, created_at) "
+            "VALUES ('wf-old', 0, 0, 'read', 'FunctionNode', 'failed', 'app.ScanNeedsOcr [HG_NODE_FAILED]: Node ''read'' raised app.ScanNeedsOcr.', "
+            "'{}', '2026-09-01T00:00:01Z')"
+        )
+        conn.commit()
+        before = conn.execute("SELECT * FROM steps").fetchall()
+        assert "public_reason" not in [row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()]
+
+        ensure_schema(conn)
+
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 11
+        assert [row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()][-1] == "public_reason"
+        after = conn.execute("SELECT * FROM steps").fetchall()
+        assert [row[:-1] for row in after] == before
+        assert [row[-1] for row in after] == [None]
+        conn.close()
+
+        checkpointer = SqliteCheckpointer(db_path)
+        (failure,) = checkpointer.get_step_failures_sync(["wf-old"]).values()
+        assert (failure.node_name, failure.public_reason) == ("read", None)
+        assert failure.error.startswith("app.ScanNeedsOcr [HG_NODE_FAILED]")
+
     def test_a_genuinely_v6_database_climbs_the_whole_ladder(self, tmp_path):
-        """A real v6 install reopens on v10 in one call with its rows intact.
+        """A real v6 install reopens on v11 in one call with its rows intact.
 
         Every other migration test rewinds exactly one version, so the legs
         in between find their columns already there and no-op. This is the
-        only test that climbs v6 -> v7 -> v8 -> v9 -> v10 for real, which is
+        only test that climbs v6 -> v7 -> ... -> v11 for real, which is
         the upgrade path a user on an older install actually takes.
         """
         import sqlite3
@@ -1446,7 +1487,7 @@ class TestMigration:
         ensure_schema(conn)
 
         # One call climbs every rung.
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 10
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 11
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
         assert "host_workers" in tables
@@ -1456,9 +1497,9 @@ class TestMigration:
         # Every pre-existing value is identical; the only change is one
         # appended NULL per column the rewind had removed.
         steps_after = conn.execute("SELECT * FROM steps ORDER BY step_index").fetchall()
-        assert [row[:-1] for row in steps_after] == steps_before
-        assert [row[-1] for row in steps_after] == [None]
-        assert [row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()][-1] == "folded_producers"
+        assert [row[:-2] for row in steps_after] == steps_before
+        assert [row[-2:] for row in steps_after] == [(None, None)]
+        assert [row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()][-2:] == ["folded_producers", "public_reason"]
 
         boundaries_after = conn.execute("SELECT * FROM pending_nodes ORDER BY node_name").fetchall()
         assert [row[:-1] for row in boundaries_after] == boundaries_before
@@ -1478,7 +1519,7 @@ class TestMigration:
         assert conn.execute("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").fetchall() == schema_after
         assert conn.execute("SELECT * FROM host_submissions ORDER BY workflow_id").fetchall() == submissions_after
         assert conn.execute("SELECT * FROM steps ORDER BY step_index").fetchall() == steps_after
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 10
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 11
         conn.close()
 
     def test_every_schema_version_can_be_rewound_to(self):

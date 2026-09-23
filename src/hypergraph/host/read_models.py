@@ -23,6 +23,7 @@ from hypergraph.host.views import (
     BATCH_OUTCOME_ABANDONED,
     TERMINAL_STATUS_VALUES,
     BatchView,
+    RunFailure,
     RunQuery,
     RunView,
     WaitingCondition,
@@ -91,6 +92,28 @@ class RunReadModel:
     #: this Run spent waiting on a human is not the machine's pace. The Run
     #: Home keeps the answered pause slot, so this costs no extra read.
     ever_paused: bool = False
+    #: Which step is it on? The node boundaries this Run recorded as runnable
+    #: that have not started settling (PRD 0013), in superstep then name
+    #: order — its FRONTIER. Siblings waiting behind ``max_concurrency`` are
+    #: pending too, so this names the step(s) the Run is at, never a claim
+    #: that one is executing this instant. A nested graph shows as its
+    #: graph node's name. Empty until the Run starts and once it settles.
+    pending_nodes: tuple[str, ...] = ()
+    #: How many Runs the Home will claim before this one: its 0-based place
+    #: in claim order (oldest acceptance first) among every submission
+    #: waiting to be claimed, whatever its Definition — ``0`` is next. None
+    #: unless the Run waits in that line: executing, paused on a person,
+    #: scheduled for later, parked, or settled Runs have no place in it. An
+    #: answered pause re-enters at its original acceptance time. Claim order
+    #: is the order work is OFFERED; under a ``max_admission_units`` budget a
+    #: lighter Run behind a heavy one can still start first.
+    runs_ahead: int | None = None
+    #: Why it failed, once it settled with an errored step: the same
+    #: ``RunFailure`` ``client.result()`` reports, read for the whole page in
+    #: one statement. ``failure.public_reason`` is the wording a person may
+    #: see; ``failure.error`` stays the type-only projection. None while the
+    #: Run can still change, and for a Run that settled without an error.
+    failure: RunFailure | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-safe dictionary suitable for an HTTP response."""
@@ -110,6 +133,9 @@ class RunReadModel:
             "forked_from": self.forked_from,
             "dead_letter_reason": self.dead_letter_reason,
             "ever_paused": self.ever_paused,
+            "pending_nodes": list(self.pending_nodes),
+            "runs_ahead": self.runs_ahead,
+            "failure": None if self.failure is None else self.failure.to_dict(),
         }
 
 
@@ -542,6 +568,9 @@ def _run(snapshot: _RunReadSnapshot, pause: PauseReadModel | None) -> RunReadMod
         # The Run Home keeps the pause slot after a person answers it, so
         # "was this ever parked" survives the resume that clears ``pause``.
         ever_paused=snapshot.ever_paused,
+        pending_nodes=snapshot.pending_nodes,
+        runs_ahead=snapshot.runs_ahead,
+        failure=snapshot.failure,
     )
 
 

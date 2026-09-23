@@ -9,6 +9,12 @@ identity, counts/timing, booleans, and static help. Raw inputs, response
 bodies, exception arguments, stack traces, and arbitrary ``repr`` never enter
 a durable record.
 
+The one piece of wording an application contributes is a **public reason**:
+static text an exception CLASS declares as ``public_reason`` for a product to
+show a person ("This scan needs OCR before it can be read."). It is read from
+the class, never the instance, so it is fixed when the code is written and
+cannot carry a run's data; see :func:`declared_public_reason`.
+
 In-memory events additionally carry :class:`ErrorDetail`, the *unredacted*
 counterpart (message, type, traceback), for live consumers that must be able
 to debug a failure — chiefly the OpenTelemetry export, which follows the
@@ -48,6 +54,25 @@ DIAGNOSTIC_CODES: dict[str, str] = {
     "HG_RUNNER_POLICY_UNSUPPORTED": f"{_ERRORS_DOC}#hg-runner-policy-unsupported",
     "HG_COMPACTED_RETENTION": f"{_ERRORS_DOC}#hg-compacted-retention",
 }
+
+
+def declared_public_reason(error: BaseException) -> str | None:
+    """The static reason ``error``'s CLASS declares safe to show a person, if any.
+
+    An exception opts in with a class attribute::
+
+        class ScanNeedsOcr(Exception):
+            public_reason = "This scan needs OCR before it can be read."
+
+    Only the class is consulted — an instance attribute, however set, is
+    ignored — so the text is fixed when the code is written and cannot carry
+    a run's inputs, paths, or response bodies into a durable record. A
+    subclass inherits its parent's reason and may declare its own. Anything
+    but a non-empty ``str`` (a property, a number, an empty string) declares
+    nothing.
+    """
+    reason = getattr(type(error), "public_reason", None)
+    return reason if isinstance(reason, str) and reason.strip() else None
 
 
 def qualified_type_name(exc_type: type[BaseException]) -> str:
@@ -125,7 +150,9 @@ class Diagnostic:
 
     ``code`` and the ``context`` field meanings are stable; ``problem`` and
     ``how_to_fix`` wording may evolve. ``docs_ref`` anchors into the code
-    registry in ``docs/06-api-reference/errors.md``.
+    registry in ``docs/06-api-reference/errors.md``. ``public_reason`` is the
+    application's own static wording for a person, when the exception class
+    declares one (:func:`declared_public_reason`), else None.
     """
 
     code: str
@@ -135,6 +162,7 @@ class Diagnostic:
     context: DiagnosticContext
     how_to_fix: tuple[DiagnosticFix, ...]
     docs_ref: str
+    public_reason: str | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """The ``hypergraph.diagnostic/v1`` wire form. Additive evolution only."""
@@ -147,6 +175,7 @@ class Diagnostic:
             "context": self.context.to_wire(),
             "how_to_fix": [fix.description for fix in self.how_to_fix],
             "docs_ref": self.docs_ref,
+            "public_reason": self.public_reason,
         }
 
 
@@ -322,6 +351,7 @@ def derive_diagnostic(
         context=context,
         how_to_fix=tuple(DiagnosticFix(text) for text in _FIXES[code]),
         docs_ref=DIAGNOSTIC_CODES[code],
+        public_reason=declared_public_reason(error),
     )
 
 

@@ -105,6 +105,7 @@ def build_superstep_records(
                     partial=stopped,
                 )
             elif superstep_error is not None:
+                node_error = _error_for_node(name, node_errors, superstep_error)
                 record = StepRecord(
                     run_id=workflow_id,
                     superstep=superstep_idx,
@@ -112,7 +113,8 @@ def build_superstep_records(
                     index=step_counter,
                     status=StepStatus.FAILED,
                     input_versions=execution.input_versions,
-                    error=_extract_error_message(_error_for_node(name, node_errors, superstep_error), node_name=name),
+                    error=_extract_error_message(node_error, node_name=name),
+                    public_reason=_public_reason(node_error),
                     node_type=node_type,
                     created_at=now,
                     child_run_id=child_run_id,
@@ -120,6 +122,7 @@ def build_superstep_records(
             else:
                 continue
         elif superstep_error is not None:
+            node_error = _error_for_node(name, node_errors, superstep_error)
             record = StepRecord(
                 run_id=workflow_id,
                 superstep=superstep_idx,
@@ -127,7 +130,8 @@ def build_superstep_records(
                 index=step_counter,
                 status=StepStatus.FAILED,
                 input_versions={},
-                error=_extract_error_message(_error_for_node(name, node_errors, superstep_error), node_name=name),
+                error=_extract_error_message(node_error, node_name=name),
+                public_reason=_public_reason(node_error),
                 node_type=node_type,
                 created_at=now,
                 child_run_id=child_run_id,
@@ -165,6 +169,11 @@ def _compute_child_run_id(
     return None
 
 
+def _failure_cause(error: BaseException) -> BaseException:
+    """The exception a failed StepRecord describes: the cause, when one is chained."""
+    return error.__cause__ if error.__cause__ is not None else error
+
+
 def _extract_error_message(error: BaseException, node_name: str | None = None) -> str:
     """Privacy-safe error projection for the durable StepRecord.
 
@@ -174,8 +183,14 @@ def _extract_error_message(error: BaseException, node_name: str | None = None) -
     """
     from hypergraph.diagnostics import safe_error_text
 
-    cause = error.__cause__ if error.__cause__ is not None else error
-    return safe_error_text(cause, node_name=node_name)
+    return safe_error_text(_failure_cause(error), node_name=node_name)
+
+
+def _public_reason(error: BaseException) -> str | None:
+    """The static reason the failure's exception class declares, for the same cause as ``error``."""
+    from hypergraph.diagnostics import declared_public_reason
+
+    return declared_public_reason(_failure_cause(error))
 
 
 def _error_for_node(

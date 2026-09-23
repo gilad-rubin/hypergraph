@@ -509,6 +509,7 @@ async def test_every_projection_matches_the_list_its_decoder_zips(store):
         (sqlite_module._PAUSE_SLOT_CURRENT_SQL, ("wf",), PAUSE_SLOT_COLS),
         (sqlite_module._PAUSE_SLOT_BY_ID_SQL, ("wf", "p"), PAUSE_SLOT_COLS),
         (sqlite_module._NODE_BOUNDARY_SELECT_SQL, ("wf",), NODE_BOUNDARY_COLS),
+        (sqlite_module._node_boundaries_query(["wf", "wf-2"]), ("wf", "wf-2"), NODE_BOUNDARY_COLS),
         (sqlite_module._ATTEMPT_SERIES_BY_ID_SQL, ("s",), ATTEMPT_SERIES_COLS),
         (sqlite_module._ATTEMPT_SERIES_OPEN_SQL, ("wf", "n"), ATTEMPT_SERIES_COLS),
         (sqlite_module._ATTEMPT_RECORDS_SQL, ("s",), ATTEMPT_RECORD_COLS),
@@ -581,17 +582,25 @@ async def test_run_and_step_paths_store_the_same_rows_sync_and_async(tmp_path):
     try:
         await async_store.create_run("wf", graph_name="g", config={"k": 1}, inputs={"x": 1})
         await async_store.save_step(_step("wf", 0, "load"))
+        await async_store.save_step(
+            _step("wf", 2, "read", status=StepStatus.FAILED, values=None, error="E [HG_NODE_FAILED]", public_reason="Needs OCR.")
+        )
         await async_store.update_run_status("wf", WorkflowStatus.ACTIVE, duration_ms=5.0, node_count=1, error_count=0)
         await async_store.record_pause(slot)
         await async_store.settle_pause("wf", pause_id=slot.pause_id, value="a")
 
         sync_store.create_run_sync("wf", graph_name="g", config={"k": 1}, inputs={"x": 1})
         sync_store.save_step_sync(_step("wf", 0, "load"))
+        sync_store.save_step_sync(
+            _step("wf", 2, "read", status=StepStatus.FAILED, values=None, error="E [HG_NODE_FAILED]", public_reason="Needs OCR.")
+        )
         sync_store.update_run_status_sync("wf", WorkflowStatus.ACTIVE, duration_ms=5.0, node_count=1, error_count=0)
         sync_store.record_pause_sync(slot)
         sync_store.settle_pause_sync("wf", pause_id=slot.pause_id, value="a")
 
         assert _snapshot(async_store) == _snapshot(sync_store)
+        assert [row["public_reason"] for row in _dump(sync_store, "steps")] == [None, "Needs OCR."]
+        assert await async_store.get_step_failures(["wf"]) == sync_store.get_step_failures_sync(["wf"])
         assert await async_store.get_state("wf") == sync_store.state("wf")
         assert await async_store.get_run_inputs("wf") == sync_store.get_run_inputs_sync("wf")
     finally:
