@@ -49,7 +49,10 @@ def _thaw(values: _Items) -> dict[str, Any]:
 
 def normalize_value(value: Any) -> Any:
     """Convert numpy/arrow scalars into the public Python representation."""
-    import numpy as np
+    try:
+        import numpy as np
+    except ImportError:  # numpy is optional: without it no numpy value can exist
+        return value
 
     if isinstance(value, np.ndarray):
         return value.tolist()

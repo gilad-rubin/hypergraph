@@ -1,10 +1,12 @@
 """Run the TableStore conformance harness against real and minimal stores.
 
-Two stores are checked:
+Three stores are checked:
 
 1. ``LanceDBStore`` — the reference backend, which pushes column projection
    down into LanceDB natively.
-2. ``DictTableStore`` — a minimal in-memory store that does NOT implement native
+2. ``SqliteTableStore`` — the stdlib-sqlite3 backend, in memory and on a file;
+   it projects in SQL.
+3. ``DictTableStore`` — a minimal in-memory store that does NOT implement native
    projection; it fetches full rows and defers to ``TableStore._project_rows``.
    Passing the identical harness proves the base-class projection default is
    correct, so an external store conforms just by accepting the ``columns=``
@@ -18,8 +20,9 @@ from __future__ import annotations
 from typing import Any
 
 import pyarrow as pa
+import pytest
 
-from hypergraph.materialization import check_store_conformance
+from hypergraph.materialization import SqliteTableStore, check_store_conformance
 from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.materialization._table_store import RowPredicate, TableStore
 
@@ -110,6 +113,15 @@ class DictTableStore(TableStore):
 
 def test_lancedb_store_conforms(tmp_path) -> None:
     check_store_conformance(LanceDBStore(str(tmp_path / "conformance_store")))
+
+
+@pytest.mark.parametrize("location", ["memory", "file"])
+def test_sqlite_store_conforms(tmp_path, location) -> None:
+    store = SqliteTableStore() if location == "memory" else SqliteTableStore(tmp_path / "conformance.db")
+    try:
+        check_store_conformance(store)
+    finally:
+        store.close()
 
 
 def test_lancedb_store_construction_is_zero_io(tmp_path) -> None:

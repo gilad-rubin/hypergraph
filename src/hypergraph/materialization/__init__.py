@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from hypergraph.materialization._branches import MaterializationBranch, MaterializedArtifact
 from hypergraph.materialization._hypertable import ChildTable, HyperTable
+from hypergraph.materialization._sqlite_store import SqliteTableStore
 from hypergraph.materialization._table import Table
 from hypergraph.materialization._table_store import TableStore, validate_store
 from hypergraph.materialization._types import (
@@ -27,6 +28,7 @@ __all__ = [
     "MaterializationBranch",
     "MaterializedArtifact",
     "LanceDBStore",
+    "SqliteTableStore",
     "Table",
     "TableStore",
     "validate_store",

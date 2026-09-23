@@ -45,6 +45,7 @@ from hypergraph.materialization import (
     PartialRow,
     RowReceipt,
     RowStatus,
+    SqliteTableStore,
     TableReceipt,
     WaitingRow,
     WriteOutcome,
@@ -263,6 +264,7 @@ def test_hypertable_docs_pin_graph_backed_receipt_contract() -> None:
     assert {reason.value for reason in ChangeReason} == {"node_error", "upstream_error", "not_run"}
     assert {outcome.value for outcome in WriteOutcome} == {"inserted", "updated", "skipped", "healed"}
     assert LanceDBStore.__module__ == "hypergraph.materialization._lancedb_store"
+    assert SqliteTableStore.__module__ == "hypergraph.materialization._sqlite_store"
 
     living = "\n".join((*pages.values(), examples, human))
     for removed in (
