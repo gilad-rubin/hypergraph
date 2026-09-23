@@ -21,7 +21,7 @@ graph.visualize()
 
 This renders an interactive graph diagram inline. Nodes are connected automatically based on their input/output names.
 
-The graph shows steps only: the values a step takes from outside (graph inputs, bound tools) are hidden until you ask for them. Hover a step, or tap it on a touch screen, to see its inputs as ghost pills beside it — see [Inputs on demand](#inputs-on-demand).
+The graph shows steps only: the values a step takes from outside (graph inputs, bound tools) are hidden until you ask for them. Hover a step, or tap it on a touch screen, to see its inputs as ghost pills beside it (tapping a collapsed container opens it) — see [Inputs on demand](#inputs-on-demand).
 
 ## Parameters
 
@@ -86,14 +86,14 @@ Inputs are hidden by default, so the diagram shows the steps and how they connec
 ### `show_bounded_inputs` — Include bound inputs
 
 ```python
-graph.bind(model="gpt-4o").visualize(show_bounded_inputs=False)
+graph.bind(model="my-model").visualize(show_bounded_inputs=False)
 ```
 
 Bound inputs (tools and settings given with `Graph.bind`) are included by default, drawn faded and with a dashed border so they read as set up once rather than passed in on each run. That holds for input boxes (`show_inputs=True`) and for the ghost pills. Pass `show_bounded_inputs=False` to leave them out of both, so the diagram shows only the values a caller still provides.
 
 ### Inputs on demand
 
-With inputs hidden, hovering a step (tapping it on a phone or tablet) draws what that step takes from outside the diagram as **ghost pills** beside it, each with a short dashed arrow into the step:
+With inputs hidden, hovering a step (tapping it on a phone or tablet) draws what that step takes from outside the diagram as **ghost pills** beside it, each with a short dashed arrow into the step. A collapsed container shows its ghosts on hover; tapping it opens it, as before, and its inner steps then show theirs.
 
 | Ghost | Pill | When |
 | --- | --- | --- |
@@ -107,7 +107,7 @@ So nothing a step consumes is invisible. At the same time the step's upstream an
 - **Clear**: click (or tap) empty canvas, or press `Escape`.
 - **Toggle**: **Show Inputs** draws the input boxes and turns the ghosts off; **Hide Inputs** brings them back. Either clears any pinned ghosts.
 
-Nothing is re-laid out: the ghosts float over the diagram. They are placed beside the step on the side with more room, never over another node, an edge label or each other. When neither side has room they sit in a row above or below the step, and types are dropped (names only) only when no spot fits them.
+Nothing is re-laid out: the ghosts float over the diagram. They never overlap each other, and they are placed clear of other nodes and edge labels: beside the step on the side with more room, else in a row above or below it, dropping types (names only) only when no spot fits them. On a graph so dense that no spot is clear even without types, they take the spot with the fewest overlaps.
 
 ### `simplify` — Hide shortcut edges
 

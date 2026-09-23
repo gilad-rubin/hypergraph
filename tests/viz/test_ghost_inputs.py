@@ -130,6 +130,61 @@ CROWDED_GHOSTS = [
 ]
 
 
+@node(output_name="seed")
+def start(src: str) -> str:
+    return src
+
+
+@ifelse(when_true="wide", when_false="alt")
+def gate(seed: str) -> bool:
+    return bool(seed)
+
+
+@node(output_name="w")
+def wide(seed: str, p1: int, p2: int, p3: int, p4: int, p5: int, p6: int, p7: int, p8: int, p9: int, p10: int) -> int:
+    return p1
+
+
+@node(output_name="w")
+def alt(seed: str, q1: dict[str, list[int]], q2: dict[str, list[int]], q3: str) -> int:
+    return len(q3)
+
+
+@node(output_name="l1")
+def side_l(seed: str) -> int:
+    return 1
+
+
+@node(output_name="r1")
+def side_r(seed: str) -> int:
+    return 1
+
+
+@node(output_name="z")
+def join(w: int, l1: int, r1: int, seed: str, zz: str) -> int:
+    return w
+
+
+def make_gate_labels_graph() -> Graph:
+    """A gate's True/False labels sit where ``alt``'s and ``wide``'s pills would go.
+
+    ``gate`` sends True to ``wide`` (ten inputs) and False to ``alt`` (three,
+    two with long types), and both targets have siblings close beside them.
+    Placement that ignored edge labels would put ``alt``'s row on the labels.
+    """
+    return Graph([start, gate, wide, alt, side_l, side_r, join], name="gated")
+
+
+GATE_LABEL_GHOSTS = {
+    "alt": [
+        ("q1", "input", "q1 : dict[str, list[int]]"),
+        ("q2", "input", "q2 : dict[str, list[int]]"),
+        ("q3", "input", "q3 : str"),
+    ],
+    "wide": [(f"p{i}", "input", f"p{i} : int") for i in range(1, 11)],
+}
+
+
 def make_ghost_graph() -> Graph:
     """Every ghost kind, a gate's True/False labels and a nested container.
 
@@ -185,9 +240,10 @@ def html_files(tmp_path_factory):
         path = out / f"{name}.html"
         graph.visualize(filepath=str(path), **kwargs)
         paths[name] = str(path)
-    crowded = out / "crowded.html"
-    make_crowded_graph().visualize(filepath=str(crowded))
-    paths["crowded"] = str(crowded)
+    for name, make in (("crowded", make_crowded_graph), ("gate_labels", make_gate_labels_graph)):
+        path = out / f"{name}.html"
+        make().visualize(filepath=str(path))
+        paths[name] = str(path)
     return paths
 
 
@@ -432,6 +488,23 @@ def test_crowded_step_falls_back_above_or_below_with_types_kept(desktop, phone):
     assert _ghost_set(state) == CROWDED_GHOSTS, "tap middle"
     _assert_no_overlap(state, "middle", "tap middle (crowded)")
     _assert_on_screen(state, "middle", "tap middle (crowded)")
+
+
+@pytest.mark.parametrize("step", list(GATE_LABEL_GHOSTS))
+def test_ghosts_never_cover_a_gates_true_false_labels(desktop, step):
+    page = desktop("gate_labels")
+    labels = {lab["text"] for lab in _state(page)["labels"]}
+    assert {"True", "False"} <= labels, f"the gate's labels are drawn: {sorted(labels)}"
+    page.hover(f'[data-id="{step}"]')
+    _settle(page)
+    state = _state(page)
+    assert _ghost_set(state) == GATE_LABEL_GHOSTS[step], f"hover {step}"
+    _assert_no_overlap(state, step, f"hover {step} (gate labels)")
+    page.click(f'[data-id="{step}"]')
+    _settle(page)
+    state = _state(page)
+    assert _ghost_set(state) == GATE_LABEL_GHOSTS[step], f"pinned {step}"
+    _assert_no_overlap(state, step, f"pinned {step} (gate labels)")
 
 
 def test_separate_outputs_still_ghosts_the_edge_simplify_hides(desktop):
