@@ -502,7 +502,9 @@ def test_crowded_step_falls_back_above_or_below_with_types_kept(desktop, phone):
     state = _state(page)
     assert _ghost_set(state) == CROWDED_GHOSTS, "tap middle"
     _assert_no_overlap(state, "middle", "tap middle (crowded)")
-    _assert_on_screen(state, "middle", "tap middle (crowded)")
+    # At the readable zoom the four pills do not fit a phone, so only the step
+    # must be on screen (test_open_fitted.py pins which pills it shows).
+    _assert_on_screen({**state, "ghosts": []}, "middle", "tap middle (crowded)")
 
 
 @pytest.mark.parametrize("step", list(GATE_LABEL_GHOSTS))

@@ -20,7 +20,8 @@ class LayoutEstimator:
     LAYOUT_SPACE_Y = 140  # Vertical spacing between nodes (matches Kedro-viz)
     LAYOUT_LAYER_SPACE_Y = 120  # Vertical spacing between layers (matches Kedro-viz)
     LAYOUT_SPACE_X = 30  # Horizontal spacing (matches Kedro-viz)
-    # Fixed padding values matching JS fitWithFixedPadding
+    # Frame padding around the estimated graph: room for the JS opening view's
+    # margins (viz.js fittedViewport keeps 16 px clear, plus the toolbar strip)
     PADDING_LEFT = 20
     PADDING_RIGHT = 70  # Extra space for control buttons (matches Kedro-viz)
     PADDING_TOP = 16
@@ -195,7 +196,7 @@ class LayoutEstimator:
             if lvl < num_levels - 1:
                 total_height += self.layer_space_y
 
-        # Add fixed padding (matching JS fitWithFixedPadding)
+        # Add the frame padding (room for the opening view's margins and toolbar)
         total_width = max_level_width + self.PADDING_LEFT + self.PADDING_RIGHT
         total_height += self.PADDING_TOP + self.PADDING_BOTTOM
 

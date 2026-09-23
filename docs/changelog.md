@@ -13,6 +13,9 @@
   node above a standalone page. Toggling inputs, types, separate outputs or
   simplify in the toolbar fits the graph again, unless you have panned or
   zoomed since the last fit. **Fit View** fits it and turns that back on.
+  Pinning a step pans to its ghost pills without zooming below that
+  readable size. When they do not all fit, it shows the step and the pills
+  nearest to it.
 
 - **BREAKING (visualization): inputs are hidden by default and revealed on
   demand; bound inputs are shown, faded and dashed, by default (#595).**

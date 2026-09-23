@@ -12,6 +12,9 @@ One rule for notebook cells and standalone pages:
   holds until the user pans or zooms (drag, wheel, pinch, the zoom buttons).
   Fit View fits and re-arms it. A fit or a pinned step's pan (#595) is not a
   user move.
+- A pinned step's pan never zooms below ``MIN_READABLE_ZOOM`` either. When
+  the step and its ghost pills cannot fit at that zoom, it frames the step and
+  as many pills as fit, nearest first.
 
 Legibility threshold: a node's text must render at 11 CSS px or more. That is
 Apple's minimum text size for iOS (Human Interface Guidelines, Typography:
@@ -33,7 +36,7 @@ import pytest
 
 from hypergraph import FunctionNode, Graph, node
 from tests.viz.conftest import HAS_PLAYWRIGHT
-from tests.viz.test_ghost_inputs import _EMPTY_POINT_JS, make_ghost_graph
+from tests.viz.test_ghost_inputs import _EMPTY_POINT_JS, make_crowded_graph, make_ghost_graph
 
 pytestmark = pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 
@@ -110,6 +113,7 @@ def html_files(tmp_path_factory):
         "ghost": (make_ghost_graph, {}),
         "ghost_types_off": (make_ghost_graph, {"show_types": False}),
         "ghost_inputs_shown": (make_ghost_graph, {"show_inputs": True, "show_bounded_inputs": True}),
+        "crowded": (make_crowded_graph, {}),
     }
     paths = {}
     for name, (make, kwargs) in variants.items():
@@ -156,7 +160,8 @@ _VIEW_JS = """() => {
   const box = el => { const r = el.getBoundingClientRect(); return {left: r.left, top: r.top, right: r.right, bottom: r.bottom}; };
   const nodes = {};
   document.querySelectorAll('.react-flow__node').forEach(el => { nodes[el.getAttribute('data-id')] = box(el); });
-  return {zoom: m.a, x: m.e, y: m.f, width: window.innerWidth, height: window.innerHeight, nodes};
+  const ghosts = [...document.querySelectorAll('[data-hg-ghost]')].map(el => ({name: el.getAttribute('data-hg-ghost'), box: box(el)}));
+  return {zoom: m.a, x: m.e, y: m.f, width: window.innerWidth, height: window.innerHeight, nodes, ghosts};
 }"""
 
 # Every text run inside one node, with the size it is drawn at on screen: the
@@ -217,6 +222,18 @@ def _content_height(page) -> float:
     view = _view(page)
     u = _union(view["nodes"].values())
     return (u["bottom"] - u["top"]) / view["zoom"]
+
+
+def _tap_to_pin(page, node_id: str) -> dict:
+    """Tap the visible part of a step, clear of the toolbar strip, and wait until its pin has framed it."""
+    view = _view(page)
+    box = view["nodes"][node_id]
+    x = (max(box["left"], 4) + min(box["right"], view["width"] - 80)) / 2
+    y = (max(box["top"], 4) + min(box["bottom"], view["height"] - 4)) / 2
+    framed = page.evaluate("window.__hypergraphVizPinFramed || 0")
+    page.touchscreen.tap(x, y)
+    page.wait_for_function(f"(window.__hypergraphVizPinFramed || 0) > {framed}", timeout=15000)
+    return _view(page)
 
 
 def _click_toolbar(page, label: str, *, tap: bool = False) -> None:
@@ -361,15 +378,37 @@ def test_pin_pans_into_view_after_the_fit_and_is_not_a_user_move(open_page):
     view = _view(page)
     box = view["nodes"]["archive"]
     assert not _inside(box, view), f"the opening view leaves 'archive' partly off screen: {box} ({_fmt(view)})"
-    # Tap its visible part, clear of the toolbar strip on the right.
-    x = (max(box["left"], 4) + min(box["right"], view["width"] - 80)) / 2
-    y = (max(box["top"], 4) + min(box["bottom"], view["height"] - 4)) / 2
-    framed = page.evaluate("window.__hypergraphVizPinFramed || 0")
-    page.touchscreen.tap(x, y)
-    page.wait_for_function(f"(window.__hypergraphVizPinFramed || 0) > {framed}", timeout=15000)
-    pinned = _view(page)
+    pinned = _tap_to_pin(page, "archive")
     assert _inside(pinned["nodes"]["archive"], pinned), f"the pin pans 'archive' on screen: {pinned['nodes']['archive']}"
 
     _click_toolbar(page, "Hide Types", tap=True)
     fresh = _view(open_page("ghost_types_off", PHONE))
     assert _same_view(_view(page), fresh), f"after a pin, a toggle still fits: {_fmt(_view(page))} vs fresh {_fmt(fresh)}"
+
+
+def test_pin_never_zooms_below_the_readable_minimum(open_page):
+    """A crowded step's pills do not fit a phone at the readable zoom.
+
+    The pin keeps the floor, keeps the step on screen and shows the pills
+    nearest the step first. It used to zoom out to about 0.49 to fit them all.
+    """
+    page = open_page("crowded", PHONE)
+    pinned = _tap_to_pin(page, "middle")
+    assert pinned["zoom"] >= MIN_READABLE_ZOOM - 1e-3, f"the pin zoomed below the readable minimum: {_fmt(pinned)}"
+    step = pinned["nodes"]["middle"]
+    assert _inside(step, pinned), f"the pinned step stays on screen: {step} ({_fmt(pinned)})"
+    assert len(pinned["ghosts"]) == 4, f"all four pills are drawn: {[g['name'] for g in pinned['ghosts']]}"
+
+    cx, cy = (step["left"] + step["right"]) / 2, (step["top"] + step["bottom"]) / 2
+
+    def distance(g):
+        b = g["box"]
+        return math.hypot((b["left"] + b["right"]) / 2 - cx, (b["top"] + b["bottom"]) / 2 - cy)
+
+    shown = [g for g in pinned["ghosts"] if _inside(g["box"], pinned)]
+    hidden = [g for g in pinned["ghosts"] if not _inside(g["box"], pinned)]
+    assert shown, f"at least the nearest pill is on screen: {[(g['name'], g['box']) for g in pinned['ghosts']]}"
+    if hidden:
+        assert max(map(distance, shown)) <= min(map(distance, hidden)) + 0.5, (
+            f"the pills on screen are the nearest ones: shown {[g['name'] for g in shown]}, off screen {[g['name'] for g in hidden]}"
+        )

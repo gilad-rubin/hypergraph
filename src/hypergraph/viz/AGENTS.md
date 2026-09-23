@@ -154,6 +154,7 @@ side-effect in the order defined by `FIRST_PARTY_ASSET_NAMES`
   - A layout from a toolbar toggle (a new `renderModeKey`) fits again, and so does a resize, unless the user has moved the view. User moves are React Flow's `onMoveEnd` (drag, wheel, pinch) and the zoom buttons.
   - Fit View fits and turns re-fitting back on.
   - Fits and pin pans are programmatic and never count as user moves.
+  - A pin's pan (`viz_ghosts.js:frameViewport`) never zooms below the same floor. When the step and its pills do not fit at it, the pan frames the step and the pills nearest to it.
   - Expanding or collapsing a container keeps the view.
 - `__hypergraphVizReady` turns true only once the fitted transform is rendered. `tests/viz/test_open_fitted.py` pins the rule in both engines.
 

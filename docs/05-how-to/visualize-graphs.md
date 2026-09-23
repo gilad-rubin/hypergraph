@@ -105,7 +105,7 @@ With inputs hidden, hovering a step (tapping it on a phone or tablet) draws what
 
 So nothing a step consumes is invisible. At the same time the step's upstream and downstream path stays lit and everything else dims, a gate's True/False labels included.
 
-- **Pin**: click (or tap) the step. The ghosts stay after the pointer leaves, and the view pans (zooming out if it must) so they are on screen.
+- **Pin**: click (or tap) the step. The ghosts stay after the pointer leaves, and the view pans so they are on screen. It zooms out if it must, but never below the readable size; when they still do not all fit, as on a phone, it shows the step and the ghosts nearest to it.
 - **Clear**: click (or tap) empty canvas, or press `Escape`.
 - **Toggle**: **Show Inputs** draws the input boxes and turns the ghosts off; **Hide Inputs** brings them back. Either clears any pinned ghosts.
 
