@@ -567,6 +567,17 @@
   containers. Dagre's positions are kept, and a gate still exits from its bottom
   vertex. (#590)
 
+- **`visualize()` arrowheads point into their node, and heads on one node no longer
+  overlap.** Each edge ended where the line from its last bend met the node's box, and
+  that point was then clamped into the border. A bend far to one side therefore landed
+  almost flat, its head lying along the border. Two edges could also be clamped onto
+  one point, so one head hid the other: a gate's True edge and a side input landed
+  together this way. Edges into one node now land at least a head's width apart, in
+  the order they arrive. A diamond's entries spread along its two upper edges. Any
+  approach steeper than 30° from straight down gets a short vertical landing, so every
+  head points into its node. The fix covers flat graphs and expanded containers. Node
+  positions and dagre's bends are unchanged. (#592)
+
 - **A durable Run could fail with "database is locked" without executing a
   single node.** The SQLite store shared ONE synchronous connection across
   threads, which closed a three-party cycle: the event loop held a
