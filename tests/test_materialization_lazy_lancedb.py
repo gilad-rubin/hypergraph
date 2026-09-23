@@ -169,3 +169,61 @@ def test_sqlite_table_store_runs_a_table_without_numpy(tmp_path: Path) -> None:
     result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, check=False)
     assert result.returncode == 0, f"probe failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
     assert "PROBE-OK" in result.stdout
+
+
+def test_reading_rows_without_numpy_does_not_retry_the_import_per_value(tmp_path: Path) -> None:
+    """With numpy absent, value normalization must not attempt ``import numpy``
+    for every cell it reads: a failed import is not cached, so each attempt walks
+    the import machinery again (the D42 path cost ~30 us per cell)."""
+    script = tmp_path / "sqlite_store_no_numpy_import_count_probe.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import importlib.abc
+            import sys
+
+            attempts = []
+
+            class Block(importlib.abc.MetaPathFinder):
+                def find_spec(self, name, path=None, target=None):
+                    if name.split(".")[0] == "numpy":
+                        attempts.append(name)
+                        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+                    return None
+
+            sys.meta_path.insert(0, Block())
+
+            from hypergraph.materialization import SqliteTableStore, Table
+
+            store = SqliteTableStore()
+            table = Table(identity="k", store=store)
+            for i in range(50):
+                table.append(k=f"k{i}", v=i, score=i / 2, tags=["x"])
+
+            attempts.clear()
+            rows = table.rows()
+            store.close()
+
+            assert len(rows) == 50 and rows[3] == {"k": "k3", "v": 3, "score": 1.5, "tags": ["x"]}, rows[3]
+            assert len(attempts) <= 1, f"numpy import attempted {len(attempts)} times reading 50 rows x 4 columns"
+            print("PROBE-OK")
+            """
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, f"probe failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    assert "PROBE-OK" in result.stdout
+
+
+def test_numpy_values_still_normalize_when_numpy_is_present() -> None:
+    """Behavior floor: with numpy imported, its scalars and arrays read back as plain Python."""
+    import numpy as np
+
+    from hypergraph.materialization._provenance import normalize_value
+
+    assert normalize_value(np.array([1.5, 2.5])) == [1.5, 2.5]
+    assert type(normalize_value(np.int64(3))) is int
+    assert type(normalize_value(np.float32(0.5))) is float
+    assert isinstance(normalize_value(np.bool_(True)), np.bool_), "only floating and integer scalars convert"
+    assert normalize_value("text") == "text"

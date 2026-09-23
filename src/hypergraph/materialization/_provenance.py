@@ -9,6 +9,7 @@ results back into the immutable reconcile state, and apply writes elsewhere.
 from __future__ import annotations
 
 import inspect
+import sys
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Literal
@@ -49,9 +50,8 @@ def _thaw(values: _Items) -> dict[str, Any]:
 
 def normalize_value(value: Any) -> Any:
     """Convert numpy/arrow scalars into the public Python representation."""
-    try:
-        import numpy as np
-    except ImportError:  # numpy is optional: without it no numpy value can exist
+    np = sys.modules.get("numpy")
+    if np is None:  # numpy is optional, and a numpy value cannot exist unless numpy was imported
         return value
 
     if isinstance(value, np.ndarray):
