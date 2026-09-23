@@ -285,8 +285,13 @@ def _render(browser, make, show_inputs: bool, depth: int) -> list[dict]:
         page.add_style_tag(content=_HEADS_ONLY_CSS)
         for edge in edges:
             page.evaluate(_ONLY_HEAD_JS, edge["index"])
-            x0, y0 = edge["end"]["x"] - radius, edge["end"]["y"] - radius
-            clip = {"x": x0, "y": y0, "width": 2 * radius, "height": 2 * radius}
+            # Clip on whole CSS pixels. Engines round a fractional clip origin to
+            # different device pixels (WebKit lands one device pixel from
+            # Chromium), which shifts every measured pixel and tilts a straight
+            # head by up to 13 degrees in WebKit, 2 in Chromium.
+            x0, y0 = math.floor(edge["end"]["x"] - radius), math.floor(edge["end"]["y"] - radius)
+            size = math.ceil(2 * radius) + 1
+            clip = {"x": x0, "y": y0, "width": size, "height": size}
             png = base64.b64encode(page.screenshot(clip=clip)).decode()
             edge["headPixels"] = page.evaluate(_PIXELS_JS, {"png": png, "x0": x0, "y0": y0, "scale": 2})
     finally:

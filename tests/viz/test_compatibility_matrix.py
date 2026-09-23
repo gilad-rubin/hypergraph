@@ -83,7 +83,7 @@ def test_filepath_html_opens_offline(tmp_path):
 
 
 @pytestmark_playwright
-def test_github_render_with_js_disabled_boot_message_contract(tmp_path):
+def test_github_render_with_js_disabled_boot_message_contract(tmp_path, _browser):
     """Simulate GitHub's notebook rendering: HTML loads, JS is disabled.
 
     Asserts contract (b)+(c): the page loads with no broken script
@@ -98,15 +98,12 @@ def test_github_render_with_js_disabled_boot_message_contract(tmp_path):
     construction no JS-rendered scene can appear there. The test
     confirms the placeholder element exists and the surrounding chrome
     is intact (no half-broken DOM)."""
-    from playwright.sync_api import sync_playwright
-
     html = _render_html_for_workflow()
     output_path = tmp_path / "github_view.html"
     output_path.write_text(html, encoding="utf-8")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(java_script_enabled=False)
+    context = _browser.new_context(java_script_enabled=False)
+    try:
         page = context.new_page()
         console_errors: list[str] = []
         page.on("pageerror", lambda exc: console_errors.append(str(exc)))
@@ -126,7 +123,8 @@ def test_github_render_with_js_disabled_boot_message_contract(tmp_path):
         # Contract (c): saved bytes preserved. The iframe srcdoc HTML
         # we wrote is the same HTML we rendered.
         assert output_path.read_text(encoding="utf-8") == html
-        browser.close()
+    finally:
+        context.close()
 
 
 # -----------------------------

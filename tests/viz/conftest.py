@@ -211,35 +211,81 @@ def make_hidden_source_data_dependency_graph() -> Graph:
     return Graph([produce, box.as_node()], entrypoint="produce")
 
 
-def _check_playwright_available() -> bool:
-    """Check if playwright is installed AND browser binaries are available.
+# Browser engines the `_browser` fixture renders in: comma-separated Playwright
+# browser names, default Chromium. CI's test matrix runs Chromium and one extra
+# job runs `-m viz_browser` with `webkit` (Safari's engine), because some
+# rendering bugs show in one engine only.
+VIZ_ENGINES_ENV = "HYPERGRAPH_VIZ_ENGINES"
+_SUPPORTED_ENGINES = ("chromium", "webkit")
 
+
+def _engines_from_env() -> tuple[str, ...]:
+    raw = os.environ.get(VIZ_ENGINES_ENV, "chromium")
+    engines = tuple(dict.fromkeys(name.strip() for name in raw.split(",") if name.strip()))
+    if not engines or any(engine not in _SUPPORTED_ENGINES for engine in engines):
+        raise pytest.UsageError(f"{VIZ_ENGINES_ENV}={raw!r}: expected a comma-separated subset of {', '.join(_SUPPORTED_ENGINES)}")
+    return engines
+
+
+VIZ_ENGINES = _engines_from_env()
+
+
+def _missing_browsers(engines: tuple[str, ...]) -> list[str]:
+    """Return the engines whose Playwright browser is not installed.
+
+    Every engine counts as missing when playwright itself is not installed.
     Runs the check in a subprocess to avoid contaminating the current process
     event loop, which would interfere with pytest-asyncio under xdist.
     """
     if importlib.util.find_spec("playwright") is None:
-        return False
+        return list(engines)
     try:
         result = subprocess.run(
             [
                 sys.executable,
                 "-c",
+                "import os, sys; "
                 "from playwright.sync_api import sync_playwright; "
                 "p = sync_playwright().start(); "
-                "import os; "
-                "print(os.path.exists(p.chromium.executable_path)); "
+                "print(' '.join(e for e in sys.argv[1:] if not os.path.exists(getattr(p, e).executable_path))); "
                 "p.stop()",
+                *engines,
             ],
             capture_output=True,
             text=True,
             timeout=15,
         )
-        return result.returncode == 0 and result.stdout.strip() == "True"
     except Exception:
-        return False
+        return list(engines)
+    return result.stdout.split() if result.returncode == 0 else list(engines)
 
 
-HAS_PLAYWRIGHT = _check_playwright_available()
+_MISSING_BROWSERS = _missing_browsers(VIZ_ENGINES)
+HAS_PLAYWRIGHT = not _MISSING_BROWSERS
+if _MISSING_BROWSERS and VIZ_ENGINES_ENV in os.environ:
+    # An engine asked for by name must run, never skip.
+    raise pytest.UsageError(
+        f"{VIZ_ENGINES_ENV} asks for {', '.join(_MISSING_BROWSERS)}, which Playwright has not installed: "
+        f"run `uv run playwright install {' '.join(_MISSING_BROWSERS)}`"
+    )
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        f"viz_browser: renders in the `_browser` fixture, once per engine in {VIZ_ENGINES_ENV} (added automatically)",
+    )
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items):
+    """Mark every test that renders in `_browser`, so a job can select them all.
+
+    tryfirst: the mark must exist before `-m` deselects.
+    """
+    for item in items:
+        if "_browser" in getattr(item, "fixturenames", ()):
+            item.add_marker("viz_browser")
 
 
 # =============================================================================
@@ -433,10 +479,10 @@ def _playwright_instance():
         yield p
 
 
-@pytest.fixture(scope="module")
-def _browser(_playwright_instance):
-    """Shared browser instance for a test module."""
-    browser = _playwright_instance.chromium.launch(headless=True)
+@pytest.fixture(scope="module", params=VIZ_ENGINES)
+def _browser(request, _playwright_instance):
+    """Shared browser instance for a test module, once per engine in VIZ_ENGINES."""
+    browser = getattr(_playwright_instance, request.param).launch(headless=True)
     yield browser
     browser.close()
 

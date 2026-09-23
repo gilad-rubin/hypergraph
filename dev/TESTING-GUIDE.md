@@ -118,7 +118,7 @@ Always match on a specific substring of the error message.
 Viz tests use Playwright. Shared fixtures live in `tests/viz/conftest.py`:
 
 - `make_workflow()` — graph factories
-- `browser`, `page` — Playwright browser/page
+- `_browser`, `page` — Playwright browser/page
 - Debug extractors for inspecting rendered output
 
 ```bash
@@ -128,6 +128,8 @@ uv run playwright install chromium
 # Run viz tests
 uv run pytest tests/viz/
 ```
+
+**Engines.** `_browser` and `page` render once per engine named in `HYPERGRAPH_VIZ_ENGINES` (comma-separated, default `chromium`; `webkit` is Safari's engine), and every test that uses them is marked `viz_browser` automatically. CI's test matrix runs Chromium, and the `viz-webkit` job runs `-m viz_browser` in WebKit, because some rendering bugs show in one engine only. To check both locally, run `uv run playwright install webkit` once, then `HYPERGRAPH_VIZ_ENGINES=chromium,webkit uv run pytest tests/viz -m viz_browser`. Naming an engine that is not installed fails the run instead of skipping it. Write new browser tests against `_browser`/`page` instead of launching Chromium directly, so they run in both engines.
 
 ## Capability Matrix
 
