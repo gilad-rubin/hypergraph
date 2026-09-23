@@ -174,7 +174,8 @@ def test_fanout_pairing_is_positional_not_name_matched():
 
     Exercises ``_fanout_viz_edges``'s pairing directly against hand-built
     ``TableSpec``/map-node lists (bypassing ``HyperTable`` construction, which
-    does not yet support two children over one shared parent column end to
+    does not support two children over one shared parent column when they
+    share a child identity, as these two do; distinct identities work end to
     end). Proves the zip-by-position fix resolves each child to its own map
     node rather than both resolving to the first name match.
     """

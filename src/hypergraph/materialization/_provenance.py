@@ -50,9 +50,9 @@ def _thaw(values: _Items) -> dict[str, Any]:
 
 def normalize_value(value: Any) -> Any:
     """Convert numpy/arrow scalars into the public Python representation."""
-    np = sys.modules.get("numpy")
-    if np is None:  # numpy is optional, and a numpy value cannot exist unless numpy was imported
+    if sys.modules.get("numpy") is None:  # numpy is optional, and a numpy value cannot exist unless numpy was imported
         return value
+    import numpy as np  # the import statement, not the sys.modules entry, waits out another thread's import in progress
 
     if isinstance(value, np.ndarray):
         return value.tolist()

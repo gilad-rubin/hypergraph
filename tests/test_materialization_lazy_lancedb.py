@@ -227,3 +227,54 @@ def test_numpy_values_still_normalize_when_numpy_is_present() -> None:
     assert type(normalize_value(np.float32(0.5))) is float
     assert isinstance(normalize_value(np.bool_(True)), np.bool_), "only floating and integer scalars convert"
     assert normalize_value("text") == "text"
+
+
+def test_numpy_mid_import_in_another_thread_is_waited_for_not_read_half_loaded(tmp_path: Path) -> None:
+    """While one thread imports numpy, ``sys.modules["numpy"]`` already holds the
+    half-initialized module. Value normalization in another thread must wait for
+    that import, not read ``np.ndarray`` off the partial module (AttributeError)."""
+    script = tmp_path / "numpy_import_race_probe.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import sys
+            import threading
+
+            from hypergraph.materialization._provenance import normalize_value
+            from hypergraph.materialization._sqlite_store import _plain
+
+            assert "numpy" not in sys.modules, "numpy was already imported"
+            errors, calls, done = [], {}, threading.Event()
+
+            def reader(normalize, started):
+                started.set()
+                while not done.is_set():
+                    try:
+                        normalize("text")
+                    except Exception as exc:
+                        errors.append(f"{normalize.__name__}: {type(exc).__name__}: {exc}")
+                        return
+                    calls[normalize.__name__] = calls.get(normalize.__name__, 0) + 1
+
+            threads = []
+            for normalize in (normalize_value, _plain):  # one thread each, so neither waits behind the other
+                started = threading.Event()
+                threads.append(threading.Thread(target=reader, args=(normalize, started)))
+                threads[-1].start()
+                started.wait()
+            import numpy
+
+            done.set()
+            for thread in threads:
+                thread.join()
+            assert not errors, errors
+            assert set(calls) == {"normalize_value", "_plain"}, calls
+            assert normalize_value(numpy.int64(3)) == 3 and _plain(numpy.int64(3)) == 3
+            print("PROBE-OK")
+            """
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, f"probe failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    assert "PROBE-OK" in result.stdout

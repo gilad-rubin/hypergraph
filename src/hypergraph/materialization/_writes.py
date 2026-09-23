@@ -178,11 +178,13 @@ def _run_pause(result: Any) -> PauseInfo | None:
 
 
 def _as_stored(value: Any, arrow_type: Any) -> Any:
-    """``value`` as a typed store reads it back, so a round trip is not a change.
+    """``value`` at the column's declared type, so a LanceDB round trip is not a change.
 
-    A typed store writes through the column's arrow type (``list[float]`` is
-    float32), so a stored vector reads back rounded. Casting both sides the
-    same way compares what a reader sees; a value the declared type cannot
+    LanceDBStore writes through the column's arrow type (``list[float]`` is
+    float32 there only), so a vector it stores reads back rounded;
+    SqliteTableStore keeps the float64 values. Casting both sides the same way
+    compares what a LanceDB reader sees, and on either store a difference below
+    the declared precision is not a change; a value the declared type cannot
     hold is compared as it is.
     """
     import pyarrow as pa

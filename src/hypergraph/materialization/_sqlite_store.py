@@ -74,8 +74,11 @@ def _kind(arrow_type: pa.DataType) -> str:
 
 def _plain(value: Any) -> Any:
     """numpy scalars and arrays as plain Python, without importing numpy."""
-    np = sys.modules.get("numpy")
-    if np is not None:
+    # A numpy value cannot exist unless numpy was imported. The import statement
+    # (not the sys.modules entry) waits out another thread's import in progress.
+    if sys.modules.get("numpy") is not None:
+        import numpy as np
+
         if isinstance(value, np.ndarray):
             return value.tolist()
         if isinstance(value, np.generic):
