@@ -187,10 +187,16 @@ def _extract_error_message(error: BaseException, node_name: str | None = None) -
 
 
 def _public_reason(error: BaseException) -> str | None:
-    """The static reason the failure's exception class declares, for the same cause as ``error``."""
+    """The static reason the failure's exception class declares.
+
+    The exception the node raised speaks first — ``raise ScanNeedsOcr() from
+    err`` keeps ScanNeedsOcr's reason, not ``err``'s. Only when it declares
+    nothing is the cause asked, which is where a framework wrapper such as
+    ``ExecutionError`` keeps the node's own exception.
+    """
     from hypergraph.diagnostics import declared_public_reason
 
-    return declared_public_reason(_failure_cause(error))
+    return declared_public_reason(error) or declared_public_reason(_failure_cause(error))
 
 
 def _error_for_node(

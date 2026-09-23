@@ -31,8 +31,10 @@ class ScanNeedsOcr(Exception):
 Only the class attribute is read — an instance attribute, however it is set,
 is ignored — so the text is fixed when the code is written and cannot carry a
 run's inputs, paths or response bodies. A subclass inherits its parent's
-reason. Anything but a non-empty string declares nothing, and a failure
-whose class declares nothing keeps `public_reason=None`. The type-only
+reason, and `raise ScanNeedsOcr() from err` keeps `ScanNeedsOcr`'s reason
+(the chained cause is asked only when the raised exception declares nothing).
+Anything but a non-empty string declares nothing, and a failure whose class
+declares nothing keeps `public_reason=None`. The type-only
 `error` projection is unchanged either way.
 
 A few surfaces sit deliberately outside that boundary, because a scrubbed

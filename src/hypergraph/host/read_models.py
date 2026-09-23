@@ -106,7 +106,9 @@ class RunReadModel:
     #: scheduled for later, parked, or settled Runs have no place in it. An
     #: answered pause re-enters at its original acceptance time. Claim order
     #: is the order work is OFFERED; under a ``max_admission_units`` budget a
-    #: lighter Run behind a heavy one can still start first.
+    #: lighter Run behind a heavy one can still start first. A Run no live
+    #: worker serves counts until a worker's next claim scan parks or retires
+    #: it — the same cached compatibility ``waiting`` reads.
     runs_ahead: int | None = None
     #: Why it failed, once it settled with an errored step: the same
     #: ``RunFailure`` ``client.result()`` reports, read for the whole page in

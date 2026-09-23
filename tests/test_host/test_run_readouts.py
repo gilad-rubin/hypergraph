@@ -243,6 +243,16 @@ class TestPublicReason:
         assert SECRET not in dump
         assert "leaked" not in dump
 
+    async def test_a_chained_exception_keeps_the_reason_of_the_exception_the_node_raised(self, home):
+        try:
+            raise ValueError(SECRET)
+        except ValueError as cause:
+            chained = ScanNeedsOcr()
+            chained.__cause__ = cause
+        host, receipt = await _settle_failure(home, chained, "paper-chained")
+        row = await RunHomeReadModel(host.client).get_run(receipt.run_ref)
+        assert row.failure.public_reason == "This scan needs OCR before it can be read."
+
     @pytest.mark.parametrize("error", [DeclaresNothing("boom"), DeclaresANonString("boom")], ids=["undeclared", "non-string"])
     async def test_an_undeclared_reason_is_none(self, home, error):
         host, receipt = await _settle_failure(home, error, "paper-plain")
