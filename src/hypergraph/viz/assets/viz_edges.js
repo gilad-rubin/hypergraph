@@ -20,7 +20,11 @@
   // ║  Section 4: Edge Component                               ║
   // ╚═══════════════════════════════════════════════════════════╝
 
-  /** Clamped B-spline through points (same as D3's curveBasis). 2-point input → S-curve. */
+  /** Clamped B-spline through points (same as D3's curveBasis). 2-point input → S-curve.
+   * The path ends with a straight `L` into the last point, as D3's does. A final
+   * cubic whose control points sit on its end point draws the same line but has
+   * no end tangent of its own, and WebKit then orients the arrowhead marker at
+   * 0° — pointing right, beside the line, half under the target node. */
   function curveBasis(pts) {
     if (pts.length < 2) return 'M ' + pts[0].x + ' ' + pts[0].y;
     if (pts.length === 2) {
@@ -38,8 +42,7 @@
               ((x0 + 4 * x1 + x) / 6) + ' ' + ((y0 + 4 * y1 + y) / 6);
       x0 = x1; y0 = y1; x1 = x; y1 = y;
     }
-    path += ' C ' + ((2 * x0 + x1) / 3) + ' ' + ((2 * y0 + y1) / 3) + ' ' +
-            ((x0 + 2 * x1) / 3) + ' ' + ((y0 + 2 * y1) / 3) + ' ' + x1 + ' ' + y1;
+    path += ' L ' + x1 + ' ' + y1;
     return path;
   }
 

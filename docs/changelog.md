@@ -549,6 +549,14 @@
   ids: the END class is emitted as `endNode`, and every other class name is unchanged.
   `to_mermaid(colors={"end": {...}})` still restyles the END node. (#585)
 
+- **`visualize()` arrowheads point along their edge in Safari and other WebKit
+  browsers.** Every edge path ended with a curve segment whose control points sat on
+  its end point, so the path gave no end direction of its own. Chromium borrowed the
+  direction from earlier in the path; WebKit drew every arrowhead pointing right, beside
+  the line and half under the target node. Since the dagre-routing rewrite, this has
+  affected every edge kind. The path now ends with a straight segment, as D3's
+  `curveBasis` does, and the drawn line is unchanged. (#587)
+
 - **A durable Run could fail with "database is locked" without executing a
   single node.** The SQLite store shared ONE synchronous connection across
   threads, which closed a three-party cycle: the event loop held a
