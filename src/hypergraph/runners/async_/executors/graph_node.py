@@ -252,9 +252,7 @@ class AsyncGraphNodeExecutor:
                     f"How to fix:\n"
                     f"  - Drop the runner= override so AsyncRunner runs the nested graph itself and\n"
                     f"    takes each permit with 'async with' (the usual answer).\n"
-                    f"  - Or remove the budgets listed above from this branch.\n"
-                    f"  - Or move the quota into the shared component that talks to the provider and\n"
-                    f"    acquire it at the exact scarce call, which works under any runner.",
+                    f"  - Or remove the budgets listed above from this branch.",
                     node_name=node.name,
                     capability="provider_limit",
                 )

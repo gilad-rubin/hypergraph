@@ -520,7 +520,7 @@ Set a default output selection. Returns a new Graph (immutable pattern).
 
 This controls which outputs are returned by `runner.run()` and which outputs are visible when the graph is used as a nested node via `as_node()`.
 
-`select` also narrows `graph.inputs` to only the parameters needed to produce the selected outputs. Nodes that don't contribute to those outputs are excluded from input computation.
+`select` also narrows `graph.inputs` to only the parameters needed to produce the selected outputs. Nodes that don't contribute to those outputs do not run and are excluded from input computation. The one widening: a needed gate keeps all of its targets, everything downstream of them, and whatever those nodes need, in scope, since the route is chosen at run time. Pruning is at this graph's node level: a needed nested graph runs its inner graph in full unless that graph has its own `select`.
 
 ```python
 from hypergraph import node, Graph
@@ -712,11 +712,13 @@ SyncRunner().run(instrumented, {"x": 1})  # spans exported, no call-site wiring
 Cap how many of this graph's function nodes execute at once, process-wide.
 Returns a new Graph (immutable pattern).
 
-This is **provider-resource admission** — a work budget over external
-capacity — never the durable host's active-Run cap
-([`RunHome.max_active_runs`](host.md#host-work-admission)). The limiter is a
-shared object, so two concurrent Runs of this graph draw on the same
-permits; that is what a per-call runner budget cannot express.
+This is a **work budget** over a scarce, process-local resource (a GPU, a
+local model, a subprocess pool, database connections) — never the durable
+host's active-Run cap ([`RunHome.max_active_runs`](host.md#host-work-admission)),
+and not an HTTP provider's API quota
+([Not for HTTP provider quotas](nodes.md#not-for-http-provider-quotas)). The
+limiter is a shared object, so two concurrent Runs of this graph draw on the
+same permits; that is what a per-call runner budget cannot express.
 
 ```python
 from hypergraph import ProcessLocalLimiter

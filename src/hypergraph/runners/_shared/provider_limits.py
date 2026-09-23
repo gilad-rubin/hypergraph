@@ -2,8 +2,9 @@
 
 Both function-node executors (sync and async) call ``provider_permits`` so
 graph- and node-scope budgets compose identically on either path. This is
-provider-resource admission — external capacity — and is never the durable
-host's active-Run cap (``RunHome.max_active_runs``).
+provider-resource admission — a budget for a scarce process-local resource,
+held for the whole node execution — and is never the durable host's
+active-Run cap (``RunHome.max_active_runs``).
 
 Graph scope crosses the nested-graph boundary. A nested graph is executed by
 its own ``run()`` call with its own ``ExecutionContext``, so the enclosing

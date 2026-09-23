@@ -98,6 +98,11 @@ deploys happen with runs in flight. The missing layer is a durable home for
   distributed. For an underlying provider quota the shared component is
   often the preferred owner: several graphs and nodes reuse it, the
   component owns admission, and it acquires at the exact scarce call.
+  *(Clarified 2026-09-23: for an HTTP provider the exact scarce call is one
+  HTTP attempt, so the component admits at its client's transport — for
+  example hyperlimit's `LimitedTransport` — never around an SDK method that
+  retries inside it. `ProcessLocalLimiter` at node or graph scope budgets a
+  process-local resource, not a provider quota.)*
   Graph- and node-level limits compose as narrower work budgets; they never
   replace the component's quota. Waiting on a provider permit is neither a
   failure nor a retry attempt — ordinary throttling never consumes retry

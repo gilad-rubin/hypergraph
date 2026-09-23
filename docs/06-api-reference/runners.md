@@ -905,12 +905,14 @@ Concurrency limits are shared across:
 This prevents overwhelming external services when processing large batches.
 
 `max_concurrency` is a budget for **one call**: a second concurrent
-`run()`/`map()` gets its own. To cap external capacity across every run in
-the process — a provider's concurrency limit — inject a shared
-[`ProcessLocalLimiter`](nodes.md#processlocallimiter) at component, node, or
-graph scope instead. The two compose: the provider budget is taken first,
-so a node queueing for external capacity never sits on a `max_concurrency`
-permit another node could use. See
+`run()`/`map()` gets its own. To cap a scarce process-local resource across
+every run in the process — a GPU, a local model, a subprocess pool — inject a
+shared [`ProcessLocalLimiter`](nodes.md#processlocallimiter) at component,
+node, or graph scope instead. The two compose: a node- or graph-scope permit
+is taken first, so a node queueing for that resource never sits on a
+`max_concurrency` permit another node could use. A component-scope permit is
+taken inside the node body, after the node already holds its
+`max_concurrency` permit. See
 [Related concurrency controls](nodes.md#related-concurrency-controls) for
 which budget owns what.
 

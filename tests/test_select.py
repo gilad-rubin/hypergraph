@@ -4,7 +4,10 @@ import pytest
 
 from hypergraph.graph import Graph
 from hypergraph.nodes.function import node
+from hypergraph.runners.async_.runner import AsyncRunner
 from hypergraph.runners.sync.runner import SyncRunner
+
+RUNNER_KINDS = ("sync", "async")
 
 
 @node(output_name="doubled")
@@ -24,6 +27,33 @@ def finalize(sum: int) -> str:
 
 def _build_graph():
     return Graph([double, add, finalize])
+
+
+async def run_graph(runner_kind: str, graph: Graph, values: dict):
+    if runner_kind == "sync":
+        return SyncRunner().run(graph, values)
+    return await AsyncRunner().run(graph, values)
+
+
+def _ledger_nodes(ledger: list[str]):
+    """Fresh nodes per test that record their own execution in ``ledger``."""
+
+    @node(output_name="doubled")
+    def double(x: int) -> int:
+        ledger.append("double")
+        return x * 2
+
+    @node(output_name="side")
+    def side_effect(x: int) -> int:
+        ledger.append("side_effect")
+        return x + 100
+
+    @node(output_name="after")
+    def downstream(doubled: int) -> int:
+        ledger.append("downstream")
+        return doubled + 1
+
+    return double, side_effect, downstream
 
 
 class TestSelectGraph:
@@ -121,3 +151,51 @@ class TestSelectNested:
         # It becomes a required input of the outer graph.
         outer = Graph([inner.as_node(), use_doubled])
         assert "doubled" in outer.inputs.required
+
+
+@pytest.mark.parametrize("runner_kind", RUNNER_KINDS)
+class TestSelectPrunesExecution:
+    """select() narrows execution, not only the returned values."""
+
+    async def test_unselected_nodes_do_not_run(self, runner_kind):
+        ledger: list[str] = []
+        graph = Graph(list(_ledger_nodes(ledger))).select("doubled")
+
+        result = await run_graph(runner_kind, graph, {"x": 5})
+
+        assert result.values == {"doubled": 10}
+        # side_effect had every input it needs; downstream consumes the selection.
+        assert ledger == ["double"]
+
+    async def test_without_select_every_node_runs(self, runner_kind):
+        ledger: list[str] = []
+        graph = Graph(list(_ledger_nodes(ledger)))
+
+        await run_graph(runner_kind, graph, {"x": 5})
+
+        assert sorted(ledger) == ["double", "downstream", "side_effect"]
+
+    async def test_nested_select_prunes_inside_the_graph_node(self, runner_kind):
+        ledger: list[str] = []
+        inner = Graph(list(_ledger_nodes(ledger)), name="inner").select("doubled")
+
+        @node(output_name="formatted")
+        def fmt(doubled: int) -> str:
+            ledger.append("fmt")
+            return f"v={doubled}"
+
+        result = await run_graph(runner_kind, Graph([inner.as_node(), fmt]), {"x": 5})
+
+        assert result.values["formatted"] == "v=10"
+        assert ledger == ["double", "fmt"]
+
+    async def test_outer_select_skips_a_graph_node_it_does_not_need(self, runner_kind):
+        ledger: list[str] = []
+        double, side_effect, _ = _ledger_nodes(ledger)
+        sidegraph = Graph([side_effect], name="sidegraph")
+        graph = Graph([sidegraph.as_node(), double]).select("doubled")
+
+        result = await run_graph(runner_kind, graph, {"x": 5})
+
+        assert result.values == {"doubled": 10}
+        assert ledger == ["double"]

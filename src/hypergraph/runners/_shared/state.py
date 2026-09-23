@@ -113,11 +113,11 @@ class ExecutionContext:
 
     ``provider_limits`` carries the graph-scope provider-resource budgets
     (``graph.with_provider_limit``) to the function-node executors,
-    outermost first. These are shared process-local permit pools over
-    EXTERNAL capacity — never the durable host's active-Run cap. A nested
-    graph inherits the enclosing graph's budgets and composes its own on
-    top, so a node covered by a budget stays covered when it moves inside
-    ``as_node()``.
+    outermost first. These are shared permit pools over a scarce
+    process-local resource, held for the whole node execution — never the
+    durable host's active-Run cap. A nested graph inherits the enclosing
+    graph's budgets and composes its own on top, so a node covered by a
+    budget stays covered when it moves inside ``as_node()``.
     """
 
     event_processors: list[EventProcessor] | None = None

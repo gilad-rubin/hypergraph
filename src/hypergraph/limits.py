@@ -1,4 +1,4 @@
-"""Provider-resource admission: injected limiters that own external capacity.
+"""Provider-resource admission: injected limiters over a scarce process-local resource.
 
 Hypergraph has **two** admission controls and they are never the same thing:
 
@@ -6,10 +6,15 @@ Hypergraph has **two** admission controls and they are never the same thing:
   ``hypergraph.host``): how many Runs one worker executes at once. It is a
   Run Home concern, tuned by operators, and over-limit Runs wait in claim
   order as ``WaitingCondition.ADMISSION_LIMITED``.
-- **Provider-resource admission** — this module: how many concurrent calls
-  an external provider tolerates. It is a graph/node/component concern,
-  injected by the workflow author, and a Run waiting for a permit is still
-  a *running* Run holding its Host slot.
+- **Provider-resource admission** — this module: how many executions may
+  hold a scarce, process-local resource at once (a GPU, a local model, a
+  subprocess pool, database connections). It is a graph/node/component
+  concern, injected by the workflow author, and a Run waiting for a permit
+  is still a *running* Run holding its Host slot.
+
+Neither control owns an HTTP provider's API quota. That quota is spent per
+HTTP attempt, so it belongs at the client's transport, which admits each
+attempt on its own (for example hyperlimit's ``LimitedTransport``).
 
 A provider-permit wait is neither a failure nor a retry attempt: it happens
 outside the attempt coordinator, so ordinary throttling never consumes a
@@ -107,9 +112,10 @@ class ProcessLocalLimiter:
     threads and event loops of the process that constructed it — two
     workers on two machines each get a full budget of their own. It is not
     a distributed limiter and must never be described as one. Hypergraph
-    ships no distributed limiter in this tier; if you need fleet-wide
-    coordination, own it in the shared component that talks to the
-    provider.
+    ships no distributed limiter in this tier. A shared component that owns
+    a scarce process-local resource can hold the limiter itself (component
+    scope, below); an HTTP provider's API quota belongs at the client's
+    transport instead.
 
     A ``ProcessLocalLimiter`` is an object you construct once and
     **share**: two concurrent Runs of the same graph draw on the same
@@ -117,17 +123,17 @@ class ProcessLocalLimiter:
 
     Three injection scopes, narrowest budget last:
 
-    - **component** (usually the right owner of a provider quota): the
-      shared client holds the limiter and acquires it at the exact scarce
-      call, so the permit is held for the provider call and nothing else::
+    - **component**: the shared object that owns the resource holds the
+      limiter and acquires it at the exact scarce use, so the permit is
+      held for that use and nothing else::
 
-          class SummaryClient:
+          class LocalEmbedder:
               def __init__(self) -> None:
-                  self._quota = ProcessLocalLimiter(max_in_flight=4)
+                  self._gpu = ProcessLocalLimiter(max_in_flight=2)
 
-              async def summarize(self, text: str) -> str:
-                  async with self._quota:          # the exact scarce call
-                      return await self._http.post(...)
+              def embed(self, text: str) -> list[float]:
+                  with self._gpu:                  # the exact scarce use
+                      return self._model.encode(text)
 
     - **node**: ``@node(..., provider_limit=budget)`` — at most
       ``max_in_flight`` executions of that node run at once, process-wide.
@@ -136,8 +142,11 @@ class ProcessLocalLimiter:
       process-wide, nested graphs included.
 
     Node and graph scopes are **work budgets**: the permit covers the whole
-    node execution, including any retry backoff. They compose as narrower
-    limits around a component quota; they never replace it.
+    node execution — every retry attempt, the backoff between attempts, and
+    any cache hit the body serves. That is the right unit for a resource the
+    body holds while it runs, and the wrong one for an HTTP provider's API
+    quota, which is spent per attempt: admit each HTTP attempt at the
+    client's transport instead (for example hyperlimit's ``LimitedTransport``).
 
     A single limiter is not reentrant — acquiring it twice on one execution
     path deadlocks, exactly like a non-reentrant lock — so the runner
@@ -168,7 +177,7 @@ class ProcessLocalLimiter:
             raise ValueError(
                 f"ProcessLocalLimiter(max_in_flight=...) must be an int >= 1 concurrent permits, got {max_in_flight!r}.\n\n"
                 "How to fix:\n"
-                "  Pass the number of concurrent calls the provider tolerates:\n"
+                "  Pass how many executions may hold the scarce resource at once:\n"
                 "  ProcessLocalLimiter(max_in_flight=4)"
             )
         self._max_in_flight = max_in_flight

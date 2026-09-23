@@ -52,8 +52,8 @@ class AsyncFunctionNodeExecutor:
 
     Injected provider-resource budgets (graph and node scope) are held
     OUTSIDE that semaphore for the whole node execution: a task queueing for
-    external capacity must not also sit on a runner concurrency permit that
-    other nodes could use. ``provider_permits`` hands them over already
+    a scarce process-local resource must not also sit on a runner concurrency
+    permit that other nodes could use. ``provider_permits`` hands them over already
     deduplicated and in the process-wide acquisition order; take them in
     exactly that order.
     """
