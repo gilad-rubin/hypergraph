@@ -555,7 +555,7 @@
   direction from earlier in the path; WebKit drew every arrowhead pointing right, beside
   the line and half under the target node. Since the dagre-routing rewrite, this has
   affected every edge kind. The path now ends with a straight segment, as D3's
-  `curveBasis` does, and the drawn line is unchanged.
+  `curveBasis` does, and the drawn line is unchanged. (#587)
 
 - **A durable Run could fail with "database is locked" without executing a
   single node.** The SQLite store shared ONE synchronous connection across
