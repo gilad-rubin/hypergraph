@@ -186,7 +186,7 @@ _HEAD_PIXELS_JS = r"""async ({ png, ends, radius }) => {
 @pytest.fixture(scope="module")
 def arrow_edges(_browser):
     """Rendered geometry of every edge, plus the pixels of every arrowhead."""
-    html_path = _cached_html_path(make_arrow_graph(), depth=0)
+    html_path = _cached_html_path(make_arrow_graph(), depth=0, show_inputs=True, show_bounded_inputs=False)
     page = _browser.new_page(viewport={"width": 900, "height": 1400}, device_scale_factor=2)
     try:
         page.goto(f"file://{html_path}")

@@ -13,8 +13,8 @@ def test_estimate_layout_respects_show_inputs_false():
     """Hidden external inputs should not inflate iframe height estimates."""
     graph = Graph([combine_inputs])
 
-    _shown_width, shown_height = estimate_layout(graph, show_inputs=True)
-    _hidden_width, hidden_height = estimate_layout(graph, show_inputs=False)
+    _shown_width, shown_height = estimate_layout(graph, show_inputs=True, show_bounded_inputs=False)
+    _hidden_width, hidden_height = estimate_layout(graph, show_inputs=False, show_bounded_inputs=False)
 
     assert hidden_height < shown_height
 

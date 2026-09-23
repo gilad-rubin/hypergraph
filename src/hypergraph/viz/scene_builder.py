@@ -28,11 +28,15 @@ def build_initial_scene(
     *,
     expansion_state: dict[str, bool] | None = None,
     separate_outputs: bool = False,
-    show_inputs: bool = True,
-    show_bounded_inputs: bool = False,
+    show_inputs: bool,
+    show_bounded_inputs: bool,
     simplify: bool = True,
 ) -> dict[str, Any]:
-    """Build a React Flow scene (nodes + edges) for the IR's initial state."""
+    """Build a React Flow scene (nodes + edges) for the IR's initial state.
+
+    ``show_inputs`` and ``show_bounded_inputs`` have no default here: the
+    caller passes values ``widget._resolve_input_visibility`` already resolved.
+    """
     if ir.schema_version != CURRENT_SCHEMA_VERSION:
         raise IRSchemaError(
             f"scene_builder.py supports IR schema_version={CURRENT_SCHEMA_VERSION!r}; "

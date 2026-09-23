@@ -693,6 +693,33 @@ def test_resolver_owns_the_deprecated_alias():
         _resolve_input_visibility(True, None, False)
 
 
+def _internal_helpers() -> dict:
+    """Each internal viz helper that takes the input flags, given everything else."""
+    from hypergraph.viz.html import LayoutEstimator, estimate_layout
+    from hypergraph.viz.renderer import render_graph
+    from hypergraph.viz.renderer.ir_builder import build_graph_ir
+    from hypergraph.viz.scene_builder import build_initial_scene
+
+    graph = make_ghost_graph()
+    flat = graph.to_flat_graph()
+    return {
+        "build_initial_scene": lambda **flags: build_initial_scene(build_graph_ir(flat), **flags),
+        "render_graph": lambda **flags: render_graph(flat, **flags),
+        "estimate_layout": lambda **flags: estimate_layout(graph, **flags),
+        "LayoutEstimator": lambda **flags: LayoutEstimator(graph, **flags),
+    }
+
+
+@pytest.mark.parametrize("missing", ["show_inputs", "show_bounded_inputs"])
+@pytest.mark.parametrize("helper", ["build_initial_scene", "render_graph", "estimate_layout", "LayoutEstimator"])
+def test_internal_helpers_refuse_a_missing_input_flag(helper, missing):
+    """The resolver is the only default (D59): an internal helper takes both flags, already resolved."""
+    flags = {"show_inputs": True, "show_bounded_inputs": False}
+    del flags[missing]
+    with pytest.raises(TypeError, match=f"keyword-only argument: '{missing}'"):
+        _internal_helpers()[helper](**flags)
+
+
 def _make_table():
     from hypergraph.materialization._lancedb_store import LanceDBStore
 

@@ -30,6 +30,7 @@ def _enumerate_scenes(graph, *, show_inputs: bool):
                 expansion_state=exp_state,
                 separate_outputs=separate,
                 show_inputs=show_inputs,
+                show_bounded_inputs=False,
             )
             visible_nodes = [n for n in scene["nodes"] if not n.get("hidden")]
             visible_edges = [e for e in scene["edges"] if not e.get("hidden")]
@@ -135,7 +136,7 @@ class TestRenderGraph:
     def test_render_single_node(self):
         """Test rendering a graph with a single node."""
         graph = Graph(nodes=[double])
-        result = render_graph(graph.to_flat_graph())
+        result = render_graph(graph.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
 
         assert "nodes" in result
         assert "edges" in result
@@ -152,7 +153,7 @@ class TestRenderGraph:
     def test_render_node_outputs(self):
         """In separate-outputs mode each function output becomes a DATA node."""
         graph = Graph(nodes=[double])
-        result = render_graph(graph.to_flat_graph(), separate_outputs=True)
+        result = render_graph(graph.to_flat_graph(), separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
         data_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "DATA"]
         assert len(data_nodes) == 1
@@ -163,7 +164,7 @@ class TestRenderGraph:
     def test_merged_mode_omits_data_nodes(self):
         """Merged mode (default) does not materialize DATA scene nodes."""
         graph = Graph(nodes=[double])
-        result = render_graph(graph.to_flat_graph())
+        result = render_graph(graph.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
 
         data_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "DATA"]
         assert data_nodes == []
@@ -171,7 +172,7 @@ class TestRenderGraph:
     def test_render_node_inputs(self):
         """Test that node inputs are captured correctly."""
         graph = Graph(nodes=[add])
-        result = render_graph(graph.to_flat_graph())
+        result = render_graph(graph.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
 
         fn_node = next(n for n in result["nodes"] if n["data"]["nodeType"] == "FUNCTION")
         inputs = fn_node["data"]["inputs"]
@@ -183,7 +184,7 @@ class TestRenderGraph:
     def test_render_multiple_nodes(self):
         """Test rendering a graph with multiple nodes."""
         graph = Graph(nodes=[double, add])
-        result = render_graph(graph.to_flat_graph())
+        result = render_graph(graph.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
 
         # Check FUNCTION nodes specifically
         fn_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "FUNCTION"]
@@ -203,7 +204,7 @@ class TestRenderGraph:
             return doubled + 1
 
         graph = Graph(nodes=[double_fn, use_doubled])
-        result = render_graph(graph.to_flat_graph())
+        result = render_graph(graph.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
 
         # Default mode (separate_outputs=False) uses merged output format:
         # Data edges go directly from producer function to consumer function
@@ -220,7 +221,7 @@ class TestRenderGraph:
     def test_render_with_bound_inputs(self):
         """Test that bound inputs are marked correctly."""
         graph = Graph(nodes=[add]).bind(a=5)
-        result = render_graph(graph.to_flat_graph())
+        result = render_graph(graph.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
 
         fn_node = next(n for n in result["nodes"] if n["data"]["nodeType"] == "FUNCTION")
         inputs = fn_node["data"]["inputs"]
@@ -249,10 +250,10 @@ class TestRenderGraph:
         assert result["meta"]["show_inputs"] is True
         assert result["meta"]["show_bounded_inputs"] is True
 
-    def test_render_options_inputs_visible_by_default(self):
-        """Renderer defaults to including INPUT/INPUT_GROUP nodes."""
+    def test_render_options_record_the_input_flags_given(self):
+        """The metadata records the input flags the caller resolved; the renderer has no default (D59)."""
         graph = Graph(nodes=[double])
-        result = render_graph(graph.to_flat_graph())
+        result = render_graph(graph.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
         assert result["meta"]["show_inputs"] is True
         assert result["meta"]["show_bounded_inputs"] is False
 
@@ -287,15 +288,15 @@ class TestRenderGraph:
         with pytest.raises(TypeError, match="Pass either show_inputs or show_external_inputs"):
             visualize(graph, show_inputs=True, show_external_inputs=False)
 
-    def test_render_hides_bound_input_nodes_by_default(self):
+    def test_render_hides_bound_input_nodes_unless_asked(self):
         """Bound inputs stay hidden unless show_bounded_inputs=True."""
         graph = Graph(nodes=[add]).bind(a=5)
 
-        default_result = render_graph(graph.to_flat_graph())
-        default_input_ids = {n["id"] for n in default_result["nodes"] if n["data"]["nodeType"] in {"INPUT", "INPUT_GROUP"}}
-        assert default_input_ids == {"input_b"}
+        hidden_result = render_graph(graph.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
+        hidden_input_ids = {n["id"] for n in hidden_result["nodes"] if n["data"]["nodeType"] in {"INPUT", "INPUT_GROUP"}}
+        assert hidden_input_ids == {"input_b"}
 
-        expanded_result = render_graph(graph.to_flat_graph(), show_bounded_inputs=True)
+        expanded_result = render_graph(graph.to_flat_graph(), show_bounded_inputs=True, show_inputs=True)
         expanded_input_ids = {n["id"] for n in expanded_result["nodes"] if n["data"]["nodeType"] in {"INPUT", "INPUT_GROUP"}}
         assert expanded_input_ids == {"input_a", "input_b"}
 
@@ -317,7 +318,7 @@ class TestRenderGraph:
             entrypoint="add_message",
         )
 
-        result = render_graph(graph.to_flat_graph(), show_bounded_inputs=True)
+        result = render_graph(graph.to_flat_graph(), show_bounded_inputs=True, show_inputs=True)
         input_ids = {n["id"] for n in result["nodes"] if n["data"]["nodeType"] in {"INPUT", "INPUT_GROUP"}}
         input_edges = {(e["source"], e["target"]) for e in result["edges"] if e.get("data", {}).get("edgeType") == "input"}
 
@@ -329,7 +330,7 @@ class TestRenderGraph:
         """``simplify=False`` keeps every declared/inferred dependency —
         pruning must be opt-out, never an artifact of the render pipeline."""
         graph = Graph(nodes=[step_a, step_b, step_c, step_d])
-        result = render_graph(graph.to_flat_graph(), simplify=False)
+        result = render_graph(graph.to_flat_graph(), simplify=False, show_inputs=True, show_bounded_inputs=False)
 
         edge_pairs = {(edge["source"], edge["target"]) for edge in result["edges"]}
 
@@ -342,7 +343,7 @@ class TestRenderGraph:
         """``simplify`` defaults on: ``step_b → step_d`` is implied by
         ``step_b → step_c → step_d``, so the shortcut is dropped."""
         graph = Graph(nodes=[step_a, step_b, step_c, step_d])
-        result = render_graph(graph.to_flat_graph())
+        result = render_graph(graph.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
 
         edge_pairs = {(edge["source"], edge["target"]) for edge in result["edges"]}
 
@@ -354,7 +355,7 @@ class TestRenderGraph:
     def test_start_node_for_explicit_entrypoint(self):
         """Configured entrypoints get a synthetic START node and edge."""
         graph = Graph(nodes=[double, add]).with_entrypoint("add")
-        result = render_graph(graph.to_flat_graph())
+        result = render_graph(graph.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
 
         start_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "START"]
         assert len(start_nodes) == 1
@@ -367,7 +368,7 @@ class TestRenderGraph:
     def test_no_start_node_without_explicit_entrypoint(self):
         """No synthetic START node is rendered by default."""
         graph = Graph(nodes=[double, add])
-        result = render_graph(graph.to_flat_graph())
+        result = render_graph(graph.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
 
         assert all(n["data"]["nodeType"] != "START" for n in result["nodes"])
 
@@ -394,7 +395,7 @@ class TestRenderGraph:
         )
         outer = Graph(nodes=[inner.as_node()], entrypoint="inner")
 
-        result = render_graph(outer.to_flat_graph(), depth=1)
+        result = render_graph(outer.to_flat_graph(), depth=1, show_inputs=True, show_bounded_inputs=False)
 
         start_edges = [e for e in result["edges"] if e["source"] == "__start__"]
         assert len(start_edges) == 1
@@ -406,7 +407,7 @@ class TestRenderGraph:
         inner = Graph(nodes=[double], name="inner")
         outer = Graph(nodes=[inner.as_node(), add])
 
-        result = render_graph(outer.to_flat_graph(), depth=1)
+        result = render_graph(outer.to_flat_graph(), depth=1, show_inputs=True, show_bounded_inputs=False)
 
         # Should have FUNCTION/PIPELINE nodes from both outer and inner
         fn_and_pipeline_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] in ("FUNCTION", "PIPELINE")]
@@ -429,7 +430,7 @@ class TestRenderGraph:
         inner = Graph(nodes=[double], name="inner")
         outer = Graph(nodes=[inner.as_node(), add])
 
-        result = render_graph(outer.to_flat_graph(), depth=0)
+        result = render_graph(outer.to_flat_graph(), depth=0, show_inputs=True, show_bounded_inputs=False)
 
         # All nodes should be present (children included for click-to-expand)
         # Visibility is controlled by JS based on expansion state
@@ -467,7 +468,7 @@ class TestRenderGraph:
         middle = Graph(nodes=[inner.as_node(), validate], name="middle")
         outer = Graph(nodes=[middle.as_node()])
 
-        result = render_graph(outer.to_flat_graph(), depth=0)
+        result = render_graph(outer.to_flat_graph(), depth=0, show_inputs=True, show_bounded_inputs=False)
 
         middle_node = next(n for n in result["nodes"] if n["id"] == "middle")
         output_names = {output["name"] for output in middle_node["data"].get("outputs", [])}
@@ -488,7 +489,7 @@ class TestRenderGraph:
         inner = Graph(nodes=[split, consume], name="inner")
         outer = Graph(nodes=[inner.as_node()])
 
-        result = render_graph(outer.to_flat_graph(), depth=0)
+        result = render_graph(outer.to_flat_graph(), depth=0, show_inputs=True, show_bounded_inputs=False)
 
         inner_node = next(n for n in result["nodes"] if n["id"] == "inner")
         output_names = {output["name"] for output in inner_node["data"].get("outputs", [])}
@@ -509,7 +510,7 @@ class TestRenderGraph:
         inner = Graph(nodes=[produce, wait_only], name="inner", edges=[(produce, wait_only)])
         outer = Graph(nodes=[inner.as_node()])
 
-        result = render_graph(outer.to_flat_graph(), depth=0)
+        result = render_graph(outer.to_flat_graph(), depth=0, show_inputs=True, show_bounded_inputs=False)
 
         inner_node = next(n for n in result["nodes"] if n["id"] == "inner")
         output_names = {output["name"] for output in inner_node["data"].get("outputs", [])}
@@ -535,7 +536,7 @@ class TestRenderGraph:
         middle = Graph(nodes=[inner.as_node(), validate], name="middle")
         outer = Graph(nodes=[middle.as_node()])
 
-        result = render_graph(outer.to_flat_graph(), depth=0, separate_outputs=True)
+        result = render_graph(outer.to_flat_graph(), depth=0, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
         data_node_ids = {n["id"] for n in result["nodes"] if n["data"]["nodeType"] == "DATA"}
 
@@ -547,7 +548,7 @@ class TestRenderGraph:
         """Notebook regression: no INPUT nodes/edges should appear with show_inputs=False."""
         graph = _build_interrupt_cycle_graph()
 
-        result = render_graph(graph.to_flat_graph(), depth=0, show_inputs=False)
+        result = render_graph(graph.to_flat_graph(), depth=0, show_inputs=False, show_bounded_inputs=False)
 
         # Initial state should hide input nodes and input edges.
         assert all(n["data"]["nodeType"] not in {"INPUT", "INPUT_GROUP"} for n in result["nodes"])
@@ -679,7 +680,7 @@ class TestNodeToParentMap:
         inner = Graph(nodes=[double], name="inner")
         outer = Graph(nodes=[inner.as_node(), add])
 
-        result = render_graph(outer.to_flat_graph())
+        result = render_graph(outer.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
 
         # Assert node_to_parent exists in meta
         assert "node_to_parent" in result["meta"]
@@ -702,7 +703,7 @@ class TestNodeToParentMap:
         level1 = Graph(nodes=[level2.as_node()], name="level1")
         outer = Graph(nodes=[level1.as_node()])
 
-        result = render_graph(outer.to_flat_graph())
+        result = render_graph(outer.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
         node_to_parent = result["meta"]["node_to_parent"]
 
         # triple's parent is level2 (hierarchical IDs: level1/level2/triple)
@@ -717,7 +718,7 @@ class TestNodeToParentMap:
     def test_node_to_parent_map_empty_for_flat_graph(self):
         """Test node_to_parent map is empty when graph has no nesting."""
         graph = Graph(nodes=[double, add])
-        result = render_graph(graph.to_flat_graph())
+        result = render_graph(graph.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
 
         node_to_parent = result["meta"]["node_to_parent"]
 
@@ -750,7 +751,7 @@ class TestExclusiveBranchEdges:
 
     def test_merged_mode_marks_exclusive(self):
         graph = self._build_ifelse_merge_graph()
-        result = render_graph(graph.to_flat_graph(), separate_outputs=False)
+        result = render_graph(graph.to_flat_graph(), separate_outputs=False, show_inputs=True, show_bounded_inputs=False)
 
         data_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data"]
         assert len(data_edges) == 2
@@ -759,7 +760,7 @@ class TestExclusiveBranchEdges:
 
     def test_separate_mode_marks_exclusive(self):
         graph = self._build_ifelse_merge_graph()
-        result = render_graph(graph.to_flat_graph(), separate_outputs=True)
+        result = render_graph(graph.to_flat_graph(), separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
         consumer_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data" and e["target"] == "consumer"]
         assert len(consumer_edges) == 2
@@ -790,7 +791,7 @@ class TestExclusiveBranchEdges:
         consumers = Graph([consumer], name="consumers")
         graph = Graph([producers.as_node(), consumers.as_node()])
 
-        result = render_graph(graph.to_flat_graph(), depth=1, separate_outputs=True)
+        result = render_graph(graph.to_flat_graph(), depth=1, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
         consumer_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data" and e["target"] == "consumers/consumer"]
         assert {e["source"] for e in consumer_edges} == {
@@ -824,7 +825,7 @@ class TestExclusiveBranchEdges:
         consumers = Graph([consumer], name="consumers")
         graph = Graph([producers.as_node(), consumers.as_node()])
 
-        result = render_graph(graph.to_flat_graph(), depth=2, separate_outputs=True)
+        result = render_graph(graph.to_flat_graph(), depth=2, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
         consumer_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data" and e["target"] == "consumers/consumer"]
         assert {e["source"] for e in consumer_edges} == {
@@ -849,7 +850,7 @@ class TestExclusiveBranchEdges:
             return "b"
 
         graph = Graph([Graph([decide, branch_a, branch_b], name="inner").as_node()])
-        result = render_graph(graph.to_flat_graph(), depth=1, separate_outputs=True)
+        result = render_graph(graph.to_flat_graph(), depth=1, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
 
         labels_by_target = {e["target"]: e["data"].get("label") for e in result["edges"] if e.get("data", {}).get("edgeType") == "control"}
         assert labels_by_target["inner/branch_a"] == "True"
@@ -865,7 +866,7 @@ class TestExclusiveBranchEdges:
             return x + 1
 
         graph = Graph([first, second])
-        result = render_graph(graph.to_flat_graph())
+        result = render_graph(graph.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
 
         data_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data"]
         assert len(data_edges) == 1
@@ -891,7 +892,7 @@ class TestExclusiveBranchEdges:
             return value
 
         graph = Graph([decide, path_a, path_b, consumer])
-        result = render_graph(graph.to_flat_graph())
+        result = render_graph(graph.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
 
         data_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data" and e["target"] == "consumer"]
         assert len(data_edges) == 2
@@ -917,7 +918,7 @@ class TestExclusiveBranchEdges:
             return value + value_b
 
         graph = Graph([fan_out, path_a, path_b, consumer])
-        result = render_graph(graph.to_flat_graph())
+        result = render_graph(graph.to_flat_graph(), show_inputs=True, show_bounded_inputs=False)
 
         data_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data" and e["target"] == "consumer"]
         assert all(e["data"]["exclusive"] is False for e in data_edges)

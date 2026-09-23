@@ -106,7 +106,7 @@ def test_mounted_flat_graph_carries_the_fanout_edge(mounted_graph):
 def test_mounted_mapped_node_is_not_an_island(mounted_graph):
     """Fully expanded, the mapped container has an incoming edge — dagre can
     rank it below its producer instead of parking it at the top."""
-    scene = scene_for_state(mounted_graph, expand_all=True)
+    scene = scene_for_state(mounted_graph, expand_all=True, show_inputs=True, show_bounded_inputs=False)
     edges = scene["edges"]
 
     fanout = [e for e in edges if e["source"] == "materialize/build_pages"]
@@ -124,7 +124,7 @@ def test_outer_input_pill_never_claims_map_fed_consumers(mounted_graph):
     (outer_pill,) = [e for e in ir.external_inputs if e.params == ("source_uri",) and not e.map_fed]
     assert set(outer_pill.consumers) == {"stage", "materialize/load_bytes", "materialize/build_pages"}
 
-    scene = scene_for_state(mounted_graph, expand_all=True)
+    scene = scene_for_state(mounted_graph, expand_all=True, show_inputs=True, show_bounded_inputs=False)
     lies = [e for e in scene["edges"] if e["source"] == outer_pill.synthetic_id and e["target"].startswith("materialize/derive_pages/")]
     assert lies == [], f"outer pill must not reach into the mapped container: {lies}"
 
@@ -154,7 +154,7 @@ def test_map_fed_field_pills_are_synthesized_for_the_mounted_container(mounted_g
 def test_previously_islanded_field_consumer_gets_its_edge(mounted_graph):
     """``page_title`` (consumes only a row-fed field) is reachable when fully
     expanded: fan-out edge → doc_name pill → page_title."""
-    scene = scene_for_state(mounted_graph, expand_all=True)
+    scene = scene_for_state(mounted_graph, expand_all=True, show_inputs=True, show_bounded_inputs=False)
     edges = scene["edges"]
 
     incoming = [e for e in edges if e["target"] == "materialize/derive_pages/page_title"]
@@ -225,7 +225,7 @@ def test_receipt_gets_a_synthesized_output_anchor(mounted_graph):
 def test_expanded_container_never_sources_the_receipt_from_its_hull(mounted_graph):
     """An edge's source must be a node; only a COLLAPSED container may stand
     in as one. Expanded, the receipt edge leaves the anchor pill."""
-    scene = scene_for_state(mounted_graph, expand_all=True)
+    scene = scene_for_state(mounted_graph, expand_all=True, show_inputs=True, show_bounded_inputs=False)
     visible_edges = [e for e in scene["edges"] if not e.get("hidden")]
 
     assert [e for e in visible_edges if e["source"] == "materialize"] == []
@@ -241,7 +241,7 @@ def test_expanded_container_never_sources_the_receipt_from_its_hull(mounted_grap
 def test_receipt_anchor_stays_hidden_while_collapsed(mounted_graph):
     """Collapsed keeps the historical picture: the box itself sources the
     edge and no anchor pill leaks out of it."""
-    scene = scene_for_state(mounted_graph)
+    scene = scene_for_state(mounted_graph, show_inputs=True, show_bounded_inputs=False)
 
     (anchor_node,) = [n for n in scene["nodes"] if n["id"] == ANCHOR_ID]
     assert anchor_node["hidden"]
@@ -252,7 +252,7 @@ def test_receipt_anchor_stays_hidden_while_collapsed(mounted_graph):
 def test_receipt_anchor_is_the_value_pill_in_separate_outputs(mounted_graph):
     """separate_outputs must not interpose a DATA node for an anchor-sourced
     edge — the anchor already IS the value pill."""
-    scene = scene_for_state(mounted_graph, expand_all=True, separate_outputs=True)
+    scene = scene_for_state(mounted_graph, expand_all=True, separate_outputs=True, show_inputs=True, show_bounded_inputs=False)
     visible_edges = [e for e in scene["edges"] if not e.get("hidden")]
 
     (receipt,) = [e for e in visible_edges if e["target"] == "publish"]

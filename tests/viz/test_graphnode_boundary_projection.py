@@ -18,7 +18,7 @@ def test_namespaced_graphnode_input_renders_resolved_address_and_routes_to_leaf(
     assert external.consumers == ("retrieval/retrieve",)
     assert external.deepest_owner == "retrieval"
 
-    scene = build_initial_scene(ir, expansion_state={"retrieval": True})
+    scene = build_initial_scene(ir, expansion_state={"retrieval": True}, show_inputs=True, show_bounded_inputs=False)
     input_node = next(n for n in scene["nodes"] if n["id"] == "input_query")
     input_edges = [e for e in scene["edges"] if e["source"] == "input_query" and not e.get("hidden")]
 
@@ -50,7 +50,7 @@ def test_exposed_shared_input_renders_once_at_parent_boundary():
     assert set(external.consumers) == {"retrieval/retrieve", "generation/generate"}
     assert external.deepest_owner is None
 
-    scene = build_initial_scene(ir, expansion_state={"retrieval": True, "generation": True})
+    scene = build_initial_scene(ir, expansion_state={"retrieval": True, "generation": True}, show_inputs=True, show_bounded_inputs=False)
     input_nodes = [n for n in scene["nodes"] if n["data"]["nodeType"] == "INPUT"]
     input_edges = [e for e in scene["edges"] if e["source"] == "input_query" and not e.get("hidden")]
 
@@ -75,7 +75,7 @@ def test_exposed_shared_input_routes_to_collapsed_graph_boundaries():
     )
     ir = build_graph_ir(graph.to_flat_graph())
 
-    scene = build_initial_scene(ir, expansion_state={})
+    scene = build_initial_scene(ir, expansion_state={}, show_inputs=True, show_bounded_inputs=False)
     input_edges = [e for e in scene["edges"] if e["source"] == "input_query" and not e.get("hidden")]
 
     assert {edge["target"] for edge in input_edges} == {"retrieval", "generation"}
@@ -102,7 +102,7 @@ def test_exposed_shared_input_routes_to_visible_mixed_expansion_boundaries():
     )
     ir = build_graph_ir(graph.to_flat_graph())
 
-    scene = build_initial_scene(ir, expansion_state={"retrieval": True})
+    scene = build_initial_scene(ir, expansion_state={"retrieval": True}, show_inputs=True, show_bounded_inputs=False)
     input_edges = [e for e in scene["edges"] if e["source"] == "input_query" and not e.get("hidden")]
 
     assert {(edge["source"], edge["target"]) for edge in input_edges} == {

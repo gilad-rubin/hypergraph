@@ -34,8 +34,8 @@ def render_graph(
     theme: str = "auto",
     show_types: bool = True,
     separate_outputs: bool = False,
-    show_inputs: bool = True,
-    show_bounded_inputs: bool = False,
+    show_inputs: bool,
+    show_bounded_inputs: bool,
     simplify: bool = True,
     debug_overlays: bool = False,
 ) -> dict[str, Any]:
@@ -43,6 +43,8 @@ def render_graph(
 
     Returns a single-state scene plus the IR (so downstream JS can
     re-derive subsequent expansion states without a kernel).
+    ``show_inputs`` and ``show_bounded_inputs`` have no default here: the
+    caller passes values ``widget._resolve_input_visibility`` already resolved.
     """
     expansion_state = build_expansion_state(flat_graph, depth)
     ir = build_graph_ir(flat_graph)

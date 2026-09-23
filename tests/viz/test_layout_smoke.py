@@ -36,7 +36,7 @@ pytestmark = pytest.mark.skipif(NODE is None, reason="Node.js not installed")
 
 def _layout(flat: Any, depth: int) -> dict[str, Any]:
     """Run performCompoundLayout over the scene at ``depth``."""
-    scene = render_graph(flat, depth=depth, separate_outputs=False)
+    scene = render_graph(flat, depth=depth, separate_outputs=False, show_inputs=True, show_bounded_inputs=False)
     payload = json.dumps(
         {
             "scene": {"nodes": scene["nodes"], "edges": scene["edges"]},
@@ -172,7 +172,7 @@ def test_no_edge_targets_an_expanded_container():
     so no scene edge may point at a container that is currently expanded.
     """
     flat = Graph([_table().as_node(name="materialize_docs")], name="ingest").to_flat_graph()
-    scene = render_graph(flat, depth=2, separate_outputs=False)
+    scene = render_graph(flat, depth=2, separate_outputs=False, show_inputs=True, show_bounded_inputs=False)
     expansion = build_expansion_state(flat, 2)
     parents = {n["id"]: n.get("parentNode") for n in scene["nodes"]}
     containers = {parent for parent in parents.values() if parent}

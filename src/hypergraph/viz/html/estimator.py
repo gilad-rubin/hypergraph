@@ -54,8 +54,8 @@ class LayoutEstimator:
         *,
         separate_outputs: bool = False,
         show_types: bool = False,
-        show_inputs: bool = True,
-        show_bounded_inputs: bool = False,
+        show_inputs: bool,
+        show_bounded_inputs: bool,
         depth: int = 0,
     ):
         self.graph = graph
@@ -274,8 +274,8 @@ def estimate_layout(
     *,
     separate_outputs: bool = False,
     show_types: bool = False,
-    show_inputs: bool = True,
-    show_bounded_inputs: bool = False,
+    show_inputs: bool,
+    show_bounded_inputs: bool,
     depth: int = 0,
 ) -> tuple[int, int]:
     """Convenience function to estimate layout dimensions.
@@ -284,8 +284,10 @@ def estimate_layout(
         graph: The hypergraph Graph to estimate
         separate_outputs: Whether outputs are rendered as separate DATA nodes
         show_types: Whether type annotations are shown
-        show_inputs: Whether external inputs are rendered
+        show_inputs: Whether external inputs are rendered (resolved by the
+            caller; no default here)
         show_bounded_inputs: Whether bound external inputs are rendered
+            (resolved by the caller; no default here)
         depth: Depth of nested graph expansion
 
     Returns:

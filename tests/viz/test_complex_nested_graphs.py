@@ -12,7 +12,9 @@ def _expanded_edges(graph_or_result, *, separate_outputs: bool = False, simplify
     embedded in ``meta``).
     """
     if hasattr(graph_or_result, "to_flat_graph"):
-        scene = scene_for_state(graph_or_result, expand_all=True, separate_outputs=separate_outputs, simplify=simplify)
+        scene = scene_for_state(
+            graph_or_result, expand_all=True, separate_outputs=separate_outputs, simplify=simplify, show_inputs=True, show_bounded_inputs=False
+        )
         return [e for e in scene["edges"] if not e.get("hidden")]
     raise TypeError("_expanded_edges expects a Graph instance")
 
