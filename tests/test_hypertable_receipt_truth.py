@@ -24,7 +24,7 @@ from typing import Any, TypedDict
 import pytest
 
 from hypergraph import Graph, node
-from hypergraph.materialization import TableStore, WriteOutcome
+from hypergraph.materialization import RowStatus, TableStore, WriteOutcome
 from hypergraph.materialization._provenance import split_boundary_provenance
 from hypergraph.runners import SyncRunner
 
@@ -304,7 +304,7 @@ def test_an_unknown_stored_status_is_refused_with_a_clear_message():
 
 
 # ---------------------------------------------------------------------------
-# 5. Items that share a child identity occupy one child row (#470)
+# 5. Items that share a child identity are refused (#470, #499)
 # ---------------------------------------------------------------------------
 
 
@@ -341,73 +341,76 @@ def _snapshot(store) -> dict[str, list[dict[str, Any]]]:
     return {name: [row.copy() for row in rows] for name, rows in store.rows.items()}
 
 
-def test_a_repeated_child_identity_settles_to_a_zero_work_skip():
-    """Two mapped items with the same identity occupy ONE child row, because
-    the logical child key is (parent identity, child identity). The parent row
-    used to record the raw item count (3) while every freshness check counted
-    deduplicated child rows (2), so the two could never agree: every write
-    re-ran the fan-out boundary and reported HEALED forever, with nothing
-    damaged and nothing derived. The recorded count is now the number of
-    distinct child identities, so an untouched row is a SKIPPED that runs
-    nothing and writes nothing."""
+def test_a_repeated_child_identity_is_refused_and_never_settles_to_a_skip():
+    """Two mapped items with the same identity would occupy ONE child row,
+    because the logical child key is (parent identity, child identity). #470
+    made the recorded count agree with that row so the write settled to a
+    zero-work SKIPPED; the second item's derived values were still lost
+    silently. The collision is now refused (#499): under ``on_error="store"``
+    the row is an ERROR row naming it, no child graph runs and no child row is
+    written, and every later write retries the row and is refused again — it
+    never reports SKIPPED or HEALED over items that collide."""
 
     store = MemoryStore()
-    _content_identity_table(store).insert(doc_id="d1", text="alpha beta alpha")
+    receipt = _content_identity_table(store).insert([{"doc_id": "d1", "text": "alpha beta alpha"}])
 
-    assert _recorded_child_count(store) == 2, "the stamp records distinct child identities, not items"
+    assert [(row.outcome.value, row.status.value) for row in receipt.receipts] == [("inserted", "error")]
+    assert "DuplicateChildIdentityError: Child table 'utterance' got two items with utterance_id='alpha'" in receipt.receipts[0].error
+    assert executions["child"] == 0
+    assert store.rows["utterance"] == []
+    assert _parent_row(store).get("_provenance_utterances") is None, "an error row records no boundary stamp"
 
-    for attempt in range(4):
+    for attempt in range(2):
         _reset_counters()
-        before = _snapshot(store)
         receipt = _content_identity_table(MemoryStore(store.rows)).sync([{"doc_id": "d1", "text": "alpha beta alpha"}])
 
-        assert [(row.outcome.value, row.status.value) for row in receipt.receipts] == [("skipped", "complete")], f"sync #{attempt + 1}"
-        assert (executions["split"], executions["child"]) == (0, 0), f"sync #{attempt + 1} must not re-run the boundary"
-        assert store.rows == before, f"sync #{attempt + 1} must not write"
-
-    _reset_counters()
-    receipt = _content_identity_table(MemoryStore(store.rows)).insert([{"doc_id": "d1", "text": "alpha beta alpha"}])
-
-    assert [(row.outcome.value, row.status.value) for row in receipt.receipts] == [("skipped", "complete")]
-    assert (executions["split"], executions["child"]) == (0, 0)
-    assert _content_identity_table(MemoryStore(store.rows)).status().is_fresh
+        assert [(row.outcome.value, row.status.value) for row in receipt.receipts] == [("updated", "error")], f"sync #{attempt + 1}"
+        assert executions["child"] == 0, f"sync #{attempt + 1} must not run a child graph"
+        assert store.rows["utterance"] == [], f"sync #{attempt + 1} must not write a child row"
 
 
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
+        ("alpha", 1),
         ("alpha beta gamma", 3),
-        ("alpha beta alpha", 2),
-        ("alpha beta alpha alpha", 2),
+        ("alpha beta alpha", None),
+        ("alpha beta alpha alpha", None),
     ],
 )
-def test_the_recorded_child_count_tracks_distinct_identities(text, expected):
-    """Falsifier: the stamp is not a constant. A unique third word is a third
-    child row; a third repeat of an existing word is not."""
+def test_the_recorded_child_count_is_the_item_count_of_every_accepted_write(text, expected):
+    """Falsifier: the stamp is not a constant — a unique third word is a third
+    child row. A repeated word is no longer folded into one row and counted
+    once: the write is refused, so no stamp is recorded and no child row is
+    written."""
 
     store = MemoryStore()
-    _content_identity_table(store).insert(doc_id="d1", text=text)
+    receipt = _content_identity_table(store).insert(doc_id="d1", text=text)
 
-    assert _recorded_child_count(store) == expected
-    assert _recorded_child_count(store) == len({row["utterance_id"] for row in store.rows["utterance"]})
+    if expected is None:
+        assert receipt.status.value == "error"
+        assert _parent_row(store).get("_provenance_utterances") is None
+        assert store.rows["utterance"] == []
+    else:
+        assert receipt.status.value == "complete"
+        assert _recorded_child_count(store) == expected == len(text.split())
+        assert _recorded_child_count(store) == len({row["utterance_id"] for row in store.rows["utterance"]})
 
 
-def test_an_item_without_the_identity_field_counts_as_the_empty_identity():
-    """Failure path: an item that does not carry the child identity is stored
-    under the empty identity, so it shares one child row with an item that
-    carries ``""`` explicitly. The recorded count keys a missing field as
-    ``""`` exactly as the deduplicating read does, so the two agree and
-    nothing raises."""
+def test_items_without_the_identity_field_collide_on_the_empty_identity_and_are_refused():
+    """Failure path: an item that does not carry the child identity keys as
+    the empty identity, exactly as the deduplicating read does, so it collides
+    with an item that carries ``""`` explicitly. The write is refused with a
+    message that says the field is missing, instead of storing one row for
+    both."""
 
     store = MemoryStore()
-    _content_identity_table(store, split_words_without_identity).insert(doc_id="d1", text="alpha beta")
+    receipt = _content_identity_table(store, split_words_without_identity).insert(doc_id="d1", text="alpha beta")
 
-    assert _recorded_child_count(store) == 1
-    _reset_counters()
-    receipt = _content_identity_table(MemoryStore(store.rows), split_words_without_identity).sync([{"doc_id": "d1", "text": "alpha beta"}])
-
-    assert [(row.outcome.value, row.status.value) for row in receipt.receipts] == [("skipped", "complete")]
-    assert (executions["split"], executions["child"]) == (0, 0)
+    assert receipt.status.value == "error"
+    assert "got two items with no utterance_id under parent 'd1': the field is missing or empty on both" in receipt.error
+    assert executions["child"] == 0
+    assert store.rows["utterance"] == []
 
 
 @node(output_name=("utterances", "word_count"))
@@ -425,32 +428,34 @@ def split_words_by_content_counting(text: str) -> tuple[list[Utterance], int]:
         pytest.param(split_words_by_content_counting, id="counting-boundary"),
     ],
 )
-def test_a_row_stamped_with_the_raw_item_count_resettles_after_one_boundary_run(splitter):
-    """Migration: a row written before #470 recorded the raw item count. Over a
-    colliding child set that stamp disagrees with the store once, so the next
-    sync() re-runs the boundary exactly once and re-stamps the distinct count;
-    every sync() after that is a zero-execution, zero-write SKIPPED. Both
-    boundary shapes converge: the plain one through the reconcile path, the one
-    that also produces a stored parent column through the whole-graph repair."""
+def test_a_legacy_row_whose_stored_children_collided_becomes_an_error_row(splitter, monkeypatch):
+    """Failure path: a row written before #499 (and before #470) over
+    colliding items is COMPLETE, holds ONE child row for the two colliding
+    items, and records the raw item count. That count disagrees with the store,
+    so the next sync() re-runs the boundary — and the refusal meets the
+    collision there: under ``on_error="store"`` the row becomes an ERROR row
+    naming it, never SKIPPED or HEALED, no child graph runs, and the stored
+    child rows are neither restamped nor retired. Both boundary shapes: the
+    plain one reaches the refusal through the column reconcile, the one that
+    also produces a stored parent column through the whole-graph repair."""
 
     store = MemoryStore()
-    _content_identity_table(store, splitter).insert(doc_id="d1", text="alpha beta alpha")
+    with monkeypatch.context() as before_the_refusal:
+        before_the_refusal.setattr("hypergraph.materialization._writes.refuse_colliding_identities", lambda *args, **kwargs: None)
+        _content_identity_table(store, splitter).insert(doc_id="d1", text="alpha beta alpha")
     parent = _parent_row(store)
+    assert RowStatus.of_stored(parent) is RowStatus.COMPLETE
     provenance, _ = split_boundary_provenance(parent["_provenance_utterances"])
     parent["_provenance_utterances"] = f"{provenance}#3"
+    children = [row.copy() for row in store.rows["utterance"]]
+    assert sorted({row["utterance_id"] for row in children}) == ["alpha", "beta"], "three items, two logical rows: the silent loss"
     _reset_counters()
 
-    _content_identity_table(MemoryStore(store.rows), splitter).sync([{"doc_id": "d1", "text": "alpha beta alpha"}])
+    receipt = _content_identity_table(MemoryStore(store.rows), splitter).sync([{"doc_id": "d1", "text": "alpha beta alpha"}])
 
-    assert executions["split"] == 1, "the old stamp re-runs the boundary once"
-    assert executions["child"] == 0, "no child row is re-derived"
-    assert _recorded_child_count(store) == 2, "the migration pass re-stamps the distinct count"
-
-    for attempt in range(2):
-        _reset_counters()
-        before = _snapshot(store)
-        receipt = _content_identity_table(MemoryStore(store.rows), splitter).sync([{"doc_id": "d1", "text": "alpha beta alpha"}])
-
-        assert [(row.outcome.value, row.status.value) for row in receipt.receipts] == [("skipped", "complete")], f"sync #{attempt + 1}"
-        assert (executions["split"], executions["child"]) == (0, 0), f"sync #{attempt + 1} must not re-run the boundary"
-        assert store.rows == before, f"sync #{attempt + 1} must not write"
+    assert [(row.outcome.value, row.status.value) for row in receipt.receipts] == [("updated", "error")]
+    assert "utterance_id='alpha' under parent 'd1'" in receipt.receipts[0].error
+    assert executions["split"] >= 1, "the stale stamp re-ran the boundary"
+    assert executions["child"] == 0, "no child graph ran"
+    assert store.rows["utterance"] == children, "no child row was restamped or retired"
+    assert [row.id for row in _content_identity_table(MemoryStore(store.rows), splitter).errors()] == ["d1"]

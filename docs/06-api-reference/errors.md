@@ -2,9 +2,9 @@
 
 Hypergraph rejects unsupported execution promises before user code runs and
 preserves the exact exception that actually settled an attempt. This page
-covers the retry/timeout exceptions and the stable
-[diagnostic code registry](#diagnostic-code-registry); runner and graph APIs
-document their other validation errors next to each operation.
+covers the retry/timeout exceptions, the [HyperTable errors](#hypertable-errors)
+and the stable [diagnostic code registry](#diagnostic-code-registry); runner
+and graph APIs document their other validation errors next to each operation.
 
 ## The privacy boundary
 
@@ -180,6 +180,34 @@ class AttemptOutcomeUnknownError(Exception):
 Reconcile external side effects of the unknown attempt first; then resume the
 workflow again to retry, or fork / start a new workflow for a fresh attempt
 series.
+
+## HyperTable errors
+
+### DuplicateChildIdentityError
+
+```python
+from hypergraph import DuplicateChildIdentityError
+```
+
+Raised by a HyperTable write when two mapped items under one parent row produce
+the same child identity. The child key is `(parent identity, child identity)`,
+so the two items would share one child row and one item's derived values would
+be lost; the write is refused before any child graph runs and before any child
+row of that parent is written. An item without the identity field counts as the
+empty identity, so two such items collide too.
+
+```python
+class DuplicateChildIdentityError(ValueError):
+    table: str      # the child table, e.g. "word"
+    identity: str   # the child identity field, e.g. "word_id"
+    value: str      # the identity two items shared ("" when missing)
+    parent: str     # the parent row's identity value
+```
+
+Under `on_error="store"` the parent is stored as an `ERROR` row carrying this
+message instead of raising. Derive the child identity from something unique per
+item — an index, a position, a content hash plus index. See
+[Child tables](../08-hypertable/api-reference.md#child-tables).
 
 ## Diagnostic code registry
 

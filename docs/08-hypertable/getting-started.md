@@ -242,10 +242,13 @@ may reference either child columns or parent columns.
 
 A child row is keyed by its parent's identity plus its own, so the child
 identity must be unique within one parent. Two mapped items that produce the
-same `page_id` for one document occupy one child row, and `rows()`, `get()`
-and `count()` return only one of them. Derive the identity from something
-unique per item, such as the loop index, rather than from content that can
-repeat.
+same `page_id` for one document would share one child row, so the write is
+refused with `DuplicateChildIdentityError` before any child graph runs; under
+`on_error="store"` the document is stored as an error row instead. An item
+without a `page_id` counts as the empty identity, so two such items collide
+too. Derive the identity from something unique per item, such as the loop
+index, rather than from content that can repeat. Each child table is named
+after its identity (`page_id` → `page`), so two fan-outs need two identities.
 
 A value the child graph `bind()`s is recipe, not data, so it is not a child
 column: it never appears in `rows()`, a mapped-item field of that name is

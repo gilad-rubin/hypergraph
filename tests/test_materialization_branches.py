@@ -11,7 +11,7 @@ from typing import TypedDict
 
 import pytest
 
-from hypergraph import AsyncRunner, Graph, GraphConfigError, node
+from hypergraph import AsyncRunner, DuplicateChildIdentityError, Graph, GraphConfigError, node
 from hypergraph.materialization import (
     LanceDBStore,
     MaterializationBranch,
@@ -269,26 +269,69 @@ def content_id_recipe() -> Graph:
     )
 
 
-def test_a_repeated_chunk_identity_leaves_the_branch_fresh(store: LanceDBStore) -> None:
+def test_a_repeated_chunk_identity_is_refused_by_the_branch(store: LanceDBStore) -> None:
     """A chunk identity taken from the chunk text repeats when the text does.
-    Both repeats occupy one child row, so the branch records one chunk for
-    them; it used to record the raw item count, stayed stale forever and
-    re-ran its chunk boundary on every sync() (#470)."""
+    The two repeats would share one chunk row and one chunk's derived values
+    would be lost, so the branch refuses the write before any chunk graph runs
+    and before any chunk row is written (#499). Before that the branch folded
+    both into one row and settled (#470)."""
 
     table = content_table(store)
     table.insert([{"doc_id": "d-1", "text": "Alpha beta|alpha"}])
     candidate = attach(table, "content-ids", content_id_recipe())
-
-    assert candidate.sync().updated == 1
-    assert candidate.status().is_fresh
     before = dict(CALLS)
 
-    receipt = candidate.sync()
+    with pytest.raises(DuplicateChildIdentityError) as caught:
+        candidate.sync()
 
-    assert receipt.skipped == 1
-    assert receipt.updated == 0
-    assert dict(CALLS) == before, "an untouched branch re-runs neither the chunk boundary nor a chunk"
-    assert candidate.status().is_fresh
+    error = caught.value
+    assert (error.table, error.identity, error.value, error.parent) == ("chunk", "chunk_id", "alpha", "d-1")
+    assert dict(CALLS) == {**before, "chunk:words": before["chunk:words"] + 1}, "only the chunk boundary ran"
+    assert candidate.status().children[0].total == 0, "no chunk row was written"
+    assert not candidate.status().is_fresh
+
+
+class Token(TypedDict):
+    token_id: str
+    token_text: str
+
+
+@node(output_name="tokens")
+def tokens_by_content(pages_text: str) -> list[Token]:
+    return [Token(token_id=word, token_text=word) for word in pages_text.replace("|", " ").split()]
+
+
+@node(output_name="token_label")
+def label_token(token_text: str) -> str:
+    CALLS["label"] += 1
+    return token_text.upper()
+
+
+def test_a_collision_in_one_branch_grain_leaves_every_grain_untouched(store: LanceDBStore) -> None:
+    """Every child grain's item list is checked before the first child write:
+    the chunk grain (positional ids, a new embedder) comes first and would
+    derive new vectors, the token grain (content ids) collides. The refusal
+    leaves the chunk rows exactly as they were — no chunk graph ran."""
+
+    chunks = Graph([normalize_chunk, embed_chunk], name="prepare_chunk").as_node(name="prepared_chunks").map_over("chunks", identity="chunk_id")
+    tokens = Graph([label_token], name="label_tokens").as_node(name="labelled_tokens").map_over("tokens", identity="token_id")
+    recipe = Graph([parse_pages, chunk_pages, tokens_by_content, chunks, tokens], name="search_index_recipe").bind(
+        chunker=Chunker("words"),
+        embedder=Embedder("embed-b"),
+    )
+    table = content_table(store)
+    table.insert([{"doc_id": "d-1", "text": "Alpha beta|alpha"}])
+    candidate = attach(table, "two-grains", recipe)
+    chunk_table = candidate.output("vector").table
+    generations = sorted(row["_write_gen"] for row in store.read_rows(chunk_table))
+
+    with pytest.raises(DuplicateChildIdentityError, match="Child table 'token'"):
+        candidate.sync()
+
+    assert CALLS["embed:embed-b"] == 0 and CALLS["label"] == 0, "no child graph of either grain ran"
+    rows = store.read_rows(chunk_table)
+    assert sorted(row["_write_gen"] for row in rows) == generations, "no chunk row was rewritten"
+    assert all(row.get(candidate.output("vector").column) is None for row in rows), "no branch vector was written"
 
 
 def test_root_delete_converges_every_registered_branch_without_open_handles(

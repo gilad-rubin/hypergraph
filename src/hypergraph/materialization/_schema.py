@@ -14,6 +14,8 @@ import typing
 from dataclasses import dataclass, field
 from typing import Any
 
+from hypergraph.graph import GraphConfigError
+
 # --- Reserved / internal column names (one source of truth) ---
 
 FINGERPRINT_COLUMNS = ("_row_fingerprint", "_write_gen")
@@ -244,7 +246,26 @@ def analyze_table(
         _validate_column_name(inp_name, "source")
         root_columns.append(_column(inp_name, role="source", content_key=True, python_type=input_types.get(inp_name, str)))
 
-    child_specs = [spec for map_node in map_over_nodes if (spec := _analyze_map_over(map_node, components)) is not None]
+    child_specs: list[TableSpec] = []
+    # A child table is named after its child identity, so two fan-outs that
+    # resolve to one name would write one physical table (#519).
+    fan_outs: dict[str, tuple[str, str]] = {}
+    for map_node in map_over_nodes:
+        spec = _analyze_map_over(map_node, components)
+        if spec is None:
+            continue
+        fan_out = getattr(map_node, "name", None) or repr(map_node)
+        if spec.name in fan_outs:
+            first, first_identity = fan_outs[spec.name]
+            raise GraphConfigError(
+                f"Two fan-outs would write one child table {spec.name!r}.\n\n"
+                f"Fan-outs: {first!r} (identity {first_identity!r}) and {fan_out!r} (identity {spec.identity!r}). "
+                "A child table is named after its child identity, so their rows would share one table.\n\n"
+                "How to fix: give each child graph its own identity, e.g. "
+                f'map_over(..., identity="{first}_id") and map_over(..., identity="{fan_out}_id").'
+            )
+        fan_outs[spec.name] = (fan_out, spec.identity)
+        child_specs.append(spec)
     child_map_inputs = {cs.map_input for cs in child_specs if cs.map_input}
 
     nodes_dict = graph.nodes if isinstance(graph.nodes, dict) else {}

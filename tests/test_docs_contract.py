@@ -305,6 +305,30 @@ def test_hypertable_docs_pin_graph_backed_receipt_contract() -> None:
     assert "materialization-branches.py" in pages["getting-started"]
 
 
+def test_hypertable_docs_pin_the_child_identity_refusal() -> None:
+    """#499/#519: a colliding child identity is refused, and every page that
+    states the uniqueness rule names the error instead of the old merge."""
+    from hypergraph import DuplicateChildIdentityError
+
+    parameters = inspect.signature(DuplicateChildIdentityError.__init__).parameters
+    assert tuple(parameters) == ("self", "table", "identity", "value", "parent")
+    assert all(parameters[name].kind is inspect.Parameter.KEYWORD_ONLY for name in ("table", "identity", "value", "parent"))
+    assert issubclass(DuplicateChildIdentityError, ValueError)
+    assert "DuplicateChildIdentityError" in _hypergraph_all()
+
+    pages = {
+        "api": _read("docs/08-hypertable/api-reference.md"),
+        "getting-started": _read("docs/08-hypertable/getting-started.md"),
+        "context": _read("docs/07-design/hypertable/CONTEXT.md"),
+        "errors": _read("docs/06-api-reference/errors.md"),
+    }
+    for page in pages.values():
+        assert "DuplicateChildIdentityError" in page
+        assert "return only one of them" not in page
+    assert "### DuplicateChildIdentityError" in pages["errors"]
+    assert "GraphConfigError` naming both fan-outs" in " ".join(pages["api"].split())
+
+
 def test_background_handle_docs_pin_public_contract() -> None:
     runners = _read("docs/06-api-reference/runners.md")
     guide = _read("docs/05-how-to/control-background-execution.md")

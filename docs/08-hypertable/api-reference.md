@@ -144,9 +144,10 @@ retires the rows they replace; that is bookkeeping, and such a pass reports
 `SKIPPED`. Nor does it mean nothing executed: when the fan-out boundary also
 produces a stored parent column, the pass runs the graph to establish that the
 stored row still stands, derives no new row from it, and reports `SKIPPED`.
-Mapped items that share a child identity are not damage either: they occupy
-one child row (see [Child tables](#child-tables)), so an untouched parent over
-them reports `SKIPPED` once its recorded count is current.
+Mapped items that share a child identity never settle as `SKIPPED` or
+`HEALED`: the write is refused before any child row is written (see
+[Child tables](#child-tables)), and under `on_error="store"` the parent is
+stored as an `ERROR` row naming the collision.
 
 `PARTIAL` is reported under `on_error="store"` when one node failed and the
 other derived columns were produced anyway: those columns are stored, the
@@ -316,14 +317,16 @@ derived columns are not re-derived, though present child rows are rewritten at
 the repair's generation. A physically missing row leaves nothing to rebuild the
 item list from, so the fan-out boundary re-runs once to regenerate it; a stored
 error row still carries its own item, so the stored list is reused and the
-boundary does not re-run. A stale recorded count (such as the raw item count
-earlier versions recorded over repeated child identities), or a boundary that
-now produces a different number of distinct child identities, leaves a count
-that disagrees with the healthy children present; that is damage too. The
-boundary re-runs, the parent records the count it produced, and the repair
-reports `HEALED` because the item list was rebuilt. Once the recorded count
-matches the child rows written, the next `sync()` is a zero-execution skip
-again.
+boundary does not re-run. A stale recorded count, or a boundary that now
+produces a different number of child identities, leaves a count that disagrees
+with the healthy children present; that is damage too. The boundary re-runs,
+the parent records the count it produced, and the repair reports `HEALED`
+because the item list was rebuilt. Once the recorded count matches the child
+rows written, the next `sync()` is a zero-execution skip again. A row an
+earlier version stored over repeated child identities recorded the raw item
+count, so this is where it surfaces: the re-run item list still collides, the
+write is refused (see [Child tables](#child-tables)), and under
+`on_error="store"` the row becomes an `ERROR` row.
 When the fan-out boundary also produces a stored parent column, every repair
 runs the parent's nodes once to regenerate the item list, while the child graph
 still runs only for the damaged child. The parent row is rewritten only when
@@ -484,11 +487,45 @@ joins matching parent identities before reading child rows.
 
 A child identity must be unique within one parent row. The logical child key
 is `(parent identity, child identity)`, so two mapped items that produce the
-same identity under the same parent occupy one child row: `rows()`, `get()`
-and `count()` return only one of them, and the child graph may run for each.
-An item without the identity field counts as the empty identity. Derive the
-identity from something unique per item — the loop index, a primary key — not
-from content that can repeat.
+same identity under the same parent would occupy one child row and one item's
+derived values would be lost. Such a write is refused:
+
+```python
+@node(output_name="words")
+def split_words(text: str) -> list[dict]:
+    return [{"word_id": word, "text": word} for word in text.split()]  # the word is the identity
+
+# tag_word is any child graph over one word's text
+table = Graph([split_words, tag_word.as_node().map_over("words", identity="word_id")]).as_table(
+    identity="doc_id", store=SqliteTableStore()
+)
+table.insert(doc_id="d1", text="alpha beta alpha")
+# DuplicateChildIdentityError: Child table 'word' got two items with word_id='alpha' under parent 'd1'.
+```
+
+`DuplicateChildIdentityError` is a `ValueError` exported from `hypergraph`; it
+carries `table`, `identity`, `value` and `parent`. It is raised before any child
+graph runs and before any child row of that parent is written, restamped or
+retired, and every child table of the row is checked together, so a collision
+in one leaves the others untouched. Under `on_error="raise"` the write raises
+and nothing for that row is written. Under `on_error="store"` the row is stored
+as an `ERROR` row whose `error` names the collision, `errors()` lists it, and
+the other rows of the same call proceed. Every write that produces the item
+list refuses it — `insert()`, `update()`, `sync()`, `rederive()`, answering a
+waiting row, and a Materialization Branch's `sync()` (which raises). An item
+without the identity field counts as the empty identity, so two such items
+collide too. Derive the identity from something unique per item — the loop
+index, a primary key — not from content that can repeat.
+
+A row stored by an earlier version over colliding items keeps its one child row
+until a write re-runs its fan-out boundary; that write meets the refusal, so
+under `on_error="store"` the row becomes an `ERROR` row rather than a `SKIPPED`
+or `HEALED` one.
+
+Each child table is named after its child identity (`word_id` → `word`), so two
+fan-outs whose identities resolve to one table name are refused when the table
+is first analyzed, with a `GraphConfigError` naming both fan-outs. Give each
+child graph its own identity.
 
 ## Diagnostics and retrieval
 

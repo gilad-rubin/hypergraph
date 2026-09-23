@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from hypergraph import Graph
+from hypergraph.exceptions import DuplicateChildIdentityError
 from hypergraph.materialization._commit import (
     ChildGenerations,
     ChildWrites,
@@ -34,6 +35,7 @@ from hypergraph.materialization._commit import (
     dedup_child_rows,
     dedup_rows,
     normalize_to_dict,
+    refuse_colliding_identities,
 )
 from hypergraph.materialization._provenance import (
     DerivedChildren,
@@ -558,11 +560,17 @@ class WritePlanner:
         self,
         parent_id: Any,
         outputs: Mapping[str, Any],
-        child_spec: TableSpec,
         child_gens: ChildGenerations,
     ) -> Generator[RunGraph, Any, None]:
-        child_items = self._child_items(outputs, child_spec)
-        if child_items is not None:
+        """Write every child table's rows from the item lists one parent run produced.
+
+        Every list is checked before the first child write, so a colliding
+        child identity in any child table leaves all of them untouched (#499).
+        """
+        selected = [(child_spec, items) for child_spec in self._spec.children if (items := self._child_items(outputs, child_spec)) is not None]
+        for child_spec, child_items in selected:
+            refuse_colliding_identities(child_items, child_spec.identity, table=child_spec.name, parent=parent_id)
+        for child_spec, child_items in selected:
             yield from self._insert_children_items(parent_id, child_items, child_spec, child_gens)
 
     def _parent_stamps_stale(self, existing: Mapping[str, Any], provenances: Mapping[str, str | None]) -> bool:
@@ -610,6 +618,12 @@ class WritePlanner:
         outputs = reconciled.output_values()
         provenances = reconciled.provenance_values()
         identity_value = item[self._identity]
+        # Every re-derived item list is checked before the first child write
+        # (#499). A rebuilt list comes from deduplicated stored rows, so it is
+        # unique by construction.
+        for selection in reconciled.children:
+            if isinstance(selection, DerivedChildren):
+                refuse_colliding_identities(selection.items, selection.spec.identity, table=selection.spec.name, parent=identity_value)
         for selection in reconciled.children:
             if isinstance(selection, RebuildChildren):
                 rows = self._commit.read_rows(selection.spec.name, (("_parent_id", "eq", identity_value),))
@@ -896,8 +910,7 @@ class WritePlanner:
                 WriteOutcome.UPDATED,
             )
 
-        for child_spec in self._spec.children:
-            yield from self._insert_children(identity_value, outputs, child_spec, child_gens)
+        yield from self._insert_children(identity_value, outputs, child_gens)
         self._rows.evolve_for_metadata(item)
         row = self._rows.parent_row(
             item,
@@ -933,36 +946,46 @@ class WritePlanner:
                 self._commit.refresh_missing_stamps(plan.row, self._rows, self._provenance)
             return self._receipt_for_row(identity_value, WriteOutcome.SKIPPED, plan.row)
 
-        if isinstance(plan, ResumeAnswers):
+        try:
+            if isinstance(plan, ResumeAnswers):
+                return (
+                    yield from self._resume_answer(
+                        item,
+                        source_inputs,
+                        plan.row,
+                        set(plan.answers),
+                        write_gen,
+                        child_gens,
+                    )
+                )
+
+            if isinstance(plan, ReconcileColumns):
+                receipt = yield from self._reconciled_parent(item, source_inputs, provided_names, plan, outcome, write_gen, child_gens, before)
+                if receipt is not None:
+                    return receipt
+
             return (
-                yield from self._resume_answer(
+                yield from self._derived_parent(
                     item,
                     source_inputs,
+                    provided_names,
                     plan.row,
-                    set(plan.answers),
+                    plan.parent_skipped,
+                    outcome,
                     write_gen,
                     child_gens,
+                    before,
                 )
             )
-
-        if isinstance(plan, ReconcileColumns):
-            receipt = yield from self._reconciled_parent(item, source_inputs, provided_names, plan, outcome, write_gen, child_gens, before)
-            if receipt is not None:
-                return receipt
-
-        return (
-            yield from self._derived_parent(
-                item,
-                source_inputs,
-                provided_names,
-                plan.row,
-                plan.parent_skipped,
-                outcome,
-                write_gen,
-                child_gens,
-                before,
-            )
-        )
+        except DuplicateChildIdentityError as error:
+            # Every arm refuses a colliding item list before its first child
+            # write, so nothing below this parent was touched. The refusal is
+            # a per-row data failure: a total-loss ERROR row, even for a parent
+            # that was COMPLETE and would otherwise have been skipped (#499).
+            if self._on_error == "raise":
+                raise
+            self._error_parent(item, source_inputs, write_gen, error, plan.row)
+            return RowReceipt(str(identity_value), outcome, RowStatus.ERROR, error=f"{type(error).__name__}: {error}")
 
     def _reconciled_parent(
         self,
@@ -1086,8 +1109,7 @@ class WritePlanner:
                 outcome,
             )
 
-        for child_spec in self._spec.children:
-            yield from self._insert_children(identity_value, outputs, child_spec, child_gens)
+        yield from self._insert_children(identity_value, outputs, child_gens)
         if parent_skipped:
             # The boundary re-ran, so its recorded count may have moved (a
             # stale or legacy stamp, or a set of distinct child identities that
@@ -1345,14 +1367,23 @@ class WritePlanner:
                     f"Column: {column!r}\n\n"
                     "How to fix: run insert() or sync() with the row's source columns so the full graph can derive it."
                 )
-            yield from self._apply_reconciled(
-                item,
-                source_inputs,
-                existing,
-                reconciled,
-                False,
-                write_gen,
-                child_gens,
-            )
+            try:
+                yield from self._apply_reconciled(
+                    item,
+                    source_inputs,
+                    existing,
+                    reconciled,
+                    False,
+                    write_gen,
+                    child_gens,
+                )
+            except DuplicateChildIdentityError as error:
+                if self._on_error == "raise":
+                    raise
+                self._error_parent(item, source_inputs, write_gen, error, existing)
+                receipts.append(
+                    RowReceipt(str(existing[self._identity]), WriteOutcome.UPDATED, RowStatus.ERROR, error=f"{type(error).__name__}: {error}")
+                )
+                continue
             receipts.append(RowReceipt(str(existing[self._identity]), WriteOutcome.UPDATED, RowStatus.COMPLETE))
         return TableReceipt(tuple(receipts))

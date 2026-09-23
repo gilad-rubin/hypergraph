@@ -23,6 +23,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
+from hypergraph.exceptions import DuplicateChildIdentityError
 from hypergraph.materialization._schema import RECIPE_COLUMN, TableSpec
 from hypergraph.materialization._table_store import RowPredicate, TableStore
 
@@ -80,9 +81,30 @@ def distinct_child_identities(items: Sequence[Any], identity: str) -> int:
     A parent row records this number at a fan-out boundary and every freshness
     check compares it against ``len(dedup_child_rows(...))``. Two items that
     share an identity occupy ONE child row, so a raw ``len(items)`` could never
-    agree with what the store holds (#470).
+    agree with what the store holds (#470). Since #499 such a list is refused
+    before it is written (``refuse_colliding_identities``), so for every write
+    accepted today this equals ``len(items)``; the stamps a store recorded
+    before the refusal were counted this way and still compare against it.
     """
     return len({str(normalize_to_dict(item).get(identity, "")) for item in items})
+
+
+def refuse_colliding_identities(items: Sequence[Any], identity: str, *, table: str, parent: Any) -> None:
+    """Refuse an item list in which two items would occupy one child row (#499).
+
+    Keyed exactly like ``dedup_child_rows`` — ``str`` of the value, a missing
+    field as ``""`` — because that is the key the child table stores under.
+    Every site that turns a fan-out's items into child rows calls this for
+    every child table of the parent before its first child write, so a refused
+    parent has no child row written, restamped or retired. For every write this
+    accepts, ``distinct_child_identities(items, identity) == len(items)``.
+    """
+    seen: set[str] = set()
+    for item in items:
+        value = str(normalize_to_dict(item).get(identity, ""))
+        if value in seen:
+            raise DuplicateChildIdentityError(table=table, identity=identity, value=value, parent=str(parent))
+        seen.add(value)
 
 
 @dataclass(frozen=True, slots=True)

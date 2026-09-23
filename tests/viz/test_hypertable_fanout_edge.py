@@ -156,8 +156,10 @@ def test_two_children_each_get_their_own_fanout_edge(store):
         [
             produce_a,
             produce_b,
-            Graph([clean], name="proc_a").as_node(name="a_node").map_over("items_a", identity="item_id"),
-            Graph([clean], name="proc_b").as_node(name="b_node").map_over("items_b", identity="item_id"),
+            # Each fan-out has its own identity: two that share one would share
+            # one child table, which table analysis refuses (#519).
+            Graph([clean], name="proc_a").as_node(name="a_node").map_over("items_a", identity="a_item_id"),
+            Graph([clean], name="proc_b").as_node(name="b_node").map_over("items_b", identity="b_item_id"),
         ]
     ).as_table(identity="doc_id", store=store)
     table._ensure_analyzed()
@@ -172,11 +174,10 @@ def test_two_children_each_get_their_own_fanout_edge(store):
 def test_fanout_pairing_is_positional_not_name_matched():
     """Two map nodes mapping the *same* column name still get distinct edges.
 
-    Exercises ``_fanout_viz_edges``'s pairing directly against hand-built
-    ``TableSpec``/map-node lists (bypassing ``HyperTable`` construction, which
-    does not support two children over one shared parent column when they
-    share a child identity, as these two do; distinct identities work end to
-    end). Proves the zip-by-position fix resolves each child to its own map
+    Exercises ``_fanout_viz_edges``'s pairing directly against the analyzed
+    ``TableSpec``/map-node lists. The two fan-outs carry their own identities:
+    sharing one would give them one child table, which table analysis refuses
+    (#519). Proves the zip-by-position fix resolves each child to its own map
     node rather than both resolving to the first name match.
     """
     from hypergraph.materialization._schema import analyze_table
@@ -185,8 +186,8 @@ def test_fanout_pairing_is_positional_not_name_matched():
     def shout(text: str) -> str:
         return text.upper()
 
-    clean_map = Graph([clean], name="proc_clean").as_node(name="clean_node").map_over("items", identity="item_id")
-    shout_map = Graph([shout], name="proc_shout").as_node(name="shout_node").map_over("items", identity="item_id")
+    clean_map = Graph([clean], name="proc_clean").as_node(name="clean_node").map_over("items", identity="clean_item_id")
+    shout_map = Graph([shout], name="proc_shout").as_node(name="shout_node").map_over("items", identity="shout_item_id")
     root_graph = Graph([produce_items], name="root")
     map_over_nodes = [clean_map, shout_map]
 
