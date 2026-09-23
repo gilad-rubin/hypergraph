@@ -14,6 +14,7 @@ from hypergraph import Graph, node
 from hypergraph.viz.debug import VizDebugger
 from hypergraph.viz.renderer.ir_builder import build_graph_ir
 from hypergraph.viz.scene_builder import build_initial_scene
+from hypergraph.viz.widget import _resolve_input_visibility
 
 ROOT = Path(__file__).resolve().parents[2]
 STREAMING_DOC = ROOT / "docs/03-patterns/06-streaming.md"
@@ -29,6 +30,8 @@ VIZ_LAYOUT_NOTEBOOK = ROOT / "notebooks/test_viz_layout.ipynb"
 GALLERY_SCRIPT = ROOT / "scripts/render_notebook_viz.py"
 DEEP_NESTED_BENCHMARK = ROOT / "scripts/benchmark_deep_nested.py"
 OBSOLETE_IR_PARITY_SCRIPT = ROOT / "scripts/render_ir_parity.py"
+# What visualize() draws when no input flag is passed (ruling D56).
+INPUT_DEFAULTS = _resolve_input_visibility(None, None, None)
 
 
 def _markdown_section(text: str, heading: str) -> str:
@@ -397,12 +400,59 @@ def test_scene_inspector_reports_selected_state_in_scene_order(expanded: bool) -
     graph = _make_nested_graph()
     ir = build_graph_ir(graph.to_flat_graph())
     expansion_state = {node_id: expanded for node_id in ir.expandable_nodes}
-    expected_scene = build_initial_scene(ir, expansion_state=expansion_state)
 
     report = module.inspect_scene(graph, expanded=expanded)
+    expected_scene = build_initial_scene(
+        ir,
+        expansion_state=expansion_state,
+        show_inputs=report["show_inputs"],
+        show_bounded_inputs=report["show_bounded_inputs"],
+    )
 
     assert report["schema_version"] == ir.schema_version
     assert report["expansion_state"] == expansion_state
     assert report["visible_nodes"] == [node for node in expected_scene["nodes"] if not node.get("hidden", False)]
     assert report["visible_edges"] == [edge for edge in expected_scene["edges"] if not edge.get("hidden", False)]
     json.dumps(report)
+
+
+def test_debug_scripts_default_to_what_visualize_draws() -> None:
+    inspector = _load_script(SCENE_INSPECTOR, "inspect_scene_defaults")
+    debug_script = _load_script(DEBUG_SCRIPT, "debug_viz_defaults")
+
+    report = inspector.inspect_scene(_make_nested_graph(), expanded=False)
+    render_options = debug_script.build_debug_summary({"meta": {}})["render_options"]
+
+    observed = {
+        "inspect_scene()": (report["show_inputs"], report["show_bounded_inputs"]),
+        "debug_viz summary of a payload without the flags": (
+            render_options["show_inputs"],
+            render_options["show_bounded_inputs"],
+        ),
+    }
+    wrong = {surface: flags for surface, flags in observed.items() if flags != INPUT_DEFAULTS}
+    assert not wrong, f"(show_inputs, show_bounded_inputs) should default to visualize()'s {INPUT_DEFAULTS}; got {wrong}"
+
+
+@pytest.mark.parametrize(
+    ("cli_flags", "expected"),
+    [
+        pytest.param([], INPUT_DEFAULTS, id="no-flags"),
+        pytest.param(["--show-inputs", "--no-show-bounded-inputs"], (True, False), id="explicit-flags"),
+    ],
+)
+def test_scene_inspector_cli_input_flags(
+    cli_flags: list[str],
+    expected: tuple[bool, bool],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    inspector = _load_script(SCENE_INSPECTOR, "inspect_scene_cli")
+    graph = _make_nested_graph()
+    monkeypatch.setattr(inspector, "_load_graph_object", lambda *_: graph)
+    monkeypatch.setattr(sys, "argv", ["inspect_scene.py", "example.graphs", "graph", "--collapsed", *cli_flags])
+
+    inspector.main()
+    report = json.loads(capsys.readouterr().out)
+
+    assert (report["show_inputs"], report["show_bounded_inputs"]) == expected

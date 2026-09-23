@@ -53,13 +53,16 @@ def inspect_scene(
     *,
     expanded: bool,
     separate_outputs: bool = False,
-    show_inputs: bool = True,
-    show_bounded_inputs: bool = False,
+    show_inputs: bool | None = None,
+    show_bounded_inputs: bool | None = None,
 ) -> dict[str, Any]:
     """Build and report the visible scene for an explicit expansion state."""
     from hypergraph.viz.renderer.ir_builder import build_graph_ir
     from hypergraph.viz.scene_builder import build_initial_scene
+    from hypergraph.viz.widget import _resolve_input_visibility
 
+    # Unset flags resolve exactly as visualize() resolves them, so the oracle matches the default widget.
+    show_inputs, show_bounded_inputs = _resolve_input_visibility(show_inputs, show_bounded_inputs, None)
     graph = _unwrap_graph(graph_obj)
     bound = graph.bind() if hasattr(graph, "bind") else graph
     flat_graph = bound.to_flat_graph() if hasattr(bound, "to_flat_graph") else bound
@@ -92,8 +95,18 @@ def main() -> None:
     state.add_argument("--expanded", action="store_true", help="Expand every nested graph")
     state.add_argument("--collapsed", action="store_true", help="Collapse every nested graph")
     parser.add_argument("--separate-outputs", action="store_true", help="Show output DATA nodes")
-    parser.add_argument("--hide-inputs", action="store_true", help="Hide external input nodes")
-    parser.add_argument("--show-bounded-inputs", action="store_true", help="Show bound input nodes")
+    parser.add_argument(
+        "--show-inputs",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Draw input nodes (default: visualize()'s, hidden)",
+    )
+    parser.add_argument(
+        "--show-bounded-inputs",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Include bound inputs (default: visualize()'s, included)",
+    )
     args = parser.parse_args()
 
     graph = _load_graph_object(args.module, args.variable)
@@ -101,7 +114,7 @@ def main() -> None:
         graph,
         expanded=args.expanded,
         separate_outputs=args.separate_outputs,
-        show_inputs=not args.hide_inputs,
+        show_inputs=args.show_inputs,
         show_bounded_inputs=args.show_bounded_inputs,
     )
     print(json.dumps(report, indent=2))
