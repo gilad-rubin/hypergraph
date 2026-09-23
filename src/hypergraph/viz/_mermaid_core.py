@@ -8,7 +8,7 @@ from typing import Any
 # Characters unsafe in Mermaid IDs (anything not alphanumeric or underscore)
 _UNSAFE_ID_RE = re.compile(r"[^a-zA-Z0-9_]")
 
-# Mermaid reserved words that cannot be used as bare node IDs
+# Mermaid reserved words that cannot be used as bare node IDs or class names
 _RESERVED_WORDS = frozenset(
     word.lower()
     for word in {
@@ -82,6 +82,19 @@ def _sanitize_id(node_id: str) -> str:
     if safe and (safe.lower() in _RESERVED_WORDS or safe[0:1].isdigit()):
         safe = f"n_{safe}"
     return safe or "n_empty"
+
+
+def _sanitize_class_name(name: str) -> str:
+    """Convert a style-class name to one Mermaid accepts after ``classDef`` / ``class``.
+
+    A reserved word gains a ``Node`` suffix (``end`` -> ``endNode``): ``end``
+    closes a ``subgraph``, so ``classDef end`` breaks the parse. Every other
+    name is returned unchanged. Callers keep using the unsanitized name as the
+    ``colors=`` key; only the emitted identifier changes.
+    """
+    if name.lower() in _RESERVED_WORDS:
+        return f"{name}Node"
+    return name
 
 
 class _MermaidIdAllocator:

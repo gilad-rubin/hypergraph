@@ -28,7 +28,7 @@ from hypergraph.viz._common import (
     is_descendant_of,
     is_node_visible,
 )
-from hypergraph.viz._mermaid_core import MermaidDiagram, _MermaidIdAllocator, _sanitize_id
+from hypergraph.viz._mermaid_core import MermaidDiagram, _MermaidIdAllocator, _sanitize_class_name, _sanitize_id
 from hypergraph.viz._simplify import EdgeRef, shortcut_edge_keys
 from hypergraph.viz.renderer._format import format_type
 from hypergraph.viz.renderer.ir_builder import (
@@ -955,7 +955,12 @@ def _build_style_section(
     ordering_edge_indices: list[int],
     id_allocator: _MermaidIdAllocator,
 ) -> list[str]:
-    """Build classDef, class assignments, and linkStyle lines."""
+    """Build classDef, class assignments, and linkStyle lines.
+
+    ``colors`` and ``node_class_map`` speak the public class vocabulary
+    (``"end"``, ``"function"``, ...); only the emitted identifier goes through
+    ``_sanitize_class_name``, so a reserved word never reaches the source.
+    """
     effective = {cls: props.copy() for cls, props in DEFAULT_COLORS.items()}
     if colors:
         for key, val in colors.items():
@@ -969,7 +974,7 @@ def _build_style_section(
         if cls_name not in used_classes:
             continue
         prop_str = ",".join(f"{k}:{v}" for k, v in props.items())
-        lines.append(f"    classDef {cls_name} {prop_str}")
+        lines.append(f"    classDef {_sanitize_class_name(cls_name)} {prop_str}")
 
     # class assignments — group node IDs by class
     class_to_ids: dict[str, list[str]] = {}
@@ -977,7 +982,7 @@ def _build_style_section(
         class_to_ids.setdefault(cls, []).append(id_allocator.get(node_id))
 
     for cls_name, ids in sorted(class_to_ids.items()):
-        lines.append(f"    class {','.join(ids)} {cls_name}")
+        lines.append(f"    class {','.join(ids)} {_sanitize_class_name(cls_name)}")
 
     # linkStyle for ordering (dotted) edges — purple stroke
     if ordering_edge_indices:

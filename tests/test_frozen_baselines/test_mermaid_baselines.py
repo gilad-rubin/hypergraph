@@ -23,6 +23,13 @@ producer instead of the subgraph hull, which is what the interactive widget and
 ``ir_builder.resolve_boundary_ports`` already drew. ``depth=0`` output is
 unchanged. Any NEW drift here is a regression.
 
+DELIBERATE CHANGE LANDED (#585): ``gated.mmd`` and
+``container_entrypoint_expanded.mmd`` each moved by two lines
+(``classDef end`` → ``classDef endNode``, ``class __end__ end`` →
+``class __end__ endNode``). ``end`` is a reserved Mermaid word — it closes a
+``subgraph`` — so the old source failed to parse in Mermaid 11. The public
+``colors={"end": ...}`` key is unchanged; only the emitted class name moved.
+
 To regenerate after an INTENTIONAL change:
 
     HYPERGRAPH_UPDATE_BASELINES=1 uv run pytest tests/test_frozen_baselines
