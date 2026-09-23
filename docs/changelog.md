@@ -542,6 +542,13 @@
   input. Also from the wave's integration review: `normalize_value` no longer retries a
   failed `import numpy` on every call when numpy is absent. (#536)
 
+- **`to_mermaid()` output with an END node renders in Mermaid 11.** The END node's style
+  class was emitted as `classDef end` / `class __end__ end`, and `end` is a reserved
+  Mermaid word (it closes a `subgraph`), so any graph with a gate that can end the run
+  failed to parse. Emitted class names now go through the same reserved-word guard as node
+  ids: the END class is emitted as `endNode`, and every other class name is unchanged.
+  `to_mermaid(colors={"end": {...}})` still restyles the END node. (#585)
+
 - **A durable Run could fail with "database is locked" without executing a
   single node.** The SQLite store shared ONE synchronous connection across
   threads, which closed a three-party cycle: the event loop held a
