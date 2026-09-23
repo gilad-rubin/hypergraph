@@ -898,9 +898,9 @@ snapshot = await watch_submissions(host.client, [batch, one], draw=ConsolePanel(
 - `WatchSnapshot` — every watched submission as one picture: `done/total`, merged `counts`, the bounded `running` list, `parked`, `exceptions` (failures, open gates, retried items, stragglers past `slow_multiple` × median), `resting`, and the same `rate` / `eta_seconds` folded across every submission.
 - Drawing: `ConsolePanel()` renders the console frame into ONE IPython display handle (the resting frame is what a saved notebook keeps); `LogPanel(every_seconds)` logs one line; `render_snapshot(snapshot)` / `snapshot_line(snapshot)` are the pure renderers.
 
-Deliberately absent: "which node is it on right now" — the read models do
-not expose per-run pending node boundaries at a cost a poll may pay, so the
-view reports condition, status, elapsed, and attempt count, never a guess.
+Not drawn: "which node is it on right now". The console reports condition,
+status, elapsed, and attempt count; a page that wants the step reads
+`RunReadModel.pending_nodes` (the Run's frontier, above), never a guess.
 A ref this Home never accepted contributes nothing to the picture, and an
 unread submission is *unknown*, never "resting".
 
@@ -1198,6 +1198,47 @@ strictly the present tense; `ever_paused` is the boolean that outlives the
 answer, for readers — [throughput](#throughput-and-eta) above — that must
 keep human deliberation out of a machine number.
 
+Four more fields answer what a queue page asks of every row, each read for
+the whole page in one statement, never one per Run:
+
+```python
+rows = await read.list_runs(RunQuery(definition="ingest", repeated=False))
+for row in rows:
+    if row.status == "running":
+        print(row.workflow_id, "on", ", ".join(row.pending_nodes))   # "on read"
+    elif row.runs_ahead is not None:
+        print(row.workflow_id, f"{row.runs_ahead} ahead")             # "2 ahead"
+    elif row.failure is not None:
+        print(row.workflow_id, row.failure.public_reason or f"failed at {row.failure.node_name}")
+```
+
+- `pending_nodes` — which step the Run is on: the node boundaries its runner
+  recorded as runnable before dispatching them (the durable
+  [pending-node boundary](checkpointers.md#pending-node-boundaries-internal)) that have not started
+  settling, in superstep then name order. It is the Run's **frontier**:
+  siblings waiting behind `max_concurrency` are pending too, so render it as
+  "at this step", never as proof that a node is executing this instant. A
+  nested graph shows as its graph node's name. Empty until the Run starts
+  and once it settles.
+- `runs_ahead` — how many Runs the Home will claim before this one: its
+  0-based place in [claim order](#host-work-admission) (oldest acceptance
+  first) among every submission waiting to be claimed, whatever its
+  Definition. `0` is next. `None` unless the Run waits in that line —
+  executing, paused on a person, scheduled for later, parked and settled
+  Runs have no place in it. An answered pause re-enters at its original
+  acceptance time. Claim order is first come, first served, even under a
+  `max_admission_units` budget, where a head that does not fit holds
+  everything behind it. Only workers serving different Definitions can take
+  work out of this order, because a worker skips rows it cannot run.
+- `failure` — the same `RunFailure` [`client.result()`](#reading-results)
+  reads, once the Run settled with an errored step. `failure.error` stays
+  the type-only projection; `failure.public_reason` is the wording a person
+  may see, when the exception class declared one
+  ([the privacy boundary](errors.md#the-privacy-boundary)).
+- `RunQuery(repeated=False)` — only the newest repeat of each Run, so a page
+  shows one row per subject after a [rerun](#rerun-repeat-settled-work)
+  (see [Listing Runs](#listing-runs)).
+
 `get_batch(batch_ref)` returns a `BatchReadModel`: the existing Batch census
 plus one `BatchItemReadModel.word` per manifest item. Those words come
 directly from `item_condition()`, and counts come directly from `BatchView`;
@@ -1397,6 +1438,21 @@ type, and traceback go to the
 instead, or to a `logging` logger through the opt-in
 [`FailureLogProcessor`](events.md#failurelogprocessor), so a failure is
 debugged there and merely identified here.
+
+What a product may show a person is `RunFailure.public_reason`: static
+wording the exception **class** declares, stored with the failed step beside
+`error` ([the privacy boundary](errors.md#the-privacy-boundary)):
+
+```python
+class ScanNeedsOcr(Exception):
+    public_reason = "This scan needs OCR before it can be read."
+
+outcome.failure.public_reason   # "This scan needs OCR before it can be read."
+outcome.failure.error           # "app.ScanNeedsOcr [HG_NODE_FAILED]: Node 'read' raised app.ScanNeedsOcr."
+```
+
+It is `None` when the class declared nothing; say something generic then,
+and let `node_name` say where.
 
 A `BatchRef` reads every child at once:
 
@@ -1671,6 +1727,21 @@ accepts a `BatchRef` or a bare batch id string and restricts results to
 that Batch's children, and `older_than` compares creation time. Omitted
 fields match everything. `limit` must be a positive `int`.
 `client.list_sync(...)` is the synchronous mirror.
+
+`repeated` filters by whether a [rerun](#rerun-repeat-settled-work) has
+repeated the Run — whether another Run names it as its `retry_of`.
+`repeated=False` keeps only the newest repeat of each lineage (a Run never
+rerun is its own newest), which is what a page listing one row per subject
+wants; `repeated=True` keeps only the Runs a rerun replaced:
+
+```python
+latest = await client.list(RunQuery(definition="ingest", repeated=False))
+```
+
+It is decided over every Run in the Home before any other filter, so a
+failed source that a completed rerun repeated is still left out of
+`RunQuery(status=WorkflowStatus.FAILED, repeated=False)`. A source rerun
+twice has two newest repeats, and both are kept.
 
 `key` is the one filter the **store** answers rather than Python: it narrows
 the read to one [`exclusive_key`](#one-live-run-per-subject) through

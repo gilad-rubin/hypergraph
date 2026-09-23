@@ -43,7 +43,7 @@ RUNS_COLS = (
 )
 STEPS_COLS = (
     "id, run_id, step_index, superstep, node_name, node_type, status, duration_ms, cached, error, decision, "
-    "input_versions, values_data, child_run_id, created_at, completed_at, partial, attempt_series_id, folded_producers"
+    "input_versions, values_data, child_run_id, created_at, completed_at, partial, attempt_series_id, folded_producers, public_reason"
 )
 PAUSE_SLOT_COLS = "pause_id, run_id, superstep, node_name, node_path, response_key, question, answer_schema, options, created_at, settled_at, answer"
 ATTEMPT_SERIES_COLS = "id, run_id, node_name, policy_fingerprint, max_attempts, opened_at, deadline_at, committed_superstep, closed_at"
@@ -179,6 +179,7 @@ def row_to_step(serializer: Any, row: Sequence[Any]) -> StepRecord:
         partial=bool(partial) if partial is not None else False,
         attempt_series_id=values["attempt_series_id"],
         folded_producers=decode_folded_producers(values["folded_producers"]),
+        public_reason=values["public_reason"],
     )
 
 
@@ -289,6 +290,7 @@ def step_upsert_params(serializer: Any, record: StepRecord) -> tuple[Any, ...]:
         int(record.partial),
         record.attempt_series_id,
         encode_folded_producers(record.folded_producers),
+        record.public_reason,
     )
 
 

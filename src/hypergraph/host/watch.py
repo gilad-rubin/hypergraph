@@ -507,10 +507,10 @@ class SubmissionWatcher:
     failing and retrying). For a ``RunRef`` the same picture costs three:
     ``get_run`` carries what ``get_batch`` and ``list_runs`` split.
 
-    Deliberately absent: "which node is it on right now". The read models do
-    not expose per-run pending node boundaries at a cost a poll may pay, so
-    the view reports each item's condition, status, elapsed time, and attempt
-    count — never a guess about its current node.
+    Not drawn: "which node is it on right now". The view reports each item's
+    condition, status, elapsed time, and attempt count; a surface that wants
+    the step reads ``RunReadModel.pending_nodes`` — the Run's frontier, never
+    a guess about a node executing this instant.
     """
 
     def __init__(self, client: RunHomeClient) -> None:

@@ -301,12 +301,12 @@ async def test_pre_ledger_database_migrates_in_place(tmp_path):
             assert "attempt_series" in tables
             assert "attempt_records" in tables
             step_cols = [row[1] for row in probe.execute("PRAGMA table_info(steps)")]
-            assert step_cols == [*_V3_STEP_COLUMNS, "attempt_series_id", "folded_producers"]
+            assert step_cols == [*_V3_STEP_COLUMNS, "attempt_series_id", "folded_producers", "public_reason"]
             new_col = next(row for row in probe.execute("PRAGMA table_info(steps)") if row[1] == "attempt_series_id")
             assert new_col[3] == 0  # notnull flag: nullable
             assert new_col[4] is None  # no default
             (version,) = probe.execute("SELECT version FROM _schema_version").fetchone()
-            assert version == 10
+            assert version == 11
         finally:
             probe.close()
 

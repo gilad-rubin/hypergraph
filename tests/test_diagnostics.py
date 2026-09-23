@@ -152,6 +152,8 @@ def test_diagnostic_wire_schema_snapshot():
         },
         "how_to_fix": ["Fork or start a new workflow to grant a fresh retry budget."],
         "docs_ref": "docs/06-api-reference/errors.md#hg-retry-exhausted",
+        # Additive: static wording the exception class declares for a person.
+        "public_reason": None,
     }
 
 

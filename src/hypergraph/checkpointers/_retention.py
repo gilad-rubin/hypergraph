@@ -245,6 +245,7 @@ def baseline_step_params(
         0,
         None,
         encode_folded_producers(producers),
+        None,  # public_reason: a carrier folds COMPLETED values and is never a failure
     )
 
 

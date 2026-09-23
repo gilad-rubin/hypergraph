@@ -163,7 +163,8 @@
 
 - **The `create_v5_schema` … `create_v9_schema` aliases are gone** — all five were aliases
   of `create_v10_schema` in the private `hypergraph.checkpointers._migrate`, each naming a
-  schema it did not create. They had no callers; use `create_v10_schema`. (#486)
+  schema it did not create. They had no callers; use `create_v11_schema` (named
+  `create_v10_schema` until schema v11). (#486)
 
 - **The routed reconcile is a first-class step kind** — HyperTable's write planner drives a
   gate-routed slice as explicit state instead of three mutable sets and a forged provenance
@@ -180,6 +181,27 @@
   the worker. `submit_batch()` items are checked the same way. (#496)
 
 ### Added
+
+- **Four read-outs a queue page needs, on `RunReadModel` and `RunQuery`.** Each is
+  read from a fact the Run Home already commits, and each costs one statement per page,
+  never one per Run:
+  - `RunReadModel.pending_nodes`: which step a Run is on. These are the node boundaries
+    its runner recorded as runnable (the pending-node intent) that have not started
+    settling. It is the Run's frontier, so siblings queued behind `max_concurrency` are
+    pending too. It is empty before the Run starts and once it settles. (#392 H23: the
+    read-model half.)
+  - `RunReadModel.runs_ahead`: how many Runs the Home will claim before this one, its
+    0-based place in claim order. `None` unless it waits in that line. The admission
+    probe and this read now share one statement for the line.
+  - `RunReadModel.failure` and `RunFailure.public_reason`: why it failed, in words a
+    person may read. An exception class opts in with a static
+    `public_reason = "..."` class attribute; instance text is never read. The reason is
+    stored with the failed `StepRecord` (`StepRecord.public_reason`, SQLite schema v11:
+    one nullable `steps` column, migrated in place) and rides `Diagnostic.public_reason`
+    on the wire. `failure.error` stays the type-only projection.
+  - `RunQuery(repeated=False)`: only the newest repeat of each Run. A Run another Run
+    names as its `retry_of` is left out, decided over every Run before any other filter.
+    `repeated=True` lists only the Runs a rerun replaced. (#573: the listing half.)
 
 - **`FailureLogProcessor` writes a failed node's real message and traceback to a
   standard logger.** `AsyncRunner(event_processors=[FailureLogProcessor()])` (or

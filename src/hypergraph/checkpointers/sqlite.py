@@ -107,6 +107,7 @@ from hypergraph.checkpointers.types import (
     Run,
     RunTable,
     RunTotals,
+    StepFailure,
     StepRecord,
     StepTable,
     WorkflowStatus,
@@ -175,8 +176,8 @@ _STEP_UPSERT_SQL = """
         run_id, superstep, node_name, step_index, status,
         input_versions, values_data, duration_ms, cached,
         decision, error, node_type, created_at, completed_at, child_run_id, partial,
-        attempt_series_id, folded_producers
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        attempt_series_id, folded_producers, public_reason
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(run_id, superstep, node_name) DO UPDATE SET
         status = excluded.status,
         values_data = excluded.values_data,
@@ -188,7 +189,8 @@ _STEP_UPSERT_SQL = """
         completed_at = excluded.completed_at,
         partial = excluded.partial,
         attempt_series_id = excluded.attempt_series_id,
-        folded_producers = excluded.folded_producers
+        folded_producers = excluded.folded_producers,
+        public_reason = excluded.public_reason
 """
 _STEP_COUNT_SQL = f"SELECT COUNT(*) FROM steps WHERE {_PUBLIC_STEP_FILTER}"
 _RETENTION_ROWS_SQL = f"SELECT {RETENTION_ROW_COLS} FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}"
@@ -239,14 +241,27 @@ _PENDING_NODE_UPSERT_SQL = """
 # record cannot drift apart. Only the joined status column is aliased: it is
 # the journal's status, read as the boundary's.
 _NODE_BOUNDARY_PROJECTION = ", ".join("s.status AS step_status" if name == "step_status" else f"p.{name}" for name in _NODE_BOUNDARY_COLS.split(", "))
-_NODE_BOUNDARY_SELECT_SQL = f"""
-    SELECT {_NODE_BOUNDARY_PROJECTION}
+# Intent joined with the journal: the one join both boundary reads share.
+_NODE_BOUNDARY_JOIN = """
     FROM pending_nodes AS p
     LEFT JOIN steps AS s
       ON s.run_id = p.run_id AND s.superstep = p.superstep AND s.node_name = p.node_name
+"""
+_NODE_BOUNDARY_SELECT_SQL = f"""
+    SELECT {_NODE_BOUNDARY_PROJECTION}
+    {_NODE_BOUNDARY_JOIN}
     WHERE p.run_id = ?
     ORDER BY p.superstep, p.node_name
 """
+
+
+def _node_boundaries_query(run_ids: Sequence[str]) -> str:
+    """``get_node_boundaries`` for several runs at once, grouped by run."""
+    return (
+        f"SELECT {_NODE_BOUNDARY_PROJECTION} {_NODE_BOUNDARY_JOIN} "
+        f"WHERE p.run_id IN ({placeholders(run_ids)}) ORDER BY p.run_id, p.superstep, p.node_name"
+    )
+
 
 # === Durable pause slots (PRD 0010) ===
 #
@@ -378,7 +393,7 @@ def _states_query(run_ids: Sequence[str]) -> str:
 def _failures_query(run_ids: Sequence[str]) -> str:
     """Errored steps for several runs at once, earliest first per run."""
     return (
-        f"SELECT run_id, error, node_name, superstep FROM steps "
+        f"SELECT run_id, error, node_name, superstep, public_reason FROM steps "
         f"WHERE run_id IN ({placeholders(run_ids)}) AND error IS NOT NULL ORDER BY run_id, {_STEP_TIME_ORDER}"
     )
 
@@ -462,18 +477,15 @@ def _run_count_query(
     return f"{_RUN_COUNT_SQL}{_where(conditions)}", params
 
 
-def _collect_first_failures(
-    rows: Iterable[Any],
-    failures: dict[str, tuple[str, str | None, int | None]],
-) -> None:
+def _collect_first_failures(rows: Iterable[Any], failures: dict[str, StepFailure]) -> None:
     """Keep the FIRST errored step per run — the failure that started it.
 
     Rows arrive in execution order, so a run's first row is its earliest
     failure; later ones are downstream fallout of the same collapse.
     """
-    for run_id, error, node_name, superstep in rows:
+    for run_id, error, node_name, superstep, public_reason in rows:
         if run_id not in failures:
-            failures[run_id] = (error, node_name, None if superstep is None else int(superstep))
+            failures[run_id] = StepFailure(error, node_name, None if superstep is None else int(superstep), public_reason)
 
 
 def _run_status_update(status: WorkflowStatus, totals: RunTotals) -> tuple[str, list[Any]]:
@@ -959,6 +971,36 @@ class SqliteCheckpointer(Checkpointer):
             rows = self._sync_db().execute(_NODE_BOUNDARY_SELECT_SQL, (run_id,)).fetchall()
         return [row_to_node_boundary(row) for row in rows]
 
+    async def _node_boundaries_of(self, run_ids: Sequence[str]) -> dict[str, list[NodeBoundary]]:
+        """``get_node_boundaries`` for several runs: one statement per id chunk.
+
+        Runs with no recorded boundary are absent. Each boundary's state is
+        derived by ``row_to_node_boundary``, exactly as the per-run read does.
+        """
+        boundaries: dict[str, list[NodeBoundary]] = {}
+        if not run_ids:
+            return boundaries
+        await self._ensure_db()
+        for chunk in self._chunk_run_ids(run_ids):
+            async with self._txn_lock():
+                cursor = await self._db.execute(_node_boundaries_query(chunk), chunk)
+                rows = await cursor.fetchall()
+            for row in rows:
+                boundary = row_to_node_boundary(row)
+                boundaries.setdefault(boundary.run_id, []).append(boundary)
+        return boundaries
+
+    def _node_boundaries_of_sync(self, run_ids: Sequence[str]) -> dict[str, list[NodeBoundary]]:
+        """Sync mirror of :meth:`_node_boundaries_of`."""
+        boundaries: dict[str, list[NodeBoundary]] = {}
+        for chunk in self._chunk_run_ids(run_ids):
+            with self._sync_lock:
+                rows = self._sync_db().execute(_node_boundaries_query(chunk), chunk).fetchall()
+            for row in rows:
+                boundary = row_to_node_boundary(row)
+                boundaries.setdefault(boundary.run_id, []).append(boundary)
+        return boundaries
+
     # === Durable pause slots (PRD 0010) ===
 
     async def record_pause(
@@ -1277,14 +1319,15 @@ class SqliteCheckpointer(Checkpointer):
             states.update(self._fold_states(rows))
         return states
 
-    async def get_step_failures(self, run_ids: Sequence[str]) -> dict[str, tuple[str, str | None, int | None]]:
-        """First errored step per run: ``(error, node_name, superstep)``.
+    async def get_step_failures(self, run_ids: Sequence[str]) -> dict[str, StepFailure]:
+        """First errored step per run, as a :class:`StepFailure`.
 
         The error text is whatever the step persisted — the privacy-safe
-        projection from ``safe_error_text``, never raw message text.
+        projection from ``safe_error_text``, never raw message text — and
+        the public reason is the static wording the exception class declared.
         """
         await self._ensure_db()
-        failures: dict[str, tuple[str, str | None, int | None]] = {}
+        failures: dict[str, StepFailure] = {}
         for chunk in self._chunk_run_ids(run_ids):
             async with self._txn_lock():
                 cursor = await self._db.execute(_failures_query(chunk), chunk)
@@ -1292,9 +1335,9 @@ class SqliteCheckpointer(Checkpointer):
             _collect_first_failures(rows, failures)
         return failures
 
-    def get_step_failures_sync(self, run_ids: Sequence[str]) -> dict[str, tuple[str, str | None, int | None]]:
+    def get_step_failures_sync(self, run_ids: Sequence[str]) -> dict[str, StepFailure]:
         """Sync mirror of ``get_step_failures``."""
-        failures: dict[str, tuple[str, str | None, int | None]] = {}
+        failures: dict[str, StepFailure] = {}
         for chunk in self._chunk_run_ids(run_ids):
             with self._sync_lock:
                 rows = self._sync_db().execute(_failures_query(chunk), chunk).fetchall()

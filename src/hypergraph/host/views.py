@@ -264,6 +264,15 @@ class RunQuery:
             first row. Unlike every other field this one is answered by the
             store, through ``idx_host_submissions_key``; Tier-0 runs, which
             carry no submission row, can never match.
+        repeated: Restrict by whether a rerun has repeated the Run — whether
+            some other Run in the Home names it as its ``retry_of``.
+            ``False`` keeps only the newest repeat of each lineage (a Run
+            never rerun is its own newest), which is what a page listing one
+            row per subject wants; ``True`` keeps only the Runs a rerun
+            replaced. Decided over every Run in the Home before any other
+            filter, so a failed source a completed rerun repeated is still
+            repeated when the query asks only for failed Runs. A source rerun
+            twice has two newest repeats, and both are kept.
     """
 
     definition: str | None = None
@@ -273,6 +282,7 @@ class RunQuery:
     limit: int = 100
     batch: BatchRef | str | None = None
     key: str | None = None
+    repeated: bool | None = None
 
 
 # THE Batch-level outcome name for a child parked by the recovery brake.
@@ -558,19 +568,26 @@ class RunFailure:
     ``logging`` logger by the opt-in ``FailureLogProcessor``, so a failure
     is debugged there and merely *identified* here.
 
+    ``public_reason`` is what a product may show a person: static wording
+    the exception CLASS declared as ``public_reason`` (never instance text),
+    or None when it declared nothing — then say something generic, and let
+    ``node_name`` say where.
+
     Attributes:
         error: Privacy-safe error projection from the first failed step.
         node_name: Node that raised it, when a step recorded one.
         superstep: Superstep the failure happened in, when recorded.
+        public_reason: The raising exception class's declared reason, or None.
     """
 
     error: str
     node_name: str | None = None
     superstep: int | None = None
+    public_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-safe dict of primitives."""
-        return {"error": self.error, "node_name": self.node_name, "superstep": self.superstep}
+        return {"error": self.error, "node_name": self.node_name, "superstep": self.superstep, "public_reason": self.public_reason}
 
 
 @dataclass(frozen=True)

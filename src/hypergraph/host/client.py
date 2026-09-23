@@ -13,12 +13,12 @@ import json
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import aclosing
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any, cast
 
-from hypergraph.checkpointers.types import PauseSlot, WorkflowStatus
+from hypergraph.checkpointers.types import BoundaryState, NodeBoundary, PauseSlot, StepFailure, WorkflowStatus
 from hypergraph.host._attempt_census import folded_census, validate_census_request
 from hypergraph.host._batch_store import BatchAcceptance, DefinitionPin
 from hypergraph.host._bus import _bus_for, _PreviewBus
@@ -294,7 +294,7 @@ def _build_run_outcome(
     submission: dict[str, Any] | None,
     run: Run | None,
     state: dict[str, Any] | None,
-    failure: tuple[str, str | None, int | None] | None,
+    failure: StepFailure | None,
 ) -> RunOutcome:
     """Project one run's durable rows into a ``RunOutcome``.
 
@@ -309,10 +309,6 @@ def _build_run_outcome(
     started = run is not None
     settled = _child_settled(submission, run) if submission is not None else (run is not None and run.status in TERMINAL_WORKFLOW_STATUSES)
     outputs = (state or {}) if (settled and started) else None
-    run_failure = None
-    if failure is not None and settled:
-        error, node_name, superstep = failure
-        run_failure = RunFailure(error=error, node_name=node_name, superstep=superstep)
     return RunOutcome(
         run_ref=RunRef(home=home_uri, run_id=run_id),
         workflow_id=run_id,
@@ -320,8 +316,17 @@ def _build_run_outcome(
         settled=settled,
         started=started,
         outputs=outputs,
-        failure=run_failure,
+        failure=_run_failure(failure) if settled and failure is not None else None,
     )
+
+
+def _run_failure(failure: StepFailure) -> RunFailure:
+    """THE projection of a run's first errored step into ``RunFailure``.
+
+    ``result()``, ``BatchOutcome`` and ``RunReadModel.failure`` all route
+    through here, so one Run never reads two different failures.
+    """
+    return RunFailure(error=failure.error, node_name=failure.node_name, superstep=failure.superstep, public_reason=failure.public_reason)
 
 
 def _build_batch_outcome(
@@ -329,7 +334,7 @@ def _build_batch_outcome(
     child_rows: dict[str, tuple[dict[str, Any], Run | None]],
     home_uri: str,
     states: dict[str, dict[str, Any]],
-    failures: dict[str, tuple[str, str | None, int | None]],
+    failures: dict[str, StepFailure],
 ) -> BatchOutcome:
     """Project every child into a ``RunOutcome``, keyed in manifest order.
 
@@ -526,6 +531,84 @@ class _RunReadSnapshot:
     #: the single-Run path, where the slot is loaded whether or not it is
     #: still open; a listing reads it in one bulk statement instead.
     ever_paused: bool = False
+    #: The Run's frontier: its PENDING node boundaries. See ``_RowFacts``.
+    pending_nodes: tuple[str, ...] = ()
+    #: Its place in claim order, when it waits in the claim line.
+    runs_ahead: int | None = None
+    #: Why it failed, once settled — the same ``RunFailure`` ``result()`` reads.
+    failure: RunFailure | None = None
+
+
+@dataclass(frozen=True)
+class _RowFacts:
+    """What a read-model page reads in bulk beyond its joined rows.
+
+    Keyed by workflow id and read once per page, never once per Run, so a
+    listing of five hundred Runs costs the same few statements as one.
+
+    Attributes:
+        pending_nodes: Each executing Run's PENDING node boundaries — the
+            nodes the runner recorded as runnable (PRD 0013) that have not
+            started settling, in superstep then name order. The FRONTIER:
+            siblings queued behind ``max_concurrency`` are pending too, so it
+            never claims a node is executing this instant.
+        runs_ahead: Each waiting Run's place in claim order — how many
+            submissions the Home will claim before it. Only Runs in the claim
+            line (pending, compatible, due) have one.
+        failures: Each settled, started Run's first errored step, projected
+            exactly as ``result()`` projects it.
+    """
+
+    pending_nodes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    runs_ahead: Mapping[str, int] = field(default_factory=dict)
+    failures: Mapping[str, RunFailure] = field(default_factory=dict)
+
+
+def _executing_ids(rows: Sequence[tuple[dict[str, Any] | None, Run | None]]) -> list[str]:
+    """Runs whose runs row can still move: only they have a frontier to read.
+
+    A settled Run may keep a PENDING boundary (a sibling a failure stopped
+    before it started); it will never run, so it is no frontier at all.
+    """
+    return [run.id for _, run in rows if run is not None and run.status not in TERMINAL_WORKFLOW_STATUSES]
+
+
+def _frontier(boundaries: Sequence[NodeBoundary]) -> tuple[str, ...]:
+    """The PENDING boundaries' node names, in recorded order."""
+    return tuple(boundary.node_name for boundary in boundaries if boundary.state is BoundaryState.PENDING)
+
+
+def _pending_submission_ids(rows: Sequence[tuple[dict[str, Any] | None, Run | None]]) -> list[str]:
+    """Runs that could stand in the claim line: only a ``pending`` submission can.
+
+    A page of settled or executing Runs names none, and skips the read.
+    """
+    return [submission["workflow_id"] for submission, _ in rows if submission is not None and submission["state"] == "pending"]
+
+
+def _settled_started_ids(rows: Sequence[tuple[dict[str, Any] | None, Run | None]]) -> list[str]:
+    """Runs that ran and can no longer change: the only ones a failure is read for.
+
+    The same settled rule ``_build_run_outcome`` applies, so a listed row and
+    ``result()`` agree on whether a Run has a failure yet.
+    """
+    return [
+        run.id
+        for submission, run in rows
+        if run is not None and (_child_settled(submission, run) if submission is not None else run.status in TERMINAL_WORKFLOW_STATUSES)
+    ]
+
+
+def _assemble_row_facts(
+    boundaries: Mapping[str, Sequence[NodeBoundary]],
+    claim_places: Mapping[str, int],
+    failures: Mapping[str, StepFailure],
+) -> _RowFacts:
+    return _RowFacts(
+        pending_nodes={run_id: _frontier(found) for run_id, found in boundaries.items()},
+        runs_ahead=dict(claim_places),
+        failures={run_id: _run_failure(failure) for run_id, failure in failures.items()},
+    )
 
 
 @dataclass(frozen=True)
@@ -796,6 +879,12 @@ def _validate_query(query: RunQuery) -> RunQuery:
         raise TypeError(f"RunQuery.key must be an exclusive_key string or None, got {type(query.key).__name__}.")
     if query.key is not None and not query.key.strip():
         raise ValueError("RunQuery.key must be a non-empty exclusive_key string; omit it to list every run.")
+    if query.repeated is not None and not isinstance(query.repeated, bool):
+        raise TypeError(
+            f"RunQuery.repeated must be a bool or None, got {type(query.repeated).__name__}.\n\n"
+            "How to fix: pass repeated=False for only the newest repeat of each Run, "
+            "repeated=True for only the Runs a rerun replaced, or leave it out for every Run."
+        )
     return query
 
 
@@ -803,6 +892,11 @@ def _query_batch_id(query: RunQuery) -> str | None:
     if query.batch is None:
         return None
     return query.batch.batch_id if isinstance(query.batch, BatchRef) else query.batch
+
+
+def _row_run_id(submission: dict[str, Any] | None, run: Run | None) -> str:
+    """The workflow id of one joined row: its submission's, else its bare runs row's."""
+    return submission["workflow_id"] if submission is not None else run.id  # type: ignore[union-attr]
 
 
 def _filter_list_rows(
@@ -815,11 +909,15 @@ def _filter_list_rows(
     """Build views for joined rows and apply the RunQuery filters, newest first."""
     cutoff = datetime.now(timezone.utc) - query.older_than if query.older_than is not None else None
     batch_id = _query_batch_id(query)
+    views = [_build_view(home_uri, _row_run_id(submission, run), submission, run, admission_full=admission_full) for submission, run in rows]
+    # Which Runs a rerun repeated, read off EVERY view before any filter
+    # drops the rerun that names them.
+    repeated_ids = {view.retry_of for view in views if view is not None and view.retry_of is not None}
     matched: list[tuple[datetime, RunView]] = []
-    for submission, run in rows:
-        run_id = submission["workflow_id"] if submission is not None else run.id  # type: ignore[union-attr]
-        view = _build_view(home_uri, run_id, submission, run, admission_full=admission_full)
+    for (submission, run), view in zip(rows, views, strict=True):
         if view is None:  # pragma: no cover - rows always carry one side
+            continue
+        if query.repeated is not None and (view.workflow_id in repeated_ids) is not query.repeated:
             continue
         if query.definition is not None and view.definition_name != query.definition:
             continue
@@ -878,8 +976,10 @@ def _make_read_snapshot(
     pause_slot: PauseSlot | None,
     dead_letter_reason: str | None = None,
     ever_paused: bool | None = None,
+    facts: _RowFacts | None = None,
 ) -> _RunReadSnapshot:
     """Shape joined storage facts without deriving a UI status word."""
+    facts = _RowFacts() if facts is None else facts
     accepted_at = _parse_iso(submission["created_at"]) if submission is not None else None
     started_at = view.created_at  # The Run ledger's own timestamps, as the view already reports them.
     settled_at = view.completed_at
@@ -909,6 +1009,9 @@ def _make_read_snapshot(
         # A loaded slot proves it by itself; a listing, which does not load
         # slots, passes what its one bulk pause read found.
         ever_paused=(pause_slot is not None) if ever_paused is None else ever_paused,
+        pending_nodes=facts.pending_nodes.get(view.workflow_id, ()),
+        runs_ahead=facts.runs_ahead.get(view.workflow_id),
+        failure=facts.failures.get(view.workflow_id),
     )
 
 
@@ -1497,7 +1600,8 @@ class RunHomeClient:
             return None
         latest = await self._home._latest_run_update_times([view.workflow_id])
         reasons = await self._home._dead_letter_reasons(_retired_ids([view], {view.workflow_id: submission}))
-        return await self._snapshot(view, submission, run, latest.get(view.workflow_id), reasons.get(view.workflow_id))
+        facts = await self._row_facts([(submission, run)])
+        return await self._snapshot(view, submission, run, latest.get(view.workflow_id), reasons.get(view.workflow_id), facts=facts)
 
     def _read_model_snapshot_sync(self, ref: RunRef) -> _RunReadSnapshot | None:
         """Sync mirror of ``_read_model_snapshot``."""
@@ -1516,7 +1620,8 @@ class RunHomeClient:
             return None
         latest = self._home._latest_run_update_times_sync([view.workflow_id])
         reasons = self._home._dead_letter_reasons_sync(_retired_ids([view], {view.workflow_id: submission}))
-        return self._snapshot_sync(view, submission, run, latest.get(view.workflow_id), reasons.get(view.workflow_id))
+        facts = self._row_facts_sync([(submission, run)])
+        return self._snapshot_sync(view, submission, run, latest.get(view.workflow_id), reasons.get(view.workflow_id), facts=facts)
 
     async def _list_read_model_snapshots(self, query: RunQuery) -> builtins.list[_RunReadSnapshot]:
         """Joined facts used by ``RunHomeReadModel`` for a filtered Run list."""
@@ -1534,9 +1639,15 @@ class RunHomeClient:
         # A listing does not load pause slots, so "was a person ever asked"
         # comes from one bulk statement rather than a slot read per row.
         gated = await self._home._ever_paused_ids([view.workflow_id for view in views])
+        facts = await self._row_facts([by_id[view.workflow_id] for view in views])
         return [
             await self._snapshot(
-                view, *by_id[view.workflow_id], latest.get(view.workflow_id), reasons.get(view.workflow_id), view.workflow_id in gated
+                view,
+                *by_id[view.workflow_id],
+                latest.get(view.workflow_id),
+                reasons.get(view.workflow_id),
+                view.workflow_id in gated,
+                facts=facts,
             )
             for view in views
         ]
@@ -1555,12 +1666,32 @@ class RunHomeClient:
         latest = self._home._latest_run_update_times_sync([view.workflow_id for view in views])
         reasons = self._home._dead_letter_reasons_sync(_retired_ids(views, {key: pair[0] for key, pair in by_id.items()}))
         gated = self._home._ever_paused_ids_sync([view.workflow_id for view in views])
+        facts = self._row_facts_sync([by_id[view.workflow_id] for view in views])
         return [
             self._snapshot_sync(
-                view, *by_id[view.workflow_id], latest.get(view.workflow_id), reasons.get(view.workflow_id), view.workflow_id in gated
+                view,
+                *by_id[view.workflow_id],
+                latest.get(view.workflow_id),
+                reasons.get(view.workflow_id),
+                view.workflow_id in gated,
+                facts=facts,
             )
             for view in views
         ]
+
+    async def _row_facts(self, rows: Sequence[tuple[dict[str, Any] | None, Run | None]]) -> _RowFacts:
+        """The page's bulk facts beyond its joined rows: one read per kind of fact."""
+        boundaries = await self._home._node_boundaries_of(_executing_ids(rows))
+        claim_places = await self._home._claim_places(_pending_submission_ids(rows))
+        failures = await self._home.get_step_failures(_settled_started_ids(rows))
+        return _assemble_row_facts(boundaries, claim_places, failures)
+
+    def _row_facts_sync(self, rows: Sequence[tuple[dict[str, Any] | None, Run | None]]) -> _RowFacts:
+        """Sync mirror of ``_row_facts``."""
+        boundaries = self._home._node_boundaries_of_sync(_executing_ids(rows))
+        claim_places = self._home._claim_places_sync(_pending_submission_ids(rows))
+        failures = self._home.get_step_failures_sync(_settled_started_ids(rows))
+        return _assemble_row_facts(boundaries, claim_places, failures)
 
     async def _snapshot(
         self,
@@ -1570,13 +1701,15 @@ class RunHomeClient:
         latest_update: str | None,
         dead_letter_reason: str | None = None,
         ever_paused: bool | None = None,
+        *,
+        facts: _RowFacts | None = None,
     ) -> _RunReadSnapshot:
         inputs = json.loads(submission["inputs_json"]) if submission is not None else await self._home.get_run_inputs(view.workflow_id)
         pause_slot = run.pause_slot if run is not None else None
         if pause_slot is None and view.waiting is WaitingCondition.PAUSED:
             pause_slot = await self._home.get_pause_slot(view.workflow_id)
         view = _reconcile_pause_view(view, pause_slot)
-        return _make_read_snapshot(view, submission, run, inputs, latest_update, pause_slot, dead_letter_reason, ever_paused)
+        return _make_read_snapshot(view, submission, run, inputs, latest_update, pause_slot, dead_letter_reason, ever_paused, facts)
 
     def _snapshot_sync(
         self,
@@ -1586,13 +1719,15 @@ class RunHomeClient:
         latest_update: str | None,
         dead_letter_reason: str | None = None,
         ever_paused: bool | None = None,
+        *,
+        facts: _RowFacts | None = None,
     ) -> _RunReadSnapshot:
         inputs = json.loads(submission["inputs_json"]) if submission is not None else self._home.get_run_inputs_sync(view.workflow_id)
         pause_slot = run.pause_slot if run is not None else None
         if pause_slot is None and view.waiting is WaitingCondition.PAUSED:
             pause_slot = self._home.get_pause_slot_sync(view.workflow_id)
         view = _reconcile_pause_view(view, pause_slot)
-        return _make_read_snapshot(view, submission, run, inputs, latest_update, pause_slot, dead_letter_reason, ever_paused)
+        return _make_read_snapshot(view, submission, run, inputs, latest_update, pause_slot, dead_letter_reason, ever_paused, facts)
 
     async def rerun(
         self,

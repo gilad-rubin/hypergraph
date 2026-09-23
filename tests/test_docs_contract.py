@@ -1157,7 +1157,15 @@ def test_durable_host_docs_pin_public_contract() -> None:
         # `pause` is the present tense; this outlives the answer, so a
         # throughput reader can keep human deliberation out of its numbers.
         "ever_paused",
+        # What a queue page asks of every row: which step (the frontier),
+        # how many are ahead (claim order), and why it failed in words a
+        # person may read (the class-declared public reason).
+        "pending_nodes",
+        "runs_ahead",
+        "failure",
     )
+    for field_name in ("pending_nodes", "runs_ahead", "public_reason", "repeated=False"):
+        assert field_name in host_api, field_name
     assert tuple(PauseReadModel.__dataclass_fields__) == (
         "run_ref",
         "pause_id",
@@ -1367,8 +1375,9 @@ def test_durable_host_docs_pin_public_contract() -> None:
     assert tuple(CommandReceipt.__dataclass_fields__) == ("run_ref", "verb", "duplicate")
     # `key` is the one RunQuery field answered store-side (#405/#392 H5):
     # exclusive_key is an indexed column, so "who holds this subject" is a
-    # narrowed read rather than a full scan filtered in Python.
-    assert tuple(RunQuery.__dataclass_fields__) == ("definition", "status", "waiting", "older_than", "limit", "batch", "key")
+    # narrowed read rather than a full scan filtered in Python. `repeated`
+    # folds rerun lineage: False lists only the newest repeat of each Run.
+    assert tuple(RunQuery.__dataclass_fields__) == ("definition", "status", "waiting", "older_than", "limit", "batch", "key", "repeated")
     assert tuple(DefinitionId.__dataclass_fields__) == ("name", "deployment_version", "structural_hash")
     assert tuple(RunView.__dataclass_fields__) == (
         "run_ref",

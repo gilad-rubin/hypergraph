@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 def detect_schema_version(conn: Any) -> int:
@@ -19,7 +19,8 @@ def detect_schema_version(conn: Any) -> int:
         7 — v7 schema (submitted work carries a builder address; workers register)
         8 — v8 schema (retention carriers record which nodes they folded)
         9 — v9 schema (a node boundary records its own settlement)
-        10 — current v10 schema (a live submission can hold an exclusive key)
+        10 — v10 schema (a live submission can hold an exclusive key)
+        11 — current v11 schema (a failed step keeps its declared public reason)
     """
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
@@ -30,8 +31,8 @@ def detect_schema_version(conn: Any) -> int:
     return 0
 
 
-def create_v10_schema(conn: Any) -> None:
-    """Create a fresh v10 schema on an empty database."""
+def create_v11_schema(conn: Any) -> None:
+    """Create a fresh v11 schema on an empty database."""
     conn.execute(_CREATE_RUNS)
     conn.execute(_CREATE_STEPS)
     conn.execute(_CREATE_ATTEMPT_SERIES)
@@ -44,6 +45,7 @@ def create_v10_schema(conn: Any) -> None:
     _ensure_v8_objects(conn)
     _ensure_v9_objects(conn)
     _ensure_v10_objects(conn)
+    _ensure_v11_objects(conn)
 
     conn.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
     conn.execute("INSERT INTO _schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
@@ -62,9 +64,10 @@ def ensure_schema(conn: Any) -> None:
         _ensure_v8_objects(conn)
         _ensure_v9_objects(conn)
         _ensure_v10_objects(conn)
+        _ensure_v11_objects(conn)
         return
     if version == 0:
-        create_v10_schema(conn)
+        create_v11_schema(conn)
         return
     if version == 2:
         _migrate_v2_to_v3(conn)
@@ -75,6 +78,7 @@ def ensure_schema(conn: Any) -> None:
         _migrate_v7_to_v8(conn)
         _migrate_v8_to_v9(conn)
         _migrate_v9_to_v10(conn)
+        _migrate_v10_to_v11(conn)
         return
     if version == 3:
         _migrate_v3_to_v4(conn)
@@ -84,6 +88,7 @@ def ensure_schema(conn: Any) -> None:
         _migrate_v7_to_v8(conn)
         _migrate_v8_to_v9(conn)
         _migrate_v9_to_v10(conn)
+        _migrate_v10_to_v11(conn)
         return
     if version == 4:
         _migrate_v4_to_v5(conn)
@@ -92,6 +97,7 @@ def ensure_schema(conn: Any) -> None:
         _migrate_v7_to_v8(conn)
         _migrate_v8_to_v9(conn)
         _migrate_v9_to_v10(conn)
+        _migrate_v10_to_v11(conn)
         return
     if version == 5:
         _migrate_v5_to_v6(conn)
@@ -99,24 +105,32 @@ def ensure_schema(conn: Any) -> None:
         _migrate_v7_to_v8(conn)
         _migrate_v8_to_v9(conn)
         _migrate_v9_to_v10(conn)
+        _migrate_v10_to_v11(conn)
         return
     if version == 6:
         _migrate_v6_to_v7(conn)
         _migrate_v7_to_v8(conn)
         _migrate_v8_to_v9(conn)
         _migrate_v9_to_v10(conn)
+        _migrate_v10_to_v11(conn)
         return
     if version == 7:
         _migrate_v7_to_v8(conn)
         _migrate_v8_to_v9(conn)
         _migrate_v9_to_v10(conn)
+        _migrate_v10_to_v11(conn)
         return
     if version == 8:
         _migrate_v8_to_v9(conn)
         _migrate_v9_to_v10(conn)
+        _migrate_v10_to_v11(conn)
         return
     if version == 9:
         _migrate_v9_to_v10(conn)
+        _migrate_v10_to_v11(conn)
+        return
+    if version == 10:
+        _migrate_v10_to_v11(conn)
         return
     raise ValueError(f"Unsupported database schema version {version} (current: {SCHEMA_VERSION}). Please upgrade hypergraph.")
 
@@ -175,6 +189,7 @@ CREATE TABLE IF NOT EXISTS steps (
     completed_at TEXT,
     attempt_series_id TEXT REFERENCES attempt_series(id),
     folded_producers TEXT,
+    public_reason TEXT,
     UNIQUE(run_id, superstep, node_name)
 )
 """
@@ -188,6 +203,15 @@ CREATE TABLE IF NOT EXISTS steps (
 # ordinary step row and on a carrier written before the column existed, which
 # is exactly the "provenance unknown" case both readers refuse to guess at.
 _STEPS_ADDED_COLUMNS = (("folded_producers", "folded_producers TEXT"),)
+
+# === v11: a failed step keeps the public reason its exception declared ===
+#
+# Static wording an exception CLASS declares as safe to show a person
+# (``diagnostics.declared_public_reason``), stored beside the type-only
+# ``error`` projection so a product reads it as a field instead of parsing
+# ``error``. NULL on every step that did not fail with a declared reason, and
+# on every step written before the column existed.
+_STEPS_V11_COLUMNS = (("public_reason", "public_reason TEXT"),)
 
 _RUNS_COPY_COLS = (
     "id, graph_name, status, duration_ms, node_count, error_count, created_at, completed_at, "
@@ -881,4 +905,22 @@ def _migrate_v9_to_v10(conn: Any) -> None:
     """In-place migration to schema v10 (one live run per exclusive key)."""
     _ensure_v10_objects(conn)
     conn.execute("UPDATE _schema_version SET version = 10")
+    conn.commit()
+
+
+def _ensure_v11_objects(conn: Any) -> None:
+    """Ensure the failed step's public-reason column exists (idempotent guard).
+
+    One nullable append to ``steps``: a v10 database migrates in place, every
+    existing row keeps its exact byte layout and reads NULL — which is the
+    honest answer for a failure recorded before a reason could be kept.
+    """
+    _add_missing_columns(conn, "steps", _STEPS_V11_COLUMNS)
+    conn.commit()
+
+
+def _migrate_v10_to_v11(conn: Any) -> None:
+    """In-place migration to schema v11 (a failed step's public reason)."""
+    _ensure_v11_objects(conn)
+    conn.execute("UPDATE _schema_version SET version = 11")
     conn.commit()
