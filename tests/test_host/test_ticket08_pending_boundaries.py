@@ -1152,3 +1152,80 @@ class TestPerNodeSettlement:
         result = await AsyncRunner(checkpointer=cp).run(self._graph(record), {"x": 1}, workflow_id="wf-seamless")
         assert result["a_out"] == 2
         assert record == ["alpha"]
+
+
+# === 8. A failed boundary batch is not half-recorded ===
+
+
+class TestFailedBatchRollsBack:
+    """A batch that fails partway leaves nothing behind for a later write to publish.
+
+    ``record_pending_nodes`` promises that a superstep's siblings become
+    attributable together or not at all. Without a rollback, the rows applied
+    before the failing one stay in the connection's open transaction and the
+    next unrelated boundary write commits them — recovery would then read a
+    superstep whose siblings are only partially recorded, the exact state
+    PRD 0013 exists to make impossible. A ``RAISE(ABORT)`` trigger stands in
+    for any constraint or IO failure partway through the ``executemany``.
+    """
+
+    RUN_ID = "wf-rollback"
+
+    @staticmethod
+    def _install_abort_trigger(db_path: str) -> None:
+        """Make every insert of the node named ``bad`` fail, over our own connection."""
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute(
+                "CREATE TRIGGER abort_bad_boundary BEFORE INSERT ON pending_nodes "
+                "WHEN NEW.node_name = 'bad' "
+                "BEGIN SELECT RAISE(ABORT, 'injected bad_boundary failure'); END"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @classmethod
+    def _boundary(cls, name: str) -> PendingNode:
+        return PendingNode(run_id=cls.RUN_ID, superstep=0, node_name=name, node_type="FunctionNode")
+
+    @staticmethod
+    async def _record(cp: SqliteCheckpointer, family: str, boundaries: list[PendingNode]) -> None:
+        if family == "sync":
+            cp.record_pending_nodes_sync(boundaries)
+        else:
+            await cp.record_pending_nodes(boundaries)
+
+    @pytest.mark.parametrize("family", ["sync", "async"])
+    async def test_a_batch_whose_second_row_fails_leaves_nothing_behind(self, tmp_path, family):
+        """The failure rolls the whole batch back, so no later write can publish it."""
+        db_path = str(tmp_path / f"rollback-{family}.db")
+        cp = SqliteCheckpointer(db_path)
+        try:
+            if family == "sync":
+                cp.create_run_sync(self.RUN_ID)
+            else:
+                await cp.create_run(self.RUN_ID)
+            self._install_abort_trigger(db_path)
+
+            batch = [self._boundary("good-from-failed-batch"), self._boundary("bad")]
+            with pytest.raises(sqlite3.IntegrityError, match="injected bad_boundary failure"):
+                await self._record(cp, family, batch)
+
+            # Read now, asserted last: the later write below closes any
+            # transaction the failure left open, and the published rows are
+            # the headline evidence either way.
+            left_open = cp._sync_db().in_transaction if family == "sync" else cp._db.in_transaction
+
+            # Correctly invisible right after the error under any implementation...
+            assert _read_boundaries_from_disk(db_path, self.RUN_ID) == []
+
+            # ...and the next, unrelated boundary write publishes ONLY itself.
+            await self._record(cp, family, [self._boundary("later-success")])
+            assert _read_boundaries_from_disk(db_path, self.RUN_ID) == [(0, "later-success")]
+
+            # The transaction really closed, so a run that swallows the failure
+            # (R15) does not carry the database write lock onwards.
+            assert left_open is False
+        finally:
+            await cp.close()

@@ -929,14 +929,14 @@ class SqliteCheckpointer(Checkpointer):
         says about StepRecord timing: a buffered boundary would not survive
         the process death it exists to describe. One transaction covers the
         whole batch, so a superstep's siblings become attributable together
-        or not at all.
+        or not at all: a failure rolls the whole batch back and re-raises, so
+        no later write can publish it.
         """
         if not boundaries:
             return
         await self._ensure_db()
-        async with self._txn_lock():
-            await self._db.executemany(_PENDING_NODE_UPSERT_SQL, [pending_node_params(b) for b in boundaries])
-            await self._db.commit()
+        async with self._write_txn() as db:
+            await db.executemany(_PENDING_NODE_UPSERT_SQL, [pending_node_params(b) for b in boundaries])
 
     async def get_node_boundaries(self, run_id: str) -> list[NodeBoundary]:
         """Recovery view: every recorded boundary of a run, state derived."""
@@ -950,10 +950,8 @@ class SqliteCheckpointer(Checkpointer):
         """Sync mirror of :meth:`record_pending_nodes`."""
         if not boundaries:
             return
-        with self._sync_lock:
-            db = self._sync_db()
+        with self._write_txn_sync() as db:
             db.executemany(_PENDING_NODE_UPSERT_SQL, [pending_node_params(b) for b in boundaries])
-            db.commit()
 
     def get_node_boundaries_sync(self, run_id: str) -> list[NodeBoundary]:
         """Sync mirror of :meth:`get_node_boundaries`."""
