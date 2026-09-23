@@ -82,6 +82,46 @@
     return function() { if (raf) cancelAnimationFrame(raf); };
   }
 
+  var FIT_MARGIN = 16;  // screen px kept clear at the canvas top, bottom and left
+
+  // Bounds of everything drawn, in flow coordinates: the node boxes (a child
+  // is positioned relative to its container) and the edge route points.
+  function contentBounds(nodes, edges) {
+    var byId = Object.create(null);
+    nodes.forEach(function(n) { byId[n.id] = n; });
+    var b = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    var grow = function(x, y) { b.x0 = Math.min(b.x0, x); b.y0 = Math.min(b.y0, y); b.x1 = Math.max(b.x1, x); b.y1 = Math.max(b.y1, y); };
+    nodes.forEach(function(n) {
+      if (n.hidden) return;
+      var x = 0, y = 0;
+      for (var p = n; p; p = p.parentNode ? byId[p.parentNode] : null) {
+        x += (p.position && p.position.x) || 0; y += (p.position && p.position.y) || 0;
+      }
+      grow(x, y);
+      grow(x + (n.width || (n.style && n.style.width) || 200), y + (n.height || (n.style && n.style.height) || 50));
+    });
+    edges.forEach(function(e) {
+      ((e.data && e.data.points) || []).forEach(function(pt) { if (pt.x !== undefined && pt.y !== undefined) grow(pt.x, pt.y); });
+    });
+    return b;
+  }
+
+  // The opening view (#598, ruling D58), for a W x H canvas: the whole graph
+  // inside the canvas at zoom <= 1, never below MIN_READABLE_ZOOM. A graph
+  // that cannot fit opens at that zoom on its first steps (its top), never
+  // clipped there. Horizontally it is centred on the canvas; a graph that fits
+  // beside the toolbar strip shifts left as far as it takes to clear it.
+  function fittedViewport(b, W, H) {
+    var left = FIT_MARGIN, right = W - R.TOOLBAR_RESERVE, top = FIT_MARGIN, bottom = H - FIT_MARGIN;
+    var cw = Math.max(1, b.x1 - b.x0), ch = Math.max(1, b.y1 - b.y0);
+    var z = Math.max(R.MIN_READABLE_ZOOM, Math.min(1, (right - left) / cw, (bottom - top) / ch));
+    var w = cw * z, h = ch * z;
+    var sx = (W - w) / 2;
+    if (w <= right - left) sx = Math.max(left, Math.min(sx, right - w));
+    var sy = h <= bottom - top ? top + (bottom - top - h) / 2 : top;
+    return { x: sx - b.x0 * z, y: sy - b.y0 * z, zoom: z };
+  }
+
   var App = function(props) {
     var initialData = props.initialData;
     var themePreference = props.themePreference;
@@ -383,63 +423,36 @@
     var rf = useReactFlow();
     var updateNI = useUpdateNodeInternals();
 
-    // Viewport centering
-    var fitWithFixedPadding = useCallback(function() {
-      if (!layoutedNodes.length) return;
+    // ── Opening view (#598, ruling D58) ──
+    // The view opens fitted (see fittedViewport). A toolbar toggle that
+    // re-lays out the graph, and a resize, fit again, unless the user has
+    // panned or zoomed since the last fit: a drag, wheel or pinch (React
+    // Flow's onMoveEnd, which fires only for user gestures) or a zoom button.
+    // Fit View always fits and re-arms. A fit and a pinned step's pan are
+    // programmatic, so neither counts. The latest programmatic move owns the
+    // view until a user gesture takes it over; __hypergraphVizReady turns true
+    // once a fit is on screen.
+    var userMovedRef = useRef(false);
+    var userGestureRef = useRef(0);
+    var viewMoveRef = useRef(0);
+    var fitSeqRef = useRef(0);
+    var onUserMoveStart = useCallback(function() { userGestureRef.current += 1; }, []);
+    var onUserMoveEnd = useCallback(function(event) { if (event) userMovedRef.current = true; }, []);
+    var onUserZoom = useCallback(function() { userMovedRef.current = true; userGestureRef.current += 1; }, []);
+    var fitView = useCallback(function() {
+      var pane = document.querySelector('.react-flow');
+      if (!layoutedNodes.length || !pane) return;
       root.__hypergraphVizReady = false;
-
-      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      layoutedNodes.forEach(function(n) {
-        var x = (n.position && n.position.x) || 0, y = (n.position && n.position.y) || 0;
-        var w = n.width || (n.style && n.style.width) || 200, h = n.height || (n.style && n.style.height) || 50;
-        minX = Math.min(minX, x); minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
-      });
-      layoutedEdges.forEach(function(e) {
-        ((e.data && e.data.points) || []).forEach(function(pt) {
-          if (pt.x !== undefined) { minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x); }
-          if (pt.y !== undefined) { minY = Math.min(minY, pt.y); maxY = Math.max(maxY, pt.y); }
-        });
-      });
-
-      var vpEl = document.querySelector('.react-flow__viewport');
-      vpEl = vpEl && vpEl.parentElement;
-      var vpW = (vpEl && vpEl.clientWidth) || 800, vpH = (vpEl && vpEl.clientHeight) || 600;
-      var contentCY = (minY + maxY) / 2, contentCX = (minX + maxX) / 2;
-      var newY = Math.max(16 - minY, vpH / 2 - contentCY);
-      var newX = Math.max(20 - minX, vpW / 2 - contentCX);
-
-      rf.setViewport({ x: newX, y: newY, zoom: 1 }, { duration: 0 });
-
-      requestAnimationFrame(function() { requestAnimationFrame(function() {
-        var vp = document.querySelector('.react-flow__viewport');
-        vp = vp && vp.parentElement;
-        var nw = document.querySelectorAll('.react-flow__node');
-        if (!vp || !nw.length) { root.__hypergraphVizReady = true; return; }
-        var vpR = vp.getBoundingClientRect();
-        var bounds = [];
-        nw.forEach(function(w) { var inner = w.querySelector('.group.rounded-lg') || w.firstElementChild; if (inner) bounds.push(inner.getBoundingClientRect()); });
-        if (!bounds.length) { root.__hypergraphVizReady = true; return; }
-
-        var left = Math.min.apply(null, bounds.map(function(r) { return r.left; }));
-        var right = Math.max.apply(null, bounds.map(function(r) { return r.right; }));
-        var top = Math.min.apply(null, bounds.map(function(r) { return r.top; }));
-        var bottom = Math.max.apply(null, bounds.map(function(r) { return r.bottom; }));
-        var cx = (left + right) / 2, vx = vpR.left + vpR.width / 2;
-        var diffY = (top - vpR.top) - (vpR.bottom - bottom);
-        var diffX = Math.round(cx - vx);
-        var cur = rf.getViewport();
-        var finalX = Math.abs(diffX) > 2 ? cur.x - diffX : cur.x;
-        var finalY = Math.abs(diffY) > 2 ? cur.y - diffY / 2 : cur.y;
-        // Margin constraints
-        var xShift = finalX - cur.x;
-        var newL = left + xShift;
-        if (newL - vpR.left < 20) finalX += (20 - (newL - vpR.left));
-        var newR = right + (finalX - cur.x);
-        if (vpR.right - newR < 100) finalX -= (100 - (vpR.right - newR));
-        if (finalX !== cur.x || finalY !== cur.y) rf.setViewport({ x: finalX, y: finalY, zoom: cur.zoom }, { duration: 0 });
-        requestAnimationFrame(function() { root.__hypergraphVizReady = true; });
-      }); });
+      userMovedRef.current = false;
+      var fit = ++fitSeqRef.current, move = ++viewMoveRef.current, gesture = userGestureRef.current;
+      var rect = pane.getBoundingClientRect();
+      var target = fittedViewport(contentBounds(layoutedNodes, layoutedEdges), rect.width, rect.height);
+      rf.setViewport(target, { duration: 0 });
+      whenViewAt(target, function() {
+        if (fit !== fitSeqRef.current) return false;  // a newer fit reports instead
+        if (move !== viewMoveRef.current || gesture !== userGestureRef.current) { root.__hypergraphVizReady = true; return false; }
+        return true;
+      }, function() { root.__hypergraphVizReady = true; });
     }, [layoutedNodes, layoutedEdges, rf]);
 
     // Force handle recalculation on expansion/mode changes
@@ -481,19 +494,23 @@
 
     // Resize handler
     useEffect(function() {
-      var h = function() { fitWithFixedPadding(); };
+      var h = function() { if (!userMovedRef.current) fitView(); };
       root.addEventListener('resize', h);
       return function() { root.removeEventListener('resize', h); };
-    }, [fitWithFixedPadding]);
+    }, [fitView]);
 
-    // Initial fit only
-    var hasInitFit = useRef(false);
+    // The first layout opens fitted; a layout from a toolbar toggle (a new
+    // renderModeKey) fits again unless the user has moved the view.
+    // Expanding or collapsing a container keeps the view, as before.
+    var fittedModeRef = useRef(null);
     useEffect(function() {
-      if (layoutedNodes.length > 0) {
-        if (!hasInitFit.current) { hasInitFit.current = true; requestAnimationFrame(function() { fitWithFixedPadding(); }); }
-        else { requestAnimationFrame(function() { requestAnimationFrame(function() { root.__hypergraphVizReady = true; }); }); }
-      }
-    }, [layoutedNodes, fitWithFixedPadding]);
+      if (!layoutedNodes.length) return;
+      var first = fittedModeRef.current === null;
+      var toggled = !first && fittedModeRef.current !== renderModeKey;
+      fittedModeRef.current = renderModeKey;
+      if (first || (toggled && !userMovedRef.current)) requestAnimationFrame(fitView);
+      else requestAnimationFrame(function() { requestAnimationFrame(function() { root.__hypergraphVizReady = true; }); });
+    }, [layoutedNodes, fitView]);
 
     // Any re-layout (expand/collapse, types, inputs, output mode) clears the
     // ghosts: their placement was measured against the previous layout.
@@ -539,18 +556,17 @@
     // rendered view reaches the target, window.__hypergraphVizPinFramed counts
     // up. A tap's click can reach the page late, so a fixed wait after the tap
     // may read the view mid-glide; tests wait on the count instead. A user
-    // gesture during the glide takes the view over, and the count stays put.
+    // gesture or a newer fit during the glide takes the view over, and the
+    // count stays put.
     var ghostPinned = !!(ghostActive && ghostActive.pinned);
-    var userGestureRef = useRef(0);
-    var onUserMoveStart = useCallback(function() { userGestureRef.current += 1; }, []);
     useEffect(function() {
       if (!ghostPinned || !activePlan) return;
       var pane = document.querySelector('.react-flow');
       if (!pane) return;
       var next = Ghosts.frameViewport(activePlan, rf.getViewport(), pane.getBoundingClientRect());
       if (next) rf.setViewport(next, { duration: PIN_PAN_MS });
-      var gesture = userGestureRef.current;
-      return whenViewAt(next || rf.getViewport(), function() { return userGestureRef.current === gesture; }, function() {
+      var move = ++viewMoveRef.current, gesture = userGestureRef.current;
+      return whenViewAt(next || rf.getViewport(), function() { return viewMoveRef.current === move && userGestureRef.current === gesture; }, function() {
         root.__hypergraphVizPinFramed = (root.__hypergraphVizPinFramed || 0) + 1;
       });
     }, [ghostPinned, activePlan, rf]);
@@ -587,7 +603,7 @@
           nodes=${displayNodes} edges=${styledEdges} nodeTypes=${nodeTypes} edgeTypes=${edgeTypes}
           onNodesChange=${onNodesChange} onEdgesChange=${onEdgesChange}
           onNodeMouseEnter=${onGhostEnter} onNodeMouseLeave=${onGhostLeave} onPaneClick=${onPaneClick}
-          onMoveStart=${onUserMoveStart}
+          onMoveStart=${onUserMoveStart} onMoveEnd=${onUserMoveEnd}
           onNodeClick=${function(e, n) { if (n.data && n.data.nodeType === 'PIPELINE' && !n.data.isExpanded && n.data.onToggleExpand) { e.stopPropagation(); n.data.onToggleExpand(); return; } onGhostClick(n); }}
           minZoom=${0.1} maxZoom=${2} className="bg-transparent" panOnScroll=${panOnScroll}
           zoomOnScroll=${false} panOnDrag=${true} zoomOnPinch=${true} preventScrolling=${false}
@@ -597,7 +613,7 @@
             onToggleSeparate=${function() { onToggleSep(); }} showTypes=${showTypes}
             onToggleTypes=${function() { onToggleTyp(); }} showInputs=${showInputs}
             onToggleInputs=${function() { onToggleInputs(); }} simplify=${simplify}
-            onToggleSimplify=${function() { onToggleSimplify(); }} onFitView=${fitWithFixedPadding} />
+            onToggleSimplify=${function() { onToggleSimplify(); }} onFitView=${fitView} onUserZoom=${onUserZoom} />
           ${root.__hypergraph_debug_viz ? html`
             <${DevLayoutControls} theme=${theme} endpointPadding=${endpointPadding} ranksep=${ranksep}
               onChangePadding=${function(v) { root.__hypergraphVizReady = false; setEndpointPadding(v); }}

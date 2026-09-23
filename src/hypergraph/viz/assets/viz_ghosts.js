@@ -50,7 +50,7 @@
   var SIDE_GAP = 30;       // step edge to the pill column
   var CLEARANCE = 6;       // margin kept from other nodes and labels
   var SLIDE_STEP = 10;     // vertical / horizontal slide per candidate
-  var TOOLBAR_RESERVE = 76; // screen px the bottom-right toolbar occupies
+  var TOOLBAR_RESERVE = R.TOOLBAR_RESERVE; // screen px the bottom-right toolbar occupies
   var DIAMOND_HALF = 67;   // half-diagonal of the 95px gate diamond
   var FONT = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
 

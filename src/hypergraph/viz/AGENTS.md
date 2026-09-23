@@ -145,6 +145,18 @@ side-effect in the order defined by `FIRST_PARTY_ASSET_NAMES`
 - `tests/viz/test_ghost_inputs.py` pins all of it (ghost sets, no overlaps,
   focus, pin/clear/toggle, touch) in both engines.
 
+## Opening View
+
+- One opening rule for notebook cells and standalone pages (#598, ruling D58): `viz.js:fittedViewport`.
+  - The whole graph sits inside the canvas at zoom <= 1, never below `MIN_READABLE_ZOOM` (`viz_runtime.js`, where the legibility evidence is recorded).
+  - A graph that cannot fit opens at that zoom on its top, centred horizontally. When it fits beside the toolbar strip, it keeps clear of it.
+- When the view fits again:
+  - A layout from a toolbar toggle (a new `renderModeKey`) fits again, and so does a resize, unless the user has moved the view. User moves are React Flow's `onMoveEnd` (drag, wheel, pinch) and the zoom buttons.
+  - Fit View fits and turns re-fitting back on.
+  - Fits and pin pans are programmatic and never count as user moves.
+  - Expanding or collapsing a container keeps the view.
+- `__hypergraphVizReady` turns true only once the fitted transform is rendered. `tests/viz/test_open_fitted.py` pins the rule in both engines.
+
 ## Node Types and Mapping
 
 - Flat graph containers: `node_type == "GRAPH"`
