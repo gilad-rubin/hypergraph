@@ -446,9 +446,23 @@ def count_letters(text: str) -> int:
     return len(text)
 
 
+class KeyedWord(TypedDict):
+    word_id: str
+    length_id: str
+    text: str
+
+
+@node(output_name="words")
+def split_keyed(extracted: str) -> list[KeyedWord]:
+    _record("split")
+    return [KeyedWord(word_id=f"w{i}", length_id=f"l{i}", text=word) for i, word in enumerate(extracted.split())]
+
+
 def test_two_child_tables_over_one_fan_out_get_one_entry() -> None:
-    lengths = Graph([count_letters], name="word_length").as_node().map_over("words", identity="word_id")
-    table = Graph([extract, summarize, split, _word_node(), lengths], name="doc").as_table(
+    """Two child tables over one input need distinct child identities: a table is
+    named after its identity, so one identity would make them one table."""
+    lengths = Graph([count_letters], name="word_length").as_node().map_over("words", identity="length_id")
+    table = Graph([extract, summarize, split_keyed, _word_node(), lengths], name="doc").as_table(
         identity="doc_id",
         store=MemoryStore(),
         on_error="store",
@@ -459,7 +473,7 @@ def test_two_child_tables_over_one_fan_out_get_one_entry() -> None:
 
     (partial,) = table.partial()
     assert [(change.column, change.reason, change.node) for change in partial.changes] == [
-        ("words", ChangeReason.NODE_ERROR, "split"),
+        ("words", ChangeReason.NODE_ERROR, "split_keyed"),
     ]
 
 
@@ -581,18 +595,6 @@ def test_a_store_written_before_changes_existed_takes_a_partial_row(tmp_path) ->
     assert CHANGES_COLUMN in LanceDBStore(path).column_names("doc")
     (partial,) = _lance_table(path).partial()
     assert partial.changes[0].column == "embedding"
-
-
-class KeyedWord(TypedDict):
-    word_id: str
-    length_id: str
-    text: str
-
-
-@node(output_name="words")
-def split_keyed(extracted: str) -> list[KeyedWord]:
-    _record("split")
-    return [KeyedWord(word_id=f"w{i}", length_id=f"l{i}", text=word) for i, word in enumerate(extracted.split())]
 
 
 def _real_store(kind: str, tmp_path):
