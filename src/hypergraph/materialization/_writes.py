@@ -21,6 +21,7 @@ Two rules hold everywhere below:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -47,6 +48,7 @@ from hypergraph.materialization._provenance import (
 from hypergraph.materialization._recipe_journal import RecipeJournal
 from hypergraph.materialization._row_builder import RowBuilder
 from hypergraph.materialization._schema import (
+    PROVENANCE_PREFIX,
     RECIPE_COLUMN,
     TableSpec,
     input_names,
@@ -185,6 +187,36 @@ def _run_pause(result: Any) -> PauseInfo | None:
     if getattr(result, "paused", False):
         return getattr(result, "pause", None)
     return None
+
+
+def _as_stored(value: Any, arrow_type: Any) -> Any:
+    """``value`` as a typed store reads it back, so a round trip is not a change.
+
+    A typed store writes through the column's arrow type (``list[float]`` is
+    float32), so a stored vector reads back rounded. Casting both sides the
+    same way compares what a reader sees; a value the declared type cannot
+    hold is compared as it is.
+    """
+    import pyarrow as pa
+
+    value = normalize_value(value)
+    if value is None or arrow_type is None:
+        return value
+    try:
+        return pa.array([value], type=arrow_type).to_pylist()[0]
+    except (pa.ArrowException, TypeError, ValueError):
+        return value
+
+
+def _same_value(left: Any, right: Any) -> bool:
+    """Value equality as a reader sees it: NaN is the same value as NaN, element-wise through lists and dicts."""
+    if isinstance(left, float) and isinstance(right, float) and math.isnan(left) and math.isnan(right):
+        return True
+    if isinstance(left, (list, tuple)) and type(left) is type(right):
+        return len(left) == len(right) and all(_same_value(a, b) for a, b in zip(left, right, strict=True))
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(_same_value(left[key], right[key]) for key in left)
+    return bool(left == right)
 
 
 def _pause_provenance(provenances: Mapping[str, str], pause: PauseInfo, *, routed: bool = False) -> str:
@@ -544,6 +576,38 @@ class WritePlanner:
         if child_items is not None:
             yield from self._insert_children_items(parent_id, child_items, child_spec, child_gens)
 
+    def _parent_stamps_stale(self, existing: Mapping[str, Any], provenances: Mapping[str, str | None]) -> bool:
+        """Whether an unchanged parent must be rewritten to carry this pass's stamps.
+
+        True when a provenance stamp moved — a column's, or a fan-out
+        boundary's ``<provenance>#<count>`` — or when the stored row predates
+        the recipe stamp. Both repair paths for an unchanged parent (the
+        column-scoped reconcile and the whole-graph derive) ask this one
+        question, so a stale recorded count is corrected by whichever runs.
+        """
+        provenance_changed = any(existing.get(f"{PROVENANCE_PREFIX}{name}") != provenance for name, provenance in provenances.items())
+        return provenance_changed or self._provenance.row_missing_stamp(existing, RECIPE_COLUMN)
+
+    def _parent_rewrite_derives(self, existing: Mapping[str, Any], row: Mapping[str, Any]) -> bool:
+        """Whether rewriting an unchanged parent as ``row`` changes what a reader sees (R13).
+
+        It does when a fan-out boundary's stamp moved — the run derived a
+        different item list than the one recorded — or when a derived column's
+        value differs from the stored one, as a node whose output varies
+        between runs can make it. Either is a rebuild, reported the way the
+        plain shape reports one. A rewrite that only moves recipe or column
+        stamps over identical values is bookkeeping and keeps the skip.
+        """
+        boundary_moved = any(
+            existing.get(f"{PROVENANCE_PREFIX}{spec.map_input}") != row.get(f"{PROVENANCE_PREFIX}{spec.map_input}")
+            for spec in self._spec.children
+            if spec.map_input
+        )
+        return boundary_moved or any(
+            not _same_value(_as_stored(existing.get(column.name), column.arrow_type), _as_stored(row.get(column.name), column.arrow_type))
+            for column in self._provenance.derived_columns()
+        )
+
     def _apply_reconciled(
         self,
         item: dict[str, Any],
@@ -571,9 +635,7 @@ class WritePlanner:
                 selection.spec,
                 child_gens,
             )
-        provenance_changed = any(existing.get(f"_provenance_{name}") != provenance for name, provenance in provenances.items())
-        rewrite_parent = not parent_skipped or provenance_changed or self._provenance.row_missing_stamp(existing, RECIPE_COLUMN)
-        if rewrite_parent:
+        if not parent_skipped or self._parent_stamps_stale(existing, provenances):
             self._rows.evolve_for_metadata(item)
             row = self._rows.parent_row(
                 item,
@@ -1038,8 +1100,19 @@ class WritePlanner:
         for child_spec in self._spec.children:
             yield from self._insert_children(identity_value, outputs, child_spec, child_gens)
         if parent_skipped:
+            # The boundary re-ran, so its recorded count may have moved (a
+            # stale or legacy stamp, or an item list that changed length).
+            # Leaving it would send every later sync() back through the graph.
+            row = self._rows.parent_row(item, source_inputs, outputs, write_gen, RowStatus.COMPLETE)
+            stamps = {key.removeprefix(PROVENANCE_PREFIX): value for key, value in row.items() if key.startswith(PROVENANCE_PREFIX)}
+            rebuilt = False
+            if existing is not None and self._parent_stamps_stale(existing, stamps):
+                self._rows.evolve_for_metadata(item)
+                self._commit.write_rows(self._spec.name, [row])
+                self._commit.cleanup_parent(identity_value, write_gen)
+                rebuilt = self._parent_rewrite_derives(existing, row)
             self._commit.cleanup_children(identity_value, child_gens)
-            return self._unchanged_parent_receipt(identity_value, before)
+            return self._unchanged_parent_receipt(identity_value, before, rebuilt=rebuilt)
 
         self._rows.evolve_for_metadata(item)
         row = self._rows.parent_row(item, source_inputs, outputs, write_gen, RowStatus.COMPLETE)
@@ -1113,18 +1186,22 @@ class WritePlanner:
         ``<provenance>#<count>`` value stamped on the parent row) against the
         physically present deduplicated child rows, and reads their ``_status``
         so a stored failure is not counted as a healthy child (#314). One
-        ``read_rows`` per child table per parent row; never writes. Child specs
-        whose boundary cannot be reconciled column-scoped (no boundary node, or
-        the boundary also produces a stored parent column) are skipped — for
-        them a repair could not honor the "present children and parent are not
-        re-derived" contract, so the fast path is preserved unchanged.
+        ``read_rows`` per child table per parent row; never writes.
+
+        A child spec whose boundary also produces a stored parent column is
+        probed like any other — the probe is read-only either way. When it
+        finds damage, the ordinary write plan reaches the same
+        ``ReconcileUnavailable`` -> ``_derived_parent`` repair ``insert()``
+        already takes for that shape (``Provenance.next_reconcile_step``), so
+        both verbs give one damage one answer (#468). A child spec with no
+        boundary node is skipped: no ``<provenance>#<count>`` stamp is written
+        for it, so there is no recorded count to compare against.
         """
         identity_value = existing[self._identity]
         for child_spec in self._spec.children:
             if child_spec.child_graph is None or not child_spec.map_input:
                 continue
-            boundary = self._provenance.boundary_node(child_spec)
-            if boundary is None or any(boundary in self._provenance.column_producers(column) for column in self._provenance.derived_columns()):
+            if self._provenance.boundary_node(child_spec) is None:
                 continue
             _, expected = split_boundary_provenance(existing.get(f"_provenance_{child_spec.map_input}"))
             if expected is None:

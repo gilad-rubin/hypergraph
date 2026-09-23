@@ -1074,13 +1074,18 @@ class HyperTable:
         Unchanged parents self-repair child damage (#204, #314): sync()
         inspects each child table once per unchanged parent row — recorded
         fan-out count and stored ``_status`` vs physically present
-        deduplicated child rows — and re-runs only the children that are
-        missing or stored as an error row (``on_error="store"``). The repair
-        reports ``HEALED`` when everything it derived landed healthy, and
-        ``UPDATED`` when a retry failed again and left the child in error. All
-        children present and complete stays a zero-execution ``SKIPPED``: the
-        probe itself never writes, and a repair pass that only re-stamps
-        unchanged child rows derives nothing and stays ``SKIPPED`` too.
+        deduplicated child rows — and runs the child graph only for the
+        children that are missing or stored as an error row
+        (``on_error="store"``). When the fan-out boundary also produces a
+        stored parent column, the repair runs the parent's nodes once as well
+        (the child graph stays scoped), and the parent row is rewritten only
+        when one of its recorded stamps moved or is missing (#468). The
+        repair reports ``HEALED`` when everything it derived landed healthy,
+        and ``UPDATED`` when a retry failed again and left the child in error.
+        When the recorded count matches the child rows present and every one
+        is complete, the row is a zero-execution ``SKIPPED``: the probe itself
+        never writes, and a repair pass that only re-stamps unchanged rows
+        derives nothing and stays ``SKIPPED`` too.
         """
         self._ensure_analyzed()
         operation = self._write_planner.sync(items)
