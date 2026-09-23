@@ -136,6 +136,11 @@ side-effect in the order defined by `FIRST_PARTY_ASSET_NAMES`
   from `data.dimmed`. Never find an edge label by its text.
 - Touch never goes through hover: the App tracks the last `pointerType`, a tap
   pins directly, and emulated mouse events after a tap are ignored.
+- A pin's pan glides, so its end is only observable on screen: once the
+  rendered view reaches the target, `window.__hypergraphVizPinFramed` counts
+  up. A browser test that reads positions after a pin waits on that count
+  (`_pin` in `test_ghost_inputs.py`), never on a fixed delay: an engine may
+  deliver a tap's click after `tap()` returns, and the view is then read mid-pan.
 - `tests/viz/test_ghost_inputs.py` pins all of it (ghost sets, no overlaps,
   focus, pin/clear/toggle, touch) in both engines.
 
