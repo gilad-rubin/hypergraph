@@ -625,6 +625,8 @@ def test_two_child_tables_over_one_fan_out_open_fail_and_heal_on_a_real_store(ki
     calls.clear()
     healed = table.sync(GAMMA)
 
+    # Loose on purpose: the heal runs the boundary once per child table over one
+    # map_over input (split runs twice here), filed as its own issue (D45).
     assert calls.pop("split") >= 1
     assert calls == {"tag": 2, "count_letters": 2}, "extract and summarize must not be paid twice"
     assert healed.completed

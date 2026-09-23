@@ -332,9 +332,8 @@ class WritePlanner:
     def _unchanged_parent_receipt(self, identity_value: Any, before: ChildWrites, *, rebuilt: bool = False) -> RowReceipt:
         """The receipt for a row whose parent this plan did not re-derive.
 
-        ``SKIPPED`` claims this pass derived nothing that survived: no child
-        row was derived, and no fan-out boundary was re-run to repair one.
-        Re-stamping the unchanged child rows at a newer generation, and
+        ``SKIPPED`` claims this pass derived nothing that survived: no row was
+        derived. Re-stamping the unchanged child rows at a newer generation, and
         retiring the rows they replace, is bookkeeping and keeps the skip —
         and so does running the graph only to arrive there, which is what a
         boundary that also produces a stored parent column forces.
