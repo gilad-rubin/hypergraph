@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from hypergraph import Graph
+from hypergraph.materialization._commit import distinct_child_identities
 from hypergraph.materialization._fingerprint import (
     _component_config_hashes,
     _plain_value_payload,
@@ -58,7 +59,7 @@ def normalize_value(value: Any) -> Any:
 
 
 def split_boundary_provenance(value: Any) -> tuple[str | None, int | None]:
-    """Parse ``<provenance>#<item-count>`` stored at a fan-out boundary."""
+    """Parse ``<provenance>#<child-count>`` stored at a fan-out boundary."""
     if not isinstance(value, str) or "#" not in value:
         return None, None
     provenance, _, count = value.rpartition("#")
@@ -594,8 +595,9 @@ class Provenance:
     def boundary_node(self, child_spec: TableSpec) -> Any:
         return find_boundary_node(self.graph, child_spec)
 
-    def boundary_provenance_value(self, provenance: str, items: Any) -> str:
-        count = len(items) if isinstance(items, list) else 0
+    def boundary_provenance_value(self, provenance: str, items: Any, identity: str) -> str:
+        """Record what the freshness check will count: child rows, not items."""
+        count = distinct_child_identities(items, identity) if isinstance(items, list) else 0
         return f"{provenance}#{count}"
 
     def child_source_inputs(self, row: Mapping[str, Any], child_spec: TableSpec) -> dict[str, Any]:
@@ -813,7 +815,7 @@ class Provenance:
             state,
             provenances=(
                 *state.provenances,
-                (child_spec.map_input, self.boundary_provenance_value(request.provenance, items)),
+                (child_spec.map_input, self.boundary_provenance_value(request.provenance, items, child_spec.identity)),
             ),
             boundary_index=state.boundary_index + 1,
             children=(*state.children, DerivedChildren(child_spec, tuple(items))),

@@ -33,6 +33,7 @@ from hypergraph.materialization._commit import (
     TableCommitter,
     dedup_child_rows,
     dedup_rows,
+    normalize_to_dict,
 )
 from hypergraph.materialization._provenance import (
     DerivedChildren,
@@ -70,19 +71,6 @@ __all__ = [
     "WritePlanner",
     "normalize_to_dict",
 ]
-
-
-def normalize_to_dict(item: Any) -> dict[str, Any]:
-    """Convert a mapped child item to a plain dict if it is not one already."""
-    if isinstance(item, dict):
-        return item
-    if hasattr(item, "model_dump"):
-        return item.model_dump(mode="python")
-    if hasattr(item, "__dataclass_fields__"):
-        from dataclasses import asdict
-
-        return asdict(item)
-    return dict(item)
 
 
 # ---------------------------------------------------------------------------

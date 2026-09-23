@@ -184,12 +184,12 @@ for row_receipt in receipt.errors:
 
 `sync()` inserts new identities, converges changed ones, skips fresh ones,
 and deletes identities absent from the incoming collection. An unchanged
-parent whose child rows were damaged is self-repairing: `sync()` compares each
-child table's recorded fan-out count against the child rows physically present
-and reads their status, then runs the child graph only for the children that
-are missing or stored as an error row, reporting the row as `healed` instead
-of `skipped` (or as `updated`, when the retry failed again and healed
-nothing). `insert()` repairs and reports the same way. When the fan-out
+parent whose child rows were damaged is self-repairing: `sync()` compares the
+number of child rows each fan-out recorded against the child rows physically
+present and reads their status, then runs the child graph only for the
+children that are missing or stored as an error row, reporting the row as
+`healed` instead of `skipped` (or as `updated`, when the retry failed again and
+healed nothing). `insert()` repairs and reports the same way. When the fan-out
 boundary also produces a stored parent column (it returns the item list and,
 say, a `word_count`), the repair runs the parent's nodes once as well, because
 that is the only way to regenerate the item list.
@@ -237,6 +237,13 @@ pages.count()
 
 Each public child row exposes the parent's named identity column. Predicates
 may reference either child columns or parent columns.
+
+A child row is keyed by its parent's identity plus its own, so the child
+identity must be unique within one parent. Two mapped items that produce the
+same `page_id` for one document occupy one child row, and `rows()`, `get()`
+and `count()` return only one of them. Derive the identity from something
+unique per item, such as the loop index, rather than from content that can
+repeat.
 
 A value the child graph `bind()`s is recipe, not data, so it is not a child
 column: it never appears in `rows()`, a mapped-item field of that name is

@@ -255,6 +255,42 @@ def test_identical_full_recipe_derives_nothing(store: LanceDBStore) -> None:
     assert identical.output("vector").shared
 
 
+@node(output_name="chunks")
+def chunk_pages_by_content(pages_text: str, chunker: Chunker) -> list[Chunk]:
+    return [Chunk(chunk_id=part, chunk_text=part) for part in chunker.split(pages_text)]
+
+
+def content_id_recipe() -> Graph:
+    child = Graph([normalize_chunk, embed_chunk], name="prepare_chunk")
+    mapped = child.as_node(name="prepared_chunks").map_over("chunks", identity="chunk_id")
+    return Graph([parse_pages, chunk_pages_by_content, mapped], name="search_index_recipe").bind(
+        chunker=Chunker("words"),
+        embedder=Embedder("embed-a"),
+    )
+
+
+def test_a_repeated_chunk_identity_leaves_the_branch_fresh(store: LanceDBStore) -> None:
+    """A chunk identity taken from the chunk text repeats when the text does.
+    Both repeats occupy one child row, so the branch records one chunk for
+    them; it used to record the raw item count, stayed stale forever and
+    re-ran its chunk boundary on every sync() (#470)."""
+
+    table = content_table(store)
+    table.insert([{"doc_id": "d-1", "text": "Alpha beta|alpha"}])
+    candidate = attach(table, "content-ids", content_id_recipe())
+
+    assert candidate.sync().updated == 1
+    assert candidate.status().is_fresh
+    before = dict(CALLS)
+
+    receipt = candidate.sync()
+
+    assert receipt.skipped == 1
+    assert receipt.updated == 0
+    assert dict(CALLS) == before, "an untouched branch re-runs neither the chunk boundary nor a chunk"
+    assert candidate.status().is_fresh
+
+
 def test_root_delete_converges_every_registered_branch_without_open_handles(
     store: LanceDBStore,
     store_path: str,

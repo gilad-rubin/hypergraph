@@ -61,6 +61,30 @@ def dedup_child_rows(rows: list[dict[str, Any]], identity: str) -> list[dict[str
     return list(best.values())
 
 
+def normalize_to_dict(item: Any) -> dict[str, Any]:
+    """Convert a mapped child item to a plain dict if it is not one already."""
+    if isinstance(item, dict):
+        return item
+    if hasattr(item, "model_dump"):
+        return item.model_dump(mode="python")
+    if hasattr(item, "__dataclass_fields__"):
+        from dataclasses import asdict
+
+        return asdict(item)
+    return dict(item)
+
+
+def distinct_child_identities(items: Sequence[Any], identity: str) -> int:
+    """How many child rows ``items`` can occupy once ``dedup_child_rows`` has run.
+
+    A parent row records this number at a fan-out boundary and every freshness
+    check compares it against ``len(dedup_child_rows(...))``. Two items that
+    share an identity occupy ONE child row, so a raw ``len(items)`` could never
+    agree with what the store holds (#470).
+    """
+    return len({str(normalize_to_dict(item).get(identity, "")) for item in items})
+
+
 @dataclass(frozen=True, slots=True)
 class ChildWrites:
     """How many child rows a plan DERIVED, and how many of those errored.
