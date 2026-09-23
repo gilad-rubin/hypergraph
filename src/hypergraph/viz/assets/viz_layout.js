@@ -27,6 +27,14 @@
   var ROOT_INPUT_TO_CONTAINER_MINLEN = 1;
   var ROOT_INPUT_WITH_ROOT_NON_PIPELINE_TARGET_MINLEN = 4;
   var ROOT_INPUT_TO_CONTAINER_WEIGHT = 10;
+  // Entry points (ruling D53). An ArrowClosed head is 9 marker units across
+  // at 12.5/20 px per unit per stroke px: 11.25px at the widest stroke (2px).
+  // Tips on one node sit a head's width plus a little air apart.
+  var ENTRY_GAP = 16;
+  // A final segment steeper than this from straight down gets a vertical
+  // landing, so its head points into the node instead of along its border.
+  var ENTRY_MAX_ANGLE_DEG = 30;
+  var ENTRY_LANDING = 20;
 
   // ╔═══════════════════════════════════════════════════════════╗
   // ║  Section 3: Dagre Layout Engine                          ║
@@ -128,6 +136,7 @@
       }
     });
     untangleSiblingExits(edges);
+    landSiblingEntries(edges, function(id) { return nodeById[id]; }, endpointPadding);
 
     var size = computeBounds(nodes, LAYOUT_PADDING);
     offsetAll(nodes, edges, size.min);
@@ -235,6 +244,71 @@
       group.slice().sort(laterPointsX).forEach(function(e, i) {
         e.points[0] = { x: slots[i].exitX, y: e.points[0].y };
         e.points[1] = { x: slots[i].bendX, y: e.points[1].y };
+      });
+    });
+  }
+
+  /** Keep `xs` (already in order) at least `gap` apart inside [lo, hi],
+   * moving each as little as a left-to-right pass allows; spread evenly
+   * when the gaps cannot fit. */
+  function spacedWithin(xs, lo, hi, gap) {
+    var n = xs.length;
+    if (n > 1 && (n - 1) * gap > hi - lo) {
+      return xs.map(function(_, i) { return lo + (hi - lo) * i / (n - 1); });
+    }
+    var out = xs.map(function(x, i) { return Math.max(lo + i * gap, Math.min(hi - (n - 1 - i) * gap, x)); });
+    for (var i = 1; i < n; i++) out[i] = Math.max(out[i], out[i - 1] + gap);
+    return out;
+  }
+
+  /**
+   * The entry-side mirror of untangleSiblingExits (ruling D53). Dagre ends an
+   * edge where the line from its last bend meets the node's box, and the
+   * endpoint clamp can pull several of those onto one point; a bend far to
+   * the side also lands almost flat, its head lying along the border.
+   * Edges into one node land at least ENTRY_GAP apart, in the order of their
+   * previous points (a diamond's entries fan along its two upper edges; a
+   * single edge keeps the vertex), and a final approach steeper than
+   * ENTRY_MAX_ANGLE_DEG gets a vertical landing so its head points into the
+   * node. Dagre's bends stay where they are.
+   */
+  function landSiblingEntries(edges, nodeOf, endpointPadding) {
+    var byTarget = new Map();
+    edges.forEach(function(e) {
+      if (!e.points || e.points.length < 2) return;
+      var group = byTarget.get(e.target);
+      if (!group) { group = []; byTarget.set(e.target, group); }
+      group.push(e);
+    });
+    byTarget.forEach(function(group, targetId) {
+      var tgt = nodeOf(targetId);
+      if (!tgt) return;
+      var tgtType = resolveNodeType(tgt.data && tgt.data.nodeType, tgt.data && tgt.data.isExpanded);
+      var top = tgt.y - tgt.height * 0.5 + getTopInset(tgtType);
+      if (group.length > 1) {
+        var last = function(e) { return e.points[e.points.length - 1]; };
+        var prev = function(e) { return e.points[e.points.length - 2]; };
+        group.sort(function(a, b) { return prev(a).x - prev(b).x || last(a).x - last(b).x; });
+        var pad = tgt.width * endpointPadding;
+        var lo = tgt.x - tgt.width * 0.5 + pad, hi = tgt.x + tgt.width * 0.5 - pad;
+        var centred = tgtType === 'BRANCH' || tgtType === 'START' || tgtType === 'END';
+        var desired = group.map(function(e, i) {
+          return centred ? tgt.x + (i - (group.length - 1) / 2) * ENTRY_GAP : last(e).x;
+        });
+        var xs = spacedWithin(desired, lo, hi, ENTRY_GAP);
+        group.forEach(function(e, i) {
+          // A diamond's upper edges fall one px per px away from its top vertex.
+          var y = tgtType === 'BRANCH' ? top + Math.abs(xs[i] - tgt.x) : top;
+          e.points[e.points.length - 1] = { x: xs[i], y: y };
+        });
+      }
+      group.forEach(function(e) {
+        var end = e.points[e.points.length - 1], from = e.points[e.points.length - 2];
+        var dy = end.y - from.y;
+        var angle = Math.atan2(Math.abs(end.x - from.x), dy) * 180 / Math.PI;
+        if (angle <= ENTRY_MAX_ANGLE_DEG) return;
+        var stem = dy > 0 ? Math.min(ENTRY_LANDING, dy / 2) : ENTRY_LANDING;
+        e.points.splice(e.points.length - 1, 0, { x: end.x, y: end.y - stem });
       });
     });
   }
@@ -430,6 +504,7 @@
       );
     });
     untangleSiblingExits(layoutEdges);
+    landSiblingEntries(layoutEdges, function(id) { return nodeById.get(id); }, endpointPadding);
 
     var size = computeBounds(layoutNodes, LAYOUT_PADDING);
     offsetAll(layoutNodes, layoutEdges, size.min);
@@ -572,6 +647,7 @@
     buildFeedbackEdgePoints: buildFeedbackEdgePoints,
     adjustEdgeEndpoints: adjustEdgeEndpoints,
     untangleSiblingExits: untangleSiblingExits,
+    landSiblingEntries: landSiblingEntries,
     performCompoundLayout: performCompoundLayout,
     useLayout: useLayout,
   };

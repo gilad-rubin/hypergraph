@@ -100,8 +100,9 @@ side-effect in the order defined by `FIRST_PARTY_ASSET_NAMES`
 - Every edge path must end with a segment that has its own end direction (`curveBasis` ends with `L`, as D3's does). WebKit orients the arrowhead marker from the final segment alone, so a degenerate final cubic draws every head at 0°, beside its line; `tests/viz/test_edge_arrowheads.py` pins it. The browser suite runs Chromium only, which hides WebKit-only rendering bugs.
 
 - Sibling exits: dagre ties the first bends of edges leaving one node and can swap them, so edges cross just under their source. `untangleSiblingExits` (`viz_layout.js`, both the flat and the compound layout) re-deals those bends and exits in the order of each edge's next point; dagre's reserved positions do not move. `tests/viz/test_edge_exit_order.py` pins it.
+- Sibling entries (ruling D53): every edge lands within 30° of straight down, so its head points into the node, and tips on one node sit at least `ENTRY_GAP` apart, in the order of each edge's previous point. `landSiblingEntries` (`viz_layout.js`, both layouts) spreads the entries and gives a steeper approach a vertical landing point; dagre's bends do not move. `tests/viz/test_edge_entry_points.py` pins it.
 
-**BRANCH/END exception**: Always use center-x regardless of mode (diamond has single exit point at bottom vertex).
+**BRANCH/START/END exception**: Exits always use center-x (a diamond has a single exit point, its bottom vertex). Entries use center-x for a single edge; several edges into one node spread symmetrically about its center, and on a diamond they spread along its two upper edges.
 
 ## Node Types and Mapping
 
