@@ -126,6 +126,27 @@
 
 ### Added
 
+- **`FailureLogProcessor` writes a failed node's real message and traceback to a
+  standard logger.** `AsyncRunner(event_processors=[FailureLogProcessor()])` (or
+  `SyncRunner`, `HostRuntime`, `serve`, a per-call `event_processors=`) logs every
+  `NodeErrorEvent`'s in-memory `error_detail` to the `"hypergraph.failures"` logger at
+  ERROR, one record per event: `node '<name>' in graph '<graph>' failed (run_id=...,
+  workflow_id=..., item_index=...): <Type>: <message>` followed by the traceback. It is
+  opt-in and persists nothing; every durable record keeps the privacy-safe projection,
+  but your log handlers may persist what they receive, so treat the logger's destination
+  like any place sensitive text can land. A nested failure logs once per level, innermost
+  first; run-level failures that raise no `NodeErrorEvent` are not logged. Exported from
+  `hypergraph` and `hypergraph.events`. (#530, closes #500)
+
+- **`SqliteTableStore`: `Table` and `HyperTable` without lancedb.** A `TableStore` on
+  stdlib `sqlite3`, exported from `hypergraph.materialization`:
+  `Table(identity="k", store=SqliteTableStore("state.db"))` (or `":memory:"`, one database
+  per instance). It passes `check_store_conformance`; `compare_and_set` is one transaction
+  with exactly one winner across threads and processes; columns whose Arrow type has no
+  SQLite type (lists, structs) are stored as JSON. No search and no manifests (so no
+  `create_index` and no materialization branches on it). It needs pyarrow, which `Table`
+  already needs, and never imports lancedb. (#535, closes #501)
+
 - **Three read verbs a product had been writing for itself (issue #392):
   `RunHomeReadModel.retry_census()`, `node_timings(descend=...)`, and an
   honest inner-cache outcome.** `retry_census(run_ids=None, definition=None)`
@@ -421,6 +442,83 @@
   pointing at `runner.map(..., workflow_id=...)`. (#484)
 
 ### Fixed
+
+- **A failed pending-boundary batch rolls back instead of riding the next commit.**
+  `SqliteCheckpointer.record_pending_nodes{,_sync}` opened no transaction of their own, so
+  a batch whose later row failed left its earlier rows in the connection's open
+  transaction and the next unrelated write committed them — a superstep's siblings could
+  become half-attributable, the state the per-node boundaries exist to prevent. Both now
+  use the store's write-transaction context managers: the batch commits whole or not at
+  all, and the error re-raises unchanged. (#527)
+
+- **Gates and interrupt handlers receive the `NodeContext` they declare.** A `@route` /
+  `@ifelse` gate function or an `@interrupt` handler with a `ctx: NodeContext` parameter
+  failed at run time with a missing-argument `TypeError`; under `SyncRunner` and
+  `AsyncRunner` it now gets the same context a `@node` gets, carrying the gate's own ids, so
+  a routing decision can read `ctx.stop_requested` and a gate's `ctx.stream()` chunk names
+  the gate. An interrupt handler's `ctx` exists only on the question path; a
+  `ctx.record()` fact the store refuses there fails the run instead of pausing it (R22).
+  `DaftRunner` still injects no `NodeContext`. (#528)
+
+- **A failing fan-out boundary keeps the columns that succeeded.** Under
+  `on_error="store"`, a failure in a `map_over` boundary nulled every derived column of the
+  row (a total-loss ERROR row). It now stores a PARTIAL row with one `ColumnChange` naming
+  the `map_over` input (reason `NODE_ERROR`), and the next `sync()` re-runs the boundary
+  and rebuilds the child rows. A partial row now names every node that failed: a failed
+  top-level node that owns no stored column (a side-effect node) makes the row a
+  total-loss ERROR row with a full retry — before, when another column was also nulled, it
+  was stored PARTIAL and the failed node was never run again. (#529)
+
+- **`sync()` heals a child error under a fan-out boundary that also produces a parent
+  column.** For that shape `sync()` reported SKIPPED forever while `insert()` of the same
+  row repaired it; both now give the same answer. The repair runs the parent's nodes once
+  (the child graph stays scoped to the damaged child) and rewrites the parent row only
+  when a recorded stamp moved or a stored value changed, and the receipt says so (HEALED,
+  or UPDATED while a child is still in error). A stale boundary count, or a boundary whose
+  item list changed between runs, no longer re-runs the whole graph on every write; that
+  loop existed for `insert()` on master too. (#532)
+
+- **A colliding child identity no longer reports HEALED forever.** A fan-out boundary's
+  provenance stamp now records the number of distinct child identities (what the child
+  table keeps), not the raw item count, so a parent whose mapped items share an identity
+  settles to SKIPPED with zero executions. Child identities must be unique per parent; two
+  items with one identity occupy one child row. Migration: a table whose stored rows
+  recorded a colliding identity re-runs that fan-out boundary once on its next write, then
+  settles. (#534)
+
+- **A nested run a dead worker left `active` settles with its submission.** A worker killed
+  mid-run left the inner page-recipe run it had started `active` forever under a completed
+  parent, and the Home's listings kept returning it. In the transaction that settles the
+  submission (finished, or parked recovery-exhausted), every nested run still `active`
+  beneath it is now settled `STOPPED` with `reason: "abandoned_incarnation"` on its
+  `status` run update, and its never-started node boundaries are dropped. The Run's own
+  row and `PAUSED` nested runs are never touched; a crash-resumed nested graph still
+  resumes under its own id. (#533)
+
+- **A raising log handler can no longer replace a node's error.** When an event processor
+  failed, the dispatcher's own warning went through the same logging handlers; a handler
+  that raised again escaped processor isolation and replaced the node's exception in the
+  raised error, the failure evidence, the step record and the Host outcome. The warning is
+  now guarded in `emit` and `emit_async`. (#530)
+
+- **Docs: `Graph.select` prunes execution, and `ProcessLocalLimiter` is not a
+  provider-quota owner.** `select()`'s docstring said every reachable node still runs; the
+  runner has pruned non-contributing nodes since the scheduler adopted the canonical scope,
+  and a test now pins it for both runner families, flat and nested. The limiter docs no
+  longer recommend `ProcessLocalLimiter` / `provider_limit` for an HTTP provider's API
+  quota: a node or graph permit is held for the whole node execution — retries, backoff and
+  in-body cache hits included — so it budgets a scarce process-local resource (a GPU, a
+  local model, a subprocess pool, database connections); a provider quota belongs at the
+  client's transport, which admits each attempt (for example hyperlimit's
+  `LimitedTransport`). Two `How to fix` hints were reworded to match. (#531, closes
+  #502, #503)
+
+- **Two child tables over one `map_over` input open on both shipped stores.** The table
+  analysis emitted the fan-out's `_provenance_<map_input>` column once per child spec, so a
+  graph with two child tables over the same mapped input could not open on
+  `LanceDBStore` ("Duplicate field name") or `SqliteTableStore`; it is now emitted once per
+  input. Also from the wave's integration review: `normalize_value` no longer retries a
+  failed `import numpy` on every call when numpy is absent. (#536)
 
 - **A durable Run could fail with "database is locked" without executing a
   single node.** The SQLite store shared ONE synchronous connection across
