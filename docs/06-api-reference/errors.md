@@ -17,6 +17,24 @@ node identity, counts/timing, booleans, and static help. Raw inputs, response
 bodies, exception arguments, stack traces, and arbitrary `repr` never enter a
 durable record.
 
+The one piece of wording an application adds is a **public reason**: static
+text an exception *class* declares for a product to show a person. It is
+stored with the failed `StepRecord` (`StepRecord.public_reason`), rides the
+`Diagnostic` as `public_reason`, and reads back as `RunFailure.public_reason`
+and `RunReadModel.failure.public_reason`:
+
+```python
+class ScanNeedsOcr(Exception):
+    public_reason = "This scan needs OCR before it can be read."
+```
+
+Only the class attribute is read — an instance attribute, however it is set,
+is ignored — so the text is fixed when the code is written and cannot carry a
+run's inputs, paths or response bodies. A subclass inherits its parent's
+reason. Anything but a non-empty string declares nothing, and a failure
+whose class declares nothing keeps `public_reason=None`. The type-only
+`error` projection is unchanged either way.
+
 A few surfaces sit deliberately outside that boundary, because a scrubbed
 failure cannot be debugged. In-memory events carry an `error_detail`
 companion (`ErrorDetail`: `message`, `type_name`, `traceback`) alongside the

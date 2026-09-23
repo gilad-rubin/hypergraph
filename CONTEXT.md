@@ -266,6 +266,22 @@ _Avoid_: Event offset, log position (no OutputLog exists), progress counter
 A fact a node itself appends to its run's log through `ctx.record(kind, payload)`, on the same durable update sequence as the host's own facts. Its `kind` is the node's vocabulary and may never be one the framework writes; with no Run Home to append to, recording is a no-op, not a failure.
 _Avoid_: Node event (events are previews, not facts), custom log, node output
 
+**Frontier**:
+The node boundaries a Run recorded as runnable before dispatching them and that have not started settling — its `PENDING` boundaries, read as `RunReadModel.pending_nodes`. It says which step a Run is at, never that a node is executing this instant: siblings waiting behind `max_concurrency` are pending too.
+_Avoid_: Current node, running step (both claim execution the journal never witnessed)
+
+**Claim order**:
+The order the Host offers waiting work to workers: pending, compatible, due submissions, oldest acceptance first with `rowid` breaking ties, never a child of a tripped Batch. `RunReadModel.runs_ahead` is a Run's 0-based place in it. It is the order work is offered, not a start guarantee: a cost budget can admit a lighter Run behind a heavy one first.
+_Avoid_: Queue position, priority
+
+**Repeated run**:
+A Run another Run names as its `retry_of` — a rerun has repeated it. `RunQuery(repeated=False)` keeps only the newest repeat of each lineage, which is one row per subject after reruns.
+_Avoid_: Retried run (retry is node-owned), superseded attempt (an attempt is a Node attempt)
+
+**Public reason**:
+Static wording an exception class declares as `public_reason` for a product to show a person. It is the only application wording a durable failure record carries, stored with the failed StepRecord beside the type-only `error` and read back as `RunFailure.public_reason`; instance text is never read.
+_Avoid_: Error message (raw messages never persist), user message
+
 ### Relationships
 
 - The **Host** owns new work; the **RunHomeClient** owns existing work. The Host exposes the client but never duplicates its verbs.
@@ -278,6 +294,7 @@ _Avoid_: Node event (events are previews, not facts), custom log, node output
 - A **paused child** is in flight, not settled: its Batch reports `settled=False` and its watch stream stays open. `child_paused` / `child_runnable` are lifecycle facts that may repeat (a second interrupt mints a new PauseSlot); only `child_settled`, `child_unstarted`, and a trip's `unstarted_items` account an item for good.
 - **Answer re-admission** resumes the *same* checkpointed Run with only `{response_key: answer}`. Pinned start inputs are never resupplied — strict checkpoint resume would refuse them as an input override.
 - Stopping a **paused child** is a stop, not a duplicate-resolution decision: the Run settles `STOPPED` and the domain question stays unanswered.
+- A Run's **frontier**, **claim order** place and **public reason** are all read from facts the Run Home already commits — the pending-node intent, the submission rows the claim scan orders, and the failed StepRecord — so none adds a second journal.
 
 ### Durable stores
 

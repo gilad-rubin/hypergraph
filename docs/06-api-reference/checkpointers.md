@@ -235,6 +235,8 @@ Steps are the source of truth — state is always computed by folding steps, nev
 
 A carrier row also records `StepRecord.folded_producers`: the node names whose `COMPLETED` step records it folded, in fold order, carried forward when one carrier is folded into the next. It is `None` on every ordinary step record, and on a carrier written before schema v8 — `None` means "not recorded", never "folded nothing".
 
+A `FAILED` step record also keeps `StepRecord.public_reason` when the raising exception's class declares one — static wording for a person, beside the type-only `error` (see [the privacy boundary](errors.md#the-privacy-boundary)). It is `None` on every other step, and on a failure recorded before schema v11.
+
 ## CheckpointPolicy
 
 `CheckpointPolicy` controls *when* checkpoints are written and *how much history* is kept:
