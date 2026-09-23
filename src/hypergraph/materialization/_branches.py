@@ -19,7 +19,7 @@ from hypergraph.materialization._branch_registry import (
     load_branch_records,
     save_branch_record,
 )
-from hypergraph.materialization._commit import dedup_child_rows, dedup_rows
+from hypergraph.materialization._commit import dedup_child_rows, dedup_rows, refuse_colliding_identities
 from hypergraph.materialization._indexes import BranchIndexBinding, IndexPolicy
 from hypergraph.materialization._provenance import Provenance, normalize_value, split_boundary_provenance
 from hypergraph.materialization._recipe_journal import RecipeJournal
@@ -630,6 +630,7 @@ class MaterializationBranch:
             values = self._logical_values(root_grain, "root", root_row)
             changes = yield from self._converge_columns(root_grain, "root", root_row, values)
             wrote = bool(changes)
+            selected: list[tuple[_LogicalGrain, str, list[dict[str, Any]], list[dict[str, Any]]]] = []
             for grain in self._layout.grains:
                 if grain.key == "root":
                     continue
@@ -662,6 +663,12 @@ class MaterializationBranch:
                     )
                     self._record_recipe(grain.boundary_node)
                     wrote = True
+                selected.append((grain, table_name, child_rows, items))
+            # Every grain's item list is checked before the first child write,
+            # so a colliding child identity leaves this root row untouched (#499).
+            for grain, _table_name, _child_rows, items in selected:
+                refuse_colliding_identities(items, grain.spec.identity, table=grain.spec.name, parent=parent_id)
+            for grain, table_name, child_rows, items in selected:
                 child_gen = child_gens.setdefault(table_name, self._root._store.max_write_gen(table_name) + 1)
                 incoming_ids: set[str] = set()
                 for item in items:

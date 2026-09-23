@@ -94,6 +94,28 @@
   switch to the exact local objects or the new typed
   `FailureEvidence.diagnostic`.
 
+- **BREAKING (HyperTable): a colliding child identity is refused, not silently
+  merged.** Two mapped items under one parent that produced the same child
+  identity used to share one child row: both child graphs ran and one item's
+  derived values were lost without a word. That write now raises
+  `DuplicateChildIdentityError` (a `ValueError` exported from `hypergraph`,
+  carrying `table`, `identity`, `value` and `parent`) before any child graph
+  runs and before any child row of that parent is written; every child table
+  of the row is checked together. Under `on_error="store"` the row is stored as
+  an `ERROR` row naming the collision and the other rows proceed. An item
+  without the identity field counts as the empty identity, so two such items
+  collide too. A row stored earlier over colliding items becomes an `ERROR`
+  row on the next write that re-runs its fan-out boundary, never `SKIPPED` or
+  `HEALED`. Two fan-outs whose child tables resolve to one name (the name comes
+  from the child identity) are now refused at table analysis with
+  `GraphConfigError` naming both, instead of writing into one table; so is a
+  fan-out whose child table resolves to the root table's own name, which used
+  to write its child rows among the root rows (a phantom row in `rows()`, a
+  `KeyError` from `child()`), and a root or child table that resolves to the
+  recipe journal's reserved name `recipe_journal`, which used to share the
+  journal's table. Derive a child identity from something unique per item, and
+  give each fan-out its own. (#499, #519)
+
 - **`gen_sync` refuses a rename-table name used as a keyword argument** — the sync-template
   generator rewrites names, not the signatures they bind to, so `f(checkpointer=x)` now
   exits with a `GenerationError` naming the line instead of silently generating

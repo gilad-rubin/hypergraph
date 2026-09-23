@@ -605,3 +605,46 @@ class WorkflowAlreadyRunningError(Exception):
             f"How to fix:\n"
             f"  Wait for the current execution to complete, or use a different workflow_id."
         )
+
+
+class DuplicateChildIdentityError(ValueError):
+    """Two mapped items under one parent row named the same child row.
+
+    A HyperTable child row is keyed by ``(parent identity, child identity)``,
+    so two items of one fan-out that produce the same child identity would
+    share one row and one item's derived values would be silently lost. The
+    write is refused before any child graph runs and before any child row of
+    that parent is written, restamped or retired — for every child table of
+    the row, checked together. Under ``on_error="store"`` the parent is stored
+    as an ERROR row carrying this message instead. (A row that predates the
+    recipe stamp is the exception: ``sync()`` refreshes that stamp first, which
+    can restamp its stored child rows and retire a duplicate copy of one.)
+
+    An item that lacks the identity field counts as the empty identity, so two
+    such items collide on ``""``.
+
+    Attributes:
+        table: The child table the items would have been written to.
+        identity: The child identity field (``map_over(..., identity=...)``).
+        value: The identity value two items shared (``""`` when missing).
+        parent: The parent row's identity value.
+    """
+
+    def __init__(self, *, table: str, identity: str, value: str, parent: str) -> None:
+        self.table = table
+        self.identity = identity
+        self.value = value
+        self.parent = parent
+        if value:
+            problem = f"Child table {table!r} got two items with {identity}={value!r} under parent {parent!r}."
+            fix = f"derive {identity} from something unique per item (an index, a position, a content hash plus index)."
+        else:
+            problem = f"Child table {table!r} got two items with no {identity} under parent {parent!r}: the field is missing or empty on both."
+            fix = f"set {identity} on every mapped item, derived from something unique per item (an index, a position, a content hash plus index)."
+        super().__init__(
+            f"{problem}\n\n"
+            f"Every mapped item under one parent must name its own child row: the child key is (parent, {identity}), "
+            "so the two items would share one row and one item's derived values would be lost. "
+            "No child graph ran and no child row of this parent was written.\n\n"
+            f"How to fix: {fix}"
+        )

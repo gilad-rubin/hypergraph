@@ -51,6 +51,7 @@ ROOT_EXPORTS = (
     "RetryWindowExpiredError",
     "CheckpointCoercionError",
     "CompactedRetentionError",
+    "DuplicateChildIdentityError",
     "MissingInputError",
     "InfiniteLoopError",
     "IncompatibleRunnerError",

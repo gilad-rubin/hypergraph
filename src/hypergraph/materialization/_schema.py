@@ -14,6 +14,8 @@ import typing
 from dataclasses import dataclass, field
 from typing import Any
 
+from hypergraph.graph import GraphConfigError
+
 # --- Reserved / internal column names (one source of truth) ---
 
 FINGERPRINT_COLUMNS = ("_row_fingerprint", "_write_gen")
@@ -244,7 +246,54 @@ def analyze_table(
         _validate_column_name(inp_name, "source")
         root_columns.append(_column(inp_name, role="source", content_key=True, python_type=input_types.get(inp_name, str)))
 
-    child_specs = [spec for map_node in map_over_nodes if (spec := _analyze_map_over(map_node, components)) is not None]
+    # Imported here: the journal module builds its own spec from this one.
+    from hypergraph.materialization._recipe_journal import JOURNAL_TABLE
+
+    table_name = name or identity.replace("_id", "")
+    if table_name == JOURNAL_TABLE:
+        raise GraphConfigError(
+            f"HyperTable table name {JOURNAL_TABLE!r} is reserved.\n\n"
+            f"The store keeps its recipe journal in a table of that name, and this table resolves to it "
+            f"(identity {identity!r}, name={name!r}), so journal rows would read back as rows of this table.\n\n"
+            f'How to fix: pass a different name= or identity, e.g. name="{table_name}_rows".'
+        )
+    child_specs: list[TableSpec] = []
+    # A child table is named after its child identity, so a fan-out that
+    # resolves to the recipe journal's or the root table's name (#499), or two
+    # that resolve to one name (#519), would write one physical table.
+    fan_outs: dict[str, tuple[str, str]] = {}
+    for map_node in map_over_nodes:
+        spec = _analyze_map_over(map_node, components)
+        if spec is None:
+            continue
+        fan_out = getattr(map_node, "name", None) or repr(map_node)
+        if spec.name == JOURNAL_TABLE:
+            raise GraphConfigError(
+                f"Fan-out {fan_out!r} would write its child rows into the reserved table {JOURNAL_TABLE!r}.\n\n"
+                f"Its child table is named after its child identity (identity {spec.identity!r}), and the store keeps "
+                "its recipe journal in a table of that name.\n\n"
+                "How to fix: give the child graph a different identity, e.g. "
+                f'map_over(..., identity="{fan_out}_id").'
+            )
+        if spec.name == table_name:
+            raise GraphConfigError(
+                f"Fan-out {fan_out!r} would write its child rows into the root table {table_name!r}.\n\n"
+                f"Its child table is named after its child identity (identity {spec.identity!r}), and the root table "
+                f"is {table_name!r}, so child rows would land among the root rows.\n\n"
+                "How to fix: give the child graph a different identity, e.g. "
+                f'map_over(..., identity="{fan_out}_id").'
+            )
+        if spec.name in fan_outs:
+            first, first_identity = fan_outs[spec.name]
+            raise GraphConfigError(
+                f"Two fan-outs would write one child table {spec.name!r}.\n\n"
+                f"Fan-outs: {first!r} (identity {first_identity!r}) and {fan_out!r} (identity {spec.identity!r}). "
+                "A child table is named after its child identity, so their rows would share one table.\n\n"
+                "How to fix: give each child graph its own identity, e.g. "
+                f'map_over(..., identity="{first}_id") and map_over(..., identity="{fan_out}_id").'
+            )
+        fan_outs[spec.name] = (fan_out, spec.identity)
+        child_specs.append(spec)
     child_map_inputs = {cs.map_input for cs in child_specs if cs.map_input}
 
     nodes_dict = graph.nodes if isinstance(graph.nodes, dict) else {}
@@ -295,7 +344,7 @@ def analyze_table(
         _column(CHANGES_COLUMN, role="internal"),
     ]
 
-    return TableSpec(name=name or identity.replace("_id", ""), identity=identity, columns=final_columns, children=child_specs)
+    return TableSpec(name=table_name, identity=identity, columns=final_columns, children=child_specs)
 
 
 def _analyze_map_over(map_node: Any, components: dict[str, Any]) -> TableSpec | None:
