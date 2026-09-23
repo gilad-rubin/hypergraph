@@ -99,6 +99,7 @@ def _edge_signature(edge: dict) -> tuple:
         edge["target"],
         data.get("edgeType"),
         data.get("valueName"),
+        tuple(data.get("valueNames") or ()),
         data.get("label"),
         bool(data.get("exclusive")),
         bool(data.get("forceFeedback")),

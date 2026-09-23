@@ -659,7 +659,7 @@ class TestInputVisibilityWhenCollapsed:
         from hypergraph.viz import extract_debug_data
 
         graph = make_input_group_container_graph()
-        data = extract_debug_data(graph, depth=0)
+        data = extract_debug_data(graph, depth=0, show_inputs=True)
 
         node_ids = {n["id"] for n in data.nodes}
         assert "input_group_alpha_beta" in node_ids, "alpha/beta are unbound graph inputs; the pill must survive the collapse."

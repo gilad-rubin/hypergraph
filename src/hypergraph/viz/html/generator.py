@@ -124,6 +124,8 @@ def generate_widget_html(graph_data: dict[str, Any]) -> str:
 <html>
 <head>
     <meta charset="UTF-8">
+    <!-- Phones lay the widget out at device width (desktop browsers and iframes ignore this) -->
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <!-- All assets are bundled - no external CDN dependencies -->
     {tailwind_css}
     {rf_css}
@@ -194,7 +196,7 @@ def generate_widget_html(graph_data: dict[str, Any]) -> str:
         'HypergraphDerivation', 'HypergraphSceneBuilder',
         'HypergraphVizRuntime', 'HypergraphVizLayout', 'HypergraphVizEdges',
         'HypergraphVizNodes', 'HypergraphVizControls', 'HypergraphVizDebug',
-        'HypergraphViz'
+        'HypergraphVizGhosts', 'HypergraphViz'
       ];
       var missing = requiredModules.filter(function(m) {{ return !window[m]; }});
       if (missing.length === 0 && typeof window.HypergraphViz.init !== 'function') {{

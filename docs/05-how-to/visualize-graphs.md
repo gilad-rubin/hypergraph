@@ -21,6 +21,8 @@ graph.visualize()
 
 This renders an interactive graph diagram inline. Nodes are connected automatically based on their input/output names.
 
+The graph shows steps only: the values a step takes from outside (graph inputs, bound tools) are hidden until you ask for them. Hover a step, or tap it on a touch screen, to see its inputs as ghost pills beside it — see [Inputs on demand](#inputs-on-demand).
+
 ## Parameters
 
 ```python
@@ -29,8 +31,8 @@ graph.visualize(
     theme="auto",              # "dark", "light", or "auto"
     show_types=True,           # Show type annotations on nodes
     separate_outputs=False,    # Render outputs as separate DATA nodes
-    show_inputs=True,          # Show INPUT/INPUT_GROUP nodes
-    show_bounded_inputs=False, # Include bound inputs when INPUT nodes are shown
+    show_inputs=False,         # Draw input boxes; hidden inputs appear on hover/tap
+    show_bounded_inputs=True,  # Include bound inputs (faded, dashed)
     simplify=True,             # Hide data edges a longer path already implies
     filepath=None,             # Save to HTML file instead of displaying
 )
@@ -73,21 +75,39 @@ graph.visualize(separate_outputs=True)
 
 By default, edges connect functions directly. With `separate_outputs=True`, each output becomes a visible DATA node, making the data flow explicit.
 
-### `show_inputs` — Root input visibility
+### `show_inputs` — Input boxes
 
 ```python
 graph.visualize(show_inputs=True)
 ```
 
-INPUT/INPUT_GROUP nodes are shown by default. Use this option, or the side-panel toggle in the widget, to hide or show them interactively.
+Inputs are hidden by default, so the diagram shows the steps and how they connect. Hidden inputs are still one hover or tap away: see [Inputs on demand](#inputs-on-demand). Pass `show_inputs=True`, or press **Show Inputs** in the widget toolbar, to draw every input as a box above the steps that take it.
 
 ### `show_bounded_inputs` — Include bound inputs
 
 ```python
-graph.bind(model="gpt-4o").visualize(show_bounded_inputs=True)
+graph.bind(model="gpt-4o").visualize(show_bounded_inputs=False)
 ```
 
-Bound inputs are hidden by default so the visualization focuses on the values a caller still needs to provide. Turn this on when you want bound values to appear in the root input lane as INPUT/INPUT_GROUP nodes. If `show_inputs=False`, the widget hides the whole input lane, so `show_bounded_inputs` has no visible effect.
+Bound inputs (tools and settings given with `Graph.bind`) are included by default, drawn faded and with a dashed border so they read as set up once rather than passed in on each run. That holds for input boxes (`show_inputs=True`) and for the ghost pills. Pass `show_bounded_inputs=False` to leave them out of both, so the diagram shows only the values a caller still provides.
+
+### Inputs on demand
+
+With inputs hidden, hovering a step (tapping it on a phone or tablet) draws what that step takes from outside the diagram as **ghost pills** beside it, each with a short dashed arrow into the step:
+
+| Ghost | Pill | When |
+| --- | --- | --- |
+| Graph input | `url : str` | a value no step produces; the caller passes it in |
+| Bound tool | `parser : Parser`, faded and dashed | a value bound with `Graph.bind` (left out when `show_bounded_inputs=False`) |
+| Hidden edge | `raw ← fetch` | a value another step produces whose arrow `simplify` hides |
+
+So nothing a step consumes is invisible. At the same time the step's upstream and downstream path stays lit and everything else dims, a gate's True/False labels included.
+
+- **Pin**: click (or tap) the step. The ghosts stay after the pointer leaves, and the view pans (zooming out if it must) so they are on screen.
+- **Clear**: click (or tap) empty canvas, or press `Escape`.
+- **Toggle**: **Show Inputs** draws the input boxes and turns the ghosts off; **Hide Inputs** brings them back. Either clears any pinned ghosts.
+
+Nothing is re-laid out: the ghosts float over the diagram. They are placed beside the step on the side with more room, never over another node, an edge label or each other. When neither side has room they sit in a row above or below the step, and types are dropped (names only) only when no spot fits them.
 
 ### `simplify` — Hide shortcut edges
 
@@ -150,7 +170,7 @@ Saves a standalone HTML file with all assets bundled (React, React Flow, Tailwin
 | **Pipeline** | Amber border | Nested graphs (containers) |
 | **Route** | Purple border | `@route` and `@ifelse` gate nodes |
 | **Data** | Green border | Output data nodes (in `separate_outputs` mode) |
-| **Input** | Gray | Graph input parameters |
+| **Input** | Gray (bound inputs faded, dashed) | Graph input parameters, drawn with `show_inputs=True` |
 
 ## START and Entrypoints
 

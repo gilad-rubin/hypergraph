@@ -1063,7 +1063,7 @@ How to fix:
 
 Shared params are omitted from the interactive input lane and from INPUT/INPUT_GROUP rendering, and are rendered as a `%% shared state: messages` comment in Mermaid output.
 
-### `visualize(*, depth=0, theme="auto", show_types=True, separate_outputs=False, show_inputs=None, show_bounded_inputs=False, simplify=True, show_external_inputs=None, filepath=None)`
+### `visualize(*, depth=0, theme="auto", show_types=True, separate_outputs=False, show_inputs=None, show_bounded_inputs=None, simplify=True, show_external_inputs=None, filepath=None)`
 
 Render an interactive visualization of the graph.
 
@@ -1078,8 +1078,8 @@ graph.visualize(filepath="graph.html")     # Save standalone HTML
 - `theme` (str): `"dark"`, `"light"`, or `"auto"` (detects from notebook environment). Default: `"auto"`.
 - `show_types` (bool): Display type annotations on nodes. Default: True.
 - `separate_outputs` (bool): Render outputs as separate DATA nodes instead of direct edges. Default: False.
-- `show_inputs` (bool | None): Show INPUT/INPUT_GROUP nodes. `None` uses the renderer default.
-- `show_bounded_inputs` (bool): Include bound INPUT/INPUT_GROUP nodes when `show_inputs=True`. If `show_inputs=False`, the input lane stays hidden. Default: False.
+- `show_inputs` (bool | None): Draw input boxes. `None` means False: the graph shows steps only, and hovering or tapping a step shows its inputs as ghost pills (graph inputs, bound tools, and values whose arrow `simplify` hides). Toggleable from the widget toolbar. Default: None (hidden).
+- `show_bounded_inputs` (bool | None): Include bound inputs, faded and dashed, in the input boxes and the ghost pills. `None` means True; False leaves them out of both. Default: None (included).
 - `simplify` (bool): Hide data edges a longer path already implies — with `A → B → C`, a direct `A → C` is dropped. Control, ordering, cycle and mutex-branch edges are never dropped. Toggleable from the widget toolbar. Default: True.
 - `show_external_inputs` (bool | None): Deprecated alias for `show_inputs`.
 - `filepath` (str | None): Save to HTML file instead of displaying inline. Default: None.

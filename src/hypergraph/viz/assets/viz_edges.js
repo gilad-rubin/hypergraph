@@ -16,6 +16,9 @@
   var EdgeLabelRenderer = R.EdgeLabelRenderer;
   var getBezierPath = R.getBezierPath;
 
+  // Opacity of an edge (path, head and label) off the focused step's path.
+  var EDGE_DIM_OPACITY = 0.12;
+
   // ╔═══════════════════════════════════════════════════════════╗
   // ║  Section 4: Edge Component                               ║
   // ╚═══════════════════════════════════════════════════════════╝
@@ -145,14 +148,23 @@
     else if (edgeLabel === 'False') labelStyle = { background: 'rgba(239,68,68,0.9)', border: '1px solid #f87171', color: '#fff', boxShadow: '0 2px 6px rgba(239,68,68,0.3)' };
     else if (edgeLabel) labelStyle = { background: 'rgba(15,23,42,0.9)', border: '1px solid #334155', color: '#cbd5e1', boxShadow: '0 2px 4px rgba(0,0,0,0.2)' };
 
+    // Focus dimming (a hovered or pinned step with inputs hidden): the edge
+    // dims its own path, arrowhead AND label, so a gate's True/False label
+    // follows its own edge and never another edge that shares its text.
+    var dimmed = !!(data && data.dimmed);
+    var dimStyle = { opacity: dimmed ? EDGE_DIM_OPACITY : 1, transition: 'opacity .15s ease' };
+
     return html`
       <${React.Fragment}>
-        <${BaseEdge} path=${edgePath} markerEnd=${markerEnd} style=${style} />
+        <g data-hg-edge="" data-hg-source=${props.source} data-hg-target=${props.target} data-hg-dimmed=${dimmed ? 'true' : 'false'} style=${dimStyle}>
+          <${BaseEdge} path=${edgePath} markerEnd=${markerEnd} style=${style} />
+        </g>
         ${edgeLabel ? html`
           <${EdgeLabelRenderer}>
-            <div style=${{ position: 'absolute', transform: 'translate(-50%,-50%) translate(' + labelX + 'px,' + labelY + 'px)',
+            <div data-hg-edge-label="" data-hg-source=${props.source} data-hg-target=${props.target} data-hg-dimmed=${dimmed ? 'true' : 'false'}
+              style=${{ position: 'absolute', transform: 'translate(-50%,-50%) translate(' + labelX + 'px,' + labelY + 'px)',
               pointerEvents: 'all', display: 'flex', alignItems: 'center', gap: '4px', padding: '3px 10px',
-              borderRadius: '10px', fontSize: '10px', fontFamily: 'ui-monospace, monospace', fontWeight: '600', letterSpacing: '0.02em', ...labelStyle }}>
+              borderRadius: '10px', fontSize: '10px', fontFamily: 'ui-monospace, monospace', fontWeight: '600', letterSpacing: '0.02em', ...labelStyle, ...dimStyle }}>
               ${edgeLabel === 'True' ? html`<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>` :
                 edgeLabel === 'False' ? html`<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>` : null}
               ${edgeLabel}

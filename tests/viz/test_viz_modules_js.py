@@ -78,6 +78,7 @@ def test_split_viz_modules_attach_expected_globals() -> None:
           'HypergraphVizNodes',
           'HypergraphVizControls',
           'HypergraphVizDebug',
+          'HypergraphVizGhosts',
           'HypergraphViz',
         ];
         const missing = globals.filter((name) => !context[name]);

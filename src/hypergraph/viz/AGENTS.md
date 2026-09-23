@@ -63,8 +63,10 @@ name matcher here.
   first-party JavaScript assets, embed them through the asset manifest and
   update `FIRST_PARTY_ASSET_NAMES` plus module smoke tests.
 - Icon-only controls need accessible names and keyboard behavior. Use tooltip
-  text or an explicit aria label, expose tooltips to focus as well as hover, and
-  let Escape hide transient tooltip UI.
+  text or an explicit aria label, expose tooltips to keyboard focus
+  (`:focus-visible`) as well as mouse hover, never to a touch (a tap focuses the
+  button and a phone has no hover to take the tooltip away), and let Escape
+  hide transient tooltip UI.
 - Mermaid id sanitization should normalize before reserved-word lookup, and
   tests should cover mixed-case reserved words when the reserved set changes.
 
@@ -89,8 +91,10 @@ side-effect in the order defined by `FIRST_PARTY_ASSET_NAMES`
 6. `viz_nodes.js` — `CustomNode` components for all node types
 7. `viz_controls.js` — zoom/fit/toggle buttons, `DevLayoutControls` (DialKit)
 8. `viz_debug.js` — `installDebugApi()` → `window.__hypergraphVizDebug`
-9. `viz.js` — App bootstrap: state management, scene refresh, theme wiring,
-   `hypergraph-set-options` message listener
+9. `viz_ghosts.js` — ghost inputs + focus (see "Input Visibility and Ghost
+   Inputs"): ghost sets, focus sets, pill placement, the overlay layer
+10. `viz.js` — App bootstrap: state management, scene refresh, theme wiring,
+   `hypergraph-set-options` message listener, hover/tap/pin state
 
 ## Edge Routing
 
@@ -103,6 +107,34 @@ side-effect in the order defined by `FIRST_PARTY_ASSET_NAMES`
 - Sibling entries (ruling D53): every edge lands within 30° of straight down, so its head points into the node, and tips on one node sit at least `ENTRY_GAP` apart, in the order of each edge's previous point. `landSiblingEntries` (`viz_layout.js`, both layouts) spreads the entries and gives a steeper approach a vertical landing point; dagre's bends do not move. `tests/viz/test_edge_entry_points.py` pins it.
 
 **BRANCH/START/END exception**: Exits always use center-x (a diamond has a single exit point, its bottom vertex). Entries use center-x for a single edge; several edges into one node spread symmetrically about its center, and on a diamond they spread along its two upper edges.
+
+## Input Visibility and Ghost Inputs
+
+- `widget.py:_resolve_input_visibility` is the ONE place the input defaults
+  live (ruling D56): `show_inputs=False`, `show_bounded_inputs=True`, and the
+  deprecated `show_external_inputs` alias. Every public entry point
+  (`Graph.visualize`, `viz.visualize`, `HyperTable.visualize`,
+  `extract_debug_data`) passes its raw `None`-default arguments through it;
+  internal helpers take the resolved booleans. Never add a default or an alias
+  block anywhere else. The JS fallback for a payload missing the flags mirrors
+  the resolver.
+- With inputs hidden, `viz_ghosts.js` shows a hovered or tapped step's inputs
+  as ghost pills: external inputs, bound tools (faded, dashed) and values whose
+  data edge `simplify` dropped (`raw ← fetch`). The dropped edges are the diff
+  between the drawn scene and the same scene built with `simplify: false`;
+  scene edges carry `data.valueNames` (both scene-builder twins) so the ghost
+  can name the value.
+- Ghosts are an overlay: no layout pass, no node moves. Placement is measured
+  from the rendered node and edge-label boxes, once per focused step; the
+  rule is documented at the top of `viz_ghosts.js`. Any re-layout clears the
+  ghost state.
+- Focus dimming goes through each component's own state: nodes get the
+  `hg-dim` / `hg-focus` class, and `CustomEdge` dims its path AND its label
+  from `data.dimmed`. Never find an edge label by its text.
+- Touch never goes through hover: the App tracks the last `pointerType`, a tap
+  pins directly, and emulated mouse events after a tap are ignored.
+- `tests/viz/test_ghost_inputs.py` pins all of it (ghost sets, no overlaps,
+  focus, pin/clear/toggle, touch) in both engines.
 
 ## Node Types and Mapping
 
@@ -338,7 +370,8 @@ Generates a scrollable gallery of all notebook visualizations with DialKit contr
 - `src/hypergraph/viz/_simplify.py` — `simplify` transitive-reduction authority
 - `src/hypergraph/viz/assets/scene_builder.js` — JS twin
 - `src/hypergraph/viz/renderer/__init__.py` — explicit Python scene + metadata compatibility helper
-- `src/hypergraph/viz/widget.py` — compact IR payload used by the HTML widget path
+- `src/hypergraph/viz/widget.py` — compact IR payload used by the HTML widget path; `_resolve_input_visibility`, the one home of the input defaults
+- `src/hypergraph/viz/assets/viz_ghosts.js` — ghost inputs + focus overlay
 - `src/hypergraph/viz/renderer/nodes.py` + `scope.py` — shared helpers used by `mermaid.py` and `ir_builder.py`
 - `src/hypergraph/viz/assets/*.js` — split JS app modules (see "JS Asset Modules"); load order in `assets/__init__.py:FIRST_PARTY_ASSET_NAMES`
 - `src/hypergraph/viz/html/generator.py` — HTML assembly with embedded assets

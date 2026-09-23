@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -63,10 +62,15 @@ def render_hypertable(
     options: dict[str, Any],
 ) -> Any:
     """Render the compute graph plus its storage-aware mapped-child fan-outs."""
-    if not include_children or not spec.children:
-        return graph.visualize(**options)
+    from hypergraph.viz.widget import _resolve_input_visibility, render_flat_graph
 
-    from hypergraph.viz.widget import render_flat_graph
+    show_inputs, show_bounded_inputs = _resolve_input_visibility(
+        options.pop("show_inputs", None),
+        options.pop("show_bounded_inputs", None),
+        options.pop("show_external_inputs", None),
+    )
+    if not include_children or not spec.children:
+        return graph.visualize(show_inputs=show_inputs, show_bounded_inputs=show_bounded_inputs, **options)
 
     all_nodes = list(graph.nodes.values()) if isinstance(graph.nodes, dict) else []
     all_nodes.extend(map_over_nodes)
@@ -88,23 +92,9 @@ def render_hypertable(
                 is_map=True,
             )
 
-    show_external_inputs = options.pop("show_external_inputs", None)
-    show_inputs = options.pop("show_inputs", None)
-    if show_external_inputs is not None:
-        if show_inputs is not None and show_inputs != show_external_inputs:
-            raise TypeError("Pass either show_inputs or show_external_inputs, not both.")
-        warnings.warn(
-            "show_external_inputs is deprecated; use show_inputs instead.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-        show_inputs = show_external_inputs
-    if show_inputs is None:
-        show_inputs = True
-
     flat_graph = combined.to_flat_graph(extra_edges=extra_edges)
     for (source_id, target_id), field_names in fanout_map_fields(graph, spec, map_over_nodes).items():
         if flat_graph.has_edge(source_id, target_id):
             flat_graph[source_id][target_id]["map_fields"] = list(field_names)
 
-    return render_flat_graph(flat_graph, combined, show_inputs=show_inputs, **options)
+    return render_flat_graph(flat_graph, combined, show_inputs=show_inputs, show_bounded_inputs=show_bounded_inputs, **options)

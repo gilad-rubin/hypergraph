@@ -73,6 +73,10 @@
       </div>`;
   };
 
+  // Bound inputs (tools bound with Graph.bind) are shown by default, faded
+  // and dashed, so they read as set-up rather than passed in per run.
+  var BOUND_INPUT_STYLE = { opacity: 0.6 };
+
   // Handle positioning
   function getSourceHandleStyle(nodeType) { return { bottom: (getOffset(nodeType)) + 'px' }; }
   function getTargetHandleStyle(nodeType) { return { top: (getTopInset(nodeType)) + 'px' }; }
@@ -136,7 +140,8 @@
                    : ' bg-slate-900 border-slate-700 text-slate-300 shadow-black/50 hover:border-slate-600');
       return html`
         <div className="w-full h-full relative" style=${wrapStyle}>
-          <div className=${'px-3 py-1.5 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg overflow-hidden' + (data.isBound ? ' border-dashed' : '') + (mapFed && isLight ? ' bg-amber-50' : '') + (mapFed && !isLight ? ' bg-slate-900' : '') + mapFedCls}>
+          <div className=${'px-3 py-1.5 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg overflow-hidden' + (data.isBound ? ' border-dashed' : '') + (mapFed && isLight ? ' bg-amber-50' : '') + (mapFed && !isLight ? ' bg-slate-900' : '') + mapFedCls}
+               style=${data.isBound ? BOUND_INPUT_STYLE : null}>
             <span className=${'shrink-0 ' + (mapFed ? (isLight ? 'text-amber-500' : 'text-amber-400') : (isLight ? 'text-slate-400' : 'text-slate-500'))}>${mapFed ? '⤨' : html`<${Icons.Data} />`}</span>
             <span className="text-xs font-mono font-medium shrink-0">${data.label}</span>
             ${data.showTypes && data.typeHint ? html`<span className=${'text-xs font-mono truncate min-w-0 ' + tc} title=${data.typeHint}>: ${truncateTypeHint(data.typeHint)}</span>` : null}
@@ -184,7 +189,8 @@
       var tc = isLight ? 'text-slate-400' : 'text-slate-500';
       return html`
         <div className="w-full h-full relative" style=${wrapStyle}>
-          <div className=${'px-3 py-2 w-full h-full relative rounded-xl border shadow-sm flex flex-col gap-1 transition-colors transition-shadow duration-200 hover:shadow-lg' + (data.isBound ? ' border-dashed' : '') + (isLight ? ' bg-white border-slate-200 text-slate-700 shadow-slate-200 hover:border-slate-300' : ' bg-slate-900 border-slate-700 text-slate-300 shadow-black/50 hover:border-slate-600')}>
+          <div className=${'px-3 py-2 w-full h-full relative rounded-xl border shadow-sm flex flex-col gap-1 transition-colors transition-shadow duration-200 hover:shadow-lg' + (data.isBound ? ' border-dashed' : '') + (isLight ? ' bg-white border-slate-200 text-slate-700 shadow-slate-200 hover:border-slate-300' : ' bg-slate-900 border-slate-700 text-slate-300 shadow-black/50 hover:border-slate-600')}
+               style=${data.isBound ? BOUND_INPUT_STYLE : null}>
             ${params.map(function(p, i) {
               return html`<div className="flex items-center gap-2 whitespace-nowrap">
                 <span className=${isLight ? 'text-slate-400' : 'text-slate-500'}><${Icons.Data} /></span>

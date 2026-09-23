@@ -307,6 +307,9 @@ def build_initial_scene(
                             "data": {
                                 "edgeType": ir_edge.edge_type,
                                 "valueName": value_name,
+                                # Every value the edge carries, so a consumer can
+                                # still name what an edge `simplify` hides.
+                                "valueNames": list(emit_value_names),
                                 "label": ir_edge.label,
                                 "exclusive": bool(ir_edge.exclusive),
                                 "forceFeedback": bool(ir_edge.is_back_edge),

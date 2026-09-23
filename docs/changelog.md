@@ -4,6 +4,22 @@
 
 ### Changed
 
+- **BREAKING (visualization): inputs are hidden by default and revealed on
+  demand; bound inputs are shown, faded and dashed, by default (#595).**
+  `visualize()` now defaults to `show_inputs=False` everywhere
+  (`Graph.visualize`, `hypergraph.viz.visualize`, `HyperTable.visualize`,
+  `extract_debug_data`), so the diagram shows steps only. Hovering a step, or
+  tapping it on a touch screen, draws its inputs as ghost pills beside it:
+  graph inputs as `name : Type`, bound tools faded and dashed, and a value
+  whose arrow `simplify` hides as `raw ← fetch`. The step's upstream and
+  downstream path stays lit while the rest dims, gate labels included. A click
+  or tap pins the ghosts and pans them on screen; an empty-canvas click,
+  `Escape` or the Show/Hide Inputs toggle clears them. `show_bounded_inputs`
+  now defaults to True, for input boxes and ghosts alike; pass False to leave
+  bound inputs out. Pass `show_inputs=True` for the previous picture. The
+  standalone HTML also lays out at device width on phones, and a tapped
+  toolbar button no longer leaves its tooltip up.
+
 - **BREAKING (OpenTelemetry): natural names, collapsed nested runs, migrated
   identity, and a >=1.24 floor.** Span names are now the user-authored graph or
   node name (unnamed graphs use `graph`); mapped items use `<graph>.item`.
