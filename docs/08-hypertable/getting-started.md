@@ -1,11 +1,13 @@
 # Getting started with HyperTable
 
 Use HyperTable when a graph derives durable columns for identified entities.
-Install the development or materialization dependencies, then import the
-shipped store from the public package:
+Two stores ship in the public package: `LanceDBStore` (vector search and named
+indexes, from the `[materialization]` extra) and `SqliteTableStore` (stdlib
+`sqlite3`, no search). Install the development or materialization
+dependencies, then import the shipped stores:
 
 ```python
-from hypergraph.materialization import LanceDBStore
+from hypergraph.materialization import LanceDBStore, SqliteTableStore
 ```
 
 ## Create a graph-backed table

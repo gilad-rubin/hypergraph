@@ -74,8 +74,11 @@ def _kind(arrow_type: pa.DataType) -> str:
 
 def _plain(value: Any) -> Any:
     """numpy scalars and arrays as plain Python, without importing numpy."""
-    np = sys.modules.get("numpy")
-    if np is not None:
+    # A numpy value cannot exist unless numpy was imported. The import statement
+    # (not the sys.modules entry) waits out another thread's import in progress.
+    if sys.modules.get("numpy") is not None:
+        import numpy as np
+
         if isinstance(value, np.ndarray):
             return value.tolist()
         if isinstance(value, np.generic):
@@ -216,11 +219,17 @@ def _where(table: str, kinds: dict[str, str], where: RowPredicate | None) -> tup
 
 
 def _refuse_case_clash(name: str, existing: Any, what: str, table: str | None = None) -> None:
-    """Refuse ``name`` when ``existing`` holds a name equal to it apart from letter case."""
+    """Refuse ``name`` when ``existing`` already holds it, exactly or apart from letter case."""
     clash = next((other for other in existing if other.lower() == name.lower()), None)
     if clash is None:
         return
     place = f" in table {table!r}" if table is not None else ""
+    if clash == name:
+        raise ValueError(
+            f"SqliteTableStore cannot create {what} {name!r}{place}: the spec names {what} {name!r} twice.\n\n"
+            f"Each {what} needs its own name.\n\n"
+            f"How to fix: remove the duplicate {what}, or rename one of them."
+        )
     raise ValueError(
         f"SqliteTableStore cannot create {what} {name!r}{place}: {clash!r} already exists.\n\n"
         f"SQLite table and column names ignore letter case, so the two would be one {what}.\n\n"

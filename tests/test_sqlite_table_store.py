@@ -408,6 +408,13 @@ def test_names_that_differ_only_by_case_are_refused(store):
         store.open(_spec("w", ColumnSpec("A", role="source"), ColumnSpec("a", role="source")), [])
 
 
+def test_a_column_named_twice_is_refused_as_a_duplicate_not_a_case_clash(store):
+    with pytest.raises(ValueError, match="names column 'a' twice") as refused:
+        store.open(_spec("w", ColumnSpec("a", role="source"), ColumnSpec("a", role="source")), [])
+    assert "letter case" not in str(refused.value)
+    assert store.column_names("w") == []
+
+
 # --- compare-and-set ---
 
 

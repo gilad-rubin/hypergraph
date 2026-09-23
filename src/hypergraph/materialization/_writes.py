@@ -178,11 +178,13 @@ def _run_pause(result: Any) -> PauseInfo | None:
 
 
 def _as_stored(value: Any, arrow_type: Any) -> Any:
-    """``value`` as a typed store reads it back, so a round trip is not a change.
+    """``value`` at the column's declared type, so a LanceDB round trip is not a change.
 
-    A typed store writes through the column's arrow type (``list[float]`` is
-    float32), so a stored vector reads back rounded. Casting both sides the
-    same way compares what a reader sees; a value the declared type cannot
+    LanceDBStore writes through the column's arrow type (``list[float]`` is
+    float32 there only), so a vector it stores reads back rounded;
+    SqliteTableStore keeps the float64 values. Casting both sides the same way
+    compares what a LanceDB reader sees, and on either store a difference below
+    the declared precision is not a change; a value the declared type cannot
     hold is compared as it is.
     """
     import pyarrow as pa
@@ -332,9 +334,8 @@ class WritePlanner:
     def _unchanged_parent_receipt(self, identity_value: Any, before: ChildWrites, *, rebuilt: bool = False) -> RowReceipt:
         """The receipt for a row whose parent this plan did not re-derive.
 
-        ``SKIPPED`` claims this pass derived nothing that survived: no child
-        row was derived, and no fan-out boundary was re-run to repair one.
-        Re-stamping the unchanged child rows at a newer generation, and
+        ``SKIPPED`` claims this pass derived nothing that survived: no row was
+        derived. Re-stamping the unchanged child rows at a newer generation, and
         retiring the rows they replace, is bookkeeping and keeps the skip —
         and so does running the graph only to arrive there, which is what a
         boundary that also produces a stored parent column forces.
@@ -1089,8 +1090,9 @@ class WritePlanner:
             yield from self._insert_children(identity_value, outputs, child_spec, child_gens)
         if parent_skipped:
             # The boundary re-ran, so its recorded count may have moved (a
-            # stale or legacy stamp, or an item list that changed length).
-            # Leaving it would send every later sync() back through the graph.
+            # stale or legacy stamp, or a set of distinct child identities that
+            # changed). Leaving it would send every later sync() back through
+            # the graph.
             row = self._rows.parent_row(item, source_inputs, outputs, write_gen, RowStatus.COMPLETE)
             stamps = {key.removeprefix(PROVENANCE_PREFIX): value for key, value in row.items() if key.startswith(PROVENANCE_PREFIX)}
             rebuilt = False

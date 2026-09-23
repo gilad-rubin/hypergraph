@@ -169,3 +169,112 @@ def test_sqlite_table_store_runs_a_table_without_numpy(tmp_path: Path) -> None:
     result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, check=False)
     assert result.returncode == 0, f"probe failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
     assert "PROBE-OK" in result.stdout
+
+
+def test_reading_rows_without_numpy_does_not_retry_the_import_per_value(tmp_path: Path) -> None:
+    """With numpy absent, value normalization must not attempt ``import numpy``
+    for every cell it reads: a failed import is not cached, so each attempt walks
+    the import machinery again (the D42 path cost ~30 us per cell)."""
+    script = tmp_path / "sqlite_store_no_numpy_import_count_probe.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import importlib.abc
+            import sys
+
+            attempts = []
+
+            class Block(importlib.abc.MetaPathFinder):
+                def find_spec(self, name, path=None, target=None):
+                    if name.split(".")[0] == "numpy":
+                        attempts.append(name)
+                        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+                    return None
+
+            sys.meta_path.insert(0, Block())
+
+            from hypergraph.materialization import SqliteTableStore, Table
+
+            store = SqliteTableStore()
+            table = Table(identity="k", store=store)
+            for i in range(50):
+                table.append(k=f"k{i}", v=i, score=i / 2, tags=["x"])
+
+            attempts.clear()
+            rows = table.rows()
+            store.close()
+
+            assert len(rows) == 50 and rows[3] == {"k": "k3", "v": 3, "score": 1.5, "tags": ["x"]}, rows[3]
+            assert len(attempts) <= 1, f"numpy import attempted {len(attempts)} times reading 50 rows x 4 columns"
+            print("PROBE-OK")
+            """
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, f"probe failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    assert "PROBE-OK" in result.stdout
+
+
+def test_numpy_values_still_normalize_when_numpy_is_present() -> None:
+    """Behavior floor: with numpy imported, its scalars and arrays read back as plain Python."""
+    import numpy as np
+
+    from hypergraph.materialization._provenance import normalize_value
+
+    assert normalize_value(np.array([1.5, 2.5])) == [1.5, 2.5]
+    assert type(normalize_value(np.int64(3))) is int
+    assert type(normalize_value(np.float32(0.5))) is float
+    assert isinstance(normalize_value(np.bool_(True)), np.bool_), "only floating and integer scalars convert"
+    assert normalize_value("text") == "text"
+
+
+def test_numpy_mid_import_in_another_thread_is_waited_for_not_read_half_loaded(tmp_path: Path) -> None:
+    """While one thread imports numpy, ``sys.modules["numpy"]`` already holds the
+    half-initialized module. Value normalization in another thread must wait for
+    that import, not read ``np.ndarray`` off the partial module (AttributeError)."""
+    script = tmp_path / "numpy_import_race_probe.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import sys
+            import threading
+
+            from hypergraph.materialization._provenance import normalize_value
+            from hypergraph.materialization._sqlite_store import _plain
+
+            assert "numpy" not in sys.modules, "numpy was already imported"
+            errors, calls, done = [], {}, threading.Event()
+
+            def reader(normalize, started):
+                started.set()
+                while not done.is_set():
+                    try:
+                        normalize("text")
+                    except Exception as exc:
+                        errors.append(f"{normalize.__name__}: {type(exc).__name__}: {exc}")
+                        return
+                    calls[normalize.__name__] = calls.get(normalize.__name__, 0) + 1
+
+            threads = []
+            for normalize in (normalize_value, _plain):  # one thread each, so neither waits behind the other
+                started = threading.Event()
+                threads.append(threading.Thread(target=reader, args=(normalize, started)))
+                threads[-1].start()
+                started.wait()
+            import numpy
+
+            done.set()
+            for thread in threads:
+                thread.join()
+            assert not errors, errors
+            assert set(calls) == {"normalize_value", "_plain"}, calls
+            assert normalize_value(numpy.int64(3)) == 3 and _plain(numpy.int64(3)) == 3
+            print("PROBE-OK")
+            """
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, f"probe failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    assert "PROBE-OK" in result.stdout
