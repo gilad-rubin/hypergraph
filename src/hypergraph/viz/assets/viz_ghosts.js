@@ -50,7 +50,7 @@
   var SIDE_GAP = 30;       // step edge to the pill column
   var CLEARANCE = 6;       // margin kept from other nodes and labels
   var SLIDE_STEP = 10;     // vertical / horizontal slide per candidate
-  var TOOLBAR_RESERVE = 76; // screen px the bottom-right toolbar occupies
+  var TOOLBAR_RESERVE = R.TOOLBAR_RESERVE; // screen px the bottom-right toolbar occupies
   var DIAMOND_HALF = 67;   // half-diagonal of the 95px gate diamond
   var FONT = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
 
@@ -372,26 +372,52 @@
 
   // The viewport that brings a pinned step and its pills on screen (camera
   // only), or null when they already are. `pane` is the canvas's screen rect.
+  // It zooms out only as far as it must, and never below MIN_READABLE_ZOOM
+  // (#598) or the view's own zoom if that is lower already. When the step and
+  // all its pills cannot fit at that floor, it frames the step and as many
+  // pills as fit, the nearest to the step first: centred on the step, shifted
+  // only as far as those pills need.
   function frameViewport(plan, vp, pane) {
-    var b = { x0: plan.step.x0, y0: plan.step.y0, x1: plan.step.x1, y1: plan.step.y1 };
-    plan.pills.forEach(function(p) {
-      b.x0 = Math.min(b.x0, p.box.x0); b.y0 = Math.min(b.y0, p.box.y0);
-      b.x1 = Math.max(b.x1, p.box.x1); b.y1 = Math.max(b.y1, p.box.y1);
-    });
     var margin = 12;
     var W = pane.width, H = pane.height;
     var box = { left: margin, top: margin, right: W - TOOLBAR_RESERVE, bottom: H - margin };
     var availW = box.right - box.left, availH = box.bottom - box.top;
+    var union = function(a, c) { return { x0: Math.min(a.x0, c.x0), y0: Math.min(a.y0, c.y0), x1: Math.max(a.x1, c.x1), y1: Math.max(a.y1, c.y1) }; };
+    var fits = function(b, k) { return (b.x1 - b.x0) * k <= availW && (b.y1 - b.y0) * k <= availH; };
+    var step = plan.step;
+    var b = plan.pills.reduce(function(acc, p) { return union(acc, p.box); }, step);
     var z = vp.zoom, x = vp.x, y = vp.y;
-    var bw = b.x1 - b.x0, bh = b.y1 - b.y0;
-    if (bw * z > availW || bh * z > availH) {
-      z = Math.max(0.2, Math.min(z, availW / bw, availH / bh));
-      x = box.left + (availW - bw * z) / 2 - b.x0 * z;
-      y = box.top + (availH - bh * z) / 2 - b.y0 * z;
-    } else {
+    // Moves the view the least that brings b inside the box at zoom z.
+    var keepInside = function(b) {
       var l = b.x0 * z + x, r = b.x1 * z + x, t = b.y0 * z + y, btm = b.y1 * z + y;
       if (l < box.left) x += box.left - l; else if (r > box.right) x -= r - box.right;
       if (t < box.top) y += box.top - t; else if (btm > box.bottom) y -= btm - box.bottom;
+    };
+    if (fits(b, z)) {
+      keepInside(b);
+    } else {
+      var floor = Math.min(z, R.MIN_READABLE_ZOOM);
+      var bw = b.x1 - b.x0, bh = b.y1 - b.y0;
+      var fitZ = Math.min(z, availW / bw, availH / bh);
+      if (fitZ >= floor) {
+        z = fitZ;
+        x = box.left + (availW - bw * z) / 2 - b.x0 * z;
+        y = box.top + (availH - bh * z) / 2 - b.y0 * z;
+      } else {
+        z = floor;
+        var cx = (step.x0 + step.x1) / 2, cy = (step.y0 + step.y1) / 2;
+        var dist = function(p) { return Math.hypot((p.box.x0 + p.box.x1) / 2 - cx, (p.box.y0 + p.box.y1) / 2 - cy); };
+        var framed = step;
+        var nearest = plan.pills.slice().sort(function(p, q) { return dist(p) - dist(q); });
+        for (var i = 0; i < nearest.length; i++) {
+          var grown = union(framed, nearest[i].box);
+          if (!fits(grown, z)) break;
+          framed = grown;
+        }
+        x = box.left + availW / 2 - cx * z;
+        y = box.top + availH / 2 - cy * z;
+        if (fits(framed, z)) keepInside(framed);
+      }
     }
     return (Math.abs(x - vp.x) > 0.5 || Math.abs(y - vp.y) > 0.5 || z !== vp.zoom) ? { x: x, y: y, zoom: z } : null;
   }

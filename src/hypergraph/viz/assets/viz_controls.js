@@ -57,8 +57,8 @@
     var rf = useReactFlow();
     return html`
       <${Panel} position="bottom-right" className="flex flex-col gap-2 pb-4 mr-6">
-        <${TooltipButton} onClick=${function() { rf.zoomIn(); }} tooltip="Zoom In" theme=${props.theme}><${Icons.ZoomIn} /><//>
-        <${TooltipButton} onClick=${function() { rf.zoomOut(); }} tooltip="Zoom Out" theme=${props.theme}><${Icons.ZoomOut} /><//>
+        <${TooltipButton} onClick=${function() { rf.zoomIn(); props.onUserZoom(); }} tooltip="Zoom In" theme=${props.theme}><${Icons.ZoomIn} /><//>
+        <${TooltipButton} onClick=${function() { rf.zoomOut(); props.onUserZoom(); }} tooltip="Zoom Out" theme=${props.theme}><${Icons.ZoomOut} /><//>
         <${TooltipButton} onClick=${props.onFitView} tooltip="Fit View" theme=${props.theme}><${Icons.Center} /><//>
         <div className=${'h-px my-1 ' + (props.theme === 'light' ? 'bg-slate-200' : 'bg-slate-700')}></div>
         <${TooltipButton} onClick=${props.onToggleSeparate} tooltip=${props.separateOutputs ? "Merge Outputs" : "Separate Outputs"} isActive=${props.separateOutputs} theme=${props.theme}>

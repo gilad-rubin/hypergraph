@@ -21,6 +21,8 @@ graph.visualize()
 
 This renders an interactive graph diagram inline. Nodes are connected automatically based on their input/output names.
 
+The diagram opens fitted to its frame, in a notebook cell and in a saved HTML page alike. It shows the whole graph at no more than its natural size, and zooms out no further than the size at which node names and output types stay readable (11 px text). A graph too large for that opens on its first steps, at the top, centred. Toggling inputs, types, separate outputs or simplify in the toolbar fits it again, unless you have panned or zoomed in the meantime; **Fit View** fits it again at any time.
+
 The graph shows steps only: the values a step takes from outside (graph inputs, bound tools) are hidden until you ask for them. Hover a step, or tap it on a touch screen, to see its inputs as ghost pills beside it (tapping a collapsed container opens it) — see [Inputs on demand](#inputs-on-demand).
 
 ## Parameters
@@ -103,7 +105,7 @@ With inputs hidden, hovering a step (tapping it on a phone or tablet) draws what
 
 So nothing a step consumes is invisible. At the same time the step's upstream and downstream path stays lit and everything else dims, a gate's True/False labels included.
 
-- **Pin**: click (or tap) the step. The ghosts stay after the pointer leaves, and the view pans (zooming out if it must) so they are on screen.
+- **Pin**: click (or tap) the step. The ghosts stay after the pointer leaves, and the view pans so they are on screen. It zooms out if it must, but never below the readable size; when they still do not all fit, as on a phone, it shows the step and the ghosts nearest to it.
 - **Clear**: click (or tap) empty canvas, or press `Escape`.
 - **Toggle**: **Show Inputs** draws the input boxes and turns the ghosts off; **Hide Inputs** brings them back. Either clears any pinned ghosts.
 

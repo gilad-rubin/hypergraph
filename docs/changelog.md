@@ -4,6 +4,19 @@
 
 ### Changed
 
+- **Visualization: `visualize()` opens fitted to its frame (#598).** The
+  notebook widget and the standalone HTML page now open on the whole graph at
+  no more than its natural size. They zoom out no further than the size at
+  which node names and output types stay readable: 11 px text, zoom 11/12. A
+  graph too large for that opens on its first steps, at the top, centred
+  horizontally. It no longer opens at zoom 1 on one corner, or with its top
+  node above a standalone page. Toggling inputs, types, separate outputs or
+  simplify in the toolbar fits the graph again, unless you have panned or
+  zoomed since the last fit. **Fit View** fits it and turns that back on.
+  Pinning a step pans to its ghost pills without zooming below that
+  readable size. When they do not all fit, it shows the step and the pills
+  nearest to it.
+
 - **BREAKING (visualization): inputs are hidden by default and revealed on
   demand; bound inputs are shown, faded and dashed, by default (#595).**
   `visualize()` now defaults to `show_inputs=False` everywhere

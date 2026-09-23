@@ -61,6 +61,18 @@
   var HEADER_HEIGHT = 32;
   var LAYOUT_PADDING = 36;
   var EDGE_ENDPOINT_PADDING = 0.25;  // fraction of node width (0-0.5)
+
+  // The opening view never zooms below this (#598, ruling D58). Legibility
+  // threshold: node text renders at 11 CSS px or more, Apple's minimum text
+  // size for iOS (Human Interface Guidelines, Typography: iOS 11 pt, macOS
+  // 10 pt; a device-width phone page and a desktop notebook both draw 1 CSS px
+  // per point). The smallest node text is output names and types (text-xs,
+  // 12 px), so the floor is 11/12: types render at 11 px and node names
+  // (text-sm, 14 px) at 12.8 px, measured in Chromium and WebKit at 390 px,
+  // DPR 3 (tests/viz/test_open_fitted.py).
+  var MIN_READABLE_ZOOM = 11 / 12;
+  // Screen px at the right edge that the bottom-right toolbar occupies.
+  var TOOLBAR_RESERVE = 76;
   var LAYOUT_RANKSEP = 80;
   var FEEDBACK_EDGE_GUTTER = 70;
   var FEEDBACK_EDGE_HEADROOM = 40;
@@ -317,6 +329,8 @@
     LAYOUT_PADDING: LAYOUT_PADDING,
     EDGE_ENDPOINT_PADDING: EDGE_ENDPOINT_PADDING,
     LAYOUT_RANKSEP: LAYOUT_RANKSEP,
+    MIN_READABLE_ZOOM: MIN_READABLE_ZOOM,
+    TOOLBAR_RESERVE: TOOLBAR_RESERVE,
     FEEDBACK_EDGE_GUTTER: FEEDBACK_EDGE_GUTTER,
     FEEDBACK_EDGE_HEADROOM: FEEDBACK_EDGE_HEADROOM,
     FEEDBACK_EDGE_STEM: FEEDBACK_EDGE_STEM,
