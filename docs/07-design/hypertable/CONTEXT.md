@@ -25,7 +25,7 @@ The tagline: **a Hypergraph graph where each node's output is a stored column, a
 
 **Child fingerprint** — a row fingerprint scoped to the child graph, not the parent graph. Computed from the child's source column values (from the child item dict), the child graph's node definition hashes, and the bound-value hashes filtered to the child graph's inputs — the child graph's OWN bindings layered under the root's, mirroring the precedence the run path uses when it binds root components onto the child. This makes child rows skippable on re-insert — if the child's source inputs, graph definition and bound values haven't changed, the child is skipped. A `_compute_child_fingerprint` method handles this separately from the parent fingerprint.
 
-**Identity** — the stable, user-facing key for a row. Declared explicitly on the table (`identity="video_id"`) and at each grain boundary (`map_over(..., identity="utterance_id")`). Used for update, delete, sync matching, and parent-child links. Always explicit — no naming-convention magic.
+**Identity** — the stable, user-facing key for a row. Declared explicitly on the table (`identity="video_id"`) and at each grain boundary (`map_over(..., identity="utterance_id")`). Used for update, delete, sync matching, and parent-child links. Always explicit — no naming-convention magic. A child identity must be unique within one parent: the child key is `(parent identity, child identity)`, so mapped items that share an identity under one parent occupy one child row, and only one of them is kept.
 
 **Grain** — the unit of identity for a table's rows. A video-grain table has one row per video. An utterance-grain table has one row per utterance. A new grain starts at a `map_over` boundary.
 

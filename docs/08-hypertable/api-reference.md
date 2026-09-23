@@ -138,7 +138,7 @@ that pass reports `SKIPPED`, as described next, unless re-running the
 parent's nodes stored a different value.
 
 `SKIPPED` is a claim about derivation, not about bytes: it means no row was
-derived and no fan-out boundary was re-run to repair one. A pass over an
+derived. A pass over an
 unchanged parent still re-stamps its child rows at a newer generation and
 retires the rows they replace; that is bookkeeping, and such a pass reports
 `SKIPPED`. Nor does it mean nothing executed: when the fan-out boundary also
@@ -146,7 +146,7 @@ produces a stored parent column, the pass runs the graph to establish that the
 stored row still stands, derives no new row from it, and reports `SKIPPED`.
 Mapped items that share a child identity are not damage either: they occupy
 one child row (see [Child tables](#child-tables)), so an untouched parent over
-them reports `SKIPPED`.
+them reports `SKIPPED` once its recorded count is current.
 
 `PARTIAL` is reported under `on_error="store"` when one node failed and the
 other derived columns were produced anyway: those columns are stored, the

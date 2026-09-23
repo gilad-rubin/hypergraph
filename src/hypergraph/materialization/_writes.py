@@ -1089,8 +1089,9 @@ class WritePlanner:
             yield from self._insert_children(identity_value, outputs, child_spec, child_gens)
         if parent_skipped:
             # The boundary re-ran, so its recorded count may have moved (a
-            # stale or legacy stamp, or an item list that changed length).
-            # Leaving it would send every later sync() back through the graph.
+            # stale or legacy stamp, or a set of distinct child identities that
+            # changed). Leaving it would send every later sync() back through
+            # the graph.
             row = self._rows.parent_row(item, source_inputs, outputs, write_gen, RowStatus.COMPLETE)
             stamps = {key.removeprefix(PROVENANCE_PREFIX): value for key, value in row.items() if key.startswith(PROVENANCE_PREFIX)}
             rebuilt = False
