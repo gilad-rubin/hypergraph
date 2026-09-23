@@ -344,13 +344,14 @@ graph = Graph(nodes=[decide, step_a, step_b])
 See your graph structure instantly — in notebooks or as standalone HTML.
 
 ```python
-graph.visualize()                          # Display in notebook
-graph.visualize(depth=1, show_types=True)  # Expand nested graphs, show types
-graph.visualize(show_bounded_inputs=True)  # Also show bound inputs in the input lane
-graph.visualize(filepath="graph.html")     # Save standalone HTML
+graph.visualize()                           # Display in notebook: steps only
+graph.visualize(depth=1, show_types=True)   # Expand nested graphs, show types
+graph.visualize(show_inputs=True)           # Also draw every input as a box
+graph.visualize(show_bounded_inputs=False)  # Leave bound inputs out
+graph.visualize(filepath="graph.html")      # Save standalone HTML
 ```
 
-Supports dark/light themes, expand/collapse for nested graphs, input toggles (`show_inputs`, `show_bounded_inputs` when inputs are shown), and type annotation display. All assets bundled — works offline.
+The diagram shows steps only; hover a step (or tap it) to see its inputs as ghost pills beside it. Bound inputs are included, faded and dashed. Supports dark/light themes, expand/collapse for nested graphs, a Show Inputs toggle, and type annotation display. All assets bundled — works offline.
 
 ### Pure Functions Stay Pure
 

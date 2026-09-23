@@ -20,7 +20,9 @@
   bound inputs out. Pass `show_inputs=True, show_bounded_inputs=False` for the
   previous picture. The
   standalone HTML also lays out at device width on phones, and a tapped
-  toolbar button no longer leaves its tooltip up.
+  toolbar button no longer leaves its tooltip up. The widget HTML grows by
+  about 31.5 KB for the ghost layer, and the payload-size test's per-cell
+  ceiling moved from 800 KB to 864 KB (#599 tracks trimming it).
 
 - **BREAKING (OpenTelemetry): natural names, collapsed nested runs, migrated
   identity, and a >=1.24 floor.** Span names are now the user-authored graph or

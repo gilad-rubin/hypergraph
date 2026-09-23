@@ -60,6 +60,12 @@ uv run python .claude/skills/debug-viz/scripts/inspect_scene.py \
   myapp.graphs my_graph_config --expanded --separate-outputs
 ```
 
+Both scripts use `visualize()`'s input defaults: input nodes hidden (a step's
+inputs appear as ghost pills on hover), bound inputs included. To debug input
+placement, press **Show Inputs** in the debug HTML's toolbar and pass
+`--show-inputs` to `inspect_scene.py` (`--no-show-bounded-inputs` leaves bound
+inputs out).
+
 ## What To Check
 
 - **IR facts**: verify node parents, expandable node order, external-input

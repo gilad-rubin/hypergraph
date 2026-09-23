@@ -94,7 +94,11 @@ def _read_embedded_payload(html_path: str) -> dict[str, Any]:
 
 def build_debug_summary(payload: dict[str, Any]) -> dict[str, Any]:
     """Build a compact summary of the widget payload embedded in HTML."""
+    from hypergraph.viz.widget import _resolve_input_visibility
+
     meta = payload.get("meta") or {}
+    # A payload missing the input flags reads as visualize()'s defaults, like the widget's JS fallback.
+    show_inputs, show_bounded_inputs = _resolve_input_visibility(meta.get("show_inputs"), meta.get("show_bounded_inputs"), None)
     ir = meta.get("ir") or {}
     nodes = payload.get("nodes") or []
     edges = payload.get("edges") or []
@@ -122,8 +126,8 @@ def build_debug_summary(payload: dict[str, Any]) -> dict[str, Any]:
             "theme_preference": meta.get("theme_preference", "auto"),
             "show_types": bool(meta.get("show_types", True)),
             "separate_outputs": bool(meta.get("separate_outputs")),
-            "show_inputs": bool(meta.get("show_inputs", True)),
-            "show_bounded_inputs": bool(meta.get("show_bounded_inputs")),
+            "show_inputs": show_inputs,
+            "show_bounded_inputs": show_bounded_inputs,
             "debug_overlays_metadata": bool(meta.get("debug_overlays")),
         },
         "browser_debug": {
