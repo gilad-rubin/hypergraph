@@ -255,6 +255,8 @@ Prefer `SyncRunner` or `AsyncRunner` when:
 - you need checkpointing, resume, or fork semantics
 - your inputs are already plain Python collections and you do not need Daft at the dataset boundary
 
+For the broader question of keeping one mental model when some runs are long or need HITL while still using Daft for large batch evals, see [Durable workflows + Daft](../07-design/durable-execution-and-daft.md).
+
 ## Stateful UDFs
 
 Heavy resources (ML models, DB connections) can be initialized once per Daft
