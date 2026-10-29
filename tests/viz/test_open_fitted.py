@@ -31,6 +31,7 @@ Every browser test renders once per engine in HYPERGRAPH_VIZ_ENGINES (the
 from __future__ import annotations
 
 import math
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -455,23 +456,40 @@ def _png_size(path) -> tuple[int, int]:
     return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
 
 
+def _drawn_box(html) -> dict:
+    """Every step's box, in CSS px, with the page opened whole at zoom 1 in a big Chromium window.
+
+    Chromium on its own thread, as the export draws: the PNG export is not per engine, and the
+    webkit run installs no Chromium, so this test stays out of the `_browser` fixture.
+    """
+
+    def measure() -> dict:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page(viewport={"width": 4000, "height": 4000})
+                page.goto(f"file://{html}")
+                _wait_ready(page)
+                return _union(_view(page)["nodes"].values())
+            finally:
+                browser.close()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(measure).result()
+
+
 @pytest.mark.parametrize("make", [make_tall_chain, make_wide_graph])
-def test_png_path_saves_the_whole_graph_cropped_at_2x(_browser, tmp_path, make):
-    if _browser.browser_type.name != "chromium":
-        pytest.skip("the PNG export always draws in Chromium; the webkit run installs no Chromium")
+def test_png_path_saves_the_whole_graph_cropped_at_2x(tmp_path, make):
     graph = make()
     png = tmp_path / "graph.png"
     assert graph.visualize(filepath=str(png), **INPUTS_HIDDEN) is None
     assert not (tmp_path / "graph.png.html").exists(), "a .png path writes a picture, not HTML"
     width, height = _png_size(png)
-    # The same graph opened whole at zoom 1 in a big window: its drawn box, in CSS px.
     html = tmp_path / "graph.html"
     graph.visualize(filepath=str(html), fit="whole", **INPUTS_HIDDEN)
-    page = _browser.new_page(viewport={"width": 4000, "height": 4000})
-    page.goto(f"file://{html}")
-    _wait_ready(page)
-    u = _union(_view(page)["nodes"].values())
-    page.close()
+    u = _drawn_box(html)
     # 2x pixels of every step plus a 16 px margin each side; edges may reach a little past the nodes.
     assert width >= 2 * (u["right"] - u["left"]) and height >= 2 * (u["bottom"] - u["top"]), f"{width}x{height} px holds {u}"
     assert width <= 2 * (u["right"] - u["left"] + 32 + 80) and height <= 2 * (u["bottom"] - u["top"] + 32 + 80), (
