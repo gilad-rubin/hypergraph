@@ -8,6 +8,8 @@ on:
   pull_request:
 
 jobs:
+  # Each job runs one stage of scripts/ci.sh, the same command the local check runs
+  # (AGENTS.md), so the two cannot drift apart. The stages hold the comments.
   lint:
     runs-on: ubuntu-24.04  # ubuntu-latest moved to 26.04, where Playwright installs no browsers (2026-10-29)
     steps:
@@ -15,15 +17,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - run: uv sync --group dev
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      # template_sync.py is generated from template_async.py. A hand-edit to
-      # either half that the other did not get fails here with the hunk.
-      - run: uv run python scripts/gen_sync.py --check
+      - run: scripts/ci.sh lint
 
   typecheck:
     runs-on: ubuntu-24.04  # ubuntu-latest moved to 26.04, where Playwright installs no browsers (2026-10-29)
@@ -32,12 +26,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.10"
-      - run: uv sync --group dev --python 3.10
-      # Same command as documented in [tool.mypy] in pyproject.toml.
-      - run: uv run --python 3.10 mypy
+      - run: scripts/ci.sh typecheck
 
   otel-floor:
     runs-on: ubuntu-24.04  # ubuntu-latest moved to 26.04, where Playwright installs no browsers (2026-10-29)
@@ -46,48 +35,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.10"
-      - run: uv sync --group dev --python 3.10
-      # pyproject.toml declares an OpenTelemetry floor of >=1.24.0 (the first release
-      # whose Span has add_link, which the collapsed-lineage spans call). Every other
-      # job resolves the newest OpenTelemetry, so this job is the only place the floor
-      # is exercised. The OTLP/HTTP exporter constrains the SDK to its own minor, so it
-      # comes down to the floor too -- otherwise its wire tests would skip.
-      # Python 3.10 is deliberate: opentelemetry-proto==1.24.0 needs protobuf<5, which
-      # emits a DeprecationWarning on 3.12+ that `-W error` turns into a collection error.
-      - name: Pin the declared OpenTelemetry floor
-        run: >-
-          uv pip install --python .venv/bin/python
-          opentelemetry-api==1.24.0
-          opentelemetry-sdk==1.24.0
-          opentelemetry-exporter-otlp-proto-http==1.24.0
-      # `uv run --with ...` cannot do this: the overlay loses to the project environment
-      # for a package the project already has, and the suite then runs green against the
-      # newest SDK. `--no-sync` keeps `uv run` from restoring it.
-      - name: Verify the floor is what the tests will import
-        run: |
-          uv run --no-sync --python 3.10 python - <<'PY'
-          import importlib.metadata as md
-
-          FLOOR = "1.24.0"
-          PINNED = ("opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp-proto-http")
-
-          drifted = {name: md.version(name) for name in PINNED if md.version(name) != FLOOR}
-          if drifted:
-              raise SystemExit(f"The floor pin did not take: expected OpenTelemetry {FLOOR} everywhere, got {drifted}")
-
-          from opentelemetry.sdk.trace import Span
-
-          if not hasattr(Span, "add_link"):
-              raise SystemExit(f"opentelemetry-sdk {FLOOR} has no Span.add_link, so the >=1.24.0 floor in pyproject.toml is wrong")
-          print(f"OpenTelemetry {FLOOR} installed; Span.add_link present.")
-          PY
-      - run: >-
-          uv run --no-sync --python 3.10 pytest tests/test_run_log
-          -W error
-          -W 'ignore::pytest.PytestUnraisableExceptionWarning'
+      - run: scripts/ci.sh otel-floor
 
   test:
     runs-on: ubuntu-24.04  # ubuntu-latest moved to 26.04, where Playwright installs no browsers (2026-10-29)
@@ -99,73 +47,15 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: uv sync --group dev --extra daft --python ${{ matrix.python-version }}
-      - run: uv run --python ${{ matrix.python-version }} playwright install chromium
-      - run: >-
-          uv run --python ${{ matrix.python-version }} pytest
-          -W error
-          -W 'ignore::pytest.PytestUnraisableExceptionWarning'
-          --junitxml=pytest.xml
-      - run: |
-          python - <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
+      - run: scripts/ci.sh test ${{ matrix.python-version }}
 
-          root = ET.parse("pytest.xml").getroot()
-          suite = root if root.tag == "testsuite" else root.find("testsuite")
-          if suite is None:
-              raise SystemExit("Could not find testsuite in pytest.xml")
-          skipped = int(suite.attrib.get("skipped", "0"))
-          warnings = int(suite.attrib.get("warnings", "0"))
-          if skipped:
-              raise SystemExit(f"CI requires zero skipped tests, found {skipped}")
-          if warnings:
-              raise SystemExit(f"CI requires zero warnings, found {warnings}")
-          print("Pytest reported zero skips and zero warnings.")
-          PY
-
-  # The test matrix renders the browser viz tests in Chromium. Some rendering bugs
-  # show in one engine only: WebKit (Safari, iOS web views) drew every arrowhead at
-  # 0 degrees while Chromium drew it right. This job renders every test that uses
-  # the engine-parametrized `_browser` fixture in WebKit; tests/viz/conftest.py marks
-  # them `viz_browser`. The engine is named explicitly, so a missing WebKit fails the
-  # run instead of skipping it.
+  # The test matrix renders the browser viz tests in Chromium; this job renders them in
+  # WebKit (Safari, iOS web views), where some bugs show alone.
   viz-webkit:
     runs-on: ubuntu-24.04  # ubuntu-latest moved to 26.04, where Playwright installs no browsers (2026-10-29)
-    env:
-      HYPERGRAPH_VIZ_ENGINES: webkit
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - run: uv sync --group dev --python 3.12
-      - run: uv run --python 3.12 playwright install --with-deps webkit
-      - run: >-
-          uv run --python 3.12 pytest tests/viz -m viz_browser
-          -W error
-          -W 'ignore::pytest.PytestUnraisableExceptionWarning'
-          --junitxml=pytest.xml
-      - run: |
-          python - <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
-
-          root = ET.parse("pytest.xml").getroot()
-          suite = root if root.tag == "testsuite" else root.find("testsuite")
-          if suite is None:
-              raise SystemExit("Could not find testsuite in pytest.xml")
-          skipped = int(suite.attrib.get("skipped", "0"))
-          warnings = int(suite.attrib.get("warnings", "0"))
-          if skipped:
-              raise SystemExit(f"CI requires zero skipped tests, found {skipped}")
-          if warnings:
-              raise SystemExit(f"CI requires zero warnings, found {warnings}")
-          print("Pytest reported zero skips and zero warnings.")
-          PY
+      - run: scripts/ci.sh viz-webkit
