@@ -457,6 +457,8 @@ def _png_size(path) -> tuple[int, int]:
 
 @pytest.mark.parametrize("make", [make_tall_chain, make_wide_graph])
 def test_png_path_saves_the_whole_graph_cropped_at_2x(_browser, tmp_path, make):
+    if _browser.browser_type.name != "chromium":
+        pytest.skip("the PNG export always draws in Chromium; the webkit run installs no Chromium")
     graph = make()
     png = tmp_path / "graph.png"
     assert graph.visualize(filepath=str(png), **INPUTS_HIDDEN) is None
