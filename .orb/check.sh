@@ -13,10 +13,11 @@ check() {
     echo "$out"; echo "== FAILED after $(( $(date +%s) - t )) s: $*"; return 1
   fi
 }
-# CI's pytest: warnings are errors, and a run with any skip or warning fails (a missing browser skips, so it fails here)
+# CI's pytest: warnings are errors, and a run with any skip or warning fails (a missing browser or Node skips, so it
+# fails here); -rs names each skip's reason in the log
 strict() {
   local xml; xml=$(mktemp --suffix .xml)
-  uv run --no-sync pytest -W error -W 'ignore::pytest.PytestUnraisableExceptionWarning' --junitxml="$xml" "$@"
+  uv run --no-sync pytest -rs -W error -W 'ignore::pytest.PytestUnraisableExceptionWarning' --junitxml="$xml" "$@"
   uv run --no-sync python - "$xml" <<'PY'
 import sys, xml.etree.ElementTree as ET
 root = ET.parse(sys.argv[1]).getroot()
