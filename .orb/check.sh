@@ -25,10 +25,12 @@ bad = {k: int(suite.attrib.get(k, "0")) for k in ("skipped", "warnings")}
 sys.exit(f"CI requires zero skips and warnings, found {bad}" if any(bad.values()) else None)
 PY
 }
+# CI's viz-webkit job: the browser viz tests in Safari's engine
+webkit() { HYPERGRAPH_VIZ_ENGINES=webkit strict tests/viz -m viz_browser; }
 check uv run --no-sync python --version
 check uv run --no-sync ruff check .
 check uv run --no-sync ruff format --check .
 check uv run --no-sync python scripts/gen_sync.py --check
 check uv run --no-sync mypy
 check strict
-check env HYPERGRAPH_VIZ_ENGINES=webkit bash -c "$(declare -f strict); strict tests/viz -m viz_browser"
+check webkit
