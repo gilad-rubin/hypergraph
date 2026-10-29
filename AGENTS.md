@@ -126,6 +126,7 @@ When adding or updating agent guidance:
 
 ## Guardrails
 
-- Do not merge to `master` without PR review + passing CI.
+- A change merges to `master` once CI passes, with no wait for Gilad's review: hypergraph serves only his own
+  projects (Gilad, 2026-10-29: "you can just push to main if it's possible, or ... merge whatever is good").
 - Follow `.github/PULL_REQUEST_TEMPLATE.md` (problem statement, before/after, test plan).
 - Keep this file concise; move task/domain detail into linked docs above.
