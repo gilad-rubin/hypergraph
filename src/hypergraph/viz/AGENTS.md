@@ -150,6 +150,7 @@ side-effect in the order defined by `FIRST_PARTY_ASSET_NAMES`
 - One opening rule for notebook cells and standalone pages (#598, ruling D58): `viz.js:fittedViewport`.
   - The whole graph sits inside the canvas at zoom <= 1, never below `MIN_READABLE_ZOOM` (`viz_runtime.js`, where the legibility evidence is recorded).
   - A graph that cannot fit opens at that zoom on its top, centred horizontally. When it fits beside the toolbar strip, it keeps clear of it.
+  - `fit="whole"` (meta `fit`) swaps the floor for `MIN_ZOOM` (0.02), and the user's zoom-out limit with it, so every step opens on screen. A `.png` `filepath` renders with it in headless Chromium and crops to the drawn graph (`widget.py:_write_png`).
 - When the view fits again:
   - A layout from a toolbar toggle (a new `renderModeKey`) fits again, and so does a resize, unless the user has moved the view. User moves are React Flow's `onMoveEnd` (drag, wheel, pinch) and the zoom buttons.
   - Fit View fits and turns re-fitting back on.

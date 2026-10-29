@@ -1886,6 +1886,7 @@ class Graph:
         simplify: bool = True,
         show_external_inputs: bool | None = None,
         filepath: str | None = None,
+        fit: str = "readable",
     ) -> Any:
         """Create an interactive visualization of this graph.
 
@@ -1908,7 +1909,11 @@ class Graph:
                 consumer (default: True).
                 Toggleable from the widget toolbar.
             show_external_inputs: Deprecated alias for show_inputs
-            filepath: Path to save HTML file (default: None, display in notebook)
+            filepath: Path to save HTML file (default: None, display in notebook).
+                A ``.png`` path saves a picture of the whole graph instead
+                (needs ``playwright`` and its chromium).
+            fit: ``"readable"`` (default) opens fitted, never below readable
+                text; ``"whole"`` always shows every step, however small
 
         Returns:
             A cell-output object when displayed in a notebook, otherwise None
@@ -1919,6 +1924,7 @@ class Graph:
             >>> graph.visualize()  # Displays interactive graph
             >>> graph.visualize(theme="light", show_types=True)
             >>> graph.visualize(filepath="graph.html")  # Save to HTML file
+            >>> graph.visualize(filepath="graph.png")  # Save a picture of the whole graph
         """
         from hypergraph.viz import visualize as viz_func
         from hypergraph.viz.widget import _resolve_input_visibility
@@ -1935,6 +1941,7 @@ class Graph:
             show_bounded_inputs=show_bounded_inputs,
             simplify=simplify,
             filepath=filepath,
+            fit=fit,
         )
 
     def to_mermaid(

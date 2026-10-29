@@ -11,7 +11,9 @@ from __future__ import annotations
 import html as html_module
 import os
 import sys
+import tempfile
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from typing import TYPE_CHECKING
 
@@ -23,6 +25,51 @@ if TYPE_CHECKING:
 from hypergraph.viz._common import build_expansion_state
 from hypergraph.viz.html import estimate_layout, generate_widget_html
 from hypergraph.viz.renderer.ir_builder import build_graph_ir
+
+_FITS = ("readable", "whole")
+
+# The drawn graph's box on screen (nodes, edges, edge labels) with a margin,
+# clamped to the window.
+_CONTENT_BOX_JS = """() => {
+  const els = document.querySelectorAll('.react-flow__node, .react-flow__edge, .react-flow__edgelabel-renderer > *');
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  els.forEach(el => {
+    const r = el.getBoundingClientRect();
+    if (!r.width && !r.height) return;
+    x0 = Math.min(x0, r.left); y0 = Math.min(y0, r.top); x1 = Math.max(x1, r.right); y1 = Math.max(y1, r.bottom);
+  });
+  const m = 16, left = Math.max(0, x0 - m), top = Math.max(0, y0 - m);
+  return {x: left, y: top, width: Math.min(innerWidth, x1 + m) - left, height: Math.min(innerHeight, y1 + m) - top};
+}"""
+
+
+def _write_png(html_content: str, filepath: str, width: int, height: int) -> None:
+    """Draw the page in headless Chromium and save the graph, cropped to it, as a PNG."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as e:
+        raise ImportError("visualize(filepath='*.png') needs Playwright: pip install playwright && playwright install chromium") from e
+
+    def shoot() -> None:
+        with tempfile.TemporaryDirectory() as tmp, sync_playwright() as p:
+            page_path = os.path.join(tmp, "graph.html")
+            with open(page_path, "w") as f:
+                f.write(html_content)
+            browser = p.chromium.launch()
+            try:
+                # The estimated layout plus the toolbar strip, so the whole fit lands near zoom 1;
+                # 2x pixels keep the text sharp.
+                page = browser.new_page(viewport={"width": width + 100, "height": height + 40}, device_scale_factor=2)
+                page.goto(f"file://{page_path}")
+                page.wait_for_function("window.__hypergraphVizReady === true", timeout=30000)
+                page.add_style_tag(content=".react-flow__panel { display: none !important; }")
+                page.screenshot(path=filepath, clip=page.evaluate(_CONTENT_BOX_JS))
+            finally:
+                browser.close()
+
+    # Playwright's sync API refuses to run inside a running event loop (a notebook cell), so it runs on its own thread.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(shoot).result()
 
 
 class _VizCellOutput:
@@ -127,6 +174,7 @@ def visualize(
     simplify: bool = True,
     show_external_inputs: bool | None = None,
     filepath: str | None = None,
+    fit: str = "readable",
     _debug_overlays: bool = False,
 ) -> _VizCellOutput | None:
     """Create a visualization for a graph.
@@ -150,6 +198,12 @@ def visualize(
             Toggleable in the widget toolbar.
         show_external_inputs: Deprecated alias for ``show_inputs``.
         filepath: Path to save standalone HTML (default: display in notebook).
+            A ``.png`` path saves a picture of the whole graph instead, drawn
+            in headless Chromium (needs ``playwright`` and its chromium).
+        fit: How the view opens. ``"readable"`` (default) fits the graph to
+            its frame but never zooms below readable text, so a large graph
+            opens on its first steps. ``"whole"`` always shows every step,
+            however small: an overview embedded in a page or seen on a phone.
         _debug_overlays: Internal metadata-only diagnostic flag; it does not
             enable visible overlays.
 
@@ -171,6 +225,7 @@ def visualize(
         show_bounded_inputs=show_bounded_inputs,
         simplify=simplify,
         filepath=filepath,
+        fit=fit,
         _debug_overlays=_debug_overlays,
     )
 
@@ -187,6 +242,7 @@ def render_flat_graph(
     show_bounded_inputs: bool | None = None,
     simplify: bool = True,
     filepath: str | None = None,
+    fit: str = "readable",
     _debug_overlays: bool = False,
 ) -> _VizCellOutput | None:
     """Render a pre-built flat graph to the notebook widget / HTML file.
@@ -196,6 +252,9 @@ def render_flat_graph(
     fan-out edge) reuse the exact same IR + HTML pipeline instead of
     special-casing the renderer. ``graph`` is still needed for layout estimation.
     """
+    if fit not in _FITS:
+        raise ValueError(f"fit must be one of {_FITS}, got {fit!r}")
+    to_png = filepath is not None and filepath.lower().endswith(".png")
     show_inputs, show_bounded_inputs = _resolve_input_visibility(show_inputs, show_bounded_inputs, None)
     est_width, est_height = estimate_layout(
         graph,
@@ -222,12 +281,16 @@ def render_flat_graph(
             "show_inputs": show_inputs,
             "show_bounded_inputs": show_bounded_inputs,
             "simplify": simplify,
+            "fit": "whole" if to_png else fit,
             "debug_overlays": _debug_overlays,
         },
     }
 
     html_content = generate_widget_html(graph_data)
 
+    if to_png:
+        _write_png(html_content, filepath, final_width, final_height)
+        return None
     if filepath is not None:
         if not filepath.endswith(".html"):
             filepath = filepath + ".html"
