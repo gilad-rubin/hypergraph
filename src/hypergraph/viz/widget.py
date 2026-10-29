@@ -288,7 +288,7 @@ def render_flat_graph(
 
     html_content = generate_widget_html(graph_data)
 
-    if to_png:
+    if to_png and filepath is not None:
         _write_png(html_content, filepath, final_width, final_height)
         return None
     if filepath is not None:

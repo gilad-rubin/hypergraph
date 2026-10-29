@@ -9,7 +9,7 @@ on:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # ubuntu-latest moved to 26.04, where Playwright installs no browsers (2026-10-29)
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -26,7 +26,7 @@ jobs:
       - run: uv run python scripts/gen_sync.py --check
 
   typecheck:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # ubuntu-latest moved to 26.04, where Playwright installs no browsers (2026-10-29)
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -40,7 +40,7 @@ jobs:
       - run: uv run --python 3.10 mypy
 
   otel-floor:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # ubuntu-latest moved to 26.04, where Playwright installs no browsers (2026-10-29)
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -90,7 +90,7 @@ jobs:
           -W 'ignore::pytest.PytestUnraisableExceptionWarning'
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # ubuntu-latest moved to 26.04, where Playwright installs no browsers (2026-10-29)
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
@@ -134,7 +134,7 @@ jobs:
   # them `viz_browser`. The engine is named explicitly, so a missing WebKit fails the
   # run instead of skipping it.
   viz-webkit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # ubuntu-latest moved to 26.04, where Playwright installs no browsers (2026-10-29)
     env:
       HYPERGRAPH_VIZ_ENGINES: webkit
     steps:
