@@ -1,37 +1,5 @@
 #!/bin/bash
-# CI's checks (.github/workflows/ci.yml) on one machine from the checkout, with no install step: `orb base --for
-# gilad-rubin/hypergraph` runs it to prove a new ready-made machine before the old one is deleted, and a worker runs it
-# before a PR. One Python (.python-version) where CI runs a matrix, and no otel-floor job, which downgrades the
-# environment. Each step's last lines and seconds; a failing step's whole output.
-set -euo pipefail
-cd "$(dirname "$0")/.."
-check() {
-  local t=$(date +%s) out
-  if out=$("$@" 2>&1); then
-    echo "$out" | tail -8; echo "== ok in $(( $(date +%s) - t )) s: $*"
-  else
-    echo "$out"; echo "== FAILED after $(( $(date +%s) - t )) s: $*"; return 1
-  fi
-}
-# CI's pytest: warnings are errors, and a run with any skip or warning fails (a missing browser or Node skips, so it
-# fails here); -rs names each skip's reason in the log
-strict() {
-  local xml; xml=$(mktemp --suffix .xml)
-  uv run --no-sync pytest -rs -W error -W 'ignore::pytest.PytestUnraisableExceptionWarning' --junitxml="$xml" "$@"
-  uv run --no-sync python - "$xml" <<'PY'
-import sys, xml.etree.ElementTree as ET
-root = ET.parse(sys.argv[1]).getroot()
-suite = root if root.tag == "testsuite" else root.find("testsuite")
-bad = {k: int(suite.attrib.get(k, "0")) for k in ("skipped", "warnings")}
-sys.exit(f"CI requires zero skips and warnings, found {bad}" if any(bad.values()) else None)
-PY
-}
-# CI's viz-webkit job: the browser viz tests in Safari's engine
-webkit() { HYPERGRAPH_VIZ_ENGINES=webkit strict tests/viz -m viz_browser; }
-check uv run --no-sync python --version
-check uv run --no-sync ruff check .
-check uv run --no-sync ruff format --check .
-check uv run --no-sync python scripts/gen_sync.py --check
-check uv run --no-sync mypy
-check strict
-check webkit
+# What proves a machine: CI's own stages (scripts/ci.sh, which CI's jobs call), so the orb's check and CI cannot drift.
+# `orb base --for gilad-rubin/hypergraph` runs it on a machine from a new ready-made snapshot before the old one is
+# deleted; a worker runs it before a PR. Arguments pass through (`.orb/check.sh test 3.12` runs one stage).
+exec "$(dirname "$0")/../scripts/ci.sh" "$@"
