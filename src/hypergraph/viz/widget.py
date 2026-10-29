@@ -15,7 +15,7 @@ import tempfile
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from types import FrameType
@@ -38,6 +38,7 @@ _CONTENT_BOX_JS = """() => {
     if (!r.width && !r.height) return;
     x0 = Math.min(x0, r.left); y0 = Math.min(y0, r.top); x1 = Math.max(x1, r.right); y1 = Math.max(y1, r.bottom);
   });
+  if (x0 === Infinity) return null;
   const m = 16, left = Math.max(0, x0 - m), top = Math.max(0, y0 - m);
   return {x: left, y: top, width: Math.min(innerWidth, x1 + m) - left, height: Math.min(innerHeight, y1 + m) - top};
 }"""
@@ -63,7 +64,10 @@ def _write_png(html_content: str, filepath: str, width: int, height: int) -> Non
                 page.goto(f"file://{page_path}")
                 page.wait_for_function("window.__hypergraphVizReady === true", timeout=30000)
                 page.add_style_tag(content=".react-flow__panel { display: none !important; }")
-                page.screenshot(path=filepath, clip=page.evaluate(_CONTENT_BOX_JS))
+                clip = page.evaluate(_CONTENT_BOX_JS)
+                if not clip:
+                    raise ValueError("visualize(filepath='*.png'): the graph drew nothing to picture")
+                page.screenshot(path=filepath, clip=clip)
             finally:
                 browser.close()
 
@@ -174,7 +178,7 @@ def visualize(
     simplify: bool = True,
     show_external_inputs: bool | None = None,
     filepath: str | None = None,
-    fit: str = "readable",
+    fit: Literal["readable", "whole"] = "readable",
     _debug_overlays: bool = False,
 ) -> _VizCellOutput | None:
     """Create a visualization for a graph.
@@ -242,7 +246,7 @@ def render_flat_graph(
     show_bounded_inputs: bool | None = None,
     simplify: bool = True,
     filepath: str | None = None,
-    fit: str = "readable",
+    fit: Literal["readable", "whole"] = "readable",
     _debug_overlays: bool = False,
 ) -> _VizCellOutput | None:
     """Render a pre-built flat graph to the notebook widget / HTML file.

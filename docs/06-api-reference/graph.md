@@ -1063,7 +1063,7 @@ How to fix:
 
 Shared params are omitted from the interactive input lane and from INPUT/INPUT_GROUP rendering, and are rendered as a `%% shared state: messages` comment in Mermaid output.
 
-### `visualize(*, depth=0, theme="auto", show_types=True, separate_outputs=False, show_inputs=None, show_bounded_inputs=None, simplify=True, show_external_inputs=None, filepath=None)`
+### `visualize(*, depth=0, theme="auto", show_types=True, separate_outputs=False, show_inputs=None, show_bounded_inputs=None, simplify=True, show_external_inputs=None, filepath=None, fit="readable")`
 
 Render an interactive visualization of the graph.
 
@@ -1071,6 +1071,8 @@ Render an interactive visualization of the graph.
 graph.visualize()                          # Display in notebook
 graph.visualize(depth=1, show_types=True)  # Expand nested graphs, show types
 graph.visualize(filepath="graph.html")     # Save standalone HTML
+graph.visualize(filepath="graph.png")      # Save a picture of the whole graph
+graph.visualize(fit="whole")               # Open on every step, however small
 ```
 
 **Args:**
@@ -1082,9 +1084,10 @@ graph.visualize(filepath="graph.html")     # Save standalone HTML
 - `show_bounded_inputs` (bool | None): Include bound inputs, faded and dashed, in the input boxes and the ghost pills. `None` means True; False leaves them out of both. Default: None (included).
 - `simplify` (bool): Hide data edges a longer path already implies — with `A → B → C`, a direct `A → C` is dropped. Control, ordering, cycle and mutex-branch edges are never dropped. Toggleable from the widget toolbar. Default: True.
 - `show_external_inputs` (bool | None): Deprecated alias for `show_inputs`.
-- `filepath` (str | None): Save to HTML file instead of displaying inline. Default: None.
+- `filepath` (str | None): Save to HTML file instead of displaying inline. A path ending in `.png` saves a picture of the whole graph instead, cropped to it at 2x pixels, drawn in headless Chromium (needs `playwright` and `playwright install chromium`). Default: None.
+- `fit` (`"readable"` | `"whole"`): How the view opens. `"readable"` fits the graph to its frame but never zooms below readable text, so a large graph opens on its first steps. `"whole"` always shows every step, however small: an overview embedded in a page or seen on a phone. Default: `"readable"`.
 
-**Returns:** `ScrollablePipelineWidget` if `filepath=None`, otherwise `None` (saves to file).
+**Returns:** `ScrollablePipelineWidget` if `filepath=None`, otherwise `None` (saves the HTML or PNG file).
 
 See [Visualize Graphs](../05-how-to/visualize-graphs.md) for the full usage guide.
 

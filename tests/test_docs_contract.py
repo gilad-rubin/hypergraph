@@ -128,6 +128,12 @@ def test_public_docs_track_current_api_contracts() -> None:
     assert "Dagre" in inspect.getdoc(Graph.visualize)
     assert "Kiwi" not in inspect.getdoc(Graph.visualize)
 
+    # `fit` opens readable by default; the docs name both modes and the `.png` picture.
+    assert inspect.signature(Graph.visualize).parameters["fit"].default == "readable"
+    assert 'fit="readable"' in graph_visualize
+    assert '"whole"' in graph_visualize and ".png" in graph_visualize
+    assert 'fit="whole"' in visualize and ".png" in visualize
+
     # `simplify` must stay on by default and stay identical across the
     # interactive widget and the Mermaid exporter — a diagram and its text
     # export disagreeing about which edges exist is the drift to catch.

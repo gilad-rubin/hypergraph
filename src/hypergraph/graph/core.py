@@ -1886,7 +1886,7 @@ class Graph:
         simplify: bool = True,
         show_external_inputs: bool | None = None,
         filepath: str | None = None,
-        fit: str = "readable",
+        fit: Literal["readable", "whole"] = "readable",
     ) -> Any:
         """Create an interactive visualization of this graph.
 
