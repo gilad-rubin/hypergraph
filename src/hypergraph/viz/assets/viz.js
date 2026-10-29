@@ -82,6 +82,7 @@
     return function() { if (raf) cancelAnimationFrame(raf); };
   }
 
+  var MIN_ZOOM = 0.02;  // the zoom-out limit under fit="whole": a graph 50x its canvas still fits
   var FIT_MARGIN = 16;  // screen px kept clear at the canvas top, bottom and left
 
   // Bounds of everything drawn, in flow coordinates: the node boxes (a child
@@ -107,14 +108,15 @@
   }
 
   // The opening view (#598, ruling D58), for a W x H canvas: the whole graph
-  // inside the canvas at zoom <= 1, never below MIN_READABLE_ZOOM. A graph
-  // that cannot fit opens at that zoom on its first steps (its top), never
-  // clipped there. Horizontally it is centred on the canvas; a graph that fits
-  // beside the toolbar strip shifts left as far as it takes to clear it.
-  function fittedViewport(b, W, H) {
+  // inside the canvas at zoom <= 1, never below `floor` (MIN_READABLE_ZOOM,
+  // or MIN_ZOOM for fit="whole"). A graph that cannot fit opens at that zoom
+  // on its first steps (its top), never clipped there. Horizontally it is
+  // centred on the canvas; a graph that fits beside the toolbar strip shifts
+  // left as far as it takes to clear it.
+  function fittedViewport(b, W, H, floor) {
     var left = FIT_MARGIN, right = W - R.TOOLBAR_RESERVE, top = FIT_MARGIN, bottom = H - FIT_MARGIN;
     var cw = Math.max(1, b.x1 - b.x0), ch = Math.max(1, b.y1 - b.y0);
-    var z = Math.max(R.MIN_READABLE_ZOOM, Math.min(1, (right - left) / cw, (bottom - top) / ch));
+    var z = Math.max(floor, Math.min(1, (right - left) / cw, (bottom - top) / ch));
     var w = cw * z, h = ch * z;
     var sx = (W - w) / 2;
     if (w <= right - left) sx = Math.max(left, Math.min(sx, right - w));
@@ -439,6 +441,9 @@
     var onUserMoveStart = useCallback(function() { userGestureRef.current += 1; }, []);
     var onUserMoveEnd = useCallback(function(event) { if (event) userMovedRef.current = true; }, []);
     var onUserZoom = useCallback(function() { userMovedRef.current = true; userGestureRef.current += 1; }, []);
+    // fit="whole" (a picture or an embed that must show every step) trades
+    // the readable floor for React Flow's own zoom-out limit.
+    var fitFloor = (initialData.meta && initialData.meta.fit === 'whole') ? MIN_ZOOM : R.MIN_READABLE_ZOOM;
     var fitView = useCallback(function() {
       var pane = document.querySelector('.react-flow');
       if (!layoutedNodes.length || !pane) return;
@@ -446,14 +451,14 @@
       userMovedRef.current = false;
       var fit = ++fitSeqRef.current, move = ++viewMoveRef.current, gesture = userGestureRef.current;
       var rect = pane.getBoundingClientRect();
-      var target = fittedViewport(contentBounds(layoutedNodes, layoutedEdges), rect.width, rect.height);
+      var target = fittedViewport(contentBounds(layoutedNodes, layoutedEdges), rect.width, rect.height, fitFloor);
       rf.setViewport(target, { duration: 0 });
       whenViewAt(target, function() {
         if (fit !== fitSeqRef.current) return false;  // a newer fit reports instead
         if (move !== viewMoveRef.current || gesture !== userGestureRef.current) { root.__hypergraphVizReady = true; return false; }
         return true;
       }, function() { root.__hypergraphVizReady = true; });
-    }, [layoutedNodes, layoutedEdges, rf]);
+    }, [layoutedNodes, layoutedEdges, rf, fitFloor]);
 
     // Force handle recalculation on expansion/mode changes
     var expansionKey = useMemo(function() {
@@ -605,7 +610,7 @@
           onNodeMouseEnter=${onGhostEnter} onNodeMouseLeave=${onGhostLeave} onPaneClick=${onPaneClick}
           onMoveStart=${onUserMoveStart} onMoveEnd=${onUserMoveEnd}
           onNodeClick=${function(e, n) { if (n.data && n.data.nodeType === 'PIPELINE' && !n.data.isExpanded && n.data.onToggleExpand) { e.stopPropagation(); n.data.onToggleExpand(); return; } onGhostClick(n); }}
-          minZoom=${0.1} maxZoom=${2} className="bg-transparent" panOnScroll=${panOnScroll}
+          minZoom=${Math.min(0.1, fitFloor)} maxZoom=${2} className="bg-transparent" panOnScroll=${panOnScroll}
           zoomOnScroll=${false} panOnDrag=${true} zoomOnPinch=${true} preventScrolling=${false}
           style=${{ width: '100%', height: '100%', backgroundColor: activeBg }}>
           <${Background} color=${theme === 'light' ? '#94a3b8' : '#334155'} gap=${24} size=${1} variant="dots" />

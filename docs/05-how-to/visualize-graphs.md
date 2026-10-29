@@ -36,7 +36,8 @@ graph.visualize(
     show_inputs=False,         # Draw input boxes; hidden inputs appear on hover/tap
     show_bounded_inputs=True,  # Include bound inputs (faded, dashed)
     simplify=True,             # Hide data edges a longer path already implies
-    filepath=None,             # Save to HTML file instead of displaying
+    filepath=None,             # Save to HTML file (or a .png picture) instead of displaying
+    fit="readable",            # "whole" opens on every step, however small
 )
 ```
 
@@ -156,13 +157,24 @@ Never dropped, so a diagram is always safe to read for ordering and control:
 - **Mutually exclusive branch arms** — two arms of an `@ifelse`/`@route` feeding
   one consumer are alternatives, not a chain plus a shortcut.
 
-### `filepath` — Save to HTML
+### `filepath` — Save to HTML or a PNG picture
 
 ```python
 graph.visualize(filepath="my_graph.html")
+graph.visualize(filepath="my_graph.png")
 ```
 
-Saves a standalone HTML file with all assets bundled (React, React Flow, Tailwind CSS). Opens in any browser, no server needed. Useful for sharing or embedding in documentation.
+An `.html` path saves a standalone HTML file with all assets bundled (React, React Flow, Tailwind CSS). Opens in any browser, no server needed. Useful for sharing or embedding in documentation.
+
+A `.png` path saves a picture of the whole graph instead: every step, cropped to the graph, at 2x pixels, without the toolbar. It draws the page in headless Chromium, so it needs Playwright (`pip install playwright && playwright install chromium`) and takes about a second. Use it for a slide, a README or a page that needs a static image. There is no SVG export: nodes are HTML, not SVG.
+
+### `fit` — How the view opens
+
+```python
+graph.visualize(filepath="overview.html", fit="whole")
+```
+
+`fit="readable"` (the default) fits the graph to its frame, but never zooms below the size at which node names and types stay readable: a graph too large for its frame opens on its first steps, at the top. `fit="whole"` always opens on every step, zooming out as far as it takes, and Fit View does the same. Use it for an overview embedded in a page, or a graph read on a phone.
 
 ## Node Types in the Visualization
 

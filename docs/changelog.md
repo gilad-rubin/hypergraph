@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Added
+
+- **Visualization: a picture of the whole graph in one call, and an opening
+  view that shows every step.** `visualize(filepath="graph.png")` saves the
+  whole graph as a PNG, cropped to it at 2x pixels, without the toolbar. It
+  draws the page in headless Chromium, so it needs `playwright` and its
+  chromium (`playwright install chromium`), and takes about a second.
+  `visualize(fit="whole")` opens the notebook cell or HTML page on every step,
+  zooming out as far as it takes: for an overview embedded in a page or seen
+  on a phone. The default, `fit="readable"`, keeps the opening rule below
+  (#598): a graph too big for its frame opens on its first steps, at readable
+  text. Before, a page or a phone that had to show the whole graph needed a
+  hand-written Playwright script, and Fit View stopped at the readable zoom.
+  SVG is not offered: nodes are HTML, not SVG.
+
 ### Changed
 
 - **Visualization: `visualize()` opens fitted to its frame (#598).** The

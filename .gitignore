@@ -69,3 +69,4 @@ viz-dev/
 .coverage
 .coverage.*
 htmlcov/
+.venv-ci/

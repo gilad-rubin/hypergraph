@@ -31,6 +31,7 @@ Every browser test renders once per engine in HYPERGRAPH_VIZ_ENGINES (the
 from __future__ import annotations
 
 import math
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -412,3 +413,85 @@ def test_pin_never_zooms_below_the_readable_minimum(open_page):
         assert max(map(distance, shown)) <= min(map(distance, hidden)) + 0.5, (
             f"the pills on screen are the nearest ones: shown {[g['name'] for g in shown]}, off screen {[g['name'] for g in hidden]}"
         )
+
+
+# --- fit="whole" and the PNG picture (a page or a phone that must see every step) ---
+
+
+@pytest.fixture(scope="module")
+def whole_files(tmp_path_factory):
+    out = tmp_path_factory.mktemp("whole")
+    paths = {}
+    for name, make in {"tall": make_tall_chain, "wide": make_wide_graph}.items():
+        path = out / f"{name}.html"
+        make().visualize(filepath=str(path), fit="whole", **INPUTS_HIDDEN)
+        paths[name] = str(path)
+    return paths
+
+
+@pytest.mark.parametrize("variant", ["tall", "wide"])
+@pytest.mark.parametrize("size", list(SIZES))
+def test_fit_whole_opens_on_every_step_below_the_readable_minimum(_browser, whole_files, variant, size):
+    context = _browser.new_context(**SIZES[size])
+    try:
+        page = context.new_page()
+        page.goto(f"file://{whole_files[variant]}")
+        _wait_ready(page)
+        view = _view(page)
+        assert not _outside(view), f"{size}: fit='whole' leaves no step outside the frame: {_outside(view)} ({_fmt(view)})"
+        assert view["zoom"] < MIN_READABLE_ZOOM, f"{size}: zoomed past the readable floor to show it all: {_fmt(view)}"
+    finally:
+        context.close()
+
+
+def test_fit_rejects_an_unknown_mode():
+    with pytest.raises(ValueError, match="fit must be one of"):
+        make_small_graph().visualize(filepath="unused.html", fit="all")
+
+
+def _png_size(path) -> tuple[int, int]:
+    with open(path, "rb") as f:
+        head = f.read(24)
+    assert head[:8] == b"\x89PNG\r\n\x1a\n", "a PNG file"
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
+def _drawn_box(html) -> dict:
+    """Every step's box, in CSS px, with the page opened whole at zoom 1 in a big Chromium window.
+
+    Chromium on its own thread, as the export draws: the PNG export is not per engine, and the
+    webkit run installs no Chromium, so this test stays out of the `_browser` fixture.
+    """
+
+    def measure() -> dict:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page(viewport={"width": 4000, "height": 4000})
+                page.goto(f"file://{html}")
+                _wait_ready(page)
+                return _union(_view(page)["nodes"].values())
+            finally:
+                browser.close()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(measure).result()
+
+
+@pytest.mark.parametrize("make", [make_tall_chain, make_wide_graph])
+def test_png_path_saves_the_whole_graph_cropped_at_2x(tmp_path, make):
+    graph = make()
+    png = tmp_path / "graph.png"
+    assert graph.visualize(filepath=str(png), **INPUTS_HIDDEN) is None
+    assert not (tmp_path / "graph.png.html").exists(), "a .png path writes a picture, not HTML"
+    width, height = _png_size(png)
+    html = tmp_path / "graph.html"
+    graph.visualize(filepath=str(html), fit="whole", **INPUTS_HIDDEN)
+    u = _drawn_box(html)
+    # 2x pixels of every step plus a 16 px margin each side; edges may reach a little past the nodes.
+    assert width >= 2 * (u["right"] - u["left"]) and height >= 2 * (u["bottom"] - u["top"]), f"{width}x{height} px holds {u}"
+    assert width <= 2 * (u["right"] - u["left"] + 32 + 80) and height <= 2 * (u["bottom"] - u["top"] + 32 + 80), (
+        f"{width}x{height} px is cropped to {u}"
+    )

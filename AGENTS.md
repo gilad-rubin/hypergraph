@@ -44,13 +44,14 @@ uv run pre-commit run --all-files
 
 CI-equivalent local check (run before PR):
 ```bash
-uv run pytest -W error -W 'ignore::pytest.PytestUnraisableExceptionWarning'
+scripts/ci.sh             # every CI job: lint, typecheck (3.10), otel-floor, test (3.12), viz-webkit
+scripts/ci.sh test 3.10   # one stage
 ```
-This matches what CI runs: all warnings as errors, except GC-triggered unraisable exceptions from `__del__` cleanup (sockets, event loops) which are non-deterministic.
+CI's jobs call the same stages, so this is what CI runs: mypy, warnings as errors (except GC-triggered unraisable exceptions from `__del__` cleanup), zero skipped tests, and the browser viz tests in Chromium and WebKit, each engine installed with its system packages.
 
 Change validation expectations:
 - Run focused tests for touched modules first, then broader suites as needed.
-- Before PR, run the CI-equivalent command above — `uv run pytest` alone does NOT catch warning-as-error failures that CI enforces.
+- Before PR, run `scripts/ci.sh` — `uv run pytest` alone misses mypy, warnings as errors, the zero-skip rule and the WebKit run.
 - When CI fails, inspect the exact job log before changing code. Matrix-only failures often come from Python-version differences; if you use a stdlib/test helper, check Python 3.10 compatibility or run the focused case with `uv run --python 3.10 ...`.
 - Auto-format/lint hook runs after Python edits (`ruff check --fix` + `ruff format`), so avoid redundant manual formatting loops.
 - For async tests that allocate long-lived resources (for example `SqliteCheckpointer` / `aiosqlite`), make teardown explicit. Prefer async fixtures that `await ...close()` rather than relying on event-loop shutdown to clean up worker threads.
