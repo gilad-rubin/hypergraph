@@ -59,6 +59,9 @@ PY
 }
 
 test_stage() {  # test_stage PYTHON
+  # The JS scene-builder parity tests run in Node, which GitHub's runner ships; without it they
+  # skip and the zero-skip check fails late, so refuse at once.
+  command -v node >/dev/null || { echo "ci.sh test: Node.js is not installed (CI's runner has it): apt-get install -y nodejs" >&2; exit 1; }
   use_env "py$1" "$1"
   uv sync --group dev --extra daft
   uv run --no-sync playwright install --with-deps chromium
