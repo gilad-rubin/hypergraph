@@ -16,7 +16,7 @@ import inspect
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-from hypergraph._utils import ensure_tuple, hash_definition
+from hypergraph._utils import ensure_tuple, hash_definition, normalize_version
 from hypergraph.nodes._callable import CallableMixin
 from hypergraph.nodes._input_extraction import extract_inputs
 from hypergraph.nodes._rename import RenameError, _apply_renames
@@ -122,6 +122,7 @@ class GateNode(CallableMixin, HyperNode):
         rename_inputs: dict[str, str] | None,
         emit: str | tuple[str, ...] | None,
         wait_for: str | tuple[str, ...] | None,
+        version: str | int | None = None,
     ) -> None:
         """Shared gate initialization tail.
 
@@ -137,7 +138,8 @@ class GateNode(CallableMixin, HyperNode):
         self._emit = ensure_tuple(emit) if emit else ()
         self._wait_for = ensure_tuple(wait_for) if wait_for else ()
         self.default_open = default_open
-        self._definition_hash = hash_definition(func)
+        self._version = normalize_version(version)
+        self._definition_hash = hash_definition(func, self._version)
 
         # `outputs` is a derived property on GateNode — no stored copy here.
         inputs, self._context_param = extract_inputs(func)
@@ -286,6 +288,7 @@ class RouteNode(GateNode):
         rename_inputs: dict[str, str] | None = None,
         emit: str | tuple[str, ...] | None = None,
         wait_for: str | tuple[str, ...] | None = None,
+        version: str | int | None = None,
     ) -> None:
         """Create a RouteNode from a routing function.
 
@@ -301,6 +304,7 @@ class RouteNode(GateNode):
             emit: Ordering-only local output name(s). Auto-produced when gate runs.
             wait_for: Ordering-only graph-scope output/emit address(es). Gate
                       won't run until these values exist and are fresh.
+            version: Optional declared definition version, as on ``@node``.
 
         Raises:
             TypeError: If func is async or generator
@@ -361,6 +365,7 @@ class RouteNode(GateNode):
             rename_inputs=rename_inputs,
             emit=emit,
             wait_for=wait_for,
+            version=version,
         )
 
     def _structural_signature_parts(self) -> list[str]:
@@ -416,6 +421,7 @@ def route(
     rename_inputs: dict[str, str] | None = None,
     emit: str | tuple[str, ...] | None = None,
     wait_for: str | tuple[str, ...] | None = None,
+    version: str | int | None = None,
 ) -> Callable[[Callable], RouteNode]:
     """Decorator to create a RouteNode from a routing function.
 
@@ -441,6 +447,7 @@ def route(
         emit: Ordering-only local output name(s). Auto-produced when gate runs.
         wait_for: Ordering-only graph-scope output/emit address(es). Gate
                   won't run until these values exist and are fresh.
+        version: Optional declared definition version, as on ``@node``.
 
     Returns:
         Decorator that creates a RouteNode
@@ -468,6 +475,7 @@ def route(
             rename_inputs=rename_inputs,
             emit=emit,
             wait_for=wait_for,
+            version=version,
         )
 
     return decorator
@@ -518,6 +526,7 @@ class IfElseNode(GateNode):
         rename_inputs: dict[str, str] | None = None,
         emit: str | tuple[str, ...] | None = None,
         wait_for: str | tuple[str, ...] | None = None,
+        version: str | int | None = None,
     ) -> None:
         """Create an IfElseNode from a boolean function.
 
@@ -535,6 +544,7 @@ class IfElseNode(GateNode):
             emit: Ordering-only local output name(s). Auto-produced when gate runs.
             wait_for: Ordering-only graph-scope output/emit address(es). Gate
                       won't run until these values exist and are fresh.
+            version: Optional declared definition version, as on ``@node``.
 
         Raises:
             TypeError: If func is async or generator
@@ -569,6 +579,7 @@ class IfElseNode(GateNode):
             rename_inputs=rename_inputs,
             emit=emit,
             wait_for=wait_for,
+            version=version,
         )
 
     def _structural_signature_parts(self) -> list[str]:
@@ -616,6 +627,7 @@ def ifelse(
     rename_inputs: dict[str, str] | None = None,
     emit: str | tuple[str, ...] | None = None,
     wait_for: str | tuple[str, ...] | None = None,
+    version: str | int | None = None,
 ) -> Callable[[Callable[..., bool]], IfElseNode]:
     """Decorator to create an IfElseNode from a boolean function.
 
@@ -640,6 +652,7 @@ def ifelse(
         emit: Ordering-only local output name(s). Auto-produced when gate runs.
         wait_for: Ordering-only graph-scope output/emit address(es). Gate
                   won't run until these values exist and are fresh.
+        version: Optional declared definition version, as on ``@node``.
 
     Returns:
         Decorator that creates an IfElseNode
@@ -666,6 +679,7 @@ def ifelse(
             rename_inputs=rename_inputs,
             emit=emit,
             wait_for=wait_for,
+            version=version,
         )
 
     return decorator

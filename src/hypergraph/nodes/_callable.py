@@ -7,6 +7,7 @@ import inspect
 from collections.abc import Callable
 from typing import Any, get_type_hints
 
+from hypergraph._utils import hash_definition
 from hypergraph.nodes._rename import build_reverse_rename_map
 
 
@@ -67,18 +68,35 @@ class CallableMixin:
     - func: Callable
     - _rename_history: list[RenameEntry]
     - _definition_hash: str
+    - _version: str | None
     - inputs: tuple[str, ...]
     """
 
     func: Callable
     _rename_history: list
     _definition_hash: str
+    _version: str | None
     inputs: tuple[str, ...]
 
     @property
     def definition_hash(self) -> str:
-        """SHA256 hash of function source (cached at creation)."""
+        """SHA256 hash of the definition (cached at creation): the source, or the declared version."""
         return self._definition_hash
+
+    @property
+    def version(self) -> str | None:
+        """The declared definition version, or None when the code itself is hashed."""
+        return self._version
+
+    @functools.cached_property
+    def source_hash(self) -> str:
+        """The hash of the function's code, whether or not a ``version`` stands in for it.
+
+        Equal to ``definition_hash`` for an unversioned node. For a versioned
+        one it is what lets a test notice an edit and ask whether the version
+        should move: the edit changes ``source_hash`` and nothing else.
+        """
+        return hash_definition(self.func)
 
     @functools.cached_property
     def defaults(self) -> dict[str, Any]:
