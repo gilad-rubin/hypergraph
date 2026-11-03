@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Nodes: a version number on each step.** `@node(version=1)` (also on
+  `FunctionNode`, `@route`, `@ifelse` and `@interrupt`) makes the step's
+  `definition_hash` its name plus that version instead of its source code. A
+  docstring, a comment, a refactor or a move to another module then changes no
+  hash a cache, a HyperTable recipe or a durable identity keys on; only a new
+  version does. Change it when the output changes. A partial's bound arguments
+  and a bound method's instance state still enter the hash. The new
+  `source_hash` property still reads the code, so a test can notice an edit to
+  a versioned step and ask whether its version should move. A step with no
+  version keeps today's hash.
+
 - **Visualization: a picture of the whole graph in one call, and an opening
   view that shows every step.** `visualize(filepath="graph.png")` saves the
   whole graph as a PNG, cropped to it at 2x pixels, without the toolbar. It

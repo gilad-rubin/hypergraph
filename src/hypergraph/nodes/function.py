@@ -8,7 +8,7 @@ import warnings
 from collections.abc import Callable
 from typing import Any, get_type_hints
 
-from hypergraph._utils import ensure_tuple, hash_definition
+from hypergraph._utils import ensure_tuple, hash_definition, normalize_version
 from hypergraph.limits import ProcessLocalLimiter
 from hypergraph.nodes._callable import CallableMixin
 from hypergraph.nodes._input_extraction import extract_inputs
@@ -124,6 +124,7 @@ class FunctionNode(CallableMixin, HyperNode):
         timeout: float | None = None,
         provider_limit: ProcessLocalLimiter | None = None,
         trace_io: bool | None = None,
+        version: str | int | None = None,
     ) -> None:
         """Wrap a function as a node.
 
@@ -163,6 +164,13 @@ class FunctionNode(CallableMixin, HyperNode):
                      durable records (RunLog, StepRecord, checkpoints) never
                      change shape or content. An exporter may refuse them
                      outright (``OpenTelemetryProcessor(redact_payloads=True)``).
+            version: Optional declared definition version (a string or an int).
+                     When given, ``definition_hash`` is the function's name
+                     plus this version instead of its source, so editing the
+                     code moves nothing a hash keys (caches, HyperTable
+                     recipes, durable identities) until the version changes.
+                     Change it when the output changes. ``source_hash`` still
+                     reads the code, for a test that asks on every edit.
         Warning:
             If the function has a return type annotation but no output_name
             is provided, a warning is emitted. This helps catch cases where
@@ -213,7 +221,8 @@ class FunctionNode(CallableMixin, HyperNode):
         self._timeout = timeout
         self._provider_limit = provider_limit
         self._trace_io = trace_io
-        self._definition_hash = hash_definition(func)
+        self._version = normalize_version(version)
+        self._definition_hash = hash_definition(func, self._version)
         self._emit = ensure_tuple(emit) if emit else ()
         self._wait_for = ensure_tuple(wait_for) if wait_for else ()
 
@@ -389,6 +398,7 @@ def node(
     timeout: float | None = None,
     provider_limit: ProcessLocalLimiter | None = None,
     trace_io: bool | None = None,
+    version: str | int | None = None,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]:
     """Decorator to wrap a function as a FunctionNode.
 
@@ -430,6 +440,10 @@ def node(
                  defers to the graph's ``trace_io``; ``True``/``False`` decide
                  for this node. Spans only — durable records are unaffected,
                  and an exporter can refuse payloads outright.
+        version: Optional declared definition version: the node's identity
+                 becomes its name plus this version, never its source, so a
+                 code edit moves no hash until the version changes. Change it
+                 when the output changes.
     Returns:
         FunctionNode if source provided, else decorator function.
 
@@ -457,6 +471,7 @@ def node(
             timeout=timeout,
             provider_limit=provider_limit,
             trace_io=trace_io,
+            version=version,
         )
         fn_node.__wrapped__ = func  # type: ignore[attr-defined]
         return fn_node

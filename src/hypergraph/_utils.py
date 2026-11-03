@@ -88,12 +88,20 @@ def format_datetime(dt: datetime | None) -> str:
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
-def hash_definition(func: Callable) -> str:
+def hash_definition(func: Callable, version: str | int | None = None) -> str:
     """Compute SHA256 hash of a function's definition.
 
     Uses source code when available (file-defined functions), falls back to
     bytecode for dynamically created functions (exec/eval), and finally to
     qualified name for builtins/C extensions.
+
+    A declared ``version`` stands in for the code: the hash is the
+    function's name plus that version, so a docstring, a comment, a reformat,
+    a refactor or a move to another module changes nothing, and only a new
+    version does. It is the author's statement that the output is unchanged,
+    the convention hypercache's ``version`` already keys on. Everything else
+    below (a partial's bound arguments, a bound method's instance state) still
+    enters the hash.
 
     For bound methods, an instance fingerprint is mixed into the hash so the
     same method on two differently-configured instances hashes differently
@@ -107,6 +115,8 @@ def hash_definition(func: Callable) -> str:
 
     Args:
         func: Function to hash
+        version: Declared definition version (see above), or None to hash
+            the code itself.
 
     Returns:
         64-character hex string (SHA256 hash)
@@ -115,18 +125,21 @@ def hash_definition(func: Callable) -> str:
         >>> def foo(): pass
         >>> len(hash_definition(foo))
         64
+        >>> hash_definition(foo, version=1) == hash_definition(foo)
+        False
     """
+    version = normalize_version(version)
     if isinstance(func, functools.partial):
         if type(func) is not functools.partial:
             raise TypeError(
                 f"Cannot deterministically fingerprint functools.partial subclass {_type_name(type(func))}; use an exact functools.partial"
             )
-        return _hash_partial(func)
+        return _hash_partial(func, version)
 
     if callable(func) and not inspect.isroutine(func) and not isinstance(func, type):
-        return _hash_callable_object(func)
+        return _hash_callable_object(func, version)
 
-    code_hash = _hash_code(func)
+    code_hash = _hash_code(func) if version is None else _hash_version(func, version)
 
     # Bound methods: mix in instance state so differently-configured
     # instances of the same class do not share a hash (and a cache).
@@ -142,11 +155,34 @@ def hash_definition(func: Callable) -> str:
     return hashlib.sha256(f"{code_hash}:{fingerprint}".encode()).hexdigest()
 
 
-def _hash_partial(func: functools.partial) -> str:
+def normalize_version(version: Any) -> str | None:
+    """A declared definition version as text: a non-empty string or an int, else refused."""
+    if version is None:
+        return None
+    if isinstance(version, bool) or not isinstance(version, (str, int)):
+        raise TypeError(f"version must be a non-empty string or an int (or None), got {version!r}.")
+    text = str(version).strip()
+    if not text:
+        raise ValueError("version must not be empty; omit it to hash the code instead.")
+    return text
+
+
+def _hash_version(func: Callable, version: str) -> str:
+    """The code slot of a versioned definition: the function's name and its version.
+
+    The name keeps two versioned functions apart (the same convention as
+    hypercache's operation name); the module and the source do not enter.
+    """
+    name = getattr(func, "__name__", None) or type(func).__name__
+    payload = {"kind": "version", "name": name, "version": version}
+    return hashlib.sha256(_canonical_json(payload).encode()).hexdigest()
+
+
+def _hash_partial(func: functools.partial, version: str | None = None) -> str:
     """Hash an exact partial from its callable and bound arguments."""
     payload = {
         "kind": "partial",
-        "callable": hash_definition(func.func),
+        "callable": hash_definition(func.func, version),
         "args": func.args,
         "keywords": func.keywords or {},
     }
@@ -154,7 +190,7 @@ def _hash_partial(func: functools.partial) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def _hash_callable_object(func: Callable) -> str:
+def _hash_callable_object(func: Callable, version: str | None = None) -> str:
     """Hash a callable instance from its call definition and typed state."""
     call_definition = type(func).__call__
 
@@ -165,7 +201,7 @@ def _hash_callable_object(func: Callable) -> str:
             f"{_type_name(type(func))}: instance state is inaccessible; "
             "define cache_key() returning supported deterministic state"
         )
-    call_hash = hash_definition(call_definition)
+    call_hash = hash_definition(call_definition, version)
     return hashlib.sha256(f"{call_hash}:{fingerprint}".encode()).hexdigest()
 
 

@@ -35,6 +35,7 @@ class InterruptNode(FunctionNode):
         hide: bool = False,
         emit: str | tuple[str, ...] | None = None,
         wait_for: str | tuple[str, ...] | None = None,
+        version: str | int | None = None,
         **unsupported: Any,
     ) -> None:
         _validate_answer_name("InterruptNode", answer_name, unsupported)
@@ -47,6 +48,7 @@ class InterruptNode(FunctionNode):
             hide=hide,
             emit=emit,
             wait_for=wait_for,
+            version=version,
         )
 
     @property
@@ -93,6 +95,7 @@ def interrupt(
     emit: str | tuple[str, ...] | None = None,
     wait_for: str | tuple[str, ...] | None = None,
     hide: bool = False,
+    version: str | int | None = None,
     **unsupported: Any,
 ) -> Callable[[Callable], InterruptNode]:
     """Decorator to create an InterruptNode from a function.
@@ -107,6 +110,7 @@ def interrupt(
         emit: Ordering-only local output name(s).
         wait_for: Ordering-only graph-scope output/emit address(es).
         hide: Whether to hide from visualization (default: False).
+        version: Optional declared definition version, as on ``@node``.
 
     Examples::
 
@@ -129,6 +133,7 @@ def interrupt(
             emit=emit,
             wait_for=wait_for,
             hide=hide,
+            version=version,
         )
         int_node.__wrapped__ = func  # type: ignore[attr-defined]
         return int_node
