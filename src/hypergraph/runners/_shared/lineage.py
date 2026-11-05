@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.checkpointers.types import Checkpoint, Run
+from hypergraph.checkpointers.types import Checkpoint, Run, StepRecord, StepStatus
 from hypergraph.exceptions import (
     CompactedRetentionError,
     GraphChangedError,
@@ -26,7 +27,6 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from hypergraph.checkpointers.base import CheckpointPolicy
-    from hypergraph.checkpointers.types import StepRecord
     from hypergraph.graph import Graph
 
 
@@ -254,3 +254,35 @@ def plan_lineage(
         retry_index=retry_index,
         is_resume=is_resume,
     )
+
+
+def inherited_history(
+    *,
+    checkpoint: Checkpoint | None,
+    action: ResumeAction,
+    workflow_id: str,
+) -> list[StepRecord]:
+    """The completed work a run started from another run's checkpoint carries as its own.
+
+    A fork or retry is a pure data copy of the point it starts from (the
+    reviewed persistence spec: "no references or pointers to the source ...
+    each workflow is self-contained"). Its inputs already travel that way
+    (``start_inputs_for_run``); this is the other half of the restorable
+    state, the source's COMPLETED step records, addressed to the new run so
+    ``create_run`` writes them with its row. Without them the new run's
+    record held only what it executed itself: its folded outputs lost what
+    the source had saved, and a retry OF it ran those finished steps again.
+
+    Only completed work is inherited. A FAILED or PAUSED row is the source's
+    own attempt evidence, and copied over it would read as this run's
+    failure or pause. The attempt-series link is dropped for the same
+    reason: the ledger belongs to the run that made the attempts, and
+    retention deletes a dropped step's closed series by id, so a kept link
+    would let this run's compaction delete the source's ledger.
+
+    A resume of the same workflow id inherits nothing: its checkpoint is its
+    own record already.
+    """
+    if checkpoint is None or action is ResumeAction.RESUME_EXISTING:
+        return []
+    return [replace(step, run_id=workflow_id, attempt_series_id=None) for step in checkpoint.steps if step.status is StepStatus.COMPLETED]

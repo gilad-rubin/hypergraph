@@ -578,6 +578,53 @@ class TestLineageAndRecovery:
         assert outcome.outputs == {"doubled": 8, "tripled": 24}
         assert host.client.result_sync(retry.run_ref).outputs == outcome.outputs
 
+    async def test_a_rerun_that_produced_outputs_keeps_what_its_source_saved(self, home):
+        """A retry resumes past its source's finished steps and makes outputs of its own.
+
+        The knowledge-base upload that found it (Panda 0.60.83): the upload
+        staged a version and failed; its retry got past the pages and failed
+        to publish. The retry's result must still carry ``staged`` — the read
+        used to borrow the source's outputs only when the retry produced none.
+        """
+        calls = {"stage": 0, "materialize": 0, "publish": 0}
+
+        @node(output_name="staged")
+        def stage(doc: str) -> dict:
+            calls["stage"] += 1
+            return {"version_id": f"v-{doc}", "expected_active_version": None}
+
+        @node(output_name="materialization")
+        def materialize(staged: dict) -> dict:
+            calls["materialize"] += 1
+            if calls["materialize"] == 1:
+                raise ValueError("pages failed")
+            return {"version_id": staged["version_id"], "rows": 3}
+
+        @node(output_name="published")
+        def publish(materialization: dict) -> dict:
+            calls["publish"] += 1
+            raise ValueError("ActiveVersionConflict")
+
+        graph = Graph([stage, materialize, publish], name="upload").with_runner(SyncRunner())
+        host = serve(graph, home=home)
+        source = await host.submit(graph, {"doc": "1002"}, workflow_id="wf-upload-1002")
+        async with _worker(host):
+            await _wait_for(lambda: _settled(RunHomeClient(home), source.run_ref))
+
+        retry = await host.client.rerun(source.run_ref)
+        async with _worker(host):
+            await _wait_for(lambda: _settled(RunHomeClient(home), retry.run_ref))
+
+        outcome = await host.client.result(retry.run_ref)
+        assert outcome.status is WorkflowStatus.FAILED
+        assert outcome.failure is not None and outcome.failure.node_name == "publish"
+        assert outcome.outputs == {
+            "staged": {"version_id": "v-1002", "expected_active_version": None},
+            "materialization": {"version_id": "v-1002", "rows": 3},
+        }
+        assert host.client.result_sync(retry.run_ref).outputs == outcome.outputs
+        assert calls == {"stage": 1, "materialize": 2, "publish": 1}, "the retry resumed past staging"
+
     async def test_checkpoint_reusing_rerun_that_produced_nothing_stays_empty(self, home):
         host, served = serve_graphs(_empty_graph(), home=home)
         original = await host.submit(served["quiet"], {"x": 4}, workflow_id="wf-empty-reused")

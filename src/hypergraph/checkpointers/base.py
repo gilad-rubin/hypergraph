@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -383,6 +383,7 @@ class Checkpointer(ABC):
         retry_index: int | None = None,
         config: dict[str, Any] | None = None,
         inputs: dict[str, Any] | None = None,
+        history: Sequence[StepRecord] = (),
     ) -> Run:
         """Create or reset a run record (upsert). Called by runner at run start.
 
@@ -393,6 +394,14 @@ class Checkpointer(ABC):
         wins so a resume (which supplies only the interrupt answer) cannot
         overwrite them. Backends that do not persist them simply ignore the
         argument and keep returning ``{}`` from ``get_run_inputs``.
+
+        ``history`` is the completed work a run started from another run's
+        checkpoint (a fork or retry) inherits, each record already addressed
+        to ``run_id``. It is saved with the run row, so the new run's own
+        record is its whole restorable state: ``get_state`` and
+        ``get_checkpoint`` of a retry carry what its source finished, and a
+        retry of that retry repeats none of it. A backend must persist it to
+        keep fork and retry restorable.
         """
         ...
 

@@ -1423,7 +1423,9 @@ Two honest caveats on `outputs`:
 - They are the run's **folded step outputs**, not a projection narrowed to
   the graph's declared outputs. Narrowing needs the `Graph` object, and this
   client is graph-free by contract, so it reports every value the run's
-  steps produced rather than guessing.
+  steps produced rather than guessing. A rerun's steps include the completed
+  steps it inherited from its source, so its outputs are what the source
+  saved plus what the rerun made, whether or not the rerun made anything.
 - They are JSON-safe because a Run Home's checkpointer defaults to
   `JsonSerializer`. A Home explicitly configured with `PickleSerializer`
   returns whatever it stored; `to_dict()` falls back to `repr` for anything

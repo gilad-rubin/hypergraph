@@ -546,6 +546,23 @@
 
 ### Fixed
 
+- **A retry keeps what its source saved, and a retry of a retry repeats none of it.**
+  A run started from another run's checkpoint (`retry_from=`, `fork_from=`, an explicit
+  `checkpoint=`, `client.rerun()`) used the source's state while it ran but recorded only
+  the steps it executed itself. Its own state therefore lost every output the source had
+  saved, and `RunHomeClient.result()` borrowed the source's outputs only when the retry
+  produced none: a knowledge-base upload that staged a version and failed, then was retried
+  past its pages and failed to publish, read back with no `staged` version (Panda 0.60.83
+  read it up the lineage by hand). Its checkpoint also lacked that work, so a retry of the
+  retry ran the finished steps again, side effects and all. Now `create_run(...,
+  history=...)` writes the source's completed steps under the new run's id in the same
+  transaction as its row, as the reviewed persistence spec has it ("forks are pure data
+  copies ... each workflow is self-contained"). Failed and paused steps are not inherited,
+  and an inherited step names no attempt series, so the source's failure never reads as the
+  retry's and the retry's retention never deletes the source's attempt ledger. A custom
+  checkpointer's `create_run` must accept and store `history`. Runs recorded before this
+  change keep their old reading.
+
 - **A failed pending-boundary batch rolls back instead of riding the next commit.**
   `SqliteCheckpointer.record_pending_nodes{,_sync}` opened no transaction of their own, so
   a batch whose later row failed left its earlier rows in the connection's open

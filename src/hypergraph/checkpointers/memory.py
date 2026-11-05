@@ -198,6 +198,7 @@ class MemoryCheckpointer(Checkpointer):
         retry_index: int | None = None,
         config: dict[str, Any] | None = None,
         inputs: dict[str, Any] | None = None,
+        history: Sequence[StepRecord] = (),
     ) -> Run:
         existing = self._runs.get(run_id)
         created_at = existing.created_at if existing is not None else datetime.now(timezone.utc)
@@ -222,6 +223,13 @@ class MemoryCheckpointer(Checkpointer):
             completed_at=None,
         )
         self._runs[run_id] = run
+        if history:
+            # The inherited work lands with the row, as SQLite writes both in
+            # one transaction; the policy then compacts it like any step.
+            run_steps = self._steps.setdefault(run_id, {})
+            for record in history:
+                run_steps[(record.superstep, record.node_name)] = record
+            self._apply_retention_policy(run_id)
         return run
 
     async def update_run_status(

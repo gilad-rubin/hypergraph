@@ -408,7 +408,8 @@ def start_inputs_for_run(
     Only names the graph declares as inputs are stored. An interrupt answer
     is a node output, not an input, so a resume payload contributes nothing
     here — and a fork or retry inherits the source checkpoint's restored
-    inputs, so the new run is independently restorable in turn.
+    inputs, which with its inherited steps (``lineage.inherited_history``)
+    make the new run independently restorable in turn.
     """
     names = set(graph.inputs.all)
     stored = {name: value for name, value in normalized_values.items() if name in names}

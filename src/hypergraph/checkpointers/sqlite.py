@@ -1192,6 +1192,7 @@ class SqliteCheckpointer(Checkpointer):
         retry_index: int | None = None,
         config: dict[str, Any] | None = None,
         inputs: dict[str, Any] | None = None,
+        history: Sequence[StepRecord] = (),
     ) -> Run:
         """Create or reset a run record (upsert).
 
@@ -1200,8 +1201,14 @@ class SqliteCheckpointer(Checkpointer):
         leaves them alone (``COALESCE``): a resume passes only the interrupt
         answer, and overwriting the original inputs with it would destroy
         the very state resume needs. See ``get_checkpoint``.
+
+        ``history`` (a fork's or retry's inherited completed steps) commits
+        in the SAME transaction as the row: a run killed half-way through
+        writing it would resume from part of its inheritance and run the
+        rest again.
         """
         await self._ensure_db()
+        history_params = [self._step_upsert_params(record) for record in history]
         params, run = run_upsert(
             run_id,
             graph_name=graph_name,
@@ -1214,10 +1221,12 @@ class SqliteCheckpointer(Checkpointer):
             config=config,
             inputs_blob=serialize_run_inputs(self._serializer, run_id, inputs),
         )
-        async with self._txn_lock():
-            await self._db.execute(_RUN_UPSERT_SQL, params)
+        async with self._write_txn() as db:
+            await db.execute(_RUN_UPSERT_SQL, params)
+            if history_params:
+                await db.executemany(_STEP_UPSERT_SQL, history_params)
+                await self._apply_retention_policy_async(run_id)
             await self._after_run_mutation(run_id, "run_started", {"graph_name": graph_name or ""})
-            await self._db.commit()
         return run
 
     async def update_run_status(
@@ -1907,29 +1916,33 @@ class SqliteCheckpointer(Checkpointer):
         retry_index: int | None = None,
         config: dict[str, Any] | None = None,
         inputs: dict[str, Any] | None = None,
+        history: Sequence[StepRecord] = (),
     ) -> Run:
         """Create or reset a run record synchronously (upsert).
 
-        ``inputs`` follow the same first-write-wins rule as ``create_run``.
+        ``inputs`` follow the same first-write-wins rule as ``create_run``,
+        and ``history`` commits with the row, as it does there.
         """
-        with self._sync_lock:
-            db = self._sync_db()
-            params, run = run_upsert(
-                run_id,
-                graph_name=graph_name,
-                created_at=datetime.now(timezone.utc),
-                parent_run_id=parent_run_id,
-                forked_from=forked_from,
-                fork_superstep=fork_superstep,
-                retry_of=retry_of,
-                retry_index=retry_index,
-                config=config,
-                inputs_blob=serialize_run_inputs(self._serializer, run_id, inputs),
-            )
+        history_params = [self._step_upsert_params(record) for record in history]
+        params, run = run_upsert(
+            run_id,
+            graph_name=graph_name,
+            created_at=datetime.now(timezone.utc),
+            parent_run_id=parent_run_id,
+            forked_from=forked_from,
+            fork_superstep=fork_superstep,
+            retry_of=retry_of,
+            retry_index=retry_index,
+            config=config,
+            inputs_blob=serialize_run_inputs(self._serializer, run_id, inputs),
+        )
+        with self._write_txn_sync() as db:
             db.execute(_RUN_UPSERT_SQL, params)
+            if history_params:
+                db.executemany(_STEP_UPSERT_SQL, history_params)
+                self._apply_retention_policy_sync(run_id)
             self._after_run_mutation_sync(db, run_id, "run_started", {"graph_name": graph_name or ""})
-            db.commit()
-            return run
+        return run
 
     def save_step_sync(self, record: StepRecord) -> None:
         """Save a step with upsert semantics synchronously."""

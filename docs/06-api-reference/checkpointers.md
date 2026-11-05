@@ -181,7 +181,7 @@ Every checkpointer implements the same contract, so runners don't need to know w
 | Method | Purpose |
 |---|---|
 | `save_step(record)` | Persist one node's execution atomically. Upserts on `(run_id, superstep, node_name)`. |
-| `create_run(run_id, ..., inputs=None)` | Create or reset a run record at run start, and store the run's graph-boundary inputs. |
+| `create_run(run_id, ..., inputs=None, history=())` | Create or reset a run record at run start, and store the run's graph-boundary inputs and, for a fork or retry, the completed steps it inherits. |
 | `update_run_status(run_id, status, ...)` | Update lifecycle status with duration/counts. |
 | `get_state(run_id, superstep=None)` | Fold step values into accumulated state. `None` means latest. |
 | `get_steps(run_id, superstep=None, show_internal=False)` | Public step records through a superstep. Set `show_internal=True` to include retention carriers. |
@@ -207,8 +207,9 @@ consumed a raw graph input could never be satisfied on resume.
   in-memory checkpointer mirrors the rule.
 - **Only declared graph inputs are stored** — an interrupt answer is a node
   output, so a resume payload contributes nothing. A fork or retry inherits
-  the source checkpoint's restored inputs and so is independently restorable
-  in turn.
+  the source checkpoint's restored inputs, and its completed steps too (see
+  [Fork and Retry](#fork-and-retry)), so it is independently restorable in
+  turn.
 - **`get_checkpoint` layers them underneath the folded step values**, so a
   node output that shadows an input name still wins, exactly as it does live.
 - **Backends need not persist them.** The ABC's `get_run_inputs` returns `{}`
@@ -322,6 +323,27 @@ fork_id  # "job-1-fork-a1b2c3"
 retry_id, retry_checkpoint = checkpointer.retry_workflow("job-1")
 retry_id  # "job-1-retry-1" (increments per retry of the same source)
 ```
+
+A fork or retry is a copy of the point it starts from, never a pointer to its
+source. When the new run is created, the source's **completed** steps up to that
+point are written under the new run's id, in the same transaction as its row
+(`create_run(..., history=...)`), beside the inputs it already inherits. The new
+run's own `get_state` and `get_checkpoint` then hold everything it started from
+plus what it made:
+
+```python
+await runner.run(graph, {"doc": "1002"}, workflow_id="up-1")    # stage ok, materialize fails
+await runner.run(graph, retry_from="up-1", workflow_id="up-2")  # materialize ok, publish fails
+await checkpointer.get_state("up-2")      # {"staged": ..., "materialization": ...}
+await runner.run(graph, retry_from="up-2", workflow_id="up-3")  # runs publish only
+```
+
+Before, the new run recorded only the steps it executed itself: `up-2`'s state
+lacked `staged`, and `up-3` ran `stage` and `materialize` again. Failed and paused
+steps are not inherited (they are the source's attempts, and copied over they would
+read as the new run's failure), and an inherited step names no attempt series (the
+ledger belongs to the run that made the attempts). A backend's `create_run` must
+store `history` to keep forks and retries restorable.
 
 ## Lineage
 

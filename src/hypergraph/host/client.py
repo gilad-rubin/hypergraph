@@ -1203,6 +1203,11 @@ class RunHomeClient:
         if not run_result.settled or run_result.outputs != {}:
             return run_result
 
+        # A rerun writes the completed steps it inherits under its own id
+        # (``create_run(history=...)``), so its own fold above already holds
+        # what its source saved. A rerun recorded before that has no rows for
+        # its inheritance: one that re-ran nothing reads empty, and borrows
+        # its nearest ancestor's outputs here.
         seen = {ref.run_id}
         current_submission, current_run = submission, run
         for _ in range(_RETRY_LINEAGE_LIMIT):

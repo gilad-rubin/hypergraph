@@ -40,6 +40,7 @@ from hypergraph.runners._shared.input_normalization import (
 )
 from hypergraph.runners._shared.lineage import (
     ResumeAction,
+    inherited_history,
     plan_lineage,
     resolve_existing_run,
     validate_lineage_request,
@@ -579,6 +580,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     retry_index=run_lineage.retry_index,
                     config=run_config,
                     inputs=start_inputs_for_run(graph, normalized_values, resume_checkpoint),
+                    history=inherited_history(checkpoint=resume_checkpoint, action=resume_action, workflow_id=workflow_id),
                 )
                 run_row_created = True
         except BaseException as error:
