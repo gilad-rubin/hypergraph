@@ -30,6 +30,9 @@ class NodeSpanRef:
     span_id: str
     node_name: str
     graph_name: str
+    #: The persisted workflow this node runs in (a Host Batch item's is ``"<batch workflow_id>:<item key>"``), so code
+    #: inside the node can say which durable run it belongs to; ``None`` for a run with no workflow id.
+    workflow_id: str | None = None
 
 
 _current_node_span: ContextVar[NodeSpanRef | None] = ContextVar("hypergraph_current_node_span", default=None)

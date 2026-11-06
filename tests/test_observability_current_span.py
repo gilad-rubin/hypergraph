@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 from hypergraph import AsyncRunner, Graph, SyncRunner, current_node_span, node
+from hypergraph.checkpointers import MemoryCheckpointer, SqliteCheckpointer
 from hypergraph.events import EventProcessor, NodeStartEvent
 
 
@@ -43,6 +44,7 @@ def test_sync_runner_publishes_node_span():
     assert ref.node_name == "observe"
     assert ref.graph_name == "obs_graph"
     assert ref.span_id in index.by_node["observe"]
+    assert ref.workflow_id is None  # a run with no workflow id names none
 
 
 @pytest.mark.asyncio
@@ -87,3 +89,36 @@ async def test_mapped_items_see_distinct_spans():
 
     assert len(span_ids) == 3
     assert len(set(span_ids)) == 3
+
+
+@pytest.mark.asyncio
+async def test_async_span_names_its_workflow():
+    """Code inside a node can say which persisted workflow it runs in (a Host Batch item's is `<batch>:<key>`)."""
+    seen: list = []
+
+    @node(output_name="out")
+    async def observe(value: int) -> int:
+        seen.append(current_node_span())
+        return value
+
+    await AsyncRunner(checkpointer=MemoryCheckpointer()).run(
+        Graph([observe], name="obs_graph"), {"value": 1}, workflow_id="wf-span"
+    )
+
+    (ref,) = seen
+    assert ref.workflow_id == "wf-span"
+
+
+def test_sync_span_names_its_workflow(tmp_path):
+    seen: list = []
+
+    @node(output_name="out")
+    def observe(value: int) -> int:
+        seen.append(current_node_span())
+        return value
+
+    checkpointer = SqliteCheckpointer(str(tmp_path / "span.db"))
+    SyncRunner(checkpointer=checkpointer).run(Graph([observe], name="obs_graph"), {"value": 1}, workflow_id="wf-span")
+
+    (ref,) = seen
+    assert ref.workflow_id == "wf-span"

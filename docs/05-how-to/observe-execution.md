@@ -368,6 +368,11 @@ runner.run(Graph([do_work]), {"x": 5})
 
 `current_node_span()` returns `None` outside of node execution (for example, if called at module import time).
 
+Its `workflow_id` names the persisted workflow the node runs in, so code deep inside a node (a tool an agent calls, a
+log handler) can say which durable run it belongs to: the `workflow_id` given to `run()`, and for one item of a Host
+Batch, `"<batch workflow_id>:<item key>"`. It is `None` for a run with no workflow id. `run_id` is the runner's own
+id for the run's events, not the workflow's.
+
 `current_node_span` and `NodeSpanRef` are exported from `hypergraph` and
 `hypergraph.runners`, and their defining module, `hypergraph.runners.observability`,
 is a public path — an instrumentation library that soft-imports the accessor can

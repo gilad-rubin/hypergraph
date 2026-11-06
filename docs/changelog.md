@@ -4,6 +4,11 @@
 
 ### Added
 
+- **Observability: the node span names its workflow.** `current_node_span().workflow_id` is the persisted
+  workflow the executing node runs in (for one item of a Host Batch, `"<batch workflow_id>:<item key>"`), or `None`
+  without one. Code inside a node, such as a tool an agent calls, can now say which durable run it belongs to without
+  a `NodeContext` parameter or a private field; `run_id` stays the runner's event id.
+
 - **Nodes: a version number on each step.** `@node(version=1)` (also on
   `FunctionNode`, `@route`, `@ifelse` and `@interrupt`) makes the step's
   `definition_hash` its name plus that version instead of its source code. A

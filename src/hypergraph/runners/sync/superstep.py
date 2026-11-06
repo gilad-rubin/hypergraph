@@ -228,7 +228,7 @@ def run_superstep_sync(
 
                 # Publish the node span so in-node telemetry (LLM clients, stores)
                 # can attribute itself to this exact span.
-                span_token = set_current_node_span(NodeSpanRef(run_id=run_id, span_id=node_span_id, node_name=node.name, graph_name=graph.name))
+                span_token = set_current_node_span(NodeSpanRef(run_id=run_id, span_id=node_span_id, node_name=node.name, graph_name=graph.name, workflow_id=ctx_base.workflow_id))
                 evidence_inputs = dict(inputs)
                 parent_invocation_token = _get_failure_evidence_invocation()
                 invocation_token = object() if isinstance(node, GraphNode) else None
