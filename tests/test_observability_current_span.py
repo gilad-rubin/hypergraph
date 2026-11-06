@@ -101,9 +101,7 @@ async def test_async_span_names_its_workflow():
         seen.append(current_node_span())
         return value
 
-    await AsyncRunner(checkpointer=MemoryCheckpointer()).run(
-        Graph([observe], name="obs_graph"), {"value": 1}, workflow_id="wf-span"
-    )
+    await AsyncRunner(checkpointer=MemoryCheckpointer()).run(Graph([observe], name="obs_graph"), {"value": 1}, workflow_id="wf-span")
 
     (ref,) = seen
     assert ref.workflow_id == "wf-span"
