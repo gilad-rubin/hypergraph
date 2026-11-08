@@ -39,6 +39,7 @@ from hypergraph.materialization._commit import (
     refuse_colliding_identities,
 )
 from hypergraph.materialization._provenance import (
+    STALE_PROVENANCE,
     DerivedChildren,
     Provenance,
     RebuildChildren,
@@ -1335,7 +1336,7 @@ class WritePlanner:
             source_inputs = self._source_inputs(item)
             stale_target_row = {key: normalize_value(value) for key, value in existing.items()}
             for target_column in self._provenance.node_columns(node):
-                stale_target_row[f"_provenance_{target_column.name}"] = None
+                stale_target_row[f"_provenance_{target_column.name}"] = STALE_PROVENANCE
             try:
                 reconciled = yield from self._reconcile(item, stale_target_row)
             except Exception as error:

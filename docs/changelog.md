@@ -35,6 +35,15 @@
 
 ### Changed
 
+- **HyperTable: a child step that recorded no provenance is judged by its
+  inputs.** A child row derived before its graph's own bound values entered
+  provenance holds values but no provenance for the steps that read them, so
+  each later reconcile re-ran those steps. On a child row stamped with today's
+  child recipe, such a step is now kept when its inputs, read back from the
+  row, are today's; the reconciled row records the provenance it was missing.
+  `rederive(column)` stales a column with a marker instead of None, so a column
+  staled on purpose is never taken for an unrecorded one.
+
 - **HyperTable: a re-derived child row keeps what was set on it.** A child row
   that re-derives because its item's content changed is written from the new
   item, which knows nothing of the values `ChildTable.set()` wrote after the

@@ -35,9 +35,21 @@ from hypergraph.materialization._recipe_journal import (
     KIND_COMPONENT_CONFIG,
     KIND_NODE_SOURCE,
 )
-from hypergraph.materialization._schema import TableSpec, graph_bound_names, input_names, is_internal_column, node_func
+from hypergraph.materialization._schema import (
+    PROVENANCE_PREFIX,
+    RECIPE_COLUMN,
+    TableSpec,
+    graph_bound_names,
+    input_names,
+    is_internal_column,
+    node_func,
+)
 
 _Items = tuple[tuple[str, Any], ...]
+
+#: What a column's provenance is set to so that its node re-runs: never equal to
+#: a provenance, and not the None of a row that never recorded one.
+STALE_PROVENANCE = "stale"
 
 
 def _freeze(values: Mapping[str, Any]) -> _Items:
@@ -161,6 +173,8 @@ class ReconcileState:
     routed_scope: frozenset[str] = frozenset()
     routed_outputs: _Items = ()
     routed_executed: frozenset[str] = frozenset()
+    #: The row was derived under today's child recipe: a node it recorded no provenance for is judged by its inputs.
+    recorded_under_today: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -595,6 +609,31 @@ class Provenance:
             for column in self.node_columns(node, spec)
         )
 
+    def unrecorded_but_fresh(self, node: Any, provenance: str, existing: Mapping[str, Any], spec: TableSpec | None = None) -> bool:
+        """A node the row holds values but no provenance for, whose inputs are the ones the row was derived from.
+
+        A child row derived before its graph's own bound values entered
+        provenance recorded none for the nodes that read them. Its values are
+        trusted exactly as its fingerprint skip already trusts them: only on a
+        row stamped with today's recipe (``recorded_under_today``), and only
+        when the node's inputs, read back from the row, are today's. A column
+        staled on purpose holds ``STALE_PROVENANCE``, never None, so it is
+        never taken for one.
+        """
+        columns = self.node_columns(node, spec)
+        if not columns or any(
+            existing.get(f"{PROVENANCE_PREFIX}{column.name}") is not None or self.column_is_null(existing.get(column.name)) for column in columns
+        ):
+            return False
+        return self.node_provenance(node, self.stored_values(existing)) == provenance
+
+    def recorded_under_today(self, spec: TableSpec, existing: Mapping[str, Any]) -> bool:
+        """Whether a CHILD row carries today's child recipe stamp; a root row never qualifies."""
+        stamp = existing.get(RECIPE_COLUMN)
+        if not isinstance(stamp, str) or not stamp or spec.parent_link is None:
+            return False
+        return stamp == self.current_child_recipe_fingerprint(spec)
+
     def boundary_node(self, child_spec: TableSpec) -> Any:
         return find_boundary_node(self.graph, child_spec)
 
@@ -653,6 +692,7 @@ class Provenance:
             boundary_index=0,
             children=(),
             graph=graph,
+            recorded_under_today=self.recorded_under_today(spec, existing),
         )
 
     def next_reconcile_step(self, state: ReconcileState) -> tuple[ReconcileState, ReconcileStep]:
@@ -681,7 +721,10 @@ class Provenance:
             if node.name in current.routed_scope:
                 current = self._settle_routed(current, node, provenance)
                 continue
-            if not self.node_is_fresh(node, provenance, existing, current.spec):
+            fresh = self.node_is_fresh(node, provenance, existing, current.spec) or (
+                current.recorded_under_today and self.unrecorded_but_fresh(node, provenance, existing, current.spec)
+            )
+            if not fresh:
                 return self._run_or_route(
                     current,
                     RunNode(
