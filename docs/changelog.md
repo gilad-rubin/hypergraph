@@ -35,6 +35,15 @@
 
 ### Changed
 
+- **HyperTable: a structured input reads as its plain data in a column's
+  provenance.** A model, a dataclass, a dict, or a list holding one, now enters
+  a column provenance as its JSON-plain data with sorted keys. A node's fresh
+  output is a model; a store that keeps structured cells as their plain data
+  reads the same value back as a dict, and before this the two hashed apart, so
+  a node downstream of a reused structured column re-ran on every reconcile.
+  Scalars hash as before. A column whose node reads a dict-valued input was
+  stamped the old way, so it re-derives once, at its row's next reconcile.
+
 - **Visualization: `visualize()` opens fitted to its frame (#598).** The
   notebook widget and the standalone HTML page now open on the whole graph at
   no more than its natural size. They zoom out no further than the size at

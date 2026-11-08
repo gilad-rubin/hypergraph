@@ -16,6 +16,7 @@ silently skips instead of re-deriving.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from collections.abc import Collection, Iterable
@@ -328,6 +329,41 @@ def compute_table_recipe_fingerprint(
     )
 
 
+def _plain_data(value: Any) -> Any:
+    """``value`` as the plain data a store keeps of it: a model's JSON fields, a dataclass's fields, through lists and dicts."""
+    if hasattr(value, "model_dump"):
+        return _plain_data(value.model_dump(mode="json"))
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return _plain_data(dataclasses.asdict(value))
+    if isinstance(value, dict):
+        return {str(key): _plain_data(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_data(item) for item in value]
+    return value
+
+
+def _is_structured(value: Any) -> bool:
+    if isinstance(value, dict) or hasattr(value, "model_dump"):
+        return True
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return True
+    return isinstance(value, (list, tuple)) and any(_is_structured(item) for item in value)
+
+
+def _provenance_input(value: Any) -> str:
+    """One input value as a column provenance reads it.
+
+    A structured value (a model, a dataclass, a dict, a list holding one)
+    reads as its plain data with sorted keys: a node's fresh output is a model,
+    the same value read back from a store that keeps its plain data is a dict,
+    and both must read alike, or a node downstream of a reused structured
+    column is never fresh. Every other value reads as it always did.
+    """
+    if _is_structured(value):
+        return "data:" + json.dumps(_plain_data(value), sort_keys=True, default=str)
+    return f"{type(value).__name__}:{value}"
+
+
 def compute_column_provenance(
     node_fn: Any,
     inputs: dict[str, Any],
@@ -337,12 +373,13 @@ def compute_column_provenance(
     """Per-column provenance: hash(producing node's code + its direct input values + consumed component configs).
 
     Direct inputs are themselves stored columns, so transitivity is value-based:
-    an upstream change that yields the same value stops the cascade here.
+    an upstream change that yields the same value stops the cascade here. A
+    structured input is read as its plain data (``_provenance_input``).
     """
     payload = json.dumps(
         {
             "node": compute_node_recipe_hash(node_fn, shadowed),
-            "inputs": {k: f"{type(v).__name__}:{v}" for k, v in sorted(inputs.items())},
+            "inputs": {k: _provenance_input(v) for k, v in sorted(inputs.items())},
             "components": component_hashes,
         },
         sort_keys=True,
