@@ -1057,6 +1057,19 @@ class HyperTable:
             return self._drive_async(operation)
         return self._drive_sync(operation)
 
+    def rederive_row(self, identity_value: str) -> RowReceipt | Awaitable[RowReceipt]:
+        """Re-derive one row and its child rows, running every step again; ``KeyError`` when it is not stored.
+
+        The row's stored sources and answers are its inputs, and nothing stored is reused: no step is skipped
+        because its inputs match. Values set on its child rows after their birth are kept. A cache inside a
+        component still answers unless the caller turns it off.
+        """
+        self._ensure_analyzed()
+        operation = self._write_planner.rederive_row(identity_value)
+        if self._is_async_runner():
+            return self._drive_async(operation)
+        return self._drive_sync(operation)
+
     def delete(self, identity_value: str) -> None | Awaitable[None]:
         """Delete a row and cascade-delete its children."""
         self._ensure_analyzed()

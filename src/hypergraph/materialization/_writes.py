@@ -488,6 +488,7 @@ class WritePlanner:
         child_spec: TableSpec,
         bound_graph: Graph,
         child_gens: ChildGenerations,
+        fresh: bool = False,
     ) -> Generator[RunGraph, Any, None]:
         write_gen = child_gens.for_table(child_spec.name)
         child_item = normalize_to_dict(raw_item)
@@ -507,7 +508,7 @@ class WritePlanner:
         )
         existing = max(existing_rows, key=lambda row: row.get("_write_gen", 0)) if existing_rows else None
         stored_status = RowStatus.of_stored(existing)
-        if existing is not None and existing.get("_row_fingerprint") == fingerprint and stored_status is RowStatus.COMPLETE:
+        if existing is not None and existing.get("_row_fingerprint") == fingerprint and stored_status is RowStatus.COMPLETE and not fresh:
             if self._provenance.row_missing_stamp(existing, RECIPE_COLUMN):
                 stamped = self._rows.stamp_existing_row(child_spec.name, existing, write_gen, child_spec, normalize_values=False)
                 self._commit.restamp_child(child_spec.name, stamped)
@@ -531,8 +532,9 @@ class WritePlanner:
 
         # A row reconciles against its own last derivation; a new row against
         # the row it continues. Either way only the nodes whose inputs changed run.
+        # A forced re-derive (`fresh`) reconciles against nothing: every step runs.
         current = existing is not None and stored_status is RowStatus.COMPLETE
-        basis = existing if current else (self._lineage_donor(child_item, child_spec) if existing is None else None)
+        basis = None if fresh else existing if current else (self._lineage_donor(child_item, child_spec) if existing is None else None)
         row: dict[str, Any] | None = None
         if basis is not None:
             try:
@@ -586,6 +588,7 @@ class WritePlanner:
         child_items: list[Any],
         child_spec: TableSpec,
         child_gens: ChildGenerations,
+        fresh: bool = False,
     ) -> WriteOperation:
         if child_spec.child_graph is None:
             return
@@ -595,7 +598,7 @@ class WritePlanner:
         # stale row and no tie can survive.
         child_gens.for_table(child_spec.name)
         bound_graph = self._provenance.bind_child_components(child_spec.child_graph)
-        operations = tuple(self._insert_child_item(parent_id, item, child_spec, bound_graph, child_gens) for item in child_items)
+        operations = tuple(self._insert_child_item(parent_id, item, child_spec, bound_graph, child_gens, fresh) for item in child_items)
         if operations:
             yield RunOperations(operations, self._page_max_concurrency)
 
@@ -604,6 +607,7 @@ class WritePlanner:
         parent_id: Any,
         outputs: Mapping[str, Any],
         child_gens: ChildGenerations,
+        fresh: bool = False,
     ) -> Generator[RunGraph, Any, None]:
         """Write every child table's rows from the item lists one parent run produced.
 
@@ -614,7 +618,7 @@ class WritePlanner:
         for child_spec, child_items in selected:
             refuse_colliding_identities(child_items, child_spec.identity, table=child_spec.name, parent=parent_id)
         for child_spec, child_items in selected:
-            yield from self._insert_children_items(parent_id, child_items, child_spec, child_gens)
+            yield from self._insert_children_items(parent_id, child_items, child_spec, child_gens, fresh)
 
     def _parent_stamps_stale(self, existing: Mapping[str, Any], provenances: Mapping[str, str | None]) -> bool:
         """Whether an unchanged parent must be rewritten to carry this pass's stamps.
@@ -975,12 +979,17 @@ class WritePlanner:
         item: dict[str, Any],
         write_gen: int,
         provided: set[str] | None = None,
+        *,
+        fresh: bool = False,
     ) -> Generator[RunGraph, Any, RowReceipt]:
         identity_value = item[self._identity]
         child_gens = self._commit.child_generations(write_gen)
         provided_names = provided if provided is not None else set(item) - {self._identity}
         source_inputs = self._source_inputs(item)
         plan = self.classify_write(item, provided_names)
+        if fresh:
+            # A forced re-derive reuses nothing stored: the whole graph runs.
+            plan = FullDerive(plan.row, parent_skipped=False)
         outcome = WriteOutcome.UPDATED if plan.row is not None else WriteOutcome.INSERTED
         before = self._commit.child_writes
 
@@ -1018,6 +1027,7 @@ class WritePlanner:
                     write_gen,
                     child_gens,
                     before,
+                    fresh=fresh,
                 )
             )
         except DuplicateChildIdentityError as error:
@@ -1116,8 +1126,10 @@ class WritePlanner:
         write_gen: int,
         child_gens: ChildGenerations,
         before: ChildWrites,
+        *,
+        fresh: bool = False,
     ) -> Generator[RunGraph, Any, RowReceipt]:
-        """Run the whole graph for one row and store what it produced."""
+        """Run the whole graph for one row and store what it produced; ``fresh`` runs every child's graph too."""
         identity_value = item[self._identity]
         try:
             result = yield RunGraph(self._graph, self._graph_inputs(item, provided_names), degrade=self._degrade())
@@ -1152,7 +1164,7 @@ class WritePlanner:
                 outcome,
             )
 
-        yield from self._insert_children(identity_value, outputs, child_gens)
+        yield from self._insert_children(identity_value, outputs, child_gens, fresh)
         if parent_skipped:
             # The boundary re-ran, so its recorded count may have moved (a
             # stale or legacy stamp, or a set of distinct child identities that
@@ -1222,6 +1234,17 @@ class WritePlanner:
             return self._receipt_for_row(identity_value, WriteOutcome.UPDATED, existing)
 
         return (yield from self._insert_one(item, write_gen, provided=set(changes)))
+
+    def rederive_row(self, identity_value: str) -> WriteOperation:
+        """Run one row's whole derivation again from its stored sources and answers, its children's too.
+
+        Nothing stored is reused: no step is skipped because its inputs match, and no child row reconciles against
+        its own row or a lineage donor. What was set on a child row after its birth (``_child_annotations``) is kept.
+        A cache inside a component still answers unless the caller turns it off. ``KeyError`` when the row is not
+        stored.
+        """
+        item, _existing, _needs_rederive, write_gen = self._prepare_update(identity_value, {})
+        return (yield from self._insert_one(item, write_gen, fresh=True))
 
     def delete(self, identity_value: str) -> None:
         if self._commit.read_one(self._spec.name, self._identity, identity_value) is None:

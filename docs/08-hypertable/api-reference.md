@@ -363,6 +363,17 @@ without derivation would make the row untruthful.
 
 Derive one column across every row, or only rows whose value is missing.
 
+### `rederive_row(id) -> RowReceipt`
+
+Run one row's whole derivation again, its child rows' too, from its stored
+sources and answers. Nothing stored is reused: no step is skipped because its
+inputs match, and no child row reconciles against its own row or a lineage
+row. Use it when a step's answer should be asked again with no input change (a
+model answered badly). The row's other columns, and what `ChildTable.set()`
+wrote on its child rows, are kept. A cache inside a component still answers;
+turn it off (or refresh it) around the call to ask the model again. Reports
+`UPDATED`; a row that is not stored raises `KeyError`.
+
 ## Reads
 
 ### `get(id) -> dict | None`

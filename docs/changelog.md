@@ -4,6 +4,14 @@
 
 ### Added
 
+- **HyperTable: `rederive_row(id)`, a forced re-derive of one row.** Every
+  other write reuses what is stored where the inputs match, and
+  `rederive(column)` reaches one column across the whole table. `rederive_row`
+  runs one row's whole graph again from its stored sources and answers, and
+  every child row's graph too, reusing nothing stored; values set on its child
+  rows are kept. A cache inside a component still answers unless the caller
+  turns it off.
+
 - **HyperTable: `map_over(lineage=...)`, a new child row continues the row it
   shares its lineage with.** A new parent row (a new version of a document)
   made all-new child rows, so every step of every page ran again. `lineage`
