@@ -12,9 +12,10 @@ stated once.
 The committer also remembers what it DERIVED into child tables, which is part
 of what lets a write plan tell ``SKIPPED`` from ``HEALED`` without re-reading
 the store (#204, #314). It distinguishes the two kinds of child write on
-purpose: re-stamping an unchanged child row at a newer generation, and
-retiring the row it replaces, is bookkeeping; writing a row the plan actually
-derived is derivation the receipt must report.
+purpose: an unchanged child row is left where it is (or only re-stamped, when
+it predates the recipe stamp), and retiring a row whose item is gone is
+bookkeeping; writing a row the plan actually derived is derivation the receipt
+must report.
 """
 
 from __future__ import annotations
@@ -113,9 +114,9 @@ class ChildWrites:
 
     Snapshot it before a stretch of a write plan and subtract with ``since()``
     to learn what derivation that stretch did to child tables. Re-stamping an
-    unchanged child row at a newer generation is deliberately not counted: it
-    writes a row but derives nothing, so on its own it never turns a skip into
-    a repair.
+    unchanged child row that predates the recipe stamp is deliberately not
+    counted: it writes a row but derives nothing, so on its own it never turns
+    a skip into a repair.
     """
 
     derived: int = 0
@@ -146,6 +147,7 @@ class ChildGenerations:
         self._commit = commit
         self._root_gen = root_gen
         self._allocated: dict[str, int] = {}
+        self._kept: dict[str, set[str]] = {}
 
     def for_table(self, table_name: str) -> int:
         gen = self._allocated.get(table_name)
@@ -153,6 +155,14 @@ class ChildGenerations:
             gen = max(self._root_gen, self._commit.max_write_gen(table_name) + 1)
             self._allocated[table_name] = gen
         return gen
+
+    def keep(self, table_name: str, identity: Any) -> None:
+        """A child row this mutation left where it was: its inputs matched, so it is not written again."""
+        self._kept.setdefault(table_name, set()).add(str(identity))
+
+    def kept(self, table_name: str) -> frozenset[str]:
+        """The identities kept in ``table_name``, keyed as text like ``dedup_child_rows``."""
+        return frozenset(self._kept.get(table_name, ()))
 
 
 class TableCommitter:
@@ -239,10 +249,18 @@ class TableCommitter:
 
     def cleanup_children(self, identity_value: Any, child_gens: ChildGenerations) -> None:
         for child_spec in self._spec.children:
-            self.delete_rows(
-                child_spec.name,
-                [("_parent_id", "eq", identity_value), ("_write_gen", "lt", child_gens.for_table(child_spec.name))],
-            )
+            older = [("_parent_id", "eq", identity_value), ("_write_gen", "lt", child_gens.for_table(child_spec.name))]
+            kept = child_gens.kept(child_spec.name)
+            if not kept:
+                self.delete_rows(child_spec.name, older)
+                continue
+            # A kept row stays at its own generation, so only the other older
+            # rows go: the ones this mutation superseded and the ones whose
+            # items are gone.
+            rows = self.read_rows(child_spec.name, tuple(older), columns=(child_spec.identity, "_parent_id", "_write_gen"))
+            doomed = {str(row[child_spec.identity]): row[child_spec.identity] for row in rows if str(row[child_spec.identity]) not in kept}
+            if doomed:
+                self.delete_rows(child_spec.name, [*older, (child_spec.identity, "in", list(doomed.values()))])
 
     def cleanup_child_row(self, child_spec: TableSpec, identity_value: Any, parent_id: Any, write_gen: int) -> None:
         self.delete_rows(

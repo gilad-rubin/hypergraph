@@ -12,8 +12,9 @@ Two rules hold everywhere below:
   (sync, async, or a test double) can drive it;
 - ``WriteOutcome`` is a claim about derivation, so ``SKIPPED`` is only ever
   reported by a path that derived no row and did not re-run a fan-out boundary
-  to repair one. Re-stamping an unchanged child row at a newer generation, and
-  retiring the row it replaces, is bookkeeping: it writes, but it derives
+  to repair one. An unchanged child row stays where it is, at its own
+  generation; re-stamping one that predates the recipe stamp, and retiring a
+  row whose item is gone, is bookkeeping: it writes, but it derives
   nothing, and a plan that does only that still reports ``SKIPPED`` — even
   when reaching that conclusion required running the graph, as it does for a
   boundary that also produces a stored parent column.
@@ -337,8 +338,9 @@ class WritePlanner:
         """The receipt for a row whose parent this plan did not re-derive.
 
         ``SKIPPED`` claims this pass derived nothing that survived: no row was
-        derived. Re-stamping the unchanged child rows at a newer generation, and
-        retiring the rows they replace, is bookkeeping and keeps the skip —
+        derived. Leaving the unchanged child rows where they are, re-stamping
+        one that predates the recipe stamp, and retiring a row whose item is
+        gone, is bookkeeping and keeps the skip —
         and so does running the graph only to arrive there, which is what a
         boundary that also produces a stored parent column forces.
 
@@ -447,8 +449,9 @@ class WritePlanner:
         raw_item: Any,
         child_spec: TableSpec,
         bound_graph: Graph,
-        write_gen: int,
+        child_gens: ChildGenerations,
     ) -> Generator[RunGraph, Any, None]:
+        write_gen = child_gens.for_table(child_spec.name)
         child_item = normalize_to_dict(raw_item)
         child_identity = child_item.get(child_spec.identity, "")
         child_inputs = {
@@ -468,17 +471,12 @@ class WritePlanner:
         stored_status = RowStatus.of_stored(existing)
         if existing is not None and existing.get("_row_fingerprint") == fingerprint and stored_status is RowStatus.COMPLETE:
             if self._provenance.row_missing_stamp(existing, RECIPE_COLUMN):
-                bumped = self._rows.stamp_existing_row(
-                    child_spec.name,
-                    existing,
-                    write_gen,
-                    child_spec,
-                    normalize_values=False,
-                )
+                stamped = self._rows.stamp_existing_row(child_spec.name, existing, write_gen, child_spec, normalize_values=False)
+                self._commit.restamp_child(child_spec.name, stamped)
             else:
-                bumped = dict(existing)
-                bumped["_write_gen"] = write_gen
-            self._commit.restamp_child(child_spec.name, bumped)
+                # Its inputs matched, so the row is current where it is:
+                # writing it again would only move it to a new generation.
+                child_gens.keep(child_spec.name, child_identity)
             return
 
         def error_row(error: BaseException) -> dict[str, Any]:
@@ -549,10 +547,11 @@ class WritePlanner:
             return
         # Allocated before any write in this batch: strictly greater than every
         # physical row currently in the child table, so cleanup (which deletes
-        # older generations) removes every stale row and no tie can survive.
-        write_gen = child_gens.for_table(child_spec.name)
+        # older generations, except the rows this batch kept) removes every
+        # stale row and no tie can survive.
+        child_gens.for_table(child_spec.name)
         bound_graph = self._provenance.bind_child_components(child_spec.child_graph)
-        operations = tuple(self._insert_child_item(parent_id, item, child_spec, bound_graph, write_gen) for item in child_items)
+        operations = tuple(self._insert_child_item(parent_id, item, child_spec, bound_graph, child_gens) for item in child_items)
         if operations:
             yield RunOperations(operations, self._page_max_concurrency)
 

@@ -139,9 +139,10 @@ parent's nodes stored a different value.
 
 `SKIPPED` is a claim about derivation, not about bytes: it means no row was
 derived. A pass over an
-unchanged parent still re-stamps its child rows at a newer generation and
-retires the rows they replace; that is bookkeeping, and such a pass reports
-`SKIPPED`. Nor does it mean nothing executed: when the fan-out boundary also
+unchanged parent leaves its unchanged child rows where they are, at their own
+write generation (a row that predates the recipe stamp is re-stamped), and
+retires the rows whose items are gone; that is bookkeeping, and such a pass
+reports `SKIPPED`. Nor does it mean nothing executed: when the fan-out boundary also
 produces a stored parent column, the pass runs the graph to establish that the
 stored row still stands, derives no new row from it, and reports `SKIPPED`.
 Mapped items that share a child identity never settle as `SKIPPED` or
@@ -316,8 +317,8 @@ never counts as a healthy child (one child-table read per parent; no writes).
 When the recorded count matches the child rows present and every one is
 complete, the row is a zero-execution, zero-write `SKIPPED`; when a child is
 damaged, only that child runs the child graph — present children and parent
-derived columns are not re-derived, though present child rows are rewritten at
-the repair's generation. A physically missing row leaves nothing to rebuild the
+derived columns are not re-derived, and present child rows stay where they are,
+at their own write generation. A physically missing row leaves nothing to rebuild the
 item list from, so the fan-out boundary re-runs once to regenerate it; a stored
 error row still carries its own item, so the stored list is reused and the
 boundary does not re-run. A stale recorded count, or a boundary that now

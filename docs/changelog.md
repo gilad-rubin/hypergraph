@@ -35,6 +35,15 @@
 
 ### Changed
 
+- **HyperTable: an unchanged child row stays where it is.** A parent write
+  whose fan-out yields a child item with unchanged inputs no longer rewrites
+  that child row at a new write generation: the row is kept as it is, and the
+  cleanup that follows retires only the rows the write superseded and the rows
+  whose items are gone. A store that projects child rows elsewhere (a search
+  index) saw every such rewrite as a change. A row that predates the recipe
+  stamp is still re-stamped. Child rows are read in physical order, so a kept
+  row no longer moves behind the rows written around it.
+
 - **HyperTable: a structured input reads as its plain data in a column's
   provenance.** A model, a dataclass, a dict, or a list holding one, now enters
   a column provenance as its JSON-plain data with sorted keys. A node's fresh

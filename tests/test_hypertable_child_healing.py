@@ -300,6 +300,7 @@ def test_healed_children_allocate_generation_above_physical_child_max():
     assert child_max_before > store.max_write_gen("doc"), "annotation bumps must outrun the root counter for this witness"
 
     store.delete_rows("utterance", [("utterance_id", "eq", "u1")])
+    untouched = {row["utterance_id"]: row["_write_gen"] for row in store.rows["utterance"]}
 
     fresh = _table(MemoryStore(store.rows))
     receipt = fresh.sync([{"doc_id": "d1", "text": "alpha beta gamma"}])
@@ -311,12 +312,15 @@ def test_healed_children_allocate_generation_above_physical_child_max():
         by_key.setdefault((row["_parent_id"], row["utterance_id"]), []).append(row["_write_gen"])
     for key, gens in by_key.items():
         assert len(gens) == len(set(gens)), f"equal-generation tie for {key}: {gens}"
-    assert min(row["_write_gen"] for row in physical) > child_max_before, (
-        "every child write in the healing mutation lands strictly above the pre-heal physical max"
-    )
+    # The heal writes only the missing row; an unchanged child row stays at its own generation.
+    written = {row["utterance_id"]: row["_write_gen"] for row in physical if row["utterance_id"] not in untouched}
+    assert set(written) == {"u1"}
+    assert min(written.values()) > child_max_before, "every child write in the healing mutation lands strictly above the pre-heal physical max"
+    assert {row["utterance_id"]: row["_write_gen"] for row in physical if row["utterance_id"] in untouched} == untouched
 
     reader = _table(MemoryStore(store.rows))
-    assert [child["clean_word"] for child in reader.child("utterance").rows(parent="d1")] == ["ALPHA", "BETA", "GAMMA"]
+    # Read in physical order: the kept rows stay where they were, the healed one is appended.
+    assert sorted(child["clean_word"] for child in reader.child("utterance").rows(parent="d1")) == ["ALPHA", "BETA", "GAMMA"]
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +338,7 @@ def test_sync_heals_missing_child_row_lancedb_fresh_handles(tmp_path):
     damage_store.delete_rows("utterance", [("utterance_id", "eq", "u1")])
     child_max_before = damage_store.max_write_gen("utterance")
     assert sorted(row["utterance_id"] for row in damage_store.read_rows("utterance")) == ["u0", "u2"]
+    untouched = {row["utterance_id"]: row["_write_gen"] for row in damage_store.read_rows("utterance")}
 
     heal_store = LanceDBStore(path)
     receipt = _table(heal_store).sync([{"doc_id": "d1", "text": "alpha beta gamma"}])
@@ -347,10 +352,15 @@ def test_sync_heals_missing_child_row_lancedb_fresh_handles(tmp_path):
         by_key.setdefault((row["_parent_id"], row["utterance_id"]), []).append(row["_write_gen"])
     for key, gens in by_key.items():
         assert len(gens) == len(set(gens)), f"equal-generation tie for {key}: {gens}"
-    assert min(row["_write_gen"] for row in physical) > child_max_before, "the healing mutation lands strictly above the pre-heal physical max"
+    # The heal writes only the missing row; an unchanged child row stays at its own generation.
+    assert next(row["_write_gen"] for row in physical if row["utterance_id"] == "u1") > child_max_before, (
+        "the healing mutation lands strictly above the pre-heal physical max"
+    )
+    assert {row["utterance_id"]: row["_write_gen"] for row in physical if row["utterance_id"] != "u1"} == untouched
 
     inspector = _table(read_store)
-    assert [child["clean_word"] for child in inspector.child("utterance").rows(parent="d1")] == ["ALPHA", "BETA", "GAMMA"]
+    # Read in physical order: the kept rows stay where they were, the healed one is appended.
+    assert sorted(child["clean_word"] for child in inspector.child("utterance").rows(parent="d1")) == ["ALPHA", "BETA", "GAMMA"]
 
 
 def test_sync_fast_path_stays_zero_write_lancedb(tmp_path):
