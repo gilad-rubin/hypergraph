@@ -463,6 +463,24 @@ class WritePlanner:
             if key not in columns and not is_internal_column(key) and not Provenance.column_is_null(value)
         }
 
+    def _lineage_donor(self, child_item: Mapping[str, Any], child_spec: TableSpec) -> dict[str, Any] | None:
+        """The newest complete row a NEW child item continues: one holding its values in the spec's lineage fields.
+
+        A new parent row (a new version of a document) makes all-new child
+        rows. Reconciling each against the row it continues reuses every node
+        whose inputs did not change; a node's provenance is its code, its
+        bound values and its direct inputs, so any complete row holding the
+        same provenance holds the value that node would produce. A store that
+        keeps no column for a lineage field has nothing to match on.
+        """
+        if not child_spec.lineage or any(field not in child_item for field in child_spec.lineage):
+            return None
+        if not set(child_spec.lineage) <= set(self._commit.column_names(child_spec.name)):
+            return None
+        rows = self._commit.read_rows(child_spec.name, tuple((field, "eq", child_item[field]) for field in child_spec.lineage))
+        complete = [row for row in rows if RowStatus.of_stored(row) is RowStatus.COMPLETE]
+        return max(complete, key=lambda row: row.get("_write_gen", 0)) if complete else None
+
     def _insert_child_item(
         self,
         parent_id: Any,
@@ -511,10 +529,14 @@ class WritePlanner:
                 error=f"{type(error).__name__}: {error}",
             )
 
+        # A row reconciles against its own last derivation; a new row against
+        # the row it continues. Either way only the nodes whose inputs changed run.
+        current = existing is not None and stored_status is RowStatus.COMPLETE
+        basis = existing if current else (self._lineage_donor(child_item, child_spec) if existing is None else None)
         row: dict[str, Any] | None = None
-        if existing is not None and stored_status is RowStatus.COMPLETE:
+        if basis is not None:
             try:
-                reconciled = yield from self._reconcile(child_item, existing, child_spec)
+                reconciled = yield from self._reconcile(child_item, basis, child_spec)
             except Exception as error:
                 if self._on_error == "raise":
                     raise

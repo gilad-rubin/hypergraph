@@ -74,6 +74,8 @@ class TableSpec:
     parent_link: str | None = None
     child_graph: Any = None
     map_input: str | None = None
+    #: Child grains only: the item fields a new row shares with the row it continues (``map_over(lineage=...)``).
+    lineage: tuple[str, ...] = ()
 
 
 # --- Graph introspection helpers ---
@@ -381,6 +383,14 @@ def _analyze_map_over(map_node: Any, components: dict[str, Any]) -> TableSpec | 
 
     child_columns.extend(_internal_columns())
 
+    lineage = tuple(config.get("lineage") or ())
+    held = set(item_schema_fields(config.get("schema"))) | {column.name for column in child_columns if column.role == "source"}
+    if unknown := [name for name in lineage if name not in held]:
+        raise GraphConfigError(
+            "map_over(lineage=...) names fields the child rows do not hold.\n\n"
+            f"Unknown: {', '.join(unknown)}\n\n"
+            "How to fix: name source fields of the mapped items (the child graph's inputs, or their schema's fields)."
+        )
     return TableSpec(
         name=identity.replace("_id", ""),
         identity=identity,
@@ -388,4 +398,5 @@ def _analyze_map_over(map_node: Any, components: dict[str, Any]) -> TableSpec | 
         parent_link=PARENT_LINK_COLUMN,
         child_graph=inner_graph,
         map_input=map_input,
+        lineage=lineage,
     )

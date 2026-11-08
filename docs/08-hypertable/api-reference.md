@@ -536,6 +536,22 @@ stamp before it probes the children, which re-stamps the stored child rows and
 retires an older duplicate copy of one; only then does the refusal store the
 `ERROR` row, so on that path child rows are restamped and retired after all.
 
+A new parent row makes all-new child rows: every step of every child runs, even
+when the parent is a new version of a document whose pages barely changed.
+`map_over(..., lineage=("document_id", "page_number"))` names the item fields a
+new child row shares with the row it continues under another parent. A child
+row with no stored row of its own reconciles against the newest complete child
+row holding the same values in those fields, under any parent, so each node
+whose inputs did not change is reused instead of run, exactly as when a row
+re-derives against its own last derivation. A lineage field must be a source
+field of the items (a child graph input, or a field of the `schema=` type),
+or analysis raises `GraphConfigError`; a field the store keeps no column for
+matches nothing, so no row is reused.
+
+```python
+pages = page_graph.as_node().map_over("pages", identity="page_id", schema=Page, lineage=("document_id", "page_number"))
+```
+
 Each child table is named after its child identity (`word_id` → `word`), so two
 fan-outs whose identities resolve to one table name are refused when the table
 is first analyzed, with a `GraphConfigError` naming both fan-outs, and so is a

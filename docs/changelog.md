@@ -4,6 +4,15 @@
 
 ### Added
 
+- **HyperTable: `map_over(lineage=...)`, a new child row continues the row it
+  shares its lineage with.** A new parent row (a new version of a document)
+  made all-new child rows, so every step of every page ran again. `lineage`
+  names the item fields a new child row shares with the row it continues
+  under another parent (`("document_id", "page_number")`); the new row
+  reconciles against the newest complete row holding the same values, so each
+  step whose inputs did not change is reused. A field the child rows do not
+  hold is refused with `GraphConfigError`.
+
 - **Observability: the node span names its workflow.** `current_node_span().workflow_id` is the persisted
   workflow the executing node runs in (for one item of a Host Batch, `"<batch workflow_id>:<item key>"`), or `None`
   without one. Code inside a node, such as a tool an agent calls, can now say which durable run it belongs to without

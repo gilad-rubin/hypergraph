@@ -677,6 +677,7 @@ class GraphNode(HyperNode):
         clone: bool | list[str] = False,
         identity: str | None = None,
         schema: type | None = None,
+        lineage: tuple[str, ...] | None = None,
     ) -> _GN:
         """Configure this GraphNode for iteration over input parameters.
 
@@ -742,6 +743,14 @@ class GraphNode(HyperNode):
                     Performance note: clone=True deep-copies every broadcast value
                     on every iteration. For large product-mode maps this can be
                     expensive. Prefer clone=["specific_params"] when possible.
+            identity: HyperTable only: the item field that names a child row.
+            schema: HyperTable only: the item type, whose fields the child rows hold.
+            lineage: HyperTable only: the item fields a NEW child row shares
+                with the row it continues under another parent (a document's
+                id and page number, across its versions). The new row
+                reconciles against the newest complete row holding the same
+                values, so each node whose inputs did not change is reused
+                instead of run.
 
         Returns:
             New GraphNode instance with map_over configuration
@@ -802,6 +811,8 @@ class GraphNode(HyperNode):
             new._map_config["identity"] = identity  # type: ignore[attr-defined]
         if schema:
             new._map_config["schema"] = schema  # type: ignore[attr-defined]
+        if lineage:
+            new._map_config["lineage"] = tuple(lineage)  # type: ignore[attr-defined]
         return new
 
     def _normalize_map_input_param(self, param: str) -> str:
