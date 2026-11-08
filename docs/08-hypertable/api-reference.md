@@ -486,7 +486,10 @@ child.count()
 ```
 
 Child rows expose the parent's public identity name rather than the physical
-link column. A `where` predicate may reference parent columns; the handle
+link column. A value `set()` wrote on a child row (any column that is not one
+of the child graph's sources or outputs) stays on it when the row re-derives
+from a changed item, as `update()` keeps a root row's metadata; a column the
+row holds no value for takes the item's. A `where` predicate may reference parent columns; the handle
 joins matching parent identities before reading child rows.
 
 A child identity must be unique within one parent row. The logical child key

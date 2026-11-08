@@ -443,6 +443,25 @@ class WritePlanner:
             return None
         return child_items
 
+    @staticmethod
+    def _child_annotations(existing: Mapping[str, Any] | None, spec: TableSpec) -> dict[str, Any]:
+        """What a child row holds besides its content: every column that is not a source, a derived value or internal.
+
+        A mapped item supplies these at the row's birth; afterwards they are
+        the caller's (``ChildTable.set`` changes exactly these). A row that
+        re-derives keeps the ones it holds a value for, as ``update()`` keeps
+        a root row's metadata: its content changed, not what was said about
+        it. One it holds no value for takes the item's.
+        """
+        if existing is None:
+            return {}
+        columns = {column.name for column in spec.columns}
+        return {
+            key: normalize_value(value)
+            for key, value in existing.items()
+            if key not in columns and not is_internal_column(key) and not Provenance.column_is_null(value)
+        }
+
     def _insert_child_item(
         self,
         parent_id: Any,
@@ -512,6 +531,7 @@ class WritePlanner:
                     error=None,
                     outputs=reconciled.output_values(),
                     provenances=reconciled.provenance_values(),
+                    annotations=self._child_annotations(existing, child_spec),
                 )
 
         if row is None:
@@ -533,6 +553,7 @@ class WritePlanner:
                 error=None,
                 outputs=child_outputs,
                 provenances=self._rows.child_provenances(child_spec, {**child_item, **child_outputs}),
+                annotations=self._child_annotations(existing, child_spec),
             )
         self._commit.write_derived_child(child_spec.name, row, errored=False)
 

@@ -35,6 +35,13 @@
 
 ### Changed
 
+- **HyperTable: a re-derived child row keeps what was set on it.** A child row
+  that re-derives because its item's content changed is written from the new
+  item, which knows nothing of the values `ChildTable.set()` wrote after the
+  row's birth, so they were lost. The row now keeps every value it holds
+  outside its sources, outputs and internal columns; one it holds no value for
+  takes the item's.
+
 - **HyperTable: an unchanged child row stays where it is.** A parent write
   whose fan-out yields a child item with unchanged inputs no longer rewrites
   that child row at a new write generation: the row is kept as it is, and the

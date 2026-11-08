@@ -238,7 +238,9 @@ class RowBuilder:
         error: str | None,
         outputs: Mapping[str, Any] | None = None,
         provenances: Mapping[str, Any] | None = None,
+        annotations: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """One child row: the item's values, then ``annotations`` (what the row held besides its content), then outputs."""
         row = {
             spec.identity: identity,
             "_parent_id": parent_id,
@@ -250,6 +252,7 @@ class RowBuilder:
         }
         self._stamp_recipe(row, spec.name, spec)
         row.update({key: value for key, value in item.items() if key not in (spec.identity, "_parent_id")})
+        row.update(annotations or {})
         row.update(outputs or {})
         for name, provenance in (provenances or {}).items():
             row[f"_provenance_{name}"] = provenance

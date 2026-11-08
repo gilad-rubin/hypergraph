@@ -101,3 +101,17 @@ def test_a_parent_edit_that_reaches_no_child_moves_no_child_row(store):
     after = _physical(store)
     assert {key: row["_write_gen"] for key, row in after.items()} == {key: row["_write_gen"] for key, row in before.items()}
     assert table.get("d1")["label"] == "B"
+
+
+def test_a_rederived_child_row_keeps_what_was_set_on_it(store):
+    table = _table(store)
+    table.insert(doc_id="d1", text="alpha|beta", tag="a")
+    table.child("page").set({"page_id": "p1"}, reviewed="yes")
+
+    # p1's content changes, so its row re-derives from the new item, which
+    # does not carry `reviewed`.
+    table.update("d1", text="alpha|gamma")
+
+    page = table.child("page").get("d1", "p1")
+    assert page["summary"] == "GAMMA"
+    assert page["reviewed"] == "yes"
