@@ -98,7 +98,26 @@ def normalize_inputs(
         return merged
     from hypergraph.graph.addressing import flatten_subgraph_addressing
 
-    return flatten_subgraph_addressing(merged, graph)
+    return without_own_binds(flatten_subgraph_addressing(merged, graph), graph)
+
+
+def without_own_binds(values: dict[str, Any], graph: Graph) -> dict[str, Any]:
+    """``values`` without the ones the graph binds itself, handed back in.
+
+    A bound value is part of a graph's definition, never an input of its run: a
+    GraphNode hands its child run the inner graph's own binds (they are its
+    parent-facing addresses), and a run stores its inputs and signs each map item
+    by them. Dropped here, the child is rebuilt from its definition like a
+    top-level run is: a checkpointed child can hold live parts (a client, an
+    opened corpus) no store can serialize, and a map item's signature, which
+    reads each input's repr, stays the same across the process that rebuilds the
+    graph over new live parts. Only the identical object is dropped: a different
+    value is an override, and stays an input.
+    """
+    bound = graph.inputs.bound
+    if not bound:
+        return values
+    return {name: value for name, value in values.items() if name not in bound or value is not bound[name]}
 
 
 def _reserved_input_error(

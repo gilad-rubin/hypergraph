@@ -50,6 +50,20 @@
   hand-written Playwright script, and Fit View stopped at the readable zoom.
   SVG is not offered: nodes are HTML, not SVG.
 
+### Fixed
+
+- **A batch step over a graph that binds a live part checkpoints each item.** A
+  GraphNode hands its child run the inner graph's own binds, and a checkpointed
+  run stores its inputs and signs each map item by them, so a mapped graph
+  binding a model client or an opened corpus refused every child ("cannot be
+  stored by this checkpointer's serializer"), and its repr made each item's
+  signature differ in the process that rebuilt the graph after a restart. A
+  value a graph binds is its definition: handed back in as the identical object
+  it is no input, never stored and never signed. A durable run can now hold a
+  batch of such items and a step after it, each item restartable, and a restart
+  over new live parts restores the items that finished. A different value for a
+  bound name is still an override and an input.
+
 ### Changed
 
 - **HyperTable: a child step that recorded no provenance is judged by its
