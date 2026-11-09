@@ -52,6 +52,14 @@
 
 ### Fixed
 
+- **A step that returns bytes is checkpointed.** `JsonSerializer`, every Run
+  Home's default, had no form for `bytes`, so a step returning them failed its
+  run when its record was written. Since a table's recipe runs record into the
+  Run Home of the durable run that drives them, a recipe reading its
+  document's source file as bytes failed every document. `bytes` (and
+  `bytearray`, `memoryview`) are written as `{"__hypergraph_bytes__": base64}`
+  and read back as `bytes`, at any depth.
+
 - **A batch step over a graph that binds a live part checkpoints each item.** A
   GraphNode hands its child run the inner graph's own binds, and a checkpointed
   run stores its inputs and signs each map item by them, so a mapped graph

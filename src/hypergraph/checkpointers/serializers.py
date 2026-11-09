@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from abc import ABC, abstractmethod
 from typing import Any
@@ -25,7 +26,14 @@ class Serializer(ABC):
         ...
 
 
+#: The one key of the object a ``bytes`` value is written as: JSON has no bytes, and a step may return them (a
+#: HyperTable blob column, a document's source file).
+BYTES_KEY = "__hypergraph_bytes__"
+
+
 def _json_default(obj: Any) -> Any:
+    if isinstance(obj, (bytes, bytearray, memoryview)):
+        return {BYTES_KEY: base64.b64encode(bytes(obj)).decode("ascii")}
     if hasattr(obj, "model_dump"):
         return obj.model_dump(mode="json")
     if hasattr(obj, "__dataclass_fields__"):
@@ -35,10 +43,18 @@ def _json_default(obj: Any) -> Any:
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
+def _json_object(obj: dict[str, Any]) -> Any:
+    """Read a ``bytes`` value back from the one-key object it was written as."""
+    if len(obj) == 1 and isinstance(encoded := obj.get(BYTES_KEY), str):
+        return base64.b64decode(encoded)
+    return obj
+
+
 class JsonSerializer(Serializer):
     """JSON serializer (default). Safe, human-readable, inspectable.
 
-    By default, handles Pydantic models and dataclasses automatically.
+    By default, handles Pydantic models, dataclasses and ``bytes`` (written as ``{"__hypergraph_bytes__": base64}``
+    and read back as ``bytes``) automatically.
     Pass ``lossy=True`` to also fall back to ``str()`` for other unsupported types.
     """
 
@@ -57,7 +73,7 @@ class JsonSerializer(Serializer):
         return json.dumps(value, default=self._default).encode("utf-8")
 
     def deserialize(self, data: bytes) -> Any:
-        return json.loads(data.decode("utf-8"))
+        return json.loads(data.decode("utf-8"), object_hook=_json_object)
 
 
 class PickleSerializer(Serializer):

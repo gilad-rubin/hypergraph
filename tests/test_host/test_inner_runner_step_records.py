@@ -321,6 +321,45 @@ async def test_an_unreadable_page_reports_its_error_rather_than_vanishing(tmp_pa
     assert {step.root_workflow_id for step in failed} == {"sweep:doc-1"}
 
 
+async def test_a_recipe_step_that_returns_bytes_is_recorded_and_the_document_completes(tmp_path, home, ledger):
+    """A recipe reads its document's source file as bytes, a value a table holds as a blob. Recorded into the Run
+    Home (R18), the step's bytes reached a JSON writer with no bytes form, so every document failed; they are stored
+    and read back as the same bytes."""
+
+    @node(output_name="source_bytes")
+    def load_source(page: str) -> bytes:
+        return b"%PDF-1.7\x00" + page.encode()
+
+    @node(output_name="length")
+    def measure(source_bytes: bytes) -> int:
+        return len(source_bytes)
+
+    table = Graph([load_source, measure], name="page_recipe").as_table(
+        identity="page_id",
+        store=LanceDBStore(str(tmp_path / "table")),
+        runner=AsyncRunner(),
+    )
+
+    @node(output_name="page_id")
+    def stage(work_item_id: str) -> str:
+        return work_item_id
+
+    @node(output_name="page")
+    def pick_page(work_item_id: str) -> str:
+        return f"{work_item_id}-p1"
+
+    graph = Graph([stage, pick_page, table.as_node(name="materialize_pages", output_name="materialization")], name="ingest_document").with_runner(
+        AsyncRunner()
+    )
+    host = serve(graph, home=home, deployment_version="v1")
+    await settled_ingest(host, graph)
+
+    outcome = await host.client.result(RunRef(home=home.uri, run_id="sweep:doc-1"))
+    assert outcome.status == WorkflowStatus.COMPLETED
+    recipe = next(run for run in home.runs(limit=None) if run.parent_run_id == "sweep:doc-1")
+    assert home.state(recipe.id)["source_bytes"] == b"%PDF-1.7\x00doc-1-p1"
+
+
 async def test_the_fan_out_s_timings_survive_the_process_that_wrote_them(tmp_path, home, ledger):
     """The restart contract: close the Home, reopen it, read the same facts.
 
