@@ -31,7 +31,7 @@ from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.results import RunStatus
-from hypergraph.runners._shared.stop import reset_stop_signal, set_stop_signal
+from hypergraph.runners._shared.stop import cancelled_by_worker_stop, reset_stop_signal, set_stop_signal
 
 if TYPE_CHECKING:
     from hypergraph.events.dispatcher import EventDispatcher
@@ -39,6 +39,16 @@ if TYPE_CHECKING:
     from hypergraph.runners._shared._inspect_transport import NotebookInspectionTransport
     from hypergraph.runners._shared.state import CheckpointErrorSink
     from hypergraph.runners._shared.stop import _WorkflowReservation
+
+
+def settles_failed(error: BaseException | None) -> bool:
+    """Whether a run that ended on ``error`` settles its row FAILED.
+
+    Every error the run did not survive does, a cancellation included, except a stopping Host worker's: its drain
+    ends the worker, not the run, and leaves the row active for the next worker's restart scan to resume (a server
+    redeployed mid-ingestion; settled FAILED, the restart found the run terminal and the work was lost).
+    """
+    return error is not None and not cancelled_by_worker_stop(error)
 
 
 class RunTeardown:

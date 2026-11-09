@@ -1919,7 +1919,10 @@ host.shutdown()                               # from another task: bounded drain
 ```
 
 `shutdown()` stops new claims and lets in-flight runs finish within
-`drain_timeout`. Process supervision (systemd, FastAPI lifespan, cron)
+`drain_timeout`. A run still executing then is cancelled and left active, as a
+killed process leaves it: the worker keeps its claim, and the next worker under
+the same name resumes it from its last committed step. (A run cancelled any
+other way, outside a stopping worker, settles `FAILED`.) Process supervision (systemd, FastAPI lifespan, cron)
 restarts the worker — Hypergraph runs no control-plane server.
 
 ### Several workers may share one Run Home

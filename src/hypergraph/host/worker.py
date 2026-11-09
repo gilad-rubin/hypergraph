@@ -24,13 +24,20 @@ from __future__ import annotations
 
 import asyncio
 
+from hypergraph.runners._shared.stop import WorkerStop
 
-async def _drain(tasks: set[asyncio.Task], drain_timeout: float) -> None:
-    """Bounded drain: await active runs, then cancel what outlives the bound."""
+
+async def _drain(tasks: set[asyncio.Task], drain_timeout: float, stop: WorkerStop) -> None:
+    """Bounded drain: await active runs, then cancel what outlives the bound.
+
+    ``stop`` is marked first, so the runs it cancels know the cancellation is the worker's, not theirs.
+    """
     pending = [task for task in tasks if not task.done()]
     if not pending:
         return
     _, still_pending = await asyncio.wait(pending, timeout=drain_timeout)
+    if still_pending:
+        stop.cancelling = True
     for task in still_pending:
         task.cancel()
     if still_pending:

@@ -76,6 +76,7 @@ from hypergraph.host.views import (
 )
 from hypergraph.host.worker import _drain
 from hypergraph.runners._shared.state_restore import RESERVED_WORKFLOW_ID_CHAR, workflow_id_is_reserved
+from hypergraph.runners._shared.stop import WorkerStop, reset_worker_stop, set_worker_stop
 
 if TYPE_CHECKING:
     from hypergraph.events.processor import EventProcessor
@@ -285,6 +286,7 @@ class Host:
         self._bus = bus
         self._client = RunHomeClient(home, _bus=bus)
         self._stop_event: asyncio.Event | None = None
+        self._worker_stop: WorkerStop | None = None
         self._worker_loop: asyncio.AbstractEventLoop | None = None
         self._shutdown_requested = False
         # What this worker last published to host_workers, and when. Both
@@ -1120,6 +1122,7 @@ class Host:
             stop_event.set()
             self._shutdown_requested = False
         tasks: dict[str, asyncio.Task] = {}
+        worker_stop = self._worker_stop = WorkerStop()
         self._published = None
         self._pulsed_at = None
         try:
@@ -1154,11 +1157,12 @@ class Host:
                     await self._process_stop_commands(set(tasks))
                     await asyncio.sleep(0 if claimed else poll_interval)
             finally:
-                await _drain(set(tasks.values()), drain_timeout)
+                await _drain(set(tasks.values()), drain_timeout, worker_stop)
                 await self._release_leases(worker_id)
                 await self._withdraw(worker_id)
         finally:
             self._stop_event = None
+            self._worker_stop = None
             self._worker_loop = None
             self._published = None
             self._pulsed_at = None
@@ -1441,6 +1445,9 @@ class Host:
         # ``work_forever`` so it covers exactly one submission and nothing
         # else the worker does.
         recorder_token = push_host_recorder(self._home)
+        # The worker's stop too: a cancellation its drain issues ends the worker, not this run, so the run stays
+        # resumable for the restart scan instead of settling FAILED.
+        stop_token = set_worker_stop(self._worker_stop)
         try:
             try:
                 if asyncio.iscoroutinefunction(run_fn):
@@ -1458,6 +1465,7 @@ class Host:
                     finally:
                         self._home._clear_sync_wait_cancellation(cancellation_token)
             finally:
+                reset_worker_stop(stop_token)
                 pop_host_recorder(recorder_token)
         # ``asyncio.CancelledError`` is a BaseException, so shutdown drain and
         # ``stop()`` cancellation pass through here untouched — they are the

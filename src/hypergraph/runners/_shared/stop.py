@@ -12,8 +12,9 @@ threading.Event works correctly for both sync and async runners.
 
 from __future__ import annotations
 
+import asyncio
 import threading
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from typing import Any
 
 from hypergraph.exceptions import WorkflowAlreadyRunningError
@@ -172,3 +173,42 @@ def set_stop_signal(signal: StopSignal) -> Any:
 def reset_stop_signal(token: Any) -> None:
     """Reset the stop signal using a token."""
     _stop_signal.reset(token)
+
+
+# ---------------------------------------------------------------------------
+# A Host worker's stop
+# ---------------------------------------------------------------------------
+
+
+class WorkerStop:
+    """A Host worker's stop, as each run it executes sees it.
+
+    A stopping worker awaits its runs for ``drain_timeout``, then cancels the rest. That cancellation ends the worker,
+    not the run: the worker keeps the claim for the restart scan, so the run must stay as a killed process leaves it,
+    active and resumable from its last committed step. The worker publishes one to each execution and marks it before
+    it cancels; any other cancellation still settles the run FAILED.
+    """
+
+    __slots__ = ("cancelling",)
+
+    def __init__(self) -> None:
+        self.cancelling = False
+
+
+_worker_stop: ContextVar[WorkerStop | None] = ContextVar("_worker_stop", default=None)
+
+
+def set_worker_stop(stop: WorkerStop | None) -> Token[WorkerStop | None]:
+    """Publish the executing worker's stop to this execution (nested runs inherit it)."""
+    return _worker_stop.set(stop)
+
+
+def reset_worker_stop(token: Token[WorkerStop | None]) -> None:
+    """Restore the worker stop in force before the matching ``set_worker_stop``."""
+    _worker_stop.reset(token)
+
+
+def cancelled_by_worker_stop(error: BaseException) -> bool:
+    """Whether ``error`` is the cancellation of a stopping worker's drain."""
+    stop = _worker_stop.get()
+    return isinstance(error, asyncio.CancelledError) and stop is not None and stop.cancelling

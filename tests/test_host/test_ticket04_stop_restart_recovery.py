@@ -80,6 +80,25 @@ def _gated_async_graph(name: str, started: asyncio.Event, release: asyncio.Event
     return Graph([seed, gated], name=name).with_runner(AsyncRunner())
 
 
+def _gated_fan_out_graph(name: str, started: asyncio.Event, release: asyncio.Event, calls: dict) -> Graph:
+    """The gated node, fanned out over two items as nested runs (a document's pages, say)."""
+
+    @node(output_name="item")
+    async def seed(x: int) -> list[int]:
+        calls["seed"] += 1
+        return [x, x + 1]
+
+    @node(output_name="out")
+    async def gated(item: int) -> int:
+        started.set()
+        await release.wait()
+        calls["gated"] += 1
+        return item * 10
+
+    each = Graph([gated], name=f"{name}_item").as_node(name="each").map_over("item")
+    return Graph([seed, each], name=name).with_runner(AsyncRunner())
+
+
 def _home_uri(tmp_path, filename: str = "runs.db") -> str:
     return f"file:{tmp_path / filename}"
 
@@ -419,6 +438,49 @@ class TestRealKillRestart:
         kinds = [u[1] for u in home._read_run_updates_sync("wf-fresh")]
         assert "run_reset" in kinds
         assert home._get_submission_sync("wf-fresh")["state"] == "finished"
+
+
+# === 2b. A run its stopping worker cancels resumes on the next one ===
+
+
+class TestDrainCancelledRestart:
+    @pytest.mark.parametrize(
+        ("make_graph", "gated_calls", "out"),
+        [(_gated_async_graph, 1, 30), (_gated_fan_out_graph, 2, [30, 40])],
+        ids=["flat", "fan-out"],
+    )
+    async def test_a_run_its_stopping_worker_cancels_resumes_on_the_next_worker(self, tmp_path, make_graph, gated_calls, out):
+        """A worker that stops waits `drain_timeout` for the runs it executes, then cancels the rest. A cancelled run
+        is interrupted, not failed: its row stays active, as a killed process leaves it, so the next worker under the
+        same name resumes it from its last committed step. Settled FAILED, the restart found it terminal and the work
+        was lost (a server redeployed mid-ingestion)."""
+        path = _home_uri(tmp_path)
+        started, release = asyncio.Event(), asyncio.Event()
+        calls = {"seed": 0, "gated": 0}
+        home = RunHome.open(path)
+        try:
+            host, served = serve_graphs(make_graph("drained", started, release, calls), home=home, deployment_version="v1")
+            receipt = await host.submit(served["drained"], {"x": 3}, workflow_id="cut-by-drain")
+            worker = asyncio.create_task(host.work_forever("w-server", poll_interval=0.01, drain_timeout=0.05))
+            await asyncio.wait_for(started.wait(), timeout=10)
+            host.shutdown()
+            await asyncio.wait_for(worker, timeout=20)  # the drain ran out and cancelled the gated node
+            cut = await host.client.get(receipt.run_ref)
+            assert cut is not None and cut.status == WorkflowStatus.ACTIVE, cut.status if cut else None
+        finally:
+            await home.close()
+
+        release.set()
+        restarted = RunHome.open(path)
+        again, served = serve_graphs(make_graph("drained", started, release, calls), home=restarted, deployment_version="v1")
+        try:
+            async with _worker(again, "w-server"):
+                view = await _wait_for(lambda: _terminal_view(again.client, receipt.run_ref))
+            assert view.status == WorkflowStatus.COMPLETED
+            assert calls == {"seed": 1, "gated": gated_calls}, "the committed step is not run again; the cut ones finish"
+            assert (await again.client.result(receipt.run_ref)).outputs["out"] == out
+        finally:
+            await restarted.close()
 
 
 # === 3. Recovery brake (A6) ===

@@ -71,7 +71,7 @@ from hypergraph.runners._shared.results import (
     build_terminal_run_result,
 )
 from hypergraph.runners._shared.run_log import RunLogCollector
-from hypergraph.runners._shared.run_teardown import AsyncRunTeardown, InspectionSettlement
+from hypergraph.runners._shared.run_teardown import AsyncRunTeardown, InspectionSettlement, settles_failed
 from hypergraph.runners._shared.scheduling import compute_execution_scope
 from hypergraph.runners._shared.state import CheckpointErrorSink, GraphState, PauseExecution
 from hypergraph.runners._shared.state_restore import (
@@ -649,7 +649,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 run_row_created = True
         except BaseException as error:
             try:
-                await teardown.settle_completely(dispatcher, settle_run_row=True)
+                await teardown.settle_completely(dispatcher, settle_run_row=settles_failed(error))
             except BaseException as final_error:
                 inspection_settlement.abort(final_error)
                 raise
@@ -896,7 +896,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             raise
         finally:
             try:
-                await teardown.settle_completely(dispatcher, settle_run_row=terminal_error is not None)
+                await teardown.settle_completely(dispatcher, settle_run_row=settles_failed(terminal_error))
             except BaseException as final_error:
                 inspection_settlement.abort(final_error)
                 raise
@@ -1173,7 +1173,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             map_stop_signal = get_stop_signal()
         except BaseException as error:
             try:
-                await teardown.settle_completely(dispatcher, settle_run_row=True)
+                await teardown.settle_completely(dispatcher, settle_run_row=settles_failed(error))
             except BaseException as final_error:
                 inspection_settlement.abort(final_error, unstarted_item_indexes=tuple(range(len(input_variations))))
                 raise
@@ -1435,7 +1435,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             raise
         finally:
             try:
-                await teardown.settle_completely(dispatcher, settle_run_row=terminal_error is not None)
+                await teardown.settle_completely(dispatcher, settle_run_row=settles_failed(terminal_error))
             except BaseException as final_error:
                 inspection_settlement.abort(
                     final_error,
