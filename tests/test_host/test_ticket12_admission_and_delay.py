@@ -259,6 +259,38 @@ class TestActiveRunCap:
         assert await cap(max_active_runs=None) is None  # explicit None writes through
         assert await cap() is None
 
+    async def test_reopening_with_the_same_cap_writes_nothing(self, tmp_path):
+        """Each server opens its Home with its cap; an unchanged cap must not
+        take the write lock, or two servers on one disk collide on it."""
+        import sqlite3
+
+        uri = _home_uri(tmp_path, "reopen.db")
+
+        async def open_with(**kwargs) -> None:
+            opened = RunHome.open(uri, **kwargs)
+            try:
+                assert opened.max_active_runs == kwargs.get("max_active_runs")
+            finally:
+                await opened.close()
+
+        await open_with(max_active_runs=1)
+        observer = sqlite3.connect(tmp_path / "reopen.db")
+        try:
+
+            def commits_seen() -> int:
+                return observer.execute("PRAGMA data_version").fetchone()[0]
+
+            before = commits_seen()
+            await open_with(max_active_runs=1)
+            assert commits_seen() == before  # same cap: no write
+            await open_with(max_active_runs=2)
+            assert commits_seen() != before  # changed cap: written
+            after_change = commits_seen()
+            await open_with(max_active_runs=2)
+            assert commits_seen() == after_change
+        finally:
+            observer.close()
+
     async def test_claim_order_stays_total_when_created_at_ties(self, home):
         """Microsecond timestamps collide; insertion order still decides."""
         host, served = serve_graphs(_sync_graph("dbl"), home=home, deployment_version="v1")

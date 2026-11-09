@@ -179,7 +179,8 @@ _MAX_ADMISSION_UNITS_KEY = "max_admission_units"
 _SELECT_SETTING_SQL = "SELECT value FROM host_settings WHERE key = ?"
 _UPSERT_SETTING_SQL = (
     "INSERT INTO host_settings (key, value, updated_at) VALUES (?, ?, ?) "
-    "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+    "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at "
+    "WHERE host_settings.value IS NOT excluded.value"
 )
 
 # The run's CURRENT pause occurrence — a later pause supersedes an earlier
@@ -1094,9 +1095,24 @@ class RunHome(SqliteCheckpointer):
     @max_active_runs.setter
     def max_active_runs(self, value: int | None) -> None:
         _validate_max_active_runs(value)
+        self._store_setting(_MAX_ACTIVE_RUNS_KEY, value)
+
+    def _store_setting(self, key: str, value: int | None) -> None:
+        """Write a Home-scoped setting only when the store holds another value.
+
+        Every process opening a Home passes its cap, so an unconditional write
+        on each open takes the database's write lock for nothing and collides
+        with a second server's writes ("database is locked"). The plain read
+        settles the common case with no lock; the upsert's own WHERE re-compares
+        under the write lock, so a racing writer is never overwritten blindly.
+        """
+        stored = None if value is None else str(value)
         with self._sync_lock:
             db = self._sync_db()
-            db.execute(_UPSERT_SETTING_SQL, (_MAX_ACTIVE_RUNS_KEY, None if value is None else str(value), _now_iso()))
+            row = db.execute(_SELECT_SETTING_SQL, (key,)).fetchone()
+            if (row[0] if row is not None else None) == stored:
+                return
+            db.execute(_UPSERT_SETTING_SQL, (key, stored, _now_iso()))
             db.commit()
 
     @property
@@ -1110,10 +1126,7 @@ class RunHome(SqliteCheckpointer):
     def max_admission_units(self, value: int | None) -> None:
         if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
             raise ValueError(f"max_admission_units must be an int >= 1, or None for unlimited; got {value!r}.")
-        with self._sync_lock:
-            db = self._sync_db()
-            db.execute(_UPSERT_SETTING_SQL, (_MAX_ADMISSION_UNITS_KEY, None if value is None else str(value), _now_iso()))
-            db.commit()
+        self._store_setting(_MAX_ADMISSION_UNITS_KEY, value)
 
     # === Store-authoritative time ===
 
