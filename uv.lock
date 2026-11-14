@@ -1010,27 +1010,26 @@ nvtx = [
 
 [[package]]
 name = "daft"
-version = "0.7.14"
+version = "0.7.26"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "fsspec" },
     { name = "packaging" },
     { name = "pyarrow" },
     { name = "tqdm" },
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/63/43/897f27f2cdcd8a93276fbc64fbde15d0c2131c8e656bb93be657efe85b66/daft-0.7.14.tar.gz", hash = "sha256:23b8ae24537817d40f300f71d60550fdca50a9000ddf37deffc0e303b3e6923e", size = 3224465, upload-time = "2026-05-20T03:41:05.088Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0d/91/f5e6aa0e441a4e1caefa2d15fc649e6206982d4b320ceaee6dade290de4e/daft-0.7.26.tar.gz", hash = "sha256:ec9034fecd87a76ed1dfb6bba059f81f60a4a363dc6a743ab616175d10ffd3b4", size = 3389855, upload-time = "2026-10-06T19:51:17.379Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c0/ca/02f43d207e29383a3743ad2738aa3726419e376a3c4574e31c9399b2b011/daft-0.7.14-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:dd2328961835797cc3b1f721bea910518b8e1a090560e19088db82ec2ef8ff44", size = 61509612, upload-time = "2026-05-20T03:40:16.485Z" },
-    { url = "https://files.pythonhosted.org/packages/5f/40/f7437c120cd9c78e8bd258d9047403ffb8371ac9b21587e8ca5c28b9e52e/daft-0.7.14-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:d372ac76beb2cd1cd8d7cb617b5c5936ddd2ade8f6d61f8b32a9b2bb14747685", size = 57069703, upload-time = "2026-05-20T03:40:22.526Z" },
-    { url = "https://files.pythonhosted.org/packages/2a/16/b442a439004934de1140e04025e0d1ba07dd17c5fc6e6dda89bc6746723f/daft-0.7.14-cp310-abi3-manylinux_2_24_aarch64.whl", hash = "sha256:de296328d19f3ecd5ad409583979f89b01f1d8a913d0360b4b4d3f20f5e56a09", size = 59651829, upload-time = "2026-05-20T03:40:27.904Z" },
-    { url = "https://files.pythonhosted.org/packages/c6/19/df6465dee01e2557801d8e323a7d1ad5bae1ec11883440afebe21f6be67a/daft-0.7.14-cp310-abi3-manylinux_2_24_x86_64.whl", hash = "sha256:5808823c3ef21dfe278d21af2540e11bc675642f617d2b51434bf2fdd827d0fa", size = 61946262, upload-time = "2026-05-20T03:40:33.309Z" },
-    { url = "https://files.pythonhosted.org/packages/3a/13/e0efefb2cfac2b2b33d01143aaa16f832009a7516969eb42efaac723d36c/daft-0.7.14-cp310-abi3-win_amd64.whl", hash = "sha256:f7a7ae3088b234d75fa10242b181d90326eea3f7b6a9c331ec02ce07f404c706", size = 62767597, upload-time = "2026-05-20T03:40:40.416Z" },
+    { url = "https://files.pythonhosted.org/packages/69/53/041db3eba4fc5c2e59fec49b04dc95d99e02024b648f91cfdbaeb6ea8684/daft-0.7.26-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:57e08253601ebf5aa3da9931306dc059af2dc91de9dcccc279293a0fbf88ac64", size = 55733536, upload-time = "2026-10-06T19:50:36.186Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/f0/0afab885023a205e13ea981613c966ed17bfdb7f107281d32d9d84caba6c/daft-0.7.26-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:8b6e7b8d4e802f15e0f5facb9e019723837d970fa6271449537fe0d594c7aea7", size = 51601501, upload-time = "2026-10-06T19:50:40.887Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/70/194f3b32d9dd949fc1fc9e44c72b4344b68cd560661c9fdb905bf5a1903c/daft-0.7.26-cp310-abi3-manylinux_2_24_aarch64.whl", hash = "sha256:a57d2db079a9736acd65fdff8951ea31d9626f4cb0fa70caec5e298c63005f85", size = 54127726, upload-time = "2026-10-06T19:50:46.489Z" },
+    { url = "https://files.pythonhosted.org/packages/51/b3/b569a3806e64b23d1377adabb7520f0ee91f74cced28f3f244a29eac2cf9/daft-0.7.26-cp310-abi3-manylinux_2_24_x86_64.whl", hash = "sha256:c4e47f5c2bd4d24183c79bee2d8ce340bed0478c6095cd493325d476c02cb01c", size = 56333298, upload-time = "2026-10-06T19:50:51.58Z" },
+    { url = "https://files.pythonhosted.org/packages/0c/82/6b2b09aaf5bc424b0abc720ac0905900105cc09a834bc67f36d5440a9a0b/daft-0.7.26-cp310-abi3-win_amd64.whl", hash = "sha256:dc629070c275f25bbabb07d21efcaa1b35cbdf57ed618c5d0b3bf50ae63f44ab", size = 55046619, upload-time = "2026-10-06T19:50:56.935Z" },
 ]
 
 [[package]]
 name = "datasets"
-version = "4.4.2"
+version = "5.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dill" },
@@ -1049,9 +1048,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "xxhash" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c4/54/9359803da96bc65439a28fbb014dc2c90b7d4d8034a93b72362b0d40191f/datasets-4.4.2.tar.gz", hash = "sha256:9de16e415c4ba4713eac0493f7c7dc74f3aa21599297f00cc6ddab409cb7b24b", size = 586474, upload-time = "2025-12-19T15:03:09.129Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0a/5b/836516269d4f618efe621661cfb6f9acc57e6f95265db3efaee48a5ffe04/datasets-5.0.1.tar.gz", hash = "sha256:ce22bb851efd7494f08aad33b940803784434f6e77763d00679a0dc45fcf686a", size = 641498, upload-time = "2026-07-28T11:09:12.016Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7b/b5/fefa518c809de7bced5cddb7c21c010da66fa2ae494bda96844a280cc6ce/datasets-4.4.2-py3-none-any.whl", hash = "sha256:6f5ef3417504d9cd663c71c1b90b9a494ff4c2076a2cd6a6e40ceee6ad95befc", size = 512268, upload-time = "2025-12-19T15:03:07.087Z" },
+    { url = "https://files.pythonhosted.org/packages/44/0b/98fc6eb83333508ca5f44c52b3e287ea8137a0ad582714e2cbc67a02154b/datasets-5.0.1-py3-none-any.whl", hash = "sha256:9fbf73688f8c18f7529b4fe592abd04015f81d1e58001e4bac73ffb2b39d7cc4", size = 559079, upload-time = "2026-07-28T11:09:10.266Z" },
 ]
 
 [[package]]
@@ -1363,11 +1362,11 @@ wheels = [
 
 [[package]]
 name = "fsspec"
-version = "2025.10.0"
+version = "2026.6.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/24/7f/2747c0d332b9acfa75dc84447a066fdf812b5a6b8d30472b74d309bfe8cb/fsspec-2025.10.0.tar.gz", hash = "sha256:b6789427626f068f9a83ca4e8a3cc050850b6c0f71f99ddb4f542b8266a26a59", size = 309285, upload-time = "2025-10-30T14:58:44.036Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/10/a1/ae4e3e5003468d6391d2c77b6fa1cd73bd5d13511d81c642d7b28ac90ed4/fsspec-2026.6.0.tar.gz", hash = "sha256:f5bac145310fe30e16e1471bd6840b2d990d609e872251d7e674241822abf01a", size = 313646, upload-time = "2026-06-16T01:57:28.105Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/eb/02/a6b21098b1d5d6249b7c5ab69dde30108a71e4e819d4a9778f1de1d5b70d/fsspec-2025.10.0-py3-none-any.whl", hash = "sha256:7c7712353ae7d875407f97715f0e1ffcc21e33d5b24556cb1e090ae9409ec61d", size = 200966, upload-time = "2025-10-30T14:58:42.53Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/22/4222d7ddf3da30f363edaa98e329c2bce6c65497c9cb2810931c8b2c0fbc/fsspec-2026.6.0-py3-none-any.whl", hash = "sha256:02e0b71817df9b2169dc30a16832045764def1191b43dcff5bb85bdee212d2a1", size = 203949, upload-time = "2026-06-16T01:57:26.358Z" },
 ]
 
 [package.optional-dependencies]
